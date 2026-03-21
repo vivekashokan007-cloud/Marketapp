@@ -1,0 +1,113 @@
+CONTEXT — What is Market Radar:
+
+Market Radar is a stock market options trading app for India's NSE (National Stock Exchange). It helps a retail trader make decisions on Bank Nifty and Nifty 50 index option spreads.
+
+The app runs as a PWA at https://vivekashokan007-cloud.github.io/MarketVivi/
+
+How the app works during a trading day (9:15 AM to 3:30 PM IST):
+1. Morning 9:15-9:30: User enters 2 numbers (FII Cash flow + FII Short %), presses Lock & Scan
+2. App fetches live market data from Upstox API — spot prices, option chains, VIX, breadth of 55 stocks
+3. App computes bias (bullish/bearish/neutral) from 6 signals, generates 95+ strategy candidates
+4. App ranks strategies using 3-force alignment: Direction (is market moving your way?), Theta (is time decay helping?), IV (is volatility in your favor?)
+5. Every 5 minutes: app polls Upstox API for live prices, updates P&L of open trades, fires alerts
+6. At 2:00 PM: app captures a chain snapshot (institutional baseline)
+7. At 3:15 PM: app compares with 2PM snapshot to detect institutional positioning for tomorrow
+8. App generates "positioning trades" for tomorrow based on what institutions are doing
+
+WHY we need an APK instead of just Chrome:
+- Chrome THROTTLES background tabs. The 5-min polling becomes 20+ min or stops entirely
+- Chrome KILLS the tab when memory is low. All state is lost
+- The 2:00 PM and 3:15 PM captures are CRITICAL — if Chrome kills the tab, we miss institutional positioning data
+- Web notifications are unreliable on mobile Chrome — sometimes fire, sometimes don't
+- This is REAL MONEY trading. Missing a stop-loss alert because Chrome killed the tab = actual financial loss
+
+WHAT THE APK NEEDS TO DO:
+
+The APK is a thin native shell. ALL trading logic stays in the web app. The APK provides 3 things the web app cannot do in Chrome:
+
+1. FOREGROUND SERVICE — A persistent Android service with notification "Market Radar Active". This tells Android "don't kill this app." The web app's JavaScript setInterval (5-min polling) runs reliably because Android keeps the process alive.
+
+2. WAKE LOCK — A partial wake lock so the CPU doesn't sleep. Without this, Android suspends the CPU after screen-off, and the 5-min polling stops. The wake lock keeps CPU active for 7 hours (full trading day).
+
+3. NATIVE NOTIFICATIONS — 3 Android notification channels:
+   - Urgent (stop loss hit, target reached, opponent in control) — high priority, vibration, sound
+   - Important (P&L dropping, force alignment changed, 2PM/3PM scans) — default priority
+   - Routine (30-min market updates) — low priority, silent
+
+HOW THE BRIDGE WORKS:
+
+The web app (JavaScript) already has these 3 hooks built in:
+- When user starts scanning: app calls window.NativeBridge.startMarketService()
+- When user stops: app calls window.NativeBridge.stopMarketService()
+- When app needs to alert: app calls window.NativeBridge.sendNotification(title, body, type)
+
+All 3 are wrapped in: if (window.NativeBridge && window.NativeBridge.isNative())
+So when running in regular Chrome (no NativeBridge), it falls back to web APIs. Safe.
+
+The APK's job is to:
+1. Load the URL in a WebView
+2. After page loads, inject window.NativeBridge object that maps to Kotlin @JavascriptInterface methods
+3. When JS calls AndroidBridge.startService() → start the foreground service
+4. When JS calls AndroidBridge.sendNotification(title, body, type) → fire native Android notification on the right channel
+
+---
+
+BUILD INSTRUCTIONS:
+
+Build an Android APK with these specs:
+
+Project setup:
+- Package: com.marketradar.app
+- Name: Market Radar
+- Language: Kotlin
+- Min SDK: API 26 (Android 8.0)
+- Target SDK: 34
+
+Create 4 Kotlin files:
+
+1. MainActivity.kt — Creates a WebView with JavaScript enabled, localStorage enabled, loads https://vivekashokan007-cloud.github.io/MarketVivi/. After page loads, injects this JavaScript:
+
+window.NativeBridge = {
+    isNative: function() { return true; },
+    startMarketService: function() { AndroidBridge.startService(); },
+    stopMarketService: function() { AndroidBridge.stopService(); },
+    sendNotification: function(title, body, type) { AndroidBridge.sendNotification(title, body, type); }
+};
+
+Also adds a @JavascriptInterface bridge object named AndroidBridge to the WebView. Back button should call moveTaskToBack(true) instead of closing. Request POST_NOTIFICATIONS permission on Android 13+.
+
+2. NativeBridge.kt — Has 3 @JavascriptInterface methods:
+- startService() — starts MarketRadarService as foreground service
+- stopService() — sends STOP action to MarketRadarService
+- sendNotification(title, body, type) — calls NotificationHelper.send()
+
+3. MarketRadarService.kt — A foreground service that:
+- Shows persistent notification "Market Radar Active — Watching market, Polls every 5 min"
+- Has a Stop action button on the notification
+- Acquires partial wake lock for 7 hours
+- Returns START_STICKY (auto-restart if killed)
+- Uses its own low-importance notification channel market_radar_service
+
+4. NotificationHelper.kt — Creates 3 notification channels and sends notifications:
+- trade_urgent — IMPORTANCE_HIGH, vibration pattern [0, 300, 200, 300]
+- trade_important — IMPORTANCE_DEFAULT, vibration on
+- trade_routine — IMPORTANCE_LOW
+- send(context, title, body, type) method picks channel based on type string
+
+AndroidManifest.xml permissions needed:
+- INTERNET
+- ACCESS_NETWORK_STATE
+- FOREGROUND_SERVICE
+- FOREGROUND_SERVICE_DATA_SYNC
+- WAKE_LOCK
+- POST_NOTIFICATIONS
+
+Register the service in manifest with foregroundServiceType="dataSync".
+Activity should have configChanges="orientation|screenSize|keyboard|keyboardHidden" and launchMode="singleTask".
+
+Dependencies needed in build.gradle:
+- androidx.core:core-ktx:1.12.0
+- androidx.appcompat:appcompat:1.6.1
+- androidx.webkit:webkit:1.10.0
+
+Build a debug APK I can install directly on the phone.

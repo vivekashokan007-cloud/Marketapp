@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p c:/Vividh/bro_git/marketradar/app/src/main/java/com/marketradar/app)",
+      "Bash(mkdir -p c:/Vividh/bro_git/marketradar/app/src/main/res/values)",
+      "Bash(mkdir -p c:/Vividh/bro_git/marketradar/app/src/main/res/mipmap-hdpi)",
+      "Bash(mkdir -p c:/Vividh/bro_git/marketradar/gradle/wrapper)",
+      "Bash(c:/Vividh/bro_git/marketradar/app/src/main/res/drawable/ic_launcher_foreground.xml:*)",
+      "Bash(\"c:/Vividh/bro_git/marketradar/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml\":*)",
+      "Bash(\"c:/Vividh/bro_git/marketradar/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml\":*)"
+    ]
+  }
+}
