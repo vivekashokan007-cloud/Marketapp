@@ -4,13 +4,12 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'app/build.gradle.kts'
-      - 'gradle.properties'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -30,6 +29,9 @@ jobs:
       - name: Decode Keystore
         run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > app/keystore.jks
 
+      - name: Make Gradlew Executable
+        run: chmod +x gradlew
+
       - name: Build Signed APK
         run: ./gradlew assembleRelease
         env:
@@ -38,12 +40,17 @@ jobs:
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
+      - name: Calculate Checksum
+        id: checksum
+        run: |
+          SHA=$(sha256sum app/build/outputs/apk/release/app-release.apk | awk '{ print $1 }')
+          echo "SHA=$SHA" >> $GITHUB_ENV
+
       - name: Get Version Name
         id: get_version
         run: |
           VERSION_NAME=$(grep "versionName =" app/build.gradle.kts | awk -F'"' '{print $2}')
           echo "VERSION_NAME=$VERSION_NAME" >> $GITHUB_ENV
-          echo "tag=$VERSION_NAME" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -56,7 +63,7 @@ jobs:
           body: |
             ### 🚀 Market Radar v${{ env.VERSION_NAME }}
             
-            This is an automated signed release triggered by a version update.
+            This is an automated signed release.
             
             **Highlights:**
             - Unified Python Brain (v3)
@@ -64,6 +71,6 @@ jobs:
             - Native Material 3 UI with Version Settings
             - Automated Supabase Trade Sync
             
-            *Sha256: $(sha256sum app/build/outputs/apk/release/app-release.apk | awk '{ print $1 }')*
+            *Checksum (SHA-256): `${{ env.SHA }}`*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
