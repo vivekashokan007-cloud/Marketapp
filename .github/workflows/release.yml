@@ -28,7 +28,10 @@ jobs:
           python-version: '3.11'
 
       - name: Decode Keystore
-        run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > app/keystore.jks
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" > keystore.base64
+          base64 -d keystore.base64 > app/keystore.jks
+          rm keystore.base64
 
       - name: Build Signed APK
         run: ./gradlew assembleRelease
