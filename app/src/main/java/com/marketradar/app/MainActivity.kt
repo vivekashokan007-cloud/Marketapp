@@ -32,6 +32,9 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import okhttp3.*
+import java.io.IOException
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,8 +45,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var topProgressBar: ProgressBar
 
     private val APP_URL = "https://vivekashokan007-cloud.github.io/MarketVivi/"
+    private val UPDATE_URL = "https://api.github.com/repos/vivekashokan007-cloud/Marketapp/releases/latest"
     private val PURPLE = Color.parseColor("#7B2FC4")
     private var isManualRefresh = false
+    private val client = OkHttpClient()
 
     private val pollReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -453,8 +458,75 @@ class MainActivity : AppCompatActivity() {
     private fun showVersionDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Market Radar")
-            .setMessage("Build Version: 2.1.0\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
+            .setMessage("Build Version: 2.2.5\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
+            .setNeutralButton("Check for Update") { _, _ -> 
+                checkForUpdates(true)
+            }
             .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
+            .show()
+    }
+
+    private fun checkForUpdates(isManual: Boolean) {
+        val request = Request.Builder().url(UPDATE_URL).build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (isManual) {
+                    runOnUiThread {
+                        Toast.makeText(this@MainActivity, "Update check failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!response.isSuccessful) return
+                    val body = response.body?.string() ?: return
+                    val json = JSONObject(body)
+                    val cloudTag = json.optString("tag_name", "") // e.g., "v2.2.6"
+                    val downloadUrl = json.optJSONArray("assets")?.optJSONObject(0)?.optString("browser_download_url")
+                    val releaseNotes = json.optString("body", "")
+
+                    val cloudVer = cloudTag.replace("v", "").trim()
+                    val localVer = "2.2.5"
+
+                    if (isNewer(localVer, cloudVer)) {
+                        runOnUiThread {
+                            showUpdateDialog(cloudTag, downloadUrl, releaseNotes)
+                        }
+                    } else if (isManual) {
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "You are on the latest version", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private fun isNewer(local: String, cloud: String): Boolean {
+        return try {
+            val l = local.split(".").map { it.toInt() }
+            val c = cloud.split(".").map { it.toInt() }
+            for (i in 0 until minOf(l.size, c.size)) {
+                if (c[i] > l[i]) return true
+                if (c[i] < l[i]) return false
+            }
+            c.size > l.size
+        } catch (e: Exception) {
+            cloud > local
+        }
+    }
+
+    private fun showUpdateDialog(version: String, url: String?, notes: String) {
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Update Available: $version")
+            .setMessage(if (notes.isNotEmpty()) notes else "A new version of Market Radar is available for download.")
+            .setPositiveButton("Download & Install") { _, _ ->
+                url?.let {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it)))
+                }
+            }
+            .setNegativeButton("Later", null)
             .show()
     }
 
