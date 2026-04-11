@@ -8,6 +8,9 @@ on:
       - 'app/build.gradle.kts'
       - 'gradle.properties'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
