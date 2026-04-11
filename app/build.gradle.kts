@@ -7,13 +7,17 @@ plugins {
 android {
     namespace = "com.marketradar.app"
     compileSdk = 35
+    
+    buildFeatures {
+        buildConfig = true
+    }
 
     defaultConfig {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "2.2.7"
+        versionName = "2.2.8"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

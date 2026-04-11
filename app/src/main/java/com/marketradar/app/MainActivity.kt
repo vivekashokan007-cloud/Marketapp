@@ -458,7 +458,7 @@ class MainActivity : AppCompatActivity() {
     private fun showVersionDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Market Radar")
-            .setMessage("Build Version: 2.2.5\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
+            .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }
@@ -489,7 +489,7 @@ class MainActivity : AppCompatActivity() {
                     val releaseNotes = json.optString("body", "")
 
                     val cloudVer = cloudTag.replace("v", "").trim()
-                    val localVer = "2.2.5"
+                    val localVer = BuildConfig.VERSION_NAME
 
                     if (isNewer(localVer, cloudVer)) {
                         runOnUiThread {
