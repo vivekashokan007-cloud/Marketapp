@@ -148,4 +148,18 @@ object SupabaseClient {
             false
         }
     }
+
+    // --- ML Service Methods (TODO) ---
+
+    fun upsert(table: String, body: JSONObject, onConflict: String? = null): Boolean {
+        return false // TODO: implement
+    }
+
+    fun update(table: String, body: JSONObject, filter: String): Boolean {
+        return false // TODO: implement
+    }
+
+    fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
+        return JSONArray() // TODO: implement
+    }
 }

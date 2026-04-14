@@ -35,5 +35,8 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <service android:name=".MarketMLService" android:exported="false"/>
+        <receiver android:name=".MLAlarmReceiver" android:exported="false"/>
+
     </application>
 </manifest>

@@ -1,4 +1,41 @@
-import json, math
+import json, math, os as _os
+
+# ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
+_ML_ENGINE     = None
+_ML_MODEL_PATH = '/data/data/com.marketradar.app/files/ml_model.json'
+
+def _ml_load_if_needed():
+    global _ML_ENGINE
+    if _ML_ENGINE is not None:
+        return _ML_ENGINE
+    try:
+        import ml_engine as _mle
+        if _os.path.exists(_ML_MODEL_PATH):
+            _ML_ENGINE = _mle.load_model(_ML_MODEL_PATH)
+    except Exception:
+        pass
+    return _ML_ENGINE
+
+def _ml_score(candidate_dict):
+    """Score candidate with ML engine. Returns {} if model not loaded.
+    mlAction='BLOCKED' = model has zero training data for this scenario."""
+    engine = _ml_load_if_needed()
+    if engine is None:
+        return {}
+    try:
+        p, reg, detail = engine.predict(candidate_dict)
+        return {
+            'p_ml':          round(p, 4),
+            'ml_action':     detail.get('action', 'WATCH'),
+            'ml_regime':     reg,
+            'ml_edge':       detail.get('edge', 0.0),
+            'ml_ood':        detail.get('ood', False),
+            'ml_ood_conf':   detail.get('ood_conf', 1.0),
+            'ml_ood_warn':   detail.get('ood_warns', []),
+            'ml_ood_blocked':detail.get('ood_blocked', False),
+        }
+    except Exception:
+        return {}
 
 # ─── UTILITIES ───
 
@@ -2468,6 +2505,45 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     idx = 'BNF' if is_bnf else 'NF'
     cid = f"{stype}_{idx}_{pair['sell']}_{pair['buy']}_W{width}"
 
+    # ── 5 display fields ─────────────────────────────────────────────────
+    # estCost: capital to allocate (broker margin ≈ maxLoss for spreads)
+    est_cost = round(max_loss * (1.3 if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') else 1.0))
+    est_cost_pct = round(est_cost / max(1, _capital) * 100, 1)
+    # netDelta: directional exposure (positive = bullish, negative = bearish)
+    sell_delta = sell_data.get('delta', 0) or 0
+    buy_delta  = buy_data.get('delta', 0) or 0
+    net_delta  = round((sell_delta - buy_delta) if is_credit else (buy_delta - sell_delta), 4)
+    # netMaxProfit: same as maxProfit for spreads (legs already netted)
+    net_max_profit = round(max_profit)
+    # upstoxPop: Upstox's own P(profit) from option_greeks.pop for sell leg
+    upstox_pop = sell_data.get('pop')
+
+    # ── ML scoring (SPLICE 2) ─────────────────────────────────────────────
+    _ml_cand = {
+        'strategy':       stype,
+        'mode':           trade_mode,
+        'vix':            vix,
+        'sigma_away':     sigma_otm or 0,
+        'gap_sigma':      0,
+        'dte':            tdte,
+        'entry_credit':   round(net_prem, 2),
+        'width':          width,
+        'move_sigma':     0,
+        'day_range_sigma':0,
+        'consec_days':    0,
+        'max_profit':     round(max_profit),
+        'max_loss':       round(max_loss),
+        'legs':           2,
+        'is_credit':      is_credit,
+        'vix_regime':     ('HIGH (20-25)' if vix >= 20 else 'LOW (<15)' if vix < 15 else 'NORMAL (15-20)'),
+        'day_group':      'Mon-Wed',
+        'day_direction':  'FLAT',
+        'day_range':      'NORMAL',
+        'day_vix':        'HIGH' if vix >= 20 else ('LOW' if vix < 15 else 'NORMAL'),
+        'weekday':        0,
+    }
+    ml = _ml_score(_ml_cand)
+
     return {
         'id': cid, 'type': stype, 'width': width, 'legs': 2,
         'sellStrike': pair['sell'], 'buyStrike': pair['buy'],
@@ -2482,6 +2558,20 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
         'targetProfit': round(abs(net_theta) * 0.5) if trade_mode == 'intraday' and tdte > 2 and is_credit and abs(net_theta) > 0 else round(max_profit * 0.5),
         'stopLoss': round(abs(net_theta)) if trade_mode == 'intraday' and tdte > 2 and is_credit and abs(net_theta) > 0 else round(max_profit if is_credit else max_loss * 0.5),
+        # ── 5 display fields ──
+        'estCost':       est_cost,
+        'estCostPct':    est_cost_pct,
+        'netDelta':      net_delta,
+        'netMaxProfit':  net_max_profit,
+        'upstoxPop':     upstox_pop,
+        # ── ML fields (None if model not loaded) ──
+        'p_ml':          ml.get('p_ml'),
+        'mlAction':      ml.get('ml_action'),
+        'mlRegime':      ml.get('ml_regime'),
+        'mlEdge':        ml.get('ml_edge'),
+        'mlOod':         ml.get('ml_ood', False),
+        'mlOodConf':     ml.get('ml_ood_conf', 1.0),
+        'mlOodBlocked':  ml.get('ml_ood_blocked', False),
     }
 
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
@@ -2740,8 +2830,12 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
         eff = c.get('ev', 0) / pc if pc > 0 else 0
         # 9: Probability
         prob = c.get('probProfit', 0)
+        # 10: ML score — tiebreaker. Neutralised when OOD.
+        p_ml = c.get('p_ml') or 0.0
+        if c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
+            p_ml = 0.0
 
-        return (safe, tier, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -eff, -prob)
+        return (safe, tier, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -eff, -prob, -p_ml)
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
     ranked.sort(key=sort_key)
@@ -2886,6 +2980,52 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         if all_cands:
             brain_verdict = result.get('verdict')
             ranked = rank_candidates(all_cands, _calibration, brain_verdict)
+
+            # ── SPLICE 4: Enrich ML with live context, BEFORE watchlist build ──
+            engine = _ml_load_if_needed()
+            if engine is not None and ranked:
+                try:
+                    last = polls[-1] if polls else {}
+                    gap_s  = last.get('gapSigma') or last.get('gap_sigma') or 0
+                    move_s = last.get('moveSigma') or last.get('move_sigma') or 0
+                    drs    = last.get('dayRangeSigma') or last.get('day_range_sigma') or 0
+                    dd     = str(last.get('dayDirection') or last.get('day_direction') or 'FLAT').upper()
+                    dr     = str(last.get('dayRange') or last.get('day_range') or 'NORMAL').upper()
+                    consec = last.get('consecDays') or last.get('consec_days') or 0
+                    wday   = last.get('weekday') or 0
+                    lv     = last.get('vix') or cur_vix or 17
+                    for c in ranked:
+                        try:
+                            enriched = {
+                                'strategy': c['type'], 'mode': ctx.get('tradeMode', 'intraday'),
+                                'vix': lv, 'sigma_away': c.get('sigmaOTM') or 0,
+                                'gap_sigma': gap_s, 'dte': c.get('tDTE', 3),
+                                'entry_credit': c.get('netPremium', 0), 'width': c['width'],
+                                'move_sigma': move_s, 'day_range_sigma': drs,
+                                'consec_days': consec, 'max_profit': c.get('maxProfit', 0),
+                                'max_loss': c.get('maxLoss', 1), 'legs': c.get('legs', 2),
+                                'is_credit': c.get('isCredit', True),
+                                'vix_regime': ('HIGH (20-25)' if lv >= 20 else 'LOW (<15)' if lv < 15 else 'NORMAL (15-20)'),
+                                'day_group': 'Thu-Fri' if wday >= 3 else 'Mon-Wed',
+                                'day_direction': dd, 'day_range': dr,
+                                'day_vix': 'HIGH' if lv >= 20 else 'LOW' if lv < 15 else 'NORMAL',
+                                'weekday': wday,
+                            }
+                            p2, reg2, d2 = engine.predict(enriched)
+                            c['p_ml']         = round(p2, 4)
+                            c['mlAction']     = d2.get('action', 'WATCH')
+                            c['mlRegime']     = reg2
+                            c['mlEdge']       = d2.get('edge', 0.0)
+                            c['mlOod']        = d2.get('ood', False)
+                            c['mlOodConf']    = d2.get('ood_conf', 1.0)
+                            c['mlOodWarn']    = d2.get('ood_warns', [])
+                            c['mlOodBlocked'] = d2.get('ood_blocked', False)
+                        except Exception:
+                            pass
+                    ranked = rank_candidates(ranked, _calibration, brain_verdict)
+                except Exception:
+                    pass
+
             # Watchlist: top 6 + diverse picks per index
             watchlist = ranked[:6]
             seen_ids = set(c['id'] for c in watchlist)

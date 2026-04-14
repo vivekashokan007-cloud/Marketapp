@@ -16,6 +16,7 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import java.io.File
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.app.DownloadManager
 import android.net.Uri
@@ -343,6 +344,25 @@ class MainActivity : AppCompatActivity() {
         container.addView(loadingOverlay)
         container.addView(errorView)
         setContentView(container)
+
+        // b105: Copy ML model files from assets to internal storage on first install
+        // Python reads from filesDir — assets are read-only and not directly accessible
+        listOf("ml_model.json", "temporal_model.json").forEach { filename ->
+            val dest = File(filesDir, filename)
+            if (!dest.exists()) {
+                try {
+                    assets.open(filename).use { input ->
+                        dest.outputStream().use { output -> input.copyTo(output) }
+                    }
+                    android.util.Log.i("MainActivity", "ML: copied $filename to filesDir")
+                } catch (e: Exception) {
+                    android.util.Log.w("MainActivity", "ML: could not copy $filename: ${e.message}")
+                }
+            }
+        }
+
+        // b105: Schedule nightly ML training at 11 PM
+        MarketMLService.scheduleNightlyTraining(this)
 
         // Restore WebView state on rotation/process restart, otherwise load fresh
         if (savedInstanceState != null) {

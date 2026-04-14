@@ -6,6 +6,7 @@ import android.content.SharedPreferences
 import android.os.Build
 import android.util.Log
 import android.webkit.JavascriptInterface
+import java.io.File
 
 class NativeBridge(private val context: Context) {
 
@@ -106,5 +107,38 @@ class NativeBridge(private val context: Context) {
         // This is a simplified check. A more robust check might query ActivityManager, 
         // but for now we'll rely on the service itself setting a flat in SharedPreferences.
         return prefs.getBoolean("service_running", false)
+    }
+
+    // Method 15: ML model status
+    @JavascriptInterface
+    fun getMLModelStatus(): String {
+        return try {
+            val py = com.chaquo.python.Python.getInstance()
+            val mod = py.getModule("ml_train")
+            val modelPath = File(context.filesDir, "ml_model.json").absolutePath
+            mod.callAttr("validate_model", modelPath).toString()
+        } catch (e: Exception) {
+            "{\"ok\":false,\"error\":\"${e.message}\"}"
+        }
+    }
+
+    // Method 16: Trigger online update after trade closes
+    @JavascriptInterface
+    fun triggerMLOnlineUpdate(tradeJson: String) {
+        try {
+            val intent = android.content.Intent(context, MarketMLService::class.java).apply {
+                action = "ACTION_ONLINE_UPDATE"
+                putExtra("trade_json", tradeJson)
+            }
+            context.startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.w("NativeBridge", "ML online update failed: ${e.message}")
+        }
+    }
+
+    // Method 17: Check if model is loaded and ready
+    @JavascriptInterface
+    fun isMLModelReady(): Boolean {
+        return File(context.filesDir, "ml_model.json").exists()
     }
 }
