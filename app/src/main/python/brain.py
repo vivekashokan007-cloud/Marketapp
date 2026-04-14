@@ -61,7 +61,7 @@ def theta_friction_minutes(est_cost, net_theta):
     Returns minutes. >60 = trade is mathematically dead."""
     if not net_theta or net_theta <= 0 or not est_cost or est_cost <= 0:
         return 999
-    theta_per_min = net_theta / 375  # 375 trading minutes per day
+    theta_per_min = (net_theta * 0.65) / 375  # Gemini fix: only ~65% of daily theta decays during market hours
     return est_cost / theta_per_min if theta_per_min > 0 else 999
 
 def detect_regime(polls, baseline):
@@ -1941,21 +1941,61 @@ def position_verdict(trade, insights, regime, ctx):
         danger += 15
         reasons.append(f"VIX rising +{vix_chg:.1f}")
 
-    # Peak erosion
-    if peak_erosion > 50 and peak_pnl > 0:
-        danger += 20
-        reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-    elif peak_erosion > 30 and peak_pnl > 0:
-        danger += 10
-        reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
+    # Peak erosion — SCALED (b104 fix: 864% got same score as 51%)
+    # Debit trades: premium decay from theta is EXPECTED, halve the impact
+    erosion_mult = 0.5 if not is_credit else 1.0
+    if peak_pnl >= 500 and peak_erosion > 0:  # Gemini fix: ignore tiny peaks (<₹500)
+        if peak_erosion > 500:
+            danger += int(40 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 200:
+            danger += int(30 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 50:
+            danger += int(20 * erosion_mult)
+            reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
+        elif peak_erosion > 30:
+            danger += int(10 * erosion_mult)
+            reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
 
-    # CI
-    if ci is not None and ci < -40:
-        danger += 25
-        if not is_ib:  # IB CI -50 is normal (b89 tolerance fix mitigates but brain should know)
-            reasons.append(f"Opponent in control (CI {ci})")
-    elif ci is not None and ci < -20:
-        danger += 10
+    # Profit-to-loss flip — was making money, now losing (b104 fix)
+    if peak_pnl > 0 and pnl < 0:
+        danger += 15
+        reasons.append(f"Flipped from +₹{peak_pnl:.0f} to -₹{abs(pnl):.0f}")
+
+    # CI — RELAXED thresholds (b104 fix: CI -5 got ZERO before)
+    # Gemini fix: IB not totally exempt — check for extreme degradation beyond baseline
+    if ci is not None:
+        if is_ib:
+            if ci < -75:
+                danger += 20
+                reasons.append(f"IB CI collapsed to {ci} (beyond normal ATM range)")
+        else:
+            if ci < -40:
+                danger += 25
+                reasons.append(f"Opponent in control (CI {ci})")
+            elif ci < -20:
+                danger += 15
+                reasons.append(f"Opponent gaining (CI {ci})")
+            elif ci < 0:
+                danger += 5
+
+    # Spot cushion from sell strike — direct check (b104 fix)
+    # IB exempt: sells ATM by design, cushion is always ~0
+    sell_strike = trade.get('sell_strike', 0)
+    spot = trade.get('current_spot', 0)
+    if sell_strike and spot and is_credit and not is_ib:
+        cushion = abs(sell_strike - spot)
+        vix = ctx.get('vix', 20)
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300  # √252=15.87, consistent with _daily_sigma
+        if daily_sigma > 0:
+            cushion_sigma = cushion / daily_sigma
+            if cushion_sigma < 0.25:
+                danger += 25
+                reasons.append(f"Only {cushion:.0f}pts ({cushion_sigma:.2f}σ) from sell strike")
+            elif cushion_sigma < 0.5:
+                danger += 15
+                reasons.append(f"Thin cushion ({cushion_sigma:.2f}σ from sell)")
 
     # Momentum threat
     if momentum_threat:
@@ -2050,7 +2090,8 @@ def _bs_delta(spot, strike, T, vol, opt_type):
     """Black-Scholes delta. opt_type = 'CE' or 'PE'"""
     if T <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
         return 0.5 if opt_type == 'CE' else -0.5
-    d1 = (math.log(spot / strike) + 0.5 * vol * vol * T) / (vol * math.sqrt(T))
+    r = 0.065  # Gemini fix: Indian risk-free rate ~6.5%
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
     if opt_type == 'CE':
         return _norm_cdf(d1)
     else:
@@ -2207,9 +2248,10 @@ def _chain_theta(strikes, price, opt_type, spot, T, vol):
     s = strikes.get(sp, {}).get(opt_type, {})
     t = s.get('theta')
     if t is not None: return t
-    # Simple BS theta approximation
+    # Simple BS theta approximation with risk-free rate
     if T <= 0 or vol <= 0: return 0
-    d1 = (math.log(spot / max(1, price)) + 0.5 * vol * vol * T) / (vol * math.sqrt(T))
+    r = 0.065  # Gemini fix: Indian risk-free rate
+    d1 = (math.log(spot / max(1, price)) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
     return -(spot * vol * math.exp(-d1*d1/2) / (2 * math.sqrt(2 * math.pi * T))) / 365
 
 # ─── SCORING ───
@@ -2418,7 +2460,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     if prob < _CONST['MIN_PROB']: return None
     if is_credit and (net_prem / width) < _CONST['MIN_CREDIT_RATIO']: return None
 
-    ev = round(prob * max_profit - (1 - prob) * max_loss)
+    ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix: profit capture discount
     sell_theta = _chain_theta(strikes, pair['sell'], pair['sellType'], spot, T, vol) * lot_size
     buy_theta = _chain_theta(strikes, pair['buy'], pair['buyType'], spot, T, vol) * lot_size
     net_theta = round(-(sell_theta - buy_theta) if is_credit else (sell_theta - buy_theta))
@@ -2561,7 +2603,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 if prob < _CONST['MIN_PROB']: continue
                 if total_credit / width < _CONST['MIN_CREDIT_RATIO']: continue
 
-                ev = round(prob * max_profit - (1 - prob) * max_loss)
+                ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
                 net_theta = round(abs(
                     _chain_theta(strikes, sell_call, 'CE', spot, T, vol) +
                     _chain_theta(strikes, sell_put, 'PE', spot, T, vol) -
@@ -2631,7 +2673,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
             prob = max(0, prob_above + prob_below - 1)
             if prob < _CONST['MIN_PROB']: continue
 
-            ev = round(prob * max_profit - (1 - prob) * max_loss)
+            ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
             idx = 'BNF' if is_bnf else 'NF'
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",

@@ -11,6 +11,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -52,10 +53,29 @@ class MainActivity : AppCompatActivity() {
 
     private val pollReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (::webView.isInitialized) {
-                webView.post {
+            Log.d("MainActivity", "BROADCAST_RECEIVED: POLL_TICK")
+            if (!::webView.isInitialized) return
+
+            val data = intent?.getStringExtra("data")
+
+            webView.post {
+                if (data != null) {
+                    // Full brain result + spots + candidates from Chaquopy — pass to syncFromNative
+                    val escaped = data
+                        .replace("\\", "\\\\")
+                        .replace("'", "\\'")
+                        .replace("\n", "")
+                        .replace("\r", "")
+                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative with data")
                     webView.evaluateJavascript(
-                        "(function() { if (typeof runBrain === 'function') runBrain().then(() => renderAll()); })()",
+                        "(function(){ if(typeof syncFromNative==='function') syncFromNative('$escaped'); else console.warn('[APK] syncFromNative not found'); })()",
+                        null
+                    )
+                } else {
+                    // Brain failed or no data, but still wake the UI to refresh poll badge
+                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative (no data, poll-only wake)")
+                    webView.evaluateJavascript(
+                        "(function(){ if(typeof syncFromNative==='function') syncFromNative(null); })()",
                         null
                     )
                 }
