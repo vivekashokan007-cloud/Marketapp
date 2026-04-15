@@ -107,7 +107,11 @@ class MarketMLService : Service() {
             return try {
                 val py = Python.getInstance()
                 val module = py.getModule("ml_train")
-                val result = module.callAttr("validate_model", modelPath(context)).toString()
+                val result = runBlocking {
+                    withTimeoutOrNull(10_000L) {
+                        module.callAttr("validate_model", modelPath(context)).toString()
+                    }
+                } ?: return MLModelStatus(ok = false, error = "Timeout")
                 val json = org.json.JSONObject(result)
                 MLModelStatus(
                     ok          = json.optBoolean("ok", false),
@@ -132,7 +136,11 @@ class MarketMLService : Service() {
                 val mle = py.getModule("ml_engine")
                 val engine = mle.callAttr("_LOADED_ENGINE") ?: return "{}"
                 val cand = py.builtins.callAttr("eval", candidateJson)
-                val p_win = engine.callAttr("predict", cand)
+                val p_win = runBlocking {
+                    withTimeoutOrNull(5_000L) {
+                        engine.callAttr("predict", cand)
+                    }
+                } ?: return "{}"
                 // Returns tuple (p_win, regime, detail_dict)
                 p_win.toString()
             } catch (e: Exception) {
@@ -259,13 +267,21 @@ class MarketMLService : Service() {
             exportAppTrades()
 
             // 2. Run training
-            val result = mod.callAttr(
-                "run",
-                backtestPath(this@MarketMLService),
-                appTradesPath(this@MarketMLService),
-                modelPath(this@MarketMLService),
-                py.builtins.callAttr("print")          // log_fn = print → logcat
-            ).toString()
+            val result = withTimeoutOrNull(60_000L) {
+                mod.callAttr(
+                    "run",
+                    backtestPath(this@MarketMLService),
+                    appTradesPath(this@MarketMLService),
+                    modelPath(this@MarketMLService),
+                    py.builtins.callAttr("print")          // log_fn = print → logcat
+                ).toString()
+            }
+            
+            if (result == null) {
+                Log.w(TAG, "TRAINING_TIMEOUT: ml_train.run timed out after 60s")
+                NotificationHelper.send(this@MarketMLService, "❌ Training Timeout", "Python trainer took too long", "urgent")
+                return@withContext
+            }
 
             val json    = org.json.JSONObject(result)
             val success = json.optBoolean("success", false)
@@ -337,13 +353,20 @@ class MarketMLService : Service() {
                 pyDict.callAttr("__setitem__", key, tradeDict.get(key).toString())
             }
 
-            val result = mod.callAttr(
-                "online_update",
-                modelPath(this@MarketMLService),
-                pyDict,
-                null  // no log_fn for online update
-            ).toString()
-
+            val result = withTimeoutOrNull(30_000L) {
+                mod.callAttr(
+                    "online_update",
+                    modelPath(this@MarketMLService),
+                    pyDict,
+                    null  // no log_fn for online update
+                ).toString()
+            }
+            
+            if (result == null) {
+                Log.w(TAG, "ONLINE_UPDATE_TIMEOUT: Python online_update timed out after 30s")
+                return@withContext
+            }
+            
             val json = org.json.JSONObject(result)
             val pBefore = json.optDouble("p_before", 0.5)
             val pAfter  = json.optDouble("p_after", 0.5)
@@ -380,23 +403,25 @@ class MarketMLService : Service() {
             Log.i(TAG, "Temporal training: $nReal real sequences available")
 
             // Train (synthetic if <20 real sequences, mixed if more)
-            val te = if (nReal >= 20) {
-                // Real training
-                mod.callAttr("train_temporal",
-                    null,                                    // csv_path
-                    buildPyListFromRows(py, sequences),      // rows
-                    8,                                       // epochs
-                    py.builtins.callAttr("print")
-                )
-            } else {
-                // Synthetic pre-training from backtest CSV
-                mod.callAttr("train_temporal",
-                    backtestPath(this@MarketMLService),      // csv_path
-                    null,                                    // rows
-                    8,                                       // epochs
-                    py.builtins.callAttr("print")
-                )
-            }
+            val te = withTimeoutOrNull(45_000L) {
+                if (nReal >= 20) {
+                    // Real training
+                    mod.callAttr("train_temporal",
+                        null,                                    // csv_path
+                        buildPyListFromRows(py, sequences),      // rows
+                        8,                                       // epochs
+                        py.builtins.callAttr("print")
+                    )
+                } else {
+                    // Synthetic pre-training from backtest CSV
+                    mod.callAttr("train_temporal",
+                        backtestPath(this@MarketMLService),      // csv_path
+                        null,                                    // rows
+                        8,                                       // epochs
+                        py.builtins.callAttr("print")
+                    )
+                }
+            } ?: return@withContext
 
             mod.callAttr("save_temporal", te, temporalModelPath(this@MarketMLService))
             Log.i(TAG, "Temporal model saved")

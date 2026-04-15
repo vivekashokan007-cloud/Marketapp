@@ -118,7 +118,7 @@ class FeatureEngine:
                 v = r.get(col)
                 if not _nan(v):
                     try: vals.append(float(v))
-                    except: pass
+                    except Exception: pass  # Silent skip for non-numeric is intended here
             if vals:
                 vals.sort()
                 n = len(vals)
@@ -135,7 +135,7 @@ class FeatureEngine:
                 v = r.get(col)
                 if not _nan(v):
                     try: vals.append(float(v))
-                    except: pass
+                    except Exception: pass  # Silent skip for non-numeric is intended here
             if len(vals) > 10:
                 vals.sort()
                 n = len(vals)
@@ -153,7 +153,7 @@ class FeatureEngine:
                     v = r.get('sigma_away')
                     if not _nan(v):
                         try: vals.append(float(v))
-                        except: pass
+                        except Exception: pass  # Silent skip for non-numeric is intended here
             if len(vals) > 10:
                 vals.sort()
                 n = len(vals)
@@ -282,7 +282,8 @@ class FeatureEngine:
                     sa_ood = True
                     violations += 3
                     warnings.append(f'sigma_away={fsa:.2f} BELOW strategy min {lo:.2f} for {strat} — model blind here')
-            except: pass
+            except Exception as e:
+                print(f"DEBUG: ood_score sigma_away check failed: {e}")
 
         if checks == 0:
             return False, 1.0, []

@@ -11,8 +11,8 @@ import java.util.concurrent.TimeUnit
 
 object SupabaseClient {
     private const val TAG = "SupabaseClient"
-    private const val URL = "https://fdynxkfxohbnlvayouje.supabase.co"
-    private const val ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkeW54a2Z4b2hibmx2YXlvdWplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMTc0NjQsImV4cCI6MjA4ODU5MzQ2NH0.1KbzYXtpuzUIDABCz9jKz4VjcuGeuyYOQAHkNLlndRE"
+    private const val URL = BuildConfig.SUPABASE_URL
+    private const val ANON_KEY = BuildConfig.SUPABASE_ANON_KEY
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

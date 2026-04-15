@@ -2867,14 +2867,16 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         try:
             r = fn(polls, baseline)
             if r: result["market"].append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: Market insight {fn.__name__} failed: {e}")
     # New context-aware market functions
     for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
                day_range_position, wall_freshness, yesterday_signal_prior]:
         try:
             r = fn(polls, ctx)
             if r: result["market"].append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: Context insight {fn.__name__} failed: {e}")
     # b92: chain_intelligence returns LIST (was single dict)
     try:
         ci_insights = chain_intelligence(polls, ctx)
@@ -2892,11 +2894,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             try:
                 r = fn(t, polls, baseline, regime, soi)
                 if r: ins.append(r)
-            except: pass
+            except Exception as e:
+                print(f"DEBUG: Position insight {fn.__name__} failed for tid {tid}: {e}")
         try:
             r = position_gamma_alert(t, polls, soi)
             if r: ins.append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: position_gamma_alert failed for tid {tid}: {e}")
         pv = position_verdict(t, ins, regime, ctx)
         result["positions"][tid] = {"verdict": pv, "insights": ins}
 
@@ -2912,12 +2916,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         try:
             r = candidate_liquidity(c, ctx)
             if r: ins.append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: candidate_liquidity failed for cid {cid}: {e}")
         # b92: Deep risk evaluation (returns LIST) — cost trap, conflict, R:R, force coherence
         try:
             risk_ins = evaluate_candidate_risk(c, ctx, open_trades, regime)
             if risk_ins: ins.extend(risk_ins)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: evaluate_candidate_risk failed for cid {cid}: {e}")
         if ins: result["candidates"][cid] = ins
 
     # Timing — existing + DTE urgency
@@ -2925,33 +2931,39 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         try:
             r = fn(polls, baseline, regime)
             if r: result["timing"].append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: Timing insight {fn.__name__} failed: {e}")
     try:
         r = dte_urgency(polls, ctx)
         if r: result["timing"].append(r)
-    except: pass
+    except Exception as e:
+        print(f"DEBUG: dte_urgency failed: {e}")
 
     # Risk — existing + daily PnL
     for fn in [risk_kelly_headroom, risk_regime_shift, risk_exit_analysis, risk_factor_importance, risk_streak_warning]:
         try:
             r = fn(polls, baseline, open_trades, closed_trades)
             if r: result["risk"].append(r)
-        except: pass
+        except Exception as e:
+            print(f"DEBUG: Risk insight {fn.__name__} failed: {e}")
     try:
         r = daily_pnl_check(polls, ctx)
         if r: result["risk"].append(r)
-    except: pass
+    except Exception as e:
+        print(f"DEBUG: daily_pnl_check failed: {e}")
 
     # ═══ THE VERDICT ═══
     all_insights = result["market"] + result["timing"] + result["risk"]
     try:
         result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
-    except: pass
+    except Exception as e:
+        print(f"DEBUG: synthesize_verdict failed: {e}")
 
     # b97: Effective bias — Bayesian decay of morning prior with intraday evidence
     try:
         result["effective_bias"] = compute_effective_bias(polls, baseline, ctx, regime)
-    except: pass
+    except Exception as e:
+        print(f"DEBUG: compute_effective_bias failed: {e}")
 
     # Phase 3: Generate trading candidates from chain data
     # Premium is king — every candidate scored by premium quality

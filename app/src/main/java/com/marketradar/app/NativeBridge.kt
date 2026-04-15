@@ -7,6 +7,8 @@ import android.os.Build
 import android.util.Log
 import android.webkit.JavascriptInterface
 import java.io.File
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 
 class NativeBridge(private val context: Context) {
 
@@ -123,7 +125,12 @@ class NativeBridge(private val context: Context) {
             val py = com.chaquo.python.Python.getInstance()
             val mod = py.getModule("ml_train")
             val modelPath = File(context.filesDir, "ml_model.json").absolutePath
-            mod.callAttr("validate_model", modelPath).toString()
+            val result = runBlocking {
+                withTimeoutOrNull(10_000L) {
+                    mod.callAttr("validate_model", modelPath).toString()
+                }
+            } ?: return "{\"ok\":false,\"error\":\"Python timeout\"}"
+            result
         } catch (e: Exception) {
             "{\"ok\":false,\"error\":\"${e.message}\"}"
         }

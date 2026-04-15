@@ -604,7 +604,7 @@ class MarketWatchService : Service() {
         return result
     }
 
-    private fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
+    private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
                                   bnfSpot: Double, nfSpot: Double, vix: Double) {
         var brainSuccess = false
         var broadcastData: String? = null
@@ -649,15 +649,24 @@ class MarketWatchService : Service() {
             Log.d(TAG, "BRAIN_CALLING: analyze() with ${JSONArray(pollsJson).length()} polls")
             
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
-            val result = brain.callAttr("analyze",
-                pollsJson,
-                closedTradesJson,
-                baselineJson,
-                openTradesJson,
-                "[]",
-                "{}",
-                ctxObj.toString()
-            ).toString()
+            val result = runBlocking {
+                withTimeoutOrNull(10_000L) {
+                    brain.callAttr("analyze",
+                        pollsJson,
+                        closedTradesJson,
+                        baselineJson,
+                        openTradesJson,
+                        "[]",
+                        "{}",
+                        ctxObj.toString()
+                    ).toString()
+                }
+            }
+            
+            if (result == null) {
+                Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after 10s")
+                return
+            }
             
             val resultObj = JSONObject(result)
             Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}, starts_with=${if (result.length > 20) result.substring(0, 20) else result}")
@@ -770,7 +779,9 @@ class MarketWatchService : Service() {
                                         val todayFii = fiiHistory.getJSONObject(0).optDouble("fiiCash", 0.0)
                                         detail = "Today FII Cash: ₹${todayFii.toInt()}Cr"
                                     }
-                                } catch (e: Exception) {}
+                                } catch (e: Exception) {
+                                    Log.d(TAG, "FII lookup failed (skipping): ${e.message}")
+                                }
                             }
                             
                             NotificationHelper.send(this, 

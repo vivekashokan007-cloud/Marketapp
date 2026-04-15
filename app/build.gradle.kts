@@ -17,11 +17,14 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "2.2.11"
+        versionName = "2.2.12"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
+        
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv("SUPABASE_ANON_KEY") ?: project.findProperty("SUPABASE_ANON_KEY") ?: ""}\"")
+        buildConfigField("String", "SUPABASE_URL", "\"https://fdynxkfxohbnlvayouje.supabase.co\"")
     }
 
     signingConfigs {

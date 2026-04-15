@@ -131,16 +131,6 @@ class MainActivity : AppCompatActivity() {
         container.addView(appBarLayout)
 
         // ── 1. WebView & Refresh — fills remaining space ──────────────────
-        swipeRefresh = SwipeRefreshLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f)
-            setColorSchemeColors(PURPLE)
-            setOnRefreshListener {
-                isManualRefresh = true
-                Toast.makeText(this@MainActivity, "Checking for updates...", Toast.LENGTH_SHORT).show()
-                webView.reload()
-            }
-        }
-
         webView = WebView(this).apply {
             layoutParams = LayoutParams(MATCH_PARENT, MATCH_PARENT)
             settings.javaScriptEnabled = true
