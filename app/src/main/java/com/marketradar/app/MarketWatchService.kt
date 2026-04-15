@@ -29,6 +29,7 @@ class MarketWatchService : Service() {
         .build()
     
     private var token401Counter = 0
+    private var lastAlertKeys = mutableSetOf<String>()
 
     companion object {
         const val CHANNEL_ID = "market_radar_service"
@@ -113,13 +114,23 @@ class MarketWatchService : Service() {
         serviceScope.launch {
             while (isActive) {
                 if (isMarketOpen()) {
-                    acquirePartialWakeLock()
-                    try {
-                        performPoll()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Poll failed: ${e.message}")
-                    } finally {
-                        releaseWakeLock()
+                    // Re-read token dynamically on each poll cycle (Bug 1 Fix)
+                    val appCtx = applicationContext
+                    val currentPrefs = appCtx.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+                    val currentToken = currentPrefs.getString("auth_token", "") ?: ""
+                    
+                    if (currentToken.isNotEmpty()) {
+                        acquirePartialWakeLock()
+                        try {
+                            performPoll(currentToken)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Poll failed: ${e.message}")
+                        } finally {
+                            releaseWakeLock()
+                        }
+                    } else {
+                        Log.w(TAG, "No auth_token in prefs, skipping poll.")
+                        updateForegroundNotification("Waiting for Token", "Open app to sync Upstox token")
                     }
                 } else {
                     Log.d(TAG, "Market closed. Skipping poll.")
@@ -139,13 +150,9 @@ class MarketWatchService : Service() {
         stopSelf()
     }
 
-    private suspend fun performPoll() {
+    private suspend fun performPoll(token: String) {
         Log.d(TAG, "POLL_START: performPoll() entered")
-        val token = prefs.getString("auth_token", null)
-        if (token == null) {
-            Log.w(TAG, "POLL_SKIP: No auth_token in prefs — Lock & Scan in WebView first")
-            return
-        }
+        
         val bnfExpiry = prefs.getString("expiry_bnf", "2026-04-17") ?: "2026-04-17"
         
         // Expiry Rollover check
@@ -404,6 +411,8 @@ class MarketWatchService : Service() {
             prefs.edit().apply {
                 remove("afternoon_baseline")
                 remove("tomorrow_signal")
+                remove("has2pmSnapshot")
+                remove("has315pmSnapshot")
                 putString("positioning_date", today)
             }.apply()
         }
@@ -587,7 +596,7 @@ class MarketWatchService : Service() {
             
             result.put("strikes", strikesObj)
             result.put("allStrikes", allStrikesArr)
-            result.put("atm", strikesObj.keys().asSequence().map { it.toDouble() }.minByOrNull { Math.abs(it - spot) } ?: spot)
+            result.put("atm", strikesObj.keys().asSequence().map { it.toDouble() }.minByOrNull { Math.abs(it - spot) }?.toInt() ?: spot.toInt())
             
         } catch (e: Exception) {
             Log.e(TAG, "Error formatting chain for brain: ${e.message}")
@@ -612,6 +621,8 @@ class MarketWatchService : Service() {
             val contextJson  = prefs.getString("context",           "{}") ?: "{}"
             
             val bnfProfile = computeChainProfile(bnfChain, bnfSpot, vix)
+            val nfProfile  = computeChainProfile(nfChain, nfSpot, vix)
+
             val bnfChainFormatted = formatChainForBrain(bnfChain, bnfSpot).apply {
                 put("callWallStrike", poll.optDouble("cw", 0.0))
                 put("putWallStrike",  poll.optDouble("pw", 0.0))
@@ -622,8 +633,13 @@ class MarketWatchService : Service() {
             // Build context
             val ctxObj = JSONObject(contextJson)
             ctxObj.put("bnfProfile", bnfProfile)
+            ctxObj.put("nfProfile",  nfProfile)
             ctxObj.put("bnfChain",   bnfChainFormatted)
             ctxObj.put("nfChain",    nfChainFormatted)
+
+            // GAP 15: Institutional Positioning Snapshots
+            captureChainSnapshots(bnfProfile, nfProfile)
+
             ctxObj.put("capital",    prefs.getInt("capital", 250000))
             ctxObj.put("bnfExpiry",  prefs.getString("expiry_bnf", ""))
             ctxObj.put("nfExpiry",   prefs.getString("expiry_nf", ""))
@@ -644,6 +660,7 @@ class MarketWatchService : Service() {
             ).toString()
             
             val resultObj = JSONObject(result)
+            Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}, starts_with=${if (result.length > 20) result.substring(0, 20) else result}")
             prefs.edit().putString("brain_result", result).apply()
             
             val candidates = resultObj.optJSONArray("generated_candidates")
@@ -684,16 +701,22 @@ class MarketWatchService : Service() {
     }
 
     private fun processBrainAlerts(result: JSONObject) {
+        val currentAlertKeys = mutableSetOf<String>()
+
         // 1. Check Main Verdict
         val verdict = result.optJSONObject("verdict")
         if (verdict != null) {
             val action = verdict.optString("action", "WAIT")
             val confidence = verdict.optInt("confidence", 0)
             if (action != "WAIT" && confidence >= 50) {
-                NotificationHelper.send(this, 
-                    "Trade Signal: $action", 
-                    "${verdict.optString("strategy")} @ $confidence% conf: ${verdict.optString("reasoning")}", 
-                    "urgent")
+                val alertKey = "VERDICT_$action"
+                currentAlertKeys.add(alertKey)
+                if (!lastAlertKeys.contains(alertKey)) {
+                    NotificationHelper.send(this, 
+                        "Trade Signal: $action", 
+                        "${verdict.optString("strategy")} @ $confidence% conf: ${verdict.optString("reasoning")}", 
+                        "urgent")
+                }
             }
         }
 
@@ -709,11 +732,15 @@ class MarketWatchService : Service() {
                     val pAction = pVerdict.optString("action", "HOLD")
                     val pReason = pVerdict.optString("reason", "")
                     if (pAction == "EXIT" || pAction == "BOOK") {
-                        NotificationHelper.send(this, 
-                            "$pAction Signal ($tid)", 
-                            pReason, 
-                            "urgent",
-                            "positions")
+                        val alertKey = "POS_${tid}_$pAction"
+                        currentAlertKeys.add(alertKey)
+                        if (!lastAlertKeys.contains(alertKey)) {
+                            NotificationHelper.send(this, 
+                                "$pAction Signal ($tid)", 
+                                pReason, 
+                                "urgent",
+                                "positions")
+                        }
                     }
                 }
             }
@@ -728,11 +755,30 @@ class MarketWatchService : Service() {
                     val ins = insights.getJSONObject(i)
                     val strength = ins.optInt("strength", 0)
                     if (strength >= 4) {
-                        NotificationHelper.send(this, 
-                            "${ins.optString("icon")} ${ins.optString("label")}", 
-                            ins.optString("detail"), 
-                            if (ins.optString("impact") == "caution") "urgent" else "info"
-                        )
+                        val label = ins.optString("label")
+                        val alertKey = "INSIGHT_${section}_${label}"
+                        currentAlertKeys.add(alertKey)
+                        
+                        if (!lastAlertKeys.contains(alertKey)) {
+                            var detail = ins.optString("detail")
+                            if (label.contains("FII") && section == "market") {
+                                try {
+                                    val contextJson = prefs.getString("context", "{}") ?: "{}"
+                                    val ctxObj = JSONObject(contextJson)
+                                    val fiiHistory = ctxObj.optJSONArray("fiiHistory")
+                                    if (fiiHistory != null && fiiHistory.length() > 0) {
+                                        val todayFii = fiiHistory.getJSONObject(0).optDouble("fiiCash", 0.0)
+                                        detail = "Today FII Cash: ₹${todayFii.toInt()}Cr"
+                                    }
+                                } catch (e: Exception) {}
+                            }
+                            
+                            NotificationHelper.send(this, 
+                                "${ins.optString("icon")} ${ins.optString("label")}", 
+                                detail, 
+                                if (ins.optString("impact") == "caution") "urgent" else "info"
+                            )
+                        }
                     }
                 }
             }
@@ -748,7 +794,7 @@ class MarketWatchService : Service() {
                 val aligned = forces?.optInt("aligned", 0) ?: 0
                 val prob = c.optDouble("probProfit", 0.0)
                 
-                // Alert on high-confidence candidates (aligned ≥ 3, prob ≥ 70%)
+                // Alert on high-confidence candidates (aligned >= 3, prob >= 70%)
                 if (aligned >= 3 && prob >= 0.70) {
                     val index = c.optString("index", "BNF")
                     val type = c.optString("type", "")
@@ -757,14 +803,20 @@ class MarketWatchService : Service() {
             }
             
             if (best.isNotEmpty()) {
-                val title = "🎯 ${best.size} High-Confidence Opportunities"
-                // Join top 3 into the body for readability
-                val body = "${best.take(3).joinToString(", ")}${if (best.size > 3) " and more" else ""} — open app to review."
-                NotificationHelper.send(this, title, body, "important")
+                val alertKey = "CANDIDATES_${best.joinToString("-")}"
+                currentAlertKeys.add(alertKey)
+                if (!lastAlertKeys.contains(alertKey)) {
+                    val title = "🎯 ${best.size} High-Confidence Opportunities"
+                    // Join top 3 into the body for readability
+                    val body = "${best.take(3).joinToString(", ")}${if (best.size > 3) " and more" else ""} — open app to review."
+                    NotificationHelper.send(this, title, body, "important")
+                }
             }
         }
+        
+        lastAlertKeys.clear()
+        lastAlertKeys.addAll(currentAlertKeys)
     }
-
 
     private fun fetchSync(url: String, token: String): JSONObject? {
         val request = Request.Builder()
@@ -865,6 +917,42 @@ class MarketWatchService : Service() {
 
     private fun releaseWakeLock() {
         wakeLock?.let { if (it.isHeld) it.release() }
+    }
+
+    private fun captureChainSnapshots(bnf: JSONObject, nf: JSONObject) {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist)
+        val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        
+        // 2:00 PM Window (13:45 - 14:30)
+        if (mins in 825..870 && !prefs.getBoolean("has2pmSnapshot", false)) {
+            Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 2pm snapshot")
+            serviceScope.launch(Dispatchers.IO) {
+                val data = JSONObject().apply {
+                    put("bnf", bnf)
+                    put("nf",  nf)
+                }
+                if (SupabaseClient.saveChainSnapshot("2pm", data)) {
+                    prefs.edit().putBoolean("has2pmSnapshot", true).apply()
+                    Log.i(TAG, "SNAPSHOT_SAVED: 2pm snapshot synced to Supabase")
+                }
+            }
+        }
+        
+        // 3:15 PM Window (15:00 - 15:30)
+        if (mins in 900..930 && !prefs.getBoolean("has315pmSnapshot", false)) {
+            Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 315pm snapshot")
+            serviceScope.launch(Dispatchers.IO) {
+                val data = JSONObject().apply {
+                    put("bnf", bnf)
+                    put("nf",  nf)
+                }
+                if (SupabaseClient.saveChainSnapshot("315pm", data)) {
+                    prefs.edit().putBoolean("has315pmSnapshot", true).apply()
+                    Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
+                }
+            }
+        }
     }
 
     override fun onDestroy() {

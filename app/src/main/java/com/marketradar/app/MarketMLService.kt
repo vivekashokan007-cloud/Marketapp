@@ -146,7 +146,15 @@ class MarketMLService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "ACTION_TRAIN_NIGHTLY" -> {
+            "ACTION_CHECK_RETRAIN" -> {
+                // Manual trigger: check trade count first, show notification
+                scope.launch {
+                    checkRetrainReadiness()
+                    stopSelf(startId)
+                }
+            }
+            "ACTION_CONFIRM_TRAIN", "ACTION_TRAIN_NIGHTLY" -> {
+                // User confirmed via notification tap or direct trigger
                 scope.launch {
                     runNightlyTraining()
                     stopSelf(startId)
@@ -166,7 +174,6 @@ class MarketMLService : Service() {
                 }
             }
             "ACTION_EXPORT_BACKTEST" -> {
-                // Called from SupabaseClient after fetching all closed trades to CSV
                 stopSelf(startId)
             }
         }
@@ -181,11 +188,67 @@ class MarketMLService : Service() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // CHECK RETRAIN READINESS — counts closed trades, shows notification
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private suspend fun checkRetrainReadiness() = withContext(Dispatchers.IO) {
+        try {
+            val closedTrades = SupabaseClient.select(
+                "ml_decisions",
+                filter = "outcome=not.is.null",
+                limit = 500
+            )
+            val count = closedTrades.length()
+
+            // Build a PendingIntent that starts training when tapped
+            val trainIntent = Intent(this@MarketMLService, MarketMLService::class.java).apply {
+                action = "ACTION_CONFIRM_TRAIN"
+            }
+            val pendingIntent = android.app.PendingIntent.getService(
+                this@MarketMLService, 0, trainIntent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val title: String
+            val body: String
+            if (count < 20) {
+                title = "⚠️ ML Retrain — Low Data"
+                body = "Only $count trades recorded — retrain needs 20+ for meaningful improvement. Tap to train anyway."
+            } else {
+                title = "🧠 ML Retrain Ready"
+                body = "$count trades ready — tap to retrain ML model."
+            }
+
+            // Show actionable notification
+            val channel = android.app.NotificationChannel(
+                "ml_training", "ML Training",
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            )
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+
+            val notification = android.app.Notification.Builder(this@MarketMLService, "ml_training")
+                .setContentTitle(title)
+                .setContentText(body)
+                .setSmallIcon(android.R.drawable.ic_menu_manage)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+
+            nm.notify(2001, notification)
+            Log.i(TAG, "Retrain check: $count trades → notification shown")
+
+        } catch (e: Exception) {
+            Log.w(TAG, "Retrain check failed: ${e.message}")
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // NIGHTLY FULL TRAINING
     // ─────────────────────────────────────────────────────────────────────────
 
     private suspend fun runNightlyTraining() = withContext(Dispatchers.IO) {
-        Log.i(TAG, "=== Nightly ML training starting ===")
+        Log.i(TAG, "=== ML training starting ===")
         val startMs = System.currentTimeMillis()
 
         try {
@@ -236,13 +299,23 @@ class MarketMLService : Service() {
 
                 // 6. Hot-reload ML engine in Chaquopy (reload module)
                 reloadMLEngine(py)
+
+                // Notify user of success
+                NotificationHelper.send(this@MarketMLService,
+                    "✅ ML Model Updated",
+                    "Accuracy: ${String.format("%.1f", accNew * 100)}% on $nTrain trades (${String.format("%.0f", elapsed)}s)",
+                    "info")
             }
 
             val totalMs = System.currentTimeMillis() - startMs
-            Log.i(TAG, "=== Nightly training complete in ${totalMs/1000}s ===")
+            Log.i(TAG, "=== ML training complete in ${totalMs/1000}s ===")
 
         } catch (e: Exception) {
-            Log.e(TAG, "Nightly training ERROR: ${e.message}", e)
+            Log.e(TAG, "ML training ERROR: ${e.message}", e)
+            NotificationHelper.send(this@MarketMLService,
+                "❌ ML Training Failed",
+                e.message ?: "Unknown error",
+                "urgent")
         }
     }
 

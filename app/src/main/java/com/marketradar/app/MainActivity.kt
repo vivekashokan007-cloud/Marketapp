@@ -345,24 +345,28 @@ class MainActivity : AppCompatActivity() {
         container.addView(errorView)
         setContentView(container)
 
-        // b105: Copy ML model files from assets to internal storage on first install
+        // b105: Copy ML model files from assets to internal storage on install/update
         // Python reads from filesDir — assets are read-only and not directly accessible
-        listOf("ml_model.json", "temporal_model.json").forEach { filename ->
-            val dest = File(filesDir, filename)
-            if (!dest.exists()) {
+        val mlPrefs = getSharedPreferences("market_radar", MODE_PRIVATE)
+        val currentVersionCode = BuildConfig.VERSION_CODE
+        val lastMLCopyVersion = mlPrefs.getInt("ml_copy_version", -1)
+        if (lastMLCopyVersion != currentVersionCode) {
+            listOf("ml_model.json", "temporal_model.json", "backtest_trades.csv").forEach { filename ->
                 try {
+                    val dest = File(filesDir, filename)
                     assets.open(filename).use { input ->
                         dest.outputStream().use { output -> input.copyTo(output) }
                     }
-                    android.util.Log.i("MainActivity", "ML: copied $filename to filesDir")
+                    android.util.Log.i("MainActivity", "ML: copied $filename to filesDir (v$currentVersionCode)")
                 } catch (e: Exception) {
                     android.util.Log.w("MainActivity", "ML: could not copy $filename: ${e.message}")
                 }
             }
+            mlPrefs.edit().putInt("ml_copy_version", currentVersionCode).apply()
         }
 
-        // b105: Schedule nightly ML training at 11 PM
-        MarketMLService.scheduleNightlyTraining(this)
+        // b105: Cancel any stale 11 PM alarm from previous APK (auto-schedule removed)
+        MarketMLService.cancelNightlyTraining(this)
 
         // Restore WebView state on rotation/process restart, otherwise load fresh
         if (savedInstanceState != null) {
@@ -376,7 +380,7 @@ class MainActivity : AppCompatActivity() {
         // Register poll receiver — wakes WebView every 5 min from service
         val filter = IntentFilter("com.marketradar.POLL_TICK")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pollReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(pollReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(pollReceiver, filter)
         }
@@ -445,13 +449,19 @@ class MainActivity : AppCompatActivity() {
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },
                     
                     // Data Pull
-                    getLatestPoll: function() { return JSON.parse(AndroidBridge.getLatestPoll()); },
-                    getPollHistory: function() { return JSON.parse(AndroidBridge.getPollHistory()); },
-                    getBrainResult: function() { return JSON.parse(AndroidBridge.getBrainResult()); },
-                    getServiceStatus: function() { return JSON.parse(AndroidBridge.getServiceStatus()); },
-                    getCandidates: function() { return JSON.parse(AndroidBridge.getCandidates()); },
+                    getLatestPoll: function() { return AndroidBridge.getLatestPoll(); },
+                    getPollHistory: function() { return AndroidBridge.getPollHistory(); },
+                    getBrainResult: function() { return AndroidBridge.getBrainResult(); },
+                    getServiceStatus: function() { return AndroidBridge.getServiceStatus(); },
+                    getCandidates: function() { return AndroidBridge.getCandidates(); },
                     
-                    init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy) active'); }
+                    // ML Methods (b105)
+                    isMLModelReady: function() { return AndroidBridge.isMLModelReady(); },
+                    getMLModelStatus: function() { return AndroidBridge.getMLModelStatus(); },
+                    triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
+                    triggerMLRetrain: function() { AndroidBridge.triggerMLRetrain(); },
+                    
+                    init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML) active'); }
                 };
                 NativeBridge.init();
                 console.log('[BRIDGE] Native bridge injected');

@@ -126,6 +126,29 @@ object SupabaseClient {
     }
 
     /**
+     * Saves a 2pm/315pm chain snapshot to chain_snapshots table
+     */
+    fun saveChainSnapshot(session: String, data: JSONObject): Boolean {
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        val body = JSONObject()
+        body.put("date", today)
+        body.put("session", session)
+        body.put("data", data)
+
+        val request = getBaseRequest("chain_snapshots")
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Save chain snapshot failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * Upserts poll history for a specific date to app_config
      */
     fun upsertPollHistory(date: String, history: JSONArray): Boolean {
@@ -149,17 +172,52 @@ object SupabaseClient {
         }
     }
 
-    // --- ML Service Methods (TODO) ---
+    // --- Generic REST Methods ---
 
     fun upsert(table: String, body: JSONObject, onConflict: String? = null): Boolean {
-        return false // TODO: implement
+        val path = if (onConflict != null) "$table?on_conflict=$onConflict" else table
+        val request = getBaseRequest(path)
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Upsert to $table failed: ${e.message}")
+            false
+        }
     }
 
     fun update(table: String, body: JSONObject, filter: String): Boolean {
-        return false // TODO: implement
+        // filter should be like "id=eq.1"
+        val request = getBaseRequest("$table?$filter")
+            .patch(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Update to $table failed: ${e.message}")
+            false
+        }
     }
 
     fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
-        return JSONArray() // TODO: implement
+        val queryParams = mutableListOf<String>()
+        if (filter != null) queryParams.add(filter)
+        if (order != null) queryParams.add("order=$order")
+        if (limit != null) queryParams.add("limit=$limit")
+        
+        val url = if (queryParams.isNotEmpty()) "$table?${queryParams.joinToString("&")}" else table
+        val request = getBaseRequest(url).get().build()
+        
+        val json = fetchSync(request) ?: return JSONArray()
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Select from $table failed: ${e.message}")
+            JSONArray()
+        }
     }
 }

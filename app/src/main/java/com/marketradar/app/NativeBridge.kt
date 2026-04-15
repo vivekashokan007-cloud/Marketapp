@@ -10,7 +10,8 @@ import java.io.File
 
 class NativeBridge(private val context: Context) {
 
-    private val prefs: SharedPreferences = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+    // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
+    private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
 
     @JavascriptInterface
     fun isNative(): Boolean = true
@@ -42,7 +43,13 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setApiToken(token: String) {
-        prefs.edit().putString("auth_token", token).apply()
+        // commit() not apply() — must be on disk before next poll reads it
+        val ok = prefs.edit().putString("auth_token", token).commit()
+        // Verify: re-read from a fresh SharedPreferences instance
+        val verify = context.applicationContext
+            .getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            .getString("auth_token", null)
+        Log.i("NativeBridge", "setApiToken: commit=$ok, stored=${token.length} chars, readback=${verify?.length ?: "NULL"}")
     }
 
     @JavascriptInterface
@@ -140,5 +147,18 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun isMLModelReady(): Boolean {
         return File(context.filesDir, "ml_model.json").exists()
+    }
+
+    // Method 18: Manual ML retrain — checks trade count, shows confirmation notification
+    @JavascriptInterface
+    fun triggerMLRetrain() {
+        try {
+            val intent = android.content.Intent(context, MarketMLService::class.java).apply {
+                action = "ACTION_CHECK_RETRAIN"
+            }
+            context.startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.w("NativeBridge", "ML retrain trigger failed: ${e.message}")
+        }
     }
 }
