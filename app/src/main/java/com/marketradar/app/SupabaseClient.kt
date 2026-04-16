@@ -110,10 +110,10 @@ object SupabaseClient {
     }
 
     /**
-     * Reads premium_history, order by date desc, limit 5
+     * Reads premium_history, order by date desc, limit 60
      */
     fun getPremiumHistory(): JSONArray {
-        val request = getBaseRequest("premium_history?select=*&order=date.desc&limit=5")
+        val request = getBaseRequest("premium_history?select=*&order=date.desc&limit=60")
             .get()
             .build()
         val json = fetchSync(request) ?: return JSONArray()
@@ -122,6 +122,23 @@ object SupabaseClient {
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing premium history: ${e.message}")
             JSONArray()
+        }
+    }
+    
+    /**
+     * Reads yesterday's signal from chain_snapshots
+     */
+    fun getYesterdaySignal(date: String): JSONObject? {
+        val request = getBaseRequest("chain_snapshots?date=eq.$date&session=eq.315pm&select=tomorrow_signal,signal_strength")
+            .get()
+            .build()
+        val json = fetchSync(request) ?: return null
+        return try {
+            val array = JSONArray(json)
+            if (array.length() > 0) array.getJSONObject(0) else null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing yesterday signal: ${e.message}")
+            null
         }
     }
 

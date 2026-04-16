@@ -9,8 +9,12 @@ import android.webkit.JavascriptInterface
 import java.io.File
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
 
 class NativeBridge(private val context: Context) {
+    private var lastScoredCandCount = -1
+    private var lastScoredFirstCandId = ""
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -74,7 +78,38 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setContext(json: String) {
-        prefs.edit().putString("context", json).apply()
+        var finalJson = json
+        try {
+            if (isMLModelReady()) {
+                val ctxObj = JSONObject(json)
+                val candsLite = ctxObj.optJSONArray("candsLite")
+                if (candsLite != null && candsLite.length() > 0) {
+                    val count = candsLite.length()
+                    val firstId = candsLite.getJSONObject(0).optString("id", "")
+                    
+                    // b116: Change guard to avoid redundant scoring
+                    if (count != lastScoredCandCount || firstId != lastScoredFirstCandId) {
+                        for (i in 0 until candsLite.length()) {
+                            val cand = candsLite.getJSONObject(i)
+                            val mlScored = scoreCandidate(cand)
+                            if (mlScored != null) {
+                                cand.put("p_ml", mlScored.optDouble("p_ml"))
+                                cand.put("mlAction", mlScored.optString("ml_action"))
+                                cand.put("mlEdge", mlScored.optDouble("ml_edge"))
+                                cand.put("mlOod", mlScored.optBoolean("ml_ood", false))
+                            }
+                        }
+                        lastScoredCandCount = count
+                        lastScoredFirstCandId = firstId
+                        finalJson = ctxObj.toString()
+                        Log.d("NativeBridge", "Scored $count WebView candidates via setContext")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("NativeBridge", "setContext ML scoring failed: ${e.message}")
+        }
+        prefs.edit().putString("context", finalJson).apply()
     }
 
     @JavascriptInterface
@@ -166,6 +201,17 @@ class NativeBridge(private val context: Context) {
             context.startForegroundService(intent)
         } catch (e: Exception) {
             android.util.Log.w("NativeBridge", "ML retrain trigger failed: ${e.message}")
+        }
+    }
+
+    private fun scoreCandidate(cand: JSONObject): JSONObject? {
+        return try {
+            val py = com.chaquo.python.Python.getInstance()
+            val brain = py.getModule("brain")
+            val result = brain.callAttr("ml_score_bridge", cand.toString()).toString()
+            JSONObject(result)
+        } catch (e: Exception) {
+            null
         }
     }
 }

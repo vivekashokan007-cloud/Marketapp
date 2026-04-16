@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
+import java.io.File
 
 class MarketWatchService : Service() {
 
@@ -30,11 +31,20 @@ class MarketWatchService : Service() {
     
     private var token401Counter = 0
     private var lastAlertKeys = mutableSetOf<String>()
+    private var pollingJob: Job? = null
 
     companion object {
         const val CHANNEL_ID = "market_radar_service"
         const val NOTIFICATION_ID = 1001
         const val TAG = "MarketWatchService"
+        
+        private val BNF_WEIGHTS = mapOf(
+            "NSE_EQ|HDFCBANK" to 0.285,
+            "NSE_EQ|ICICIBANK" to 0.235,
+            "NSE_EQ|AXISBANK" to 0.095,
+            "NSE_EQ|SBIN" to 0.092,
+            "NSE_EQ|KOTAKBANK" to 0.085
+        )
     }
 
     override fun onCreate() {
@@ -59,6 +69,11 @@ class MarketWatchService : Service() {
         
         serviceScope.launch {
             bootstrapFromSupabase()
+            // We need the token for OHLC/Futures Key resolution which are Startup tasks
+            val token = prefs.getString("auth_token", "") ?: ""
+            if (token.isNotEmpty()) {
+                bootstrapFromUpstox(token)
+            }
             startPolling()
         }
         return START_STICKY
@@ -74,6 +89,10 @@ class MarketWatchService : Service() {
         
         if (!isStale && hasBaseline) {
             Log.d(TAG, "Bootstrap skipped: data is fresh")
+            val premHistory = JSONArray(prefs.getString("premium_history", "[]"))
+            val ySig = prefs.getString("yesterday_signal", "null")
+            val historyLoadedLog = "HISTORY_LOADED_RESTART: vixCount=${premHistory.length()}, fiiCount=${extractFiiHistory().length()}, ySignal=$ySig"
+            Log.d(TAG, historyLoadedLog)
             return
         }
 
@@ -94,13 +113,26 @@ class MarketWatchService : Service() {
                 // 3. Closed Trades
                 val closed = SupabaseClient.getClosedTrades()
                 prefs.edit().putString("closed_trades", closed.toString()).apply()
-
-                // 4. Poll History (today)
                 val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
                 val history = SupabaseClient.getPollHistory(today)
                 if (history.length() > 0) {
                     prefs.edit().putString("poll_history", history.toString()).apply()
                 }
+
+                // 5. Historial Premium Data & Signal
+                val premHistory = SupabaseClient.getPremiumHistory()
+                if (premHistory.length() > 0) {
+                    prefs.edit().putString("premium_history", premHistory.toString()).apply()
+                }
+                
+                val yesterday = getYesterdayDate()
+                SupabaseClient.getYesterdaySignal(yesterday)?.let {
+                    prefs.edit().putString("yesterday_signal", it.toString()).apply()
+                    Log.d(TAG, "SIGNAL_PRIOR_LOADED: $it")
+                }
+
+                val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}"
+                Log.d(TAG, historyLoadedLog)
 
                 prefs.edit().putLong("last_bootstrap_time", now).apply()
                 Log.d(TAG, "Bootstrap complete")
@@ -110,8 +142,49 @@ class MarketWatchService : Service() {
         }
     }
 
+    private suspend fun bootstrapFromUpstox(token: String) {
+        try {
+            fetchYesterdayOHLC(token)
+            // Resolve futures key one-time
+            resolveFuturesKey(token)
+        } catch (e: Exception) {
+            Log.e(TAG, "Bootstrap from Upstox failed: ${e.message}")
+        }
+    }
+
+    private suspend fun fetchYesterdayOHLC(token: String) {
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        if (prefs.getString("ohlc_date", "") == today) return
+
+        Log.d(TAG, "Fetching yesterday's OHLC...")
+        val url = "https://api.upstox.com/v2/market-quote/ohlc?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50&interval=1d"
+        val json = fetchSync(url, token)
+        if (json != null) {
+            prefs.edit().putString("yesterday_ohlc", json.toString())
+                .putString("ohlc_date", today)
+                .apply()
+            Log.d(TAG, "OHLC_FETCHED: Success")
+        }
+    }
+
+    private fun getYesterdayDate(): String {
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DATE, -1)
+        if (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) cal.add(Calendar.DATE, -2)
+        else if (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY) cal.add(Calendar.DATE, -1)
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+    }
+
+    private suspend fun resolveFuturesKey(token: String) {
+        // Find near-month futures key for BNF and NF
+        // Standard practice: Instrument list can be huge, so we guess or fetch /instrument/details
+        // For simplicity and to match the plan's 'dynamic resolver', we'll look for 'FUT' in a targeted search
+        // Implementation omitted for brevity in this chunk, will add in next
+    }
+
     private fun startPolling() {
-        serviceScope.launch {
+        pollingJob?.cancel() // Guard: Stop any existing poll coroutine before starting a new one
+        pollingJob = serviceScope.launch {
             while (isActive) {
                 if (isMarketOpen()) {
                     // Re-read token dynamically on each poll cycle (Bug 1 Fix)
@@ -177,19 +250,23 @@ class MarketWatchService : Service() {
         }
         
         // Step 2: Fetch BNF chain
-        Log.d(TAG, "POLL_STEP2: Fetching BNF option chain (expiry=$bnfExpiry)")
+        val bnfStocks = BNF_WEIGHTS.keys.joinToString(",")
+        Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
         val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
         val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
-        val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
+        val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
         
         val bnfChainJson = fetchSync(bnfUrl, token)
-        if (bnfChainJson == null) {
-            Log.e(TAG, "POLL_FAIL: BNF chain fetch returned null")
+        val bnfStocksJson = fetchSync(bnfStocksUrl, token)
+        
+        if (bnfChainJson == null || bnfStocksJson == null) {
+            Log.e(TAG, "POLL_FAIL: BNF chain or stocks/futures fetch returned null")
             return
         }
         
         // Step 3: Fetch NF chain
         Log.d(TAG, "POLL_STEP3: Fetching NF option chain (expiry=$nfExpiry)")
+        val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
         val nfChainJson = fetchSync(nfUrl, token)
         if (nfChainJson == null) {
             Log.e(TAG, "POLL_FAIL: NF chain fetch returned null")
@@ -208,12 +285,19 @@ class MarketWatchService : Service() {
 
         // Step 5: Build poll object and save
         Log.d(TAG, "POLL_STEP5: Saving poll object")
-        val pollObj = parsePollData(quotesJson, bnfChainJson)
+        val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
         savePoll(pollObj)
 
         // Step 6: Run Python Brain (POLL_TICK broadcast is inside runBrainAnalysis finally block)
         Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-        runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix)
+        runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
+    }
+
+    private fun getFuturesKey(symbol: String): String {
+        val cal = Calendar.getInstance()
+        val yy = SimpleDateFormat("yy", Locale.US).format(cal.time)
+        val mmm = SimpleDateFormat("MMM", Locale.US).format(cal.time).uppercase()
+        return "NSE_FO|${symbol}${yy}${mmm}FUT"
     }
 
     private fun updateOpenTradesPnL(chain: JSONObject, spot: Double) {
@@ -309,41 +393,70 @@ class MarketWatchService : Service() {
         } catch (e: Exception) { return 99 }
     }
 
-    private fun parsePollData(quotes: JSONObject, chain: JSONObject): JSONObject {
+    private fun parsePollData(quotes: JSONObject, chain: JSONObject, stocks: JSONObject, spot: Double): JSONObject {
         val data = quotes.getJSONObject("data")
+        val sData = stocks.getJSONObject("data")
         val bnf = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
         val nf = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
         val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
         
         val time = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date())
         
-        var maxCallOi = -1.0
-        var maxPutOi = -1.0
+        var maxCallOi = 0.0
+        var maxPutOi = 0.0
         var cw = 0.0
         var pw = 0.0
-        var totalCOI = 0.0
-        var totalPOI = 0.0
+        
+        // Near-ATM PCR (±10 strikes)
+        var nearAtmCOI = 0.0
+        var nearAtmPOI = 0.0
+        
+        // Straddle Logic (ATM premiums)
+        var atmCE = 0.0
+        var atmPE = 0.0
+        var atmDist = Double.MAX_VALUE
+        var atmStrike = 0.0
         
         val chainData = chain.getJSONArray("data")
         for (i in 0 until chainData.length()) {
             val item = chainData.getJSONObject(i)
             val strikePrice = item.getDouble("strike_price")
             
-            item.optJSONObject("call_options")?.optJSONObject("market_data")?.let { md ->
-                val oi = md.optDouble("oi", 0.0)
-                totalCOI += oi
-                if (oi > maxCallOi) {
-                    maxCallOi = oi
-                    cw = strikePrice
-                }
+            val callMd = item.optJSONObject("call_options")?.optJSONObject("market_data")
+            val putMd = item.optJSONObject("put_options")?.optJSONObject("market_data")
+            
+            val coi = callMd?.optDouble("oi", 0.0) ?: 0.0
+            val poi = putMd?.optDouble("oi", 0.0) ?: 0.0
+            
+            // Wall logic
+            if (coi > maxCallOi) { maxCallOi = coi; cw = strikePrice }
+            if (poi > maxPutOi) { maxPutOi = poi; pw = strikePrice }
+            
+            // Near-ATM Logic
+            if (Math.abs(strikePrice - bnf) <= 500) { // ±10 strikes (50 pts each in BNF)
+                nearAtmCOI += coi
+                nearAtmPOI += poi
             }
             
-            item.optJSONObject("put_options")?.optJSONObject("market_data")?.let { md ->
-                val oi = md.optDouble("oi", 0.0)
-                totalPOI += oi
-                if (oi > maxPutOi) {
-                    maxPutOi = oi
-                    pw = strikePrice
+            // Straddle Logic
+            val dist = Math.abs(strikePrice - bnf)
+            if (dist < atmDist) {
+                atmDist = dist
+                atmStrike = strikePrice
+                
+                // Fallback to bid/ask if LTP is 0
+                atmCE = callMd?.optDouble("last_price", 0.0) ?: 0.0
+                if (atmCE == 0.0) {
+                    val bid = callMd?.optDouble("bid_price", 0.0) ?: 0.0
+                    val ask = callMd?.optDouble("ask_price", 0.0) ?: 0.0
+                    atmCE = if (bid > 0 && ask > 0) (bid + ask) / 2.0 else Math.max(bid, ask)
+                }
+                
+                atmPE = putMd?.optDouble("last_price", 0.0) ?: 0.0
+                if (atmPE == 0.0) {
+                    val bid = putMd?.optDouble("bid_price", 0.0) ?: 0.0
+                    val ask = putMd?.optDouble("ask_price", 0.0) ?: 0.0
+                    atmPE = if (bid > 0 && ask > 0) (bid + ask) / 2.0 else Math.max(bid, ask)
                 }
             }
         }
@@ -355,10 +468,27 @@ class MarketWatchService : Service() {
         poll.put("vix", vix)
         poll.put("cw", cw)
         poll.put("pw", pw)
-        poll.put("totalCOI", totalCOI)
-        poll.put("totalPOI", totalPOI)
-        poll.put("pcr", if (totalPOI > 0) totalCOI / totalPOI else 0.0)
+        poll.put("cwOI", maxCallOi)
+        poll.put("pwOI", maxPutOi)
+        poll.put("straddle", atmCE + atmPE)
+        poll.put("pcr", if (nearAtmCOI > 0) nearAtmPOI / nearAtmCOI else 1.0) // brain expects PE/CE
         
+        // Futures Premium
+        val bnfFutKey = getFuturesKey("BANKNIFTY")
+        Log.d(TAG, "FP_DEBUG: bnfFutKey=$bnfFutKey")
+        var bnfFutLtp = sData.optJSONObject(bnfFutKey)?.optDouble("last_price", 0.0) ?: 0.0
+        
+        if (bnfFutLtp > 0) {
+            Log.d(TAG, "FP_SOURCE: actual ($bnfFutLtp)")
+        } else {
+            // Synthetic Fallback: ATM_CE - ATM_PE + Spot
+            bnfFutLtp = atmCE - atmPE + bnf
+            Log.d(TAG, "FP_SOURCE: synthetic ($bnfFutLtp)")
+        }
+        
+        poll.put("fp", (bnfFutLtp - bnf) / bnf * 100.0)
+        
+        Log.d("AUDIT_POLL", poll.toString())
         return poll
     }
 
@@ -520,6 +650,101 @@ class MarketWatchService : Service() {
         return profile
     }
 
+    private fun calculateBreadth(stocks: JSONObject): JSONObject {
+        val result = JSONObject()
+        try {
+            val data = stocks.getJSONObject("data")
+            var weightedBnfPct = 0.0
+            var advancing = 0
+            var declining = 0
+            
+            for ((key, weight) in BNF_WEIGHTS) {
+                val stockKey = key.replace("|", ":")
+                val stockData = data.optJSONObject(stockKey)
+                val ltp = stockData?.optDouble("last_price", 0.0) ?: 0.0
+                val close = stockData?.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
+                
+                if (ltp > close && close > 0) {
+                    advancing++
+                    weightedBnfPct += weight * 100.0
+                } else if (ltp < close && close > 0) {
+                    declining++
+                    weightedBnfPct += weight * 0.0
+                } else {
+                    weightedBnfPct += weight * 50.0 // neutral
+                }
+            }
+            
+            result.put("pct", weightedBnfPct)
+            result.put("advancing", advancing)
+            result.put("declining", declining)
+        } catch (e: Exception) {
+            Log.e(TAG, "Breadth calc failed: ${e.message}")
+            result.put("pct", 50.0).put("advancing", 0).put("declining", 0)
+        }
+        return result
+    }
+
+    private fun calculateIvPercentile(vix: Double): Int {
+        try {
+            val histStr = prefs.getString("premium_history", "[]") ?: "[]"
+            val hist = JSONArray(histStr)
+            if (hist.length() < 10) return 50
+            var lower = 0
+            for (i in 0 until hist.length()) {
+                if (vix > hist.getJSONObject(i).optDouble("vix", 0.0)) lower++
+            }
+            return (lower * 100 / hist.length())
+        } catch (e: Exception) { return 50 }
+    }
+
+    private fun extractFiiHistory(): JSONArray {
+        val uniqueDays = LinkedHashMap<String, JSONObject>()
+        try {
+            val hist = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
+            for (i in 0 until hist.length()) {
+                val row = hist.getJSONObject(i)
+                val date = row.optString("date", "")
+                if (date.isEmpty()) continue
+                
+                if (!uniqueDays.containsKey(date)) {
+                    val entry = JSONObject()
+                    entry.put("fiiCash", row.optDouble("fii_cash", 0.0))
+                    entry.put("fiiShort", row.optDouble("fii_short_pct", 0.0))
+                    entry.put("vix", row.optDouble("vix", 0.0))
+                    entry.put("date", date)
+                    uniqueDays[date] = entry
+                }
+                if (uniqueDays.size >= 5) break
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "extractFiiHistory error: ${e.message}")
+        }
+        
+        val result = JSONArray()
+        uniqueDays.values.forEach { result.put(it) }
+        return result
+    }
+
+    private fun computeGapObject(ohlc: JSONObject, bnfSpot: Double): JSONObject {
+        val gap = JSONObject()
+        try {
+            val bnfOhlc = ohlc.getJSONObject("data").getJSONObject("NSE_INDEX:Nifty Bank").getJSONObject("ohlc")
+            val prevClose = bnfOhlc.getDouble("close")
+            val todayOpen = bnfOhlc.getDouble("open")
+            
+            val pct = (todayOpen - prevClose) / prevClose * 100.0
+            val sigma = pct / 0.5 // Simplified: 1 sigma = 0.5%
+            
+            gap.put("type", if (pct > 0.3) "GAP_UP" else if (pct < -0.3) "GAP_DOWN" else "FLAT")
+            gap.put("pct", pct)
+            gap.put("sigma", sigma)
+        } catch (e: Exception) {
+            gap.put("type", "FLAT").put("pct", 0.0).put("sigma", 0.0)
+        }
+        return gap
+    }
+
     private fun computeTomorrowSignal(current: JSONObject) {
         try {
             val baseline = JSONObject(prefs.getString("afternoon_baseline", "{}"))
@@ -554,6 +779,11 @@ class MarketWatchService : Service() {
             val strikesObj = JSONObject()
             val allStrikesArr = JSONArray()
             
+            var atmStrike = 0.0
+            var atmMinDist = Double.MAX_VALUE
+            var atmCEIv = 0.0
+            var atmPEIv = 0.0
+
             for (i in 0 until data.length()) {
                 val item = data.getJSONObject(i)
                 val strike = item.getDouble("strike_price")
@@ -561,6 +791,16 @@ class MarketWatchService : Service() {
                 
                 val call = item.optJSONObject("call_options")
                 val put = item.optJSONObject("put_options")
+                
+                val dist = Math.abs(strike - spot)
+                if (dist < atmMinDist) {
+                    atmMinDist = dist
+                    atmStrike = strike
+                    val cmd = call?.optJSONObject("market_data")
+                    val pmd = put?.optJSONObject("market_data")
+                    atmCEIv = cmd?.optDouble("iv", 0.0) ?: 0.0
+                    atmPEIv = pmd?.optDouble("iv", 0.0) ?: 0.0
+                }
                 
                 val strikeObj = JSONObject()
                 strikeObj.put("CE", JSONObject().apply {
@@ -596,7 +836,8 @@ class MarketWatchService : Service() {
             
             result.put("strikes", strikesObj)
             result.put("allStrikes", allStrikesArr)
-            result.put("atm", strikesObj.keys().asSequence().map { it.toDouble() }.minByOrNull { Math.abs(it - spot) }?.toInt() ?: spot.toInt())
+            result.put("atm", atmStrike)
+            result.put("atmIv", if (atmCEIv > 0 && atmPEIv > 0) (atmCEIv + atmPEIv) / 2.0 else Math.max(atmCEIv, atmPEIv))
             
         } catch (e: Exception) {
             Log.e(TAG, "Error formatting chain for brain: ${e.message}")
@@ -605,7 +846,7 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
-                                  bnfSpot: Double, nfSpot: Double, vix: Double) {
+                                  bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject) {
         var brainSuccess = false
         var broadcastData: String? = null
 
@@ -620,25 +861,117 @@ class MarketWatchService : Service() {
             val closedTradesJson = prefs.getString("closed_trades", "[]") ?: "[]"
             val contextJson  = prefs.getString("context",           "{}") ?: "{}"
             
-            val bnfProfile = computeChainProfile(bnfChain, bnfSpot, vix)
-            val nfProfile  = computeChainProfile(nfChain, nfSpot, vix)
-
-            val bnfChainFormatted = formatChainForBrain(bnfChain, bnfSpot).apply {
-                put("callWallStrike", poll.optDouble("cw", 0.0))
-                put("putWallStrike",  poll.optDouble("pw", 0.0))
-                put("pcr",            poll.optDouble("pcr", 0.0))
-            }
-            val nfChainFormatted = formatChainForBrain(nfChain, nfSpot)
-            
-            // Build context
+            // profile merge strategy (Fix 2 - 3-way merge)
             val ctxObj = JSONObject(contextJson)
-            ctxObj.put("bnfProfile", bnfProfile)
-            ctxObj.put("nfProfile",  nfProfile)
-            ctxObj.put("bnfChain",   bnfChainFormatted)
-            ctxObj.put("nfChain",    nfChainFormatted)
+            
+            fun mergeProfile(key: String, spot: Double, v: Double) {
+                val profile = ctxObj.optJSONObject(key)
+                if (profile != null && profile.length() > 2) {
+                    // Case 1 & 2: Rich profile (new or stored) — update live spot/vix
+                    profile.put("spot", spot)
+                    profile.put("vix", v)
+                } else {
+                    // Case 3: No rich data — remove to avoid stub confusion
+                    ctxObj.remove(key)
+                }
+            }
+            mergeProfile("bnfProfile", bnfSpot, vix)
+            mergeProfile("nfProfile", nfSpot, vix)
 
+            // CHAIN MERGING (Fix 1 - Preservation)
+            fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double, 
+                           cwPoll: Double, pwPoll: Double, pcrPoll: Double) {
+                val formattedLive = formatChainForBrain(liveChainRaw, spot)
+                val existingChain = ctxObj.optJSONObject(key)
+                
+                if (existingChain != null && existingChain.has("atm")) {
+                    // Rich chain exists — refresh only live intraday fields
+                    existingChain.put("strikes",         formattedLive.optJSONObject("strikes"))
+                    existingChain.put("atm",             formattedLive.optDouble("atm", 0.0))
+                    existingChain.put("callWallStrike",  cwPoll)
+                    existingChain.put("putWallStrike",   pwPoll)
+                    // allStrikes, atmIv, maxPain kept from WebView
+                } else {
+                    // No rich data — use full formatted live chain
+                    formattedLive.put("callWallStrike", cwPoll)
+                    formattedLive.put("putWallStrike",  pwPoll)
+                    formattedLive.put("pcr",            pcrPoll)
+                    ctxObj.put(key, formattedLive)
+                }
+            }
+            
+            // Calculate NF walls since they aren't in the main 'poll' object
+            var nfCw = 0.0; var nfPw = 0.0; var nfMaxC = 0.0; var nfMaxP = 0.0
+            val nfData = nfChain.optJSONArray("data")
+            if (nfData != null) {
+                for (i in 0 until nfData.length()) {
+                    val item = nfData.getJSONObject(i)
+                    val s = item.optDouble("strike_price", 0.0)
+                    val coi = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
+                    val poi = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
+                    if (coi > nfMaxC) { nfMaxC = coi; nfCw = s }
+                    if (poi > nfMaxP) { nfMaxP = poi; nfPw = s }
+                }
+            }
+
+            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0))
+            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0)
+            
             // GAP 15: Institutional Positioning Snapshots
-            captureChainSnapshots(bnfProfile, nfProfile)
+            captureChainSnapshots(ctxObj.optJSONObject("bnfProfile"), ctxObj.optJSONObject("nfProfile"))
+
+            // Data Parity Overlays
+            val breadth = calculateBreadth(stocksJson)
+            ctxObj.put("bnfBreadth", breadth)
+            
+            val ohlcStr = prefs.getString("yesterday_ohlc", null)
+            val gapObj = JSONObject()
+            if (ohlcStr != null) {
+                val ohlc = JSONObject(ohlcStr)
+                val calculatedGap = computeGapObject(ohlc, bnfSpot)
+                gapObj.put("type", calculatedGap.optString("type", "FLAT"))
+                gapObj.put("pct", calculatedGap.optDouble("pct", 0.0))
+                gapObj.put("sigma", calculatedGap.optDouble("sigma", 0.0))
+                
+                // closeChar inside morningBias (if bias exists)
+                val mb = ctxObj.optJSONObject("morningBias")
+                if (mb != null) {
+                    val bnfOhlc = ohlc.optJSONObject("data")?.optJSONObject("NSE_INDEX:Nifty Bank")?.optJSONObject("ohlc")
+                    if (bnfOhlc != null) {
+                        val c = bnfOhlc.getDouble("close")
+                        val h = bnfOhlc.getDouble("high")
+                        val l = bnfOhlc.getDouble("low")
+                        val closeChar = if (c > h - (h-l)*0.2) 2 else if (c < l + (h-l)*0.2) -2 else 0
+                        mb.put("closeChar", closeChar)
+                    }
+                }
+            } else {
+                gapObj.put("type", "FLAT").put("pct", 0.0).put("sigma", 0.0)
+            }
+            ctxObj.put("gap", gapObj)
+            
+            val ySigStr = prefs.getString("yesterday_signal", null)
+            if (ySigStr != null) {
+                val ySig = JSONObject(ySigStr)
+                val sigObj = JSONObject()
+                sigObj.put("signal", ySig.optString("tomorrow_signal", "NEUTRAL").replace("Tomorrow: ", "").split(" ")[0])
+                sigObj.put("strength", ySig.optString("tomorrow_signal", "").let { if (it.contains("4/5")) 4 else 2 })
+                ctxObj.put("yesterdaySignal", sigObj)
+            }
+            
+            // Always overlay history from SharedPreferences for brain.py (Persistence)
+            val premHist = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
+            val vixHist = JSONArray()
+            for (i in 0 until premHist.length()) {
+                val v = premHist.getJSONObject(i).optDouble("vix", 0.0)
+                if (v > 0) vixHist.put(v)
+            }
+            if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
+            
+            val fiiHist = extractFiiHistory()
+            if (fiiHist.length() > 0) ctxObj.put("fiiHistory", fiiHist)
+            
+            ctxObj.put("ivPercentile", calculateIvPercentile(vix))
 
             ctxObj.put("capital",    prefs.getInt("capital", 250000))
             ctxObj.put("bnfExpiry",  prefs.getString("expiry_bnf", ""))
@@ -646,8 +979,34 @@ class MarketWatchService : Service() {
             ctxObj.put("vix",        vix)
             if (!ctxObj.has("ivPercentile")) ctxObj.put("ivPercentile", 50)
             
+            Log.d("BRAIN_CTX_CHECK",
+                "bnfChain.atm=${ctxObj.optJSONObject("bnfChain")?.opt("atm")}, " +
+                "nfChain.atm=${ctxObj.optJSONObject("nfChain")?.opt("atm")}, " +
+                "bnfProfile.maxPain=${ctxObj.optJSONObject("bnfProfile")?.opt("maxPain")}, " +
+                "nfProfile.maxPain=${ctxObj.optJSONObject("nfProfile")?.opt("maxPain")}, " +
+                "tradeMode=${ctxObj.optString("tradeMode")}, " +
+                "ivPctl=${ctxObj.optDouble("ivPercentile")}, " +
+                "bias=${ctxObj.optJSONObject("morningBias")?.optString("label")}, " +
+                "biasNet=${ctxObj.optJSONObject("morningBias")?.optInt("net")}, " +
+                "bnfExpiry=${ctxObj.optString("bnfExpiry")}, " +
+                "nfExpiry=${ctxObj.optString("nfExpiry")}"
+            )
+            
+            Log.d("BRAIN_INPUT_SUMMARY",
+                "polls=${JSONArray(pollsJson).length()}, " +
+                "morningBias=${ctxObj.optJSONObject("morningBias")?.toString()}, " +
+                "ivPercentile=${ctxObj.optDouble("ivPercentile")}, " +
+                "vix=${ctxObj.optDouble("vix")}, " +
+                "tradeMode=${ctxObj.optString("tradeMode")}, " +
+                "bnfChain_strikes_count=${ctxObj.optJSONObject("bnfChain")?.optJSONObject("strikes")?.length() ?: 0}, " +
+                "bnfExpiry=${ctxObj.optString("bnfExpiry")}"
+            )
+            
             Log.d(TAG, "BRAIN_CALLING: analyze() with ${JSONArray(pollsJson).length()} polls")
             
+            // Persistence: Must save merged context back to SharedPreferences for next poll cycle
+            prefs.edit().putString("context", ctxObj.toString()).apply()
+
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
             val result = runBlocking {
                 withTimeoutOrNull(10_000L) {
@@ -669,6 +1028,43 @@ class MarketWatchService : Service() {
             }
             
             val resultObj = JSONObject(result)
+            
+            // --- NEW Diagnostic Result Parsing ---
+            try {
+                val candidateError = resultObj.optString("candidate_error", "")
+                if (candidateError.isNotEmpty()) {
+                    Log.e("BRAIN_PHASE3_ERROR", "Phase 3 exception: $candidateError")
+                }
+                val generated = resultObj.optJSONArray("generated_candidates")
+                val watchlist = resultObj.optJSONArray("watchlist")
+                val actualCandidates = resultObj.optJSONObject("candidates")
+                Log.d("BRAIN_CANDIDATES_DETAIL",
+                    "generated=${generated?.length() ?: 0}, " +
+                    "watchlist=${watchlist?.length() ?: 0}, " +
+                    "candidates_in_result=${actualCandidates?.length() ?: 0}"
+                )
+            } catch(e: Exception) {
+                Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
+            }
+
+            // --- v2.2.6 ML Scoring Integration ---
+            val generatedCands = resultObj.optJSONArray("generated_candidates")
+            if (generatedCands != null && generatedCands.length() > 0 && isMLModelReady()) {
+                val py = Python.getInstance()
+                val brainMod = py.getModule("brain")
+                for (i in 0 until generatedCands.length()) {
+                    val cand = generatedCands.getJSONObject(i)
+                    val mlResult = scoreCandidate(cand, brainMod)
+                    if (mlResult != null) {
+                        cand.put("p_ml", mlResult.optDouble("p_ml"))
+                        cand.put("mlAction", mlResult.optString("ml_action"))
+                        cand.put("mlEdge", mlResult.optDouble("ml_edge"))
+                        cand.put("mlOod", mlResult.optBoolean("ml_ood", false))
+                    }
+                }
+                Log.d("BRAIN_ML_SCORING", "Scored ${generatedCands.length()} background candidates")
+            }
+
             Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}, starts_with=${if (result.length > 20) result.substring(0, 20) else result}")
             prefs.edit().putString("brain_result", result).apply()
             
@@ -930,7 +1326,7 @@ class MarketWatchService : Service() {
         wakeLock?.let { if (it.isHeld) it.release() }
     }
 
-    private fun captureChainSnapshots(bnf: JSONObject, nf: JSONObject) {
+    private fun captureChainSnapshots(bnf: JSONObject?, nf: JSONObject?) {
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)
         val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
@@ -963,6 +1359,19 @@ class MarketWatchService : Service() {
                     Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
                 }
             }
+        }
+    }
+
+    private fun isMLModelReady(): Boolean {
+        return File(filesDir, "ml_model.json").exists()
+    }
+
+    private fun scoreCandidate(cand: JSONObject, brain: com.chaquo.python.PyObject): JSONObject? {
+        return try {
+            val result = brain.callAttr("ml_score_bridge", cand.toString()).toString()
+            JSONObject(result)
+        } catch (e: Exception) {
+            null
         }
     }
 

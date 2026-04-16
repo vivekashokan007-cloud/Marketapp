@@ -37,6 +37,15 @@ def _ml_score(candidate_dict):
     except Exception:
         return {}
 
+def ml_score_bridge(cand_json):
+    """Bridge for Kotlin to call _ml_score with JSON string."""
+    try:
+        cand = json.loads(cand_json)
+        res = _ml_score(cand)
+        return json.dumps(res)
+    except Exception as e:
+        return json.dumps({'error': str(e)})
+
 # ─── UTILITIES ───
 
 def lsq_slope(values):
@@ -778,27 +787,32 @@ def timing_wait_signal(polls, baseline, regime):
 
 def risk_kelly_headroom(polls, baseline, open_trades, closed_trades):
     """Kelly % vs current exposure."""
-    if len(closed_trades) < 5: return None
-    wins = [t for t in closed_trades if (t.get('actual_pnl') or 0) > 0]
-    losses = [t for t in closed_trades if (t.get('actual_pnl') or 0) <= 0]
-    w = len(wins) / len(closed_trades)
-    avg_w = sum(t['actual_pnl'] for t in wins) / len(wins) if wins else 0
-    avg_l = abs(sum(t['actual_pnl'] for t in losses) / len(losses)) if losses else 1
-    r = avg_w / avg_l if avg_l > 0 else 1
-    kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
-    kelly_pct = kelly * 100
-    capital = _capital  # set from context in analyze()
-    optimal = kelly * capital
-    current_exposure = sum(abs(t.get('max_loss', 0)) for t in open_trades if not t.get('paper'))
-    headroom = optimal - current_exposure
-    if headroom > 5000:
-        return {"type": "risk", "icon": "🎰", "label": f"Kelly {kelly_pct:.0f}% — room for entry",
-                "detail": f"Optimal: ₹{optimal:.0f}. Used: ₹{current_exposure:.0f}. Headroom: ₹{headroom:.0f}.",
-                "impact": "neutral", "strength": 2}
-    elif headroom < 0:
-        return {"type": "risk", "icon": "🎰", "label": f"Kelly {kelly_pct:.0f}% — overexposed",
-                "detail": f"Optimal: ₹{optimal:.0f}. Used: ₹{current_exposure:.0f}. Over by ₹{abs(headroom):.0f}.",
-                "impact": "caution", "strength": 4}
+    try:
+        if len(closed_trades) < 5: return None
+        wins = [t for t in closed_trades if (t.get('actual_pnl') or 0) > 0]
+        losses = [t for t in closed_trades if (t.get('actual_pnl') or 0) <= 0]
+        w = len(wins) / len(closed_trades)
+        
+        avg_w = sum(t.get('actual_pnl', 0) or 0 for t in wins) / len(wins) if wins else 0
+        avg_l = abs(sum(t.get('actual_pnl', 0) or 0 for t in losses) / len(losses)) if losses else 1
+        
+        r = avg_w / avg_l if avg_l > 0 else 1
+        kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
+        kelly_pct = kelly * 100
+        capital = _capital  # set from context in analyze()
+        optimal = kelly * capital
+        current_exposure = sum(abs(t.get('max_loss', 0) or 0) for t in open_trades if not t.get('paper'))
+        headroom = optimal - current_exposure
+        if headroom > 5000:
+            return {"type": "risk", "icon": "🎰", "label": f"Kelly {kelly_pct:.0f}% — room for entry",
+                    "detail": f"Optimal: ₹{optimal:.0f}. Used: ₹{current_exposure:.0f}. Headroom: ₹{headroom:.0f}.",
+                    "impact": "neutral", "strength": 2}
+        elif headroom < 0:
+            return {"type": "risk", "icon": "🎰", "label": f"Kelly {kelly_pct:.0f}% — overexposed",
+                    "detail": f"Optimal: ₹{optimal:.0f}. Used: ₹{current_exposure:.0f}. Over by ₹{abs(headroom):.0f}.",
+                    "impact": "caution", "strength": 4}
+    except Exception:
+        pass
     return None
 
 def risk_regime_shift(polls, baseline, open_trades, closed_trades):
@@ -2017,14 +2031,49 @@ def position_verdict(trade, insights, regime, ctx):
             elif ci < 0:
                 danger += 5
 
-    # Spot cushion from sell strike — direct check (b104 fix)
-    # IB exempt: sells ATM by design, cushion is always ~0
+    # b115: Breakeven cushion — the REAL danger line, not sell strike
+    # be_upper = upper breakeven (IC/IB/Bear Call), be_lower = lower breakeven (IC/IB/Bull Put)
+    be_upper = trade.get('be_upper') or trade.get('beUpper')
+    be_lower = trade.get('be_lower') or trade.get('beLower')
     sell_strike = trade.get('sell_strike', 0)
     spot = trade.get('current_spot', 0)
-    if sell_strike and spot and is_credit and not is_ib:
+    if spot and (be_upper or be_lower):
+        vix = ctx.get('vix', 20)
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300
+        if is_4leg and be_upper and be_lower:
+            upper_cushion = be_upper - spot
+            lower_cushion = spot - be_lower
+            near_cushion = min(upper_cushion, lower_cushion)
+            near_label = f"upper BE {be_upper}" if upper_cushion < lower_cushion else f"lower BE {be_lower}"
+        elif be_upper:
+            near_cushion = be_upper - spot
+            near_label = f"BE {be_upper}"
+        else:
+            near_cushion = spot - be_lower
+            near_label = f"BE {be_lower}"
+        if daily_sigma > 0:
+            cushion_sigma = near_cushion / daily_sigma
+            if near_cushion <= 0:
+                danger += 40
+                reasons.append(f"BREACHED — spot past {near_label}")
+            elif cushion_sigma < 0.15:
+                danger += 30
+                reasons.append(f"Only {near_cushion:.0f}pts to {near_label} ({cushion_sigma:.2f}σ)")
+            elif cushion_sigma < 0.30:
+                danger += 20
+                reasons.append(f"Thin BE cushion {near_cushion:.0f}pts to {near_label}")
+            elif cushion_sigma < 0.50:
+                danger += 10
+                reasons.append(f"Approaching {near_label} ({near_cushion:.0f}pts)")
+        # b115: Early BOOK — profitable + near breakeven = take money now
+        if pnl > 0 and near_cushion > 0 and daily_sigma > 0 and near_cushion / daily_sigma < 0.20:
+            return {"action": "BOOK", "urgency": "NOW",
+                    "reason": f"₹{pnl:.0f} profit but only {near_cushion:.0f}pts to {near_label}. Premium at risk — lock in now."}
+    elif sell_strike and spot and is_credit and not is_ib:
+        # Fallback: use sell_strike if no breakeven stored (old trades)
         cushion = abs(sell_strike - spot)
         vix = ctx.get('vix', 20)
-        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300  # √252=15.87, consistent with _daily_sigma
+        daily_sigma = spot * (vix / 100) / 15.87 if spot > 0 else 300
         if daily_sigma > 0:
             cushion_sigma = cushion / daily_sigma
             if cushion_sigma < 0.25:
@@ -2064,6 +2113,24 @@ def position_verdict(trade, insights, regime, ctx):
         urgency = 'NOW' if danger >= 80 else 'SOON'
         return {"action": "EXIT", "urgency": urgency,
                 "reason": f"Danger {danger}/100. {'. '.join(reasons[:3])}"}
+
+    # ═══ b114: THESIS_BROKEN — entry bias contradicts current effective bias ═══
+    entry_bias = trade.get('entry_bias', '')
+    current_bias = (ctx.get('effective_bias') or {}).get('bias', '') or ''
+    thesis_broken = False
+    if is_credit and not is_4leg and entry_bias and current_bias:
+        bull_entry = 'BULL' in entry_bias.upper()
+        bear_entry = 'BEAR' in entry_bias.upper()
+        bull_now = 'BULL' in current_bias.upper()
+        bear_now = 'BEAR' in current_bias.upper()
+        if (bull_entry and bear_now) or (bear_entry and bull_now):
+            thesis_broken = True
+    if thesis_broken and pnl < 0:
+        return {"action": "EXIT", "urgency": "SOON",
+                "reason": f"Thesis broken. Entered {entry_bias}, market now {current_bias}. Credit spread fighting the trend."}
+    if thesis_broken and pnl >= 0:
+        return {"action": "BOOK", "urgency": "NOW",
+                "reason": f"Thesis broken — market flipped {entry_bias}→{current_bias}. Lock in ₹{pnl:.0f} before it reverses."}
 
     # ═══ EXIT — structural threats (independent of danger score) ═══
     if is_4leg and dte <= 1:
@@ -2841,6 +2908,175 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
     ranked.sort(key=sort_key)
     return ranked
 
+
+def _ltp(sd, strike, ot):
+    k = str(int(strike))
+    return ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('ltp', 0) or 0
+
+def _delta_val(sd, strike, ot):
+    k = str(int(strike))
+    d = ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('delta', None)
+    return d
+
+def _oi_val(sd, strike, ot):
+    k = str(int(strike))
+    return ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('oi', 0) or 0
+
+def _forces_py(stype, bias, iv_pctl):
+    credit = stype in ('BULL_PUT', 'BEAR_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+    debit = stype in ('BULL_CALL', 'BEAR_PUT')
+    bull_dir = stype in ('BULL_CALL', 'BULL_PUT')
+    bear_dir = stype in ('BEAR_CALL', 'BEAR_PUT')
+    f1 = 0
+    if bull_dir: f1 = 1 if bias in ('BULL', 'MILD_BULL', 'STRONG_BULL') else (-1 if bias in ('BEAR', 'MILD_BEAR', 'STRONG_BEAR') else 0)
+    if bear_dir: f1 = 1 if bias in ('BEAR', 'MILD_BEAR', 'STRONG_BEAR') else (-1 if bias in ('BULL', 'MILD_BULL', 'STRONG_BULL') else 0)
+    f2 = 1 if credit else -1
+    iv_high = iv_pctl is None or iv_pctl >= 25
+    if iv_high: f3 = 1 if credit else 0
+    else: f3 = 1 if debit else -1
+    return {'f1': f1, 'f2': f2, 'f3': f3, 'aligned': f1 + f2 + f3}
+
+def _varsity_py(bias, iv_pctl, vix):
+    iv_high = vix >= 20 or (iv_pctl is not None and iv_pctl >= 25)
+    if 'BULL' in (bias or ''):
+        return ['BULL_PUT', 'BULL_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY'] if iv_high else ['BULL_CALL', 'BULL_PUT', 'IRON_BUTTERFLY', 'IRON_CONDOR']
+    elif 'BEAR' in (bias or ''):
+        return ['BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'] if iv_high else ['BEAR_PUT', 'BEAR_CALL', 'IRON_BUTTERFLY', 'IRON_CONDOR']
+    else:
+        return ['IRON_BUTTERFLY', 'IRON_CONDOR', 'BULL_PUT', 'BEAR_CALL']
+
+def _closest(all_s, target):
+    return min(all_s, key=lambda x: abs(x - target))
+
+def _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot, daily_sig, idx, expiry, dte, forces, capital, chain):
+    try:
+        sell_k = sell_t = buy_k = buy_t = None
+        sell_k2 = sell_t2 = buy_k2 = buy_t2 = None
+
+        if stype == 'BULL_CALL':
+            buy_k, sell_k, buy_t, sell_t = atm, _closest(all_s, atm + width), 'CE', 'CE'
+        elif stype == 'BEAR_PUT':
+            buy_k, sell_k, buy_t, sell_t = atm, _closest(all_s, atm - width), 'PE', 'PE'
+        elif stype == 'BULL_PUT':
+            sell_k = _closest(all_s, atm - round(0.5 * daily_sig / step) * step)
+            buy_k = _closest(all_s, sell_k - width)
+            buy_t = sell_t = 'PE'
+        elif stype == 'BEAR_CALL':
+            sell_k = _closest(all_s, atm + round(0.5 * daily_sig / step) * step)
+            buy_k = _closest(all_s, sell_k + width)
+            buy_t = sell_t = 'CE'
+        elif stype == 'IRON_BUTTERFLY':
+            sell_k, buy_k, sell_t, buy_t = atm, _closest(all_s, atm + width), 'CE', 'CE'
+            sell_k2, buy_k2, sell_t2, buy_t2 = atm, _closest(all_s, atm - width), 'PE', 'PE'
+        elif stype == 'IRON_CONDOR':
+            sell_k = _closest(all_s, atm + round(0.5 * daily_sig / step) * step)
+            buy_k = _closest(all_s, sell_k + width)
+            sell_k2 = _closest(all_s, atm - round(0.5 * daily_sig / step) * step)
+            buy_k2 = _closest(all_s, sell_k2 - width)
+            sell_t = buy_t = 'CE'; sell_t2 = buy_t2 = 'PE'
+
+        if sell_k is None or buy_k is None: return None
+
+        sl = _ltp(sd, sell_k, sell_t); bl = _ltp(sd, buy_k, buy_t)
+        if sl <= 0 or bl <= 0: return None
+
+        sl2 = bl2 = 0
+        if sell_k2 is not None:
+            sl2 = _ltp(sd, sell_k2, sell_t2); bl2 = _ltp(sd, buy_k2, buy_t2)
+            if sl2 <= 0 or bl2 <= 0: return None
+
+        credit = stype in ('BULL_PUT', 'BEAR_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+        if stype in ('IRON_BUTTERFLY', 'IRON_CONDOR'):
+            net = (sl + sl2) - (bl + bl2)
+        elif credit: net = sl - bl
+        else: net = bl - sl
+
+        if net <= 0: return None
+
+        if credit: mp = round(net * lot); ml = round((width - net) * lot)
+        else: mp = round((width - net) * lot); ml = round(net * lot)
+
+        if ml <= 0 or mp <= 0: return None
+        if ml > capital * 0.10: return None
+
+        sd_val = _delta_val(sd, sell_k, sell_t)
+        prob = max(0.50, min(0.97, (1 - abs(sd_val)) if sd_val is not None else 0.65))
+
+        ev = prob * mp - (1 - prob) * ml
+        if ev <= 0: return None
+
+        cand = {
+            'id': f"{idx}_{stype}_{sell_k}_{width}_py",
+            'index': idx, 'type': stype, 'expiry': expiry, 'tDTE': dte,
+            'sellStrike': sell_k, 'sellType': sell_t, 'sellLTP': round(sl, 2),
+            'buyStrike': buy_k, 'buyType': buy_t, 'buyLTP': round(bl, 2),
+            'width': width, 'netPremium': round(net, 2), 'isCredit': credit,
+            'maxProfit': mp, 'maxLoss': ml, 'riskReward': round(mp/ml, 2),
+            'probProfit': round(prob, 3), 'pRange': round(prob, 3),
+            'ev': round(ev), 'ev1k': round(ev / (ml / 1000)) if ml > 0 else 0,
+            'forces': forces, 'varsityTier': 1 if forces['aligned'] == 3 else 2,
+            'source': 'brain'
+        }
+        if sell_k2 is not None:
+            cand.update({'sellStrike2': sell_k2, 'sellType2': sell_t2, 'sellLTP2': round(sl2, 2),
+                         'buyStrike2': buy_k2, 'buyType2': buy_t2, 'buyLTP2': round(bl2, 2)})
+        # b115: Breakeven — real danger lines
+        if stype in ('IRON_BUTTERFLY', 'IRON_CONDOR'):
+            cand['beUpper'] = round(sell_k + net)
+            cand['beLower'] = round((sell_k2 if sell_k2 else sell_k) - net)
+        elif credit:
+            if sell_t == 'CE': cand['beUpper'] = round(sell_k + net)
+            else: cand['beLower'] = round(sell_k - net)
+        else:
+            if buy_t == 'CE': cand['beUpper'] = round(buy_k + net)
+            else: cand['beLower'] = round(buy_k - net)
+        return cand
+    except: return None
+
+def generate_candidates_py(ctx, effective_bias):
+    """Phase 3: Brain generates trade candidates directly from chain data."""
+    eb = effective_bias or {}
+    bias = eb.get('bias', 'NEUTRAL')
+    iv_pctl = ctx.get('ivPercentile', None)
+    vix = ctx.get('vix', 18) or 18
+    capital = ctx.get('capital', 250000)
+    trade_mode = ctx.get('tradeMode', 'intraday')
+    allowed = _varsity_py(bias, iv_pctl, vix)
+
+    candidates = []
+    for idx in ['NF', 'BNF']:
+        chain = ctx.get('bnfChain' if idx == 'BNF' else 'nfChain', {})
+        if not chain: continue
+        atm = chain.get('atm')
+        sd = chain.get('strikes', {})
+        all_s_raw = chain.get('allStrikes', list(sd.keys()))
+        if not atm or not sd or not all_s_raw: continue
+        try:
+            all_s = sorted([int(k) for k in all_s_raw])
+        except: continue
+        if len(all_s) < 4: continue
+        step = all_s[1] - all_s[0] if len(all_s) > 1 else (100 if idx == 'BNF' else 50)
+        spot = chain.get('spot', atm)
+        lot = 30 if idx == 'BNF' else 65
+        atm_iv = chain.get('atmIv', 0) or 0
+        daily_sig = (atm_iv / 100) * spot / 15.87 if atm_iv > 0 else step * 3
+        expiry = chain.get('expiry', ctx.get('bnfExpiry' if idx == 'BNF' else 'nfExpiry', ''))
+        dte = ctx.get('bnfDTE' if idx == 'BNF' else 'nfDTE', 4)
+        widths = [400, 500, 600, 800, 1000] if idx == 'BNF' else [100, 150, 200, 250, 300, 400]
+
+        for stype in allowed:
+            if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and trade_mode == 'swing' and (dte or 0) > 2:
+                continue
+            forces = _forces_py(stype, bias, iv_pctl)
+            if forces['aligned'] < 1: continue
+            for width in widths:
+                c = _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot,
+                                   daily_sig, idx, expiry, dte, forces, capital, chain)
+                if c: candidates.append(c)
+
+    candidates.sort(key=lambda c: c.get('ev', 0), reverse=True)
+    return candidates[:25]
+
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -3061,6 +3297,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 t = c['type']
                 result["candidate_stats"]["by_type"][t] = result["candidate_stats"]["by_type"].get(t, 0) + 1
     except Exception as e:
+        result["candidate_error"] = str(e)
+
+    # Phase 3: Brain candidate generation using effective_bias
+    try:
+        result["generated_candidates"] = generate_candidates_py(ctx, result.get("effective_bias"))
+    except Exception as e:
+        result["generated_candidates"] = []
         result["candidate_error"] = str(e)
 
     return json.dumps(result)
