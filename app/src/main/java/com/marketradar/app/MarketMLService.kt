@@ -22,6 +22,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
 import kotlinx.coroutines.*
@@ -133,16 +134,19 @@ class MarketMLService : Service() {
         fun predictCandidate(candidateJson: String): String {
             return try {
                 val py = Python.getInstance()
+                val json = py.getModule("json")
                 val mle = py.getModule("ml_engine")
-                val engine = mle.callAttr("_LOADED_ENGINE") ?: return "{}"
-                val cand = py.builtins.callAttr("eval", candidateJson)
-                val p_win = runBlocking {
+                val engine = mle.get("_ML_ENGINE") ?: return "{}" // MLS2: use _ML_ENGINE
+                
+                // MLS1: Use json.loads instead of eval() to avoid RCE vulnerabilities
+                val cand = json.callAttr("loads", candidateJson)
+                
+                val result = runBlocking {
                     withTimeoutOrNull(5_000L) {
                         engine.callAttr("predict", cand)
                     }
                 } ?: return "{}"
-                // Returns tuple (p_win, regime, detail_dict)
-                p_win.toString()
+                result.toString()
             } catch (e: Exception) {
                 Log.w(TAG, "Predict failed: ${e.message}")
                 "{}"
@@ -151,37 +155,75 @@ class MarketMLService : Service() {
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val prefs by lazy { getSharedPreferences("market_radar", Context.MODE_PRIVATE) }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // B3: Must promote to foreground within 5s on Android 8+
+        val channel = android.app.NotificationChannel(
+            "ml_training", "ML Engine Updates",
+            android.app.NotificationManager.IMPORTANCE_LOW
+        )
+        val nm = getSystemService(android.app.NotificationManager::class.java)
+        nm?.createNotificationChannel(channel)
+        
+        val notification = NotificationCompat.Builder(this, "ml_training")
+            .setContentTitle("ML Engine")
+            .setContentText(when (intent?.action) {
+                "ACTION_CHECK_RETRAIN" -> "Checking retrain readiness"
+                "ACTION_CONFIRM_TRAIN", "ACTION_TRAIN_NIGHTLY" -> "Training ML model"
+                "ACTION_ONLINE_UPDATE" -> "Updating from closed trade"
+                "ACTION_TRAIN_TEMPORAL" -> "Training temporal model"
+                else -> "Working"
+            })
+            .setSmallIcon(android.R.drawable.ic_menu_manage)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
+        
+        startForeground(2002, notification)
+        
         when (intent?.action) {
             "ACTION_CHECK_RETRAIN" -> {
-                // Manual trigger: check trade count first, show notification
                 scope.launch {
                     checkRetrainReadiness()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
             }
             "ACTION_CONFIRM_TRAIN", "ACTION_TRAIN_NIGHTLY" -> {
-                // User confirmed via notification tap or direct trigger
                 scope.launch {
                     runNightlyTraining()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
             }
             "ACTION_ONLINE_UPDATE" -> {
-                val tradeJson = intent.getStringExtra("trade_json") ?: return START_NOT_STICKY
+                val tradeJson = intent.getStringExtra("trade_json")
+                if (tradeJson == null) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
                 scope.launch {
                     runOnlineUpdate(tradeJson)
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
             }
             "ACTION_TRAIN_TEMPORAL" -> {
                 scope.launch {
                     runTemporalTraining()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
             }
             "ACTION_EXPORT_BACKTEST" -> {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(startId)
+            }
+            else -> {
+                // Unknown action — shouldn't happen but don't leak foreground
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(startId)
             }
         }
@@ -217,11 +259,12 @@ class MarketMLService : Service() {
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
 
+            val threshold = prefs.getInt("retrain_threshold", 20) // MLS12: Configurable threshold
             val title: String
             val body: String
-            if (count < 20) {
+            if (count < threshold) {
                 title = "⚠️ ML Retrain — Low Data"
-                body = "Only $count trades recorded — retrain needs 20+ for meaningful improvement. Tap to train anyway."
+                body = "Only $count trades recorded — retrain needs $threshold+ for meaningful improvement. Tap to train anyway."
             } else {
                 title = "🧠 ML Retrain Ready"
                 body = "$count trades ready — tap to retrain ML model."
@@ -229,7 +272,7 @@ class MarketMLService : Service() {
 
             // Show actionable notification
             val channel = android.app.NotificationChannel(
-                "ml_training", "ML Training",
+                "ml_training", "ML Engine Updates",
                 android.app.NotificationManager.IMPORTANCE_HIGH
             )
             val nm = getSystemService(android.app.NotificationManager::class.java)
@@ -266,8 +309,8 @@ class MarketMLService : Service() {
             // 1. Export closed trades to JSON for app_trades.json
             exportAppTrades()
 
-            // 2. Run training
-            val result = withTimeoutOrNull(60_000L) {
+            // 2. Run training (MLS5: Timeout increased to 300s for large NN/GBT datasets)
+            val result = withTimeoutOrNull(300_000L) {
                 mod.callAttr(
                     "run",
                     backtestPath(this@MarketMLService),
@@ -286,29 +329,35 @@ class MarketMLService : Service() {
             val json    = org.json.JSONObject(result)
             val success = json.optBoolean("success", false)
             val deployed = json.optBoolean("deployed", false)
-            val accNew  = json.optDouble("accuracy_new", 0.0)
-            val accOld  = json.optDouble("accuracy_old", 0.0)
+            val accGbt  = json.optDouble("acc_gbt", 0.0) // MLS7: Distinct accuracy fields
+            val accEns  = json.optDouble("acc_ens", 0.0)
             val nTrain  = json.optInt("n_train", 0)
             val elapsed = json.optDouble("duration_sec", 0.0)
             val reason  = json.optString("reason", "")
 
             Log.i(TAG, "Training result: success=$success deployed=$deployed " +
-                       "acc=$accOld→$accNew n=$nTrain ${elapsed}s")
+                       "accEns=$accEns n=$nTrain ${elapsed}s")
 
             // 3. Store result in Supabase ml_models table
             if (success) {
+                val pyEngine = py.getModule("ml_engine")
+                val currentVersion = pyEngine.get("ML_VERSION")?.toString() ?: "2.2.0" // MLS6: Read from Python
+                
                 saveModelMetaToSupabase(
-                    version   = "2.1.1",
+                    version   = currentVersion,
                     nTrain    = nTrain,
-                    accGbt    = accNew,
-                    accEns    = accNew,
+                    accGbt    = accGbt,
+                    accEns    = accEns,
                     deployed  = deployed,
                     reason    = reason,
                     topFeatures = json.optJSONArray("top_features")?.toString() ?: "[]"
                 )
+                
+                // MLS8: Cleanup old model files after successful training
+                cleanupOldModels()
 
                 // 4. Update ml_performance table
-                savePerformanceToSupabase(accNew)
+                savePerformanceToSupabase(accEns)
 
                 // 5. Also train temporal model while we're awake
                 runTemporalTraining()
@@ -319,7 +368,7 @@ class MarketMLService : Service() {
                 // Notify user of success
                 NotificationHelper.send(this@MarketMLService,
                     "✅ ML Model Updated",
-                    "Accuracy: ${String.format("%.1f", accNew * 100)}% on $nTrain trades (${String.format("%.0f", elapsed)}s)",
+                    "Accuracy: ${String.format("%.1f", accEns * 100)}% on $nTrain trades (${String.format("%.0f", elapsed)}s)",
                     "info")
             }
 
@@ -347,10 +396,16 @@ class MarketMLService : Service() {
             // Parse trade dict
             val tradeDict = org.json.JSONObject(tradeJson)
 
-            // Convert JSONObject to Python dict
+            // MLS13: Pass numeric fields as numbers, not strings, to avoid 'None' rejection in Python
             val pyDict = py.builtins.callAttr("dict")
             tradeDict.keys().forEach { key ->
-                pyDict.callAttr("__setitem__", key, tradeDict.get(key).toString())
+                val rawVal = tradeDict.get(key)
+                if (listOf("pnl", "id", "days_held").contains(key)) {
+                    val numVal = tradeDict.optDouble(key, 0.0)
+                    pyDict.callAttr("__setitem__", key, numVal)
+                } else {
+                    pyDict.callAttr("__setitem__", key, rawVal.toString())
+                }
             }
 
             val result = withTimeoutOrNull(30_000L) {
@@ -405,12 +460,13 @@ class MarketMLService : Service() {
             // Train (synthetic if <20 real sequences, mixed if more)
             val te = withTimeoutOrNull(45_000L) {
                 if (nReal >= 20) {
-                    // Real training
+                    // MLS9: Use fit_real route for actual poll sequences
                     mod.callAttr("train_temporal",
                         null,                                    // csv_path
                         buildPyListFromRows(py, sequences),      // rows
                         8,                                       // epochs
-                        py.builtins.callAttr("print")
+                        py.builtins.callAttr("print"),
+                        true                                     // is_real=True
                     )
                 } else {
                     // Synthetic pre-training from backtest CSV
@@ -449,7 +505,8 @@ class MarketMLService : Service() {
                 put("deploy_reason", reason)
                 put("top_features",  org.json.JSONArray(topFeatures))
             }
-            SupabaseClient.upsert("ml_models", body)
+            // MLS11: Use onConflict to prevent duplication in ml_models
+            SupabaseClient.upsert("ml_models", body, onConflict = "version")
             Log.i(TAG, "ML model meta saved to Supabase")
         } catch (e: Exception) {
             Log.w(TAG, "Failed to save model meta: ${e.message}")
@@ -490,7 +547,7 @@ class MarketMLService : Service() {
                 order  = "date.desc",
                 limit  = 500
             )
-            org.json.JSONArray(resp)
+            resp  // MLS12: already JSONArray, don't double-wrap
         } catch (e: Exception) {
             Log.w(TAG, "Could not fetch poll sequences: ${e.message}")
             org.json.JSONArray()
@@ -516,13 +573,21 @@ class MarketMLService : Service() {
     // ── Hot-reload ML engine module after training ─────────────────────────────
     private fun reloadMLEngine(py: Python) {
         try {
-            val builtins    = py.builtins
-            val importlib   = py.getModule("importlib")
-            val mlModule    = py.getModule("ml_engine")
-            importlib.callAttr("reload", mlModule)
-            // Re-load model into module-level _ML_ENGINE
-            mlModule.callAttr("_ml_load_if_needed")
-            Log.i(TAG, "ML engine hot-reloaded")
+            val importlib = py.getModule("importlib")
+            val mlEngineModule = py.getModule("ml_engine")
+            val brainModule = py.getModule("brain")
+            
+            // 1. Reload ml_engine module (fresh class definitions)
+            importlib.callAttr("reload", mlEngineModule)
+            
+            // 2. Invalidate brain's cached engine reference
+            // brainModule.put("_ML_ENGINE", null) // Replaced by _ml_invalidate in v2.2.7
+            
+            // 3. Trigger re-load by calling brain's loader
+            brainModule.callAttr("_ml_invalidate")
+            brainModule.callAttr("_ml_load_if_needed")
+            
+            Log.i(TAG, "ML engine hot-reloaded (brain cache invalidated)")
         } catch (e: Exception) {
             Log.w(TAG, "ML engine reload failed (non-critical): ${e.message}")
         }
@@ -539,94 +604,37 @@ class MarketMLService : Service() {
         }
         return pyList
     }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DATA CLASS
-// ─────────────────────────────────────────────────────────────────────────────
+    // ── MLS8: Model File Cleanup ──────────────────────────────────────────────
+    private fun cleanupOldModels() {
+        try {
+            val dir = applicationContext.filesDir
+            val models = dir.listFiles { _, name -> name.startsWith("ml_model.json.v") } ?: return
+            if (models.size <= 5) return
+
+            // Sort by version number (descending)
+            val sorted = models.sortedByDescending { it.name.substringAfterLast(".v").toIntOrNull() ?: 0 }
+            
+            // Delete anything beyond the first 5
+            for (i in 5 until sorted.size) {
+                if (sorted[i].delete()) {
+                    Log.d(TAG, "MLS8: Deleted old model: ${sorted[i].name}")
+                }
+            }
+            Log.i(TAG, "MLS8: Model cleanup complete. Retained ${minOf(sorted.size, 5)} versions.")
+        } catch (e: Exception) {
+            Log.w(TAG, "MLS8: Cleanup failed: ${e.message}")
+        }
+    }
+}
 
 data class MLModelStatus(
-    val ok:       Boolean = false,
-    val version:  String  = "",
-    val nTrain:   Int     = 0,
-    val thrTake:  Double  = 0.70,
-    val thrWatch: Double  = 0.58,
-    val baseWr:   Double  = 0.588,
-    val sampleP:  Double  = 0.5,
-    val error:    String  = ""
+    val ok: Boolean = false,
+    val version: String = "unknown",
+    val nTrain: Int = 0,
+    val thrTake: Double = 0.0,
+    val thrWatch: Double = 0.0,
+    val baseWr: Double = 0.0,
+    val sampleP: Double = 0.0,
+    val error: String = ""
 )
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NATIVEBRIDGE ADDITIONS — add these methods to your existing NativeBridge.kt
-// ─────────────────────────────────────────────────────────────────────────────
-
-/*
-// Add to NativeBridge.kt:
-
-@JavascriptInterface
-fun getMLModelStatus(): String {
-    return try {
-        val status = MarketMLService.validateModel(context)
-        org.json.JSONObject().apply {
-            put("ok",        status.ok)
-            put("version",   status.version)
-            put("nTrain",    status.nTrain)
-            put("thrTake",   status.thrTake)
-            put("thrWatch",  status.thrWatch)
-            put("baseWr",    status.baseWr)
-            put("sampleP",   status.sampleP)
-        }.toString()
-    } catch (e: Exception) { "{\"ok\":false}" }
-}
-
-@JavascriptInterface
-fun triggerMLOnlineUpdate(tradeJson: String) {
-    val intent = Intent(context, MarketMLService::class.java).apply {
-        action = "ACTION_ONLINE_UPDATE"
-        putExtra("trade_json", tradeJson)
-    }
-    context.startForegroundService(intent)
-}
-
-@JavascriptInterface
-fun isMLModelReady(): Boolean {
-    return File(MarketMLService.modelPath(context)).exists()
-}
-
-// Add to NativeBridge 14-method list as methods 15 + 16 + 17:
-// 15: getMLModelStatus() → String (JSON)
-// 16: triggerMLOnlineUpdate(tradeJson: String) → void
-// 17: isMLModelReady() → Boolean
-*/
-
-// ─────────────────────────────────────────────────────────────────────────────
-// NIGHTLY TRAINING SETUP — call from MainActivity.onCreate()
-// ─────────────────────────────────────────────────────────────────────────────
-
-/*
-// Add to MainActivity.kt onCreate():
-
-// Schedule ML training at 11 PM nightly
-MarketMLService.scheduleNightlyTraining(this)
-
-// Validate model on first launch
-CoroutineScope(Dispatchers.IO).launch {
-    val status = MarketMLService.validateModel(this@MainActivity)
-    if (status.ok) {
-        Log.i("MainActivity", "ML model ready: v${status.version}  n=${status.nTrain}  thr=${status.thrTake}")
-        // Push status to WebView
-        runOnUiThread {
-            webView.evaluateJavascript("window.mlStatus = ${status.toJson()};", null)
-        }
-    } else {
-        Log.w("MainActivity", "ML model not ready: ${status.error}")
-        // Trigger immediate training if no model exists
-        if (!File(MarketMLService.modelPath(this@MainActivity)).exists()) {
-            Log.i("MainActivity", "No model found — triggering initial training")
-            val intent = Intent(this@MainActivity, MarketMLService::class.java)
-            intent.action = "ACTION_TRAIN_NIGHTLY"
-            startForegroundService(intent)
-        }
-    }
-}
-*/

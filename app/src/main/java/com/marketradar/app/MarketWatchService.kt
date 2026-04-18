@@ -65,7 +65,7 @@ class MarketWatchService : Service() {
         }
 
         startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
-        prefs.edit().putBoolean("service_running", true).apply()
+        prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
         
         serviceScope.launch {
             bootstrapFromSupabase()
@@ -145,8 +145,14 @@ class MarketWatchService : Service() {
     private suspend fun bootstrapFromUpstox(token: String) {
         try {
             fetchYesterdayOHLC(token)
-            // Resolve futures key one-time
-            resolveFuturesKey(token)
+            // WS1: Ensure we have the near-month keys for both indices for breadth/fp
+            val bnfFutKey = getFuturesKey("BNF")
+            val nfFutKey = getFuturesKey("NF")
+            Log.d(TAG, "BOOTSTRAP_FUTURES: BNF=$bnfFutKey, NF=$nfFutKey")
+            
+            // Fetch initial futures quotes to prime the system
+            val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfFutKey,$nfFutKey"
+            fetchSync(url, token)
         } catch (e: Exception) {
             Log.e(TAG, "Bootstrap from Upstox failed: ${e.message}")
         }
@@ -168,18 +174,52 @@ class MarketWatchService : Service() {
     }
 
     private fun getYesterdayDate(): String {
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.DATE, -1)
-        if (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY) cal.add(Calendar.DATE, -2)
-        else if (cal.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY) cal.add(Calendar.DATE, -1)
-        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist)
+        
+        // WS2: NSE Holiday support (2026 partial list - example)
+        val holidays = setOf("2026-01-26", "2026-03-06", "2026-03-24", "2026-04-02", "2026-04-14", "2026-05-01")
+        
+        do {
+            cal.add(Calendar.DATE, -1)
+            val ds = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(cal.time)
+            val isWeekend = cal.get(Calendar.DAY_OF_WEEK) == Calendar.SUNDAY || cal.get(Calendar.DAY_OF_WEEK) == Calendar.SATURDAY
+            val isHoliday = holidays.contains(ds)
+        } while (isWeekend || isHoliday)
+        
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(cal.time)
     }
 
-    private suspend fun resolveFuturesKey(token: String) {
-        // Find near-month futures key for BNF and NF
-        // Standard practice: Instrument list can be huge, so we guess or fetch /instrument/details
-        // For simplicity and to match the plan's 'dynamic resolver', we'll look for 'FUT' in a targeted search
-        // Implementation omitted for brevity in this chunk, will add in next
+    private fun getFuturesKey(index: String): String {
+        // WS6: Implement near-month futures rollover logic
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist)
+        val day = cal.get(Calendar.DAY_OF_MONTH)
+        val month = cal.get(Calendar.MONTH) // 0-based
+        val year = cal.get(Calendar.YEAR)
+        
+        // Find last Thursday of current month
+        val temp = Calendar.getInstance(ist).apply {
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month)
+            set(Calendar.DAY_OF_MONTH, getActualMaximum(Calendar.DAY_OF_MONTH))
+        }
+        while (temp.get(Calendar.DAY_OF_WEEK) != Calendar.THURSDAY) {
+            temp.add(Calendar.DAY_OF_MONTH, -1)
+        }
+        val lastThursday = temp.get(Calendar.DAY_OF_MONTH)
+        
+        // If today is past last Thursday, roll to next month
+        val targetMonthCal = Calendar.getInstance(ist)
+        if (day > lastThursday) {
+            targetMonthCal.add(Calendar.MONTH, 1)
+        }
+        
+        val monthStr = SimpleDateFormat("MMM", Locale.US).format(targetMonthCal.time).uppercase()
+        val yearShort = SimpleDateFormat("yy", Locale.US).format(targetMonthCal.time)
+        
+        val symbol = if (index == "NF") "NIFTY" else "BANKNIFTY"
+        return "NSE_FO|$symbol$yearShort$monthStr" + "FUT"
     }
 
     private fun startPolling() {
@@ -210,14 +250,17 @@ class MarketWatchService : Service() {
                     updateForegroundNotification("Market Closed", "Waiting for next session...")
                 }
                 
-                // Wait for 5 minutes
-                delay(5 * 60 * 1000L)
+                // WS5: Read poll delay dynamically (default 5m)
+                val pollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
+                delay(pollIntervalMins * 60 * 1000L)
             }
         }
     }
 
     private fun stopPolling() {
-        prefs.edit().putBoolean("service_running", false).apply()
+        prefs.edit().putBoolean("service_running", false).commit() 
+        // WS27: Cancel job before stopping foreground to ensure no new notifications are triggered
+        pollingJob?.cancel()
         serviceScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -226,7 +269,9 @@ class MarketWatchService : Service() {
     private suspend fun performPoll(token: String) {
         Log.d(TAG, "POLL_START: performPoll() entered")
         
-        val bnfExpiry = prefs.getString("expiry_bnf", "2026-04-17") ?: "2026-04-17"
+        // C4: Dynamically compute next Thursday if expiry is missing
+        val nextThu = getNextThursday()
+        val bnfExpiry = prefs.getString("expiry_bnf", nextThu) ?: nextThu
         
         // Expiry Rollover check
         val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
@@ -279,9 +324,9 @@ class MarketWatchService : Service() {
         val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
         Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
 
-        // Step 4: Update Trade P&L
+        // Step 4: Update Trade P&L (A2: pass both chains for NF trade support)
         Log.d(TAG, "POLL_STEP4: Updating open trade P&L")
-        updateOpenTradesPnL(bnfChainJson, bnfSpot)
+        updateOpenTradesPnL(bnfChainJson, bnfSpot, nfChainJson, nfSpot)
 
         // Step 5: Build poll object and save
         Log.d(TAG, "POLL_STEP5: Saving poll object")
@@ -293,91 +338,125 @@ class MarketWatchService : Service() {
         runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
     }
 
-    private fun getFuturesKey(symbol: String): String {
-        val cal = Calendar.getInstance()
-        val yy = SimpleDateFormat("yy", Locale.US).format(cal.time)
-        val mmm = SimpleDateFormat("MMM", Locale.US).format(cal.time).uppercase()
-        return "NSE_FO|${symbol}${yy}${mmm}FUT"
-    }
 
-    private fun updateOpenTradesPnL(chain: JSONObject, spot: Double) {
+    private fun updateOpenTradesPnL(bnfChain: JSONObject, bnfSpot: Double, nfChain: JSONObject, nfSpot: Double) {
         val openTradesStr = prefs.getString("open_trades", "[]") ?: "[]"
         if (openTradesStr == "[]") return
 
         try {
             val openTrades = JSONArray(openTradesStr)
-            val chainData = chain.getJSONArray("data")
             
-            // Map strikes to prices for fast lookup
-            val pCache = mutableMapOf<Double, Pair<Double, Double>>() // Strike -> [CallLTP, PutLTP]
-            for (i in 0 until chainData.length()) {
-                val item = chainData.getJSONObject(i)
-                val strike = item.getDouble("strike_price")
-                val callLtp = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                val putLtp = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                pCache[strike] = Pair(callLtp, putLtp)
+            // Map strikes to prices for BNF
+            val bnfCache = mutableMapOf<Double, Pair<Double, Double>>()
+            val bnfData = bnfChain.optJSONArray("data")
+            if (bnfData != null) {
+                for (i in 0 until bnfData.length()) {
+                    val item = bnfData.getJSONObject(i)
+                    val strike = item.getDouble("strike_price")
+                    val callLtp = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
+                    val putLtp = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
+                    bnfCache[strike] = Pair(callLtp, putLtp)
+                }
+            }
+
+            // Map strikes to prices for NF
+            val nfCache = mutableMapOf<Double, Pair<Double, Double>>()
+            val nfData = nfChain.optJSONArray("data")
+            if (nfData != null) {
+                for (i in 0 until nfData.length()) {
+                    val item = nfData.getJSONObject(i)
+                    val strike = item.getDouble("strike_price")
+                    val callLtp = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
+                    val putLtp = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
+                    nfCache[strike] = Pair(callLtp, putLtp)
+                }
             }
 
             var changed = false
             for (i in 0 until openTrades.length()) {
-                val trade = openTrades.getJSONObject(i)
-                val stype = trade.optString("strategy_type", "")
-                val lotSize = trade.optInt("lot_size", 0)
-                val entryPremium = trade.optDouble("entry_premium", 0.0)
-                
-                val sellS = trade.optDouble("sell_strike", 0.0)
-                val buyS = trade.optDouble("buy_strike", 0.0)
-                val sellS2 = trade.optDouble("sell_strike2", 0.0)
-                val buyS2 = trade.optDouble("buy_strike2", 0.0)
-                
-                var currentNet = 0.0
-                val isCredit = listOf("BEAR_CALL", "BULL_PUT", "IRON_CONDOR", "IRON_BUTTERFLY").contains(stype)
-                
-                if (stype == "BEAR_CALL") {
-                    currentNet = (pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)
-                } else if (stype == "BULL_PUT") {
-                    currentNet = (pCache[sellS]?.second ?: 0.0) - (pCache[buyS]?.second ?: 0.0)
-                } else if (stype == "IRON_CONDOR" || stype == "IRON_BUTTERFLY") {
-                    currentNet = ((pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)) +
-                                 ((pCache[sellS2]?.second ?: 0.0) - (pCache[buyS2]?.second ?: 0.0))
-                } else if (stype == "BULL_CALL") {
-                    currentNet = (pCache[buyS]?.first ?: 0.0) - (pCache[sellS]?.first ?: 0.0)
-                } else if (stype == "BEAR_PUT") {
-                    currentNet = (pCache[buyS]?.second ?: 0.0) - (pCache[sellS]?.second ?: 0.0)
-                }
+                try {
+                    val trade = openTrades.getJSONObject(i)
+                    val idx = trade.optString("index", "BNF")
+                    val stype = trade.optString("strategy_type", "")
+                    val pCache = if (idx == "NF") nfCache else bnfCache
+                    val spot = if (idx == "NF") nfSpot else bnfSpot
+                    
+                    val lotSize = trade.optInt("lot_size", 0)
+                    if (lotSize <= 0) {
+                        // WS7: Critical math check. If lotSize is 0, P&L is 0. Log warning.
+                        Log.w(TAG, "WS7_WARNING: Trade ${trade.optInt("id")} has lotSize 0. Skipping P&L update.")
+                        continue
+                    }
+                    val entryPremium = trade.optDouble("entry_premium", 0.0)
+                    val isCredit = listOf("BEAR_CALL", "BULL_PUT", "IRON_CONDOR", "IRON_BUTTERFLY").contains(stype)
 
-                if (currentNet != 0.0) {
-                    val pnl = if (isCredit) {
-                        (entryPremium - currentNet) * lotSize
-                    } else {
-                        (currentNet - entryPremium) * lotSize
+                    val sellS = trade.optDouble("sell_strike", 0.0)
+                    val buyS = trade.optDouble("buy_strike", 0.0)
+                    val sellS2 = trade.optDouble("sell_strike2", 0.0)
+                    val buyS2 = trade.optDouble("buy_strike2", 0.0)
+                    
+                    var currentNet = 0.0
+                    if (stype == "BEAR_CALL") {
+                        currentNet = (pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)
+                    } else if (stype == "BULL_PUT") {
+                        currentNet = (pCache[sellS]?.second ?: 0.0) - (pCache[buyS]?.second ?: 0.0)
+                    } else if (stype == "IRON_CONDOR" || stype == "IRON_BUTTERFLY") {
+                        currentNet = ((pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)) +
+                                     ((pCache[sellS2]?.second ?: 0.0) - (pCache[buyS2]?.second ?: 0.0))
+                    } else if (stype == "BULL_CALL") {
+                        currentNet = (pCache[buyS]?.first ?: 0.0) - (pCache[sellS]?.first ?: 0.0)
+                    } else if (stype == "BEAR_PUT") {
+                        currentNet = (pCache[buyS]?.second ?: 0.0) - (pCache[sellS]?.second ?: 0.0)
                     }
-                    
-                    trade.put("current_pnl", pnl)
-                    trade.put("current_spot", spot)
-                    
-                    val peak = trade.optDouble("peak_pnl", -999999.0)
-                    if (pnl > peak) trade.put("peak_pnl", pnl)
-                    
-                    // GAP 13: Append journey point (HH:mm, pnl, spot)
-                    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date())
-                    val journey = trade.optJSONArray("journey") ?: JSONArray().apply { trade.put("journey", this) }
-                    
-                    // Throttle journey points: only add if last point was > 10 min ago or first point
-                    val lastPoint = if (journey.length() > 0) journey.getJSONObject(journey.length() - 1) else null
-                    if (lastPoint == null || minutesSince(lastPoint.getString("t"), time) >= 10) {
-                        val point = JSONObject()
-                        point.put("t", time)
-                        point.put("pnl", pnl)
-                        point.put("spot", spot)
-                        journey.put(point)
+
+                    if (currentNet != 0.0) {
+                        val pnl = if (isCredit) {
+                            (entryPremium - currentNet) * lotSize
+                        } else {
+                            (currentNet - entryPremium) * lotSize
+                        }
+                        
+                        trade.put("current_pnl", pnl)
+                        trade.put("current_spot", spot)
+                        
+                        val peak = trade.optDouble("peak_pnl", 0.0)
+                        // WS8: Only track POSITIVE peaks. A peak of -500 is not a "profit peak".
+                        if (pnl > 0 && pnl > peak) {
+                            trade.put("peak_pnl", pnl)
+                        }
+                        
+                        // GAP 13: Append journey point (HH:mm, pnl, spot)
+                        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date())
+                        val journey = trade.optJSONArray("journey") ?: JSONArray().apply { trade.put("journey", this) }
+                        
+                        // Throttle journey points: only add if last point was > 10 min ago or first point
+                        val lastPoint = if (journey.length() > 0) journey.getJSONObject(journey.length() - 1) else null
+                        if (lastPoint == null || minutesSince(lastPoint.getString("t"), time) >= 10) {
+                            val point = JSONObject()
+                            point.put("t", time)
+                            point.put("pnl", pnl)
+                            point.put("spot", spot)
+                            journey.put(point)
+                            
+                            // WS9: Cap journey to 100 points to prevent OOM
+                            if (journey.length() > 100) {
+                                val newJourney = JSONArray()
+                                for (j in (journey.length() - 100) until journey.length()) {
+                                    newJourney.put(journey.get(j))
+                                }
+                                trade.put("journey", newJourney)
+                            }
+                        }
+                        changed = true
                     }
-                    
-                    changed = true
+                } catch (e: Exception) {
+                    // WS30: Guarded per-trade P&L update
+                    Log.e(TAG, "WS30_ERROR: Failed to update P&L for trade at index $i: ${e.message}")
                 }
             }
             if (changed) {
-                prefs.edit().putString("open_trades", openTrades.toString()).apply()
+                // WS10: Use commit() to avoid cross-process race conditions with NativeBridge
+                prefs.edit().putString("open_trades", openTrades.toString()).commit()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error updating P&L: ${e.message}")
@@ -433,7 +512,8 @@ class MarketWatchService : Service() {
             if (poi > maxPutOi) { maxPutOi = poi; pw = strikePrice }
             
             // Near-ATM Logic
-            if (Math.abs(strikePrice - bnf) <= 500) { // ±10 strikes (50 pts each in BNF)
+            val gapS = bnf * (vix / 100.0) / Math.sqrt(252.0)
+            if (gapS > 0 && Math.abs(strikePrice - bnf) <= gapS * 1.5) { // C6 partial: use sigma-based near-atm
                 nearAtmCOI += coi
                 nearAtmPOI += poi
             }
@@ -466,6 +546,10 @@ class MarketWatchService : Service() {
         poll.put("bnf", bnf)
         poll.put("nf", nf)
         poll.put("vix", vix)
+        // Sigma Logic (Fix C2: correct daily sigma sqrt(252))
+        val dailySigma = bnf * (vix / 100.0) / Math.sqrt(252.0)
+        poll.put("gap_sigma", dailySigma)
+        
         poll.put("cw", cw)
         poll.put("pw", pw)
         poll.put("cwOI", maxCallOi)
@@ -493,24 +577,37 @@ class MarketWatchService : Service() {
     }
 
     private fun savePoll(poll: JSONObject) {
-        val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
-        val history = JSONArray(historyStr)
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        
+        var history = JSONArray(prefs.getString("poll_history", "[]"))
+        var pollCount = prefs.getInt("poll_count", 0)
+
+        // A1+A5: Daily Reset
+        if (lastPollDate != today) {
+            Log.i(TAG, "DAILY_RESET: New trading day detected ($today). Resetting history.")
+            history = JSONArray()
+            pollCount = 0
+            prefs.edit().putString("last_poll_date", today).apply()
+        }
         
         // Append new poll
         history.put(poll)
+        pollCount++ // A5: Monotonic increment
         
-        // Keep last 100
-        val trimmed = JSONArray()
-        val start = if (history.length() > 100) history.length() - 100 else 0
-        for (i in start until history.length()) {
-            trimmed.put(history.get(i))
+        // Keep last 100 for memory
+        if (history.length() > 100) {
+            val trimmed = JSONArray()
+            for (i in (history.length() - 100) until history.length()) {
+                trimmed.put(history.get(i))
+            }
+            history = trimmed
         }
-
-        val pollCount = trimmed.length()
 
         prefs.edit().apply {
             putString("latest_poll", poll.toString())
-            putString("poll_history", trimmed.toString())
+            putString("poll_history", history.toString())
             putString("last_poll_time", poll.getString("t"))
             putInt("poll_count", pollCount)
         }.apply()
@@ -522,7 +619,7 @@ class MarketWatchService : Service() {
         if (pollCount > 0 && pollCount % 3 == 0) {
             serviceScope.launch(Dispatchers.IO) {
                 val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                SupabaseClient.upsertPollHistory(today, trimmed)
+                SupabaseClient.upsertPollHistory(today, history)
             }
         }
 
@@ -556,99 +653,8 @@ class MarketWatchService : Service() {
         }
 
         // At 3:15 PM (915 mins) to 3:30 PM
-        if (mins in 915..930) {
-            if (!prefs.contains("tomorrow_signal") && prefs.contains("afternoon_baseline")) {
-                computeTomorrowSignal(poll)
-            }
-        }
     }
 
-    private fun computeChainProfile(chain: JSONObject, spot: Double, vix: Double): JSONObject {
-        val profile = JSONObject()
-        try {
-            val data = chain.optJSONArray("data") ?: return profile
-            val sigma = spot * (vix / 100.0) / Math.sqrt(252.0)
-            
-            var totalGamma = 0.0
-            var atmGamma = 0.0
-            var ceVolAtm = 0.0
-            var peVolAtm = 0.0
-            
-            val strikes = mutableListOf<Double>()
-            val callOI = mutableMapOf<Double, Double>()
-            val putOI = mutableMapOf<Double, Double>()
-            val callIV = mutableMapOf<Double, Double>()
-            val putIV = mutableMapOf<Double, Double>()
-            val callVol = mutableMapOf<Double, Double>()
-            val putVol = mutableMapOf<Double, Double>()
-
-            for (i in 0 until data.length()) {
-                val item = data.getJSONObject(i)
-                val strike = item.getDouble("strike_price")
-                strikes.add(strike)
-                
-                val call = item.optJSONObject("call_options")
-                val put = item.optJSONObject("put_options")
-                
-                val cOI = call?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
-                val pOI = put?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
-                val cIV = call?.optJSONObject("market_data")?.optDouble("iv", 0.0) ?: 0.0
-                val pIV = put?.optJSONObject("market_data")?.optDouble("iv", 0.0) ?: 0.0
-                val cV = call?.optJSONObject("market_data")?.optDouble("volume", 0.0) ?: 0.0
-                val pV = put?.optJSONObject("market_data")?.optDouble("volume", 0.0) ?: 0.0
-                val gamma = call?.optJSONObject("option_greeks")?.optDouble("gamma", 0.0) ?: 0.0
-                
-                callOI[strike] = cOI
-                putOI[strike] = pOI
-                callIV[strike] = cIV
-                putIV[strike] = pIV
-                callVol[strike] = cV
-                putVol[strike] = pV
-                
-                totalGamma += gamma
-                if (Math.abs(strike - spot) <= 0.3 * sigma) {
-                    atmGamma += gamma
-                }
-                if (Math.abs(strike - spot) <= 1.5 * sigma) {
-                    ceVolAtm += cV
-                    peVolAtm += pV
-                }
-            }
-            
-            // 7 Metrics
-            // 1. ivSlope: putIV(-1s) - callIV(+1s)
-            val sNeg1 = strikes.minByOrNull { Math.abs(it - (spot - sigma)) } ?: 0.0
-            val sPos1 = strikes.minByOrNull { Math.abs(it - (spot + sigma)) } ?: 0.0
-            profile.put("ivSlope", (putIV[sNeg1] ?: 0.0) - (callIV[sPos1] ?: 0.0))
-            
-            // 2. gammaCluster
-            profile.put("gammaCluster", if (totalGamma > 0) atmGamma / totalGamma else 0.0)
-            
-            // 3. volRatio
-            profile.put("volRatio", if (peVolAtm > 0) ceVolAtm / peVolAtm else 1.0)
-            
-            // 4/5. Freshness
-            // Note: poll object is not available here, so we skip poll-dependent freshness
-            
-            // 6/7. Depth (Top 3 OI in 1.5s range)
-            val nearStrikes = strikes.filter { Math.abs(it - spot) <= 1.5 * sigma }
-            val top3C = nearStrikes.map { callOI[it] ?: 0.0 }.sortedDescending().take(3).sum()
-            val totalC = nearStrikes.sumOf { callOI[it] ?: 0.0 }
-            val top3P = nearStrikes.map { putOI[it] ?: 0.0 }.sortedDescending().take(3).sum()
-            val totalP = nearStrikes.sumOf { putOI[it] ?: 0.0 }
-            
-            profile.put("callClusterDepth", if (totalC > 0) top3C / totalC * 5 else 0.0)
-            profile.put("putClusterDepth", if (totalP > 0) top3P / totalP * 5 else 0.0)
-            
-            // Other expected fields
-            profile.put("spot", spot)
-            profile.put("vix", vix)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error computing chain profile: ${e.message}")
-        }
-        return profile
-    }
 
     private fun calculateBreadth(stocks: JSONObject): JSONObject {
         val result = JSONObject()
@@ -745,33 +751,6 @@ class MarketWatchService : Service() {
         return gap
     }
 
-    private fun computeTomorrowSignal(current: JSONObject) {
-        try {
-            val baseline = JSONObject(prefs.getString("afternoon_baseline", "{}"))
-            val cOI0 = baseline.optDouble("totalCOI", 0.0)
-            val pOI0 = baseline.optDouble("totalPOI", 0.0)
-            val cOI1 = current.optDouble("totalCOI", 0.0)
-            val pOI1 = current.optDouble("totalPOI", 0.0)
-
-            if (cOI0 == 0.0 || pOI0 == 0.0) return
-
-            val dCall = cOI1 - cOI0
-            val dPut = pOI1 - pOI0
-            
-            val direction = if (dCall > dPut * 1.5) "BEARISH" else if (dPut > dCall * 1.5) "BULLISH" else "NEUTRAL"
-            val strength = if (Math.abs(dCall - dPut) > (cOI0 + pOI0) * 0.05) "4/5" else "2/5"
-            val reason = if (direction == "BEARISH") "heavy call writing" else if (direction == "BULLISH") "heavy put writing" else "balanced positioning"
-
-            val signal = "Tomorrow: $direction ($strength) — $reason"
-            prefs.edit().putString("tomorrow_signal", signal).apply()
-            
-            NotificationHelper.send(this, "📊 Institutional Positioning", signal, "info")
-            Log.d(TAG, "Computed tomorrow signal: $signal")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to compute tomorrow signal: ${e.message}")
-        }
-    }
-
     private fun formatChainForBrain(chain: JSONObject, spot: Double): JSONObject {
         val result = JSONObject()
         try {
@@ -806,8 +785,11 @@ class MarketWatchService : Service() {
                 strikeObj.put("CE", JSONObject().apply {
                     val md = call?.optJSONObject("market_data")
                     put("ltp", md?.optDouble("last_price", 0.0) ?: 0.0)
-                    put("bid", md?.optDouble("bid_price", 0.0) ?: 0.0)
-                    put("ask", md?.optDouble("ask_price", 0.0) ?: 0.0)
+                    val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
+                    val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    put("bid", bid)
+                    put("ask", ask)
+                    put("mid", if (bid > 0 && ask > 0) (bid + ask) / 2.0 else md?.optDouble("last_price", 0.0) ?: 0.0)
                     put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
@@ -820,8 +802,11 @@ class MarketWatchService : Service() {
                 strikeObj.put("PE", JSONObject().apply {
                     val md = put?.optJSONObject("market_data")
                     put("ltp", md?.optDouble("last_price", 0.0) ?: 0.0)
-                    put("bid", md?.optDouble("bid_price", 0.0) ?: 0.0)
-                    put("ask", md?.optDouble("ask_price", 0.0) ?: 0.0)
+                    val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
+                    val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    put("bid", bid)
+                    put("ask", ask)
+                    put("mid", if (bid > 0 && ask > 0) (bid + ask) / 2.0 else md?.optDouble("last_price", 0.0) ?: 0.0)
                     put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
@@ -851,6 +836,21 @@ class MarketWatchService : Service() {
         var broadcastData: String? = null
 
         try {
+            val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            
+            // C1: Calculate DTE (Days to Expiry) for brain context
+            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            val todayDate = sdf.parse(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
+            
+            val bnfExpDate = try { sdf.parse(ctxObj.optString("bnfExpiry")) } catch(e: Exception) { null }
+            val nfExpDate = try { sdf.parse(ctxObj.optString("nfExpiry")) } catch(e: Exception) { null }
+            
+            val bnfDTE = bnfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
+            val nfDTE = nfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
+            
+            ctxObj.put("bnfDTE", bnfDTE)
+            ctxObj.put("nfDTE",  nfDTE)
+
             Log.d(TAG, "BRAIN_START: Loading Chaquopy brain module")
             val py = Python.getInstance()
             val brain = py.getModule("brain")
@@ -859,10 +859,8 @@ class MarketWatchService : Service() {
             val baselineJson = prefs.getString("morning_baseline",  "{}") ?: "{}"
             val openTradesJson   = prefs.getString("open_trades",   "[]") ?: "[]"
             val closedTradesJson = prefs.getString("closed_trades", "[]") ?: "[]"
-            val contextJson  = prefs.getString("context",           "{}") ?: "{}"
             
             // profile merge strategy (Fix 2 - 3-way merge)
-            val ctxObj = JSONObject(contextJson)
             
             fun mergeProfile(key: String, spot: Double, v: Double) {
                 val profile = ctxObj.optJSONObject(key)
@@ -1060,18 +1058,26 @@ class MarketWatchService : Service() {
                         cand.put("mlAction", mlResult.optString("ml_action"))
                         cand.put("mlEdge", mlResult.optDouble("ml_edge"))
                         cand.put("mlOod", mlResult.optBoolean("ml_ood", false))
+                        cand.put("mlOodConf", mlResult.optDouble("ml_ood_conf", 1.0))
+                        cand.put("mlOodWarn", mlResult.optJSONArray("ml_ood_warn") ?: JSONArray())
+                        cand.put("mlOodBlocked", mlResult.optBoolean("ml_ood_blocked", false))
+                        cand.put("mlRegime", mlResult.optString("ml_regime", ""))
                     }
                 }
                 Log.d("BRAIN_ML_SCORING", "Scored ${generatedCands.length()} background candidates")
             }
 
-            Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}, starts_with=${if (result.length > 20) result.substring(0, 20) else result}")
-            prefs.edit().putString("brain_result", result).apply()
+            Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}")
+            
+            // WS19: resultObj was mutated with ML scoring, 'result' string was NOT.
+            // Save resultObj to ensure ML-scored data persists in getBrainResult()
+            val finalBrainString = resultObj.toString()
+            prefs.edit().putString("brain_result", finalBrainString).commit()
             
             val candidates = resultObj.optJSONArray("generated_candidates")
                 ?: resultObj.optJSONArray("candidates")
             if (candidates != null) {
-                prefs.edit().putString("candidates", candidates.toString()).apply()
+                prefs.edit().putString("candidates", candidates.toString()).commit()
             }
             Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
             
@@ -1081,15 +1087,19 @@ class MarketWatchService : Service() {
             // Build the data payload for syncFromNative() in WebView
             val pollCount = prefs.getInt("poll_count", 0)
             val openTradesUpdated = prefs.getString("open_trades", "[]") ?: "[]"
+            val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
+            
             broadcastData = JSONObject().apply {
+                put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())) // A4
                 put("spots", JSONObject().apply {
                     put("bnfSpot", bnfSpot)
                     put("nfSpot",  nfSpot)
                     put("vix",     vix)
                 })
-                put("brainResult",  resultObj)
+                put("brainResult",  resultObj) // WS19: use mutated object
                 put("candidates",   candidates ?: JSONArray())
                 put("pollCount",    pollCount)
+                put("pollHistory",  JSONArray(historyStr)) // A4
                 put("openTrades",   JSONArray(openTradesUpdated))
             }.toString()
             
@@ -1237,8 +1247,9 @@ class MarketWatchService : Service() {
                 if (!response.isSuccessful) {
                     if (response.code == 401) {
                         token401Counter++
-                        if (token401Counter >= 3) {
-                            NotificationHelper.send(this, "🔑 Auth Expired", "3 failed attempts. Open app to refresh Upstox token.", "urgent")
+                        if (token401Counter == 3) {
+                            // WS26: Only notify once on the 3rd fail to avoid spam
+                            NotificationHelper.send(this, "🔑 Auth Expired", "Upstox token invalid. Open app to refresh.", "urgent")
                             stopPolling()
                         }
                     }
@@ -1318,8 +1329,10 @@ class MarketWatchService : Service() {
     }
 
     private fun acquirePartialWakeLock() {
+        // C7: Release before acquire to prevent leak if previously held
+        releaseWakeLock()
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MarketRadar::Poll").apply { acquire(10*1000L) }
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MarketRadar::Poll").apply { acquire(30*1000L) }
     }
 
     private fun releaseWakeLock() {
@@ -1376,9 +1389,20 @@ class MarketWatchService : Service() {
     }
 
     override fun onDestroy() {
+        // E5: Ensure wakelock is released when service is killed
+        releaseWakeLock()
         serviceScope.cancel()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?) = null
+
+    // C4: Expiry fallback helper
+    private fun getNextThursday(): String {
+        val cal = Calendar.getInstance()
+        while (cal.get(Calendar.DAY_OF_WEEK) != Calendar.THURSDAY) {
+            cal.add(Calendar.DATE, 1)
+        }
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+    }
 }

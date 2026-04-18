@@ -21,6 +21,7 @@ Quick start:
 import json
 import math
 import csv
+import random
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VERSION & CONSTANTS
@@ -495,9 +496,8 @@ class GradientBoostedTrees:
             res    = [y[i] - _sig(F[i]) for i in range(n)]
             p_prev = [_sig(F[i]) for i in range(n)]   # for Newton-Raphson leaf
 
-            # Sliding-window subsample — from training split only
-            start = (t * sub_n) % tr_n
-            idx   = [(start + j) % tr_n for j in range(sub_n)]
+            # ME1: Bootstrap randomization (truly random subsample instead of sliding window)
+            idx = random.sample(range(tr_n), sub_n)
 
             tree = _Tree(self.max_depth, self.min_leaf)
             tree.fit(X, res, idx, tree_seed=t, sw=sw, p_prev=p_prev)
@@ -807,7 +807,8 @@ class NeuralNet:
         wd = self.l2
 
         for _ in range(n_steps):
-            a1, z1, a2, z2, out = self._fwd(x, training=True)
+            # ME8: Explicitly disable dropout during online updates to prevent noisy gradients
+            a1, z1, a2, z2, out = self._fwd(x, training=False)
             d3 = out - y_val
 
             gW3 = [[d3 * a2[j] for j in range(self.h2)]]
@@ -1008,21 +1009,32 @@ class RegimeDetector:
     # ── Inference ────────────────────────────────────────────────────────────
 
     def predict(self, row):
-        """Returns regime label string and cluster probabilities."""
+        """Returns regime label string, cluster probabilities, and entropy-based confidence."""
         if not self.fitted or not self.centroids:
-            return 'CALM', {}
+            return 'CALM', {}, 1.0
 
         pt  = self._row_to_vec(row)
-        dists = [self._dist(pt, c) for c in self.centroids]
+        # ME6: Epsilon-guard for exact centroid match
+        dists = [max(self._dist(pt, c), 1e-9) for c in self.centroids]
         best_cid = min(range(len(dists)), key=lambda j: dists[j])
 
         # Soft probabilities via inverse-distance (temp=1)
-        inv = [1.0 / max(d, 1e-6) for d in dists]
+        inv = [1.0 / d for d in dists]
         tot = sum(inv)
         probs = {self.state_map[j]: inv[j] / tot for j in range(len(self.centroids))}
 
+        # ME6: Entropy-based confidence
+        # H(P) = -sum(p * log2(p)). Max H for 4 classes is 2.0.
+        # Confidence = 1.0 - (H / 2.0). 
+        # conf=1.0 means all probability is in one class. conf=0.0 means 25% each.
+        h = 0.0
+        for p in probs.values():
+            if p > 0: h -= p * math.log2(p)
+        
+        confidence = max(0.0, 1.0 - (h / 2.0))
         label = self.state_map[best_cid]
-        return label, probs
+        
+        return label, probs, round(confidence, 4)
 
     # ── Regime → strategy hint ───────────────────────────────────────────────
 
@@ -1171,6 +1183,18 @@ class MLEngine:
 
         action = ('TAKE'  if p_meta >= self.thr_take  else
                   'WATCH' if p_meta >= self.thr_watch else 'SKIP')
+
+        # E12: Direction Safety (Logic Guard)
+        # If strategy is bearish (BEAR_CALL, BEAR_PUT) but day_direction is UP -> Risky
+        # If strategy is bullish (BULL_PUT, BULL_CALL) but day_direction is DOWN -> Risky
+        strat_up = strat in ('BULL_PUT', 'BULL_CALL') or (strat == 'IRON_BUTTERFLY' and ddir == 'UP')
+        strat_dn = strat in ('BEAR_CALL', 'BEAR_PUT') or (strat == 'IRON_BUTTERFLY' and ddir == 'DOWN')
+        
+        is_anti_trend = (strat_up and ddir == 'DOWN') or (strat_dn and ddir == 'UP')
+        
+        if is_anti_trend and action == 'TAKE':
+            action = 'WATCH' # Force downgrade if fighting the trend
+            ood_warns.append(f"ANTI-TREND: {strat} fighting {ddir} regime")
 
         # Strategy-blind: model has zero training data for this scenario → BLOCKED
         if is_strategy_blind:

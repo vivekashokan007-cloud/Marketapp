@@ -92,7 +92,7 @@ def extract_poll_features(poll):
         _clamp((bias_net + 3) / 6.0, 0, 1),        # 2
         _clamp(breadth / 100.0, 0, 1),             # 3
         (spot_move_norm + 1.0) / 2.0,              # 4  rescale [-1,1]→[0,1]
-        _clamp((fut_prem + 150) / 300.0, 0, 1),    # 5
+        _clamp((fut_prem + 1.0) / 2.0, 0, 1),      # 5: futures %
     ]
 
 
@@ -190,8 +190,8 @@ class MiniGRU:
 
         d_total = self.in_dim + self.hid_dim
 
-        # Truncated BPTT through last 2 steps only — sufficient for gradient signal
-        bptt_start = max(0, len(seq) - 2)
+        # Truncated BPTT through full N_SEQ steps (TM5: increase from 2 to 6)
+        bptt_start = max(0, len(seq) - 6)
         for t in reversed(range(bptt_start, len(seq))):
             h_prev = [0.0] * self.hid_dim if t == 0 else cache[t - 1][0]
             h_t, z, r, h_tilde = cache[t]
@@ -305,7 +305,8 @@ def _synthetic_seq(row, n=N_SEQ):
         frac = t / max(n - 1, 1)
 
         # VIX: starts closer to daily avg, arrives at entry VIX
-        vix_daily_avg = 17.0
+        # TM7: Dynamic baseline to prevent "always rising" pattern in high VIX regimes
+        vix_daily_avg = 17.0 if vix < 20 else (vix - 2.0)
         vix_t = vix_daily_avg + (vix - vix_daily_avg) * frac
         # Add small noise
         seed = (1664525 * seed + 1013904223) & 0xFFFFFFFF
@@ -382,9 +383,14 @@ class TemporalEngine:
         val_n = max(4, min(int(n * 0.15), n // 4))
         tr_n  = n - val_n
 
+        import random
+        indices = list(range(tr_n))
+
         for ep in range(epochs):
             total_loss = 0.0
-            for i in range(tr_n):
+            # TM10: Shuffle indices each epoch to improve SGD exploration
+            random.shuffle(indices)
+            for i in indices:
                 total_loss += self.gru.train_step(seqs[i], labels[i], lr=lr)
             tr_acc = sum(
                 1 for i in range(tr_n)
@@ -409,22 +415,33 @@ class TemporalEngine:
         """
         Fine-tune on real poll sequences from journey timeline rows.
         journey_rows: list of {trade_id, vix, pcr, bias_net, ...} per poll
-        trade_outcomes: dict of trade_id → won (bool)
+        trade_outcomes: dict of trade_id (int/str) → won (bool)
         """
         from collections import defaultdict
         by_trade = defaultdict(list)
+        
+        # T1: Ensure trade_ids are strings for consistent lookup
+        outcomes = {str(k): bool(v) for k, v in trade_outcomes.items()}
+        
         for r in journey_rows:
-            tid = r.get('trade_id') or r.get('id')
-            if tid and tid in trade_outcomes:
+            tid = str(r.get('trade_id') or r.get('id') or '')
+            if tid in outcomes:
                 by_trade[tid].append(r)
 
         n_real = 0
         total_loss = 0.0
         for tid, polls in by_trade.items():
+            # T2: Need at least 2 polls for a "sequence" signal
             if len(polls) < 2:
                 continue
-            seq = polls_to_sequence(polls)
-            y   = 1 if trade_outcomes[tid] else 0
+            
+            # Extract features for all polls in journey
+            seq_raw = [extract_poll_features(p) for p in polls]
+            
+            # Use polls_to_sequence to ensure fixed N_SEQ length with padding
+            seq = polls_to_sequence(polls, n=N_SEQ)
+            
+            y = 1 if outcomes[tid] else 0
             total_loss += self.gru.train_step(seq, y, lr=lr)
             n_real += 1
 

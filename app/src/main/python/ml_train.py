@@ -126,15 +126,15 @@ def _app_trade_to_row(t):
         'buy_strike2':  t.get('buy_strike2')  or '',
         'vix_regime': vix_regime,
         'is_credit': str(is_credit),
-        'day_group': 'Mon-Wed',   # live trades: approximate
-        'inside_day': '',
-        'outside_day': '',
-        'uptrend': '',
-        'downtrend': '',
-        'bullish_close': '',
-        'bearish_close': '',
+        'day_group': 'Mon-Wed' if int(t.get('weekday', 0)) <= 2 else 'Thu-Fri', # T4: Proper day group based on IST
+        'inside_day': t.get('inside_day', ''),
+        'outside_day': t.get('outside_day', ''),
+        'uptrend': t.get('uptrend', ''),
+        'downtrend': t.get('downtrend', ''),
+        'bullish_close': t.get('bullish_close', ''),
+        'bearish_close': t.get('bearish_close', ''),
         'day_range_sigma': t.get('day_range_sigma') or '',
-        'consec_days': '',
+        'consec_days': t.get('consec_days', ''),
         'day_direction': str(t.get('day_direction', 'FLAT')).upper(),
         'day_range': str(t.get('day_range', 'NORMAL')).upper(),
         'day_vix': 'HIGH' if float(vix) >= 20 else ('LOW' if float(vix) < 15 else 'NORMAL'),
@@ -261,7 +261,12 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
         result['n_train'] = n
 
         # ── 4. Compare to deployed model ─────────────────────────────────────
-        acc_new = getattr(new_engine.gbt, 'val_acc', 0.0)
+        acc_gbt = getattr(new_engine.gbt, 'val_acc', 0.0)
+        acc_nn  = getattr(new_engine.nn, 'val_acc', 0.0)
+        acc_new = (acc_gbt + acc_nn) / 2.0  # Simple ensemble average for deployment decision
+        
+        result['acc_gbt']      = round(acc_gbt, 4)
+        result['acc_ens']      = round(acc_nn, 4)  # acc_ens stores NN/ensemble accuracy
         result['accuracy_new'] = round(acc_new, 4)
 
         acc_old = 0.0
@@ -277,6 +282,15 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
         # ── 5. Deploy ────────────────────────────────────────────────────────
         improvement = acc_new - acc_old
         if acc_old == 0.0 or improvement >= MIN_IMPROVEMENT:
+            # T9: Backup previous model before overwrite
+            if os.path.exists(model_path):
+                try:
+                    import shutil
+                    shutil.copy2(model_path, model_path + ".bak")
+                    log(f"ml_train: created model backup: {os.path.basename(model_path)}.bak")
+                except Exception as e:
+                    log(f"ml_train: backup failed: {e}")
+            
             _ml.save_model(new_engine, model_path)
             result['deployed'] = True
             result['reason'] = (f'Deployed: accuracy {acc_old:.3f} → {acc_new:.3f} '
@@ -327,39 +341,51 @@ def _train_from_rows(rows, log_fn=None, sample_weights=None):
     if n == 0:
         raise ValueError('No valid rows with won=True/False')
 
-    engine = _ml.MLEngine()
-    engine.n_train       = n
-    engine.base_win_rate = sum(y) / n
-
-    engine.feature_engine.fit(clean)
-    X = [engine.feature_engine.extract(r) for r in clean]
-
-    engine.regime.fit(clean, log_fn=log_fn)
-    engine.gbt.fit(X, y, log_fn=log, sample_weights=sample_weights)
-    engine.nn.fit(X, y, log_fn=log)
-
-    gbt_preds = [engine.gbt.predict_proba(X[i]) for i in range(n)]
-    nn_preds  = [engine.nn.predict_proba(X[i]) for i in range(n)]
-    regimes   = [engine.regime.predict(clean[i])[0] for i in range(n)]
-    engine.meta.calibrate(gbt_preds, nn_preds, regimes, y)
-
-    # Holdout thresholds
+    # TR4: Fix Validation Leak. Split into train (85%) and val (15%)
     val_n  = max(8, min(int(n * 0.15), n // 4))
     tr_n   = n - val_n
-    val_preds = []
-    for i in range(tr_n, n):
-        feat = engine.feature_engine.extract(clean[i])
-        pg   = engine.gbt.predict_proba(feat)
-        pn   = engine.nn.predict_proba(feat) if engine.nn.trained else 0.5
-        reg  = regimes[i]
-        pm   = engine.meta.predict(pg, pn, reg)
-        val_preds.append((pm, y[i]))
+    
+    train_rows = clean[:tr_n]
+    train_y    = y[:tr_n]
+    train_weights = sample_weights[:tr_n] if sample_weights else None
+    
+    val_rows   = clean[tr_n:]
+    val_y      = y[tr_n:]
+
+    log(f"ml_train: Split {n} rows into {len(train_rows)} training / {len(val_rows)} validation")
+
+    engine = _ml.MLEngine()
+    engine.n_train       = n
+    engine.base_win_rate = sum(train_y) / len(train_y)
+
+    # Fit feature engine on training data only
+    engine.feature_engine.fit(train_rows)
+    X_train = [engine.feature_engine.extract(r) for r in train_rows]
+    X_val   = [engine.feature_engine.extract(r) for r in val_rows]
+
+    # Fit GBT/NN on training data
+    engine.regime.fit(train_rows, log_fn=log_fn)
+    engine.gbt.fit(X_train, train_y, log_fn=log, sample_weights=train_weights)
+    engine.nn.fit(X_train, train_y, log_fn=log)
+
+    # Calibrate Meta-Calibrator and find Thresholds on VALIDATION data (No Leak)
+    gbt_v_preds = [engine.gbt.predict_proba(X_val[i]) for i in range(len(X_val))]
+    nn_v_preds  = [engine.nn.predict_proba(X_val[i]) if engine.nn.trained else 0.5 for i in range(len(X_val))]
+    v_regimes   = [engine.regime.predict(val_rows[i])[0] for i in range(len(val_rows))]
+    
+    engine.meta.calibrate(gbt_v_preds, nn_v_preds, v_regimes, val_y)
+
+    # Evaluate best thresholds on validation outputs
+    val_results = []
+    for i in range(len(X_val)):
+        pm = engine.meta.predict(gbt_v_preds[i], nn_v_preds[i], v_regimes[i])
+        val_results.append((pm, val_y[i]))
 
     best_thr = 0.65
     for thr_step in range(70, 42, -2):
         thr  = thr_step / 100.0
-        take = [(p, yi) for p, yi in val_preds if p >= thr]
-        if len(take) < 20: continue
+        take = [(p, yi) for p, yi in val_results if p >= thr]
+        if len(take) < 10: continue 
         prec = sum(yi for _, yi in take) / len(take)
         if prec >= 0.96:
             best_thr = thr
@@ -368,6 +394,10 @@ def _train_from_rows(rows, log_fn=None, sample_weights=None):
     engine.thr_take  = best_thr
     engine.thr_watch = max(0.46, best_thr - 0.12)
     engine.trained   = True
+    
+    # Store validation accuracy for reporting
+    engine.gbt.val_acc = sum(1 for i, p in enumerate(gbt_v_preds) if (p >= 0.5) == val_y[i]) / len(val_y)
+    
     return engine
 
 

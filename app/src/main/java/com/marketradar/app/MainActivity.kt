@@ -344,10 +344,22 @@ class MainActivity : AppCompatActivity() {
             listOf("ml_model.json", "temporal_model.json", "backtest_trades.csv").forEach { filename ->
                 try {
                     val dest = File(filesDir, filename)
-                    assets.open(filename).use { input ->
-                        dest.outputStream().use { output -> input.copyTo(output) }
+                    
+                    // MA7: backtest_trades.csv is static baseline data, always overwrite.
+                    // ml_model.json and temporal_model.json are TRAINED state — preserve if they exist.
+                    val shouldCopy = when (filename) {
+                        "backtest_trades.csv" -> true  // always refresh baseline CSV
+                        else -> !dest.exists() || dest.length() == 0L  // only copy models if missing
                     }
-                    android.util.Log.i("MainActivity", "ML: copied $filename to filesDir (v$currentVersionCode)")
+                    
+                    if (shouldCopy) {
+                        assets.open(filename).use { input ->
+                            dest.outputStream().use { output -> input.copyTo(output) }
+                        }
+                        android.util.Log.i("MainActivity", "ML: copied $filename (v$currentVersionCode)")
+                    } else {
+                        android.util.Log.i("MainActivity", "ML: preserved existing $filename (trained state)")
+                    }
                 } catch (e: Exception) {
                     android.util.Log.w("MainActivity", "ML: could not copy $filename: ${e.message}")
                 }
@@ -388,10 +400,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
-        val tab = intent?.getStringExtra("openTab")
-        if (tab != null) {
-            webView.post {
-                webView.evaluateJavascript("if(typeof switchTab === 'function') switchTab('$tab')", null)
+        val rawTab = intent?.getStringExtra("openTab")
+        if (rawTab != null) {
+            // MA14: only allow alphanumeric + underscore in tab names
+            val safeTab = rawTab.filter { it.isLetterOrDigit() || it == '_' }
+            if (safeTab.isNotEmpty() && safeTab == rawTab) {
+                webView.post {
+                    webView.evaluateJavascript("if(typeof switchTab === 'function') switchTab('$safeTab')", null)
+                }
+            } else {
+                android.util.Log.w("MainActivity", "Rejected unsafe openTab: $rawTab")
             }
         }
     }
@@ -547,14 +565,17 @@ class MainActivity : AppCompatActivity() {
 
     private fun isNewer(local: String, cloud: String): Boolean {
         return try {
-            val l = local.split(".").map { it.toInt() }
-            val c = cloud.split(".").map { it.toInt() }
+            // MA10: Strip any non-numeric segments (like "v" or "-beta") to prevent toInt() crashes
+            val l = local.replace(Regex("[^0-9.]"), "").split(".").filter { it.isNotEmpty() }.map { it.toInt() }
+            val c = cloud.replace(Regex("[^0-9.]"), "").split(".").filter { it.isNotEmpty() }.map { it.toInt() }
+            
             for (i in 0 until minOf(l.size, c.size)) {
                 if (c[i] > l[i]) return true
                 if (c[i] < l[i]) return false
             }
             c.size > l.size
         } catch (e: Exception) {
+            // Fallback for cases where parsing might still fail (should be rare now)
             cloud > local
         }
     }

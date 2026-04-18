@@ -15,6 +15,7 @@ import org.json.JSONObject
 class NativeBridge(private val context: Context) {
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
+    private var lastScoredTotalLen = -1
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -34,10 +35,16 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun stopMarketService() {
-        val intent = Intent(context, MarketWatchService::class.java).apply {
-            action = "STOP"
+        try {
+            // NB1: Use stopService() instead of startService("STOP") to avoid background runtime exceptions
+            val intent = Intent(context, MarketWatchService::class.java)
+            context.stopService(intent)
+            
+            // Explicitly update running flag for immediate UI response
+            prefs.edit().putBoolean("service_running", false).commit()
+        } catch (e: Exception) {
+            Log.e("NativeBridge", "stopMarketService failed: ${e.message}")
         }
-        context.startService(intent)
     }
 
     @JavascriptInterface
@@ -60,12 +67,16 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setOpenTrades(json: String) {
-        prefs.edit().putString("open_trades", json).apply()
+        val last = prefs.getString("open_trades", "")
+        if (json == last) return
+        prefs.edit().putString("open_trades", json).commit()
     }
 
     @JavascriptInterface
     fun setBaseline(json: String) {
-        prefs.edit().putString("morning_baseline", json).apply()
+        val last = prefs.getString("morning_baseline", "")
+        if (json == last) return
+        prefs.edit().putString("morning_baseline", json).commit()
     }
 
     @JavascriptInterface
@@ -73,7 +84,7 @@ class NativeBridge(private val context: Context) {
         prefs.edit().apply {
             putString("expiry_bnf", bnf)
             putString("expiry_nf", nf)
-        }.apply()
+        }.commit()
     }
 
     @JavascriptInterface
@@ -87,20 +98,32 @@ class NativeBridge(private val context: Context) {
                     val count = candsLite.length()
                     val firstId = candsLite.getJSONObject(0).optString("id", "")
                     
-                    // b116: Change guard to avoid redundant scoring
-                    if (count != lastScoredCandCount || firstId != lastScoredFirstCandId) {
-                        for (i in 0 until candsLite.length()) {
+                    // b116/NB7: Enhanced change-guard (count + firstId + total length)
+                    val totalLen = json.length
+                    if (count != lastScoredCandCount || firstId != lastScoredFirstCandId || totalLen != lastScoredTotalLen) {
+                        for (i in 0 until count) {
                             val cand = candsLite.getJSONObject(i)
-                            val mlScored = scoreCandidate(cand)
-                            if (mlScored != null) {
-                                cand.put("p_ml", mlScored.optDouble("p_ml"))
-                                cand.put("mlAction", mlScored.optString("ml_action"))
-                                cand.put("mlEdge", mlScored.optDouble("ml_edge"))
-                                cand.put("mlOod", mlScored.optBoolean("ml_ood", false))
+                            try {
+                                // NB3: Per-iteration try/catch — if one candidate fails, others still score
+                                val mlScored = scoreCandidate(cand)
+                                if (mlScored != null) {
+                                    // NB2: Copy all ML fields, not just 4
+                                    cand.put("p_ml", mlScored.optDouble("p_ml"))
+                                    cand.put("mlAction", mlScored.optString("ml_action"))
+                                    cand.put("mlEdge", mlScored.optDouble("ml_edge"))
+                                    cand.put("mlOod", mlScored.optBoolean("ml_ood", false))
+                                    cand.put("mlOodConf", mlScored.optDouble("ml_ood_conf", 1.0))
+                                    cand.put("mlOodWarn", mlScored.optJSONArray("ml_ood_warn") ?: JSONArray())
+                                    cand.put("mlOodBlocked", mlScored.optBoolean("ml_ood_blocked", false))
+                                    cand.put("mlRegime", mlScored.optString("ml_regime", ""))
+                                }
+                            } catch (e: Exception) {
+                                Log.w("NativeBridge", "ML scoring failed for cand $i: ${e.message}")
                             }
                         }
                         lastScoredCandCount = count
                         lastScoredFirstCandId = firstId
+                        lastScoredTotalLen = totalLen
                         finalJson = ctxObj.toString()
                         Log.d("NativeBridge", "Scored $count WebView candidates via setContext")
                     }
@@ -109,12 +132,16 @@ class NativeBridge(private val context: Context) {
         } catch (e: Exception) {
             Log.w("NativeBridge", "setContext ML scoring failed: ${e.message}")
         }
-        prefs.edit().putString("context", finalJson).apply()
+        val lastCtx = prefs.getString("context", "")
+        if (finalJson == lastCtx) return
+        prefs.edit().putString("context", finalJson).commit()
     }
 
     @JavascriptInterface
     fun setClosedTrades(json: String) {
-        prefs.edit().putString("closed_trades", json).apply()
+        val last = prefs.getString("closed_trades", "")
+        if (json == last) return
+        prefs.edit().putString("closed_trades", json).commit()
     }
 
     // --- NEW: Data Pull (JS -> Kotlin) ---
@@ -135,11 +162,17 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
-    fun getServiceStatus(): String? {
-        val isRunning = isServiceRunning()
-        val lastPoll = prefs.getString("last_poll_time", "Never")
-        val pollCount = prefs.getInt("poll_count", 0)
-        return "{\"running\": $isRunning, \"lastPoll\": \"$lastPoll\", \"polls\": $pollCount}"
+    fun getServiceStatus(): String {
+        return try {
+            // NB6: Build JSON using JSONObject to avoid injection/escaping issues
+            val status = JSONObject()
+            status.put("running", isServiceRunning())
+            status.put("lastPoll", prefs.getString("last_poll_time", "Never"))
+            status.put("polls", prefs.getInt("poll_count", 0))
+            status.toString()
+        } catch (e: Exception) {
+            "{\"running\": false, \"error\": \"Internal failure\"}"
+        }
     }
 
     @JavascriptInterface
@@ -160,12 +193,8 @@ class NativeBridge(private val context: Context) {
             val py = com.chaquo.python.Python.getInstance()
             val mod = py.getModule("ml_train")
             val modelPath = File(context.filesDir, "ml_model.json").absolutePath
-            val result = runBlocking {
-                withTimeoutOrNull(10_000L) {
-                    mod.callAttr("validate_model", modelPath).toString()
-                }
-            } ?: return "{\"ok\":false,\"error\":\"Python timeout\"}"
-            result
+            // NB4: Bridge calls are synchronous, runBlocking is redundant and risky
+            mod.callAttr("validate_model", modelPath).toString()
         } catch (e: Exception) {
             "{\"ok\":false,\"error\":\"${e.message}\"}"
         }

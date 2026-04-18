@@ -13,7 +13,8 @@ object NotificationHelper {
     private const val CHANNEL_URGENT = "trade_urgent"
     private const val CHANNEL_IMPORTANT = "trade_important"
     private const val CHANNEL_ROUTINE = "trade_routine"
-    private var notifId = 2000
+    private val lastNotifyTimes = mutableMapOf<String, Long>()
+    private var notifIdBase = 3000
 
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -41,6 +42,12 @@ object NotificationHelper {
     }
 
     fun send(context: Context, title: String, body: String, type: String, tab: String? = null) {
+        // NH1: Spam reduction / Throttling (30s per unique title)
+        val now = System.currentTimeMillis()
+        val lastTime = lastNotifyTimes[title] ?: 0L
+        if (now - lastTime < 30_000L) return 
+        lastNotifyTimes[title] = now
+
         createChannels(context)
 
         val channelId = when (type) {
@@ -61,8 +68,11 @@ object NotificationHelper {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         
+        val currentId = notifIdBase++
+        if (notifIdBase > 5000) notifIdBase = 3000
+
         val pending = PendingIntent.getActivity(
-            context, notifId, intent,
+            context, currentId, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -79,6 +89,6 @@ object NotificationHelper {
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager?.notify(notifId++, builder.build())
+        manager?.notify(currentId, builder.build())
     }
 }

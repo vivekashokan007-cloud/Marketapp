@@ -31,7 +31,8 @@ object SupabaseClient {
         return try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.e(TAG, "Request failed: ${response.code} ${response.message}")
+                    val errorBody = response.body?.string() ?: ""
+                    Log.e(TAG, "Request failed: ${response.code} ${response.message} | URL: ${request.url} | Body: $errorBody")
                     null
                 } else {
                     response.body?.string()
@@ -77,10 +78,10 @@ object SupabaseClient {
     }
 
     /**
-     * Reads trades_v2 where status = CLOSED, limit 20
+     * Reads trades_v2 where status = CLOSED, limit 200 (SC1: increased from 20 for ML calibration)
      */
     fun getClosedTrades(): JSONArray {
-        val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=exit_date.desc&limit=20")
+        val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=exit_date.desc&limit=200")
             .get()
             .build()
         val json = fetchSync(request) ?: return JSONArray()
@@ -146,7 +147,11 @@ object SupabaseClient {
      * Saves a 2pm/315pm chain snapshot to chain_snapshots table
      */
     fun saveChainSnapshot(session: String, data: JSONObject): Boolean {
-        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        // SC4: Standardization - snapshots use IST date to match trading days
+        val ist = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+            timeZone = ist
+        }.format(java.util.Date())
         val body = JSONObject()
         body.put("date", today)
         body.put("session", session)
@@ -207,13 +212,19 @@ object SupabaseClient {
     }
 
     fun update(table: String, body: JSONObject, filter: String): Boolean {
-        // filter should be like "id=eq.1"
+        // SC3: Use return=representation and check for empty array to detect 0 rows affected
         val request = getBaseRequest("$table?$filter")
+            .header("Prefer", "return=representation")
             .patch(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
             .build()
         
         return try {
-            client.newCall(request).execute().use { it.isSuccessful }
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@use false
+                val respBody = response.body?.string() ?: "[]"
+                // If representation is [], then 0 rows affected
+                respBody.trim().length > 2
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Update to $table failed: ${e.message}")
             false
