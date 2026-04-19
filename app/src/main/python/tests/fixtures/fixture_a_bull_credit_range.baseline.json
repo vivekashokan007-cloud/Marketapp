@@ -1,0 +1,65 @@
+{
+  "verdict": {
+    "action": "SELL PREMIUM",
+    "strategy": "IRON_CONDOR",
+    "direction": "BULL",
+    "confidence": 69,
+    "urgency": "WAIT \u2014 opening noise",
+    "reasoning": "Range 0.1\u03c3 \u00b7 Breadth strong (68%) \u00b7 FII +\u20b93500Cr/5d \u00b7 Bull 1.7 vs Bear 0.0",
+    "conflicts": [
+      "Range but bias BULL",
+      "IRON_CONDOR is intraday only \u2014 switch to INTRADAY"
+    ],
+    "bull": 1.65,
+    "bear": 0.0
+  },
+  "market": [
+    {
+      "type": "regime",
+      "icon": "\ud83d\udce6",
+      "label": "Range-bound (0.13\u03c3)",
+      "detail": "IB/IC candidates favored. Vol crush likely.",
+      "impact": "neutral",
+      "strength": 3
+    },
+    {
+      "type": "fii",
+      "icon": "\ud83c\udfe6",
+      "label": "FII buying 3 days (\u20b93500Cr)",
+      "detail": "Sustained institutional buying. Bullish conviction.",
+      "impact": "bullish",
+      "strength": 4
+    },
+    {
+      "type": "market",
+      "icon": "\u26a0\ufe0f",
+      "label": "Fragile call wall (depth 0)",
+      "detail": "Single-strike call wall. One unwind breaks it.",
+      "impact": "caution",
+      "strength": 3
+    }
+  ],
+  "positions": {},
+  "candidates": {},
+  "timing": [],
+  "risk": [],
+  "effective_bias": {
+    "bias": "NEUTRAL",
+    "strength": "",
+    "net": 0.11,
+    "morning_weight": 0.75,
+    "signals": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      2,
+      0
+    ],
+    "intraday_net": 2,
+    "drift_reasons": [
+      "Breadth 68%"
+    ]
+  }
+}

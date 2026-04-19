@@ -1,0 +1,16 @@
+{
+  "scenario_name": "bear_debit_trend",
+  "expected_verdict_direction": "BEAR",
+  "expected_action": "BUY PREMIUM",
+  "expected_strategy": "BEAR_PUT",
+  "expected_confidence_min": 55,
+  "expected_confidence_max": 85,
+  "expected_regime_type": "trend",
+  "inputs": {
+    "poll_json": "[{\"bnf\":48000,\"nf\":22000,\"vix\":18.5,\"pcr\":1.05,\"pcrNearAtm\":1.10,\"bnfFutPrem\":12,\"putWall\":47800,\"callWall\":48300,\"maxPain\":48000},{\"bnf\":47900,\"nf\":21950,\"vix\":19.2,\"pcr\":1.02,\"pcrNearAtm\":1.08,\"bnfFutPrem\":10,\"putWall\":47700,\"callWall\":48300,\"maxPain\":47950},{\"bnf\":47800,\"nf\":21900,\"vix\":19.8,\"pcr\":0.98,\"pcrNearAtm\":0.95,\"bnfFutPrem\":8,\"putWall\":47600,\"callWall\":48300,\"maxPain\":47900},{\"bnf\":47700,\"nf\":21850,\"vix\":20.5,\"pcr\":0.94,\"pcrNearAtm\":0.90,\"bnfFutPrem\":5,\"putWall\":47500,\"callWall\":48200,\"maxPain\":47850},{\"bnf\":47600,\"nf\":21800,\"vix\":21.0,\"pcr\":0.90,\"pcrNearAtm\":0.88,\"bnfFutPrem\":2,\"putWall\":47400,\"callWall\":48200,\"maxPain\":47800},{\"bnf\":47500,\"nf\":21750,\"vix\":21.5,\"pcr\":0.87,\"pcrNearAtm\":0.85,\"bnfFutPrem\":-2,\"putWall\":47300,\"callWall\":48100,\"maxPain\":47750}]",
+    "ctx_json": "{\"capital\":250000,\"bnfDTE\":3,\"nfDTE\":3,\"tradeMode\":\"swing\",\"vixHistory\":[18.0,18.2,17.8,18.5,19.0,18.3,18.8,19.5,19.8,18.5],\"fiiHistory\":[{\"fiiCash\":-2500},{\"fiiCash\":-1800}],\"bnfBreadth\":{\"pct\":28},\"bnfProfile\":{\"ivSkew\":3.5,\"cwFresh\":0.30,\"pwFresh\":0.05}}",
+    "baseline_json": "{\"vix\":18.0,\"bnfSpot\":48000,\"bnfOpen\":48100,\"pcr\":1.05,\"nfSpot\":22000,\"nfOpen\":22050}",
+    "closed_trades_json": "[]",
+    "open_trades_json": "[]"
+  }
+}

@@ -5,3 +5,13 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# Audit leftovers and quarantine
+phase_9d_cumulative.diff
+ANTIGRAVITY_UNVERIFIED_SNAPSHOT.txt
+app/src/main/python/tests/_antigravity_unverified/
+app/src/main/python/brain_v228_rollback.py

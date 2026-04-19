@@ -1,0 +1,15 @@
+{
+  "scenario_name": "neutral_conflict",
+  "expected_verdict_direction": "NEUTRAL",
+  "expected_action_options": ["WAIT", "SELL PREMIUM"],
+  "expected_confidence_max": 40,
+  "expected_regime_type_options": ["choppy", "mild_trend"],
+  "expected_conflicts_min": 2,
+  "inputs": {
+    "poll_json": "[{\"bnf\":48000,\"nf\":22000,\"vix\":17.0,\"pcr\":1.05,\"pcrNearAtm\":0.95,\"bnfFutPrem\":10,\"putWall\":47800,\"callWall\":48200,\"maxPain\":48000},{\"bnf\":48100,\"nf\":22050,\"vix\":23.0,\"pcr\":0.92,\"pcrNearAtm\":1.15,\"bnfFutPrem\":5,\"putWall\":47900,\"callWall\":48200,\"maxPain\":48100},{\"bnf\":47950,\"nf\":21980,\"vix\":19.0,\"pcr\":1.10,\"pcrNearAtm\":0.90,\"bnfFutPrem\":12,\"putWall\":47800,\"callWall\":48100,\"maxPain\":48050},{\"bnf\":48080,\"nf\":22040,\"vix\":22.0,\"pcr\":0.95,\"pcrNearAtm\":1.12,\"bnfFutPrem\":8,\"putWall\":47900,\"callWall\":48200,\"maxPain\":48050},{\"bnf\":47980,\"nf\":22000,\"vix\":19.5,\"pcr\":1.08,\"pcrNearAtm\":0.98,\"bnfFutPrem\":11,\"putWall\":47800,\"callWall\":48100,\"maxPain\":48000},{\"bnf\":48050,\"nf\":22030,\"vix\":21.0,\"pcr\":0.98,\"pcrNearAtm\":1.10,\"bnfFutPrem\":9,\"putWall\":47900,\"callWall\":48200,\"maxPain\":48050},{\"bnf\":48010,\"nf\":22010,\"vix\":17.5,\"pcr\":1.12,\"pcrNearAtm\":0.92,\"bnfFutPrem\":13,\"putWall\":47800,\"callWall\":48100,\"maxPain\":48000},{\"bnf\":48090,\"nf\":22050,\"vix\":20.5,\"pcr\":1.00,\"pcrNearAtm\":1.05,\"bnfFutPrem\":10,\"putWall\":47900,\"callWall\":48200,\"maxPain\":48050}]",
+    "ctx_json": "{\"capital\":250000,\"bnfDTE\":2,\"nfDTE\":2,\"tradeMode\":\"intraday\",\"vixHistory\":[16,24,18,22,19,21,17,23,20,18],\"fiiHistory\":[{\"fiiCash\":100},{\"fiiCash\":-200}],\"bnfBreadth\":{\"pct\":50},\"bnfProfile\":{\"ivSkew\":0,\"cwFresh\":0.10,\"pwFresh\":0.10}}",
+    "baseline_json": "{\"vix\":19.0,\"bnfSpot\":48000,\"bnfOpen\":48000,\"pcr\":1.05,\"nfSpot\":22000,\"nfOpen\":22000}",
+    "closed_trades_json": "[]",
+    "open_trades_json": "[]"
+  }
+}

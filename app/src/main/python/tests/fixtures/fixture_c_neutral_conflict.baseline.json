@@ -1,0 +1,94 @@
+{
+  "verdict": {
+    "action": "SELL PREMIUM",
+    "strategy": "IRON_CONDOR",
+    "direction": "NEUTRAL",
+    "confidence": 74,
+    "urgency": "WAIT \u2014 opening noise",
+    "reasoning": "Range 0.2\u03c3 \u00b7 Mode: INTRADAY \u00b7 Bull 0.0 vs Bear 0.4",
+    "conflicts": [],
+    "bull": 0.0,
+    "bear": 0.4
+  },
+  "market": [
+    {
+      "type": "pcr",
+      "icon": "\ud83d\udd04",
+      "label": "PCR falling",
+      "detail": "1.10 \u2192 1.00 (30min). Gradual shift.",
+      "impact": "bearish",
+      "strength": 2
+    },
+    {
+      "type": "vix",
+      "icon": "\ud83d\udd3a",
+      "label": "VIX climbing",
+      "detail": "VIX 19.0 \u2192 20.5 (+1.5). Fear rising.",
+      "impact": "caution",
+      "strength": 3
+    },
+    {
+      "type": "regime",
+      "icon": "\ud83d\udce6",
+      "label": "Range-bound (0.24\u03c3)",
+      "detail": "IB/IC candidates favored. Vol crush likely.",
+      "impact": "neutral",
+      "strength": 3
+    },
+    {
+      "type": "coherence",
+      "icon": "\u26a0\ufe0f",
+      "label": "VIX-Spot divergence",
+      "detail": "VIX rising WITH spot rising. Unusual \u2014 proceed with caution.",
+      "impact": "caution",
+      "strength": 4
+    },
+    {
+      "type": "market",
+      "icon": "\u26a0\ufe0f",
+      "label": "Fragile call wall (depth 0)",
+      "detail": "Single-strike call wall. One unwind breaks it.",
+      "impact": "caution",
+      "strength": 3
+    }
+  ],
+  "positions": {},
+  "candidates": {},
+  "timing": [
+    {
+      "type": "timing",
+      "icon": "\u23f0",
+      "label": "DTE 2 \u2014 theta accelerating",
+      "detail": "Credit favored. Debit positions lose value rapidly.",
+      "impact": "neutral",
+      "strength": 2
+    }
+  ],
+  "risk": [
+    {
+      "type": "risk",
+      "icon": "\u26a1",
+      "label": "VIX crossed 20 \u2191",
+      "detail": "Morning 19.0 \u2192 now 20.5. Regime boundary crossed \u2014 review strategy alignment.",
+      "impact": "caution",
+      "strength": 3
+    }
+  ],
+  "effective_bias": {
+    "bias": "NEUTRAL",
+    "strength": "",
+    "net": -0.09,
+    "morning_weight": 0.6,
+    "signals": [
+      0,
+      -1,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "intraday_net": -1,
+    "drift_reasons": []
+  }
+}
