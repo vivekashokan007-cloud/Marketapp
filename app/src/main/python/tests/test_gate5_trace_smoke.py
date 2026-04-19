@@ -73,7 +73,7 @@ def run_gate5_smoke_test():
         assert k in trace, f"Trace missing required key: {k}"
     print(f"PASS: Trace contains all required keys: {required_keys}")
     
-    assert trace["meta"]["brain_version"] == "2.2.9", f"Wrong brain_version: {trace['meta']['brain_version']}"
+    assert trace["meta"]["brain_version"] == "2.2.15", f"Wrong brain_version: {trace['meta']['brain_version']}"
     assert trace["meta"]["trace_schema_version"] == "1.0", f"Wrong schema_version: {trace['meta']['trace_schema_version']}"
     assert trace["meta"]["source"] == "live", f"Wrong source: {trace['meta']['source']}"
     assert trace["meta"]["truncated"] == False, "Trace should not be truncated"
