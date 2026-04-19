@@ -1666,204 +1666,50 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     b92: Now receives candidates + their insights for menu awareness."""
     bull = bear = 0.0
     cautions = 0
-    # TASK 5.3 — snapshot inputs for trace
-    if ctx.get('_trace') is not None:
-        _trace = ctx['_trace']['verdict']
-        vixs_here = get_vix_vals(polls)
-        _trace['inputs'] = {
-            'insights_count': len(all_insights),
-            'regime_type': regime.get('type', 'unknown'),
-            'vix_current': vixs_here[-1] if vixs_here else None,
-            'bnfDTE': ctx.get('bnfDTE'),
-            'nfDTE': ctx.get('nfDTE'),
-            'tradeMode': ctx.get('tradeMode'),
-            'breadth_pct': (ctx.get('bnfBreadth') or {}).get('pct'),
-            'iv_skew': (ctx.get('bnfProfile') or {}).get('ivSkew', 0),
-            'cw_fresh': (ctx.get('bnfProfile') or {}).get('cwFresh', 0),
-            'pw_fresh': (ctx.get('bnfProfile') or {}).get('pwFresh', 0),
-            'fii_history_len': len(ctx.get('fiiHistory', [])),
-        }
     for ins in all_insights:
         w = (ins.get('strength', 1)) / 5.0
         imp = ins.get('impact', 'neutral')
-        # TASK 5.3 — log every insight contribution (taken or neutral)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'insight_contributions', {
-                'label': ins.get('label', ''),
-                'type': ins.get('type', ''),
-                'impact': imp,
-                'strength': ins.get('strength', 1),
-                'weight': w,
-                'applied_to': 'bull' if imp == 'bullish' else ('bear' if imp == 'bearish' else ('caution_count' if imp == 'caution' else 'none')),
-            })
-        if imp == 'bullish':
-            bull += w
-            # TASK 5.3 (Bullish Contribution)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'bull_contributions', {
-                    'src': 'market_insight', 'label': ins.get('label', ''),
-                    'value': w, 'running': round(bull, 2)
-                })
-        elif imp == 'bearish':
-            bear += w
-            # TASK 5.3 (Bearish Contribution)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'bear_contributions', {
-                    'src': 'market_insight', 'label': ins.get('label', ''),
-                    'value': w, 'running': round(bear, 2)
-                })
+        if imp == 'bullish': bull += w
+        elif imp == 'bearish': bear += w
         elif imp == 'caution': cautions += 1
 
     # Context signals (numeric, not insights)
     profile = ctx.get('bnfProfile') or {}
     breadth = ctx.get('bnfBreadth') or {}
     b_pct = breadth.get('pct', 50)
-    if b_pct > 65:
-        bull += 0.4
-        # TASK 5.3 (C1)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bull_contributions', {
-                'src': 'breadth_high', 'value': 0.4,
-                'inputs': {'b_pct': b_pct, 'threshold': 65},
-                'reason': f'b_pct={b_pct} > 65',
-            })
-    elif b_pct < 35:
-        bear += 0.4
-        # TASK 5.3 (C2)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bear_contributions', {
-                'src': 'breadth_low', 'value': 0.4,
-                'inputs': {'b_pct': b_pct, 'threshold': 35},
-                'reason': f'b_pct={b_pct} < 35',
-            })
+    if b_pct > 65: bull += 0.4
+    elif b_pct < 35: bear += 0.4
     # DEAD UNTIL v2.2.9 — profile.ivSkew not wired; skew defaults to 0 making all skew logic inert
     skew = profile.get('ivSkew', 0)
-    if skew > 3:
-        bear += 0.2
-        # TASK 5.3 (C3)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bear_contributions', {
-                'src': 'iv_skew_call_heavy', 'value': 0.2,
-                'inputs': {'skew': skew},
-                'reason': f'skew={skew} > 3 (call-side pressure)',
-            })
-    elif skew < -2:
-        bull += 0.2
-        # TASK 5.3 (C4)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bull_contributions', {
-                'src': 'iv_skew_put_heavy', 'value': 0.2,
-                'inputs': {'skew': skew},
-                'reason': f'skew={skew} < -2 (put-side pressure)',
-            })
+    if skew > 3: bear += 0.2
+    elif skew < -2: bull += 0.2
     cwF = profile.get('cwFresh', 0)
     pwF = profile.get('pwFresh', 0)
-    if cwF > 0.25:
-        bear += 0.15
-        # TASK 5.3 (C5)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bear_contributions', {
-                'src': 'cw_fresh', 'value': 0.15,
-                'inputs': {'cwF': cwF},
-                'reason': f'call wall fresh {cwF:.2f} > 0.25',
-            })
-    if pwF > 0.25:
-        bull += 0.15
-        # TASK 5.3 (C6)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bull_contributions', {
-                'src': 'pw_fresh', 'value': 0.15,
-                'inputs': {'pwF': pwF},
-                'reason': f'put wall fresh {pwF:.2f} > 0.25',
-            })
+    if cwF > 0.25: bear += 0.15
+    if pwF > 0.25: bull += 0.15
     fii_hist = ctx.get('fiiHistory', [])
     fii_sum = 0
     for h in fii_hist[:5]:
         v = h.get('fiiCash', 0)
         try: fii_sum += float(v) if v is not None else 0
         except (ValueError, TypeError): pass
-    if fii_sum < -3000:
-        bear += 0.3
-        # TASK 5.3 (C7)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'bear_contributions', {
-                'src': 'fii_selling', 'value': 0.3,
-                'inputs': {'fii_sum': fii_sum, 'threshold': -3000},
-                'reason': f'FII 5d sum {fii_sum:.0f} < -3000',
-            })
-    elif fii_sum > 3000:
-        bull += 0.3
-        # TASK 5.3 (C8)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'fii_buying', {
-                'src': 'fii_buying', 'value': 0.3,
-                'inputs': {'fii_sum': fii_sum, 'threshold': 3000},
-                'reason': f'FII 5d sum {fii_sum:.0f} > 3000',
-            })
+    if fii_sum < -3000: bear += 0.3
+    elif fii_sum > 3000: bull += 0.3
 
     # Direction
     if bull > bear + 0.4: direction = 'BULL'
     elif bear > bull + 0.4: direction = 'BEAR'
     else: direction = 'NEUTRAL'
-    # TASK 5.3 — direction decision snapshot
-    if ctx.get('_trace') is not None:
-        ctx['_trace']['verdict']['direction_decision'] = {
-            'bull': round(bull, 4),
-            'bear': round(bear, 4),
-            'gap': round(abs(bull - bear), 4),
-            'threshold': 0.4,
-            'result': direction,
-        }
-        ctx['_trace']['verdict']['caution_count'] = cautions
 
     # Confidence
     total = bull + bear + 0.001
     dominant = max(bull, bear)
     confidence = int(dominant / total * 80)  # base max 80
-    # TASK 5.3 (F1)
-    if ctx.get('_trace') is not None:
-        _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-            'step': 'base', 'final': confidence,
-            'formula': 'dominant/total*80',
-            'inputs': {'dominant': round(dominant, 4), 'total': round(total, 4)},
-        })
-    if cautions >= 3:
-        confidence -= 15
-        # TASK 5.3 (F2)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'cautions_penalty', 'delta': -15,
-                'inputs': {'cautions': cautions, 'threshold': 3},
-                'running': confidence,
-            })
-    if bull > 0.5 and bear > 0.5:
-        confidence -= 20  # conflicting
-        # TASK 5.3 (F3)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'conflict_penalty', 'delta': -20,
-                'inputs': {'bull': round(bull, 4), 'bear': round(bear, 4)},
-                'running': confidence,
-            })
+    if cautions >= 3: confidence -= 15
+    if bull > 0.5 and bear > 0.5: confidence -= 20  # conflicting
     rtype = regime.get('type', 'unknown')
-    if rtype in ('range', 'trend'):
-        confidence += 10  # clear regime = higher confidence
-        # TASK 5.3 (F4)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'regime_clarity_bonus', 'delta': 10,
-                'inputs': {'rtype': rtype},
-                'running': confidence,
-            })
-    if rtype == 'choppy':
-        confidence -= 10
-        # TASK 5.3 (F5)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'regime_choppy_penalty', 'delta': -10,
-                'inputs': {'rtype': rtype},
-                'running': confidence,
-            })
+    if rtype in ('range', 'trend'): confidence += 10  # clear regime = higher confidence
+    if rtype == 'choppy': confidence -= 10
 
     # Personal calibration boost/penalty
     vixs = get_vix_vals(polls)
@@ -1911,19 +1757,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             action, strategy = 'SELL PREMIUM', 'IRON_CONDOR'
         else:
             action, strategy = 'WAIT', None
-    # TASK 5.3 — strategy selection snapshot (captures outcome of 1730-1759 block)
-    if ctx.get('_trace') is not None:
-        ctx['_trace']['verdict']['strategy_selection'] = {
-            'regime_type': rtype,
-            'direction': direction,
-            'vix': vix,
-            'vix_z': round(vix_z, 3) if vix_z is not None else None,
-            'dte': dte,
-            'straddle_expanding': straddle_expanding,
-            'straddle_chg': round(straddle_chg, 2) if straddle_chg else 0,
-            'initial_action': action,
-            'initial_strategy': strategy,
-        }
 
     # b93: HARD VETO — calibration kill switch (0% win rate = never recommend)
     vetoed_strategy = None
@@ -1938,23 +1771,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             action = 'WAIT'
         elif n >= 5 and rate < 0.3:
             confidence -= 20
-            # TASK 5.3 (F6)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'calibration_penalty', 'delta': -20,
-                    'inputs': {'total': n, 'rate': round(rate, 4), 'strategy': strategy},
-                    'running': confidence,
-                })
             conflicts.append(f"Your {strategy}: {cal.get('wins',0)}/{n} ({rate*100:.0f}%)")
         elif n >= 5 and rate > 0.7:
             confidence += 10
-            # TASK 5.3 (F7)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'calibration_bonus', 'delta': 10,
-                    'inputs': {'total': n, 'rate': round(rate, 4), 'strategy': strategy},
-                    'running': confidence,
-                })
 
     # b92: Candidate menu awareness — does recommended strategy have viable candidates?
     if strategy and candidates and cand_insights is not None:
@@ -1962,13 +1781,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         if not strat_cands:
             conflicts.append(f"No {strategy} candidates generated")
             confidence -= 10
-            # TASK 5.3 (F8)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'missing_candidates_penalty', 'delta': -10,
-                    'inputs': {'strategy': strategy},
-                    'running': confidence,
-                })
         elif strat_cands:
             # Check if ALL candidates of this type have caution insights
             all_cautioned = True
@@ -1982,13 +1794,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             if all_cautioned and len(strat_cands) > 0:
                 conflicts.append(f"All {strategy} candidates have risk warnings")
                 confidence -= 15
-                # TASK 5.3 (F9)
-                if ctx.get('_trace') is not None:
-                    _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                        'step': 'all_cautioned_penalty', 'delta': -15,
-                        'inputs': {'strategy': strategy, 'cands_count': len(strat_cands)},
-                        'running': confidence,
-                    })
 
     # b95: SMART FALLBACK — if recommended strategy is dead, find best available alternative
     # Triggers when: (a) no candidates generated, (b) calibration <30%, OR (c) strategy was VETOED
@@ -2043,16 +1848,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             strategy = best_alt
             action = alt_action
             # Restore some confidence — we found a viable alternative
-            _conf_before = confidence
             confidence = max(confidence, 30)
-            # TASK 5.3 (F10)
-            if ctx.get('_trace') is not None and _conf_before != confidence:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'fallback_recovery',
-                    'from': _conf_before, 'to': confidence,
-                    'reason': 'Fallback strategy found — restore floor 30',
-                    'running': confidence,
-                })
 
     # ═══ b92: FULL OMNISCIENCE CHECKS — use all 12 new data streams ═══
 
@@ -2061,13 +1857,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if strategy in ('IRON_CONDOR', 'IRON_BUTTERFLY') and tm == 'swing':
         conflicts.append(f"{strategy} is intraday only — switch to INTRADAY")
         confidence -= 20
-        # TASK 5.3 (F11)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'trade_mode_conflict', 'delta': -20,
-                'inputs': {'strategy': strategy, 'trade_mode': tm},
-                'running': confidence,
-            })
 
     # Overnight delta conflict — brain says BULL but overnight is BEAR
     # DEAD UNTIL v2.2.9 — ctx.overnightDelta not wired
@@ -2076,23 +1865,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         if 'BEARISH' in od['summary'] and direction == 'BULL':
             conflicts.append("Overnight BEARISH vs brain BULL")
             confidence -= 10
-            # TASK 5.3 (F12)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'overnight_bear_conflict', 'delta': -10,
-                    'inputs': {'brain_direction': direction, 'overnight': od['summary']},
-                    'running': confidence,
-                })
         elif 'BULLISH' in od['summary'] and direction == 'BEAR':
             conflicts.append("Overnight BULLISH vs brain BEAR")
             confidence -= 10
-            # TASK 5.3 (F13)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'overnight_bull_conflict', 'delta': -10,
-                    'inputs': {'brain_direction': direction, 'overnight': od['summary']},
-                    'running': confidence,
-                })
 
     # Institutional regime — low credit confidence but selling premium
     # DEAD UNTIL v2.2.9 — ctx.institutionalRegime not wired
@@ -2100,13 +1875,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if ir and ir.get('creditConfidence') == 'LOW' and action == 'SELL PREMIUM':
         conflicts.append("Low institutional credit confidence")
         confidence -= 10
-        # TASK 5.3 (F14/F15)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'institutional_low_credit', 'delta': -10,
-                'inputs': {'ir_credit': 'LOW', 'action': action},
-                'running': confidence,
-            })
 
     # Bias drift — morning thesis no longer holds
     # DEAD UNTIL v2.2.9 — ctx.biasDrift not wired
@@ -2114,26 +1882,13 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if abs(drift) >= 2:
         conflicts.append(f"Bias drifted {drift:+d} from morning")
         confidence -= 10
-        # TASK 5.3 (F15)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'bias_drift_divergence', 'delta': -10,
-                'inputs': {'drift': drift},
-                'running': confidence,
-            })
 
     # Scan freshness — stale data
+    # DEAD UNTIL v2.2.9 — ctx.scanAgeMin not wired
     scan_age = ctx.get('scanAgeMin')
     if scan_age and scan_age >= 30:
         conflicts.append(f"Data is {scan_age}min stale — rescan first")
         confidence -= 15
-        # TASK 5.3 (F16)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'stale_data_penalty', 'delta': -15,
-                'inputs': {'scan_age': scan_age, 'threshold': 30},
-                'running': confidence,
-            })
 
     # Global direction conflict — Dow/Crude/GIFT contradict brain direction
     gd = ctx.get('globalDirection') or {}
@@ -2153,13 +1908,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if gd_conflicts >= 2:
         conflicts.append(f"Global direction contradicts ({gd_conflicts}/3 against)")
         confidence -= 15
-        # TASK 5.3 (F17)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'global_conflict_penalty', 'delta': -15,
-                'inputs': {'gd_conflicts': gd_conflicts, 'threshold': 2},
-                'running': confidence,
-            })
 
     # Brain flip-flop detection — prior verdict contradicts current
     # DEAD UNTIL v2.2.9 — ctx.priorVerdict not wired
@@ -2168,36 +1916,15 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         if prior.get('confidence', 0) >= 40:
             conflicts.append(f"Flip: was {prior['direction']} {prior.get('confidence',0)}% → now {direction}")
             confidence -= 10
-            # TASK 5.3 (F18)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'prior_flip_penalty', 'delta': -10,
-                    'inputs': {'prior_direction': prior['direction'], 'current': direction},
-                    'running': confidence,
-                })
 
     # Varsity alignment — brain strategy vs Varsity PRIMARY
     vf = ctx.get('varsityFilter')
     if vf and strategy:
         if strategy in (vf.get('primary') or []):
             confidence += 5  # brain agrees with Varsity
-            # TASK 5.3 (F19)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'varsity_agree_bonus', 'delta': 5,
-                    'inputs': {'strategy': strategy, 'varsity_primary': vf.get('primary')},
-                    'running': confidence,
-                })
         elif strategy not in (vf.get('allowed') or []) and strategy not in (vf.get('primary') or []):
             conflicts.append(f"Brain picks {strategy} but Varsity doesn't allow it")
             confidence -= 10
-            # TASK 5.3 (F20)
-            if ctx.get('_trace') is not None:
-                _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                    'step': 'varsity_mismatch_penalty', 'delta': -10,
-                    'inputs': {'strategy': strategy, 'varsity_allowed': vf.get('allowed')},
-                    'running': confidence,
-                })
 
     # Urgency
     mins = get_time_mins(polls[-1].get('t', '')) - 555 if polls else 0
@@ -2209,46 +1936,15 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # Daily P&L gate
     if ctx.get('dailyPnl', 0) < -2000:
         action, strategy, urgency = 'STOP', None, 'DONE FOR TODAY'
-        _conf_before_pnl = confidence
         confidence = 0
-        # TASK 5.3 (F21)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'daily_pnl_stop_zero', 'from': _conf_before_pnl, 'to': 0,
-                'reason': f"Daily P&L {ctx.get('dailyPnl')} < -2000",
-                'running': 0,
-            })
     # DEAD UNTIL v2.2.9 — ctx.dailyPnl/dailyTradeCount not wired
     elif ctx.get('dailyTradeCount', 0) >= 3:
         confidence -= 15
-        # TASK 5.3 (F22)
-        if ctx.get('_trace') is not None:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'multi_trade_penalty', 'delta': -15,
-                'inputs': {'count': ctx.get('dailyTradeCount')},
-                'running': confidence,
-            })
         if confidence < 50: urgency = 'CAUTION — 3+ trades today'
 
-    _conf_pre_clamp = confidence
     confidence = max(0, min(100, confidence))
-    # TASK 5.3 (F23)
-    if ctx.get('_trace') is not None and _conf_pre_clamp != confidence:
-        _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-            'step': 'final_clamp', 'from': _conf_pre_clamp, 'to': confidence,
-            'running': confidence,
-        })
-
     if action == 'WAIT' or action == 'STOP':
-        _conf_pre_zero = confidence
         confidence = 0
-        # TASK 5.3 (F24)
-        if ctx.get('_trace') is not None and _conf_pre_zero != 0:
-            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
-                'step': 'wait_stop_zero', 'from': _conf_pre_zero, 'to': 0,
-                'reason': f'Action is {action}',
-                'running': 0,
-            })
 
     # Build reasoning
     reasons = []
@@ -2281,41 +1977,17 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     }
 
 def position_verdict(trade, insights, regime, ctx):
+    # BR71: Warn when DTE falls to default — signals Kotlin wiring failure
     idx_key = trade.get('index_key', 'BNF')
     dte_key = 'bnfDTE' if idx_key == 'BNF' else 'nfDTE'
     dte = ctx.get(dte_key)
     if dte is None:
+        # DEAD UNTIL v2.2.9 - catch index-specific DTE wiring failure
         print(f"position_verdict: {dte_key} missing for trade {trade.get('id','?')} — default 5")
         dte = 5
-    """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason."""
-
-    # TASK 5.4 — init per-position trace slot
-    _trace_root = ctx.get('_trace')
-    _pos_trace = None
-    if _trace_root is not None:
-        _tid = str(trade.get('id', 'unknown'))
-        _pos_trace = {
-            'inputs': {
-                'trade_id': _tid,
-                'pnl': trade.get('current_pnl', 0),
-                'max_profit': trade.get('max_profit'),
-                'max_loss': trade.get('max_loss'),
-                'strategy_type': trade.get('strategy_type', ''),
-                'is_credit': trade.get('is_credit'),
-                'ci': trade.get('controlIndex'),
-                'wall_sev': (trade.get('wallDrift') or {}).get('severity', 0),
-                'vix_chg': trade.get('vixChange', 0),
-                'peak_erosion': trade.get('peakErosion', 0),
-                'peak_pnl': trade.get('peak_pnl', 0),
-                'dte': dte,
-            },
-            'danger_components': [],
-            'danger_final': 0,
-            'structural_exits': {},
-            'decision_path': [],
-            'final': {},
-        }
-        _trace_root['positions'][_tid] = _pos_trace
+    """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason.
+    b89: Now receives wallDrift, vixChange, peakErosion from JS poll loop.
+    Brain is the SINGLE decision maker — weighs ALL signals together."""
     pnl = trade.get('current_pnl', 0)
     max_p = trade.get('max_profit', 1)
     max_l = trade.get('max_loss', 1)
@@ -2343,210 +2015,62 @@ def position_verdict(trade, insights, regime, ctx):
 
     # ═══ DANGER SCORE — compound risk assessment ═══
     danger = 0
-    # TASK 5.4 (initialization)
-    if ctx.get('_trace') is not None and _pos_trace is not None:
-        _pos_trace['danger_initial'] = 0
     reasons = []
 
     # Wall drift
-    _wall_matched = False
     if wall_sev >= 2:
         danger += 40
-        # TASK 5.4 (D1)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'wall_exposed', 'matched': True, 'condition': 'wall_sev >= 2',
-                'delta': 40, 'running_danger': danger,
-                'inputs': {'wall_sev': wall_sev, 'warning': wall.get('warning', '')[:50]},
-            })
         reasons.append(f"Wall EXPOSED ({wall.get('warning', '')[:50]})")
-        _wall_matched = True
     elif wall_sev == 1:
         danger += 15
-        # TASK 5.4 (D2)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'wall_weakened', 'matched': True, 'condition': 'wall_sev == 1',
-                'delta': 15, 'running_danger': danger,
-                'inputs': {'wall_sev': wall_sev},
-            })
         reasons.append("Wall weakened")
-        _wall_matched = True
-    # TASK 5.4 (Wall Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _wall_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'wall', 'matched': False, 'skip_reason': 'wall_sev==0 (wall stable)',
-            'running_danger': danger, 'inputs': {'wall_sev': wall_sev},
-        })
 
     # VIX spike (worst for credit sellers)
-    _vix_matched = False
     if is_credit and vix_chg >= 2.0:
         danger += 35
-        # TASK 5.4 (D3)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'vix_spike_credit', 'matched': True, 'condition': 'is_credit and vix_chg >= 2.0',
-                'delta': 35, 'running_danger': danger,
-                'inputs': {'is_credit': is_credit, 'vix_chg': vix_chg, 'threshold': 2.0},
-            })
         reasons.append(f"VIX spiked +{vix_chg:.1f} — premiums expanding")
-        _vix_matched = True
     elif is_credit and vix_chg >= 1.0:
         danger += 15
-        # TASK 5.4 (D4)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'vix_rising_credit', 'matched': True, 'condition': 'is_credit and vix_chg >= 1.0',
-                'delta': 15, 'running_danger': danger,
-                'inputs': {'is_credit': is_credit, 'vix_chg': vix_chg, 'threshold': 1.0},
-            })
         reasons.append(f"VIX rising +{vix_chg:.1f}")
-        _vix_matched = True
-    # TASK 5.4 (VIX Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _vix_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'vix', 'matched': False, 'skip_reason': 'not credit or vix_chg below threshold',
-            'running_danger': danger, 'inputs': {'is_credit': is_credit, 'vix_chg': vix_chg},
-        })
 
     # Peak erosion — SCALED (b104 fix: 864% got same score as 51%)
     # Debit trades: premium decay from theta is EXPECTED, halve the impact
     erosion_mult = 0.5 if not is_credit else 1.0
-    _erosion_matched = False
     if peak_pnl >= 500 and peak_erosion > 0:  # Gemini fix: ignore tiny peaks (<₹500)
         if peak_erosion > 500:
-            _d = int(40 * erosion_mult)
-            danger += _d
-            # TASK 5.4 (D5)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'peak_erosion_extreme', 'matched': True, 'condition': 'peak_erosion > 500',
-                    'delta': _d, 'running_danger': danger,
-                    'inputs': {'peak_erosion': peak_erosion, 'peak_pnl': peak_pnl, 'mult': erosion_mult},
-                })
+            danger += int(40 * erosion_mult)
             reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-            _erosion_matched = True
         elif peak_erosion > 200:
-            _d = int(30 * erosion_mult)
-            danger += _d
-            # TASK 5.4 (D6)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'peak_erosion_high', 'matched': True, 'condition': 'peak_erosion > 200',
-                    'delta': _d, 'running_danger': danger,
-                    'inputs': {'peak_erosion': peak_erosion, 'peak_pnl': peak_pnl, 'mult': erosion_mult},
-                })
+            danger += int(30 * erosion_mult)
             reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-            _erosion_matched = True
         elif peak_erosion > 50:
-            _d = int(20 * erosion_mult)
-            danger += _d
-            # TASK 5.4 (D7)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'peak_erosion_medium', 'matched': True, 'condition': 'peak_erosion > 50',
-                    'delta': _d, 'running_danger': danger,
-                    'inputs': {'peak_erosion': peak_erosion, 'peak_pnl': peak_pnl, 'mult': erosion_mult},
-                })
+            danger += int(20 * erosion_mult)
             reasons.append(f"Peak erosion {peak_erosion:.0f}% (was ₹{peak_pnl:.0f})")
-            _erosion_matched = True
         elif peak_erosion > 30:
-            _d = int(10 * erosion_mult)
-            danger += _d
-            # TASK 5.4 (D8)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'peak_erosion_fade', 'matched': True, 'condition': 'peak_erosion > 30',
-                    'delta': _d, 'running_danger': danger,
-                    'inputs': {'peak_erosion': peak_erosion, 'peak_pnl': peak_pnl, 'mult': erosion_mult},
-                })
+            danger += int(10 * erosion_mult)
             reasons.append(f"Profit fading ({peak_erosion:.0f}% from peak)")
-            _erosion_matched = True
-
-    # TASK 5.4 (Erosion Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _erosion_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'peak_erosion', 'matched': False,
-            'skip_reason': f'peak_pnl={peak_pnl} < 500 or erosion={peak_erosion} <= 30',
-            'running_danger': danger, 'inputs': {'peak_pnl': peak_pnl, 'peak_erosion': peak_erosion},
-        })
 
     # Profit-to-loss flip — was making money, now losing (b104 fix)
-    _flip_matched = False
     if peak_pnl > 0 and pnl < 0:
         danger += 15
-        # TASK 5.4 (D9)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'profit_to_loss_flip', 'matched': True, 'condition': 'peak_pnl > 0 and pnl < 0',
-                'delta': 15, 'running_danger': danger,
-                'inputs': {'peak_pnl': peak_pnl, 'pnl': pnl},
-            })
         reasons.append(f"Flipped from +₹{peak_pnl:.0f} to -₹{abs(pnl):.0f}")
-        _flip_matched = True
-    # TASK 5.4 (Flip Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _flip_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'profit_to_loss_flip', 'matched': False, 'skip_reason': 'peak_pnl<=0 or pnl>=0',
-            'running_danger': danger, 'inputs': {'peak_pnl': peak_pnl, 'pnl': pnl},
-        })
 
     # CI — RELAXED thresholds (b104 fix: CI -5 got ZERO before)
     # Gemini fix: IB not totally exempt — check for extreme degradation beyond baseline
-    _ci_matched = False
     if ci is not None:
         if is_ib:
             if ci < -75:
                 danger += 20
-                # TASK 5.4 (D10)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'ib_ci_collapse', 'matched': True, 'condition': 'is_ib and ci < -75',
-                        'delta': 20, 'running_danger': danger,
-                        'inputs': {'ci': ci, 'threshold': -75, 'is_ib': True},
-                    })
                 reasons.append(f"IB CI collapsed to {ci} (beyond normal ATM range)")
-                _ci_matched = True
         else:
             if ci < -40:
                 danger += 25
-                # TASK 5.4 (D11)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'ci_opponent_control', 'matched': True, 'condition': 'not is_ib and ci < -40',
-                        'delta': 25, 'running_danger': danger,
-                        'inputs': {'ci': ci},
-                    })
                 reasons.append(f"Opponent in control (CI {ci})")
-                _ci_matched = True
             elif ci < -20:
                 danger += 15
-                # TASK 5.4 (D12)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'ci_opponent_gaining', 'matched': True, 'condition': 'ci < -20',
-                        'delta': 15, 'running_danger': danger,
-                        'inputs': {'ci': ci},
-                    })
                 reasons.append(f"Opponent gaining (CI {ci})")
-                _ci_matched = True
             elif ci < 0:
                 danger += 5
-                # TASK 5.4 (D13)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'ci_opponent_slight', 'matched': True, 'condition': 'ci < 0',
-                        'delta': 5, 'running_danger': danger,
-                        'inputs': {'ci': ci},
-                    })
-                _ci_matched = True
-    # TASK 5.4 (CI Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _ci_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'ci', 'matched': False, 'skip_reason': 'ci is None' if ci is None else 'ci positive',
-            'running_danger': danger, 'inputs': {'ci': ci},
-        })
 
     # b115: Breakeven cushion — the REAL danger line, not sell strike
     # be_upper = upper breakeven (IC/IB/Bear Call), be_lower = lower breakeven (IC/IB/Bull Put)
@@ -2554,9 +2078,7 @@ def position_verdict(trade, insights, regime, ctx):
     be_lower = trade.get('be_lower') or trade.get('beLower')
     sell_strike = trade.get('sell_strike', 0)
     spot = trade.get('current_spot', 0)
-    _be_matched = False
     if spot and (be_upper or be_lower):
-        _be_eligible = True
         vix = ctx.get('vix', 20)
         # BR73: Annualized to daily volatility denominator fix
         daily_sigma = spot * (vix / 100) / math.sqrt(252) if spot > 0 else 300
@@ -2571,70 +2093,26 @@ def position_verdict(trade, insights, regime, ctx):
         else:
             near_cushion = spot - be_lower
             near_label = f"BE {be_lower}"
-
         if daily_sigma > 0:
             cushion_sigma = near_cushion / daily_sigma
             if near_cushion <= 0:
                 danger += 40
-                # TASK 5.4 (D14)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'be_breached', 'matched': True, 'condition': 'near_cushion <= 0',
-                        'delta': 40, 'running_danger': danger,
-                        'inputs': {'near_cushion': near_cushion, 'near_label': near_label},
-                    })
                 reasons.append(f"BREACHED — spot past {near_label}")
-                _be_matched = True
             elif cushion_sigma < 0.15:
                 danger += 30
-                # TASK 5.4 (D15)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'be_cushion_critical', 'matched': True, 'condition': 'cushion_sigma < 0.15',
-                        'delta': 30, 'running_danger': danger,
-                        'inputs': {'near_cushion': near_cushion, 'cushion_sigma': cushion_sigma},
-                    })
                 reasons.append(f"Only {near_cushion:.0f}pts to {near_label} ({cushion_sigma:.2f}σ)")
-                _be_matched = True
             elif cushion_sigma < 0.30:
                 danger += 20
-                # TASK 5.4 (D16)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'be_cushion_thin', 'matched': True, 'condition': 'cushion_sigma < 0.30',
-                        'delta': 20, 'running_danger': danger,
-                        'inputs': {'near_cushion': near_cushion, 'cushion_sigma': cushion_sigma},
-                    })
                 reasons.append(f"Thin BE cushion {near_cushion:.0f}pts to {near_label}")
-                _be_matched = True
             elif cushion_sigma < 0.50:
                 danger += 10
-                # TASK 5.4 (D17)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'be_cushion_approaching', 'matched': True, 'condition': 'cushion_sigma < 0.50',
-                        'delta': 10, 'running_danger': danger,
-                        'inputs': {'near_cushion': near_cushion, 'cushion_sigma': cushion_sigma},
-                    })
                 reasons.append(f"Approaching {near_label} ({near_cushion:.0f}pts)")
-                _be_matched = True
         # b115: Early BOOK — profitable + near breakeven = take money now
         if pnl > 0 and near_cushion > 0 and daily_sigma > 0 and near_cushion / daily_sigma < 0.20:
-            # TASK 5.4 (decision_path)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _pos_trace['decision_path'].append('early_book_cushion: pnl>0 and cushion_sigma < 0.20')
-            _final_verdict = {"action": "BOOK", "urgency": "NOW",
+            return {"action": "BOOK", "urgency": "NOW",
                     "reason": f"₹{pnl:.0f} profit but only {near_cushion:.0f}pts to {near_label}. Premium at risk — lock in now."}
-            # TASK 5.4 (Final Snapshot)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _pos_trace['danger_final'] = danger
-                _pos_trace['final'] = dict(_final_verdict)
-                _pos_trace['structural_exits']['be_cushion_early_book'] = True
-            return _final_verdict
     elif sell_strike and spot and is_credit and not is_ib:
         # Fallback: use sell_strike if no breakeven stored (old trades)
-        # TASK 5.4 — R3-4 Skip Label (D14-D17 group was eligible based on inputs but be_upper/lower missing)
-        # be_cushion_absent_fallback_fired
         cushion = abs(sell_strike - spot)
         vix = ctx.get('vix', 20)
         # BR73: Annualized to daily volatility denominator fix
@@ -2643,150 +2121,41 @@ def position_verdict(trade, insights, regime, ctx):
             cushion_sigma = cushion / daily_sigma
             if cushion_sigma < 0.25:
                 danger += 25
-                # TASK 5.4 (D18)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'sell_strike_close', 'matched': True, 'condition': 'cushion_sigma < 0.25',
-                        'delta': 25, 'running_danger': danger,
-                        'inputs': {'cushion': cushion, 'cushion_sigma': cushion_sigma},
-                    })
                 reasons.append(f"Only {cushion:.0f}pts ({cushion_sigma:.2f}σ) from sell strike")
-                _be_matched = True
             elif cushion_sigma < 0.5:
                 danger += 15
-                # TASK 5.4 (D19)
-                if ctx.get('_trace') is not None and _pos_trace is not None:
-                    _trace_append(_pos_trace, 'danger_components', {
-                        'check': 'sell_strike_thin', 'matched': True, 'condition': 'cushion_sigma < 0.5',
-                        'delta': 15, 'running_danger': danger,
-                        'inputs': {'cushion': cushion, 'cushion_sigma': cushion_sigma},
-                    })
                 reasons.append(f"Thin cushion ({cushion_sigma:.2f}σ from sell)")
-                _be_matched = True
-    # TASK 5.4 — BE Cushion Skip logic (highly informative for regression)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _be_matched:
-        _skip_reason = 'be_upper and be_lower are None — BR115 class silent failure'
-        if not spot: _skip_reason = 'spot missing'
-        elif (be_upper or be_lower) and _be_eligible:
-             _skip_reason = 'cushion outside danger thresholds'
-             # be_cushion_absent_fallback_eligible_not_matched
-        # Check against R3-4 failure conditions
-        if not be_upper and not be_lower and (is_credit or is_4leg):
-             # be_cushion_silent_failure
-             pass # label anchor
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'be_cushion', 'matched': False, 'skip_reason': _skip_reason,
-            'running_danger': danger, 'inputs': {'be_upper': be_upper, 'be_lower': be_lower, 'spot': spot},
-        })
 
     # Momentum threat
-    _mom_matched = False
     if momentum_threat:
         danger += 30
-        # TASK 5.4 (D20)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'momentum_threat', 'matched': True, 'condition': 'momentum_threat',
-                'delta': 30, 'running_danger': danger,
-                'inputs': {'insight_labels': [i.get('label', '') for i in insights if 'sell strike' in i.get('label', '').lower()]},
-            })
         reasons.append("Spot approaching sell strike")
-        _mom_matched = True
-    # TASK 5.4 (Momentum Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _mom_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'momentum_threat', 'matched': False, 'skip_reason': 'no sell-strike-approach insight',
-            'running_danger': danger, 'inputs': {},
-        })
 
     # Phase mismatch (credit in trending phase = danger)
-    _phase_matched = False
     if is_credit and phase == 'TRENDING':
         danger += 10
-        # TASK 5.4 (D21)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'phase_mismatch_credit', 'matched': True, 'condition': "is_credit and phase == 'TRENDING'",
-                'delta': 10, 'running_danger': danger,
-                'inputs': {'is_credit': is_credit, 'phase': phase},
-            })
         reasons.append("Trending market — credit at risk")
-        _phase_matched = True
-    # TASK 5.4 (Phase Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _phase_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'phase_mismatch', 'matched': False,
-            'skip_reason': f'phase={phase} or not credit',
-            'running_danger': danger, 'inputs': {'is_credit': is_credit, 'phase': phase},
-        })
 
     # b96: "Past the wall" insight — position_wall_proximity detected exposure
-    _past_wall_matched = False
     past_wall = any('Past the wall' in i.get('label', '') for i in insights)
     if past_wall:
         danger += 35
-        # TASK 5.4 (D22)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _trace_append(_pos_trace, 'danger_components', {
-                'check': 'past_wall', 'matched': True, 'condition': 'past_wall insight',
-                'delta': 35, 'running_danger': danger,
-                'inputs': {'has_past_wall_insight': True},
-            })
         reasons.append("Sell past OI wall — no protection")
-        _past_wall_matched = True
-    # TASK 5.4 (Past Wall Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _past_wall_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'past_wall', 'matched': False, 'skip_reason': 'no past-wall insight',
-            'running_danger': danger, 'inputs': {},
-        })
 
     # b96: Loss magnitude — deep loss even with stable danger should escalate
-    _loss_matched = False
     if pnl < 0:
         if loss_pct > 0.5:
             danger += 30
-            # TASK 5.4 (D23)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'loss_deep', 'matched': True, 'condition': 'loss_pct > 0.5',
-                    'delta': 30, 'running_danger': danger,
-                    'inputs': {'loss_pct': loss_pct, 'pnl': pnl, 'max_loss': max_l},
-                })
             reasons.append(f"Deep loss ({loss_pct*100:.0f}% of max)")
-            _loss_matched = True
         elif loss_pct > 0.3:
             danger += 15
-            # TASK 5.4 (D24)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _trace_append(_pos_trace, 'danger_components', {
-                    'check': 'loss_significant', 'matched': True, 'condition': 'loss_pct > 0.3',
-                    'delta': 15, 'running_danger': danger,
-                    'inputs': {'loss_pct': loss_pct, 'pnl': pnl, 'max_loss': max_l},
-                })
             reasons.append(f"Significant loss ({loss_pct*100:.0f}% of max)")
-            _loss_matched = True
-    # TASK 5.4 (Loss Skip)
-    if ctx.get('_trace') is not None and _pos_trace is not None and not _loss_matched:
-        _trace_append(_pos_trace, 'danger_components', {
-            'check': 'loss_magnitude', 'matched': False, 'skip_reason': 'pnl>=0 (not in loss)',
-            'running_danger': danger, 'inputs': {'pnl': pnl},
-        })
 
     # ═══ EXIT — compound danger high ═══
     if danger >= 60:
         urgency = 'NOW' if danger >= 80 else 'SOON'
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append(f'danger>={60}: urgency={urgency}')
-        _final_verdict = {"action": "EXIT", "urgency": urgency,
+        return {"action": "EXIT", "urgency": urgency,
                 "reason": f"Danger {danger}/100. {'. '.join(reasons[:3])}"}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-            _pos_trace['structural_exits']['danger_threshold_hit'] = True
-        return _final_verdict
 
     # ═══ b114: THESIS_BROKEN — entry bias contradicts current effective bias ═══
     entry_bias = trade.get('entry_bias', '')
@@ -2800,49 +2169,18 @@ def position_verdict(trade, insights, regime, ctx):
         if (bull_entry and bear_now) or (bear_entry and bull_now):
             thesis_broken = True
     if thesis_broken and pnl < 0:
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('thesis_broken and pnl<0')
-        _final_verdict = {"action": "EXIT", "urgency": "SOON",
+        return {"action": "EXIT", "urgency": "SOON",
                 "reason": f"Thesis broken. Entered {entry_bias}, market now {current_bias}. Credit spread fighting the trend."}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-            _pos_trace['structural_exits']['thesis_broken'] = True
-        return _final_verdict
     if thesis_broken and pnl >= 0:
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('thesis_broken and pnl>=0')
-        _final_verdict = {"action": "BOOK", "urgency": "NOW",
+        return {"action": "BOOK", "urgency": "NOW",
                 "reason": f"Thesis broken — market flipped {entry_bias}→{current_bias}. Lock in ₹{pnl:.0f} before it reverses."}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-            _pos_trace['structural_exits']['thesis_broken'] = True
-        return _final_verdict
 
     # ═══ EXIT — structural threats (independent of danger score) ═══
     if is_4leg and dte <= 1:
         if pnl > 0:
-            # TASK 5.4 (decision_path)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _pos_trace['decision_path'].append('4leg_expiry_win')
-            _final_verdict = {"action": "BOOK", "urgency": "NOW", "reason": "4-leg + expiry day. 0% overnight survival."}
+            return {"action": "BOOK", "urgency": "NOW", "reason": "4-leg + expiry day. 0% overnight survival."}
         else:
-            # TASK 5.4 (decision_path)
-            if ctx.get('_trace') is not None and _pos_trace is not None:
-                _pos_trace['decision_path'].append('4leg_expiry_loss')
-            _final_verdict = {"action": "EXIT", "urgency": "NOW", "reason": "4-leg + expiry. Cut loss, don't hold overnight."}
-
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-            _pos_trace['structural_exits']['four_leg_expiry'] = True
-        return _final_verdict
+            return {"action": "EXIT", "urgency": "NOW", "reason": "4-leg + expiry. Cut loss, don't hold overnight."}
 
     # ═══ BOOK — profitable + reasons to take money ═══
     if pnl_pct >= 0.5:
@@ -2852,29 +2190,13 @@ def position_verdict(trade, insights, regime, ctx):
         if regime.get('type') == 'range': book_reasons.append("range — theta captured")
         if vix_chg < -1.0 and is_credit: book_reasons.append(f"VIX crushed {vix_chg:.1f} — lock gains")
         urgency = 'NOW' if pnl_pct >= 0.7 or danger >= 30 else 'SOON'
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append(f'book_50pct: urgency={urgency}')
         reason = f"{pnl_pct*100:.0f}% of max."
         if book_reasons: reason += f" {'. '.join(book_reasons[:2])}"
-        _final_verdict = {"action": "BOOK", "urgency": urgency, "reason": reason}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
+        return {"action": "BOOK", "urgency": urgency, "reason": reason}
 
     if pnl_pct >= 0.3 and (against_trend or danger >= 25):
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('book_30pct_risk')
-        _final_verdict = {"action": "BOOK", "urgency": "SOON",
+        return {"action": "BOOK", "urgency": "SOON",
                 "reason": f"{pnl_pct*100:.0f}% profit + {'risk building' if danger >= 25 else 'against trend'}. Don't give it back."}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
 
     # ═══ HOLD — positive conditions ═══
     if pnl > 0 and danger < 20:
@@ -2883,36 +2205,16 @@ def position_verdict(trade, insights, regime, ctx):
         if has_wall and wall_sev == 0: hold_reasons.append("wall protecting")
         if regime.get('type') == 'range': hold_reasons.append("range — theta working")
         if vix_chg < 0 and is_credit: hold_reasons.append("VIX falling — good for credit")
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('hold_win_low_risk')
         reason = f"P&L ₹{pnl:.0f} ({pnl_pct*100:.0f}%)."
         if hold_reasons: reason += f" {'. '.join(hold_reasons[:2])}"
-        _final_verdict = {"action": "HOLD", "urgency": "WATCH", "reason": reason}
-        # TASK 5.4 (Final Snapshot)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['danger_final'] = danger
-            _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
+        return {"action": "HOLD", "urgency": "WATCH", "reason": reason}
 
     # ═══ DEFAULT ═══
     if pnl >= 0:
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('default_hold_profit')
-        _final_verdict = {"action": "HOLD", "urgency": "WATCH", "reason": f"P&L ₹{pnl:.0f}. Danger {danger}/100."}
+        return {"action": "HOLD", "urgency": "WATCH", "reason": f"P&L ₹{pnl:.0f}. Danger {danger}/100."}
     else:
-        # TASK 5.4 (decision_path)
-        if ctx.get('_trace') is not None and _pos_trace is not None:
-            _pos_trace['decision_path'].append('default_hold_loss')
-        _final_verdict = {"action": "HOLD", "urgency": "MONITOR",
+        return {"action": "HOLD", "urgency": "MONITOR",
                 "reason": f"Loss ₹{pnl:.0f} ({loss_pct*100:.0f}%). Danger {danger}/100. {'. '.join(reasons[:2]) if reasons else 'Watch CI.'}"}
-
-    # TASK 5.4 (Final Snapshot)
-    if ctx.get('_trace') is not None and _pos_trace is not None:
-        _pos_trace['danger_final'] = danger
-        _pos_trace['final'] = dict(_final_verdict)
-    return _final_verdict
 
 # ═══════════════════════════════════════════
 # MAIN ENTRY POINT
@@ -2968,170 +2270,7 @@ _CONST = {
     'DIR_BEAR': ['BEAR_CALL', 'BEAR_PUT'],
 }
 
-
-# ═══════════════════════════════════════════════════════════════
-# CHAIN_DEBUG FOUNDATION — v2.2.9
-# Trace collector constants + utilities used by analyze(), synthesize_verdict,
-# position_verdict, generate_candidates, _build_candidate, and replay().
-# Guarded by ctx.get('_trace') — zero cost when debug disabled.
-# ═══════════════════════════════════════════════════════════════
-
-# TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.2.9"
-TRACE_SCHEMA_VERSION = "1.0"
-MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
-
-
-# TASK 5.1 — Fresh trace skeleton for each analyze() call
-def _new_trace(source='live'):
-    """Return a fresh trace dict with full schema pre-populated.
-    
-    All sections present so downstream code can append without
-    checking existence. candidates keyed by index (BNF/NF) because
-    generate_candidates is called once per index.
-    """
-    return {
-        'meta': {
-            'brain_version': BRAIN_VERSION,
-            'trace_schema_version': TRACE_SCHEMA_VERSION,
-            'source': source,              # 'live' or 'replay'
-            'ts_iso': None,                # populated in analyze() — Task 5.10
-            'session_date': None,          # populated in analyze() — Task 5.10
-            'inputs_hash': None,           # populated in analyze() — Task 5.9
-            'brain_execution_time_ms': None,  # populated in analyze() — Task 5.11
-            'truncated': False,            # set by _trace_append if MAX_TRACE_ITEMS exceeded
-        },
-        'verdict': {
-            'inputs': {},
-            'insight_contributions': [],   # one entry per all_insights loop iteration
-            'bull_contributions': [],      # context signals that increased bull
-            'bear_contributions': [],      # context signals that increased bear
-            'caution_count': 0,
-            'direction_decision': {},
-            'confidence_adjustments': [],
-            'strategy_selection': {},
-            'conflicts': [],
-            'final': {},
-        },
-        'positions': {},   # keyed by trade_id
-        'candidates': {
-            'BNF': None,   # filled by generate_candidates when BNF chain present
-            'NF':  None,   # filled by generate_candidates when NF chain present
-        },
-        'ml_budget': None,  # R3-2: populated by Task 5.13 after ML enrichment loop
-        'errors': [],       # insight function exceptions captured here
-    }
-
-
-# TASK 5.1 — Safe JSON serialization (handles nan, inf, non-finite floats)
-def _safe_json(obj):
-    """Serialize dict to JSON string, replacing nan/inf with None.
-    
-    Standard json.dumps raises ValueError on nan/inf. Brain's BS math
-    occasionally produces these on edge cases (near-expiry, zero-vol inputs).
-    Without this wrapper, trace persistence would crash on those polls.
-    
-    Returns: (json_str, had_unsafe_values: bool)
-    """
-    import json as _json
-    import math as _math
-    
-    def _sanitize(v):
-        if isinstance(v, float):
-            if _math.isnan(v) or _math.isinf(v):
-                return None
-            return v
-        if isinstance(v, dict):
-            return {k: _sanitize(vv) for k, vv in v.items()}
-        if isinstance(v, (list, tuple)):
-            return [_sanitize(vv) for vv in v]
-        return v
-    
-    had_unsafe = False
-    try:
-        # Fast path — assume safe (allow_nan=False ensures we catch non-standard JSON)
-        return _json.dumps(obj, allow_nan=False), False
-    except (ValueError, TypeError):
-        had_unsafe = True
-        safe_obj = _sanitize(obj)
-        return _json.dumps(safe_obj), True
-
-
-# TASK 5.1 — Bounded append to trace array with truncation flag
-def _trace_append(trace_dict, array_key, entry):
-    """Append entry to trace_dict[array_key]; set trace.meta.truncated if cap hit.
-    
-    Every trace array append goes through this wrapper. Prevents any single
-    poll from producing unbounded trace payload.
-    
-    If trace_dict is None or falsy, no-op (zero-cost guard for disabled mode).
-    """
-    if not trace_dict:
-        return
-    arr = trace_dict.get(array_key)
-    if arr is None:
-        return
-    if len(arr) >= MAX_TRACE_ITEMS:
-        # Already capped — mark meta once, then silently drop
-        meta = trace_dict.get('meta', {})
-        if not meta.get('truncated'):
-            meta['truncated'] = True
-            # Record truncation event in errors
-            errs = trace_dict.get('errors', [])
-            errs.append({
-                'function': '_trace_append',
-                'error': 'MAX_TRACE_ITEMS exceeded',
-                'array_key': array_key,
-                'cap': MAX_TRACE_ITEMS,
-            })
-        return
-    arr.append(entry)
-
-
-# TASK 5.1 — Verdict flip detection (accepts dict or JSON string — R2 fix)
-def _detect_flip(current_verdict, previous_verdict):
-    """Compare current vs previous verdict. Returns flip descriptor or None.
-    
-    Accepts dict or JSON string for both arguments — Kotlin calls via Chaquopy
-    typically pass JSON strings (brain.callAttr stringifies JSONObject args),
-    Python callers pass dicts. Parses as needed.
-    
-    Returns dict with 'event': 'flip' and changed fields, or None if no flip.
-    """
-    import json as _json
-    
-    def _coerce(v):
-        """Accept dict pass-through or JSON string parse. None/malformed → None."""
-        if isinstance(v, str):
-            try:
-                return _json.loads(v)
-            except (ValueError, TypeError):
-                return None
-        return v
-    
-    current = _coerce(current_verdict)
-    previous = _coerce(previous_verdict)
-    
-    if not isinstance(current, dict) or not isinstance(previous, dict):
-        return None
-    
-    changed = {}
-    for field in ('direction', 'action', 'strategy'):
-        prev_v = previous.get(field)
-        curr_v = current.get(field)
-        if prev_v != curr_v and prev_v is not None:
-            changed[field] = {'from': prev_v, 'to': curr_v}
-    if not changed:
-        return None
-    return {
-        'event': 'flip',
-        'changed': changed,
-    }
-
-# END TASK 5.1
-
 # ─── VARSITY FILTER ───
-
 
 def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
     """Maps bias + VIX → PRIMARY / ALLOWED / BLOCKED strategy types.
@@ -3421,142 +2560,46 @@ def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw
 
 # ─── BUILD SINGLE 2-LEG CANDIDATE ───
 
-def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx):
+def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode):
     sp_sell = str(int(pair['sell']))
     sp_buy = str(int(pair['buy']))
     sell_data = strikes.get(sp_sell, {}).get(pair['sellType'], {})
     buy_data = strikes.get(sp_buy, {}).get(pair['buyType'], {})
-    if not sell_data or not buy_data:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'strike_data_missing',
-                    'reason': 'sell_data or buy_data missing',
-                })
-        return None
+    if not sell_data or not buy_data: return None
 
     is_credit = stype in _CONST['CREDIT_TYPES']
     sell_price = sell_data.get('bid', 0) if is_credit else sell_data.get('ask', 0)
     buy_price = buy_data.get('ask', 0) if is_credit else buy_data.get('bid', 0)
-    if not sell_price or not buy_price:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'price_zero',
-                    'reason': 'sell_price or buy_price zero',
-                })
-        return None
+    if not sell_price or not buy_price: return None
 
     if is_credit:
         net_prem = sell_price - buy_price
-        if net_prem <= 0:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'credit_non_positive',
-                        'reason': 'is_credit and net_prem <= 0',
-                    })
-            return None
+        if net_prem <= 0: return None
         max_profit = net_prem * lot_size
         max_loss = (width - net_prem) * lot_size
     else:
         net_prem = buy_price - sell_price
-        if net_prem <= 0:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_credit_conflict_non_positive_net',
-                        'reason': 'net_prem <= 0 in debit block',
-                    })
-            return None
+        if net_prem <= 0: return None
         max_profit = (width - net_prem) * lot_size
         max_loss = net_prem * lot_size
 
-    if max_loss <= 0 or max_profit <= 0:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'max_loss_non_positive',
-                    'reason': 'max_loss <= 0 or max_profit <= 0',
-                })
-        return None
+    if max_loss <= 0 or max_profit <= 0: return None
     capital = _capital
     # BR118: Risk limit check (10% of capital)
-    if max_loss > capital * 0.10:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'capital_limit_exceeded',
-                    'reason': 'max_loss > capital * 0.10',
-                })
-        return None
+    if max_loss > capital * 0.10: return None
 
     # Sigma OTM filter — credit directional only (0.5σ minimum)
     sigma_otm = None
     ds = _daily_sigma(spot, vix)
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and ds > 0:
         sigma_otm = abs(pair['sell'] - spot) / ds
-        if sigma_otm < _CONST['MIN_SIGMA_OTM']:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'sigma_otm_too_close',
-                        'reason': 'is_credit directional and sigma_otm < 0.5',
-                    })
-            return None
+        if sigma_otm < _CONST['MIN_SIGMA_OTM']: return None
         sigma_otm = round(sigma_otm, 2)
 
     # Minimum width filter — narrow credit directional rejected
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT'):
         min_w = _CONST['MIN_WIDTH_BNF'] if is_bnf else _CONST['MIN_WIDTH_NF']
-        if width < min_w:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'width_too_narrow',
-                        'reason': 'is_credit directional and width < min_width',
-                    })
-            return None
+        if width < min_w: return None
 
     # Probability at breakeven
     if is_credit:
@@ -3568,47 +2611,13 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
 
     # BR98: Credit requires 50% prob floor. Debit can be acceptable <50% if EV clearly positive.
     if is_credit and prob < _CONST['MIN_PROB']:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'credit_prob_below_floor',
-                    'reason': 'is_credit and prob < MIN_PROB',
-                })
         return None
     if not is_credit:
         # For debit: require prob >= 40% floor AND 10% positive EV buffer
-        if prob < 0.40:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_prob_below_floor',
-                        'reason': 'not is_credit and prob < 0.40',
-                    })
-            return None
+        if prob < 0.40: return None
         expected_win = prob * max_profit
         expected_loss = (1 - prob) * max_loss
         if expected_win < expected_loss * 1.10:  # require 10% positive EV buffer
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_negative_ev',
-                        'reason': 'not is_credit and EV check fails',
-                    })
             return None
 
     ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)
@@ -3656,15 +2665,6 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     }
     ml = _ml_score(_ml_cand)
 
-    # TASK 5.6 — trace accepted candidate
-    if ctx.get('_trace') is not None:
-        _active = ctx.get('_active_cand_trace')
-        if _active is not None:
-            _trace_append(_active, 'attempts', {
-                'stype': stype,
-                'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                'width': width, 'result': 'accepted',
-            })
     return {
         'id': cid, 'type': stype, 'width': width, 'legs': 2,
         'sellStrike': pair['sell'], 'buyStrike': pair['buy'],
@@ -3700,34 +2700,12 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
 
 def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx):
+    """Generate ALL trading candidates for one index (BNF or NF).
+    Premium is king — every candidate scored by premium quality.
+    Dynamic is the way — calibration feeds into scoring."""
     if not chain or not chain.get('strikes') or not chain.get('atm'): return []
-    is_bnf = index_key == 'BNF'
 
-    # TASK 5.5 — trace init for this index
-    _trace_root = ctx.get('_trace')
-    _cand_trace = None
-    if _trace_root is not None:
-        _cand_trace = {
-            'config': {
-                'index_key': index_key, 'spot': spot, 'atm': chain.get('atm'),
-                'expiry': expiry, 'vix': vix,
-                'bias': bias.get('bias', 'NEUTRAL') if isinstance(bias, dict) else str(bias),
-                'bias_strength': bias.get('strength', '') if isinstance(bias, dict) else '',
-                'iv_pctl': iv_pctl,
-                'lot_size': _CONST['BNF_LOT'] if is_bnf else _CONST['NF_LOT'],
-                'widths': list(_CONST['BNF_WIDTHS'] if is_bnf else _CONST['NF_WIDTHS']),
-                'trade_mode': ctx.get('tradeMode', 'swing'),
-                'range_detected': (ctx.get('rangeSigma') or 999) < 0.3,
-                'strikes_count': len(chain.get('strikes', {})),
-                'cw_strike': chain.get('callWallStrike', 0),
-                'pw_strike': chain.get('putWallStrike', 0),
-            },
-            'varsity': {},
-            'attempts': [],
-            'summary': None,
-        }
-        _trace_root['candidates'][index_key] = _cand_trace
-        ctx['_active_cand_trace'] = _cand_trace
+    is_bnf = index_key == 'BNF'
     lot_size = _CONST['BNF_LOT'] if is_bnf else _CONST['NF_LOT']
     widths = _CONST['BNF_WIDTHS'] if is_bnf else _CONST['NF_WIDTHS']
     atm = chain['atm']
@@ -3748,13 +2726,6 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
 
     varsity = _get_varsity_filter(bias, vix, trade_mode, range_detected)
     allowed_types = varsity['primary'] + varsity['allowed']
-    # TASK 5.5 — varsity snapshot
-    if _cand_trace is not None:
-        _cand_trace['varsity'] = {
-            'primary': list(varsity.get('primary', [])),
-            'allowed': list(varsity.get('allowed', [])),
-            'blocked': list(varsity.get('blocked', [])),
-        }
     candidates = []
 
     # ═══ 1. DIRECTIONAL 2-LEG SPREADS ═══
@@ -3763,7 +2734,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
         for width in widths:
             pairs = _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw)
             for pair in pairs:
-                cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx)
+                cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode)
                 if not cand: continue
 
                 # Range budget filter — debit only
@@ -3953,14 +2924,6 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
             }
             candidates.append(ib)
 
-    # TASK 5.5 — Summary Trace
-    if _cand_trace is not None:
-        _cand_trace['summary'] = {
-            'total_found': len(candidates),
-            'types_found': sorted(list(set(c['type'] for c in candidates))),
-            'primary_found': len([c for c in candidates if c.get('varsityTier') == 'PRIMARY']),
-            'timestamp': time.time() if 'time' in dir() else 0,
-        }
     return candidates
 
 # ─── RANK CANDIDATES ───
@@ -4207,17 +3170,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     strike_oi = json.loads(strike_oi_json) if strike_oi_json else {}
     ctx = json.loads(context_json) if context_json else {}
 
-    # TASK 5.2 — trace init
-    # Install trace if debug enabled. Source tag 'replay' overridden by replay() endpoint.
-    if ctx.get('_debug'):
-        _trace_source = ctx.get('_trace_source_override', 'live')
-        ctx['_trace'] = _new_trace(source=_trace_source)
-
     result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
     if len(polls) < 3:
-        # Even on early return, embed trace so consumer knows it ran
-        if ctx.get('_trace'):
-            result['_trace'] = ctx['_trace']
         return json.dumps(result)
 
     # Set capital from JS context (single source of truth: C.CAPITAL)
@@ -4461,10 +3415,4 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     # BR119: Single source of truth. Sophisticated generator above handles all logic.
     # Phase 3 fallback (A3) fully retired.
     # BR130: Market Radar Engine v2.2.8 finalized.
-    # TASK 5.2 — embed trace in result
-    if ctx.get('_trace') is not None:
-        result['_trace'] = ctx['_trace']
-    # Use _safe_json to handle any nan/inf produced by BS math edge cases
-    out_str, _ = _safe_json(result)
-    return out_str
-
+    return json.dumps(result)
