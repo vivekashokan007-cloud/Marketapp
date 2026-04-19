@@ -2114,7 +2114,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if abs(drift) >= 2:
         conflicts.append(f"Bias drifted {drift:+d} from morning")
         confidence -= 10
-        # TASK 5.3 (F17)
+        # TASK 5.3 (F15)
         if ctx.get('_trace') is not None:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'bias_drift_divergence', 'delta': -10,
@@ -2127,7 +2127,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if scan_age and scan_age >= 30:
         conflicts.append(f"Data is {scan_age}min stale — rescan first")
         confidence -= 15
-        # TASK 5.3 (F20.5 — stale_data_penalty)
+        # TASK 5.3 (F16)
         if ctx.get('_trace') is not None:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'stale_data_penalty', 'delta': -15,
@@ -2153,7 +2153,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if gd_conflicts >= 2:
         conflicts.append(f"Global direction contradicts ({gd_conflicts}/3 against)")
         confidence -= 15
-        # TASK 5.3 (F21.5 — global_conflict_penalty)
+        # TASK 5.3 (F17)
         if ctx.get('_trace') is not None:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'global_conflict_penalty', 'delta': -15,
@@ -2211,7 +2211,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         action, strategy, urgency = 'STOP', None, 'DONE FOR TODAY'
         _conf_before_pnl = confidence
         confidence = 0
-        # TASK 5.3 (F24.5)
+        # TASK 5.3 (F21)
         if ctx.get('_trace') is not None:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'daily_pnl_stop_zero', 'from': _conf_before_pnl, 'to': 0,
@@ -2221,7 +2221,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # DEAD UNTIL v2.2.9 — ctx.dailyPnl/dailyTradeCount not wired
     elif ctx.get('dailyTradeCount', 0) >= 3:
         confidence -= 15
-        # TASK 5.3 (F21)
+        # TASK 5.3 (F22)
         if ctx.get('_trace') is not None:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'multi_trade_penalty', 'delta': -15,
@@ -2242,7 +2242,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if action == 'WAIT' or action == 'STOP':
         _conf_pre_zero = confidence
         confidence = 0
-        # TASK 5.3 (F22)
+        # TASK 5.3 (F24)
         if ctx.get('_trace') is not None and _conf_pre_zero != 0:
             _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
                 'step': 'wait_stop_zero', 'from': _conf_pre_zero, 'to': 0,
