@@ -4468,3 +4468,213 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     out_str, _ = _safe_json(result)
     return out_str
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TASK 5.7 (Ship 2 Phase 0.3) — replay() ENDPOINT
+# Re-runs analyze() against stored inputs for regression verification.
+# Depends on: _new_trace, _calibration, _cal_signature, BRAIN_VERSION,
+#             TRACE_SCHEMA_VERSION, analyze() — all defined above.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+# Fields compared when expected_baseline is provided.
+# Direction/action/strategy: exact match. confidence/bull/bear: tolerance.
+# Excluded: reasoning, urgency (non-deterministic), market[] (order-sensitive),
+# effective_bias (derived), conflicts list (exact match separately).
+REPLAY_COMPARE_EXACT = ('direction', 'action', 'strategy')
+REPLAY_COMPARE_TOLERANT = ('confidence', 'bull', 'bear')
+REPLAY_COMPARE_LIST_EXACT = ('conflicts',)
+REPLAY_DEFAULT_TOLERANCE = {'confidence': 0, 'bull': 0.01, 'bear': 0.01}
+
+
+def replay(inputs, calibration_override=None, expected_baseline=None,
+           tolerance=None, source_tag='replay'):
+    """
+    Re-run analyze() against stored inputs for regression verification.
+
+    Parameters
+    ----------
+    inputs : dict
+        Fixture format: has 'inputs' sub-dict with poll_json, ctx_json,
+        baseline_json, closed_trades_json, open_trades_json.
+        Raw format: has poll_json, trades_json, baseline_json, open_trades_json,
+        candidates_json, strike_oi_json, context_json at top level.
+    calibration_override : dict | None
+        If provided, overrides _calibration global during replay.
+        None → rebuild from trades_json normally.
+        {} → run with no calibration.
+    expected_baseline : dict | None
+        If provided, compares result.verdict to expected_baseline.verdict.
+        Shape matches fixture_X.baseline.json (has 'verdict' key).
+    tolerance : dict | None
+        Field tolerances. Default REPLAY_DEFAULT_TOLERANCE.
+    source_tag : str
+        trace.meta.source value. Default 'replay'.
+
+    Returns
+    -------
+    dict with keys 'result' (analyze dict) and 'replay_meta'.
+
+    Raises
+    ------
+    ValueError: malformed inputs or expected_baseline.
+    TypeError: wrong type for override or tolerance.
+    """
+    import datetime as _dt
+
+    global _calibration, _cal_signature
+
+    # ─── Parameter validation ───
+    if not isinstance(inputs, dict):
+        raise TypeError("replay: inputs must be a dict")
+    if calibration_override is not None and not isinstance(calibration_override, dict):
+        raise TypeError("replay: calibration_override must be dict or None")
+    if tolerance is not None and not isinstance(tolerance, dict):
+        raise TypeError("replay: tolerance must be dict or None")
+    if expected_baseline is not None:
+        if not isinstance(expected_baseline, dict):
+            raise TypeError("replay: expected_baseline must be dict or None")
+        if 'verdict' not in expected_baseline:
+            raise ValueError("replay: expected_baseline missing 'verdict' key")
+
+    # ─── Format detection and normalization to 7 analyze() args ───
+    if 'inputs' in inputs and isinstance(inputs.get('inputs'), dict):
+        input_format = 'fixture'
+        fx_inputs = inputs['inputs']
+        poll_json     = fx_inputs.get('poll_json')
+        trades_json   = fx_inputs.get('closed_trades_json', '[]')
+        baseline_json = fx_inputs.get('baseline_json', '{}')
+        opentrades_js = fx_inputs.get('open_trades_json', '[]')
+        candidates_js = fx_inputs.get('candidates_json', '[]')
+        strike_oi_js  = fx_inputs.get('strike_oi_json', '{}')
+        context_json  = fx_inputs.get('ctx_json', '{}')
+        if poll_json is None:
+            raise ValueError("replay: fixture.inputs.poll_json missing")
+    else:
+        input_format = 'raw'
+        poll_json     = inputs.get('poll_json')
+        trades_json   = inputs.get('trades_json', '[]')
+        baseline_json = inputs.get('baseline_json', '{}')
+        opentrades_js = inputs.get('open_trades_json', '[]')
+        candidates_js = inputs.get('candidates_json', '[]')
+        strike_oi_js  = inputs.get('strike_oi_json', '{}')
+        context_json  = inputs.get('context_json', '{}')
+        if poll_json is None:
+            raise ValueError("replay: raw.poll_json missing")
+
+    # ─── Inject _debug + source override into context ───
+    try:
+        ctx_dict = json.loads(context_json) if context_json else {}
+    except (ValueError, TypeError):
+        raise ValueError("replay: context_json is not valid JSON")
+    ctx_dict['_debug'] = True
+    ctx_dict['_trace_source_override'] = source_tag
+    context_json = json.dumps(ctx_dict)
+
+    # ─── Calibration override (save, set, restore in finally) ───
+    _saved_cal = _calibration
+    _saved_sig = _cal_signature
+    override_used = calibration_override is not None
+
+    errors = []
+    result_dict = None
+    try:
+        if override_used:
+            _calibration = calibration_override
+            _cal_signature = '__REPLAY_OVERRIDE__'
+
+        try:
+            result_str = analyze(poll_json, trades_json, baseline_json,
+                                 opentrades_js, candidates_js, strike_oi_js,
+                                 context_json)
+            result_dict = json.loads(result_str)
+        except Exception as e:
+            errors.append({'where': 'analyze', 'type': type(e).__name__, 'msg': str(e)})
+    finally:
+        _calibration = _saved_cal
+        _cal_signature = _saved_sig
+
+    # ─── Build replay_meta ───
+    ist = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+    replay_meta = {
+        'source_tag': source_tag,
+        'brain_version': BRAIN_VERSION,
+        'trace_schema_version': TRACE_SCHEMA_VERSION,
+        'calibration_override_used': override_used,
+        'replayed_at_ist': _dt.datetime.now(ist).isoformat(),
+        'input_format': input_format,
+        'errors': errors,
+    }
+
+    # ─── Version mismatch detection (warning only, per D7) ───
+    if expected_baseline is not None:
+        base_ver = expected_baseline.get('meta', {}).get('brain_version')
+        if base_ver is not None and base_ver != BRAIN_VERSION:
+            replay_meta['version_mismatch'] = {
+                'baseline_version': base_ver,
+                'current_version': BRAIN_VERSION,
+                'warning': 'Baseline from older brain. Mismatches may reflect code changes, not regressions.'
+            }
+
+    # ─── Diff computation (only if baseline provided AND analyze succeeded) ───
+    if expected_baseline is not None and result_dict is not None:
+        tol = dict(REPLAY_DEFAULT_TOLERANCE)
+        if tolerance:
+            tol.update(tolerance)
+        exp_verdict = expected_baseline['verdict']
+        act_verdict = (result_dict or {}).get('verdict') or {}
+        mismatches = []
+
+        for field in REPLAY_COMPARE_EXACT:
+            if exp_verdict.get(field) != act_verdict.get(field):
+                mismatches.append({
+                    'field': field,
+                    'expected': exp_verdict.get(field),
+                    'actual': act_verdict.get(field)
+                })
+
+        for field in REPLAY_COMPARE_TOLERANT:
+            e_val = exp_verdict.get(field)
+            a_val = act_verdict.get(field)
+            if e_val is None and a_val is None:
+                continue
+            if e_val is None or a_val is None:
+                mismatches.append({
+                    'field': field, 'expected': e_val, 'actual': a_val,
+                    'reason': 'one_side_none'
+                })
+                continue
+            try:
+                diff = abs(float(a_val) - float(e_val))
+            except (TypeError, ValueError):
+                mismatches.append({
+                    'field': field, 'expected': e_val, 'actual': a_val,
+                    'reason': 'non_numeric'
+                })
+                continue
+            allowed = tol.get(field, 0)
+            if diff > allowed:
+                mismatches.append({
+                    'field': field, 'expected': e_val, 'actual': a_val,
+                    'diff': round(diff, 4), 'tolerance': allowed
+                })
+
+        for field in REPLAY_COMPARE_LIST_EXACT:
+            e_list = exp_verdict.get(field) or []
+            a_list = act_verdict.get(field) or []
+            if sorted(e_list) != sorted(a_list):
+                mismatches.append({
+                    'field': field, 'expected': e_list, 'actual': a_list
+                })
+
+        replay_meta['diff'] = {
+            'match': len(mismatches) == 0,
+            'fields_checked': (len(REPLAY_COMPARE_EXACT)
+                               + len(REPLAY_COMPARE_TOLERANT)
+                               + len(REPLAY_COMPARE_LIST_EXACT)),
+            'mismatches': mismatches,
+            'tolerance_applied': tol,
+        }
+
+    return {'result': result_dict, 'replay_meta': replay_meta}
