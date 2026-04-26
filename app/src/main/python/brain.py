@@ -3294,6 +3294,56 @@ def _compute_wall_score(cand, chain, is_bnf):
     if stype == 'BEAR_PUT' and abs(cand.get('buyStrike', 0) - pw) <= step: score = -0.5
     return round(score, 2)
 
+
+def _wall_tag(score, strategy_type):
+    """Wall protection tag — display-only, mirrors JS computeWallScore tag mapping (app.js L3949).
+
+    Returns one of: '🛡️ Wall', '🛡️', '🛡️🛡️', '📌 Pinned',
+    '⚠️ Wall blocks', or '' (empty).
+
+    Per-strategy asymmetry preserved per Decision #6 lock (Vivek 2026-04-26):
+    BEAR_CALL and BULL_PUT use different tier thresholds for identical
+    score values. Origin (intentional design vs JS oversight) is
+    tracked as Audit Finding #15 for future investigation when trade
+    history is sufficient for correlation analysis. Tag is display-only
+    — does NOT affect trade-decision math (rank_candidates gates on
+    wallScore, never wallTag).
+
+    Defensive: returns '' on None, non-numeric input, or unknown
+    strategy_type. Mirrors A.4a `_gamma_tag` pattern.
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return ''
+    if strategy_type == 'BEAR_CALL':
+        if s == 1.0:
+            return '🛡️ Wall'
+        if s == 0.7:
+            return '🛡️'
+        return ''
+    if strategy_type == 'BULL_PUT':
+        if s >= 0.7:
+            return '🛡️ Wall'
+        if s >= 0.4:
+            return '🛡️'
+        return ''
+    if strategy_type == 'IRON_CONDOR':
+        if s >= 0.5:
+            return '🛡️🛡️'
+        if s >= 0.3:
+            return '🛡️'
+        return ''
+    if strategy_type == 'IRON_BUTTERFLY':
+        if s == 0.6:
+            return '📌 Pinned'
+        return ''
+    if strategy_type in ('BULL_CALL', 'BEAR_PUT'):
+        if s == -0.5:
+            return '⚠️ Wall blocks'
+        return ''
+    return ''
+
 def _compute_gamma_risk(cand, spot, tdte):
     if not cand.get('isCredit'): return 0
     dist = abs(cand['sellStrike'] - spot)
@@ -3795,6 +3845,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 cand['forces'] = _get_forces(stype, bias, vix, iv_pctl)
                 cand['varsityTier'] = 'PRIMARY' if stype in varsity['primary'] else 'ALLOWED'
                 cand['wallScore'] = _compute_wall_score(cand, chain, is_bnf)
+                cand['wallTag'] = _wall_tag(cand['wallScore'], cand['type'])
                 cand['gammaRisk'] = _compute_gamma_risk(cand, spot, tdte)
                 cand['gammaTag'] = _gamma_tag(cand['gammaRisk'])
                 cand['contextScore'] = _compute_context_score(cand, spot, tdte, vix, ctx)
@@ -3907,6 +3958,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                     'beUpper': round(upper_be), 'beLower': round(lower_be),
                 }
                 ic['wallScore'] = _compute_wall_score(ic, chain, is_bnf)
+                ic['wallTag'] = _wall_tag(ic['wallScore'], ic['type'])
                 ic['gammaRisk'] = _compute_gamma_risk(ic, spot, tdte)
                 ic['gammaTag'] = _gamma_tag(ic['gammaRisk'])
                 # IC context: only VIX direction penalty
@@ -3973,6 +4025,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 'beUpper': round(upper_be), 'beLower': round(lower_be),
             }
             ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
+            ib['wallTag'] = _wall_tag(ib['wallScore'], ib['type'])
             candidates.append(ib)
 
     # TASK 5.5 — Summary Trace
