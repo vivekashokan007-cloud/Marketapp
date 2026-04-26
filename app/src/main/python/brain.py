@@ -2942,6 +2942,16 @@ def _bs_delta(spot, strike, T, vol, opt_type):
     else:
         return _norm_cdf(d1) - 1.0
 
+def _bs_theta(spot, strike, T, vol, opt_type):
+    """Black-Scholes theta (per-day). Simplified for near-money options."""
+    if T <= 0 or vol <= 0 or spot <= 0 or strike <= 0:
+        return 0
+    r = 0.065
+    d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
+    # Standard BS theta term for non-dividend stock (per year)
+    theta_ann = -(spot * vol * math.exp(-d1*d1/2) / (2 * math.sqrt(2 * math.pi * T)))
+    return theta_ann / 365
+
 def _daily_sigma(spot, vix):
     """Daily 1σ move from VIX"""
     if spot <= 0 or vix <= 0: return 300
@@ -3247,25 +3257,95 @@ def _get_forces(stype, bias, vix, iv_pctl):
 
 # ─── CHAIN HELPERS ───
 
+def _interpolate_strike_value(strikes, price, opt_type, field):
+    """
+    Linear interpolation of a chain greek (delta or theta) at an off-strike price.
+    
+    Mirrors JS chainDeltaAtPrice (app.js L4111-4140). Used by both _chain_delta
+    and _chain_theta to honor "API first, BS fallback only" principle (Decision #13a).
+    
+    Returns:
+        float — interpolated or single-bracket value if chain data sufficient.
+        None  — if chain unusable; caller falls back to BS computation.
+    
+    Behavior:
+        - Empty/single-strike chain → None (fall to BS).
+        - Exact strike hit (price equals a chain key) → return chain value directly
+          (no interpolation, exact-equality bypass).
+        - Both brackets have non-null field → linear interpolate.
+        - Only one bracket has value → return that value.
+        - Neither bracket has value → None.
+        - Price outside chain entirely → use nearest strike's field if non-null, else None.
+    """
+    if not strikes:
+        return None
+    try:
+        all_k = sorted(int(k) for k in strikes.keys())
+    except (ValueError, TypeError):
+        return None
+    if len(all_k) < 2:
+        return None
+    
+    p = float(price)
+    
+    # Exact strike hit — bypass interpolation
+    if int(p) in all_k and float(int(p)) == p:
+        v = strikes.get(str(int(p)), {}).get(opt_type, {}).get(field)
+        if v is not None:
+            return v
+        # Exact strike but value missing — fall through to bracket logic
+    
+    # Find bracketing strikes
+    lo = None
+    hi = None
+    for i in range(len(all_k) - 1):
+        if all_k[i] <= p <= all_k[i + 1]:
+            lo = all_k[i]
+            hi = all_k[i + 1]
+            break
+    
+    if lo is None or hi is None:
+        # Price outside chain — use nearest strike
+        nearest = min(all_k, key=lambda k: abs(k - p))
+        v = strikes.get(str(nearest), {}).get(opt_type, {}).get(field)
+        return v  # may be None — caller falls to BS
+    
+    v_lo = strikes.get(str(lo), {}).get(opt_type, {}).get(field)
+    v_hi = strikes.get(str(hi), {}).get(opt_type, {}).get(field)
+    
+    if v_lo is not None and v_hi is not None:
+        # Both brackets — interpolate
+        if hi == lo:
+            return v_lo  # degenerate — exact match
+        frac = (p - lo) / (hi - lo)
+        return v_lo + frac * (v_hi - v_lo)
+    if v_lo is not None:
+        return v_lo
+    if v_hi is not None:
+        return v_hi
+    return None
+
+
 def _chain_delta(strikes, price, opt_type, spot, T, vol):
-    """Get delta from chain (Upstox IV smile) with BS fallback"""
-    sp = str(int(price))
-    s = strikes.get(sp, {}).get(opt_type, {})
-    d = s.get('delta')
-    if d is not None and d != 0: return d
+    """
+    Chain delta lookup with off-strike interpolation (Decision #13a).
+    Uses Upstox per-strike delta (incorporates IV smile) when available.
+    Falls back to BS if chain unusable.
+    """
+    v = _interpolate_strike_value(strikes, price, opt_type, 'delta')
+    if v is not None:
+        return v
     return _bs_delta(spot, price, T, vol, opt_type)
 
 def _chain_theta(strikes, price, opt_type, spot, T, vol):
-    """Get theta from chain with BS fallback"""
-    sp = str(int(price))
-    s = strikes.get(sp, {}).get(opt_type, {})
-    t = s.get('theta')
-    if t is not None: return t
-    # Simple BS theta approximation with risk-free rate
-    if T <= 0 or vol <= 0: return 0
-    r = 0.065  # Gemini fix: Indian risk-free rate
-    d1 = (math.log(spot / max(1, price)) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
-    return -(spot * vol * math.exp(-d1*d1/2) / (2 * math.sqrt(2 * math.pi * T))) / 365
+    """
+    Chain theta lookup with off-strike interpolation (Decision #13a — symmetric port).
+    Uses Upstox per-strike theta when available. Falls back to BS if chain unusable.
+    """
+    v = _interpolate_strike_value(strikes, price, opt_type, 'theta')
+    if v is not None:
+        return v
+    return _bs_theta(spot, price, T, vol, opt_type)
 
 # ─── SCORING ───
 
