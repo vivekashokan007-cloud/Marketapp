@@ -3203,10 +3203,11 @@ def _assess_force1(stype, bias):
     is_bull = stype in _CONST['DIR_BULL']
     is_bear = stype in _CONST['DIR_BEAR']
     if is_neutral:
-        # BR84: NEUTRAL bias + NEUTRAL strategy shouldn't auto-get +1.
-        # Only reward when regime strongly supports (range_detected adds f1+1 elsewhere).
+        # Decision #1 (2026-04-26) — REVERTS BR84 back to JS behavior.
+        # JS source of truth: app.js assessForce1_Intrinsic L3010 — "Neutral strategies: LOVE neutral bias".
+        # NEUTRAL+NEUTRAL must auto-reward +1 to align ranking with currently-live PWA behavior.
         if b == 'NEUTRAL':
-            return 0  # neutral/neutral is neither support nor conflict
+            return 1  # neutral bias + neutral strategy = full alignment
         if bias.get('strength', '') == 'MILD':
             return 0
         return -1  # strong directional bias + neutral strategy = opposing
@@ -3306,6 +3307,24 @@ def _compute_gamma_risk(cand, spot, tdte):
     elif tdte <= 3: risk += 0.3
     elif tdte <= 5: risk += 0.1
     return round(min(1.0, risk), 2)
+
+def _gamma_tag(risk):
+    """
+    Decision #5 (A.4): map gamma_risk score to display tag.
+    Brain.py is sole producer of gammaTag; MarketVivi reads cand['gammaTag'].
+    Threshold 0.7 here MUST stay numerically identical to the swing-credit
+    block consumer (`cand['gammaRisk'] >= 0.7`); behavioral and display
+    thresholds share the same value by design.
+    """
+    try:
+        r = float(risk)
+    except (TypeError, ValueError):
+        return ''
+    if r >= 0.7:
+        return '\u26a0\ufe0f High \u03b3'   # ⚠️ High γ
+    if r >= 0.4:
+        return '\u26a0\ufe0f \u03b3'         # ⚠️ γ
+    return ''
 
 def _compute_context_score(cand, spot, tdte, vix, ctx):
     penalty = 0.0
@@ -3777,6 +3796,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 cand['varsityTier'] = 'PRIMARY' if stype in varsity['primary'] else 'ALLOWED'
                 cand['wallScore'] = _compute_wall_score(cand, chain, is_bnf)
                 cand['gammaRisk'] = _compute_gamma_risk(cand, spot, tdte)
+                cand['gammaTag'] = _gamma_tag(cand['gammaRisk'])
                 cand['contextScore'] = _compute_context_score(cand, spot, tdte, vix, ctx)
                 cand['directionSafe'] = cand['forces']['f1'] >= 0
                 cand['capitalBlocked'] = False
@@ -3888,6 +3908,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 }
                 ic['wallScore'] = _compute_wall_score(ic, chain, is_bnf)
                 ic['gammaRisk'] = _compute_gamma_risk(ic, spot, tdte)
+                ic['gammaTag'] = _gamma_tag(ic['gammaRisk'])
                 # IC context: only VIX direction penalty
                 fii_hist = ctx.get('fiiHistory', [])
                 yv = fii_hist[0].get('vix') if fii_hist else None
@@ -3951,6 +3972,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 'stopLoss': round(max_loss * 0.6),
                 'beUpper': round(upper_be), 'beLower': round(lower_be),
             }
+            ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
             candidates.append(ib)
 
     # TASK 5.5 — Summary Trace
