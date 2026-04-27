@@ -1,4 +1,5 @@
 package com.marketradar.app.util
+import android.util.Log
 
 import java.util.concurrent.ConcurrentLinkedDeque
 
@@ -21,6 +22,18 @@ object LogBuffer {
     fun add(level: Char, tag: String, message: String) {
         val now = System.currentTimeMillis()
         buffer.addFirst(Entry(now, level, tag, message))
+        
+        // Mirror to system logcat for ADB visibility
+        when (level) {
+            'V' -> Log.v(tag, message)
+            'D' -> Log.d(tag, message)
+            'I' -> Log.i(tag, message)
+            'W' -> Log.w(tag, message)
+            'E' -> Log.e(tag, message)
+            'F' -> Log.wtf(tag, message)
+            else -> Log.i(tag, message)
+        }
+
         // Trim by count
         while (buffer.size > MAX_ENTRIES) buffer.pollLast()
         // Trim by age (best-effort, runs on every add)

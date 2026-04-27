@@ -469,7 +469,12 @@ class MainActivity : AppCompatActivity() {
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { AndroidBridge.triggerMLRetrain(); },
                     
-                    init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML) active'); }
+                    // Diagnostic Methods (LV.1)
+                    getLogBuffer: function(f) { return AndroidBridge.getLogBuffer(f); },
+                    clearLogBuffer: function() { return AndroidBridge.clearLogBuffer(); },
+                    getLogCaptureMode: function() { return AndroidBridge.getLogCaptureMode(); },
+                    
+                    init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML+LV1) active'); }
                 };
                 NativeBridge.init();
                 console.log('[BRIDGE] Native bridge injected');
