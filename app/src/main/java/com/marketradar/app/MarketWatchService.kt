@@ -14,6 +14,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import okhttp3.logging.HttpLoggingInterceptor
+import com.marketradar.app.util.LogBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -27,6 +29,9 @@ class MarketWatchService : Service() {
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
+        .addInterceptor(HttpLoggingInterceptor { msg ->
+            LogBuffer.add('I', "OkHttp", msg)
+        }.apply { level = HttpLoggingInterceptor.Level.BASIC })
         .build()
     
     private var token401Counter = 0
@@ -49,13 +54,9 @@ class MarketWatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        LogBuffer.add('I', "MarketWatchService", "Service started, pid=${android.os.Process.myPid()}")
         prefs = getSharedPreferences("market_radar", Context.MODE_PRIVATE)
         createNotificationChannel()
-        
-        // Initialize Python if not already started
-        if (!Python.isStarted()) {
-            Python.start(AndroidPlatform(this))
-        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -238,6 +239,7 @@ class MarketWatchService : Service() {
                             performPoll(currentToken)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
+                            LogBuffer.add('E', "MarketWatchService", "Poll #${prefs.getInt("poll_count", 0) + 1} FAILED: ${e.message}")
                         } finally {
                             releaseWakeLock()
                         }
@@ -267,7 +269,9 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun performPoll(token: String) {
+        val pollCount = prefs.getInt("poll_count", 0) + 1
         Log.d(TAG, "POLL_START: performPoll() entered")
+        LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
         
         // C4: Dynamically compute next Thursday if expiry is missing
         val nextThu = getNextThursday()
@@ -332,6 +336,7 @@ class MarketWatchService : Service() {
         Log.d(TAG, "POLL_STEP5: Saving poll object")
         val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
         savePoll(pollObj)
+        LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
 
         // Step 6: Run Python Brain (POLL_TICK broadcast is inside runBrainAnalysis finally block)
         Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1026,6 +1031,7 @@ class MarketWatchService : Service() {
             }
             
             val resultObj = JSONObject(result)
+            LogBuffer.add('I', "MarketWatchService", "Brain complete v=${resultObj.optString("version", "N/A")} ts=${resultObj.optString("timestamp", "N/A")}")
             
             // --- NEW Diagnostic Result Parsing ---
             try {

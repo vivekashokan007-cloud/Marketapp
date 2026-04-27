@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import com.marketradar.app.util.LogBuffer
 
 class NativeBridge(private val context: Context) {
     private var lastScoredCandCount = -1
@@ -232,6 +233,35 @@ class NativeBridge(private val context: Context) {
             android.util.Log.w("NativeBridge", "ML retrain trigger failed: ${e.message}")
         }
     }
+
+    @JavascriptInterface
+    fun getLogBuffer(filterJson: String?): String {
+        val filter = if (filterJson.isNullOrBlank()) null else {
+            try { JSONObject(filterJson).optString("filter", null) }
+            catch (e: Exception) { null }
+        }
+        val entries = LogBuffer.snapshot(filter)
+        val arr = JSONArray()
+        for (e in entries) {
+            arr.put(JSONObject().apply {
+                put("ts", e.timestampMs)
+                put("level", e.level.toString())
+                put("tag", e.tag)
+                put("msg", e.message)
+            })
+        }
+        return arr.toString()
+    }
+
+    @JavascriptInterface
+    fun clearLogBuffer(): Boolean {
+        LogBuffer.clear()
+        LogBuffer.add('I', "NativeBridge", "Log buffer cleared by user")
+        return true
+    }
+
+    @JavascriptInterface
+    fun getLogCaptureMode(): String = LogBuffer.captureMode.name
 
     private fun scoreCandidate(cand: JSONObject): JSONObject? {
         return try {
