@@ -18,7 +18,7 @@ object LogTap {
             val py = Python.getInstance()
             val sys = py.getModule("sys")
             val builtins = py.getModule("builtins")
-            py.getModule("__main__").callAttr("exec", """
+            builtins.callAttr("exec", """
 import sys
 class _LogTapStream:
     def __init__(self, level):

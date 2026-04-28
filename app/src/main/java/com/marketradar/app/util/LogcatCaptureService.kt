@@ -6,13 +6,20 @@ object LogcatCaptureService {
     private var job: Job? = null
     private var lastSeenSignature: String? = null
 
+    private val LOGCAT_FILTERS = arrayOf(
+        "-s", 
+        "MarketRadarApp", "MarketWatchService", "NativeBridge",
+        "LogProbe", "MainActivity", "OkHttp",
+        "python.stdout", "python.stderr", "Chaquopy"
+    )
+
     fun start(scope: CoroutineScope) {
         if (job?.isActive == true) return
         val pid = android.os.Process.myPid()
         job = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
-                    val cmd = arrayOf("logcat", "-d", "--pid=$pid", "-v", "time")
+                    val cmd = arrayOf("logcat", "-d", "--pid=$pid", "-v", "time") + LOGCAT_FILTERS
                     val proc = Runtime.getRuntime().exec(cmd)
                     val reader = proc.inputStream.bufferedReader()
                     val lines = reader.readLines()

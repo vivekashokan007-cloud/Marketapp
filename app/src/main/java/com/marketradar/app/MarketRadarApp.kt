@@ -26,6 +26,7 @@ class MarketRadarApp : Application() {
             // ─── Log viewer probe ───
             val probeOk = try {
                 val pid = android.os.Process.myPid()
+                // No filters in probe — just check if we can read ANY process output
                 val proc = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "--pid=$pid", "-t", "5"))
                 val out = proc.inputStream.bufferedReader().readText()
                 proc.waitFor(2, TimeUnit.SECONDS)
