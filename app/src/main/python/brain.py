@@ -16,6 +16,12 @@ def _ml_load_if_needed():
         pass
     return _ML_ENGINE
 
+def _ml_invalidate():
+    """Forces ML engine reload on next call.
+    Used by Kotlin hot-reload path (MarketMLService.kt) after importlib.reload(ml_engine)."""
+    global _ML_ENGINE
+    _ML_ENGINE = None
+
 def _ml_score(candidate_dict):
     """Score candidate with ML engine. Returns {} if model not loaded.
     mlAction='BLOCKED' = model has zero training data for this scenario."""
@@ -2602,6 +2608,8 @@ def update_watchlist_forces(watchlist, ctx, vix, iv_pctl):
 def get_contrarian_pcr(chain):
     """Decision #20. Extreme PCR readings = contrarian signal."""
     flags = []
+    if not chain:
+        return {'flags': flags}
     pcr = chain.get('nearAtmPCR') or chain.get('pcr')
     if pcr is None: return {'flags': flags}
     
@@ -5843,8 +5851,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     vix = ctx.get('vix') or 20
     gap = ctx.get('gap') or {}
 
-    result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap)
-    result["nfProfile"] = chain_profile(nf_chain, nf_spot, nf_ohlc, vix, gap)
+    result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap) or {}
+    result["nfProfile"] = chain_profile(nf_chain, nf_spot, nf_ohlc, vix, gap) or {}
     
     # Decision #20: Contrarian PCR flags
     result["bnfContrarian"] = get_contrarian_pcr(result["bnfProfile"])
