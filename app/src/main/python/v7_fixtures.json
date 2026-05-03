@@ -1,0 +1,642 @@
+[
+  {
+    "name": "Fixture 1",
+    "context": {
+      "bnfChain": {
+        "atm": 48000,
+        "strikes": {
+          "48000": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48050,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.1,
+        "vix": 15
+      },
+      "nfChain": {
+        "atm": 22000,
+        "strikes": {
+          "22000": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22025
+      },
+      "morning_input": {
+        "fiiCash": "-1000",
+        "diiCash": "800",
+        "fiiShortPct": "80",
+        "giftSpot": "22100"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": 0.5,
+        "gap": 100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 2",
+    "context": {
+      "bnfChain": {
+        "atm": 48100,
+        "strikes": {
+          "48100": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48150,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.12,
+        "vix": 16
+      },
+      "nfChain": {
+        "atm": 22050,
+        "strikes": {
+          "22050": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22075
+      },
+      "morning_input": {
+        "fiiCash": "-800",
+        "diiCash": "850",
+        "fiiShortPct": "79",
+        "giftSpot": "22150"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": -0.5,
+        "gap": -100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 3",
+    "context": {
+      "bnfChain": {
+        "atm": 48200,
+        "strikes": {
+          "48200": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48250,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.1400000000000001,
+        "vix": 17
+      },
+      "nfChain": {
+        "atm": 22100,
+        "strikes": {
+          "22100": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22125
+      },
+      "morning_input": {
+        "fiiCash": "-600",
+        "diiCash": "900",
+        "fiiShortPct": "78",
+        "giftSpot": "22200"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": 0.5,
+        "gap": 100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 4",
+    "context": {
+      "bnfChain": {
+        "atm": 48300,
+        "strikes": {
+          "48300": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48350,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.1600000000000001,
+        "vix": 18
+      },
+      "nfChain": {
+        "atm": 22150,
+        "strikes": {
+          "22150": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22175
+      },
+      "morning_input": {
+        "fiiCash": "-400",
+        "diiCash": "950",
+        "fiiShortPct": "77",
+        "giftSpot": "22250"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": -0.5,
+        "gap": -100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 5",
+    "context": {
+      "bnfChain": {
+        "atm": 48400,
+        "strikes": {
+          "48400": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48450,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.1800000000000002,
+        "vix": 19
+      },
+      "nfChain": {
+        "atm": 22200,
+        "strikes": {
+          "22200": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22225
+      },
+      "morning_input": {
+        "fiiCash": "-200",
+        "diiCash": "1000",
+        "fiiShortPct": "76",
+        "giftSpot": "22300"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": 0.5,
+        "gap": 100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 6",
+    "context": {
+      "bnfChain": {
+        "atm": 48500,
+        "strikes": {
+          "48500": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48550,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.2000000000000002,
+        "vix": 20
+      },
+      "nfChain": {
+        "atm": 22250,
+        "strikes": {
+          "22250": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22275
+      },
+      "morning_input": {
+        "fiiCash": "0",
+        "diiCash": "1050",
+        "fiiShortPct": "75",
+        "giftSpot": "22350"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": -0.5,
+        "gap": -100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 7",
+    "context": {
+      "bnfChain": {
+        "atm": 48600,
+        "strikes": {
+          "48600": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48650,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.2200000000000002,
+        "vix": 21
+      },
+      "nfChain": {
+        "atm": 22300,
+        "strikes": {
+          "22300": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22325
+      },
+      "morning_input": {
+        "fiiCash": "200",
+        "diiCash": "1100",
+        "fiiShortPct": "74",
+        "giftSpot": "22400"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": 0.5,
+        "gap": 100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 8",
+    "context": {
+      "bnfChain": {
+        "atm": 48700,
+        "strikes": {
+          "48700": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48750,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.2400000000000002,
+        "vix": 22
+      },
+      "nfChain": {
+        "atm": 22350,
+        "strikes": {
+          "22350": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22375
+      },
+      "morning_input": {
+        "fiiCash": "400",
+        "diiCash": "1150",
+        "fiiShortPct": "73",
+        "giftSpot": "22450"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": -0.5,
+        "gap": -100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 9",
+    "context": {
+      "bnfChain": {
+        "atm": 48800,
+        "strikes": {
+          "48800": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48850,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.26,
+        "vix": 23
+      },
+      "nfChain": {
+        "atm": 22400,
+        "strikes": {
+          "22400": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22425
+      },
+      "morning_input": {
+        "fiiCash": "600",
+        "diiCash": "1200",
+        "fiiShortPct": "72",
+        "giftSpot": "22500"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": 0.5,
+        "gap": 100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  },
+  {
+    "name": "Fixture 10",
+    "context": {
+      "bnfChain": {
+        "atm": 48900,
+        "strikes": {
+          "48900": {
+            "call_oi": 10000,
+            "put_oi": 12000,
+            "call_md": {
+              "ltp": 200
+            },
+            "put_md": {
+              "ltp": 180
+            }
+          }
+        },
+        "bnf_spot": 48950,
+        "futuresPremium": 0.05,
+        "nearAtmPCR": 1.28,
+        "vix": 24
+      },
+      "nfChain": {
+        "atm": 22450,
+        "strikes": {
+          "22450": {
+            "call_oi": 50000,
+            "put_oi": 45000,
+            "call_md": {
+              "ltp": 100
+            },
+            "put_md": {
+              "ltp": 110
+            }
+          }
+        },
+        "nf_spot": 22475
+      },
+      "morning_input": {
+        "fiiCash": "800",
+        "diiCash": "1250",
+        "fiiShortPct": "71",
+        "giftSpot": "22550"
+      },
+      "eveningClose": {
+        "dow": 38000,
+        "crude": 85,
+        "gift": 22000
+      },
+      "gap": {
+        "sigma": -0.5,
+        "gap": -100
+      },
+      "yesterdayHistory": [
+        {
+          "fii_short_pct": 82
+        }
+      ],
+      "globalDirection": {
+        "dowClose": 38200,
+        "crudeSettle": 84
+      }
+    }
+  }
+]

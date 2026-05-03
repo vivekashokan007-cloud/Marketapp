@@ -328,145 +328,17 @@ class MarketWatchService : Service() {
         val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
         Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
 
-        // Step 4: Update Trade P&L (A2: pass both chains for NF trade support)
-        Log.d(TAG, "POLL_STEP4: Updating open trade P&L")
-        updateOpenTradesPnL(bnfChainJson, bnfSpot, nfChainJson, nfSpot)
-
         // Step 5: Build poll object and save
         Log.d(TAG, "POLL_STEP5: Saving poll object")
         val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
         savePoll(pollObj)
         LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
 
-        // Step 6: Run Python Brain (POLL_TICK broadcast is inside runBrainAnalysis finally block)
+        // Step 6: Run Python Brain
         Log.d(TAG, "POLL_STEP6: Launching brain analysis")
         runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
     }
 
-
-    private fun updateOpenTradesPnL(bnfChain: JSONObject, bnfSpot: Double, nfChain: JSONObject, nfSpot: Double) {
-        val openTradesStr = prefs.getString("open_trades", "[]") ?: "[]"
-        if (openTradesStr == "[]") return
-
-        try {
-            val openTrades = JSONArray(openTradesStr)
-            
-            // Map strikes to prices for BNF
-            val bnfCache = mutableMapOf<Double, Pair<Double, Double>>()
-            val bnfData = bnfChain.optJSONArray("data")
-            if (bnfData != null) {
-                for (i in 0 until bnfData.length()) {
-                    val item = bnfData.getJSONObject(i)
-                    val strike = item.getDouble("strike_price")
-                    val callLtp = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                    val putLtp = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                    bnfCache[strike] = Pair(callLtp, putLtp)
-                }
-            }
-
-            // Map strikes to prices for NF
-            val nfCache = mutableMapOf<Double, Pair<Double, Double>>()
-            val nfData = nfChain.optJSONArray("data")
-            if (nfData != null) {
-                for (i in 0 until nfData.length()) {
-                    val item = nfData.getJSONObject(i)
-                    val strike = item.getDouble("strike_price")
-                    val callLtp = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                    val putLtp = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0
-                    nfCache[strike] = Pair(callLtp, putLtp)
-                }
-            }
-
-            var changed = false
-            for (i in 0 until openTrades.length()) {
-                try {
-                    val trade = openTrades.getJSONObject(i)
-                    val idx = trade.optString("index", "BNF")
-                    val stype = trade.optString("strategy_type", "")
-                    val pCache = if (idx == "NF") nfCache else bnfCache
-                    val spot = if (idx == "NF") nfSpot else bnfSpot
-                    
-                    val lotSize = trade.optInt("lot_size", 0)
-                    if (lotSize <= 0) {
-                        // WS7: Critical math check. If lotSize is 0, P&L is 0. Log warning.
-                        Log.w(TAG, "WS7_WARNING: Trade ${trade.optInt("id")} has lotSize 0. Skipping P&L update.")
-                        continue
-                    }
-                    val entryPremium = trade.optDouble("entry_premium", 0.0)
-                    val isCredit = listOf("BEAR_CALL", "BULL_PUT", "IRON_CONDOR", "IRON_BUTTERFLY").contains(stype)
-
-                    val sellS = trade.optDouble("sell_strike", 0.0)
-                    val buyS = trade.optDouble("buy_strike", 0.0)
-                    val sellS2 = trade.optDouble("sell_strike2", 0.0)
-                    val buyS2 = trade.optDouble("buy_strike2", 0.0)
-                    
-                    var currentNet = 0.0
-                    if (stype == "BEAR_CALL") {
-                        currentNet = (pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)
-                    } else if (stype == "BULL_PUT") {
-                        currentNet = (pCache[sellS]?.second ?: 0.0) - (pCache[buyS]?.second ?: 0.0)
-                    } else if (stype == "IRON_CONDOR" || stype == "IRON_BUTTERFLY") {
-                        currentNet = ((pCache[sellS]?.first ?: 0.0) - (pCache[buyS]?.first ?: 0.0)) +
-                                     ((pCache[sellS2]?.second ?: 0.0) - (pCache[buyS2]?.second ?: 0.0))
-                    } else if (stype == "BULL_CALL") {
-                        currentNet = (pCache[buyS]?.first ?: 0.0) - (pCache[sellS]?.first ?: 0.0)
-                    } else if (stype == "BEAR_PUT") {
-                        currentNet = (pCache[buyS]?.second ?: 0.0) - (pCache[sellS]?.second ?: 0.0)
-                    }
-
-                    if (currentNet != 0.0) {
-                        val pnl = if (isCredit) {
-                            (entryPremium - currentNet) * lotSize
-                        } else {
-                            (currentNet - entryPremium) * lotSize
-                        }
-                        
-                        trade.put("current_pnl", pnl)
-                        trade.put("current_spot", spot)
-                        
-                        val peak = trade.optDouble("peak_pnl", 0.0)
-                        // WS8: Only track POSITIVE peaks. A peak of -500 is not a "profit peak".
-                        if (pnl > 0 && pnl > peak) {
-                            trade.put("peak_pnl", pnl)
-                        }
-                        
-                        // GAP 13: Append journey point (HH:mm, pnl, spot)
-                        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date())
-                        val journey = trade.optJSONArray("journey") ?: JSONArray().apply { trade.put("journey", this) }
-                        
-                        // Throttle journey points: only add if last point was > 10 min ago or first point
-                        val lastPoint = if (journey.length() > 0) journey.getJSONObject(journey.length() - 1) else null
-                        if (lastPoint == null || minutesSince(lastPoint.getString("t"), time) >= 10) {
-                            val point = JSONObject()
-                            point.put("t", time)
-                            point.put("pnl", pnl)
-                            point.put("spot", spot)
-                            journey.put(point)
-                            
-                            // WS9: Cap journey to 100 points to prevent OOM
-                            if (journey.length() > 100) {
-                                val newJourney = JSONArray()
-                                for (j in (journey.length() - 100) until journey.length()) {
-                                    newJourney.put(journey.get(j))
-                                }
-                                trade.put("journey", newJourney)
-                            }
-                        }
-                        changed = true
-                    }
-                } catch (e: Exception) {
-                    // WS30: Guarded per-trade P&L update
-                    Log.e(TAG, "WS30_ERROR: Failed to update P&L for trade at index $i: ${e.message}")
-                }
-            }
-            if (changed) {
-                // WS10: Use commit() to avoid cross-process race conditions with NativeBridge
-                prefs.edit().putString("open_trades", openTrades.toString()).commit()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating P&L: ${e.message}")
-        }
-    }
 
     private fun minutesSince(oldT: String, newT: String): Int {
         try {
@@ -476,6 +348,22 @@ class MarketWatchService : Service() {
             return ((d2.time - d1.time) / (1000 * 60)).toInt()
         } catch (e: Exception) { return 99 }
     }
+
+    private fun extractLtpMap(chainJson: JSONObject): JSONObject {
+        val map = JSONObject()
+        val data = chainJson.optJSONArray("data") ?: return map
+        for (i in 0 until data.length()) {
+            val item = data.getJSONObject(i)
+            val strike = item.optDouble("strike_price").toString()
+            val pair = JSONObject()
+            pair.put("CE", item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0)
+            pair.put("PE", item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0)
+            map.put(strike, pair)
+        }
+        return map
+    }
+
+
 
     private fun parsePollData(quotes: JSONObject, chain: JSONObject, stocks: JSONObject, spot: Double): JSONObject {
         val data = quotes.getJSONObject("data")
@@ -554,6 +442,35 @@ class MarketWatchService : Service() {
         // Sigma Logic (Fix C2: correct daily sigma sqrt(252))
         val dailySigma = bnf * (vix / 100.0) / Math.sqrt(252.0)
         poll.put("gap_sigma", dailySigma)
+        
+        // Phase E.1 — spotSigma / vixSigma wiring (port-first from app.js L5540-5552)
+        // Required by runBrainAnalysis significantMove gate. Without these two fields
+        // populated here, ctx.significant_move is always false and evaluate_alerts
+        // skips WATCHLIST/POSITION/MARKET branches.
+        val baselineStr = prefs.getString("morning_baseline", null)
+        var spotSigma = 0.0
+        var vixSigmaValue = 0.0
+        if (baselineStr != null) {
+            try {
+                val baseline = JSONObject(baselineStr)
+                val baselineSpot = baseline.optDouble("bnfSpot", 0.0)
+                val baselineVix = baseline.optDouble("vix", 0.0)
+                if (baselineSpot > 0 && baselineVix > 0) {
+                    val spotDailySigma = baselineSpot * (baselineVix / 100.0) / Math.sqrt(252.0)
+                    if (spotDailySigma > 0) {
+                        spotSigma = (bnf - baselineSpot) / spotDailySigma
+                    }
+                    val vixDailySigma = baselineVix * 0.10
+                    if (vixDailySigma > 0) {
+                        vixSigmaValue = (vix - baselineVix) / vixDailySigma
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "spotSigma/vixSigma compute failed: ${e.message}")
+            }
+        }
+        poll.put("spotSigma", spotSigma)
+        poll.put("vixSigma", vixSigmaValue)
         
         poll.put("cw", cw)
         poll.put("pw", pw)
@@ -798,11 +715,14 @@ class MarketWatchService : Service() {
                     put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
+                    put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
                     
                     val gr = call?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
                     put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
                     put("theta", gr?.optDouble("theta", 0.0) ?: 0.0)
+                    put("vega", gr?.optDouble("vega", 0.0) ?: 0.0)        // PHASE C STEP 7.0
+                    put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
                 })
                 strikeObj.put("PE", JSONObject().apply {
                     val md = put?.optJSONObject("market_data")
@@ -815,11 +735,14 @@ class MarketWatchService : Service() {
                     put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
+                    put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
                     
                     val gr = put?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
                     put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
                     put("theta", gr?.optDouble("theta", 0.0) ?: 0.0)
+                    put("vega", gr?.optDouble("vega", 0.0) ?: 0.0)        // PHASE C STEP 7.0
+                    put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
                 })
                 strikesObj.put(strike.toString(), strikeObj)
             }
@@ -865,35 +788,18 @@ class MarketWatchService : Service() {
             val openTradesJson   = prefs.getString("open_trades",   "[]") ?: "[]"
             val closedTradesJson = prefs.getString("closed_trades", "[]") ?: "[]"
             
-            // profile merge strategy (Fix 2 - 3-way merge)
-            
-            fun mergeProfile(key: String, spot: Double, v: Double) {
-                val profile = ctxObj.optJSONObject(key)
-                if (profile != null && profile.length() > 2) {
-                    // Case 1 & 2: Rich profile (new or stored) — update live spot/vix
-                    profile.put("spot", spot)
-                    profile.put("vix", v)
-                } else {
-                    // Case 3: No rich data — remove to avoid stub confusion
-                    ctxObj.remove(key)
-                }
-            }
-            mergeProfile("bnfProfile", bnfSpot, vix)
-            mergeProfile("nfProfile", nfSpot, vix)
-
-            // CHAIN MERGING (Fix 1 - Preservation)
+            // CHAIN MERGING (Phase C: Format raw chains for Python)
             fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double, 
                            cwPoll: Double, pwPoll: Double, pcrPoll: Double) {
                 val formattedLive = formatChainForBrain(liveChainRaw, spot)
                 val existingChain = ctxObj.optJSONObject(key)
                 
                 if (existingChain != null && existingChain.has("atm")) {
-                    // Rich chain exists — refresh only live intraday fields
+                    // Rich chain exists from WebView — refresh only live intraday fields
                     existingChain.put("strikes",         formattedLive.optJSONObject("strikes"))
                     existingChain.put("atm",             formattedLive.optDouble("atm", 0.0))
                     existingChain.put("callWallStrike",  cwPoll)
                     existingChain.put("putWallStrike",   pwPoll)
-                    // allStrikes, atmIv, maxPain kept from WebView
                 } else {
                     // No rich data — use full formatted live chain
                     formattedLive.put("callWallStrike", cwPoll)
@@ -903,7 +809,7 @@ class MarketWatchService : Service() {
                 }
             }
             
-            // Calculate NF walls since they aren't in the main 'poll' object
+            // Calculate NF walls
             var nfCw = 0.0; var nfPw = 0.0; var nfMaxC = 0.0; var nfMaxP = 0.0
             val nfData = nfChain.optJSONArray("data")
             if (nfData != null) {
@@ -918,16 +824,50 @@ class MarketWatchService : Service() {
             }
 
             mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0))
+            ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
             mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0)
-            
-            // GAP 15: Institutional Positioning Snapshots
-            captureChainSnapshots(ctxObj.optJSONObject("bnfProfile"), ctxObj.optJSONObject("nfProfile"))
+            ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
+
+            // Phase C: Inject OHLC for profile calculations
+            val ohlcStr = prefs.getString("yesterday_ohlc", null)
+            if (ohlcStr != null) {
+                try {
+                    val ohlcData = JSONObject(ohlcStr).optJSONObject("data")
+                    if (ohlcData != null) {
+                        ctxObj.put("bnfOHLC", ohlcData.optJSONObject("NSE_INDEX|Nifty Bank"))
+                        ctxObj.put("nfOHLC",  ohlcData.optJSONObject("NSE_INDEX|Nifty 50"))
+                    }
+                } catch (e: Exception) { Log.e(TAG, "OHLC parse fail: ${e.message}") }
+            }
 
             // Data Parity Overlays
             val breadth = calculateBreadth(stocksJson)
             ctxObj.put("bnfBreadth", breadth)
             
-            val ohlcStr = prefs.getString("yesterday_ohlc", null)
+            // Phase B: populate morning input + yesterday history for brain.py
+            val morningInputStr = prefs.getString("morning_input", null)
+            if (morningInputStr != null) {
+                ctxObj.put("morning_input", JSONObject(morningInputStr))
+            }
+            val ydayHistStr = prefs.getString("premium_history", "[]") ?: "[]"
+            ctxObj.put("yesterdayHistory", JSONArray(ydayHistStr))
+            
+            // Phase B: accuracy stats from Supabase (refresh once per day or per session)
+            val accuracyStats = SupabaseClient.getSignalAccuracyStats()
+            ctxObj.put("signalAccuracy", accuracyStats)
+            
+            // Phase B: evening close data for overnight delta
+            val eveningCloseStr = prefs.getString("evening_close_baseline", null)
+            if (eveningCloseStr != null) {
+                ctxObj.put("eveningClose", JSONObject(eveningCloseStr))
+            }
+            
+            // Phase B: global direction for overnight delta
+            val globalDirStr = prefs.getString("global_direction", null)
+            if (globalDirStr != null) {
+                ctxObj.put("globalDirection", JSONObject(globalDirStr))
+            }
+            
             val gapObj = JSONObject()
             if (ohlcStr != null) {
                 val ohlc = JSONObject(ohlcStr)
@@ -935,19 +875,6 @@ class MarketWatchService : Service() {
                 gapObj.put("type", calculatedGap.optString("type", "FLAT"))
                 gapObj.put("pct", calculatedGap.optDouble("pct", 0.0))
                 gapObj.put("sigma", calculatedGap.optDouble("sigma", 0.0))
-                
-                // closeChar inside morningBias (if bias exists)
-                val mb = ctxObj.optJSONObject("morningBias")
-                if (mb != null) {
-                    val bnfOhlc = ohlc.optJSONObject("data")?.optJSONObject("NSE_INDEX:Nifty Bank")?.optJSONObject("ohlc")
-                    if (bnfOhlc != null) {
-                        val c = bnfOhlc.getDouble("close")
-                        val h = bnfOhlc.getDouble("high")
-                        val l = bnfOhlc.getDouble("low")
-                        val closeChar = if (c > h - (h-l)*0.2) 2 else if (c < l + (h-l)*0.2) -2 else 0
-                        mb.put("closeChar", closeChar)
-                    }
-                }
             } else {
                 gapObj.put("type", "FLAT").put("pct", 0.0).put("sigma", 0.0)
             }
@@ -980,29 +907,51 @@ class MarketWatchService : Service() {
             ctxObj.put("bnfExpiry",  prefs.getString("expiry_bnf", ""))
             ctxObj.put("nfExpiry",   prefs.getString("expiry_nf", ""))
             ctxObj.put("vix",        vix)
+            ctxObj.put("bnfSpot",    bnfSpot)
+            ctxObj.put("nfSpot",     nfSpot)
+            ctxObj.put("bnfLtpMap",  extractLtpMap(bnfChain))
+            ctxObj.put("nfLtpMap",   extractLtpMap(nfChain))
+
+            // PHASE E: Populate context with new fields
+            val ist = TimeZone.getTimeZone("Asia/Kolkata")
+            val cal = Calendar.getInstance(ist)
+            val minsSinceOpen = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE) - 555
+            ctxObj.put("mins_since_open", minsSinceOpen)
+            ctxObj.put("now_ms", System.currentTimeMillis())
+            ctxObj.put("today_ist", SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date()))
+            
+            val lastRoutine = prefs.getLong("last_routine_dispatch_ms", 0L)
+            ctxObj.put("last_routine_dispatch_ms", lastRoutine)
+            
+            // Phase E #27 — significantMove gate (port-first from app.js L5550-5552)
+            val openTradesCount = org.json.JSONArray(prefs.getString("open_trades", "[]") ?: "[]").length()
+            val sigmaThreshold = if (openTradesCount > 0) 1.0 else 1.5
+            
+            val bnfSpotSigma = poll.optDouble("spotSigma", 0.0)
+            val vixSigma = poll.optDouble("vixSigma", 0.0)
+            
+            val sigMove = Math.abs(bnfSpotSigma) > sigmaThreshold || Math.abs(vixSigma) > sigmaThreshold
+            
+            ctxObj.put("significant_move", sigMove)
+            ctxObj.put("abs_spot_sigma", Math.abs(bnfSpotSigma))
+            ctxObj.put("abs_vix_sigma", Math.abs(vixSigma))
+
+            val snap2pmStr = prefs.getString("snap_2pm_today", null)
+            if (snap2pmStr != null) {
+                ctxObj.put("snap_2pm_today", JSONObject(snap2pmStr))
+            }
+
             if (!ctxObj.has("ivPercentile")) ctxObj.put("ivPercentile", 50)
             
             Log.d("BRAIN_CTX_CHECK",
                 "bnfChain.atm=${ctxObj.optJSONObject("bnfChain")?.opt("atm")}, " +
                 "nfChain.atm=${ctxObj.optJSONObject("nfChain")?.opt("atm")}, " +
-                "bnfProfile.maxPain=${ctxObj.optJSONObject("bnfProfile")?.opt("maxPain")}, " +
-                "nfProfile.maxPain=${ctxObj.optJSONObject("nfProfile")?.opt("maxPain")}, " +
-                "tradeMode=${ctxObj.optString("tradeMode")}, " +
-                "ivPctl=${ctxObj.optDouble("ivPercentile")}, " +
-                "bias=${ctxObj.optJSONObject("morningBias")?.optString("label")}, " +
-                "biasNet=${ctxObj.optJSONObject("morningBias")?.optInt("net")}, " +
-                "bnfExpiry=${ctxObj.optString("bnfExpiry")}, " +
-                "nfExpiry=${ctxObj.optString("nfExpiry")}"
-            )
-            
+                "bnfProfile.maxPain=${ctxObj.optJSONObject("bnfProfile")?.opt("maxPain")}")
             Log.d("BRAIN_INPUT_SUMMARY",
                 "polls=${JSONArray(pollsJson).length()}, " +
-                "morningBias=${ctxObj.optJSONObject("morningBias")?.toString()}, " +
                 "ivPercentile=${ctxObj.optDouble("ivPercentile")}, " +
                 "vix=${ctxObj.optDouble("vix")}, " +
-                "tradeMode=${ctxObj.optString("tradeMode")}, " +
-                "bnfChain_strikes_count=${ctxObj.optJSONObject("bnfChain")?.optJSONObject("strikes")?.length() ?: 0}, " +
-                "bnfExpiry=${ctxObj.optString("bnfExpiry")}"
+                "tradeMode=${ctxObj.optString("tradeMode")}"
             )
             
             Log.d(TAG, "BRAIN_CALLING: analyze() with ${JSONArray(pollsJson).length()} polls")
@@ -1025,89 +974,137 @@ class MarketWatchService : Service() {
                 }
             }
             
-            if (result == null) {
-                Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after 10s")
-                return
-            }
-            
-            val resultObj = JSONObject(result)
-            LogBuffer.add('I', "MarketWatchService", "Brain complete v=${resultObj.optString("version", "N/A")} ts=${resultObj.optString("timestamp", "N/A")}")
-            
-            // --- NEW Diagnostic Result Parsing ---
-            try {
-                val candidateError = resultObj.optString("candidate_error", "")
-                if (candidateError.isNotEmpty()) {
-                    Log.e("BRAIN_PHASE3_ERROR", "Phase 3 exception: $candidateError")
-                }
-                val generated = resultObj.optJSONArray("generated_candidates")
-                val watchlist = resultObj.optJSONArray("watchlist")
-                val actualCandidates = resultObj.optJSONObject("candidates")
-                Log.d("BRAIN_CANDIDATES_DETAIL",
-                    "generated=${generated?.length() ?: 0}, " +
-                    "watchlist=${watchlist?.length() ?: 0}, " +
-                    "candidates_in_result=${actualCandidates?.length() ?: 0}"
-                )
-            } catch(e: Exception) {
-                Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
-            }
+            if (result != null) {
+                val resultObj = JSONObject(result)
+                broadcastData = result
+                brainSuccess = true
+                
+                // Phase E: Capture snapshots using Python-computed data
+                captureChainSnapshots(ctxObj, py)
 
-            // --- v2.2.6 ML Scoring Integration ---
-            val generatedCands = resultObj.optJSONArray("generated_candidates")
-            if (generatedCands != null && generatedCands.length() > 0 && isMLModelReady()) {
-                val py = Python.getInstance()
-                val brainMod = py.getModule("brain")
-                for (i in 0 until generatedCands.length()) {
-                    val cand = generatedCands.getJSONObject(i)
-                    val mlResult = scoreCandidate(cand, brainMod)
-                    if (mlResult != null) {
-                        cand.put("p_ml", mlResult.optDouble("p_ml"))
-                        cand.put("mlAction", mlResult.optString("ml_action"))
-                        cand.put("mlEdge", mlResult.optDouble("ml_edge"))
-                        cand.put("mlOod", mlResult.optBoolean("ml_ood", false))
-                        cand.put("mlOodConf", mlResult.optDouble("ml_ood_conf", 1.0))
-                        cand.put("mlOodWarn", mlResult.optJSONArray("ml_ood_warn") ?: JSONArray())
-                        cand.put("mlOodBlocked", mlResult.optBoolean("ml_ood_blocked", false))
-                        cand.put("mlRegime", mlResult.optString("ml_regime", ""))
+                // Decision #17/#18/#Issue9: Persist brain-computed P&L and metrics back to open_trades
+                val posLive = resultObj.optJSONObject("position_live")
+                if (posLive != null) {
+                    val tradesStr = prefs.getString("open_trades", "[]") ?: "[]"
+                    val trades = JSONArray(tradesStr)
+                    var changed = false
+                    for (i in 0 until trades.length()) {
+                        val t = trades.getJSONObject(i)
+                        val tid = t.optString("id")
+                        val live = posLive.optJSONObject(tid)
+                        if (live != null) {
+                            t.put("current_pnl", live.optDouble("current_pnl"))
+                            t.put("current_spot", live.optDouble("current_spot"))
+                            t.put("peak_pnl", live.optDouble("peak_pnl"))
+                            t.put("trough_pnl", live.optDouble("trough_pnl"))
+                            t.put("peak_erosion", live.optDouble("peak_erosion"))
+                            t.put("vix_change", live.optDouble("vix_change"))
+                            t.put("journey", live.optJSONArray("journey"))
+                            
+                            val posData = resultObj.optJSONObject("positions")?.optJSONObject(tid)
+                            if (posData != null) {
+                                t.put("controlIndex", posData.optInt("controlIndex", 0))
+                                t.put("wallDrift", posData.optJSONObject("wallDrift"))
+                            }
+                            changed = true
+                        }
+                    }
+                    if (changed) {
+                        prefs.edit().putString("open_trades", trades.toString()).commit()
                     }
                 }
-                Log.d("BRAIN_ML_SCORING", "Scored ${generatedCands.length()} background candidates")
-            }
 
-            Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}")
-            
-            // WS19: resultObj was mutated with ML scoring, 'result' string was NOT.
-            // Save resultObj to ensure ML-scored data persists in getBrainResult()
-            val finalBrainString = resultObj.toString()
-            prefs.edit().putString("brain_result", finalBrainString).commit()
-            
-            val candidates = resultObj.optJSONArray("generated_candidates")
-                ?: resultObj.optJSONArray("candidates")
-            if (candidates != null) {
-                prefs.edit().putString("candidates", candidates.toString()).commit()
+                // --- NEW Diagnostic Result Parsing ---
+                try {
+                    val candidateError = resultObj.optString("candidate_error", "")
+                    if (candidateError.isNotEmpty()) {
+                        Log.e("BRAIN_PHASE3_ERROR", "Phase 3 exception: $candidateError")
+                    }
+                    val generated = resultObj.optJSONArray("generated_candidates")
+                    val watchlist = resultObj.optJSONArray("watchlist")
+                    val actualCandidates = resultObj.optJSONObject("candidates")
+                    Log.d("BRAIN_CANDIDATES_DETAIL",
+                        "generated=${generated?.length() ?: 0}, " +
+                        "watchlist=${watchlist?.length() ?: 0}, " +
+                        "candidates_in_result=${actualCandidates?.length() ?: 0}"
+                    )
+                } catch(e: Exception) {
+                    Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
+                }
+
+                // --- v2.2.6 ML Scoring Integration ---
+                val generatedCands = resultObj.optJSONArray("generated_candidates")
+                if (generatedCands != null && generatedCands.length() > 0 && isMLModelReady()) {
+                    val py = Python.getInstance()
+                    val brainMod = py.getModule("brain")
+                    for (i in 0 until generatedCands.length()) {
+                        val cand = generatedCands.getJSONObject(i)
+                        val mlResult = scoreCandidate(cand, brainMod)
+                        if (mlResult != null) {
+                            cand.put("p_ml", mlResult.optDouble("p_ml"))
+                            cand.put("mlAction", mlResult.optString("ml_action"))
+                            cand.put("mlEdge", mlResult.optDouble("ml_edge"))
+                            cand.put("mlOod", mlResult.optBoolean("ml_ood", false))
+                            cand.put("mlOodConf", mlResult.optDouble("ml_ood_conf", 1.0))
+                            cand.put("mlOodWarn", mlResult.optJSONArray("ml_ood_warn") ?: JSONArray())
+                            cand.put("mlOodBlocked", mlResult.optBoolean("ml_ood_blocked", false))
+                            cand.put("mlRegime", mlResult.optString("ml_regime", ""))
+                        }
+                    }
+                    Log.d("BRAIN_ML_SCORING", "Scored ${generatedCands.length()} background candidates")
+                }
+
+
+                Log.d(TAG, "SAVING_BRAIN_RESULT: result length=${result.length}")
+                
+                // WS19: resultObj was mutated with ML scoring, 'result' string was NOT.
+                // Save resultObj to ensure ML-scored data persists in getBrainResult()
+                val finalBrainString = resultObj.toString()
+                prefs.edit().putString("brain_result", finalBrainString).commit()
+                
+                val candidates = resultObj.optJSONArray("generated_candidates")
+                    ?: resultObj.optJSONArray("candidates")
+                if (candidates != null) {
+                    prefs.edit().putString("candidates", candidates.toString()).commit()
+                }
+                Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
+                
+                processBrainAlerts(resultObj)
+                
+                // Phase E: Persist routine alert timestamp if routine alert was fired
+                val alerts = resultObj.optJSONArray("alerts")
+                if (alerts != null) {
+                    for (i in 0 until alerts.length()) {
+                        if (alerts.getJSONObject(i).optString("category") == "ROUTINE") {
+                            prefs.edit().putLong("last_routine_dispatch_ms", System.currentTimeMillis()).apply()
+                            break
+                        }
+                    }
+                }
+                
+                brainSuccess = true
+                
+                // Build the data payload for syncFromNative() in WebView
+                val pollCount = prefs.getInt("poll_count", 0)
+                val openTradesUpdated = prefs.getString("open_trades", "[]") ?: "[]"
+                val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
+                
+                broadcastData = JSONObject().apply {
+                    put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())) // A4
+                    put("spots", JSONObject().apply {
+                        put("bnfSpot", bnfSpot)
+                        put("nfSpot",  nfSpot)
+                        put("vix",     vix)
+                    })
+                    put("brainResult",  resultObj) // WS19: use mutated object
+                    put("candidates",   candidates ?: JSONArray())
+                    put("pollCount",    pollCount)
+                    put("pollHistory",  JSONArray(historyStr)) // A4
+                    put("openTrades",   JSONArray(openTradesUpdated))
+                }.toString()
+            } else {
+                Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after 10s")
             }
-            Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
-            
-            processBrainAlerts(resultObj)
-            brainSuccess = true
-            
-            // Build the data payload for syncFromNative() in WebView
-            val pollCount = prefs.getInt("poll_count", 0)
-            val openTradesUpdated = prefs.getString("open_trades", "[]") ?: "[]"
-            val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
-            
-            broadcastData = JSONObject().apply {
-                put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())) // A4
-                put("spots", JSONObject().apply {
-                    put("bnfSpot", bnfSpot)
-                    put("nfSpot",  nfSpot)
-                    put("vix",     vix)
-                })
-                put("brainResult",  resultObj) // WS19: use mutated object
-                put("candidates",   candidates ?: JSONArray())
-                put("pollCount",    pollCount)
-                put("pollHistory",  JSONArray(historyStr)) // A4
-                put("openTrades",   JSONArray(openTradesUpdated))
-            }.toString()
             
         } catch (e: Exception) {
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
@@ -1122,118 +1119,24 @@ class MarketWatchService : Service() {
     }
 
     private fun processBrainAlerts(result: JSONObject) {
+        val alerts = result.optJSONArray("alerts") ?: return
         val currentAlertKeys = mutableSetOf<String>()
 
-        // 1. Check Main Verdict
-        val verdict = result.optJSONObject("verdict")
-        if (verdict != null) {
-            val action = verdict.optString("action", "WAIT")
-            val confidence = verdict.optInt("confidence", 0)
-            if (action != "WAIT" && confidence >= 50) {
-                val alertKey = "VERDICT_$action"
-                currentAlertKeys.add(alertKey)
-                if (!lastAlertKeys.contains(alertKey)) {
-                    NotificationHelper.send(this, 
-                        "Trade Signal: $action", 
-                        "${verdict.optString("strategy")} @ $confidence% conf: ${verdict.optString("reasoning")}", 
-                        "urgent")
-                }
-            }
-        }
-
-        // 2. Check Position Verdicts (High Priority)
-        val positions = result.optJSONObject("positions")
-        if (positions != null) {
-            val keys = positions.keys()
-            while (keys.hasNext()) {
-                val tid = keys.next()
-                val posData = positions.getJSONObject(tid)
-                val pVerdict = posData.optJSONObject("verdict")
-                if (pVerdict != null) {
-                    val pAction = pVerdict.optString("action", "HOLD")
-                    val pReason = pVerdict.optString("reason", "")
-                    if (pAction == "EXIT" || pAction == "BOOK") {
-                        val alertKey = "POS_${tid}_$pAction"
-                        currentAlertKeys.add(alertKey)
-                        if (!lastAlertKeys.contains(alertKey)) {
-                            NotificationHelper.send(this, 
-                                "$pAction Signal ($tid)", 
-                                pReason, 
-                                "urgent",
-                                "positions")
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. High Strength Market/Risk Insights
-        val sections = listOf("market", "risk", "timing")
-        for (section in sections) {
-            val insights = result.optJSONArray(section)
-            if (insights != null) {
-                for (i in 0 until insights.length()) {
-                    val ins = insights.getJSONObject(i)
-                    val strength = ins.optInt("strength", 0)
-                    if (strength >= 4) {
-                        val label = ins.optString("label")
-                        val alertKey = "INSIGHT_${section}_${label}"
-                        currentAlertKeys.add(alertKey)
-                        
-                        if (!lastAlertKeys.contains(alertKey)) {
-                            var detail = ins.optString("detail")
-                            if (label.contains("FII") && section == "market") {
-                                try {
-                                    val contextJson = prefs.getString("context", "{}") ?: "{}"
-                                    val ctxObj = JSONObject(contextJson)
-                                    val fiiHistory = ctxObj.optJSONArray("fiiHistory")
-                                    if (fiiHistory != null && fiiHistory.length() > 0) {
-                                        val todayFii = fiiHistory.getJSONObject(0).optDouble("fiiCash", 0.0)
-                                        detail = "Today FII Cash: ₹${todayFii.toInt()}Cr"
-                                    }
-                                } catch (e: Exception) {
-                                    Log.d(TAG, "FII lookup failed (skipping): ${e.message}")
-                                }
-                            }
-                            
-                            NotificationHelper.send(this, 
-                                "${ins.optString("icon")} ${ins.optString("label")}", 
-                                detail, 
-                                if (ins.optString("impact") == "caution") "urgent" else "info"
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. Candidate Opportunities (Summary)
-        val candidates = result.optJSONArray("generated_candidates") ?: result.optJSONArray("candidates")
-        if (candidates != null && candidates.length() > 0) {
-            val best = mutableListOf<String>()
-            for (i in 0 until candidates.length()) {
-                val c = candidates.getJSONObject(i)
-                val forces = c.optJSONObject("forces")
-                val aligned = forces?.optInt("aligned", 0) ?: 0
-                val prob = c.optDouble("probProfit", 0.0)
-                
-                // Alert on high-confidence candidates (aligned >= 3, prob >= 70%)
-                if (aligned >= 3 && prob >= 0.70) {
-                    val index = c.optString("index", "BNF")
-                    val type = c.optString("type", "")
-                    best.add("$index $type $aligned/3")
-                }
-            }
+        for (i in 0 until alerts.length()) {
+            val alert = alerts.getJSONObject(i)
+            val key = alert.optString("key")
+            val priority = alert.optString("priority")
+            val category = alert.optString("category")
             
-            if (best.isNotEmpty()) {
-                val alertKey = "CANDIDATES_${best.joinToString("-")}"
-                currentAlertKeys.add(alertKey)
-                if (!lastAlertKeys.contains(alertKey)) {
-                    val title = "🎯 ${best.size} High-Confidence Opportunities"
-                    // Join top 3 into the body for readability
-                    val body = "${best.take(3).joinToString(", ")}${if (best.size > 3) " and more" else ""} — open app to review."
-                    NotificationHelper.send(this, title, body, "important")
-                }
+            currentAlertKeys.add(key)
+            
+            if (!lastAlertKeys.contains(key)) {
+                NotificationHelper.send(this,
+                    alert.optString("title"),
+                    alert.optString("body"),
+                    priority,
+                    if (category == "POSITION") "positions" else "main"
+                )
             }
         }
         
@@ -1345,7 +1248,7 @@ class MarketWatchService : Service() {
         wakeLock?.let { if (it.isHeld) it.release() }
     }
 
-    private fun captureChainSnapshots(bnf: JSONObject?, nf: JSONObject?) {
+    private fun captureChainSnapshots(ctx: JSONObject, py: Python) {
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)
         val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
@@ -1354,13 +1257,18 @@ class MarketWatchService : Service() {
         if (mins in 825..870 && !prefs.getBoolean("has2pmSnapshot", false)) {
             Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 2pm snapshot")
             serviceScope.launch(Dispatchers.IO) {
-                val data = JSONObject().apply {
-                    put("bnf", bnf)
-                    put("nf",  nf)
-                }
-                if (SupabaseClient.saveChainSnapshot("2pm", data)) {
-                    prefs.edit().putBoolean("has2pmSnapshot", true).apply()
-                    Log.i(TAG, "SNAPSHOT_SAVED: 2pm snapshot synced to Supabase")
+                try {
+                    val brain = py.getModule("brain")
+                    val snapJson = brain.callAttr("build_chain_snapshot_data", ctx.toString()).toString()
+                    val data = JSONObject(snapJson)
+                    
+                    if (SupabaseClient.saveChainSnapshot("2pm", data)) {
+                        prefs.edit().putString("snap_2pm_today", snapJson).apply()
+                        prefs.edit().putBoolean("has2pmSnapshot", true).apply()
+                        Log.i(TAG, "SNAPSHOT_SAVED: 2pm snapshot synced to Supabase & Prefs")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "SNAPSHOT_ERROR 2pm: ${e.message}")
                 }
             }
         }
@@ -1369,13 +1277,17 @@ class MarketWatchService : Service() {
         if (mins in 900..930 && !prefs.getBoolean("has315pmSnapshot", false)) {
             Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 315pm snapshot")
             serviceScope.launch(Dispatchers.IO) {
-                val data = JSONObject().apply {
-                    put("bnf", bnf)
-                    put("nf",  nf)
-                }
-                if (SupabaseClient.saveChainSnapshot("315pm", data)) {
-                    prefs.edit().putBoolean("has315pmSnapshot", true).apply()
-                    Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
+                try {
+                    val brain = py.getModule("brain")
+                    val snapJson = brain.callAttr("build_chain_snapshot_data", ctx.toString()).toString()
+                    val data = JSONObject(snapJson)
+                    
+                    if (SupabaseClient.saveChainSnapshot("315pm", data)) {
+                        prefs.edit().putBoolean("has315pmSnapshot", true).apply()
+                        Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "SNAPSHOT_ERROR 315pm: ${e.message}")
                 }
             }
         }

@@ -1,4 +1,4 @@
-import json, math, os as _os
+import json, math, os as _os, statistics
 
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
 _ML_ENGINE     = None
@@ -268,6 +268,101 @@ def regime_detector(polls, baseline):
                 "detail": f"No clear direction. Widen stops or wait.",
                 "impact": "caution", "strength": 4}
     return None
+
+def _synthesize_market_phase(regime, ctx):
+    """Returns {id, label, detail, hint} from detect_regime output."""
+    rtype = regime.get('type', 'unknown')
+    direction = regime.get('direction', 0)
+    sigma = regime.get('sigma', 0)
+    trend_pct = regime.get('trend_pct', 0)
+
+    if rtype == 'range':
+        return {
+            'id': 'RANGE',
+            'label': 'Range-bound',
+            'detail': f'{sigma:.2f}σ range',
+            'hint': 'Credit-friendly. Watch for breakout.'
+        }
+    elif rtype == 'trend':
+        d = 'UP' if direction > 0 else 'DOWN'
+        return {
+            'id': f'TREND_{d}',
+            'label': f'Trending {d.lower()}',
+            'detail': f'{sigma:.2f}σ, {trend_pct:.1f}% trend',
+            'hint': 'Debit-friendly in trend direction.'
+        }
+    elif rtype == 'choppy':
+        return {
+            'id': 'CHOPPY',
+            'label': 'Choppy',
+            'detail': f'{sigma:.2f}σ, no clear direction',
+            'hint': 'Avoid directional plays. IB/IC if intraday.'
+        }
+    return {'id': 'UNKNOWN', 'label': 'Unknown', 'detail': '', 'hint': ''}
+
+def institutional_regime(ctx):
+    """Phase B: classify FII/DII institutional positioning regime.
+    Replaces JS computeInstitutionalRegime(). Returns dict or None.
+    """
+    morning = ctx.get('morning_input') or {}
+    fii_cash = float(morning.get('fiiCash') or 0)
+    dii_cash = float(morning.get('diiCash') or 0)
+    fii_idx_fut = float(morning.get('fiiIdxFut') or 0)
+    fii_stk_fut = float(morning.get('fiiStkFut') or 0)
+
+    # Skip if no institutional data entered
+    if not morning.get('diiCash') and not morning.get('fiiIdxFut') and not morning.get('fiiStkFut'):
+        return None
+
+    # Derived metrics
+    abs_fii_cash = abs(fii_cash)
+    absorption_ratio = round(dii_cash / abs_fii_cash, 2) if abs_fii_cash > 0 else None
+    fii_deriv_net = int(fii_idx_fut + fii_stk_fut)
+    is_rotation = fii_cash < -500 and fii_stk_fut > 200
+    is_panic = fii_cash < -500 and absorption_ratio is not None and absorption_ratio < 0.5 and fii_stk_fut < 0
+    is_accumulation = fii_cash > 500 and dii_cash > 0
+    is_repositioning = fii_cash < -500 and fii_idx_fut > 0
+
+    # Classify regime
+    regime, regime_color, regime_detail, credit_confidence = None, None, None, None
+
+    if is_panic:
+        regime = 'PANIC'
+        regime_color = 'var(--danger)'
+        regime_detail = 'No floor — DII not absorbing, FII selling everything. Avoid credit near ATM.'
+        credit_confidence = 'LOW'
+    elif is_repositioning:
+        regime = 'REPOSITIONING'
+        regime_color = 'var(--warn)'
+        regime_detail = 'FII selling cash but buying futures — setting up for bounce. Direction may flip.'
+        credit_confidence = 'MEDIUM'
+    elif is_rotation:
+        regime = 'ROTATION'
+        regime_color = 'var(--green)'
+        regime_detail = 'Orderly rotation — selling index, buying stocks. Floor exists. Credit spreads safe.'
+        credit_confidence = 'HIGH'
+    elif is_accumulation:
+        regime = 'ACCUMULATION'
+        regime_color = 'var(--green)'
+        regime_detail = 'FII + DII both buying. Rally likely. Credit bull spreads ride it.'
+        credit_confidence = 'HIGH'
+    elif absorption_ratio is not None and absorption_ratio >= 0.8 and fii_cash < -500:
+        regime = 'DEFENDED'
+        regime_color = '#2196F3'
+        regime_detail = f'DII absorbing {int(absorption_ratio * 100)}% of FII selling. Support holding.'
+        credit_confidence = 'HIGH'
+    else:
+        regime = 'NORMAL'
+        regime_color = 'var(--text-muted)'
+        regime_detail = 'No extreme institutional pattern detected.'
+        credit_confidence = 'MEDIUM'
+
+    return {
+        'regime': regime, 'regimeColor': regime_color, 'regimeDetail': regime_detail,
+        'creditConfidence': credit_confidence,
+        'fiiCash': fii_cash, 'diiCash': dii_cash, 'fiiIdxFut': fii_idx_fut, 'fiiStkFut': fii_stk_fut,
+        'absorptionRatio': absorption_ratio, 'fiiDerivNet': fii_deriv_net, 'isRotation': is_rotation
+    }
 
 def futures_premium_trend(polls, baseline):
     fps = [p.get('fp') for p in last_n(polls, 6) if p.get('fp') is not None]
@@ -1291,6 +1386,64 @@ def fii_trend(polls, ctx):
                 "detail": f"Mild selling pressure.", "impact": "bearish", "strength": 2}
     return None
 
+def fii_short_trend(ctx):
+    """Phase B: 3-day FII Short% trend classifier.
+    Replaces JS getFiiShortTrend(currentShort, history).
+    """
+    morning = ctx.get('morning_input') or {}
+    current_short = morning.get('fiiShortPct')
+    if current_short is None or current_short == '':
+        return None
+    
+    try:
+        current_short = float(current_short)
+    except:
+        return None
+
+    yday_hist = ctx.get('yesterdayHistory') or []
+    vals = [current_short]
+    for h in yday_hist[:2]:
+        val = h.get('fii_short_pct')
+        if val is not None:
+            vals.append(float(val))
+    
+    if len(vals) < 2:
+        return None
+
+    changes = []
+    for i in range(len(vals) - 1):
+        changes.append(vals[i] - vals[i+1])
+
+    trend = 'FLAT'
+    label = ''
+    all_down = all(c < 0 for c in changes)
+    all_up = all(c > 0 for c in changes)
+
+    vals_str = '→'.join(f'{v:.1f}' for v in vals)
+
+    if all_down:
+        trend = 'COVERING'
+        label = f'↓↓ Covering ({vals_str}) — bullish'
+    elif all_up:
+        trend = 'BUILDING'
+        label = f'↑↑ Building ({vals_str}) — bearish'
+    elif len(changes) >= 2 and (1 if changes[0] > 0 else -1 if changes[0] < 0 else 0) != (1 if changes[1] > 0 else -1 if changes[1] < 0 else 0):
+        trend = 'INFLECTION'
+        label = f'⟳ Inflection ({vals_str}) — direction changed'
+    else:
+        label = vals_str
+
+    accel = False
+    if len(changes) >= 2 and abs(changes[0]) > abs(changes[1]) * 1.3:
+        accel = True
+    
+    aggressive = len(changes) > 0 and abs(changes[0]) >= 3
+
+    return {
+        'trend': trend, 'label': label, 'accel': accel, 'aggressive': aggressive,
+        'values': vals, 'changes': changes
+    }
+
 def nf_bnf_divergence(polls, ctx):
     """NF and BNF moving in different directions?"""
     # DEAD UNTIL v2.2.9 — profile.pctFromOpen not wired by Kotlin
@@ -1345,6 +1498,45 @@ def yesterday_signal_prior(polls, ctx):
             "detail": f"Signal accuracy: {pct}% over {acc.get('total',0) if acc else 0} signals.",
             "impact": "bearish" if sig['signal']=='BEARISH' else "bullish" if sig['signal']=='BULLISH' else "neutral",
             "strength": 2 if pct < 60 else 3}
+
+def validate_yesterday_signal(ctx):
+    """Phase B: validate yesterday's tomorrow_signal against today's gap.
+    Replaces async JS validateYesterdaySignal(todayGap).
+    """
+    gap = ctx.get('gap')
+    if not gap or gap.get('type') == 'UNKNOWN':
+        return None
+    
+    yday_hist = ctx.get('yesterdayHistory') or []
+    if not yday_hist:
+        return None
+    
+    yday_date = yday_hist[0].get('date')
+    if not yday_date:
+        return None
+    
+    yday_signal = ctx.get('yesterdaySignal')
+    if not yday_signal or not yday_signal.get('tomorrow_signal'):
+        return None
+    
+    predicted = yday_signal.get('tomorrow_signal')
+    actual_gap = gap.get('gap', 0)
+    actual_dir = 'BULLISH' if actual_gap > 50 else 'BEARISH' if actual_gap < -50 else 'NEUTRAL'
+    
+    correct = (predicted == actual_dir) or (predicted == 'NEUTRAL' and abs(actual_gap) < 100)
+    
+    accuracy_stats = ctx.get('signalAccuracy') or {}
+    total_signals = accuracy_stats.get('total', 0)
+    
+    return {
+        'date': yday_date,
+        'predicted': predicted,
+        'strength': yday_signal.get('signal_strength'),
+        'actualGap': actual_gap,
+        'actualDir': actual_dir,
+        'correct': correct,
+        'totalSignals': total_signals
+    }
 
 def dte_urgency(polls, ctx):
     """DTE-aware urgency for timing."""
@@ -1524,14 +1716,1245 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         'drift_reasons': drift_reasons[:5]
     }
 
-def chain_intelligence(polls, ctx):
-    """b92: Deep chain analysis — returns LIST of ALL qualifying insights (was single-return).
-    Uses 10 computed features from computeChainProfile."""
+def compute_morning_bias(ctx, polls):
+    """Phase B: 7-signal voting + 8th chain-validation overlay.
+    Replaces JS computeBias(). Reads from ctx. Returns dict.
+    """
+    votes = {'bull': 0, 'bear': 0}
+    signals = []
+    morning = ctx.get('morning_input') or {}
+    chain_data = ctx.get('chain_data') or ctx.get('bnfChain') or {}
+    yday_hist = ctx.get('yesterdayHistory') or []
+    
+    if not morning:
+        return {'bias': 'NEUTRAL', 'strength': '', 'net': 0,
+                'votes': votes, 'signals': signals,
+                'label': 'NEUTRAL', 'upstoxAgrees': None,
+                'chainValidation': 'NONE'}
+    
+    def _to_float(v):
+        if v is None or v == '':
+            return None
+        try:
+            f = float(v)
+            return f if f == f else None  # NaN check
+        except (ValueError, TypeError):
+            return None
+    
+    # 1. FII Cash
+    fc = _to_float(morning.get('fiiCash'))
+    if fc is not None:
+        if fc > 500:
+            votes['bull'] += 1
+            signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'BULL'})
+        elif fc < -500:
+            votes['bear'] += 1
+            signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'BEAR'})
+        else:
+            signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'NEUTRAL'})
+    
+    # 2. FII Short%
+    fsp = _to_float(morning.get('fiiShortPct'))
+    if fsp is not None:
+        prev = float(yday_hist[0].get('fii_short_pct')) if (yday_hist and yday_hist[0].get('fii_short_pct') is not None) else None
+        if prev is None:
+            if fsp > 85:
+                votes['bear'] += 1
+                signals.append({'name': 'FII Short%', 'value': f'{fsp}% (prev: N/A)', 'dir': 'BEAR'})
+            elif fsp < 70:
+                votes['bull'] += 1
+                signals.append({'name': 'FII Short%', 'value': f'{fsp}%', 'dir': 'BULL'})
+            else:
+                signals.append({'name': 'FII Short%', 'value': f'{fsp}%', 'dir': 'NEUTRAL'})
+        elif fsp > 85 and fsp > prev:
+            votes['bear'] += 1
+            signals.append({'name': 'FII Short%', 'value': f'{fsp}%↑ (was {prev})', 'dir': 'BEAR'})
+        elif fsp > 85 and fsp < prev:
+            signals.append({'name': 'FII Short%', 'value': f'{fsp}%↓ covering (was {prev})', 'dir': 'NEUTRAL'})
+        elif fsp > 85 and fsp == prev:
+            signals.append({'name': 'FII Short%', 'value': f'{fsp}% → flat (was {prev})', 'dir': 'NEUTRAL'})
+        elif fsp < 70:
+            votes['bull'] += 1
+            signals.append({'name': 'FII Short%', 'value': f'{fsp}%', 'dir': 'BULL'})
+        else:
+            signals.append({'name': 'FII Short%', 'value': f'{fsp}%', 'dir': 'NEUTRAL'})
+
+    # 3. Close Char
+    cc = chain_data.get('closeChar')
+    if cc is not None:
+        if cc >= 1:
+            votes['bull'] += 1
+            sign = '+' if cc > 0 else ''
+            signals.append({'name': 'Close Char', 'value': f'{sign}{cc} (auto)', 'dir': 'BULL'})
+        elif cc <= -1:
+            votes['bear'] += 1
+            signals.append({'name': 'Close Char', 'value': f'{cc} (auto)', 'dir': 'BEAR'})
+        else:
+            signals.append({'name': 'Close Char', 'value': f'{cc} (auto)', 'dir': 'NEUTRAL'})
+            
+    # 4. PCR
+    pcr = _to_float(chain_data.get('nearAtmPCR'))
+    if pcr is not None:
+        if pcr > 1.2:
+            votes['bull'] += 1
+            signals.append({'name': 'PCR', 'value': f'{pcr:.2f} (near-ATM)', 'dir': 'BULL'})
+        elif pcr < 0.9:
+            votes['bear'] += 1
+            signals.append({'name': 'PCR', 'value': f'{pcr:.2f} (near-ATM)', 'dir': 'BEAR'})
+        else:
+            signals.append({'name': 'PCR', 'value': f'{pcr:.2f} (near-ATM)', 'dir': 'NEUTRAL'})
+
+    # 5. VIX Dir
+    cur_vix = _to_float(chain_data.get('vix'))
+    if yday_hist and cur_vix is not None:
+        y_vix = _to_float(yday_hist[0].get('vix'))
+        if y_vix:
+            diff = cur_vix - y_vix
+            if diff > 0.3:
+                votes['bear'] += 1
+                signals.append({'name': 'VIX Dir', 'value': f'{cur_vix:.1f} ↑{diff:.1f}', 'dir': 'BEAR'})
+            elif diff < -0.3:
+                votes['bull'] += 1
+                signals.append({'name': 'VIX Dir', 'value': f'{cur_vix:.1f} ↓{abs(diff):.1f}', 'dir': 'BULL'})
+            else:
+                signals.append({'name': 'VIX Dir', 'value': f'{cur_vix:.1f} →', 'dir': 'NEUTRAL'})
+
+    # 6. Futures Prem
+    fp = _to_float(chain_data.get('futuresPremium'))
+    if fp is not None:
+        if fp > 0.05:
+            votes['bull'] += 1
+            signals.append({'name': 'Futures Prem', 'value': f'{fp:.3f}%', 'dir': 'BULL'})
+        elif fp < -0.05:
+            votes['bear'] += 1
+            signals.append({'name': 'Futures Prem', 'value': f'{fp:.3f}%', 'dir': 'BEAR'})
+        else:
+            signals.append({'name': 'Futures Prem', 'value': f'{fp:.3f}%', 'dir': 'NEUTRAL'})
+
+    # 7. DII Floor
+    dc = _to_float(morning.get('diiCash'))
+    if dc is not None and fc is not None and abs(fc) > 100:
+        today_abs = round(dc / abs(fc), 2)
+        yday = yday_hist[0] if yday_hist else None
+        ydc = _to_float(yday.get('dii_cash')) if yday else None
+        yfc = _to_float(yday.get('fii_cash')) if yday else None
+        y_abs = round(ydc / abs(yfc), 2) if (ydc is not None and yfc is not None and abs(yfc) > 100) else None
+        change = round(today_abs - y_abs, 2) if y_abs is not None else None
+        c_str = f' (was {y_abs}×, Δ{"+" if change > 0 else ""}{change})' if change is not None else ''
+        
+        if change is not None:
+            if change < -0.2 and today_abs <= 1.0:
+                votes['bear'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}×{c_str}', 'dir': 'BEAR'})
+            elif change > 0.2 and today_abs >= 0.7:
+                votes['bull'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}×{c_str}', 'dir': 'BULL'})
+            elif today_abs > 1.2:
+                votes['bull'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}× strong{c_str}', 'dir': 'BULL'})
+            elif today_abs < 0.3:
+                votes['bear'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}× panic{c_str}', 'dir': 'BEAR'})
+            else:
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}×{c_str}', 'dir': 'NEUTRAL'})
+        else:
+            if today_abs > 1.0:
+                votes['bull'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}× (no prev)', 'dir': 'BULL'})
+            elif today_abs < 0.5:
+                votes['bear'] += 1
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}× (no prev)', 'dir': 'BEAR'})
+            else:
+                signals.append({'name': 'DII Floor', 'value': f'{today_abs}× (no prev)', 'dir': 'NEUTRAL'})
+
+    # 8. Overnight Chain Validation
+    chain_validation = 'NONE'
+    overnight = ctx.get('overnightDelta')
+    gap = ctx.get('gap')
+    if overnight and overnight.get('signals'):
+        o_bulls = len([s for s in overnight['signals'] if s['dir'] == 'BULL'])
+        o_bears = len([s for s in overnight['signals'] if s['dir'] == 'BEAR'])
+        o_dir = 'BEAR' if o_bears >= 2 else 'BULL' if o_bulls >= 2 else 'MIXED'
+        
+        gap_sigma = gap.get('sigma', 0) if gap else 0
+        g_dir = ('BEAR' if gap_sigma < -0.5 else 'BULL' if gap_sigma > 0.5 else 'NEUTRAL') if gap else 'NEUTRAL'
+        
+        g_confirms = (o_dir == g_dir)
+        g_conflicts = (o_dir == 'BULL' and g_dir == 'BEAR') or (o_dir == 'BEAR' and g_dir == 'BULL')
+        
+        if o_dir != 'MIXED' and g_confirms:
+            chain_validation = 'CONFIRMED'
+        elif o_dir != 'MIXED' and g_dir == 'NEUTRAL':
+            chain_validation = 'LIKELY'
+        elif o_dir != 'MIXED' and g_conflicts:
+            chain_validation = 'UNCERTAIN'
+            
+        for s in overnight['signals']:
+            v_str = f"{s['pct']:.2f}σ" if s.get('isSigma') else f"{'+' if s['pct'] > 0 else ''}{s['pct']}%"
+            signals.append({'name': f"🌙 {s['name']}", 'value': f"{s['from']}→{s.get('to') or '?'} ({v_str})", 'dir': s['dir']})
+            
+        if chain_validation == 'CONFIRMED':
+            confirmed_dir = o_dir
+            stale_neutralized = 0
+            for i in range(len(signals)):
+                s = signals[i]
+                is_stale = any(name in s['name'] for name in ['Close Char', 'FII Short%', 'DII Floor'])
+                if is_stale and s['dir'] != 'NEUTRAL' and s['dir'] != confirmed_dir:
+                    if s['dir'] == 'BULL': votes['bull'] -= 1
+                    if s['dir'] == 'BEAR': votes['bear'] -= 1
+                    signals[i] = {**s, 'value': s['value'] + ' [stale⚠️]', 'dir': 'NEUTRAL'}
+                    stale_neutralized += 1
+            if confirmed_dir == 'BEAR': votes['bear'] += 2
+            elif confirmed_dir == 'BULL': votes['bull'] += 2
+            signals.append({'name': '🔗 Chain', 'value': f'CONFIRMED {confirmed_dir} ({stale_neutralized} stale neutralized)', 'dir': confirmed_dir})
+        elif chain_validation == 'LIKELY':
+            likely_dir = o_dir
+            if likely_dir == 'BEAR': votes['bear'] += 1
+            elif likely_dir == 'BULL': votes['bull'] += 1
+            signals.append({'name': '🔗 Chain', 'value': f'LIKELY {likely_dir} (gap flat, not confirmed)', 'dir': likely_dir})
+        elif chain_validation == 'UNCERTAIN':
+            signals.append({'name': '🔗 Chain', 'value': f'UNCERTAIN (overnight {o_dir} but gap {g_dir})', 'dir': 'NEUTRAL'})
+
+    # Final scoring
+    net = votes['bull'] - votes['bear']
+    if net >= 3: bias, strength = 'BULL', 'STRONG'
+    elif net >= 1: bias, strength = 'BULL', 'MILD'
+    elif net <= -3: bias, strength = 'BEAR', 'STRONG'
+    elif net <= -1: bias, strength = 'BEAR', 'MILD'
+    else: bias, strength = 'NEUTRAL', ''
+    
+    ub = morning.get('upstoxBias')
+    u_agrees = None
+    if ub and ub != '':
+        u_dir = 'BULL' if ub == 'Bullish' else 'BEAR' if ub == 'Bearish' else 'NEUTRAL'
+        u_agrees = (bias == u_dir) or (bias == 'NEUTRAL' and u_dir == 'NEUTRAL')
+        signals.append({'name': 'Upstox', 'value': f"{ub} {'✅ agrees' if u_agrees else '⚠️ DISAGREES'}", 'dir': u_dir, 'isComparison': True})
+        
+    return {
+        'bias': bias, 'strength': strength, 'net': net, 'votes': votes,
+        'signals': signals, 'label': f'{strength} {bias}'.strip(),
+        'upstoxAgrees': u_agrees, 'chainValidation': chain_validation
+    }
+
+def compute_overnight_delta(ctx):
+    """Phase B: compute Dow/Crude/GIFT deltas since evening close.
+    Replaces JS computeOvernightDelta(currentNfSpot).
+    """
+    DOW_THRESHOLD = 0.5
+    CRUDE_THRESHOLD = 1.5
+    
+    eve = ctx.get('eveningClose')
+    if not eve:
+        return None
+        
+    morning_global = ctx.get('globalDirection') or {}
+    m_dow = morning_global.get('dowClose')
+    m_crude = morning_global.get('crudeSettle')
+    
+    delta = {'signals': [], 'summary': ''}
+    
+    if eve.get('dow') and m_dow:
+        e_dow = float(eve['dow'])
+        pct = round((m_dow - e_dow) / e_dow * 100, 2)
+        dir = 'NEUTRAL' if abs(pct) < DOW_THRESHOLD else ('BULL' if pct > 0 else 'BEAR')
+        delta['signals'].append({'name': 'Dow', 'from': e_dow, 'to': m_dow, 'pct': pct, 'dir': dir, 'threshold': DOW_THRESHOLD})
+        
+    if eve.get('crude') and m_crude:
+        e_crude = float(eve['crude'])
+        pct = round((m_crude - e_crude) / e_crude * 100, 2)
+        # Crude up = bearish
+        dir = 'NEUTRAL' if abs(pct) < CRUDE_THRESHOLD else ('BEAR' if pct > 0 else 'BULL')
+        delta['signals'].append({'name': 'Crude', 'from': e_crude, 'to': m_crude, 'pct': pct, 'dir': dir, 'threshold': CRUDE_THRESHOLD})
+        
+    gift_spot = ctx.get('morning_input', {}).get('giftSpot')
+    if eve.get('gift') and gift_spot:
+        e_gift = float(eve['gift'])
+        m_gift = float(gift_spot)
+        pct = round((m_gift - e_gift) / e_gift * 100, 2)
+        g_dir = 'BULL' if pct > 0.4 else 'BEAR' if pct < -0.4 else 'NEUTRAL'
+        delta['signals'].append({'name': 'GIFT', 'from': e_gift, 'to': m_gift, 'pct': pct, 'dir': g_dir, 'threshold': 0.4})
+    elif eve.get('gift') and ctx.get('gap'):
+        # Fallback to sigma if giftSpot missing (preserving existing resilience)
+        gap_sigma = ctx['gap'].get('sigma', 0)
+        g_dir = 'BULL' if gap_sigma > 0.3 else 'BEAR' if gap_sigma < -0.3 else 'NEUTRAL'
+        delta['signals'].append({'name': 'GIFT', 'from': eve['gift'], 'to': '?', 'pct': gap_sigma, 'dir': g_dir, 'isSigma': True})
+        
+    bulls = len([s for s in delta['signals'] if s['dir'] == 'BULL'])
+    bears = len([s for s in delta['signals'] if s['dir'] == 'BEAR'])
+    
+    if bears >= 2: delta['summary'] = '🔴 OVERNIGHT BEARISH'
+    elif bulls >= 2: delta['summary'] = '🟢 OVERNIGHT BULLISH'
+    elif bears > bulls: delta['summary'] = '🟡 OVERNIGHT MILDLY BEARISH'
+    elif bulls > bears: delta['summary'] = '🟡 OVERNIGHT MILDLY BULLISH'
+    else: delta['summary'] = '⚪ OVERNIGHT NEUTRAL'
+    return delta
+
+# ───────────────────────────────────────────────────────────────
+# DECISION #24 — build_chain_snapshot_data
+# ───────────────────────────────────────────────────────────────
+def build_chain_snapshot_data(ctx: dict) -> dict:
+    bnf_chain = ctx.get('bnfChain', {}) or {}
+    nf_chain = ctx.get('nfChain', {}) or {}
+    live = ctx.get('live', {}) or {}
+    baseline = ctx.get('baseline', {}) or {}
+    bnf_breadth = ctx.get('bnfBreadth', {}) or {}
+    nf50_breadth = ctx.get('nf50Breadth', {}) or {}
+
+    bnf_spot = live.get('bnfSpot') or baseline.get('bnfSpot')
+    nf_spot = live.get('nfSpot') or baseline.get('nfSpot')
+    vix = live.get('vix') or baseline.get('vix')
+
+    snapshot = {
+        'date': ctx.get('today_ist'),
+        'bnf_spot': bnf_spot,
+        'nf_spot': nf_spot,
+        'vix': vix,
+        'bnf_pcr': bnf_chain.get('pcr'),
+        'bnf_near_atm_pcr': bnf_chain.get('nearAtmPCR'),
+        'nf_pcr': nf_chain.get('pcr'),
+        'bnf_max_pain': bnf_chain.get('maxPain'),
+        'nf_max_pain': nf_chain.get('maxPain'),
+        'bnf_call_wall': bnf_chain.get('callWallStrike'),
+        'bnf_call_wall_oi': bnf_chain.get('callWallOI'),
+        'bnf_put_wall': bnf_chain.get('putWallStrike'),
+        'bnf_put_wall_oi': bnf_chain.get('putWallOI'),
+        'bnf_total_call_oi': bnf_chain.get('totalCallOI'),
+        'bnf_total_put_oi': bnf_chain.get('totalPutOI'),
+        'nf_total_call_oi': nf_chain.get('totalCallOI'),
+        'nf_total_put_oi': nf_chain.get('totalPutOI'),
+        'bnf_atm_iv': bnf_chain.get('atmIv'),
+        'bnf_futures_prem': bnf_chain.get('futuresPremium'),
+        'bnf_breadth_pct': bnf_breadth.get('weightedPct'),
+        'nf50_advancing': nf50_breadth.get('scaled'),
+    }
+    return snapshot
+
+# ───────────────────────────────────────────────────────────────
+# DECISION #25 — compute_positioning
+# ───────────────────────────────────────────────────────────────
+def compute_positioning(snap_2pm: dict, snap_315pm: dict, ctx: dict) -> dict:
+    if not snap_2pm or not snap_315pm:
+        return None
+
+    delta = {
+        'callOiDelta': (snap_315pm.get('bnf_total_call_oi') or 0) - (snap_2pm.get('bnf_total_call_oi') or 0),
+        'putOiDelta': (snap_315pm.get('bnf_total_put_oi') or 0) - (snap_2pm.get('bnf_total_put_oi') or 0),
+        'nfCallOiDelta': (snap_315pm.get('nf_total_call_oi') or 0) - (snap_2pm.get('nf_total_call_oi') or 0),
+        'nfPutOiDelta': (snap_315pm.get('nf_total_put_oi') or 0) - (snap_2pm.get('nf_total_put_oi') or 0),
+        'pcrChange': (snap_315pm.get('bnf_pcr') or 0) - (snap_2pm.get('bnf_pcr') or 0),
+        'nearPcrChange': (snap_315pm.get('bnf_near_atm_pcr') or 0) - (snap_2pm.get('bnf_near_atm_pcr') or 0),
+        'vixChange': (snap_315pm.get('vix') or 0) - (snap_2pm.get('vix') or 0),
+        'maxPainShift': (snap_315pm.get('bnf_max_pain') or 0) - (snap_2pm.get('bnf_max_pain') or 0),
+        'breadthChange': (snap_315pm.get('bnf_breadth_pct') or 0) - (snap_2pm.get('bnf_breadth_pct') or 0),
+        'spotChange': (snap_315pm.get('bnf_spot') or 0) - (snap_2pm.get('bnf_spot') or 0),
+        'snap2pm': snap_2pm,
+        'snap315pm': snap_315pm,
+    }
+
+    bear_score = 0.0
+    bull_score = 0.0
+
+    if delta['callOiDelta'] > delta['putOiDelta'] * 1.5:
+        bear_score += 2
+    elif delta['putOiDelta'] > delta['callOiDelta'] * 1.5:
+        bull_score += 2
+
+    if delta['pcrChange'] < -0.05:
+        bear_score += 1.5
+    elif delta['pcrChange'] > 0.05:
+        bull_score += 1.5
+
+    if delta['vixChange'] > 0.3:
+        bear_score += 1.5
+    elif delta['vixChange'] < -0.3:
+        bull_score += 1.5
+
+    if delta['maxPainShift'] < -100:
+        bear_score += 1
+    elif delta['maxPainShift'] > 100:
+        bull_score += 1
+
+    if delta['breadthChange'] < -0.5:
+        bear_score += 1
+    elif delta['breadthChange'] > 0.5:
+        bull_score += 1
+
+    pcr_context = ctx.get('pcrContext')
+    if pcr_context and pcr_context.get('confidence') != 'LOW':
+        bias = pcr_context.get('bias')
+        if bias == 'BULL':
+            bull_score += 1
+        elif bias == 'BEAR':
+            bear_score += 1
+        elif bias == 'MILD_BULL':
+            bull_score += 0.5
+
+    net_score = bull_score - bear_score
+    if net_score >= 3:
+        signal = 'BULLISH'
+        strength = min(5, round(net_score))
+    elif net_score >= 1:
+        signal = 'BULLISH'
+        strength = min(3, round(net_score))
+    elif net_score <= -3:
+        signal = 'BEARISH'
+        strength = min(5, round(abs(net_score)))
+    elif net_score <= -1:
+        signal = 'BEARISH'
+        strength = min(3, round(abs(net_score)))
+    else:
+        signal = 'NEUTRAL'
+        strength = 1
+
+    return {
+        'delta': delta,
+        'signal': signal,
+        'strength': strength,
+        'bullScore': bull_score,
+        'bearScore': bear_score,
+        'netScore': net_score,
+    }
+
+# ───────────────────────────────────────────────────────────────
+# DECISION #26 — compute_global_boost
+# ───────────────────────────────────────────────────────────────
+def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
+    if not positioning_result:
+        return None
+
+    base_signal = positioning_result.get('signal')
+    if base_signal == 'NEUTRAL':
+        return None
+
+    tomorrow_signal = {
+        'signal': base_signal,
+        'strength': positioning_result.get('strength', 1),
+        'globalBoost': 0,
+    }
+
+    gd = ctx.get('globalDirection', {}) or {}
+    is_bull = base_signal == 'BULLISH'
+    boost = 0
+
+    dow_threshold = _CONST.get('DOW_THRESHOLD', 0.5)
+    crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
+    gift_threshold = _CONST.get('GIFT_THRESHOLD', 0.3)
+
+    dow_close = gd.get('dowClose')
+    dow_now = gd.get('dowNow')
+    if dow_close and dow_now:
+        dow_pct = ((dow_now - dow_close) / dow_close) * 100.0
+        if abs(dow_pct) >= dow_threshold:
+            if (dow_pct > 0 and is_bull) or (dow_pct < 0 and not is_bull):
+                boost += 1
+            else:
+                boost -= 1
+
+    crude_settle = gd.get('crudeSettle')
+    crude_now = gd.get('crudeNow')
+    if crude_settle and crude_now:
+        crude_pct = ((crude_now - crude_settle) / crude_settle) * 100.0
+        if abs(crude_pct) >= crude_threshold:
+            if (crude_pct < 0 and is_bull) or (crude_pct > 0 and not is_bull):
+                boost += 1
+            else:
+                boost -= 1
+
+    gift_ref = (ctx.get('eveningClose') or {}).get('gift')
+    gift_now = gd.get('giftNow')
+    if gift_ref and gift_now:
+        gift_pct = ((gift_now - gift_ref) / gift_ref) * 100.0
+        if abs(gift_pct) >= gift_threshold:
+            if (gift_pct > 0 and is_bull) or (gift_pct < 0 and not is_bull):
+                boost += 1
+            else:
+                boost -= 1
+    elif ctx.get('gap') and ctx['gap'].get('sigma') is not None:
+        gap_sigma = ctx['gap']['sigma']
+        gift_bull = gap_sigma > 0.3
+        gift_bear = gap_sigma < -0.3
+        if (gift_bull and is_bull) or (gift_bear and not is_bull):
+            boost += 1
+        elif (gift_bull and not is_bull) or (gift_bear and is_bull):
+            boost -= 1
+
+    if boost != 0:
+        base_strength = positioning_result.get('strength', 1)
+        tomorrow_signal['strength'] = max(1, min(5, base_strength + boost))
+        tomorrow_signal['globalBoost'] = boost
+
+    return tomorrow_signal
+
+# ───────────────────────────────────────────────────────────────
+# DECISION #27 — evaluate_alerts
+# ───────────────────────────────────────────────────────────────
+def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict) -> list:
+    alerts = []
+    elapsed = ctx.get('mins_since_open', 0)
+    now_ms = ctx.get('now_ms', 0)
+    last_routine_notify = ctx.get('last_routine_dispatch_ms', 0)
+
+    if elapsed < _CONST.get('NOISE_WINDOW', 15):
+        return alerts
+
+    significant_move = ctx.get('significant_move', False)
+    abs_spot_sigma = ctx.get('abs_spot_sigma', 0.0)
+    abs_vix_sigma = ctx.get('abs_vix_sigma', 0.0)
+
+    if significant_move:
+        for cand in (watchlist or []):
+            if not cand.get('_alignmentChanged'):
+                continue
+            forces = cand.get('forces') or {}
+            aligned = forces.get('aligned', 0)
+            prev_aligned = cand.get('_prevAlignment', 0)
+            cand_index = cand.get('index', '')
+            cand_type = cand.get('type', '')
+            sell_strike = cand.get('sellStrike', '')
+            buy_strike = cand.get('buyStrike', '')
+            is_credit = cand.get('isCredit', False)
+            net_premium = cand.get('netPremium', 0)
+
+            if aligned == 3 and prev_aligned < 3:
+                if elapsed < _CONST.get('LAST_ENTRY_CUTOFF', 345):
+                    alerts.append({
+                        'key': f"WATCHLIST_ENTRY_{cand_index}_{sell_strike}_{buy_strike}",
+                        'category': 'WATCHLIST',
+                        'priority': 'entry',
+                        'title': '🎯 Entry Window',
+                        'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — 3/3 aligned. {'Credit' if is_credit else 'Debit'} ₹{net_premium}",
+                    })
+            elif prev_aligned == 3 and aligned < 3:
+                alerts.append({
+                    'key': f"WATCHLIST_CLOSING_{cand_index}_{sell_strike}_{buy_strike}",
+                    'category': 'WATCHLIST',
+                    'priority': 'important',
+                    'title': '⚠️ Window Closing',
+                    'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — dropped to {aligned}/3",
+                })
+
+        for trade in (open_trades or []):
+            t_index = trade.get('index_key', '')
+            t_type = trade.get('strategy_type', '')
+            t_sell_strike = trade.get('sell_strike', '')
+            t_id = trade.get('id', '')
+            current_pnl = trade.get('current_pnl', 0)
+            max_profit = trade.get('max_profit', 0)
+            max_loss = trade.get('max_loss', 0)
+            t_forces = trade.get('forces') or {}
+            t_aligned = t_forces.get('aligned')
+            trade_label = f"{t_index} {t_type} {t_sell_strike}"
+
+            if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
+                pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
+                alerts.append({
+                    'key': f"POS_TARGET_{t_id}",
+                    'category': 'POSITION',
+                    'priority': 'urgent',
+                    'title': '💰 Target Near',
+                    'body': f"{trade_label} P&L ₹{current_pnl} ({pct_of_max}% of max). Book profit.",
+                })
+            if max_loss and current_pnl <= -max_loss * _CONST.get('STOP_LOSS_RATIO', 0.7):
+                alerts.append({
+                    'key': f"POS_STOP_{t_id}",
+                    'category': 'POSITION',
+                    'priority': 'urgent',
+                    'title': '🛑 Stop Loss Near',
+                    'body': f"{trade_label} P&L ₹{current_pnl}. Cut position.",
+                })
+            if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
+                alerts.append({
+                    'key': f"POS_BOOK_{t_id}",
+                    'category': 'POSITION',
+                    'priority': 'urgent',
+                    'title': '⚡ Book Profit',
+                    'body': f"{trade_label} Forces {t_aligned}/3 but profitable ₹{current_pnl}. Take it.",
+                })
+
+        if abs_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0) or abs_vix_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0):
+            live = ctx.get('live', {}) or {}
+            bnf_spot = live.get('bnfSpot')
+            vix = live.get('vix')
+            spot_sigma = live.get('spotSigma', 0)
+            vix_sigma = live.get('vixSigma', 0)
+            bnf_str = f"{int(bnf_spot)}" if bnf_spot is not None else 'N/A'
+            vix_str = f"{vix:.1f}" if vix is not None else 'N/A'
+            alerts.append({
+                'key': f"SIG_MOVE_{bnf_str}_{vix_str}",
+                'category': 'MARKET',
+                'priority': 'important',
+                'title': '📊 Significant Move',
+                'body': f"BNF {bnf_str} ({spot_sigma}σ) VIX {vix_str} ({vix_sigma}σ)",
+            })
+
+    if (now_ms - last_routine_notify) >= _CONST.get('ROUTINE_NOTIFY_MS', 1800000):
+        live = ctx.get('live', {}) or {}
+        bnf_spot = live.get('bnfSpot')
+        vix = live.get('vix')
+        bnf_str = f"{int(bnf_spot)}" if bnf_spot is not None else 'N/A'
+        vix_str = f"{vix:.1f}" if vix is not None else 'N/A'
+        body = f"BNF {bnf_str} | VIX {vix_str}"
+        if open_trades:
+            total_pnl = sum((t.get('current_pnl') or 0) for t in open_trades)
+            body += f" | {len(open_trades)} pos P&L ₹{total_pnl}"
+        if watchlist and not open_trades:
+            top = watchlist[0]
+            top_forces = top.get('forces') or {}
+            top_aligned = top_forces.get('aligned', 0)
+            top_type = top.get('type', '')
+            body += f" | Top: {top_aligned}/3 {top_type}"
+        alerts.append({
+            'key': f"ROUTINE_{int(now_ms / _CONST.get('ROUTINE_NOTIFY_MS', 1800000))}",
+            'category': 'ROUTINE',
+            'priority': 'routine',
+            'title': '📈 Market Update',
+            'body': body,
+        })
+    return alerts
+
+def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
+    """Phase D: brain.py becomes sole producer of position P&L.
+    Replaces JS updateOpenTradePnL (2-leg only) and Kotlin 
+    updateOpenTradesPnL (silently skipped on missing lot_size).
+    """
+    # 1. Read lot_size from trade record if present
+    lot_size = trade.get('lot_size') or trade.get('lots') or 0
+
+    # 2. If missing, resolve from index_key:
+    if lot_size <= 0:
+        idx = trade.get('index_key', 'BNF')
+        lot_size = 30 if idx == 'BNF' else 65  # _CONST['BNF_LOT'] / _CONST['NF_LOT']
+
+    # 3. If still zero (unknown index), return None
+    if lot_size <= 0:
+        return None
+
+    sell_s   = trade.get('sell_strike', 0)
+    buy_s    = trade.get('buy_strike', 0)
+    sell_s2  = trade.get('sell_strike2', 0)
+    buy_s2   = trade.get('buy_strike2', 0)
+    stype    = trade.get('strategy_type')
+    if not stype:
+        return None
+
+    is_credit = trade.get('is_credit', False) or stype in (
+        'BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'
+    )
+    entry_premium = trade.get('entry_premium', 0)
+
+    # Build cache from chain or ltpMap
+    cache = {}
+    idx = trade.get('index_key', 'BNF')
+    # Prefer ltpMap from ctx if available for performance
+    ltp_map = ctx.get('bnfLtpMap' if idx == 'BNF' else 'nfLtpMap')
+    if ltp_map:
+        for k_str, pair in ltp_map.items():
+            cache[int(float(k_str))] = (pair.get('CE', 0), pair.get('PE', 0))
+    else:
+        chain = bnf_chain if idx == 'BNF' else nf_chain
+        strikes = chain.get('strikes', {})
+        for k_str, sd in strikes.items():
+            try:
+                k = int(float(k_str))
+                ce_ltp = (sd.get('CE') or {}).get('ltp', 0) or 0
+                pe_ltp = (sd.get('PE') or {}).get('ltp', 0) or 0
+                cache[k] = (ce_ltp, pe_ltp)
+            except: continue
+
+    spot  = spots.get('bnfSpot' if idx == 'BNF' else 'nfSpot', 0)
+
+    def _get(strike, leg):  # leg: 0=CE, 1=PE
+        return (cache.get(int(strike)) or (0, 0))[leg]
+
+    current_net = 0.0
+    if stype == 'BEAR_CALL':
+        current_net = _get(sell_s, 0) - _get(buy_s, 0)
+    elif stype == 'BULL_PUT':
+        current_net = _get(sell_s, 1) - _get(buy_s, 1)
+    elif stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        current_net = (_get(sell_s, 0) - _get(buy_s, 0)) + \
+                      (_get(sell_s2, 1) - _get(buy_s2, 1))
+    elif stype == 'BULL_CALL':
+        current_net = _get(buy_s, 0) - _get(sell_s, 0)
+    elif stype == 'BEAR_PUT':
+        current_net = _get(buy_s, 1) - _get(sell_s, 1)
+
+    if current_net == 0.0 and stype:
+        return None  # chain data missing; cannot compute
+
+    if is_credit:
+        pnl = (entry_premium - current_net) * lot_size
+    else:
+        pnl = (current_net - entry_premium) * lot_size
+
+    # Peak tracking — only positive peaks
+    prev_peak = trade.get('peak_pnl', 0) or 0
+    new_peak = max(prev_peak, pnl) if pnl > 0 else prev_peak
+
+    # Trough tracking — most negative seen
+    prev_trough = trade.get('trough_pnl', 0) or 0
+    new_trough = min(prev_trough, pnl) if pnl < 0 else prev_trough
+
+    # Erosion — % of peak lost (only if peak >= 500)
+    if new_peak >= 500:
+        erosion = round((new_peak - pnl) / new_peak * 100, 1)
+    else:
+        erosion = 0.0
+
+    # VIX change since entry
+    entry_vix = trade.get('entry_vix', 0) or 0
+    v_curr = vix or 20
+    vix_change = round(v_curr - entry_vix, 2) if entry_vix > 0 else 0.0
+
+    # Journey point (10-min throttle)
+    import time
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_dt = datetime.now(ist)
+    now_str = now_dt.strftime("%H:%M")
+
+    journey = trade.get('journey', []) or []
+    if isinstance(journey, str): # Handle possible json string
+        import json
+        try: journey = json.loads(journey)
+        except: journey = []
+    
+    last = journey[-1] if journey else None
+    add_point = True
+    if last:
+        try:
+            last_t = last.get('t', '')
+            h1, m1 = map(int, last_t.split(':'))
+            h2, m2 = map(int, now_str.split(':'))
+            diff = (h2*60 + m2) - (h1*60 + m1)
+            if diff < 10:
+                add_point = False
+        except: add_point = True
+
+    journey_point = None
+    if add_point:
+        journey_point = {'t': now_str, 'pnl': round(pnl), 'spot': round(spot, 2)}
+        journey.append(journey_point)
+        if len(journey) > 100:
+            journey = journey[-100:]
+
+    return {
+        'trade_id': trade.get('id'),
+        'current_pnl': round(pnl),
+        'current_spot': round(spot, 2),
+        'peak_pnl': round(new_peak),
+        'trough_pnl': round(new_trough),
+        'peak_erosion': erosion,
+        'vix_change': vix_change,
+        'lot_size_resolved': lot_size,
+        'journey': journey,
+        'journey_point_added': journey_point,
+        'current_net_premium': round(current_net, 2),
+    }
+
+def compute_control_index(trade, chain, spot, breadth):
+    """Decision #17. Returns int (-100 to +100)."""
+    if not trade or not chain: return 0
+
+    stype = trade.get('strategy_type', '')
+    is_bear = 'BEAR' in stype
+    is_bull = 'BULL' in stype
+    is_ic = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+    score = 0
+
+    # Signal 1: Max Pain Migration (35%)
+    entry_mp = trade.get('entry_max_pain') or chain.get('maxPain')
+    curr_mp = chain.get('maxPain')
+    if entry_mp and curr_mp:
+        mp_move = curr_mp - entry_mp
+        mp_score = 0
+        if is_bear and mp_move < 0: mp_score = 1
+        elif is_bear and mp_move > 0: mp_score = -1
+        elif is_bull and mp_move > 0: mp_score = 1
+        elif is_bull and mp_move < 0: mp_score = -1
+        elif is_ic: mp_score = 1 if abs(mp_move) < 200 else -1
+        score += mp_score * 35
+
+    # Signal 2: Sell Strike OI change (30%)
+    strikes = chain.get('strikes', {})
+    s_strike = trade.get('sell_strike')
+    s_type = trade.get('sell_type') or ('CE' if is_bear else 'PE' if is_bull else None)
+    
+    sell_data = strikes.get(str(s_strike), {}).get(s_type) if s_strike and s_type else None
+    entry_oi = trade.get('entry_sell_oi')
+    if sell_data and entry_oi:
+        oi_change = sell_data.get('oi', 0) - entry_oi
+        if is_ic:
+            score += (15 if oi_change > 0 else -15 if oi_change < 0 else 0)
+            s_strike2 = trade.get('sell_strike2')
+            s_type2 = trade.get('sell_type2')
+            sell_data2 = strikes.get(str(s_strike2), {}).get(s_type2) if s_strike2 and s_type2 else None
+            entry_oi2 = trade.get('entry_sell_oi2')
+            if sell_data2 and entry_oi2:
+                oi_change2 = sell_data2.get('oi', 0) - entry_oi2
+                score += (15 if oi_change2 > 0 else -15 if oi_change2 < 0 else 0)
+        else:
+            score += (30 if oi_change > 0 else -30 if oi_change < 0 else 0)
+
+    # Signal 3: PCR Shift (25%)
+    entry_pcr = trade.get('entry_pcr')
+    curr_pcr = chain.get('nearAtmPCR') or chain.get('pcr')
+    if entry_pcr and curr_pcr:
+        pcr_change = curr_pcr - entry_pcr
+        pcr_score = 0
+        if is_ic:
+            if abs(pcr_change) < 0.05: pcr_score = 1
+            elif abs(pcr_change) > 0.15: pcr_score = -1
+        elif is_bear and pcr_change < -0.05: pcr_score = 1
+        elif is_bear and pcr_change > 0.05: pcr_score = -1
+        elif is_bull and pcr_change > 0.05: pcr_score = 1
+        elif is_bull and pcr_change < -0.05: pcr_score = -1
+        score += pcr_score * 25
+
+    # Signal 4: Heavyweight Divergence (10%)
+    if breadth and trade.get('index_key') == 'BNF':
+        wp = breadth.get('weightedPct', 0)
+        hw_score = 0
+        if is_bear and wp < -0.5: hw_score = 1
+        elif is_bear and wp > 0.5: hw_score = -1
+        elif is_bull and wp > 0.5: hw_score = 1
+        elif is_bull and wp < -0.5: hw_score = -1
+        score += hw_score * 10
+
+    # Signal 5: Strike Breach Override
+    if spot and s_strike:
+        breach = False
+        if is_bear and spot > s_strike: breach = True
+        elif is_bull and spot < s_strike: breach = True
+        elif is_ic:
+            s_strike2 = trade.get('sell_strike2')
+            if s_strike2:
+                if stype == 'IRON_BUTTERFLY':
+                    tol = (trade.get('width') or 300) / 4
+                    if spot > s_strike + tol or spot < s_strike2 - tol: breach = True
+                else:
+                    if spot > s_strike or spot < s_strike2: breach = True
+        if breach:
+            score = min(score, -50)
+
+    return int(max(-100, min(100, score)))
+
+def compute_wall_drift(trade, chain):
+    """Decision #18. Per-trade wall drift tracker."""
+    if not trade or not chain: return None
+    if not trade.get('is_credit') and trade.get('strategy_type') not in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'):
+        return None
+
+    stype = trade.get('strategy_type', '')
+    is_bear = 'BEAR' in stype
+    is_bull = 'BULL' in stype
+    is_ic = stype == 'IRON_CONDOR'
+    if stype == 'IRON_BUTTERFLY': return None
+
+    # Decision #6 / Phase D Item 2: Use 200/100 for consistency
+    step = 200 if trade.get('index_key') == 'BNF' else 100
+    
+    e_snapshot = trade.get('entry_snapshot') or {}
+    e_cw = e_snapshot.get('call_wall') or trade.get('entry_call_wall')
+    e_pw = e_snapshot.get('put_wall') or trade.get('entry_put_wall')
+    c_cw = chain.get('callWallStrike')
+    c_pw = chain.get('putWallStrike')
+
+    res = {'callSide': None, 'putSide': None, 'warning': None, 'severity': 0}
+
+    if (is_bear or is_ic) and e_cw and c_cw:
+        sell_ce = trade.get('sell_strike')
+        c_gap = c_cw - sell_ce
+        w_move = c_cw - e_cw
+        if w_move < -step:
+            res['callSide'] = {'entry': e_cw, 'current': c_cw, 'drift': w_move, 'status': 'EXPOSED' if c_gap <= 0 else 'WEAKENED'}
+            res['severity'] = max(res['severity'], 2 if c_gap <= 0 else 1)
+
+    if (is_bull or is_ic) and e_pw and c_pw:
+        sell_pe = trade.get('sell_strike2') if is_ic else trade.get('sell_strike')
+        c_gap = sell_pe - c_pw
+        w_move = c_pw - e_pw
+        if w_move > step:
+            res['putSide'] = {'entry': e_pw, 'current': c_pw, 'drift': w_move, 'status': 'EXPOSED' if c_gap <= 0 else 'WEAKENED'}
+            res['severity'] = max(res['severity'], 2 if c_gap <= 0 else 1)
+
+    if res['callSide']:
+        s = res['callSide']
+        res['warning'] = f"🛡️↓ Call wall {s['entry']}→{s['current']} ({s['drift']}). {'SELL EXPOSED' if s['status']=='EXPOSED' else 'Weakened.'}"
+    if res['putSide']:
+        s = res['putSide']
+        m = f"🛡️↑ Put wall {s['entry']}→{s['current']} (+{s['drift']}). {'SELL EXPOSED' if s['status']=='EXPOSED' else 'Weakened.'}"
+        res['warning'] = (res['warning'] + ' | ' + m) if res['warning'] else m
+
+    return res if res['severity'] > 0 else None
+
+
+def update_watchlist_forces(watchlist, ctx, vix, iv_pctl):
+    """Decision #19. Mutates watchlist in place."""
+    bias = (ctx.get('effective_bias') or ctx.get('morningBias') 
+            or {'bias': 'NEUTRAL', 'strength': '', 'net': 0})
+    for c in watchlist:
+        try:
+            c['forces'] = _get_forces(c.get('type'), bias, vix, iv_pctl)
+        except: pass
+    return watchlist
+
+def get_contrarian_pcr(chain):
+    """Decision #20. Extreme PCR readings = contrarian signal."""
+    flags = []
+    pcr = chain.get('nearAtmPCR') or chain.get('pcr')
+    if pcr is None: return {'flags': flags}
+    
+    # Directive: 1.6 (corrected to 1.5 per JS L2839)
+    if pcr < 0.6:
+        flags.append({
+            'type': 'contrarian_pcr', 'icon': '🔄',
+            'label': f'PCR extremely low ({pcr:.2f})',
+            'detail': 'Excessive call buying — contrarian bearish.',
+            'impact': 'bearish', 'strength': 3
+        })
+    elif pcr > 1.5:
+        flags.append({
+            'type': 'contrarian_pcr', 'icon': '🔄',
+            'label': f'PCR extremely high ({pcr:.2f})',
+            'detail': 'Excessive put buying — contrarian bullish.',
+            'impact': 'bullish', 'strength': 3
+        })
+    return {'flags': flags}
+
+def get_institutional_pcr(current_pcr, vix, gap_info, history, afternoon_baseline, live_chain):
+    """Decision #21. High calibration institutional PCR read."""
+    if not current_pcr: return None
+    
+    pcr = current_pcr
+    is_high = pcr > 1.3
+    is_low = pcr < 0.7
+    is_extreme = pcr > 1.5 or pcr < 0.6
+    high_vix = vix >= 20
+    very_high_vix = vix >= 24
+    
+    gap_sigma = gap_info.get('sigma', 0) if gap_info else 0
+    big_gap_down = gap_sigma <= -1
+    big_gap_up = gap_sigma >= 1
+    
+    yday_pcr = history[0].get('pcr') if history and len(history) > 0 else None
+    pcr_rising = (pcr - yday_pcr > 0.05) if yday_pcr else False
+    pcr_falling = (pcr - yday_pcr < -0.05) if yday_pcr else False
+    
+    reading = ''
+    bias = 'NEUTRAL'
+    confidence = 'LOW'
+    severity = 3 # medium
+    
+    # 9-branch decision tree from JS L2893
+    if is_high and very_high_vix and big_gap_down:
+        reading = f"PCR {pcr:.2f} — Fear hedging (VIX {vix:.1f}, {gap_sigma}σ gap-down). Panic puts, not institutional conviction."
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 3
+    elif is_high and high_vix and big_gap_down:
+        reading = f"PCR {pcr:.2f} — Defensive hedging (VIX {vix:.1f}, gap-down). Floor may hold but driven by fear."
+        bias = 'MILD_BULL'; confidence = 'LOW'; severity = 3
+    elif is_high and high_vix and not big_gap_down:
+        reading = f"PCR {pcr:.2f} — Institutional floor + elevated IV (VIX {vix:.1f}). Support exists, credit sellers favored."
+        bias = 'BULL'; confidence = 'MEDIUM'; severity = 4
+    elif is_high and not high_vix and not big_gap_down:
+        reading = f"PCR {pcr:.2f} — Institutional floor (VIX {vix:.1f}, normal day). Deliberate put writing = support."
+        bias = 'BULL'; confidence = 'HIGH'; severity = 4
+    elif is_high and pcr_rising and not big_gap_down:
+        reading = f"PCR {pcr:.2f} — Active floor building (rising from {yday_pcr:.2f if yday_pcr else 0}). Institutions adding support."
+        bias = 'BULL'; confidence = 'MEDIUM'; severity = 4
+    elif is_high and pcr_falling:
+        reading = f"PCR {pcr:.2f} — Floor unwinding (was {yday_pcr:.2f if yday_pcr else 0}). Support weakening."
+        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 4
+    elif is_low and high_vix and big_gap_up:
+        reading = f"PCR {pcr:.2f} — Euphoria calls (VIX {vix:.1f}, gap-up). Caution — VIX still elevated."
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 3
+    elif is_low and not high_vix:
+        reading = f"PCR {pcr:.2f} — Institutions buying calls. Directional bullish bet."
+        bias = 'BEAR'; confidence = 'HIGH'; severity = 4
+    elif is_low and high_vix:
+        reading = f"PCR {pcr:.2f} — Low PCR despite high VIX. Aggressive call buying or put unwinding."
+        bias = 'BEAR'; confidence = 'MEDIUM'; severity = 4
+    elif is_extreme:
+        reading = f"PCR {pcr:.2f} — Extreme level. Watch for reversal."
+        bias = 'BULL' if pcr > 1.5 else 'BEAR'; confidence = 'MEDIUM'; severity = 4
+    else:
+        reading = f"PCR {pcr:.2f} — Normal range. No extreme institutional signal."
+        bias = 'NEUTRAL'; confidence = 'LOW'; severity = 2
+        
+    # Phase B: 2pm OI enrichment
+    oi_delta = None
+    if afternoon_baseline and live_chain:
+        b_c_oi = afternoon_baseline.get('bnfTotalCallOi') or afternoon_baseline.get('bnf_total_call_oi') or 0
+        b_p_oi = afternoon_baseline.get('bnfTotalPutOi') or afternoon_baseline.get('bnf_total_put_oi') or 0
+        l_c_oi = live_chain.get('totalCallOI') or 0
+        l_p_oi = live_chain.get('totalPutOI') or 0
+        
+        if b_c_oi > 0 and b_p_oi > 0:
+            c_delta = l_c_oi - b_c_oi
+            p_delta = l_p_oi - b_p_oi
+            oi_delta = {'callDelta': c_delta, 'putDelta': p_delta}
+            
+            def fmt(v): return f"{'+' if v>0 else '-'}{abs(v)/100000:.1f}L"
+            
+            if c_delta > p_delta * 1.5 and c_delta > 50000:
+                reading += f" Since 2PM: Calls {fmt(c_delta)} vs Puts {fmt(p_delta)} — ceiling building."
+            elif p_delta > c_delta * 1.5 and p_delta > 50000:
+                reading += f" Since 2PM: Puts {fmt(p_delta)} vs Calls {fmt(c_delta)} — active floor building."
+            elif abs(c_delta) < 30000 and abs(p_delta) < 30000:
+                reading += " Since 2PM: Minimal OI change."
+            else:
+                reading += f" Since 2PM: Calls {fmt(c_delta)}, Puts {fmt(p_delta)} — balanced."
+
+    return {
+        'pcr': float(pcr),
+        'reading': reading,
+        'bias': bias,
+        'confidence': confidence,
+        'severity': severity,
+        'sessionTrend': 'flat', # Placeholder for multi-session logic
+        'oiDelta': oi_delta,
+        'phase': 'afternoon' if afternoon_baseline else 'morning',
+        'vix': float(vix),
+        'gapSigma': float(gap_sigma)
+    }
+
+def get_session_trajectory(history):
+    """Decision #22. Ported JS faithful (Option A)."""
+    if not history or len(history) < 2: return None
+    sessions = history[:5][::-1] # oldest first
+    fields = ['vix', 'pcr', 'fii_cash', 'fii_short_pct', 'bnf_spot', 'nf_spot']
+    labels = ['VIX', 'PCR', 'FII Cash', 'FII Short%', 'BNF', 'NF']
+    trajectory = []
+
+    for f_idx, field in enumerate(fields):
+        row = {'label': labels[f_idx], 'arrows': []}
+        for i in range(1, len(sessions)):
+            prev = sessions[i-1].get(field)
+            curr = sessions[i].get(field)
+            if prev is None or curr is None:
+                row['arrows'].append('-')
+                continue
+            diff = curr - prev
+            # Thresholds from JS L3193
+            thresh = 0.3 if field == 'vix' else 0.03 if field == 'pcr' else 0.5 if field == 'fii_short_pct' else 50 if 'spot' in field else 100
+            row['arrows'].append('↑' if diff > thresh else '↓' if diff < -thresh else '→')
+        trajectory.append(row)
+
+    rev_count = 0
+    if len(sessions) >= 3:
+        for row in trajectory:
+            if len(row['arrows']) >= 2:
+                last = row['arrows'][-1]
+                prev = row['arrows'][-2]
+                if prev != '→' and last != '→' and last != prev:
+                    rev_count += 1
+
+    last_arrows = [r['arrows'][-1] for r in trajectory if r['arrows'] and r['arrows'][-1] != '—']
+    up_c = last_arrows.count('↑')
+    dn_c = last_arrows.count('↓')
+
+    return {
+        'trajectory': trajectory,
+        'dates': [s.get('date') for s in sessions],
+        'reversal': 'Possible institutional shift — 3+ signals reversed' if rev_count >= 3 else None,
+        'alignment': 'Institutional accumulation pressure — 4+ signals rising' if up_c >= 4 else 'Institutional selling pressure — 4+ signals falling' if dn_c >= 4 else None
+    }
+
+def get_strike(strikes_dict, k):
+
+    """Helper for Phase C: handle both string and numeric strike keys."""
+    if not strikes_dict: return None
+    return strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k))) or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None)
+
+def chain_profile(chain, spot, ohlc, vix=None, gap=None):
+    """Phase C: 30-feature chain profile builder.
+    Replaces JS computeChainProfile(). Returns dict or None.
+    """
+    if not chain or not chain.get('strikes') or not chain.get('atm') or not chain.get('allStrikes'):
+        return None
+        
+    strikes = chain['strikes']
+    all_k = chain['allStrikes']
+    vix = vix if vix is not None else 20
+    
+    # daily_sigma preference: ctx-provided > computed
+    daily_sigma = chain.get('dailySigma') or _daily_sigma(spot, vix)
+    if not daily_sigma or daily_sigma <= 0:
+        return None
+        
+    step = (all_k[1] - all_k[0]) if len(all_k) > 1 else (100 if spot > 30000 else 50)
+
+    # IV Skew: OTM put IV vs OTM call IV at ~0.5σ
+    otm_dist_raw = round(daily_sigma * 0.5 / step) * step
+    otm_dist = otm_dist_raw if otm_dist_raw else step
+    
+    atm = chain['atm']
+    c_iv = (get_strike(strikes, atm + otm_dist) or {}).get('CE', {}).get('iv', 0) or 0
+    p_iv = (get_strike(strikes, atm - otm_dist) or {}).get('PE', {}).get('iv', 0) or 0
+
+    # Sigma-zone PCR
+    def zone_pcr(lo, hi):
+        c_oi, p_oi = 0, 0
+        for k in all_k:
+            sigma = abs(k - atm) / daily_sigma
+            if lo <= sigma < hi:
+                sd = get_strike(strikes, k) or {}
+                c_oi += sd.get('CE', {}).get('oi', 0) or 0
+                p_oi += sd.get('PE', {}).get('oi', 0) or 0
+        return round(p_oi / c_oi, 2) if c_oi > 0 else 0.0
+
+    # Wall freshness + OI change
+    def wall_fresh(strike, leg_type):
+        sd = get_strike(strikes, strike) or {}
+        d = sd.get(leg_type) or {}
+        vol = d.get('volume', 0) or 0
+        oi = d.get('oi', 0) or 0
+        prev_oi = d.get('prev_oi')
+        fresh = round(vol / max(1, oi), 3)
+        oi_chg = (oi - prev_oi) if prev_oi is not None else None
+        return {'fresh': fresh, 'oiChg': oi_chg}
+
+    cw = wall_fresh(chain.get('callWallStrike'), 'CE')
+    pw = wall_fresh(chain.get('putWallStrike'), 'PE')
+
+    # ATM data
+    atm_data = get_strike(strikes, atm) or {}
+    atm_ce = atm_data.get('CE') or {}
+    atm_pe = atm_data.get('PE') or {}
+    
+    # Day range
+    day_range = 0.5
+    if ohlc and ohlc.get('high', 0) > ohlc.get('low', 0):
+        day_range = round((spot - ohlc['low']) / (ohlc['high'] - ohlc['low']), 2)
+        
+    # Concentration (top 3)
+    near_k = [k for k in all_k if abs(k - atm) / daily_sigma < 1.5]
+    c_ois = sorted([(get_strike(strikes, k) or {}).get('CE', {}).get('oi', 0) or 0 for k in near_k], reverse=True)
+    p_ois = sorted([(get_strike(strikes, k) or {}).get('PE', {}).get('oi', 0) or 0 for k in near_k], reverse=True)
+    c_total = sum(c_ois)
+    p_total = sum(p_ois)
+
+    # Gap fill
+    gap_val = gap.get('gap') if gap else None
+    gap_fill = None
+    if ohlc and gap_val and abs(gap_val) > 10:
+        gap_fill = round(min(1.0, abs(spot - ohlc.get('open', spot)) / abs(gap_val)), 2)
+        
+    # Greeks
+    # 1. IV Slope
+    otm_dist2_raw = round(daily_sigma * 1.0 / step) * step
+    otm_dist2 = otm_dist2_raw if otm_dist2_raw else step * 2
+    far_p_iv = (get_strike(strikes, atm - otm_dist2) or {}).get('PE', {}).get('iv', 0) or 0
+    iv_slope = round((far_p_iv - c_iv) / 2, 1) if far_p_iv > 0 and c_iv > 0 else 0.0
+    
+    # 2. Gamma Cluster
+    g_total, g_near = 0.0, 0.0
+    for k in near_k:
+        sd = get_strike(strikes, k) or {}
+        g = abs(sd.get('CE', {}).get('gamma', 0) or 0) + abs(sd.get('PE', {}).get('gamma', 0) or 0)
+        g_total += g
+        if abs(k - atm) / daily_sigma < 0.3:
+            g_near += g
+    gamma_cluster = round(g_near / g_total, 3) if g_total > 0 else 0.0
+    
+    # 3. Volume Ratio
+    c_vol, p_vol = 0, 0
+    for k in near_k:
+        sd = get_strike(strikes, k) or {}
+        c_vol += sd.get('CE', {}).get('volume', 0) or 0
+        p_vol += sd.get('PE', {}).get('volume', 0) or 0
+    if p_vol > 0:
+        vol_ratio = round(c_vol / p_vol, 2)
+    else:
+        vol_ratio = 5.0 if c_vol > 0 else 1.0
+        
+    # 4. Net Delta
+    n_delta = 0.0
+    for k in near_k:
+        sd = get_strike(strikes, k) or {}
+        ce = sd.get('CE') or {}
+        pe = sd.get('PE') or {}
+        n_delta += (ce.get('oi', 0) or 0) * (ce.get('delta', 0) or 0) + (pe.get('oi', 0) or 0) * (pe.get('delta', 0) or 0)
+    norm_delta = round(n_delta / 100000, 2)
+    
+    # 5. Avg Theta/Vega
+    n_len = len(near_k)
+    t_sum, v_sum = 0.0, 0.0
+    for k in near_k:
+        sd = get_strike(strikes, k) or {}
+        t_sum += abs(sd.get('CE', {}).get('theta', 0) or 0) + abs(sd.get('PE', {}).get('theta', 0) or 0)
+        v_sum += abs(sd.get('CE', {}).get('vega', 0) or 0) + abs(sd.get('PE', {}).get('vega', 0) or 0)
+    avg_theta = round(t_sum / n_len, 2) if n_len > 0 else 0.0
+    avg_vega = round(v_sum / n_len, 2) if n_len > 0 else 0.0
+    
+    # 7. OI Velocity
+    v_oi = 0
+    top_c_k = sorted(near_k, key=lambda k: (get_strike(strikes, k) or {}).get('CE', {}).get('oi', 0) or 0, reverse=True)[:5]
+    top_p_k = sorted(near_k, key=lambda k: (get_strike(strikes, k) or {}).get('PE', {}).get('oi', 0) or 0, reverse=True)[:5]
+    for k in top_c_k:
+        d = (get_strike(strikes, k) or {}).get('CE') or {}
+        if d.get('prev_oi') is not None: v_oi += (d.get('oi', 0) or 0) - d['prev_oi']
+    for k in top_p_k:
+        d = (get_strike(strikes, k) or {}).get('PE') or {}
+        if d.get('prev_oi') is not None: v_oi += (d.get('oi', 0) or 0) - d['prev_oi']
+    norm_v_oi = round(v_oi / 10000, 2)
+    
+    # 8. Bid-Ask Quality
+    s_sum, s_cnt = 0.0, 0
+    for k in near_k:
+        sd = get_strike(strikes, k) or {}
+        for leg in ['CE', 'PE']:
+            d = sd.get(leg) or {}
+            ltp = d.get('ltp', 0) or 0
+            if ltp > 1:
+                ask = d.get('ask', 0) or 0
+                bid = d.get('bid', 0) or 0
+                s_sum += (ask - bid) / ltp
+                s_cnt += 1
+    ba_quality = round(s_sum / s_cnt * 100, 2) if s_cnt > 0 else 0.0
+    
+    # 9. Cluster Depth
+    radius = 5 if spot > 30000 else 4
+    cw_k = chain.get('callWallStrike')
+    pw_k = chain.get('putWallStrike')
+    all_c_oi = [(get_strike(strikes, k) or {}).get('CE', {}).get('oi', 0) or 0 for k in all_k]
+    all_p_oi = [(get_strike(strikes, k) or {}).get('PE', {}).get('oi', 0) or 0 for k in all_k]
+    c_med = statistics.median([v for v in all_c_oi if v > 0]) if any(v > 0 for v in all_c_oi) else 0
+    p_med = statistics.median([v for v in all_p_oi if v > 0]) if any(v > 0 for v in all_p_oi) else 0
+    
+    cc_depth, pc_depth = 0, 0
+    for k in all_k:
+        sd = get_strike(strikes, k) or {}
+        if cw_k and abs(k - cw_k) <= radius * step and (sd.get('CE', {}).get('oi', 0) or 0) > c_med * 2:
+            cc_depth += 1
+        if pw_k and abs(k - pw_k) <= radius * step and (sd.get('PE', {}).get('oi', 0) or 0) > p_med * 2:
+            pc_depth += 1
+
+    return {
+        'ivSkew': round(p_iv - c_iv, 1),
+        'pcrZ1': zone_pcr(0.3, 0.5), 'pcrZ2': zone_pcr(0.5, 0.8), 'pcrZ3': zone_pcr(0.8, 1.2),
+        'cwFresh': cw['fresh'], 'cwOiChg': cw['oiChg'], 'pwFresh': pw['fresh'], 'pwOiChg': pw['oiChg'],
+        'atmSpread': round((atm_ce.get('ask', 0) or 0) - (atm_ce.get('bid', 0) or 0) + (atm_pe.get('ask', 0) or 0) - (atm_pe.get('bid', 0) or 0), 1),
+        'dayRange': day_range, 'gapFill': gap_fill,
+        'callConc': round(sum(c_ois[:3]) / c_total, 3) if c_total > 0 else 0.0,
+        'putConc': round(sum(p_ois[:3]) / p_total, 3) if p_total > 0 else 0.0,
+        'pctFromOpen': round((spot - ohlc['open']) / ohlc['open'] * 100, 2) if ohlc and ohlc.get('open') else 0.0,
+        'maxPain': chain.get('maxPain'), 'callWall': chain.get('callWallStrike'), 'putWall': chain.get('putWallStrike'),
+        'atm': atm, 'spot': spot, 'atmGamma': atm_ce.get('gamma'),
+        'ivSlope': iv_slope, 'gammaCluster': gamma_cluster, 'volRatio': vol_ratio,
+        'netDelta': norm_delta, 'avgTheta': avg_theta, 'avgVega': avg_vega,
+        'oiVelocity': norm_v_oi, 'bidAskQuality': ba_quality,
+        'callClusterDepth': cc_depth, 'putClusterDepth': pc_depth
+    }
+
+def chain_profile_insights(ctx):
+    """Phase C: emit chain insight cards from bnfProfile features.
+    Replaces chain_intelligence().
+    """
     profile = ctx.get('bnfProfile') or {}
     insights = []
     
     # 1. IV Smile Slope — steepness indicates fear/hedging
-    # DEAD UNTIL v2.2.9 — 9 profile fields not wired (ivSlope, gammaCluster, etc.)
     iv_slope = profile.get('ivSlope', 0)
     if iv_slope > 3:
         insights.append({"type": "market", "icon": "📉", "label": f"Fear skew steep ({iv_slope:.1f})",
@@ -1608,7 +3031,7 @@ def chain_intelligence(polls, ctx):
                 "detail": f"Single-strike {fragile} wall. One unwind breaks it.",
                 "impact": "caution", "strength": 3})
     
-    return insights  # LIST — can be empty, 1, or multiple
+    return insights
 
 def daily_pnl_check(polls, ctx):
     """Prevent overtrading and chasing losses."""
@@ -2976,6 +4399,17 @@ _CONST = {
     'NEUTRAL_TYPES': ['IRON_CONDOR', 'IRON_BUTTERFLY', 'DOUBLE_DEBIT'],
     'DIR_BULL': ['BULL_CALL', 'BULL_PUT'],
     'DIR_BEAR': ['BEAR_CALL', 'BEAR_PUT'],
+    'DOW_THRESHOLD': 0.5,
+    'CRUDE_THRESHOLD': 1.5,
+    'GIFT_THRESHOLD': 0.3,
+    'NOISE_WINDOW': 15,
+    'LAST_ENTRY_CUTOFF': 345,
+    'ROUTINE_NOTIFY_MS': 1800000, # 30 min in ms
+    'SIGMA_IMPORTANT_THRESHOLD': 2.0,
+    'TARGET_NEAR_RATIO': 0.8,
+    'STOP_LOSS_RATIO': 0.7,
+    'SIGMA_ENTRY_THRESHOLD': 1.5,
+    'SIGMA_EXIT_THRESHOLD': 1.0
 }
 
 
@@ -2987,7 +4421,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.2.15"
+BRAIN_VERSION = "2.3.4"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -4381,6 +5815,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     build_calibration(closed_trades)
     regime = detect_regime(polls, baseline)
+    result['marketPhase'] = _synthesize_market_phase(regime, ctx)
 
     # Market (existing 8 + new 7)
     for fn in [pcr_velocity, oi_wall_shift, vix_momentum, spot_exhaustion,
@@ -4398,17 +5833,69 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if r: result["market"].append(r)
         except Exception as e:
             print(f"DEBUG: Context insight {fn.__name__} failed: {e}")
-    # b92: chain_intelligence returns LIST (was single dict)
+    # Phase C: compute profiles from raw chains
+    bnf_chain = ctx.get('bnfChain') or {}
+    nf_chain = ctx.get('nfChain') or {}
+    bnf_spot = ctx.get('bnfSpot') or 0
+    nf_spot = ctx.get('nfSpot') or 0
+    bnf_ohlc = ctx.get('bnfOHLC')
+    nf_ohlc = ctx.get('nfOHLC')
+    vix = ctx.get('vix') or 20
+    gap = ctx.get('gap') or {}
+
+    result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap)
+    result["nfProfile"] = chain_profile(nf_chain, nf_spot, nf_ohlc, vix, gap)
+    
+    # Decision #20: Contrarian PCR flags
+    result["bnfContrarian"] = get_contrarian_pcr(result["bnfProfile"])
+    result["nfContrarian"] = get_contrarian_pcr(result["nfProfile"])
+
+    # Decision #21: Institutional PCR context
+    hist = ctx.get('yesterdayHistory', [])
+    result["pcrContext"] = get_institutional_pcr(
+        result["bnfProfile"].get('nearAtmPCR') or result["bnfProfile"].get('pcr'),
+        vix, gap, hist, baseline, bnf_chain
+    )
+
+    # Decision #22: Session Trajectory
+    result["sessionTrajectory"] = get_session_trajectory(hist)
+
+    # Make profiles available to insights via ctx
+    ctx["bnfProfile"] = result["bnfProfile"]
+    ctx["nfProfile"] = result["nfProfile"]
+    ctx["pcrContext"] = result["pcrContext"]
+
+
+    # b92: chain_profile_insights returns LIST
     try:
-        ci_insights = chain_intelligence(polls, ctx)
+        ci_insights = chain_profile_insights(ctx)
         if ci_insights:
             result["market"].extend(ci_insights)
     except Exception as e:
-        print(f"chain_intelligence: {e}")
+        print(f"chain_profile_insights: {e}")
 
-    # Positions — verdict + insights
+    # Positions — verdict + insights + Phase D (P&L + CI + WallDrift)
+    result["position_live"] = {}
+    spots = {'bnfSpot': bnf_spot, 'nfSpot': nf_spot}
+    bnf_breadth = ctx.get('bnfBreadth')
+    
     for t in open_trades:
         tid = t.get("id", "")
+        # Decision #17/#18/#Issue9: Live metrics
+        idx = t.get('index_key', 'BNF')
+        chain = result["bnfProfile"] if idx == 'BNF' else result["nfProfile"]
+        spot = bnf_spot if idx == 'BNF' else nf_spot
+        
+        pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, vix, ctx, bnf_breadth)
+        if pl_data:
+            result["position_live"][tid] = pl_data
+            # Update trade object for downstream insights
+            t['current_pnl'] = pl_data['current_pnl']
+            t['current_spot'] = pl_data['current_spot']
+        
+        t['controlIndex'] = compute_control_index(t, chain, spot, bnf_breadth)
+        t['wallDrift'] = compute_wall_drift(t, chain)
+
         ins = []
         soi = strike_oi.get(tid, [])
         for fn in [position_wall_proximity, position_momentum_threat,
@@ -4424,7 +5911,52 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         except Exception as e:
             print(f"DEBUG: position_gamma_alert failed for tid {tid}: {e}")
         pv = position_verdict(t, ins, regime, ctx)
-        result["positions"][tid] = {"verdict": pv, "insights": ins}
+        result["positions"][tid] = {
+            "verdict": pv,
+            "insights": ins,
+            "controlIndex": t.get("controlIndex", 0),
+            "wallDrift": t.get("wallDrift")
+        }
+
+
+    # ═══════════════════════════════════════════════════════════════
+    # PHASE E — Snapshot / Positioning / Alerts (Decisions #24-27)
+    # ═══════════════════════════════════════════════════════════════
+    if 'pcrContext' in result:
+        ctx['pcrContext'] = result['pcrContext']
+
+    mins_since_open = ctx.get('mins_since_open', 0)
+
+    # #24 — Build current snapshot if at/past 2PM (mins >= 270)
+    snapshot_now = None
+    if mins_since_open >= 270:
+        snapshot_now = build_chain_snapshot_data(ctx)
+        result['chain_snapshot_now'] = snapshot_now
+
+    # #25 — Compute positioning if at 3:15PM (mins >= 345) AND 2PM baseline exists
+    positioning_result = None
+    snap_2pm = ctx.get('snap_2pm_today')  # Kotlin populates from SharedPreferences
+    if mins_since_open >= 345 and snap_2pm and snapshot_now:
+        positioning_result = compute_positioning(snap_2pm, snapshot_now, ctx)
+        if positioning_result:
+            result['positioning'] = positioning_result
+
+    # #26 — Compute global boost (only if positioning produced non-NEUTRAL signal)
+    tomorrow_signal_result = None
+    if positioning_result:
+        tomorrow_signal_result = compute_global_boost(positioning_result, ctx)
+        if tomorrow_signal_result:
+            result['tomorrow_signal'] = tomorrow_signal_result
+
+    # #27 — Evaluate alerts (every poll, after positioning/signal computed)
+    alerts_result = evaluate_alerts(
+        open_trades=open_trades, # use local list
+        watchlist=result.get('watchlist') or [], # use from result
+        result=result,
+        ctx=ctx,
+    )
+    result['alerts'] = alerts_result
+
 
     # Candidates — existing + liquidity + pattern match + b92 risk evaluation
     for c in candidates:
@@ -4479,6 +6011,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         print(f"DEBUG: daily_pnl_check failed: {e}")
 
+    # Phase B: morning bias + regime + trends
+    result["overnightDelta"] = compute_overnight_delta(ctx)
+    ctx["overnightDelta"] = result["overnightDelta"]
+
+    result["morningBias"] = compute_morning_bias(ctx, polls)
+    ctx["morningBias"] = result["morningBias"]
+
     # ═══ THE VERDICT ═══
     all_insights = result["market"] + result["timing"] + result["risk"]
     try:
@@ -4491,6 +6030,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["effective_bias"] = compute_effective_bias(polls, baseline, ctx, regime)
     except Exception as e:
         print(f"DEBUG: compute_effective_bias failed: {e}")
+
+    result["institutionalRegime"] = institutional_regime(ctx)
+    result["fiiTrend"] = fii_short_trend(ctx)
+    result["signalValidation"] = validate_yesterday_signal(ctx)
 
     # Phase 3: Generate trading candidates from chain data
     # Premium is king — every candidate scored by premium quality
@@ -4597,10 +6140,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     idx_added += 1
                     if idx_added >= 3: break
             
-            result["watchlist"] = watchlist
+            # Decision #19: Refresh forces for the top picks
+            result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl)
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
-            result["watchlist"] = watchlist
+
             result["candidate_stats"] = {
                 "total": len(all_cands),
                 "ranked": len(ranked),
@@ -4620,6 +6164,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     if ctx.get('_trace') is not None:
         result['_trace'] = ctx['_trace']
     # Use _safe_json to handle any nan/inf produced by BS math edge cases
+    # Phase F.1 — emit structured gap info for PWA render
+    gap = ctx.get('gap') or {}
+    result['gapInfo'] = {
+        'gap': gap.get('bnf', {}).get('points', 0),
+        'pct': gap.get('bnf', {}).get('pct', 0),
+        'sigma': gap.get('bnf', {}).get('sigma', 0),
+        'type': gap.get('bnf', {}).get('type', 'NORMAL'),
+    }
+    result['nfGapInfo'] = {
+        'gap': gap.get('nf', {}).get('points', 0),
+        'pct': gap.get('nf', {}).get('pct', 0),
+        'sigma': gap.get('nf', {}).get('sigma', 0),
+        'type': gap.get('nf', {}).get('type', 'NORMAL'),
+    }
+
     out_str, _ = _safe_json(result)
     return out_str
 

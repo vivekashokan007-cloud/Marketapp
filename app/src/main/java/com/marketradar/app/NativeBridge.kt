@@ -263,6 +263,185 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getLogCaptureMode(): String = LogBuffer.captureMode.name
 
+    @JavascriptInterface
+    fun getSignalAccuracyStats(): String {
+        return try {
+            SupabaseClient.getSignalAccuracyStats().toString()
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    private val TAG = "NativeBridge"
+
+    @JavascriptInterface
+    fun getOpenTrades(): String {
+        return try {
+            SupabaseClient.getOpenTrades().toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getOpenTrades failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getClosedTrades(limit: Int): String {
+        return try {
+            SupabaseClient.select("trades_v2", "status=eq.CLOSED", "exit_date.desc", limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getClosedTrades failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getPremiumHistory(days: Int): String {
+        return try {
+            SupabaseClient.select("premium_history", null, "date.desc", days * 5).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getPremiumHistory failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getMorningSnapshot(date: String): String {
+        return try {
+            val res = SupabaseClient.select("chain_snapshots", "date=eq.$date&session=eq.morning")
+            if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
+        } catch (e: Exception) {
+            Log.e(TAG, "getMorningSnapshot failed", e)
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getYesterdayHistory(days: Int): String {
+        return try {
+            SupabaseClient.select("chain_snapshots", null, "date.desc", days).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getYesterdayHistory failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getChainSnapshot(date: String, session: String): String {
+        return try {
+            val res = SupabaseClient.select("chain_snapshots", "date=eq.$date&session=eq.$session")
+            if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
+        } catch (e: Exception) {
+            Log.e(TAG, "getChainSnapshot failed", e)
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getBaseline(): String {
+        return try {
+            prefs.getString("morning_baseline", "{}") ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getConfig(key: String): String {
+        return try {
+            val res = SupabaseClient.select("app_config", "key=eq.$key")
+            if (res.length() > 0) res.getJSONObject(0).optString("value", "{}") else "{}"
+        } catch (e: Exception) {
+            Log.e(TAG, "getConfig failed", e)
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getAllConfig(): String {
+        return try {
+            val res = SupabaseClient.select("app_config")
+            val obj = JSONObject()
+            for (i in 0 until res.length()) {
+                val item = res.getJSONObject(i)
+                obj.put(item.getString("key"), item.opt("value"))
+            }
+            obj.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllConfig failed", e)
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getBnfChain(): String {
+        return try {
+            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctx.optJSONObject("bnfChain")?.toString() ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getNfChain(): String {
+        return try {
+            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctx.optJSONObject("nfChain")?.toString() ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getBnfBreadth(): String {
+        return try {
+            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctx.optJSONObject("bnfBreadth")?.toString() ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getNf50Breadth(): String {
+        return try {
+            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctx.optJSONObject("nf50Breadth")?.toString() ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getGlobalDirection(): String {
+        return try {
+            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctx.optJSONObject("globalDirection")?.toString() ?: "{}"
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
+    fun getRecentSignals(limit: Int): String {
+        return try {
+            SupabaseClient.getRecentSignals(limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getRecentSignals failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getMLDecisions(limit: Int): String {
+        return try {
+            SupabaseClient.select("ml_decisions", null, "created_at.desc", limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getMLDecisions failed", e)
+            "[]"
+        }
+    }
+
     private fun scoreCandidate(cand: JSONObject): JSONObject? {
         return try {
             val py = com.chaquo.python.Python.getInstance()

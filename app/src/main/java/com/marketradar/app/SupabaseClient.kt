@@ -248,4 +248,73 @@ object SupabaseClient {
             JSONArray()
         }
     }
+
+    /**
+     * Phase B: fetch recent signals for accuracy tracking.
+     * Mirrors db.js getRecentSignals(limit).
+     */
+    fun getRecentSignals(limit: Int = 20): JSONArray {
+        val request = getBaseRequest(
+            "chain_snapshots?session=eq.315pm" +
+            "&select=date,tomorrow_signal,signal_strength,bnf_spot,vix" +
+            "&order=date.desc" +
+            "&limit=$limit"
+        ).get().build()
+        val json = fetchSync(request) ?: return JSONArray()
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing recent signals: ${e.message}")
+            JSONArray()
+        }
+    }
+
+    /**
+     * Phase B: write yesterday's signal validation result.
+     * Mirrors db.js updateSignalResult(date, correct, actualGap) — patches
+     * chain_snapshots where date AND session=315pm.
+     */
+    fun updateSignalResult(date: String, correct: Boolean, actualGap: Double): Boolean {
+        val body = JSONObject()
+        body.put("signal_correct", correct)
+        body.put("signal_actual_gap", actualGap)
+        return update("chain_snapshots", body, "date=eq.$date&session=eq.315pm")
+    }
+
+    /**
+     * Phase B: rolling 30-signal accuracy stats.
+     * Mirrors db.js getSignalAccuracyStats() — chain_snapshots filter
+     * session=315pm AND signal_correct IS NOT NULL, last 30, computes pct.
+     */
+    fun getSignalAccuracyStats(): JSONObject {
+        val request = getBaseRequest(
+            "chain_snapshots?session=eq.315pm" +
+            "&signal_correct=not.is.null" +
+            "&select=date,tomorrow_signal,signal_strength,signal_correct,signal_actual_gap" +
+            "&order=date.desc" +
+            "&limit=30"
+        ).get().build()
+        val result = JSONObject()
+        result.put("correct", 0)
+        result.put("total", 0)
+        result.put("pct", 0)
+        result.put("history", JSONArray())
+        val json = fetchSync(request) ?: return result
+        return try {
+            val data = JSONArray(json)
+            val total = data.length()
+            var correctCount = 0
+            for (i in 0 until total) {
+                if (data.getJSONObject(i).optBoolean("signal_correct", false)) correctCount++
+            }
+            result.put("correct", correctCount)
+            result.put("total", total)
+            result.put("pct", if (total > 0) Math.round(correctCount.toDouble() / total * 100).toInt() else 0)
+            result.put("history", data)
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing accuracy stats: ${e.message}")
+            result
+        }
+    }
 }

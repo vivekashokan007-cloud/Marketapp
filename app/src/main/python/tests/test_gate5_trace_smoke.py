@@ -73,11 +73,11 @@ def run_gate5_smoke_test():
         assert k in trace, f"Trace missing required key: {k}"
     print(f"PASS: Trace contains all required keys: {required_keys}")
     
-    assert trace["meta"]["brain_version"] == "2.2.15", f"Wrong brain_version: {trace['meta']['brain_version']}"
+    assert trace["meta"]["brain_version"] == "2.3.0", f"Wrong brain_version: {trace['meta']['brain_version']}"
     assert trace["meta"]["trace_schema_version"] == "1.0", f"Wrong schema_version: {trace['meta']['trace_schema_version']}"
     assert trace["meta"]["source"] == "live", f"Wrong source: {trace['meta']['source']}"
     assert trace["meta"]["truncated"] == False, "Trace should not be truncated"
-    print("PASS: Trace meta fields verified (v2.2.9, schema 1.0, live, not truncated)")
+    print("PASS: Trace meta fields verified (v2.3.0, schema 1.0, live, not truncated)")
     
     assert isinstance(trace["verdict"]["inputs"], dict) and len(trace["verdict"]["inputs"]) > 0, "verdict['inputs'] must be non-empty dict"
     print("PASS: verdict['inputs'] populated via TASK 5.3 snapshot")
