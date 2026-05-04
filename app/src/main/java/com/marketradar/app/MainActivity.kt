@@ -452,6 +452,8 @@ class MainActivity : AppCompatActivity() {
                     setApiToken: function(t) { AndroidBridge.setApiToken(t); },
                     setOpenTrades: function(j) { AndroidBridge.setOpenTrades(j); },
                     setBaseline: function(j) { AndroidBridge.setBaseline(j); },
+                    setMorningInput: function(j) { return AndroidBridge.setMorningInput(j); },
+                    setEveningClose: function(j) { return AndroidBridge.setEveningClose(j); },
                     setExpiries: function(bnf, nf) { AndroidBridge.setExpiries(bnf, nf); },
                     setContext: function(j) { AndroidBridge.setContext(j); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },

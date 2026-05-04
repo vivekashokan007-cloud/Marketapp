@@ -81,6 +81,54 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun setMorningInput(json: String): String {
+        return try {
+            val obj = JSONObject(json)
+            val missing = missingNumericFields(
+                obj,
+                listOf(
+                    "fiiCash" to "FII Cash",
+                    "fiiShortPct" to "FII Short %",
+                    "diiCash" to "DII Cash",
+                    "fiiIdxFut" to "FII Idx Fut",
+                    "fiiStkFut" to "FII Stk Fut",
+                    "dowClose" to "Dow Close",
+                    "crudeSettle" to "Crude Settle",
+                    "giftSpot" to "GIFT Spot"
+                )
+            )
+            if (missing.isNotEmpty()) return bridgeFail("Missing required morning input: ${missing.joinToString(", ")}")
+            prefs.edit()
+                .putString("morning_input", obj.toString())
+                .putString("morning_baseline", obj.toString())
+                .commit()
+            bridgeOk()
+        } catch (e: Exception) {
+            bridgeFail("Invalid morning input: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
+    fun setEveningClose(json: String): String {
+        return try {
+            val obj = JSONObject(json)
+            val missing = missingNumericFields(
+                obj,
+                listOf(
+                    "dow" to "Dow Close",
+                    "crude" to "Crude Settle",
+                    "gift" to "GIFT Close"
+                )
+            )
+            if (missing.isNotEmpty()) return bridgeFail("Missing required evening close: ${missing.joinToString(", ")}")
+            prefs.edit().putString("evening_close_baseline", obj.toString()).commit()
+            bridgeOk()
+        } catch (e: Exception) {
+            bridgeFail("Invalid evening close: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
     fun setExpiries(bnf: String, nf: String) {
         prefs.edit().apply {
             putString("expiry_bnf", bnf)
@@ -273,6 +321,20 @@ class NativeBridge(private val context: Context) {
     }
 
     private val TAG = "NativeBridge"
+
+    private fun missingNumericFields(obj: JSONObject, fields: List<Pair<String, String>>): List<String> {
+        return fields.mapNotNull { (key, label) ->
+            val value = obj.optDouble(key, Double.NaN)
+            if (!obj.has(key) || obj.isNull(key) || !java.lang.Double.isFinite(value)) label else null
+        }
+    }
+
+    private fun bridgeOk(): String = JSONObject().put("ok", true).toString()
+
+    private fun bridgeFail(error: String): String = JSONObject()
+        .put("ok", false)
+        .put("error", error)
+        .toString()
 
     @JavascriptInterface
     fun getOpenTrades(): String {
