@@ -7,8 +7,15 @@ import android.os.Build
 import android.util.Log
 import android.webkit.JavascriptInterface
 import java.io.File
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import com.marketradar.app.util.LogBuffer
@@ -20,6 +27,7 @@ class NativeBridge(private val context: Context) {
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+    private val httpClient = OkHttpClient()
 
     @JavascriptInterface
     fun isNative(): Boolean = true
@@ -98,9 +106,35 @@ class NativeBridge(private val context: Context) {
                 )
             )
             if (missing.isNotEmpty()) return bridgeFail("Missing required morning input: ${missing.joinToString(", ")}")
+
+            val token = (prefs.getString("auth_token", "") ?: "").trim()
+            if (token.isEmpty()) {
+                return bridgeFail("Upstox token missing. Please paste token before Lock & Scan.")
+            }
+
+            val bnfExpiry = resolveNearestExpiry("NSE_INDEX|Nifty Bank", token)
+            val nfExpiry = resolveNearestExpiry("NSE_INDEX|Nifty 50", token)
+            if (bnfExpiry == null || nfExpiry == null) {
+                return bridgeFail("Failed to discover valid expiries from Upstox. Check token/connectivity.")
+            }
+
+            val live = fetchLiveIndexQuotes(token)
+                ?: return bridgeFail("Failed to fetch live quotes from Upstox.")
+            if (live.bnfSpot <= 0.0 || live.nfSpot <= 0.0 || live.vix <= 0.0) {
+                return bridgeFail("Invalid live quotes from Upstox.")
+            }
+
+            obj.put("bnfSpot", live.bnfSpot)
+            obj.put("nfSpot", live.nfSpot)
+            obj.put("vix", live.vix)
+            obj.put("bnfExpiry", bnfExpiry)
+            obj.put("nfExpiry", nfExpiry)
+
             prefs.edit()
                 .putString("morning_input", obj.toString())
                 .putString("morning_baseline", obj.toString())
+                .putString("expiry_bnf", bnfExpiry)
+                .putString("expiry_nf", nfExpiry)
                 .commit()
             bridgeOk()
         } catch (e: Exception) {
@@ -327,6 +361,65 @@ class NativeBridge(private val context: Context) {
             val value = obj.optDouble(key, Double.NaN)
             if (!obj.has(key) || obj.isNull(key) || !java.lang.Double.isFinite(value)) label else null
         }
+    }
+
+    private data class LiveQuotes(val bnfSpot: Double, val nfSpot: Double, val vix: Double)
+
+    private fun todayIstDate(): String {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+    }
+
+    private fun fetchJson(url: String, token: String): JSONObject? {
+        val req = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "application/json")
+            .build()
+        return try {
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                JSONObject(resp.body?.string() ?: "{}")
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun resolveNearestExpiry(instrumentKey: String, token: String): String? {
+        val today = todayIstDate()
+
+        val existing = (if (instrumentKey.contains("Nifty Bank")) {
+            prefs.getString("expiry_bnf", "")
+        } else {
+            prefs.getString("expiry_nf", "")
+        } ?: "").trim()
+        if (existing.isNotEmpty() && existing >= today) return existing
+
+        val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
+        val url = "https://api.upstox.com/v2/expired-instruments/expiries?instrument_key=$encodedKey"
+        val json = fetchJson(url, token) ?: return null
+        val arr = json.optJSONArray("data") ?: return null
+
+        var nearest: String? = null
+        for (i in 0 until arr.length()) {
+            val date = arr.optString(i, "")
+            if (date.length != 10) continue
+            if (date < today) continue
+            if (nearest == null || date < nearest) nearest = date
+        }
+        return nearest
+    }
+
+    private fun fetchLiveIndexQuotes(token: String): LiveQuotes? {
+        val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
+        val json = fetchJson(url, token) ?: return null
+        val data = json.optJSONObject("data") ?: return null
+
+        val bnf = data.optJSONObject("NSE_INDEX:Nifty Bank")?.optDouble("last_price", 0.0) ?: 0.0
+        val nf = data.optJSONObject("NSE_INDEX:Nifty 50")?.optDouble("last_price", 0.0) ?: 0.0
+        val vix = data.optJSONObject("NSE_INDEX:India VIX")?.optDouble("last_price", 0.0) ?: 0.0
+        return LiveQuotes(bnf, nf, vix)
     }
 
     private fun bridgeOk(): String = JSONObject().put("ok", true).toString()

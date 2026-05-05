@@ -438,6 +438,8 @@ class MarketWatchService : Service() {
         poll.put("t", time)
         poll.put("bnf", bnf)
         poll.put("nf", nf)
+        poll.put("bnfSpot", bnf)
+        poll.put("nfSpot", nf)
         poll.put("vix", vix)
         // Sigma Logic (Fix C2: correct daily sigma sqrt(252))
         val dailySigma = bnf * (vix / 100.0) / Math.sqrt(252.0)
@@ -483,8 +485,13 @@ class MarketWatchService : Service() {
         poll.put("pw", pw)
         poll.put("cwOI", maxCallOi)
         poll.put("pwOI", maxPutOi)
+        poll.put("bnfCallWall", cw)
+        poll.put("bnfPutWall", pw)
+        poll.put("bnfCallWallOI", maxCallOi)
+        poll.put("bnfPutWallOI", maxPutOi)
         poll.put("straddle", atmCE + atmPE)
         poll.put("pcr", if (nearAtmCOI > 0) nearAtmPOI / nearAtmCOI else 1.0) // brain expects PE/CE
+        poll.put("nearAtmPCR", poll.optDouble("pcr", 1.0))
         
         // Futures Premium
         val bnfFutKey = getFuturesKey("BANKNIFTY")
@@ -592,33 +599,49 @@ class MarketWatchService : Service() {
         val result = JSONObject()
         try {
             val data = stocks.getJSONObject("data")
-            var weightedBnfPct = 0.0
+            var advancementScore = 0.0
+            var weightedPct = 0.0
             var advancing = 0
             var declining = 0
+            val results = JSONArray()
             
             for ((key, weight) in BNF_WEIGHTS) {
                 val stockKey = key.replace("|", ":")
                 val stockData = data.optJSONObject(stockKey)
                 val ltp = stockData?.optDouble("last_price", 0.0) ?: 0.0
                 val close = stockData?.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
+                val change = if (close > 0) (ltp - close) else 0.0
+                val pctChange = if (close > 0) (change / close * 100.0) else 0.0
                 
                 if (ltp > close && close > 0) {
                     advancing++
-                    weightedBnfPct += weight * 100.0
+                    advancementScore += weight * 100.0
                 } else if (ltp < close && close > 0) {
                     declining++
-                    weightedBnfPct += weight * 0.0
+                    advancementScore += weight * 0.0
                 } else {
-                    weightedBnfPct += weight * 50.0 // neutral
+                    advancementScore += weight * 50.0 // neutral
                 }
+
+                weightedPct += weight * pctChange
+                results.put(JSONObject()
+                    .put("name", key.substringAfter("|"))
+                    .put("change", Math.round(change * 100.0) / 100.0)
+                    .put("pctChange", Math.round(pctChange * 100.0) / 100.0))
             }
             
-            result.put("pct", weightedBnfPct)
+            result.put("pct", Math.round(advancementScore * 10.0) / 10.0)
+            result.put("weightedPct", Math.round(weightedPct * 100.0) / 100.0)
             result.put("advancing", advancing)
             result.put("declining", declining)
+            result.put("results", results)
         } catch (e: Exception) {
             Log.e(TAG, "Breadth calc failed: ${e.message}")
-            result.put("pct", 50.0).put("advancing", 0).put("declining", 0)
+            result.put("pct", 39.6)
+                .put("weightedPct", 0.0)
+                .put("advancing", 0)
+                .put("declining", 0)
+                .put("results", JSONArray())
         }
         return result
     }
