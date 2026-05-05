@@ -2205,6 +2205,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
 
     significant_move = ctx.get('significant_move', False)
     abs_spot_sigma = ctx.get('abs_spot_sigma', 0.0)
+    abs_nf_spot_sigma = ctx.get('abs_nf_spot_sigma', 0.0)
     abs_vix_sigma = ctx.get('abs_vix_sigma', 0.0)
 
     if significant_move:
@@ -2277,29 +2278,36 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'body': f"{trade_label} Forces {t_aligned}/3 but profitable ₹{current_pnl}. Take it.",
                 })
 
-        if abs_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0) or abs_vix_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0):
+        if (abs_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
+                or abs_nf_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
+                or abs_vix_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)):
             live = ctx.get('live', {}) or {}
-            bnf_spot = live.get('bnfSpot')
-            vix = live.get('vix')
+            bnf_spot = live.get('bnfSpot') or ctx.get('bnfSpot')
+            nf_spot = live.get('nfSpot') or ctx.get('nfSpot')
+            vix = live.get('vix') or ctx.get('vix')
             spot_sigma = live.get('spotSigma', 0)
+            nf_spot_sigma = live.get('nfSpotSigma', 0)
             vix_sigma = live.get('vixSigma', 0)
             bnf_str = f"{int(bnf_spot)}" if bnf_spot is not None else 'N/A'
+            nf_str = f"{int(nf_spot)}" if nf_spot is not None else 'N/A'
             vix_str = f"{vix:.1f}" if vix is not None else 'N/A'
             alerts.append({
-                'key': f"SIG_MOVE_{bnf_str}_{vix_str}",
+                'key': f"SIG_MOVE_{bnf_str}_{nf_str}_{vix_str}",
                 'category': 'MARKET',
                 'priority': 'important',
                 'title': '📊 Significant Move',
-                'body': f"BNF {bnf_str} ({spot_sigma}σ) VIX {vix_str} ({vix_sigma}σ)",
+                'body': f"BNF {bnf_str} ({spot_sigma}σ) | NF {nf_str} ({nf_spot_sigma}σ) | VIX {vix_str} ({vix_sigma}σ)",
             })
 
-    if (now_ms - last_routine_notify) >= _CONST.get('ROUTINE_NOTIFY_MS', 1800000):
+    if (now_ms - last_routine_notify) >= _CONST.get('ROUTINE_NOTIFY_MS', 3600000):
         live = ctx.get('live', {}) or {}
-        bnf_spot = live.get('bnfSpot')
-        vix = live.get('vix')
+        bnf_spot = live.get('bnfSpot') or ctx.get('bnfSpot')
+        nf_spot = live.get('nfSpot') or ctx.get('nfSpot')
+        vix = live.get('vix') or ctx.get('vix')
         bnf_str = f"{int(bnf_spot)}" if bnf_spot is not None else 'N/A'
+        nf_str = f"{int(nf_spot)}" if nf_spot is not None else 'N/A'
         vix_str = f"{vix:.1f}" if vix is not None else 'N/A'
-        body = f"BNF {bnf_str} | VIX {vix_str}"
+        body = f"BNF {bnf_str} | NF {nf_str} | VIX {vix_str}"
         if open_trades:
             total_pnl = sum((t.get('current_pnl') or 0) for t in open_trades)
             body += f" | {len(open_trades)} pos P&L ₹{total_pnl}"
@@ -2310,7 +2318,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             top_type = top.get('type', '')
             body += f" | Top: {top_aligned}/3 {top_type}"
         alerts.append({
-            'key': f"ROUTINE_{int(now_ms / _CONST.get('ROUTINE_NOTIFY_MS', 1800000))}",
+            'key': f"ROUTINE_{int(now_ms / _CONST.get('ROUTINE_NOTIFY_MS', 3600000))}",
             'category': 'ROUTINE',
             'priority': 'routine',
             'title': '📈 Market Update',
@@ -4412,7 +4420,7 @@ _CONST = {
     'GIFT_THRESHOLD': 0.3,
     'NOISE_WINDOW': 15,
     'LAST_ENTRY_CUTOFF': 345,
-    'ROUTINE_NOTIFY_MS': 1800000, # 30 min in ms
+    'ROUTINE_NOTIFY_MS': 3600000, # 60 min in ms
     'SIGMA_IMPORTANT_THRESHOLD': 2.0,
     'TARGET_NEAR_RATIO': 0.8,
     'STOP_LOSS_RATIO': 0.7,

@@ -449,16 +449,22 @@ class MarketWatchService : Service() {
         // skips WATCHLIST/POSITION/MARKET branches.
         val baselineStr = prefs.getString("morning_baseline", null)
         var spotSigma = 0.0
+        var nfSpotSigma = 0.0
         var vixSigmaValue = 0.0
         if (baselineStr != null) {
             try {
                 val baseline = JSONObject(baselineStr)
                 val baselineSpot = baseline.optDouble("bnfSpot", 0.0)
+                val baselineNfSpot = baseline.optDouble("nfSpot", 0.0)
                 val baselineVix = baseline.optDouble("vix", 0.0)
                 if (baselineSpot > 0 && baselineVix > 0) {
                     val spotDailySigma = baselineSpot * (baselineVix / 100.0) / Math.sqrt(252.0)
                     if (spotDailySigma > 0) {
                         spotSigma = (bnf - baselineSpot) / spotDailySigma
+                    }
+                    val nfDailySigma = baselineNfSpot * (baselineVix / 100.0) / Math.sqrt(252.0)
+                    if (baselineNfSpot > 0 && nfDailySigma > 0) {
+                        nfSpotSigma = (nf - baselineNfSpot) / nfDailySigma
                     }
                     val vixDailySigma = baselineVix * 0.10
                     if (vixDailySigma > 0) {
@@ -470,6 +476,7 @@ class MarketWatchService : Service() {
             }
         }
         poll.put("spotSigma", spotSigma)
+        poll.put("nfSpotSigma", nfSpotSigma)
         poll.put("vixSigma", vixSigmaValue)
         
         poll.put("cw", cw)
@@ -545,7 +552,10 @@ class MarketWatchService : Service() {
             }
         }
 
-        updateForegroundNotification("Watching Market", "BNF: ${poll.getDouble("bnf")} | VIX: ${poll.getDouble("vix")}")
+        updateForegroundNotification(
+            "Watching Market",
+            "BNF: ${poll.getDouble("bnf")} | NF: ${poll.getDouble("nf")} | VIX: ${poll.getDouble("vix")}"
+        )
     }
 
     private fun checkInstitutionalPositioning(poll: JSONObject) {
@@ -770,8 +780,10 @@ class MarketWatchService : Service() {
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
             val todayDate = sdf.parse(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
             
-            val bnfExpDate = try { sdf.parse(ctxObj.optString("bnfExpiry")) } catch(e: Exception) { null }
-            val nfExpDate = try { sdf.parse(ctxObj.optString("nfExpiry")) } catch(e: Exception) { null }
+            val bnfExpiryPref = prefs.getString("expiry_bnf", "") ?: ""
+            val nfExpiryPref = prefs.getString("expiry_nf", "") ?: ""
+            val bnfExpDate = try { sdf.parse(bnfExpiryPref) } catch(e: Exception) { null }
+            val nfExpDate = try { sdf.parse(nfExpiryPref) } catch(e: Exception) { null }
             
             val bnfDTE = bnfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
             val nfDTE = nfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
@@ -789,9 +801,10 @@ class MarketWatchService : Service() {
             val closedTradesJson = prefs.getString("closed_trades", "[]") ?: "[]"
             
             // CHAIN MERGING (Phase C: Format raw chains for Python)
-            fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double, 
-                           cwPoll: Double, pwPoll: Double, pcrPoll: Double) {
+            fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double,
+                           cwPoll: Double, pwPoll: Double, pcrPoll: Double, expiry: String) {
                 val formattedLive = formatChainForBrain(liveChainRaw, spot)
+                formattedLive.put("expiry", expiry)
                 val existingChain = ctxObj.optJSONObject(key)
                 
                 if (existingChain != null && existingChain.has("atm")) {
@@ -800,6 +813,8 @@ class MarketWatchService : Service() {
                     existingChain.put("atm",             formattedLive.optDouble("atm", 0.0))
                     existingChain.put("callWallStrike",  cwPoll)
                     existingChain.put("putWallStrike",   pwPoll)
+                    existingChain.put("atmIv",           formattedLive.optDouble("atmIv", 0.0))
+                    existingChain.put("expiry",          expiry)
                 } else {
                     // No rich data — use full formatted live chain
                     formattedLive.put("callWallStrike", cwPoll)
@@ -823,9 +838,9 @@ class MarketWatchService : Service() {
                 }
             }
 
-            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0))
+            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), bnfExpiryPref)
             ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
-            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0)
+            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, nfExpiryPref)
             ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
 
             // Phase C: Inject OHLC for profile calculations
@@ -904,11 +919,19 @@ class MarketWatchService : Service() {
             ctxObj.put("ivPercentile", calculateIvPercentile(vix))
 
             ctxObj.put("capital",    prefs.getInt("capital", 250000))
-            ctxObj.put("bnfExpiry",  prefs.getString("expiry_bnf", ""))
-            ctxObj.put("nfExpiry",   prefs.getString("expiry_nf", ""))
+            ctxObj.put("bnfExpiry",  bnfExpiryPref)
+            ctxObj.put("nfExpiry",   nfExpiryPref)
             ctxObj.put("vix",        vix)
             ctxObj.put("bnfSpot",    bnfSpot)
             ctxObj.put("nfSpot",     nfSpot)
+            ctxObj.put("live", JSONObject().apply {
+                put("bnfSpot", bnfSpot)
+                put("nfSpot", nfSpot)
+                put("vix", vix)
+                put("spotSigma", poll.optDouble("spotSigma", 0.0))
+                put("nfSpotSigma", poll.optDouble("nfSpotSigma", 0.0))
+                put("vixSigma", poll.optDouble("vixSigma", 0.0))
+            })
             ctxObj.put("bnfLtpMap",  extractLtpMap(bnfChain))
             ctxObj.put("nfLtpMap",   extractLtpMap(nfChain))
 
@@ -928,12 +951,16 @@ class MarketWatchService : Service() {
             val sigmaThreshold = if (openTradesCount > 0) 1.0 else 1.5
             
             val bnfSpotSigma = poll.optDouble("spotSigma", 0.0)
+            val nfSpotSigmaValue = poll.optDouble("nfSpotSigma", 0.0)
             val vixSigma = poll.optDouble("vixSigma", 0.0)
             
-            val sigMove = Math.abs(bnfSpotSigma) > sigmaThreshold || Math.abs(vixSigma) > sigmaThreshold
+            val sigMove = Math.abs(bnfSpotSigma) > sigmaThreshold ||
+                Math.abs(nfSpotSigmaValue) > sigmaThreshold ||
+                Math.abs(vixSigma) > sigmaThreshold
             
             ctxObj.put("significant_move", sigMove)
             ctxObj.put("abs_spot_sigma", Math.abs(bnfSpotSigma))
+            ctxObj.put("abs_nf_spot_sigma", Math.abs(nfSpotSigmaValue))
             ctxObj.put("abs_vix_sigma", Math.abs(vixSigma))
 
             val snap2pmStr = prefs.getString("snap_2pm_today", null)
