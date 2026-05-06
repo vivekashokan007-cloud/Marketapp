@@ -378,10 +378,15 @@ class NativeBridge(private val context: Context) {
             .build()
         return try {
             httpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                JSONObject(resp.body?.string() ?: "{}")
+                val body = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    Log.w("NativeBridge", "Upstox fetch failed: code=${resp.code}, url=$url, body=${body.take(240)}")
+                    return null
+                }
+                JSONObject(body)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w("NativeBridge", "Upstox fetch exception: url=$url, error=${e.message}")
             null
         }
     }
@@ -397,16 +402,19 @@ class NativeBridge(private val context: Context) {
         if (existing.isNotEmpty() && existing >= today) return existing
 
         val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
-        val url = "https://api.upstox.com/v2/expired-instruments/expiries?instrument_key=$encodedKey"
+        val url = "https://api.upstox.com/v2/option/contract?instrument_key=$encodedKey"
         val json = fetchJson(url, token) ?: return null
         val arr = json.optJSONArray("data") ?: return null
 
         var nearest: String? = null
         for (i in 0 until arr.length()) {
-            val date = arr.optString(i, "")
+            val date = arr.optJSONObject(i)?.optString("expiry", "") ?: ""
             if (date.length != 10) continue
             if (date < today) continue
             if (nearest == null || date < nearest) nearest = date
+        }
+        if (nearest == null) {
+            Log.w("NativeBridge", "No live expiry found for $instrumentKey; contracts=${arr.length()}, today=$today")
         }
         return nearest
     }
