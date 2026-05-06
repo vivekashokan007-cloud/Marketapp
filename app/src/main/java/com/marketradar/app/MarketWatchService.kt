@@ -599,6 +599,12 @@ class MarketWatchService : Service() {
         val result = JSONObject()
         try {
             val data = stocks.getJSONObject("data")
+            val quoteKeys = mutableListOf<String>()
+            val keyIter = data.keys()
+            while (keyIter.hasNext() && quoteKeys.size < 5) {
+                quoteKeys.add(keyIter.next())
+            }
+            LogBuffer.add('D', TAG, "BREADTH_KEYS: first=${quoteKeys.joinToString("|")}")
             var advancementScore = 0.0
             var weightedPct = 0.0
             var advancing = 0
@@ -612,6 +618,11 @@ class MarketWatchService : Service() {
                 val close = stockData?.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
                 val change = if (close > 0) (ltp - close) else 0.0
                 val pctChange = if (close > 0) (change / close * 100.0) else 0.0
+                LogBuffer.add(
+                    'D',
+                    TAG,
+                    "BREADTH_STOCK: req=$key lookup=$stockKey hit=${stockData != null} ltp=$ltp close=$close pct=${Math.round(pctChange * 100.0) / 100.0}"
+                )
                 
                 if (ltp > close && close > 0) {
                     advancing++
@@ -635,8 +646,14 @@ class MarketWatchService : Service() {
             result.put("advancing", advancing)
             result.put("declining", declining)
             result.put("results", results)
+            LogBuffer.add(
+                'D',
+                TAG,
+                "BREADTH_RESULT: pct=${result.optDouble("pct")} weighted=${result.optDouble("weightedPct")} adv=$advancing dec=$declining"
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Breadth calc failed: ${e.message}")
+            LogBuffer.add('E', TAG, "BREADTH_ERROR: ${e.message}")
             result.put("pct", 39.6)
                 .put("weightedPct", 0.0)
                 .put("advancing", 0)
@@ -1003,6 +1020,22 @@ class MarketWatchService : Service() {
                 "vix=${ctxObj.optDouble("vix")}, " +
                 "tradeMode=${ctxObj.optString("tradeMode")}"
             )
+            run {
+                val bnfCtx = ctxObj.optJSONObject("bnfChain")
+                val nfCtx = ctxObj.optJSONObject("nfChain")
+                val bnfBreadth = ctxObj.optJSONObject("bnfBreadth")
+                LogBuffer.add(
+                    'D',
+                    TAG,
+                    "BRAIN_CTX: bnfStrikes=${bnfCtx?.optJSONObject("strikes")?.length() ?: -1} nfStrikes=${nfCtx?.optJSONObject("strikes")?.length() ?: -1} " +
+                        "bnfAtm=${bnfCtx?.opt("atm")} nfAtm=${nfCtx?.opt("atm")} " +
+                        "bnfExp=$bnfExpiryPref nfExp=$nfExpiryPref bnfDTE=$bnfDTE nfDTE=$nfDTE " +
+                        "breadthPct=${bnfBreadth?.optDouble("pct")} breadthWeighted=${bnfBreadth?.optDouble("weightedPct")} " +
+                        "breadthAdv=${bnfBreadth?.optInt("advancing")} breadthDec=${bnfBreadth?.optInt("declining")} " +
+                        "tradeMode=${ctxObj.optString("tradeMode")}"
+                )
+                LogBuffer.add('D', TAG, "BRAIN_CHAIN_SIZE: bnfBytes=${bnfChain.toString().length} nfBytes=${nfChain.toString().length}")
+            }
             
             Log.d(TAG, "BRAIN_CALLING: analyze() with ${JSONArray(pollsJson).length()} polls")
             
@@ -1078,8 +1111,19 @@ class MarketWatchService : Service() {
                         "watchlist=${watchlist?.length() ?: 0}, " +
                         "candidates_in_result=${actualCandidates?.length() ?: 0}"
                     )
+                    val resultKeys = mutableListOf<String>()
+                    val resultIter = resultObj.keys()
+                    while (resultIter.hasNext() && resultKeys.size < 20) {
+                        resultKeys.add(resultIter.next())
+                    }
+                    LogBuffer.add(
+                        'D',
+                        TAG,
+                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} candidateTrace=${resultObj.has("candidateTrace")}"
+                    )
                 } catch(e: Exception) {
                     Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
+                    LogBuffer.add('W', TAG, "BRAIN_RESULT_PARSE_FAIL: ${e.message}")
                 }
 
                 // --- v2.2.6 ML Scoring Integration ---
