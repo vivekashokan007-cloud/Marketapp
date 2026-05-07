@@ -83,12 +83,14 @@ class MarketWatchService : Service() {
     private suspend fun bootstrapFromSupabase() {
         val lastSync = prefs.getLong("last_bootstrap_time", 0L)
         val now = System.currentTimeMillis()
+        val today = todayIstDate()
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         
         // Only fetch if data is missing or older than 30 minutes
         val isStale = (now - lastSync) > 30 * 60 * 1000L
         val hasBaseline = prefs.contains("morning_baseline")
         
-        if (!isStale && hasBaseline) {
+        if (!isStale && hasBaseline && lastPollDate == today) {
             Log.d(TAG, "Bootstrap skipped: data is fresh")
             val premHistory = JSONArray(prefs.getString("premium_history", "[]"))
             val ySig = prefs.getString("yesterday_signal", "null")
@@ -114,10 +116,33 @@ class MarketWatchService : Service() {
                 // 3. Closed Trades
                 val closed = SupabaseClient.getClosedTrades()
                 prefs.edit().putString("closed_trades", closed.toString()).apply()
-                val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
                 val history = SupabaseClient.getPollHistory(today)
                 if (history.length() > 0) {
-                    prefs.edit().putString("poll_history", history.toString()).apply()
+                    val latest = history.optJSONObject(history.length() - 1)
+                    prefs.edit().apply {
+                        putString("poll_history", history.toString())
+                        putInt("poll_count", history.length())
+                        putString("last_poll_date", today)
+                        if (latest != null) {
+                            putString("latest_poll", latest.toString())
+                            putString("last_poll_time", latest.optString("t", ""))
+                        }
+                    }.apply()
+                } else if (
+                    lastPollDate != today &&
+                    (prefs.getString("poll_history", "[]") != "[]" ||
+                        prefs.getInt("poll_count", 0) != 0 ||
+                        prefs.getString("latest_poll", "null") != "null" ||
+                        prefs.contains("last_poll_time"))
+                ) {
+                    prefs.edit().apply {
+                        remove("poll_history")
+                        remove("poll_count")
+                        remove("latest_poll")
+                        remove("last_poll_time")
+                        putString("last_poll_date", today)
+                    }.apply()
+                    Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
                 }
 
                 // 5. Historial Premium Data & Signal
@@ -160,7 +185,7 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun fetchYesterdayOHLC(token: String) {
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        val today = todayIstDate()
         if (prefs.getString("ohlc_date", "") == today) return
 
         Log.d(TAG, "Fetching yesterday's OHLC...")
@@ -239,7 +264,7 @@ class MarketWatchService : Service() {
                             performPoll(currentToken)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
-                            LogBuffer.add('E', "MarketWatchService", "Poll #${prefs.getInt("poll_count", 0) + 1} FAILED: ${e.message}")
+                            LogBuffer.add('E', "MarketWatchService", "Poll #${nextPollNumberForToday()} FAILED: ${e.message}")
                         } finally {
                             releaseWakeLock()
                         }
@@ -269,7 +294,7 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun performPoll(token: String) {
-        val pollCount = prefs.getInt("poll_count", 0) + 1
+        val pollCount = nextPollNumberForToday()
         Log.d(TAG, "POLL_START: performPoll() entered")
         LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
         
@@ -435,6 +460,7 @@ class MarketWatchService : Service() {
         }
 
         val poll = JSONObject()
+        poll.put("date", todayIstDate())
         poll.put("t", time)
         poll.put("bnf", bnf)
         poll.put("nf", nf)
@@ -554,8 +580,7 @@ class MarketWatchService : Service() {
         // GAP 6: Upsert to Supabase every 3rd poll
         if (pollCount > 0 && pollCount % 3 == 0) {
             serviceScope.launch(Dispatchers.IO) {
-                val today = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                SupabaseClient.upsertPollHistory(today, history)
+                SupabaseClient.upsertPollHistory(todayIstDate(), history)
             }
         }
 
@@ -569,7 +594,7 @@ class MarketWatchService : Service() {
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)
         val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+        val today = todayIstDate()
         val lastSavedDate = prefs.getString("positioning_date", "")
 
         // Reset if new day
@@ -818,7 +843,7 @@ class MarketWatchService : Service() {
             
             // C1: Calculate DTE (Days to Expiry) for brain context
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-            val todayDate = sdf.parse(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()))
+            val todayDate = sdf.parse(todayIstDate())
             
             val bnfExpiryPref = prefs.getString("expiry_bnf", "") ?: ""
             val nfExpiryPref = prefs.getString("expiry_nf", "") ?: ""
@@ -981,7 +1006,7 @@ class MarketWatchService : Service() {
             val minsSinceOpen = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE) - 555
             ctxObj.put("mins_since_open", minsSinceOpen)
             ctxObj.put("now_ms", System.currentTimeMillis())
-            ctxObj.put("today_ist", SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date()))
+            ctxObj.put("today_ist", todayIstDate())
             
             val lastRoutine = prefs.getLong("last_routine_dispatch_ms", 0L)
             ctxObj.put("last_routine_dispatch_ms", lastRoutine)
@@ -1286,8 +1311,7 @@ class MarketWatchService : Service() {
     )
 
     private fun isMarketDay(): Boolean {
-        val ist = TimeZone.getTimeZone("Asia/Kolkata")
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+        val today = todayIstDate()
         return !NSE_HOLIDAYS_2026.contains(today)
     }
 
@@ -1411,10 +1435,22 @@ class MarketWatchService : Service() {
 
     // C4: Expiry fallback helper
     private fun getNextThursday(): String {
-        val cal = Calendar.getInstance()
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist)
         while (cal.get(Calendar.DAY_OF_WEEK) != Calendar.THURSDAY) {
             cal.add(Calendar.DATE, 1)
         }
-        return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time)
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(cal.time)
+    }
+
+    private fun todayIstDate(): String {
+        return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }.format(Date())
+    }
+
+    private fun nextPollNumberForToday(): Int {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        return if (lastPollDate == todayIstDate()) prefs.getInt("poll_count", 0) + 1 else 1
     }
 }

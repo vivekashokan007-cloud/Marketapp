@@ -29,6 +29,10 @@ class NativeBridge(private val context: Context) {
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient()
 
+    init {
+        clearStalePollStateIfNeeded()
+    }
+
     @JavascriptInterface
     fun isNative(): Boolean = true
 
@@ -231,11 +235,13 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getLatestPoll(): String {
+        clearStalePollStateIfNeeded()
         return prefs.getString("latest_poll", "null") ?: "null"
     }
 
     @JavascriptInterface
     fun getPollHistory(): String {
+        clearStalePollStateIfNeeded()
         return prefs.getString("poll_history", "[]") ?: "[]"
     }
 
@@ -247,6 +253,7 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getServiceStatus(): String {
         return try {
+            clearStalePollStateIfNeeded()
             // NB6: Build JSON using JSONObject to avoid injection/escaping issues
             val status = JSONObject()
             status.put("running", isServiceRunning())
@@ -368,6 +375,27 @@ class NativeBridge(private val context: Context) {
     private fun todayIstDate(): String {
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+    }
+
+    private fun clearStalePollStateIfNeeded() {
+        val today = todayIstDate()
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate == today) return
+
+        val hasStalePollState =
+            prefs.getString("poll_history", "[]") != "[]" ||
+            prefs.getInt("poll_count", 0) != 0 ||
+            prefs.getString("latest_poll", "null") != "null" ||
+            prefs.contains("last_poll_time")
+        if (!hasStalePollState) return
+
+        prefs.edit()
+            .remove("poll_history")
+            .remove("poll_count")
+            .remove("latest_poll")
+            .remove("last_poll_time")
+            .commit()
+        Log.i("NativeBridge", "DAILY_RESET_BRIDGE: cleared stale poll state for $today")
     }
 
     private fun fetchJson(url: String, token: String): JSONObject? {
