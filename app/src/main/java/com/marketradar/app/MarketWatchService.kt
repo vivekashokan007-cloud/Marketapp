@@ -332,6 +332,23 @@ class MarketWatchService : Service() {
         
         val bnfChainJson = fetchSync(bnfUrl, token)
         val bnfStocksJson = fetchSync(bnfStocksUrl, token)
+        LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
+        if (bnfStocksJson != null) {
+            val breadthData = bnfStocksJson.optJSONObject("data")
+            val breadthKeys = mutableListOf<String>()
+            val breadthKeyIter = breadthData?.keys()
+            while (breadthKeyIter != null && breadthKeyIter.hasNext() && breadthKeys.size < 5) {
+                breadthKeys.add(breadthKeyIter.next())
+            }
+            val bodyPrefix = bnfStocksJson.toString().take(500)
+            LogBuffer.add(
+                'D',
+                TAG,
+                "BREADTH_HTTP_BODY: status=${bnfStocksJson.optString("status")} errors=${bnfStocksJson.opt("errors")} dataKeys=${breadthData?.length() ?: 0} first=${breadthKeys.joinToString("|")} bodyPrefix=$bodyPrefix"
+            )
+        } else {
+            LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
+        }
         
         if (bnfChainJson == null || bnfStocksJson == null) {
             Log.e(TAG, "POLL_FAIL: BNF chain or stocks/futures fetch returned null")

@@ -1999,6 +1999,14 @@ def compute_overnight_delta(ctx):
 # DECISION #24 — build_chain_snapshot_data
 # ───────────────────────────────────────────────────────────────
 def build_chain_snapshot_data(ctx: dict) -> dict:
+    if isinstance(ctx, str):
+        try:
+            ctx = json.loads(ctx)
+        except Exception:
+            return {}
+    if not isinstance(ctx, dict):
+        return {}
+
     bnf_chain = ctx.get('bnfChain', {}) or {}
     nf_chain = ctx.get('nfChain', {}) or {}
     live = ctx.get('live', {}) or {}
