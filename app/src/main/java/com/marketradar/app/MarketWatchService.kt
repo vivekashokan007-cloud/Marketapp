@@ -38,17 +38,24 @@ class MarketWatchService : Service() {
     private var lastAlertKeys = mutableSetOf<String>()
     private var pollingJob: Job? = null
 
+    private data class BreadthStock(
+        val symbol: String,
+        val requestKey: String,
+        val responseKey: String,
+        val weight: Double
+    )
+
     companion object {
         const val CHANNEL_ID = "market_radar_service"
         const val NOTIFICATION_ID = 1001
         const val TAG = "MarketWatchService"
         
-        private val BNF_WEIGHTS = mapOf(
-            "NSE_EQ|HDFCBANK" to 0.285,
-            "NSE_EQ|ICICIBANK" to 0.235,
-            "NSE_EQ|AXISBANK" to 0.095,
-            "NSE_EQ|SBIN" to 0.092,
-            "NSE_EQ|KOTAKBANK" to 0.085
+        private val BNF_STOCKS = listOf(
+            BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.285),
+            BreadthStock("ICICIBANK", "NSE_EQ|INE090A01021", "NSE_EQ:ICICIBANK", 0.235),
+            BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.095),
+            BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.092),
+            BreadthStock("KOTAKBANK", "NSE_EQ|INE237A01028", "NSE_EQ:KOTAKBANK", 0.085)
         )
     }
 
@@ -324,7 +331,7 @@ class MarketWatchService : Service() {
         }
         
         // Step 2: Fetch BNF chain
-        val bnfStocks = BNF_WEIGHTS.keys.joinToString(",")
+        val bnfStocks = BNF_STOCKS.joinToString(",") { it.requestKey }
         Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
         val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
         val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
@@ -391,6 +398,42 @@ class MarketWatchService : Service() {
         } catch (e: Exception) { return 99 }
     }
 
+    private fun optionLtp(md: JSONObject?): Double {
+        if (md == null) return 0.0
+        val ltp = md.optDouble("ltp", 0.0)
+        return if (ltp > 0.0) ltp else md.optDouble("last_price", 0.0)
+    }
+
+    private fun optionMid(md: JSONObject?): Double {
+        if (md == null) return 0.0
+        val bid = md.optDouble("bid_price", 0.0)
+        val ask = md.optDouble("ask_price", 0.0)
+        return if (bid > 0.0 && ask > 0.0) {
+            (bid + ask) / 2.0
+        } else {
+            val ltp = optionLtp(md)
+            if (ltp > 0.0) ltp else Math.max(bid, ask)
+        }
+    }
+
+    private fun optionIv(option: JSONObject?, md: JSONObject?): Double {
+        val greekIv = option?.optJSONObject("option_greeks")?.optDouble("iv", 0.0) ?: 0.0
+        return if (greekIv > 0.0) greekIv else (md?.optDouble("iv", 0.0) ?: 0.0)
+    }
+
+    private fun findQuoteByInstrument(data: JSONObject, requestKey: String, responseKey: String? = null): JSONObject? {
+        if (!responseKey.isNullOrBlank()) data.optJSONObject(responseKey)?.let { return it }
+        data.optJSONObject(requestKey)?.let { return it }
+        data.optJSONObject(requestKey.replace("|", ":"))?.let { return it }
+        val keys = data.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val quote = data.optJSONObject(key)
+            if (quote?.optString("instrument_token") == requestKey) return quote
+        }
+        return null
+    }
+
     private fun extractLtpMap(chainJson: JSONObject): JSONObject {
         val map = JSONObject()
         val data = chainJson.optJSONArray("data") ?: return map
@@ -398,8 +441,8 @@ class MarketWatchService : Service() {
             val item = data.getJSONObject(i)
             val strike = item.optDouble("strike_price").toString()
             val pair = JSONObject()
-            pair.put("CE", item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0)
-            pair.put("PE", item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("last_price", 0.0) ?: 0.0)
+            pair.put("CE", optionLtp(item.optJSONObject("call_options")?.optJSONObject("market_data")))
+            pair.put("PE", optionLtp(item.optJSONObject("put_options")?.optJSONObject("market_data")))
             map.put(strike, pair)
         }
         return map
@@ -459,20 +502,8 @@ class MarketWatchService : Service() {
                 atmDist = dist
                 atmStrike = strikePrice
                 
-                // Fallback to bid/ask if LTP is 0
-                atmCE = callMd?.optDouble("last_price", 0.0) ?: 0.0
-                if (atmCE == 0.0) {
-                    val bid = callMd?.optDouble("bid_price", 0.0) ?: 0.0
-                    val ask = callMd?.optDouble("ask_price", 0.0) ?: 0.0
-                    atmCE = if (bid > 0 && ask > 0) (bid + ask) / 2.0 else Math.max(bid, ask)
-                }
-                
-                atmPE = putMd?.optDouble("last_price", 0.0) ?: 0.0
-                if (atmPE == 0.0) {
-                    val bid = putMd?.optDouble("bid_price", 0.0) ?: 0.0
-                    val ask = putMd?.optDouble("ask_price", 0.0) ?: 0.0
-                    atmPE = if (bid > 0 && ask > 0) (bid + ask) / 2.0 else Math.max(bid, ask)
-                }
+                atmCE = optionMid(callMd)
+                atmPE = optionMid(putMd)
             }
         }
 
@@ -539,7 +570,7 @@ class MarketWatchService : Service() {
         // Futures Premium
         val bnfFutKey = getFuturesKey("BANKNIFTY")
         Log.d(TAG, "FP_DEBUG: bnfFutKey=$bnfFutKey")
-        var bnfFutLtp = sData.optJSONObject(bnfFutKey)?.optDouble("last_price", 0.0) ?: 0.0
+        var bnfFutLtp = findQuoteByInstrument(sData, bnfFutKey)?.optDouble("last_price", 0.0) ?: 0.0
         
         if (bnfFutLtp > 0) {
             Log.d(TAG, "FP_SOURCE: actual ($bnfFutLtp)")
@@ -549,7 +580,9 @@ class MarketWatchService : Service() {
             Log.d(TAG, "FP_SOURCE: synthetic ($bnfFutLtp)")
         }
         
-        poll.put("fp", (bnfFutLtp - bnf) / bnf * 100.0)
+        val futuresPremium = if (bnf > 0.0) (bnfFutLtp - bnf) / bnf * 100.0 else 0.0
+        poll.put("fp", futuresPremium)
+        poll.put("futuresPremBnf", futuresPremium)
         
         Log.d("AUDIT_POLL", poll.toString())
         return poll
@@ -653,9 +686,8 @@ class MarketWatchService : Service() {
             var declining = 0
             val results = JSONArray()
             
-            for ((key, weight) in BNF_WEIGHTS) {
-                val stockKey = key.replace("|", ":")
-                val stockData = data.optJSONObject(stockKey)
+            for (stock in BNF_STOCKS) {
+                val stockData = findQuoteByInstrument(data, stock.requestKey, stock.responseKey)
                 val ltp = stockData?.optDouble("last_price", 0.0) ?: 0.0
                 val close = stockData?.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
                 val change = if (close > 0) (ltp - close) else 0.0
@@ -663,22 +695,22 @@ class MarketWatchService : Service() {
                 LogBuffer.add(
                     'D',
                     TAG,
-                    "BREADTH_STOCK: req=$key lookup=$stockKey hit=${stockData != null} ltp=$ltp close=$close pct=${Math.round(pctChange * 100.0) / 100.0}"
+                    "BREADTH_STOCK: symbol=${stock.symbol} req=${stock.requestKey} lookup=${stock.responseKey} hit=${stockData != null} ltp=$ltp close=$close pct=${Math.round(pctChange * 100.0) / 100.0}"
                 )
                 
                 if (ltp > close && close > 0) {
                     advancing++
-                    advancementScore += weight * 100.0
+                    advancementScore += stock.weight * 100.0
                 } else if (ltp < close && close > 0) {
                     declining++
-                    advancementScore += weight * 0.0
+                    advancementScore += stock.weight * 0.0
                 } else {
-                    advancementScore += weight * 50.0 // neutral
+                    advancementScore += stock.weight * 50.0 // neutral
                 }
 
-                weightedPct += weight * pctChange
+                weightedPct += stock.weight * pctChange
                 results.put(JSONObject()
-                    .put("name", key.substringAfter("|"))
+                    .put("name", stock.symbol)
                     .put("change", Math.round(change * 100.0) / 100.0)
                     .put("pctChange", Math.round(pctChange * 100.0) / 100.0))
             }
@@ -771,11 +803,18 @@ class MarketWatchService : Service() {
             val data = chain.optJSONArray("data") ?: return result
             val strikesObj = JSONObject()
             val allStrikesArr = JSONArray()
+            val oiRows = mutableListOf<DoubleArray>()
             
             var atmStrike = 0.0
             var atmMinDist = Double.MAX_VALUE
             var atmCEIv = 0.0
             var atmPEIv = 0.0
+            var totalCallOI = 0.0
+            var totalPutOI = 0.0
+            var maxCallOI = 0.0
+            var maxPutOI = 0.0
+            var callWallStrike = 0.0
+            var putWallStrike = 0.0
 
             for (i in 0 until data.length()) {
                 val item = data.getJSONObject(i)
@@ -784,29 +823,42 @@ class MarketWatchService : Service() {
                 
                 val call = item.optJSONObject("call_options")
                 val put = item.optJSONObject("put_options")
+                val callMd = call?.optJSONObject("market_data")
+                val putMd = put?.optJSONObject("market_data")
+                val callOI = callMd?.optDouble("oi", 0.0) ?: 0.0
+                val putOI = putMd?.optDouble("oi", 0.0) ?: 0.0
+                totalCallOI += callOI
+                totalPutOI += putOI
+                oiRows.add(doubleArrayOf(strike, callOI, putOI))
+                if (callOI > maxCallOI) {
+                    maxCallOI = callOI
+                    callWallStrike = strike
+                }
+                if (putOI > maxPutOI) {
+                    maxPutOI = putOI
+                    putWallStrike = strike
+                }
                 
                 val dist = Math.abs(strike - spot)
                 if (dist < atmMinDist) {
                     atmMinDist = dist
                     atmStrike = strike
-                    val cmd = call?.optJSONObject("market_data")
-                    val pmd = put?.optJSONObject("market_data")
-                    atmCEIv = cmd?.optDouble("iv", 0.0) ?: 0.0
-                    atmPEIv = pmd?.optDouble("iv", 0.0) ?: 0.0
+                    atmCEIv = optionIv(call, callMd)
+                    atmPEIv = optionIv(put, putMd)
                 }
                 
                 val strikeObj = JSONObject()
                 strikeObj.put("CE", JSONObject().apply {
-                    val md = call?.optJSONObject("market_data")
-                    put("ltp", md?.optDouble("last_price", 0.0) ?: 0.0)
+                    val md = callMd
                     val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
                     val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    put("ltp", optionLtp(md))
                     put("bid", bid)
                     put("ask", ask)
-                    put("mid", if (bid > 0 && ask > 0) (bid + ask) / 2.0 else md?.optDouble("last_price", 0.0) ?: 0.0)
-                    put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
+                    put("mid", optionMid(md))
+                    put("oi", callOI)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
-                    put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
+                    put("iv", optionIv(call, md))
                     put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
                     
                     val gr = call?.optJSONObject("option_greeks")
@@ -817,16 +869,16 @@ class MarketWatchService : Service() {
                     put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
                 })
                 strikeObj.put("PE", JSONObject().apply {
-                    val md = put?.optJSONObject("market_data")
-                    put("ltp", md?.optDouble("last_price", 0.0) ?: 0.0)
+                    val md = putMd
                     val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
                     val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    put("ltp", optionLtp(md))
                     put("bid", bid)
                     put("ask", ask)
-                    put("mid", if (bid > 0 && ask > 0) (bid + ask) / 2.0 else md?.optDouble("last_price", 0.0) ?: 0.0)
-                    put("oi", md?.optDouble("oi", 0.0) ?: 0.0)
+                    put("mid", optionMid(md))
+                    put("oi", putOI)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
-                    put("iv", md?.optDouble("iv", 0.0) ?: 0.0)
+                    put("iv", optionIv(put, md))
                     put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
                     
                     val gr = put?.optJSONObject("option_greeks")
@@ -838,11 +890,46 @@ class MarketWatchService : Service() {
                 })
                 strikesObj.put(strike.toString(), strikeObj)
             }
+
+            var nearTotalCallOI = 0.0
+            var nearTotalPutOI = 0.0
+            val nearWindow = Math.max(spot * 0.015, 1.0)
+            for (row in oiRows) {
+                if (Math.abs(row[0] - atmStrike) <= nearWindow) {
+                    nearTotalCallOI += row[1]
+                    nearTotalPutOI += row[2]
+                }
+            }
+
+            var maxPain = 0.0
+            var minPain = Double.MAX_VALUE
+            for (candidate in oiRows) {
+                var pain = 0.0
+                for (row in oiRows) {
+                    pain += row[1] * Math.max(candidate[0] - row[0], 0.0)
+                    pain += row[2] * Math.max(row[0] - candidate[0], 0.0)
+                }
+                if (pain < minPain) {
+                    minPain = pain
+                    maxPain = candidate[0]
+                }
+            }
             
             result.put("strikes", strikesObj)
             result.put("allStrikes", allStrikesArr)
             result.put("atm", atmStrike)
             result.put("atmIv", if (atmCEIv > 0 && atmPEIv > 0) (atmCEIv + atmPEIv) / 2.0 else Math.max(atmCEIv, atmPEIv))
+            result.put("totalCallOI", totalCallOI)
+            result.put("totalPutOI", totalPutOI)
+            result.put("nearTotalCallOI", nearTotalCallOI)
+            result.put("nearTotalPutOI", nearTotalPutOI)
+            result.put("pcr", if (totalCallOI > 0.0) totalPutOI / totalCallOI else 0.0)
+            result.put("nearAtmPCR", if (nearTotalCallOI > 0.0) nearTotalPutOI / nearTotalCallOI else 0.0)
+            result.put("maxPain", maxPain)
+            result.put("callWallStrike", callWallStrike)
+            result.put("callWallOI", maxCallOI)
+            result.put("putWallStrike", putWallStrike)
+            result.put("putWallOI", maxPutOI)
             
         } catch (e: Exception) {
             Log.e(TAG, "Error formatting chain for brain: ${e.message}")
@@ -887,21 +974,32 @@ class MarketWatchService : Service() {
                            cwPoll: Double, pwPoll: Double, pcrPoll: Double, expiry: String) {
                 val formattedLive = formatChainForBrain(liveChainRaw, spot)
                 formattedLive.put("expiry", expiry)
+                val liveCw = if (cwPoll > 0.0) cwPoll else formattedLive.optDouble("callWallStrike", 0.0)
+                val livePw = if (pwPoll > 0.0) pwPoll else formattedLive.optDouble("putWallStrike", 0.0)
+                val livePcr = if (pcrPoll > 0.0) pcrPoll else formattedLive.optDouble("pcr", 0.0)
                 val existingChain = ctxObj.optJSONObject(key)
                 
                 if (existingChain != null && existingChain.has("atm")) {
                     // Rich chain exists from WebView — refresh only live intraday fields
                     existingChain.put("strikes",         formattedLive.optJSONObject("strikes"))
                     existingChain.put("atm",             formattedLive.optDouble("atm", 0.0))
-                    existingChain.put("callWallStrike",  cwPoll)
-                    existingChain.put("putWallStrike",   pwPoll)
+                    existingChain.put("callWallStrike",  liveCw)
+                    existingChain.put("putWallStrike",   livePw)
                     existingChain.put("atmIv",           formattedLive.optDouble("atmIv", 0.0))
                     existingChain.put("expiry",          expiry)
+                    val summaryKeys = listOf(
+                        "allStrikes", "totalCallOI", "totalPutOI", "nearTotalCallOI", "nearTotalPutOI",
+                        "nearAtmPCR", "maxPain", "callWallOI", "putWallOI"
+                    )
+                    for (summaryKey in summaryKeys) {
+                        if (formattedLive.has(summaryKey)) existingChain.put(summaryKey, formattedLive.opt(summaryKey))
+                    }
+                    existingChain.put("pcr", livePcr)
                 } else {
                     // No rich data — use full formatted live chain
-                    formattedLive.put("callWallStrike", cwPoll)
-                    formattedLive.put("putWallStrike",  pwPoll)
-                    formattedLive.put("pcr",            pcrPoll)
+                    formattedLive.put("callWallStrike", liveCw)
+                    formattedLive.put("putWallStrike",  livePw)
+                    formattedLive.put("pcr",            livePcr)
                     ctxObj.put(key, formattedLive)
                 }
             }
