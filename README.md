@@ -1,4 +1,4 @@
-# 🛡️ Market Radar v2.3.7 — Android Runtime Milestone
+# 🛡️ Market Radar v2.3.17 — Candlestick Pattern Detection
 
 Market Radar is a high-performance options trading companion with a native Android runtime, Kotlin bridge, and canonical Python brain (`brain.py`).
 

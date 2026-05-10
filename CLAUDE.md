@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Project overview
 
-**Market Radar** — Android app (package `com.marketradar.app`, versionName `2.3.7`, versionCode `138`) that wraps a PWA hosted at `https://vivekashokan007-cloud.github.io/MarketVivi/` in a WebView and augments it with:
+**Market Radar** — Android app (package `com.marketradar.app`, versionName `2.3.17`, versionCode `148`) that wraps a PWA hosted at `https://vivekashokan007-cloud.github.io/MarketVivi/` in a WebView and augments it with:
 
 - A foreground service that polls the Upstox market-data API every 5 minutes during NSE market hours.
 - A JavaScript ↔ Kotlin bridge (`window.AndroidBridge`) for state exchange between the PWA and native code.
