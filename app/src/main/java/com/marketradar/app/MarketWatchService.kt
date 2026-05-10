@@ -1315,7 +1315,22 @@ class MarketWatchService : Service() {
                         }
                     }
                 }
-                
+
+                // Persist candlestick data to Supabase for historical review
+                try {
+                    val candleBnf = resultObj.optJSONObject("candle_bnf")
+                    val candleNf = resultObj.optJSONObject("candle_nf")
+                    if (candleBnf != null || candleNf != null) {
+                        SupabaseClient.upsertCandleData(
+                            todayIstDate(),
+                            candleBnf ?: JSONObject(),
+                            candleNf ?: JSONObject()
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Candle data persist failed: ${e.message}")
+                }
+
                 brainSuccess = true
                 
                 // Build the data payload for syncFromNative() in WebView

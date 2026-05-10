@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Project overview
 
-**Market Radar** — Android app (package `com.marketradar.app`, versionName `2.2.11`, versionCode `1`) that wraps a PWA hosted at `https://vivekashokan007-cloud.github.io/MarketVivi/` in a WebView and augments it with:
+**Market Radar** — Android app (package `com.marketradar.app`, versionName `2.3.7`, versionCode `138`) that wraps a PWA hosted at `https://vivekashokan007-cloud.github.io/MarketVivi/` in a WebView and augments it with:
 
 - A foreground service that polls the Upstox market-data API every 5 minutes during NSE market hours.
 - A JavaScript ↔ Kotlin bridge (`window.AndroidBridge`) for state exchange between the PWA and native code.
@@ -12,7 +12,7 @@ Guidance for Claude Code when working in this repository.
 - **Supabase** REST backend for trade / baseline / poll-history persistence.
 - Foreground notifications across three channels (urgent / important / routine).
 
-The WebView ships no bundled HTML — all UI is remote. Native code exists only to run background jobs the web layer cannot.
+The WebView ships no bundled HTML — all UI is remote. Native code exists only to run background jobs the web layer cannot, and `app/src/main/python/brain.py` is the canonical brain source.
 
 ## Build / toolchain
 

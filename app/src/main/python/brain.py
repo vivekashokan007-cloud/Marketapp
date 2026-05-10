@@ -1544,6 +1544,333 @@ def validate_yesterday_signal(ctx):
         'totalSignals': total_signals
     }
 
+# ─── CANDLESTICK PATTERN DETECTION ───
+
+def _ohlc_vals(polls, key):
+    return [p.get(key) for p in polls if p.get(key) is not None]
+
+def _is_bullish(c):
+    return c['close'] >= c['open']
+
+def _is_bearish(c):
+    return c['close'] < c['open']
+
+def _real_body(c):
+    return abs(c['close'] - c['open'])
+
+def _upper_shadow(c):
+    return c['high'] - max(c['open'], c['close'])
+
+def _lower_shadow(c):
+    return min(c['open'], c['close']) - c['low']
+
+def _total_range(c):
+    r = c['high'] - c['low']
+    return r if r > 0 else 0.001
+
+def _body_pct(c):
+    return _real_body(c) / _total_range(c)
+
+def aggregate_15m_candles(polls, key='bnf'):
+    groups = []
+    for i in range(0, len(polls), 3):
+        block = polls[i:i+3]
+        if len(block) < 2:
+            break
+        vals = _ohlc_vals(block, key)
+        if len(vals) < 2:
+            continue
+        groups.append({
+            'open': block[0].get(key),
+            'high': max(vals),
+            'low': min(vals),
+            'close': block[-1].get(key),
+            'ts': block[-1].get('t', ''),
+            'count': len(vals)
+        })
+    return groups
+
+def build_daily_candle(polls, key='bnf'):
+    vals = _ohlc_vals(polls, key)
+    if not vals:
+        return None
+    return {
+        'open': polls[0].get(key),
+        'high': max(vals),
+        'low': min(vals),
+        'close': vals[-1],
+        'ts': polls[-1].get('t', ''),
+        'count': len(vals)
+    }
+
+def _prior_trend(candles, n=5, direction='down'):
+    if len(candles) < n:
+        return False
+    segment = candles[-n:]
+    closes = [c['close'] for c in segment]
+    slope = lsq_slope(closes)
+    threshold = _CONST.get('CANDLE_PRIOR_TREND_THRESHOLD', 0.3)
+    if direction == 'down':
+        return slope < -threshold
+    elif direction == 'up':
+        return slope > threshold
+    return abs(slope) <= threshold
+
+def _is_bullish_marubozu(c):
+    sp = _CONST.get('CANDLE_MARUBOZU_SHADOW_PCT', 0.05)
+    return _is_bullish(c) and _upper_shadow(c) / _total_range(c) <= sp and _lower_shadow(c) / _total_range(c) <= sp
+
+def _is_bearish_marubozu(c):
+    sp = _CONST.get('CANDLE_MARUBOZU_SHADOW_PCT', 0.05)
+    return _is_bearish(c) and _upper_shadow(c) / _total_range(c) <= sp and _lower_shadow(c) / _total_range(c) <= sp
+
+def _is_doji(c):
+    return _body_pct(c) <= _CONST.get('CANDLE_DOJI_BODY_PCT', 0.05)
+
+def _is_spinning_top(c):
+    min_b = _CONST.get('CANDLE_SPINNING_MIN_BODY_PCT', 0.05)
+    max_b = _CONST.get('CANDLE_SPINNING_MAX_BODY_PCT', 0.20)
+    b = _body_pct(c)
+    if not (min_b < b <= max_b):
+        return False
+    us = _upper_shadow(c)
+    ls = _lower_shadow(c)
+    if us == 0 or ls == 0:
+        return False
+    ratio = us / ls
+    rmin = _CONST.get('CANDLE_SHADOW_RATIO_MIN', 0.5)
+    rmax = _CONST.get('CANDLE_SHADOW_RATIO_MAX', 2.0)
+    return rmin <= ratio <= rmax
+
+def _is_hammer(c, prior_down):
+    if not prior_down:
+        return False
+    body = _real_body(c)
+    if body == 0:
+        return False
+    return _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+
+def _is_hanging_man(c, prior_up):
+    if not prior_up:
+        return False
+    body = _real_body(c)
+    if body == 0:
+        return False
+    return _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+
+def _is_bullish_engulfing(p1, p2, prior_down):
+    if not prior_down:
+        return False
+    if not _is_bearish(p1) or not _is_bullish(p2):
+        return False
+    return p2['close'] > p1['open'] and p2['open'] < p1['close']
+
+def _is_bearish_engulfing(p1, p2, prior_up):
+    if not prior_up:
+        return False
+    if not _is_bullish(p1) or not _is_bearish(p2):
+        return False
+    return p2['open'] > p1['close'] and p2['close'] < p1['open']
+
+def _is_bullish_harami(p1, p2, prior_down):
+    if not prior_down:
+        return False
+    if not _is_bearish(p1) or not _is_bullish(p2):
+        return False
+    if _real_body(p1) <= _real_body(p2) * _CONST.get('CANDLE_ENGULF_BODY_MIN', 1.5):
+        return False
+    return p2['open'] > p1['close'] and p2['close'] < p1['open']
+
+def _is_bearish_harami(p1, p2, prior_up):
+    if not prior_up:
+        return False
+    if not _is_bullish(p1) or not _is_bearish(p2):
+        return False
+    if _real_body(p1) <= _real_body(p2) * _CONST.get('CANDLE_ENGULF_BODY_MIN', 1.5):
+        return False
+    return p2['open'] < p1['close'] and p2['close'] > p1['open']
+
+def _is_morning_star(p1, p2, p3, prior_down):
+    if not prior_down:
+        return False
+    if not _is_bearish(p1) or not _is_bullish(p3):
+        return False
+    if not (_is_doji(p2) or _is_spinning_top(p2)):
+        return False
+    gap_pct = _CONST.get('CANDLE_GAP_PCT', 0.001)
+    gap_down = p2['open'] < p1['close'] * (1 - gap_pct)
+    gap_up = p3['open'] > p2['close'] * (1 + gap_pct)
+    return gap_down and gap_up and p3['close'] > p1['open']
+
+def _is_evening_star(p1, p2, p3, prior_up):
+    if not prior_up:
+        return False
+    if not _is_bullish(p1) or not _is_bearish(p3):
+        return False
+    if not (_is_doji(p2) or _is_spinning_top(p2)):
+        return False
+    gap_pct = _CONST.get('CANDLE_GAP_PCT', 0.001)
+    gap_up = p2['open'] > p1['close'] * (1 + gap_pct)
+    gap_down = p3['open'] < p2['close'] * (1 - gap_pct)
+    return gap_up and gap_down and p3['close'] < p1['open']
+
+def _candle_insight(pattern_name, label, detail, impact, strength, index, timeframe, candle):
+    return {
+        "type": "candle", "icon": "🕯", "label": label, "detail": detail,
+        "impact": impact, "strength": strength,
+        "pattern": pattern_name, "index": index, "timeframe": timeframe,
+        "candle": {"open": candle['open'], "high": candle['high'],
+                   "low": candle['low'], "close": candle['close']}
+    }
+
+def _detect_15m_patterns(candles, index_key):
+    insights = []
+    if not candles:
+        return insights
+    c = candles[-1]
+    prior_down = _prior_trend(candles[:-1], direction='down')
+    prior_up = _prior_trend(candles[:-1], direction='up')
+    if _is_bullish_marubozu(c):
+        insights.append(_candle_insight("BULLISH_MARUBOZU",
+            f"Bullish Marubozu on {index_key} (15m)",
+            f"Open={c['open']:.0f} Close={c['close']:.0f}. No wicks, extreme buying.",
+            "bullish", 3, index_key, "15m", c))
+    if _is_bearish_marubozu(c):
+        insights.append(_candle_insight("BEARISH_MARUBOZU",
+            f"Bearish Marubozu on {index_key} (15m)",
+            f"Open={c['open']:.0f} Close={c['close']:.0f}. No wicks, extreme selling.",
+            "bearish", 3, index_key, "15m", c))
+    if _is_doji(c):
+        insights.append(_candle_insight("DOJI",
+            f"Doji on {index_key} (15m)",
+            f"Open={c['open']:.0f} Close={c['close']:.0f}. Indecision, equilibrium.",
+            "caution", 2, index_key, "15m", c))
+    if _is_spinning_top(c):
+        insights.append(_candle_insight("SPINNING_TOP",
+            f"Spinning Top on {index_key} (15m)",
+            f"Open={c['open']:.0f} Close={c['close']:.0f}. Small body, indecision.",
+            "caution", 2, index_key, "15m", c))
+    if _is_hammer(c, prior_down):
+        insights.append(_candle_insight("HAMMER",
+            f"Hammr on {index_key} (15m)",
+            f"Low={c['low']:.0f} Close={c['close']:.0f}. Long lower wick in downtrend.",
+            "bullish", 3, index_key, "15m", c))
+    if _is_hanging_man(c, prior_up):
+        insights.append(_candle_insight("HANGING_MAN",
+            f"Hanging Man on {index_key} (15m)",
+            f"Low={c['low']:.0f} Close={c['close']:.0f}. Long lower wick in uptrend.",
+            "bearish", 3, index_key, "15m", c))
+    if len(candles) >= 2:
+        p1 = candles[-2]
+        p2 = candles[-1]
+        prior_down_2 = _prior_trend(candles[:-2], direction='down') if len(candles) > 2 else False
+        prior_up_2 = _prior_trend(candles[:-2], direction='up') if len(candles) > 2 else False
+        if _is_bullish_engulfing(p1, p2, prior_down_2):
+            insights.append(_candle_insight("BULLISH_ENGULFING",
+                f"Bullish Engulfing on {index_key} (15m)",
+                f"P1 red ({p1['close']:.0f}) -> P2 blue ({p2['close']:.0f}) engulfs. Strong reversal.",
+                "bullish", 4, index_key, "15m", p2))
+        if _is_bearish_engulfing(p1, p2, prior_up_2):
+            insights.append(_candle_insight("BEARISH_ENGULFING",
+                f"Bearish Engulfing on {index_key} (15m)",
+                f"P1 blue ({p1['close']:.0f}) -> P2 red ({p2['close']:.0f}) engulfs. Strong reversal.",
+                "bearish", 4, index_key, "15m", p2))
+        if _is_bullish_harami(p1, p2, prior_down_2):
+            insights.append(_candle_insight("BULLISH_HARAMI",
+                f"Bullish Harami on {index_key} (15m)",
+                f"P1 long red -> P2 small blue inside. Potential reversal up.",
+                "bullish", 3, index_key, "15m", p2))
+        if _is_bearish_harami(p1, p2, prior_up_2):
+            insights.append(_candle_insight("BEARISH_HARAMI",
+                f"Bearish Harami on {index_key} (15m)",
+                f"P1 long blue -> P2 small red inside. Potential reversal down.",
+                "bearish", 3, index_key, "15m", p2))
+    if len(candles) >= 3:
+        p1 = candles[-3]
+        p2 = candles[-2]
+        p3 = candles[-1]
+        prior_down_3 = _prior_trend(candles[:-3], direction='down') if len(candles) > 3 else False
+        prior_up_3 = _prior_trend(candles[:-3], direction='up') if len(candles) > 3 else False
+        if _is_morning_star(p1, p2, p3, prior_down_3):
+            insights.append(_candle_insight("MORNING_STAR",
+                f"Morning Star on {index_key} (15m)",
+                f"P1 red, P2 doji (gap down), P3 blue > P1 open. Strong bullish reversal.",
+                "bullish", 5, index_key, "15m", p3))
+        if _is_evening_star(p1, p2, p3, prior_up_3):
+            insights.append(_candle_insight("EVENING_STAR",
+                f"Evening Star on {index_key} (15m)",
+                f"P1 blue, P2 doji (gap up), P3 red < P1 open. Strong bearish reversal.",
+                "bearish", 5, index_key, "15m", p3))
+    return insights
+
+def _detect_daily_patterns(today, yesterday, index_key):
+    insights = []
+    if not today or not yesterday:
+        return insights
+    if not isinstance(yesterday, dict):
+        return insights
+    y = yesterday
+    if not all(k in y for k in ('open', 'high', 'low', 'close')):
+        return insights
+    if _is_bullish_marubozu(today):
+        insights.append(_candle_insight("BULLISH_MARUBOZU",
+            f"Bullish Marubozu on {index_key} (Daily)",
+            f"Open={today['open']:.0f} Close={today['close']:.0f}. Extreme buying all session.",
+            "bullish", 3, index_key, "daily", today))
+    if _is_bearish_marubozu(today):
+        insights.append(_candle_insight("BEARISH_MARUBOZU",
+            f"Bearish Marubozu on {index_key} (Daily)",
+            f"Open={today['open']:.0f} Close={today['close']:.0f}. Extreme selling all session.",
+            "bearish", 3, index_key, "daily", today))
+    if _is_doji(today):
+        insights.append(_candle_insight("DOJI",
+            f"Doji on {index_key} (Daily)",
+            f"Open={today['open']:.0f} Close={today['close']:.0f}. Market indecision.",
+            "caution", 2, index_key, "daily", today))
+    if _is_spinning_top(today):
+        insights.append(_candle_insight("SPINNING_TOP",
+            f"Spinning Top on {index_key} (Daily)",
+            f"Open={today['open']:.0f} Close={today['close']:.0f}. Indecision.",
+            "caution", 2, index_key, "daily", today))
+    prior_down = _is_bearish(y)
+    prior_up = _is_bullish(y)
+    if _is_bullish_engulfing(y, today, prior_down):
+        insights.append(_candle_insight("BULLISH_ENGULFING",
+            f"Bullish Engulfing on {index_key} (Daily)",
+            f"Yesterday red -> Today blue engulfs. Strong daily reversal.",
+            "bullish", 4, index_key, "daily", today))
+    if _is_bearish_engulfing(y, today, prior_up):
+        insights.append(_candle_insight("BEARISH_ENGULFING",
+            f"Bearish Engulfing on {index_key} (Daily)",
+            f"Yesterday blue -> Today red engulfs. Strong daily reversal.",
+            "bearish", 4, index_key, "daily", today))
+    if _is_bullish_harami(y, today, prior_down):
+        insights.append(_candle_insight("BULLISH_HARAMI",
+            f"Bullish Harami on {index_key} (Daily)",
+            f"Yesterday long red -> Today small blue inside. Potential reversal.",
+            "bullish", 3, index_key, "daily", today))
+    if _is_bearish_harami(y, today, prior_up):
+        insights.append(_candle_insight("BEARISH_HARAMI",
+            f"Bearish Harami on {index_key} (Daily)",
+            f"Yesterday long blue -> Today small red inside. Potential reversal.",
+            "bearish", 3, index_key, "daily", today))
+    return insights
+
+def compute_candle_signals(polls, ctx):
+    result = {}
+    for index_key, poll_key in [('BNF', 'bnf'), ('NF', 'nf')]:
+        candles_15m = aggregate_15m_candles(polls, poll_key)
+        daily = build_daily_candle(polls, poll_key)
+        patterns_15m = _detect_15m_patterns(candles_15m, index_key)
+        ctx_ohlc = ctx.get(f'{poll_key}OHLC')
+        patterns_daily = _detect_daily_patterns(daily, ctx_ohlc, index_key) if daily and ctx_ohlc else []
+        result[f'candle_{poll_key}'] = {
+            'current': daily,
+            'last_15m': candles_15m[-1] if candles_15m else None,
+            'patterns': patterns_15m + patterns_daily,
+        }
+    return result
+
 def dte_urgency(polls, ctx):
     """DTE-aware urgency for timing."""
     dte = ctx.get('bnfDTE', 5)
@@ -4433,7 +4760,18 @@ _CONST = {
     'TARGET_NEAR_RATIO': 0.8,
     'STOP_LOSS_RATIO': 0.7,
     'SIGMA_ENTRY_THRESHOLD': 1.5,
-    'SIGMA_EXIT_THRESHOLD': 1.0
+    'SIGMA_EXIT_THRESHOLD': 1.0,
+    'CANDLE_MARUBOZU_SHADOW_PCT': 0.05,
+    'CANDLE_DOJI_BODY_PCT': 0.05,
+    'CANDLE_SPINNING_MIN_BODY_PCT': 0.05,
+    'CANDLE_SPINNING_MAX_BODY_PCT': 0.20,
+    'CANDLE_SHADOW_RATIO_MIN': 0.5,
+    'CANDLE_SHADOW_RATIO_MAX': 2.0,
+    'CANDLE_HAMMER_SHADOW_MIN': 2.0,
+    'CANDLE_ENGULF_BODY_MIN': 1.5,
+    'CANDLE_PRIOR_TREND_CANDLES': 5,
+    'CANDLE_PRIOR_TREND_THRESHOLD': 0.3,
+    'CANDLE_GAP_PCT': 0.001
 }
 
 
@@ -5857,6 +6195,15 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if r: result["market"].append(r)
         except Exception as e:
             print(f"DEBUG: Context insight {fn.__name__} failed: {e}")
+    # Candlestick pattern detection
+    try:
+        candle_data = compute_candle_signals(polls, ctx)
+        for ckey in ('candle_bnf', 'candle_nf'):
+            result[ckey] = candle_data[ckey]
+            for ins in candle_data[ckey].get('patterns', []):
+                result["market"].append(ins)
+    except Exception as e:
+        print(f"DEBUG: candlestick detection failed: {e}")
     # Phase C: compute profiles from raw chains
     bnf_chain = ctx.get('bnfChain') or {}
     nf_chain = ctx.get('nfChain') or {}
