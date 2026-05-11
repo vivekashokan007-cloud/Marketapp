@@ -19,6 +19,7 @@ import com.marketradar.app.util.LogBuffer
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 
 class MarketWatchService : Service() {
@@ -37,6 +38,9 @@ class MarketWatchService : Service() {
     private var token401Counter = 0
     private var lastAlertKeys = mutableSetOf<String>()
     private var pollingJob: Job? = null
+    private val serviceStartInProgress = AtomicBoolean(false)
+    private val pollInProgress = AtomicBoolean(false)
+    private val pollSaveLock = Any()
 
     private data class BreadthStock(
         val symbol: String,
@@ -74,15 +78,25 @@ class MarketWatchService : Service() {
 
         startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
+
+        if (pollingJob?.isActive == true || !serviceStartInProgress.compareAndSet(false, true)) {
+            Log.w(TAG, "SERVICE_START_IGNORED: polling already active or startup in progress")
+            LogBuffer.add('W', TAG, "SERVICE_START_IGNORED: polling already active or startup in progress")
+            return START_STICKY
+        }
         
         serviceScope.launch {
-            bootstrapFromSupabase()
-            // We need the token for OHLC/Futures Key resolution which are Startup tasks
-            val token = prefs.getString("auth_token", "") ?: ""
-            if (token.isNotEmpty()) {
-                bootstrapFromUpstox(token)
+            try {
+                bootstrapFromSupabase()
+                // We need the token for OHLC/Futures Key resolution which are Startup tasks
+                val token = prefs.getString("auth_token", "") ?: ""
+                if (token.isNotEmpty()) {
+                    bootstrapFromUpstox(token)
+                }
+                startPolling()
+            } finally {
+                serviceStartInProgress.set(false)
             }
-            startPolling()
         }
         return START_STICKY
     }
@@ -256,7 +270,11 @@ class MarketWatchService : Service() {
     }
 
     private fun startPolling() {
-        pollingJob?.cancel() // Guard: Stop any existing poll coroutine before starting a new one
+        if (pollingJob?.isActive == true) {
+            Log.w(TAG, "POLL_LOOP_IGNORED: polling loop already active")
+            LogBuffer.add('W', TAG, "POLL_LOOP_IGNORED: polling loop already active")
+            return
+        }
         pollingJob = serviceScope.launch {
             while (isActive) {
                 if (isMarketOpen()) {
@@ -285,7 +303,11 @@ class MarketWatchService : Service() {
                 }
                 
                 // WS5: Read poll delay dynamically (default 5m)
-                val pollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
+                val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
+                val pollIntervalMins = if (configuredPollIntervalMins > 0) configuredPollIntervalMins else 5
+                if (configuredPollIntervalMins <= 0) {
+                    LogBuffer.add('W', TAG, "POLL_INTERVAL_INVALID: $configuredPollIntervalMins, using 5")
+                }
                 delay(pollIntervalMins * 60 * 1000L)
             }
         }
@@ -301,91 +323,100 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun performPoll(token: String) {
-        val pollCount = nextPollNumberForToday()
-        Log.d(TAG, "POLL_START: performPoll() entered")
-        LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
-        
-        // C4: Dynamically compute next Thursday if expiry is missing
-        val nextThu = getNextThursday()
-        val bnfExpiry = prefs.getString("expiry_bnf", nextThu) ?: nextThu
-        
-        // Expiry Rollover check
-        val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
-        val today = sdfUTC.format(Date())
-        
-        if (bnfExpiry < today) {
-            Log.w(TAG, "POLL_SKIP: Expiry passed: $bnfExpiry < $today")
-            NotificationHelper.send(this, "⚠️ Expiry passed", "Poll skipped. Open app to refresh expiry dates.", "info")
+        if (!pollInProgress.compareAndSet(false, true)) {
+            Log.w(TAG, "POLL_SKIPPED_OVERLAP: poll already running")
+            LogBuffer.add('W', TAG, "POLL_SKIPPED_OVERLAP: poll already running")
             return
         }
+        try {
+            val pollCount = nextPollNumberForToday()
+            Log.d(TAG, "POLL_START: performPoll() entered")
+            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
 
-        updateForegroundNotification("Polling Market", "Fetching Quotes...")
+            // C4: Dynamically compute next Thursday if expiry is missing
+            val nextThu = getNextThursday()
+            val bnfExpiry = prefs.getString("expiry_bnf", nextThu) ?: nextThu
 
-        // Step 1: Fetch Spot Prices
-        Log.d(TAG, "POLL_STEP1: Fetching spot prices")
-        val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
-        val quotesJson = fetchSync(quotesUrl, token)
-        if (quotesJson == null) {
-            Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
-            return
-        }
-        
-        // Step 2: Fetch BNF chain
-        val bnfStocks = BNF_STOCKS.joinToString(",") { it.requestKey }
-        Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
-        val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
-        val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
-        val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
-        
-        val bnfChainJson = fetchSync(bnfUrl, token)
-        val bnfStocksJson = fetchSync(bnfStocksUrl, token)
-        LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
-        if (bnfStocksJson != null) {
-            val breadthData = bnfStocksJson.optJSONObject("data")
-            val breadthKeys = mutableListOf<String>()
-            val breadthKeyIter = breadthData?.keys()
-            while (breadthKeyIter != null && breadthKeyIter.hasNext() && breadthKeys.size < 5) {
-                breadthKeys.add(breadthKeyIter.next())
+            // Expiry Rollover check
+            val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
+            val today = sdfUTC.format(Date())
+
+            if (bnfExpiry < today) {
+                Log.w(TAG, "POLL_SKIP: Expiry passed: $bnfExpiry < $today")
+                NotificationHelper.send(this, "⚠️ Expiry passed", "Poll skipped. Open app to refresh expiry dates.", "info")
+                return
             }
-            val bodyPrefix = bnfStocksJson.toString().take(500)
-            LogBuffer.add(
-                'D',
-                TAG,
-                "BREADTH_HTTP_BODY: status=${bnfStocksJson.optString("status")} errors=${bnfStocksJson.opt("errors")} dataKeys=${breadthData?.length() ?: 0} first=${breadthKeys.joinToString("|")} bodyPrefix=$bodyPrefix"
-            )
-        } else {
-            LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
-        }
-        
-        if (bnfChainJson == null || bnfStocksJson == null) {
-            Log.e(TAG, "POLL_FAIL: BNF chain or stocks/futures fetch returned null")
-            return
-        }
-        
-        // Step 3: Fetch NF chain
-        Log.d(TAG, "POLL_STEP3: Fetching NF option chain (expiry=$nfExpiry)")
-        val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
-        val nfChainJson = fetchSync(nfUrl, token)
-        if (nfChainJson == null) {
-            Log.e(TAG, "POLL_FAIL: NF chain fetch returned null")
-            return
-        }
 
-        val data = quotesJson.getJSONObject("data")
-        val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
-        val nfSpot = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
-        val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
-        Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
+            updateForegroundNotification("Polling Market", "Fetching Quotes...")
 
-        // Step 5: Build poll object and save
-        Log.d(TAG, "POLL_STEP5: Saving poll object")
-        val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
-        savePoll(pollObj)
-        LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
+            // Step 1: Fetch Spot Prices
+            Log.d(TAG, "POLL_STEP1: Fetching spot prices")
+            val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
+            val quotesJson = fetchSync(quotesUrl, token)
+            if (quotesJson == null) {
+                Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
+                return
+            }
 
-        // Step 6: Run Python Brain
-        Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-        runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
+            // Step 2: Fetch BNF chain
+            val bnfStocks = BNF_STOCKS.joinToString(",") { it.requestKey }
+            Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
+            val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
+            val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
+            val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
+
+            val bnfChainJson = fetchSync(bnfUrl, token)
+            val bnfStocksJson = fetchSync(bnfStocksUrl, token)
+            LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
+            if (bnfStocksJson != null) {
+                val breadthData = bnfStocksJson.optJSONObject("data")
+                val breadthKeys = mutableListOf<String>()
+                val breadthKeyIter = breadthData?.keys()
+                while (breadthKeyIter != null && breadthKeyIter.hasNext() && breadthKeys.size < 5) {
+                    breadthKeys.add(breadthKeyIter.next())
+                }
+                val bodyPrefix = bnfStocksJson.toString().take(500)
+                LogBuffer.add(
+                    'D',
+                    TAG,
+                    "BREADTH_HTTP_BODY: status=${bnfStocksJson.optString("status")} errors=${bnfStocksJson.opt("errors")} dataKeys=${breadthData?.length() ?: 0} first=${breadthKeys.joinToString("|")} bodyPrefix=$bodyPrefix"
+                )
+            } else {
+                LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
+            }
+
+            if (bnfChainJson == null || bnfStocksJson == null) {
+                Log.e(TAG, "POLL_FAIL: BNF chain or stocks/futures fetch returned null")
+                return
+            }
+
+            // Step 3: Fetch NF chain
+            Log.d(TAG, "POLL_STEP3: Fetching NF option chain (expiry=$nfExpiry)")
+            val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
+            val nfChainJson = fetchSync(nfUrl, token)
+            if (nfChainJson == null) {
+                Log.e(TAG, "POLL_FAIL: NF chain fetch returned null")
+                return
+            }
+
+            val data = quotesJson.getJSONObject("data")
+            val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
+            val nfSpot = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
+            val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
+            Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
+
+            // Step 5: Build poll object and save
+            Log.d(TAG, "POLL_STEP5: Saving poll object")
+            val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
+            savePoll(pollObj)
+            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
+
+            // Step 6: Run Python Brain
+            Log.d(TAG, "POLL_STEP6: Launching brain analysis")
+            runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
+        } finally {
+            pollInProgress.set(false)
+        }
     }
 
 
@@ -589,55 +620,57 @@ class MarketWatchService : Service() {
     }
 
     private fun savePoll(poll: JSONObject) {
-        val ist = TimeZone.getTimeZone("Asia/Kolkata")
-        val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
-        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
-        
-        var history = JSONArray(prefs.getString("poll_history", "[]"))
-        var pollCount = prefs.getInt("poll_count", 0)
+        synchronized(pollSaveLock) {
+            val ist = TimeZone.getTimeZone("Asia/Kolkata")
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
+            val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
 
-        // A1+A5: Daily Reset
-        if (lastPollDate != today) {
-            Log.i(TAG, "DAILY_RESET: New trading day detected ($today). Resetting history.")
-            history = JSONArray()
-            pollCount = 0
-            prefs.edit().putString("last_poll_date", today).apply()
-        }
-        
-        // Append new poll
-        history.put(poll)
-        pollCount++ // A5: Monotonic increment
-        
-        // Keep last 100 for memory
-        if (history.length() > 100) {
-            val trimmed = JSONArray()
-            for (i in (history.length() - 100) until history.length()) {
-                trimmed.put(history.get(i))
+            var history = JSONArray(prefs.getString("poll_history", "[]"))
+            var pollCount = prefs.getInt("poll_count", 0)
+
+            // A1+A5: Daily Reset
+            if (lastPollDate != today) {
+                Log.i(TAG, "DAILY_RESET: New trading day detected ($today). Resetting history.")
+                history = JSONArray()
+                pollCount = 0
             }
-            history = trimmed
-        }
 
-        prefs.edit().apply {
-            putString("latest_poll", poll.toString())
-            putString("poll_history", history.toString())
-            putString("last_poll_time", poll.getString("t"))
-            putInt("poll_count", pollCount)
-        }.apply()
-        
-        // GAP 12: Institutional Positioning
-        checkInstitutionalPositioning(poll)
+            // Append new poll
+            history.put(poll)
+            pollCount++ // A5: Monotonic increment
 
-        // GAP 6: Upsert to Supabase every 3rd poll
-        if (pollCount > 0 && pollCount % 3 == 0) {
-            serviceScope.launch(Dispatchers.IO) {
-                SupabaseClient.upsertPollHistory(todayIstDate(), history)
+            // Keep last 100 for memory
+            if (history.length() > 100) {
+                val trimmed = JSONArray()
+                for (i in (history.length() - 100) until history.length()) {
+                    trimmed.put(history.get(i))
+                }
+                history = trimmed
             }
-        }
 
-        updateForegroundNotification(
-            "Watching Market",
-            "BNF: ${poll.getDouble("bnf")} | NF: ${poll.getDouble("nf")} | VIX: ${poll.getDouble("vix")}"
-        )
+            prefs.edit().apply {
+                putString("last_poll_date", today)
+                putString("latest_poll", poll.toString())
+                putString("poll_history", history.toString())
+                putString("last_poll_time", poll.getString("t"))
+                putInt("poll_count", pollCount)
+            }.commit()
+
+            // GAP 12: Institutional Positioning
+            checkInstitutionalPositioning(poll)
+
+            // GAP 6: Upsert to Supabase every 3rd poll
+            if (pollCount > 0 && pollCount % 3 == 0) {
+                serviceScope.launch(Dispatchers.IO) {
+                    SupabaseClient.upsertPollHistory(todayIstDate(), history)
+                }
+            }
+
+            updateForegroundNotification(
+                "Watching Market",
+                "BNF: ${poll.getDouble("bnf")} | NF: ${poll.getDouble("nf")} | VIX: ${poll.getDouble("vix")}"
+            )
+        }
     }
 
     private fun checkInstitutionalPositioning(poll: JSONObject) {
