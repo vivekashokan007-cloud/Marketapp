@@ -265,7 +265,11 @@ class MarketWatchService : Service() {
         val monthStr = SimpleDateFormat("MMM", Locale.US).format(targetMonthCal.time).uppercase()
         val yearShort = SimpleDateFormat("yy", Locale.US).format(targetMonthCal.time)
         
-        val symbol = if (index == "NF") "NIFTY" else "BANKNIFTY"
+        val normalized = index.trim().uppercase(Locale.US)
+        val symbol = when (normalized) {
+            "NF", "NIFTY" -> "NIFTY"
+            else -> "BANKNIFTY"
+        }
         return "NSE_FO|$symbol$yearShort$monthStr" + "FUT"
     }
 
@@ -463,6 +467,31 @@ class MarketWatchService : Service() {
             if (quote?.optString("instrument_token") == requestKey) return quote
         }
         return null
+    }
+
+    private fun quoteLtp(quote: JSONObject?): Double {
+        if (quote == null) return 0.0
+        val directLast = quote.optDouble("last_price", 0.0)
+        if (directLast > 0.0) return directLast
+        val directLtp = quote.optDouble("ltp", 0.0)
+        if (directLtp > 0.0) return directLtp
+        val ltpc = quote.optJSONObject("ltpc")
+        val ltpcLtp = ltpc?.optDouble("ltp", 0.0) ?: 0.0
+        if (ltpcLtp > 0.0) return ltpcLtp
+        return 0.0
+    }
+
+    private fun quoteClose(quote: JSONObject?): Double {
+        if (quote == null) return 0.0
+        val ohlcClose = quote.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
+        if (ohlcClose > 0.0) return ohlcClose
+        val prevOhlcClose = quote.optJSONObject("prev_ohlc")?.optDouble("close", 0.0) ?: 0.0
+        if (prevOhlcClose > 0.0) return prevOhlcClose
+        val closePrice = quote.optDouble("close_price", 0.0)
+        if (closePrice > 0.0) return closePrice
+        val ltpcCp = quote.optJSONObject("ltpc")?.optDouble("cp", 0.0) ?: 0.0
+        if (ltpcCp > 0.0) return ltpcCp
+        return 0.0
     }
 
     private fun extractLtpMap(chainJson: JSONObject): JSONObject {
@@ -721,8 +750,8 @@ class MarketWatchService : Service() {
             
             for (stock in BNF_STOCKS) {
                 val stockData = findQuoteByInstrument(data, stock.requestKey, stock.responseKey)
-                val ltp = stockData?.optDouble("last_price", 0.0) ?: 0.0
-                val close = stockData?.optJSONObject("ohlc")?.optDouble("close", 0.0) ?: 0.0
+                val ltp = quoteLtp(stockData)
+                val close = quoteClose(stockData)
                 val change = if (close > 0) (ltp - close) else 0.0
                 val pctChange = if (close > 0) (change / close * 100.0) else 0.0
                 LogBuffer.add(
