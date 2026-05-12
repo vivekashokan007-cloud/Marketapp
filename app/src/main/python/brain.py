@@ -4969,8 +4969,10 @@ def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
         allowed = [] if is_strong else ['BULL_PUT']
         blocked = ['BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'DOUBLE_DEBIT']
     else:  # NEUTRAL + low IV
-        primary = ['DOUBLE_DEBIT']
-        allowed = ['IRON_CONDOR']
+        # DOUBLE_DEBIT is not built by the live candidate generator.
+        # Use the buildable neutral premium structure as the primary lane.
+        primary = ['IRON_CONDOR']
+        allowed = ['BEAR_CALL', 'BULL_PUT']
         blocked = ['BEAR_PUT', 'BULL_CALL', 'BEAR_CALL', 'BULL_PUT']
 
     # VERY HIGH VIX override — debit co-PRIMARY (backtest: VIX≥24 debit 91.7%)
@@ -4986,12 +4988,15 @@ def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
                 if s not in allowed: allowed.append(s)
             blocked = [s for s in blocked if s not in ('BEAR_PUT', 'BULL_CALL')]
 
-    # Range detection override — IB/IC default (100% vs 47% directional)
-    if range_detected and iv_high:
+    # Range detection override — IB/IC first, regardless of IV bucket.
+    if range_detected:
         primary = ['IRON_BUTTERFLY', 'IRON_CONDOR']
-        if b == 'BEAR': allowed = ['BEAR_CALL']
-        elif b == 'BULL': allowed = ['BULL_PUT']
-        else: allowed = []
+        if b == 'BEAR':
+            allowed = ['BEAR_CALL', 'BULL_PUT']
+        elif b == 'BULL':
+            allowed = ['BULL_PUT', 'BEAR_CALL']
+        else:
+            allowed = ['BEAR_CALL', 'BULL_PUT']
         blocked = [s for s in blocked if s not in ('IRON_BUTTERFLY', 'IRON_CONDOR')]
 
     # IB blocked by default (margin concern) unless range override
@@ -6110,6 +6115,7 @@ def generate_candidates_py(ctx, effective_bias):
     capital = ctx.get('capital', 250000)
     trade_mode = ctx.get('tradeMode', 'intraday')
     allowed = _varsity_py(bias, iv_pctl, vix)
+    range_detected = (ctx.get('rangeSigma') or 999) < 0.3
 
     candidates = []
     for idx in ['NF', 'BNF']:
@@ -6140,7 +6146,8 @@ def generate_candidates_py(ctx, effective_bias):
             if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and trade_mode == 'swing' and (dte or 0) > 2:
                 continue
             forces = _forces_py(stype, bias, iv_pctl)
-            if forces['aligned'] < 1: continue
+            if forces['aligned'] < 1 and not (range_detected and stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')):
+                continue
             for width in widths:
                 c = _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot,
                                    daily_sig, idx, expiry, dte, forces, capital, chain)
@@ -6166,6 +6173,23 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
     if len(polls) < 3:
+        # Do not return an empty stub for low-history sessions. Emit an explicit
+        # WAIT verdict so UI and logs can explain why strategy generation is empty.
+        result["verdict"] = {
+            "action": "WAIT",
+            "strategy": None,
+            "direction": "NEUTRAL",
+            "confidence": 0,
+            "urgency": "WAIT — building poll history",
+            "reasoning": f"Insufficient history ({len(polls)} polls). Need >=3 for full analysis.",
+            "conflicts": [f"Insufficient poll history: {len(polls)}/3"],
+            "bull": 0.0,
+            "bear": 0.0,
+        }
+        result["generated_candidates"] = []
+        result["watchlist"] = []
+        result["candidateTrace"] = False
+
         # Even on early return, embed trace so consumer knows it ran
         if ctx.get('_trace'):
             result['_trace'] = ctx['_trace']

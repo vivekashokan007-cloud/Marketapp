@@ -16,6 +16,17 @@ class MarketRadarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         try {
+            val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
+            val now = System.currentTimeMillis()
+            val lastProcessStart = prefs.getLong("last_process_start_ms", 0L)
+            if (lastProcessStart > 0L) {
+                val gapMs = now - lastProcessStart
+                if (gapMs in 1 until 30_000L) {
+                    Log.w("MarketRadarApp", "BL_A_PROCESS_RESTART_GAP_MS=$gapMs")
+                    LogBuffer.add('W', "MarketRadarApp", "BL_A_PROCESS_RESTART_GAP_MS=$gapMs")
+                }
+            }
+            prefs.edit().putLong("last_process_start_ms", now).apply()
             Log.i("MarketRadarApp", "onCreate starting")
             
             // Initialize Python

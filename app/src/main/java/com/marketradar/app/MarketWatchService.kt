@@ -65,8 +65,18 @@ class MarketWatchService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        LogBuffer.add('I', "MarketWatchService", "Service started, pid=${android.os.Process.myPid()}")
         prefs = getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+        val now = System.currentTimeMillis()
+        val lastServiceCreate = prefs.getLong("last_service_create_ms", 0L)
+        if (lastServiceCreate > 0L) {
+            val gapMs = now - lastServiceCreate
+            if (gapMs in 1 until 30_000L) {
+                Log.w(TAG, "BL_A_SERVICE_RESTART_GAP_MS=$gapMs")
+                LogBuffer.add('W', TAG, "BL_A_SERVICE_RESTART_GAP_MS=$gapMs")
+            }
+        }
+        prefs.edit().putLong("last_service_create_ms", now).apply()
+        LogBuffer.add('I', "MarketWatchService", "Service started, pid=${android.os.Process.myPid()}")
         createNotificationChannel()
     }
 
@@ -106,6 +116,12 @@ class MarketWatchService : Service() {
         val now = System.currentTimeMillis()
         val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        val shortGapMs = now - lastSync
+        if (lastSync > 0L && shortGapMs in 1 until 30_000L) {
+            Log.w(TAG, "BL_A_BOOTSTRAP_SHORT_GAP_SKIP_MS=$shortGapMs")
+            LogBuffer.add('W', TAG, "BL_A_BOOTSTRAP_SHORT_GAP_SKIP_MS=$shortGapMs")
+            return
+        }
         
         // Only fetch if data is missing or older than 30 minutes
         val isStale = (now - lastSync) > 30 * 60 * 1000L
@@ -273,6 +289,36 @@ class MarketWatchService : Service() {
         return "NSE_FO|$symbol$yearShort$monthStr" + "FUT"
     }
 
+    private fun normalizeTradeMode(raw: String?): String {
+        val m = (raw ?: "").trim().lowercase(Locale.US)
+        return when (m) {
+            "intraday", "intra", "day" -> "intraday"
+            "swing", "carry", "positional" -> "swing"
+            else -> ""
+        }
+    }
+
+    private fun resolveTradeMode(ctxObj: JSONObject): String {
+        val fromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
+        if (fromCtx.isNotEmpty()) return fromCtx
+
+        val fromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
+        if (fromPrefs.isNotEmpty()) return fromPrefs
+
+        val morningInputStr = prefs.getString("morning_input", null)
+        if (!morningInputStr.isNullOrBlank()) {
+            try {
+                val morning = JSONObject(morningInputStr)
+                val fromMorning = normalizeTradeMode(
+                    morning.optString("tradeMode", morning.optString("mode", ""))
+                )
+                if (fromMorning.isNotEmpty()) return fromMorning
+            } catch (_: Exception) {
+            }
+        }
+        return "swing"
+    }
+
     private fun startPolling() {
         if (pollingJob?.isActive == true) {
             Log.w(TAG, "POLL_LOOP_IGNORED: polling loop already active")
@@ -280,6 +326,16 @@ class MarketWatchService : Service() {
             return
         }
         pollingJob = serviceScope.launch {
+            val lastSuccessfulPollMs = prefs.getLong("last_successful_poll_ms", 0L)
+            if (lastSuccessfulPollMs > 0L) {
+                val ageMs = System.currentTimeMillis() - lastSuccessfulPollMs
+                if (ageMs in 1 until 60_000L) {
+                    val waitMs = 60_000L - ageMs
+                    Log.w(TAG, "BL_A_FIRST_POLL_THROTTLE waitMs=$waitMs ageMs=$ageMs")
+                    LogBuffer.add('W', TAG, "BL_A_FIRST_POLL_THROTTLE waitMs=$waitMs ageMs=$ageMs")
+                    delay(waitMs)
+                }
+            }
             while (isActive) {
                 if (isMarketOpen()) {
                     // Re-read token dynamically on each poll cycle (Bug 1 Fix)
@@ -683,6 +739,7 @@ class MarketWatchService : Service() {
                 putString("poll_history", history.toString())
                 putString("last_poll_time", poll.getString("t"))
                 putInt("poll_count", pollCount)
+                putLong("last_successful_poll_ms", System.currentTimeMillis())
             }.commit()
 
             // GAP 12: Institutional Positioning
@@ -742,16 +799,32 @@ class MarketWatchService : Service() {
                 quoteKeys.add(keyIter.next())
             }
             LogBuffer.add('D', TAG, "BREADTH_KEYS: first=${quoteKeys.joinToString("|")}")
-            var advancementScore = 0.0
-            var weightedPct = 0.0
+            val configuredWeight = BNF_STOCKS.sumOf { it.weight }
+            var coveredWeight = 0.0
+            var advancingWeight = 0.0
+            var decliningWeight = 0.0
+            var neutralWeight = 0.0
+            var advancementScoreRaw = 0.0
+            var weightedPctRaw = 0.0
             var advancing = 0
             var declining = 0
+            var neutral = 0
+            var considered = 0
             val results = JSONArray()
             
             for (stock in BNF_STOCKS) {
                 val stockData = findQuoteByInstrument(data, stock.requestKey, stock.responseKey)
                 val ltp = quoteLtp(stockData)
                 val close = quoteClose(stockData)
+                if (ltp <= 0.0 || close <= 0.0) {
+                    LogBuffer.add(
+                        'W',
+                        TAG,
+                        "BREADTH_STOCK_MISSING: symbol=${stock.symbol} req=${stock.requestKey} hit=${stockData != null} ltp=$ltp close=$close"
+                    )
+                    continue
+                }
+
                 val change = if (close > 0) (ltp - close) else 0.0
                 val pctChange = if (close > 0) (change / close * 100.0) else 0.0
                 LogBuffer.add(
@@ -759,41 +832,69 @@ class MarketWatchService : Service() {
                     TAG,
                     "BREADTH_STOCK: symbol=${stock.symbol} req=${stock.requestKey} lookup=${stock.responseKey} hit=${stockData != null} ltp=$ltp close=$close pct=${Math.round(pctChange * 100.0) / 100.0}"
                 )
+                considered++
+                coveredWeight += stock.weight
                 
-                if (ltp > close && close > 0) {
+                if (ltp > close) {
                     advancing++
-                    advancementScore += stock.weight * 100.0
-                } else if (ltp < close && close > 0) {
+                    advancingWeight += stock.weight
+                    advancementScoreRaw += stock.weight * 100.0
+                } else if (ltp < close) {
                     declining++
-                    advancementScore += stock.weight * 0.0
+                    decliningWeight += stock.weight
+                    advancementScoreRaw += stock.weight * 0.0
                 } else {
-                    advancementScore += stock.weight * 50.0 // neutral
+                    neutral++
+                    neutralWeight += stock.weight
+                    advancementScoreRaw += stock.weight * 50.0
                 }
 
-                weightedPct += stock.weight * pctChange
+                weightedPctRaw += stock.weight * pctChange
                 results.put(JSONObject()
                     .put("name", stock.symbol)
                     .put("change", Math.round(change * 100.0) / 100.0)
                     .put("pctChange", Math.round(pctChange * 100.0) / 100.0))
             }
-            
-            result.put("pct", Math.round(advancementScore * 10.0) / 10.0)
-            result.put("weightedPct", Math.round(weightedPct * 100.0) / 100.0)
+
+            val normDivisor = if (coveredWeight > 0.0) coveredWeight else 1.0
+            val pctNormalized = if (coveredWeight > 0.0) advancementScoreRaw / normDivisor else 50.0
+            val weightedPctNormalized = if (coveredWeight > 0.0) weightedPctRaw / normDivisor else 0.0
+            val coveragePct = if (configuredWeight > 0.0) (coveredWeight / configuredWeight) * 100.0 else 0.0
+
+            result.put("pct", Math.round(pctNormalized * 10.0) / 10.0)
+            result.put("weightedPct", Math.round(weightedPctNormalized * 100.0) / 100.0)
+            result.put("pctRaw", Math.round(advancementScoreRaw * 10.0) / 10.0)
+            result.put("weightedPctRaw", Math.round(weightedPctRaw * 100.0) / 100.0)
+            result.put("coverageWeight", Math.round(coveredWeight * 1000.0) / 1000.0)
+            result.put("configuredWeight", Math.round(configuredWeight * 1000.0) / 1000.0)
+            result.put("coveragePct", Math.round(coveragePct * 10.0) / 10.0)
             result.put("advancing", advancing)
             result.put("declining", declining)
+            result.put("neutral", neutral)
+            result.put("considered", considered)
+            result.put("advancingWeight", Math.round(advancingWeight * 1000.0) / 1000.0)
+            result.put("decliningWeight", Math.round(decliningWeight * 1000.0) / 1000.0)
+            result.put("neutralWeight", Math.round(neutralWeight * 1000.0) / 1000.0)
             result.put("results", results)
             LogBuffer.add(
                 'D',
                 TAG,
-                "BREADTH_RESULT: pct=${result.optDouble("pct")} weighted=${result.optDouble("weightedPct")} adv=$advancing dec=$declining"
+                "BREADTH_RESULT: pct=${result.optDouble("pct")} weighted=${result.optDouble("weightedPct")} " +
+                    "coverage=${result.optDouble("coverageWeight")}/${result.optDouble("configuredWeight")} " +
+                    "adv=$advancing dec=$declining neu=$neutral considered=$considered"
             )
         } catch (e: Exception) {
             Log.e(TAG, "Breadth calc failed: ${e.message}")
             LogBuffer.add('E', TAG, "BREADTH_ERROR: ${e.message}")
-            result.put("pct", 39.6)
+            result.put("pct", 50.0)
                 .put("weightedPct", 0.0)
                 .put("advancing", 0)
                 .put("declining", 0)
+                .put("neutral", 0)
+                .put("considered", 0)
+                .put("coverageWeight", 0.0)
+                .put("configuredWeight", BNF_STOCKS.sumOf { it.weight })
+                .put("coveragePct", 0.0)
                 .put("results", JSONArray())
         }
         return result
@@ -1006,6 +1107,9 @@ class MarketWatchService : Service() {
 
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            val resolvedTradeMode = resolveTradeMode(ctxObj)
+            ctxObj.put("tradeMode", resolvedTradeMode)
+            prefs.edit().putString("trade_mode", resolvedTradeMode).apply()
             
             // C1: Calculate DTE (Days to Expiry) for brain context
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -1220,7 +1324,7 @@ class MarketWatchService : Service() {
                 "polls=${JSONArray(pollsJson).length()}, " +
                 "ivPercentile=${ctxObj.optDouble("ivPercentile")}, " +
                 "vix=${ctxObj.optDouble("vix")}, " +
-                "tradeMode=${ctxObj.optString("tradeMode")}"
+                "tradeMode=$resolvedTradeMode"
             )
             run {
                 val bnfCtx = ctxObj.optJSONObject("bnfChain")
@@ -1234,7 +1338,7 @@ class MarketWatchService : Service() {
                         "bnfExp=$bnfExpiryPref nfExp=$nfExpiryPref bnfDTE=$bnfDTE nfDTE=$nfDTE " +
                         "breadthPct=${bnfBreadth?.optDouble("pct")} breadthWeighted=${bnfBreadth?.optDouble("weightedPct")} " +
                         "breadthAdv=${bnfBreadth?.optInt("advancing")} breadthDec=${bnfBreadth?.optInt("declining")} " +
-                        "tradeMode=${ctxObj.optString("tradeMode")}"
+                        "tradeMode=$resolvedTradeMode"
                 )
                 LogBuffer.add('D', TAG, "BRAIN_CHAIN_SIZE: bnfBytes=${bnfChain.toString().length} nfBytes=${nfChain.toString().length}")
             }

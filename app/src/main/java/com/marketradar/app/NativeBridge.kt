@@ -178,15 +178,32 @@ class NativeBridge(private val context: Context) {
     fun setContext(json: String) {
         var finalJson = json
         try {
+            val ctxObj = JSONObject(finalJson)
+            val modeFromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
+            val modeFromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
+            val resolvedMode = when {
+                modeFromCtx.isNotEmpty() -> modeFromCtx
+                modeFromPrefs.isNotEmpty() -> modeFromPrefs
+                else -> "swing"
+            }
+            if (ctxObj.optString("tradeMode", "") != resolvedMode) {
+                ctxObj.put("tradeMode", resolvedMode)
+                finalJson = ctxObj.toString()
+            }
+            prefs.edit().putString("trade_mode", resolvedMode).commit()
+        } catch (e: Exception) {
+            Log.w("NativeBridge", "setContext tradeMode normalize failed: ${e.message}")
+        }
+        try {
             if (isMLModelReady()) {
-                val ctxObj = JSONObject(json)
+                val ctxObj = JSONObject(finalJson)
                 val candsLite = ctxObj.optJSONArray("candsLite")
                 if (candsLite != null && candsLite.length() > 0) {
                     val count = candsLite.length()
                     val firstId = candsLite.getJSONObject(0).optString("id", "")
                     
                     // b116/NB7: Enhanced change-guard (count + firstId + total length)
-                    val totalLen = json.length
+                    val totalLen = finalJson.length
                     if (count != lastScoredCandCount || firstId != lastScoredFirstCandId || totalLen != lastScoredTotalLen) {
                         for (i in 0 until count) {
                             val cand = candsLite.getJSONObject(i)
@@ -222,6 +239,17 @@ class NativeBridge(private val context: Context) {
         val lastCtx = prefs.getString("context", "")
         if (finalJson == lastCtx) return
         prefs.edit().putString("context", finalJson).commit()
+    }
+
+    @JavascriptInterface
+    fun setTradeMode(mode: String) {
+        val normalized = normalizeTradeMode(mode).ifEmpty { "swing" }
+        prefs.edit().putString("trade_mode", normalized).commit()
+    }
+
+    @JavascriptInterface
+    fun getTradeMode(): String {
+        return normalizeTradeMode(prefs.getString("trade_mode", "")).ifEmpty { "swing" }
     }
 
     @JavascriptInterface
@@ -464,6 +492,15 @@ class NativeBridge(private val context: Context) {
         .put("ok", false)
         .put("error", error)
         .toString()
+
+    private fun normalizeTradeMode(raw: String?): String {
+        val m = (raw ?: "").trim().lowercase(Locale.US)
+        return when (m) {
+            "intraday", "intra", "day" -> "intraday"
+            "swing", "carry", "positional" -> "swing"
+            else -> ""
+        }
+    }
 
     @JavascriptInterface
     fun getOpenTrades(): String {
