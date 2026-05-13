@@ -1138,7 +1138,7 @@ class MarketWatchService : Service() {
                     put("vega", gr?.optDouble("vega", 0.0) ?: 0.0)        // PHASE C STEP 7.0
                     put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
                 })
-                strikesObj.put(strike.toString(), strikeObj)
+                strikesObj.put(strike.toInt().toString(), strikeObj)
             }
 
             var nearTotalCallOI = 0.0
