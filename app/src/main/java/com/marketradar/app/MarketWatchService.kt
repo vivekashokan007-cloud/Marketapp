@@ -41,6 +41,7 @@ class MarketWatchService : Service() {
     private val serviceStartInProgress = AtomicBoolean(false)
     private val pollInProgress = AtomicBoolean(false)
     private val pollSaveLock = Any()
+    private var pollLoopIteration = 0L
 
     private data class BreadthStock(
         val symbol: String,
@@ -53,6 +54,10 @@ class MarketWatchService : Service() {
         const val CHANNEL_ID = "market_radar_service"
         const val NOTIFICATION_ID = 1001
         const val TAG = "MarketWatchService"
+        private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
+        private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
+        private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
+        private const val LEASE_STALE_MS = 10 * 60 * 1000L
         
         private val BNF_STOCKS = listOf(
             BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.285),
@@ -66,6 +71,7 @@ class MarketWatchService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+        Log.i(TAG, "BL_A_CHECK_ENTERED: site=Service.onCreate")
         val now = System.currentTimeMillis()
         val lastServiceCreate = prefs.getLong("last_service_create_ms", 0L)
         if (lastServiceCreate > 0L) {
@@ -75,14 +81,23 @@ class MarketWatchService : Service() {
                 LogBuffer.add('W', TAG, "BL_A_SERVICE_RESTART_GAP_MS=$gapMs")
             }
         }
-        prefs.edit().putLong("last_service_create_ms", now).apply()
+        prefs.edit().putLong("last_service_create_ms", now).commit()
         LogBuffer.add('I', "MarketWatchService", "Service started, pid=${android.os.Process.myPid()}")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
+            releaseLease()
             stopPolling()
+            return START_NOT_STICKY
+        }
+
+        val lease = claimLease()
+        Log.w(TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
+        LogBuffer.add('W', TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
+        if (!lease.claimed) {
+            stopSelf()
             return START_NOT_STICKY
         }
 
@@ -111,7 +126,69 @@ class MarketWatchService : Service() {
         return START_STICKY
     }
 
+    private data class LeaseResult(val claimed: Boolean, val reason: String, val gapMs: Long = 0L)
+
+    private fun claimLease(): LeaseResult {
+        val myPid = android.os.Process.myPid()
+        val now = System.currentTimeMillis()
+        val ownerPid = prefs.getInt(LEASE_OWNER_PID_KEY, 0)
+        val heartbeat = prefs.getLong(LEASE_HEARTBEAT_MS_KEY, 0L)
+        val gapMs = if (heartbeat > 0L) now - heartbeat else Long.MAX_VALUE
+
+        if (ownerPid == 0 || heartbeat == 0L) {
+            prefs.edit()
+                .putInt(LEASE_OWNER_PID_KEY, myPid)
+                .putLong(LEASE_STARTED_MS_KEY, now)
+                .putLong(LEASE_HEARTBEAT_MS_KEY, now)
+                .commit()
+            return LeaseResult(true, "fresh_claim")
+        }
+
+        if (ownerPid == myPid) {
+            prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, now).commit()
+            return LeaseResult(true, "self_refresh", gapMs)
+        }
+
+        if (!isPidAlive(ownerPid)) {
+            Log.w(TAG, "LEASE_STOLE_DEAD_PID: oldPid=$ownerPid oldHeartbeatAgeMs=$gapMs")
+            LogBuffer.add('W', TAG, "LEASE_STOLE_DEAD_PID: oldPid=$ownerPid oldHeartbeatAgeMs=$gapMs")
+            prefs.edit()
+                .putInt(LEASE_OWNER_PID_KEY, myPid)
+                .putLong(LEASE_STARTED_MS_KEY, now)
+                .putLong(LEASE_HEARTBEAT_MS_KEY, now)
+                .commit()
+            return LeaseResult(true, "stole_dead", gapMs)
+        }
+
+        if (gapMs < LEASE_STALE_MS) {
+            Log.w(TAG, "LEASE_REJECTED_LIVE_OWNER: ownerPid=$ownerPid heartbeatAgeMs=$gapMs")
+            LogBuffer.add('W', TAG, "LEASE_REJECTED_LIVE_OWNER: ownerPid=$ownerPid heartbeatAgeMs=$gapMs")
+            return LeaseResult(false, "active_owner_pid_$ownerPid", gapMs)
+        }
+
+        prefs.edit()
+            .putInt(LEASE_OWNER_PID_KEY, myPid)
+            .putLong(LEASE_STARTED_MS_KEY, now)
+            .putLong(LEASE_HEARTBEAT_MS_KEY, now)
+            .commit()
+        return LeaseResult(true, "stole_stale", gapMs)
+    }
+
+    private fun isPidAlive(pid: Int): Boolean {
+        if (pid <= 0 || pid == android.os.Process.myPid()) return false
+        return File("/proc/$pid").exists()
+    }
+
+    private fun releaseLease() {
+        prefs.edit()
+            .remove(LEASE_OWNER_PID_KEY)
+            .remove(LEASE_STARTED_MS_KEY)
+            .remove(LEASE_HEARTBEAT_MS_KEY)
+            .commit()
+    }
+
     private suspend fun bootstrapFromSupabase() {
+        Log.i(TAG, "BL_A_CHECK_ENTERED: site=bootstrapFromSupabase")
         val lastSync = prefs.getLong("last_bootstrap_time", 0L)
         val now = System.currentTimeMillis()
         val today = todayIstDate()
@@ -197,7 +274,7 @@ class MarketWatchService : Service() {
                 val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}"
                 Log.d(TAG, historyLoadedLog)
 
-                prefs.edit().putLong("last_bootstrap_time", now).apply()
+                prefs.edit().putLong("last_bootstrap_time", now).commit()
                 Log.d(TAG, "Bootstrap complete")
             } catch (e: Exception) {
                 Log.e(TAG, "Bootstrap failed: ${e.message}")
@@ -337,6 +414,13 @@ class MarketWatchService : Service() {
                 }
             }
             while (isActive) {
+                pollLoopIteration += 1
+                val now = System.currentTimeMillis()
+                val sinceLast = prefs.getLong("last_successful_poll_ms", 0L).let { if (it > 0L) now - it else -1L }
+                val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
+                val pollIntervalMins = if (configuredPollIntervalMins > 0) configuredPollIntervalMins else 5
+                Log.d(TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration sinceLastMs=$sinceLast delayMins=$pollIntervalMins")
+                LogBuffer.add('D', TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration sinceLastMs=$sinceLast delayMins=$pollIntervalMins")
                 if (isMarketOpen()) {
                     // Re-read token dynamically on each poll cycle (Bug 1 Fix)
                     val appCtx = applicationContext
@@ -361,10 +445,8 @@ class MarketWatchService : Service() {
                     Log.d(TAG, "Market closed. Skipping poll.")
                     updateForegroundNotification("Market Closed", "Waiting for next session...")
                 }
-                
+
                 // WS5: Read poll delay dynamically (default 5m)
-                val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
-                val pollIntervalMins = if (configuredPollIntervalMins > 0) configuredPollIntervalMins else 5
                 if (configuredPollIntervalMins <= 0) {
                     LogBuffer.add('W', TAG, "POLL_INTERVAL_INVALID: $configuredPollIntervalMins, using 5")
                 }
@@ -375,6 +457,7 @@ class MarketWatchService : Service() {
 
     private fun stopPolling() {
         prefs.edit().putBoolean("service_running", false).commit() 
+        releaseLease()
         // WS27: Cancel job before stopping foreground to ensure no new notifications are triggered
         pollingJob?.cancel()
         serviceScope.cancel()
@@ -474,6 +557,10 @@ class MarketWatchService : Service() {
             // Step 6: Run Python Brain
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
             runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
+            val hbTs = System.currentTimeMillis()
+            prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
+            Log.d(TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
+            LogBuffer.add('D', TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
         } finally {
             pollInProgress.set(false)
         }

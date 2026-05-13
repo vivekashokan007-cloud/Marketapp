@@ -26,7 +26,7 @@ class MarketRadarApp : Application() {
                     LogBuffer.add('W', "MarketRadarApp", "BL_A_PROCESS_RESTART_GAP_MS=$gapMs")
                 }
             }
-            prefs.edit().putLong("last_process_start_ms", now).apply()
+            prefs.edit().putLong("last_process_start_ms", now).commit()
             Log.i("MarketRadarApp", "onCreate starting")
             
             // Initialize Python
