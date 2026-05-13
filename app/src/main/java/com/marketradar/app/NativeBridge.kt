@@ -28,6 +28,8 @@ class NativeBridge(private val context: Context) {
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient()
+    private val TAG = "NativeBridge"
+    private val startDebounceMs = 15000L
 
     init {
         clearStalePollStateIfNeeded()
@@ -38,6 +40,18 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun startMarketService() {
+        val now = System.currentTimeMillis()
+        val running = prefs.getBoolean("service_running", false)
+        val lastStartReq = prefs.getLong("last_start_req_ms", 0L)
+        val sinceLastReq = if (lastStartReq > 0L) now - lastStartReq else Long.MAX_VALUE
+        if (running && sinceLastReq in 0 until startDebounceMs) {
+            Log.w(TAG, "startMarketService debounced: running=$running sinceLastReqMs=$sinceLastReq")
+            LogBuffer.add('W', TAG, "startMarketService debounced: running=$running sinceLastReqMs=$sinceLastReq")
+            return
+        }
+        prefs.edit().putLong("last_start_req_ms", now).commit()
+        Log.i(TAG, "startMarketService request: running=$running sinceLastReqMs=$sinceLastReq")
+        LogBuffer.add('I', TAG, "startMarketService request: running=$running sinceLastReqMs=$sinceLastReq")
         val intent = Intent(context, MarketWatchService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent)
@@ -49,14 +63,25 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun stopMarketService() {
         try {
+            val now = System.currentTimeMillis()
+            val lastStopReq = prefs.getLong("last_stop_req_ms", 0L)
+            val sinceLastReq = if (lastStopReq > 0L) now - lastStopReq else Long.MAX_VALUE
+            if (sinceLastReq in 0 until 1500L) {
+                Log.w(TAG, "stopMarketService debounced: sinceLastReqMs=$sinceLastReq")
+                LogBuffer.add('W', TAG, "stopMarketService debounced: sinceLastReqMs=$sinceLastReq")
+                return
+            }
+            prefs.edit().putLong("last_stop_req_ms", now).commit()
             // NB1: Use stopService() instead of startService("STOP") to avoid background runtime exceptions
             val intent = Intent(context, MarketWatchService::class.java)
+            Log.i(TAG, "stopMarketService request")
+            LogBuffer.add('I', TAG, "stopMarketService request")
             context.stopService(intent)
             
             // Explicitly update running flag for immediate UI response
             prefs.edit().putBoolean("service_running", false).commit()
         } catch (e: Exception) {
-            Log.e("NativeBridge", "stopMarketService failed: ${e.message}")
+            Log.e(TAG, "stopMarketService failed: ${e.message}")
         }
     }
 
@@ -388,8 +413,6 @@ class NativeBridge(private val context: Context) {
             "{}"
         }
     }
-
-    private val TAG = "NativeBridge"
 
     private fun missingNumericFields(obj: JSONObject, fields: List<Pair<String, String>>): List<String> {
         return fields.mapNotNull { (key, label) ->

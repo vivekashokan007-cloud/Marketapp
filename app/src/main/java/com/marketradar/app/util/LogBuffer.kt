@@ -19,19 +19,22 @@ object LogBuffer {
 
     private val buffer = ConcurrentLinkedDeque<Entry>()
 
-    fun add(level: Char, tag: String, message: String) {
+    fun add(level: Char, tag: String, message: String, mirrorToLogcat: Boolean = true) {
         val now = System.currentTimeMillis()
         buffer.addFirst(Entry(now, level, tag, message))
         
-        // Mirror to system logcat for ADB visibility
-        when (level) {
-            'V' -> Log.v(tag, message)
-            'D' -> Log.d(tag, message)
-            'I' -> Log.i(tag, message)
-            'W' -> Log.w(tag, message)
-            'E' -> Log.e(tag, message)
-            'F' -> Log.wtf(tag, message)
-            else -> Log.i(tag, message)
+        // Mirror to system logcat for ADB visibility unless caller disables it.
+        // This is important for logcat ingestion paths to avoid feedback loops.
+        if (mirrorToLogcat) {
+            when (level) {
+                'V' -> Log.v(tag, message)
+                'D' -> Log.d(tag, message)
+                'I' -> Log.i(tag, message)
+                'W' -> Log.w(tag, message)
+                'E' -> Log.e(tag, message)
+                'F' -> Log.wtf(tag, message)
+                else -> Log.i(tag, message)
+            }
         }
 
         // Trim by count

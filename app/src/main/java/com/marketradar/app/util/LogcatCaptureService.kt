@@ -41,17 +41,26 @@ object LogcatCaptureService {
     private fun ingest(lines: List<String>) {
         // logcat -v time format: "MM-DD HH:MM:SS.mmm L/TAG  ( PID): message"
         val pattern = Regex("""^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEF])/([^(]+)\(\s*\d+\):\s*(.*)$""")
-        var foundLastSeen = (lastSeenSignature == null)
-        for (line in lines) {
-            val sig = line.take(120)  // signature for dedup
-            if (!foundLastSeen) {
-                if (sig == lastSeenSignature) foundLastSeen = true
-                continue
-            }
+        val startIndex = if (lastSeenSignature == null) {
+            -1
+        } else {
+            lines.indexOfLast { it.take(200) == lastSeenSignature }
+        }
+        val newLines = if (startIndex >= 0 && startIndex < lines.size - 1) {
+            lines.subList(startIndex + 1, lines.size)
+        } else if (startIndex == lines.size - 1) {
+            emptyList()
+        } else {
+            lines
+        }
+
+        for (line in newLines) {
             val m = pattern.matchEntire(line) ?: continue
             val (_, level, tag, msg) = m.destructured
-            LogBuffer.add(level[0], tag.trim(), msg)
+            // Do not mirror captured logcat lines back into logcat.
+            // Mirroring here creates self-amplifying feedback loops.
+            LogBuffer.add(level[0], tag.trim(), msg, mirrorToLogcat = false)
         }
-        if (lines.isNotEmpty()) lastSeenSignature = lines.last().take(120)
+        if (lines.isNotEmpty()) lastSeenSignature = lines.last().take(200)
     }
 }
