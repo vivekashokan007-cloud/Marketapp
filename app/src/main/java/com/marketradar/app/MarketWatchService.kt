@@ -450,7 +450,21 @@ class MarketWatchService : Service() {
                 if (configuredPollIntervalMins <= 0) {
                     LogBuffer.add('W', TAG, "POLL_INTERVAL_INVALID: $configuredPollIntervalMins, using 5")
                 }
-                delay(pollIntervalMins * 60 * 1000L)
+                val intervalMs = pollIntervalMins * 60 * 1000L
+                val lastSuccessAfterPoll = prefs.getLong("last_successful_poll_ms", 0L)
+                val elapsedSinceSuccess = if (lastSuccessAfterPoll > 0L) {
+                    System.currentTimeMillis() - lastSuccessAfterPoll
+                } else {
+                    0L
+                }
+                val waitMs = (intervalMs - elapsedSinceSuccess).coerceAtLeast(0L)
+                val sleepStart = SystemClock.elapsedRealtime()
+                delay(waitMs)
+                val actualSleepMs = SystemClock.elapsedRealtime() - sleepStart
+                if (actualSleepMs > waitMs + 60_000L) {
+                    Log.w(TAG, "POLL_SLEEP_DRIFT: expectedMs=$waitMs actualMs=$actualSleepMs overMs=${actualSleepMs - waitMs}")
+                    LogBuffer.add('W', TAG, "POLL_SLEEP_DRIFT: expectedMs=$waitMs actualMs=$actualSleepMs overMs=${actualSleepMs - waitMs}")
+                }
             }
         }
     }
@@ -1528,11 +1542,11 @@ class MarketWatchService : Service() {
                         val cand = generatedCands.getJSONObject(i)
                         val mlResult = scoreCandidate(cand, brainMod)
                         if (mlResult != null) {
-                            cand.put("p_ml", mlResult.optDouble("p_ml"))
+                            cand.put("p_ml", finiteDouble(mlResult, "p_ml", 0.0))
                             cand.put("mlAction", mlResult.optString("ml_action"))
-                            cand.put("mlEdge", mlResult.optDouble("ml_edge"))
+                            cand.put("mlEdge", finiteDouble(mlResult, "ml_edge", 0.0))
                             cand.put("mlOod", mlResult.optBoolean("ml_ood", false))
-                            cand.put("mlOodConf", mlResult.optDouble("ml_ood_conf", 1.0))
+                            cand.put("mlOodConf", finiteDouble(mlResult, "ml_ood_conf", 1.0))
                             cand.put("mlOodWarn", mlResult.optJSONArray("ml_ood_warn") ?: JSONArray())
                             cand.put("mlOodBlocked", mlResult.optBoolean("ml_ood_blocked", false))
                             cand.put("mlRegime", mlResult.optString("ml_regime", ""))
@@ -1805,6 +1819,12 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun finiteDouble(obj: JSONObject, key: String, fallback: Double): Double {
+        if (!obj.has(key) || obj.isNull(key)) return fallback
+        val value = obj.optDouble(key, fallback)
+        return if (value.isFinite()) value else fallback
     }
 
     override fun onDestroy() {
