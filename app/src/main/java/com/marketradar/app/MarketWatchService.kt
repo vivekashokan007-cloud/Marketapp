@@ -56,6 +56,7 @@ class MarketWatchService : Service() {
         const val TAG = "MarketWatchService"
         private const val ACTION_POLL_TICK = "com.marketradar.app.ACTION_POLL_TICK"
         private const val POLL_ALARM_REQ_CODE = 74051
+        private const val LAST_POLL_DISPATCH_MS_KEY = "last_poll_dispatch_ms"
         private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
@@ -438,7 +439,7 @@ class MarketWatchService : Service() {
                     if (currentToken.isNotEmpty()) {
                         acquirePartialWakeLock()
                         try {
-                            performPoll(currentToken)
+                            dispatchPollIfDue("loop", currentToken, pollIntervalMins * 60 * 1000L)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
                             LogBuffer.add('E', "MarketWatchService", "Poll #${nextPollNumberForToday()} FAILED: ${e.message}")
@@ -1869,14 +1870,6 @@ class MarketWatchService : Service() {
     private suspend fun maybeRunPollFromAlarm() {
         val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5).let { if (it > 0) it else 5 }
         val intervalMs = configuredPollIntervalMins * 60 * 1000L
-        val now = System.currentTimeMillis()
-        val lastSuccess = prefs.getLong("last_successful_poll_ms", 0L)
-        val elapsed = if (lastSuccess > 0L) now - lastSuccess else Long.MAX_VALUE
-        val minGapMs = (intervalMs - 30_000L).coerceAtLeast(60_000L)
-        if (elapsed < minGapMs) {
-            LogBuffer.add('D', TAG, "POLL_ALARM_SKIP: elapsedMs=$elapsed minGapMs=$minGapMs")
-            return
-        }
         if (!isMarketOpen()) {
             LogBuffer.add('D', TAG, "POLL_ALARM_SKIP: market_closed")
             return
@@ -1887,16 +1880,39 @@ class MarketWatchService : Service() {
             LogBuffer.add('W', TAG, "POLL_ALARM_SKIP: missing_token")
             return
         }
-        LogBuffer.add('I', TAG, "POLL_ALARM_TRIGGER: elapsedMs=$elapsed intervalMs=$intervalMs")
+        LogBuffer.add('I', TAG, "POLL_ALARM_TRIGGER: intervalMs=$intervalMs")
         acquirePartialWakeLock()
         try {
-            performPoll(token)
+            dispatchPollIfDue("alarm", token, intervalMs)
         } catch (e: Exception) {
             Log.e(TAG, "POLL_ALARM_FAIL: ${e.message}")
             LogBuffer.add('E', TAG, "POLL_ALARM_FAIL: ${e.message}")
         } finally {
             releaseWakeLock()
         }
+    }
+
+    private suspend fun dispatchPollIfDue(trigger: String, token: String, intervalMs: Long) {
+        val now = System.currentTimeMillis()
+        val lastSuccess = prefs.getLong("last_successful_poll_ms", 0L)
+        val elapsedSinceSuccess = if (lastSuccess > 0L) now - lastSuccess else Long.MAX_VALUE
+        val minGapMs = (intervalMs - 30_000L).coerceAtLeast(60_000L)
+        if (elapsedSinceSuccess < minGapMs) {
+            LogBuffer.add('D', TAG, "POLL_DISPATCH_SKIP[$trigger]: elapsedMs=$elapsedSinceSuccess minGapMs=$minGapMs")
+            return
+        }
+
+        val lastDispatch = prefs.getLong(LAST_POLL_DISPATCH_MS_KEY, 0L)
+        val sinceDispatch = if (lastDispatch > 0L) now - lastDispatch else Long.MAX_VALUE
+        val dispatchCooldownMs = 60_000L
+        if (sinceDispatch < dispatchCooldownMs) {
+            LogBuffer.add('D', TAG, "POLL_DISPATCH_DEDUP[$trigger]: sinceDispatchMs=$sinceDispatch")
+            return
+        }
+
+        prefs.edit().putLong(LAST_POLL_DISPATCH_MS_KEY, now).commit()
+        LogBuffer.add('I', TAG, "POLL_DISPATCH[$trigger]: elapsedMs=$elapsedSinceSuccess intervalMs=$intervalMs")
+        performPoll(token)
     }
 
     override fun onDestroy() {
