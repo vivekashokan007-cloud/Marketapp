@@ -54,6 +54,8 @@ class MarketWatchService : Service() {
         const val CHANNEL_ID = "market_radar_service"
         const val NOTIFICATION_ID = 1001
         const val TAG = "MarketWatchService"
+        private const val ACTION_POLL_TICK = "com.marketradar.app.ACTION_POLL_TICK"
+        private const val POLL_ALARM_REQ_CODE = 74051
         private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
@@ -88,6 +90,7 @@ class MarketWatchService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "STOP") {
+            cancelPollAlarm()
             releaseLease()
             stopPolling()
             return START_NOT_STICKY
@@ -103,6 +106,11 @@ class MarketWatchService : Service() {
 
         startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
+        ensurePollAlarmScheduled()
+
+        if (intent?.action == ACTION_POLL_TICK) {
+            serviceScope.launch { maybeRunPollFromAlarm() }
+        }
 
         if (pollingJob?.isActive == true || !serviceStartInProgress.compareAndSet(false, true)) {
             Log.w(TAG, "SERVICE_START_IGNORED: polling already active or startup in progress")
@@ -451,6 +459,7 @@ class MarketWatchService : Service() {
                     LogBuffer.add('W', TAG, "POLL_INTERVAL_INVALID: $configuredPollIntervalMins, using 5")
                 }
                 val intervalMs = pollIntervalMins * 60 * 1000L
+                ensurePollAlarmScheduled(intervalMs)
                 val lastSuccessAfterPoll = prefs.getLong("last_successful_poll_ms", 0L)
                 val elapsedSinceSuccess = if (lastSuccessAfterPoll > 0L) {
                     System.currentTimeMillis() - lastSuccessAfterPoll
@@ -471,6 +480,7 @@ class MarketWatchService : Service() {
 
     private fun stopPolling() {
         prefs.edit().putBoolean("service_running", false).commit() 
+        cancelPollAlarm()
         releaseLease()
         // WS27: Cancel job before stopping foreground to ensure no new notifications are triggered
         pollingJob?.cancel()
@@ -1825,6 +1835,68 @@ class MarketWatchService : Service() {
         if (!obj.has(key) || obj.isNull(key)) return fallback
         val value = obj.optDouble(key, fallback)
         return if (value.isFinite()) value else fallback
+    }
+
+    private fun pollAlarmIntent(): PendingIntent {
+        val alarmIntent = Intent(this, MarketWatchService::class.java).apply { action = ACTION_POLL_TICK }
+        return PendingIntent.getService(
+            this,
+            POLL_ALARM_REQ_CODE,
+            alarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun ensurePollAlarmScheduled(intervalMs: Long = 5 * 60 * 1000L) {
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            val triggerAt = SystemClock.elapsedRealtime() + intervalMs
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pollAlarmIntent())
+        } catch (e: Exception) {
+            Log.w(TAG, "POLL_ALARM_SCHEDULE_FAIL: ${e.message}")
+            LogBuffer.add('W', TAG, "POLL_ALARM_SCHEDULE_FAIL: ${e.message}")
+        }
+    }
+
+    private fun cancelPollAlarm() {
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            am.cancel(pollAlarmIntent())
+        } catch (_: Exception) {
+        }
+    }
+
+    private suspend fun maybeRunPollFromAlarm() {
+        val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5).let { if (it > 0) it else 5 }
+        val intervalMs = configuredPollIntervalMins * 60 * 1000L
+        val now = System.currentTimeMillis()
+        val lastSuccess = prefs.getLong("last_successful_poll_ms", 0L)
+        val elapsed = if (lastSuccess > 0L) now - lastSuccess else Long.MAX_VALUE
+        val minGapMs = (intervalMs - 30_000L).coerceAtLeast(60_000L)
+        if (elapsed < minGapMs) {
+            LogBuffer.add('D', TAG, "POLL_ALARM_SKIP: elapsedMs=$elapsed minGapMs=$minGapMs")
+            return
+        }
+        if (!isMarketOpen()) {
+            LogBuffer.add('D', TAG, "POLL_ALARM_SKIP: market_closed")
+            return
+        }
+        val token = applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            .getString("auth_token", "") ?: ""
+        if (token.isBlank()) {
+            LogBuffer.add('W', TAG, "POLL_ALARM_SKIP: missing_token")
+            return
+        }
+        LogBuffer.add('I', TAG, "POLL_ALARM_TRIGGER: elapsedMs=$elapsed intervalMs=$intervalMs")
+        acquirePartialWakeLock()
+        try {
+            performPoll(token)
+        } catch (e: Exception) {
+            Log.e(TAG, "POLL_ALARM_FAIL: ${e.message}")
+            LogBuffer.add('E', TAG, "POLL_ALARM_FAIL: ${e.message}")
+        } finally {
+            releaseWakeLock()
+        }
     }
 
     override fun onDestroy() {
