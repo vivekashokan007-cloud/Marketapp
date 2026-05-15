@@ -1425,7 +1425,8 @@ def fii_short_trend(ctx):
     all_down = all(c < 0 for c in changes)
     all_up = all(c > 0 for c in changes)
 
-    vals_str = '→'.join(f'{v:.1f}' for v in vals)
+    # Show oldest -> newest in label (human-readable trend direction)
+    vals_str = '→'.join(f'{v:.1f}' for v in reversed(vals))
 
     if all_down:
         trend = 'COVERING'
@@ -1892,11 +1893,17 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     morning_bias = ctx.get('morningBias') or {}
     morning_net = morning_bias.get('net', 0)
     poll_count = len(polls)
-    TOTAL_SIGNALS = 7
+    TOTAL_SIGNALS = 8
     
-    # ═══ MORNING WEIGHT DECAY ═══
-    # 100% at poll 0, decays 5%/poll, floor 20%. Sweet spot ~poll 16-20.
-    morning_weight = max(0.20, 1.0 - poll_count * 0.05)
+    # ═══ MORNING WEIGHT DECAY (time-aware) ═══
+    # Keep morning thesis dominant until entry window (~11:00 IST), then decay.
+    mins_since_open = ctx.get('mins_since_open', 0) or 0
+    if mins_since_open <= 105:      # 9:15 -> 11:00
+        morning_weight = max(0.60, 1.0 - poll_count * 0.03)
+    elif mins_since_open <= 165:    # 11:00 -> 12:00
+        morning_weight = max(0.45, 0.75 - (mins_since_open - 105) * 0.005)
+    else:                           # post-noon
+        morning_weight = max(0.25, 0.45 - (mins_since_open - 165) * 0.002)
     intraday_weight = 1.0 - morning_weight
     
     # ═══ FIRST 15 MINUTES SUPPRESSION ═══
@@ -1998,7 +2005,15 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     elif breadth_pct < 45: signals.append(-1)
     else: signals.append(0)
     
-    # --- 7. Regime (range pushes opposite to morning direction) ---
+    # --- 7. NF50 breadth (macro market breadth) ---
+    nf50_pct = (ctx.get('nf50Breadth') or {}).get('pct', 50)
+    if nf50_pct > 65: signals.append(2); drift_reasons.append(f"NF50 {nf50_pct:.0f}%")
+    elif nf50_pct > 55: signals.append(1)
+    elif nf50_pct < 35: signals.append(-2); drift_reasons.append(f"NF50 {nf50_pct:.0f}%")
+    elif nf50_pct < 45: signals.append(-1)
+    else: signals.append(0)
+    
+    # --- 8. Regime (range pushes opposite to morning direction) ---
     regime_type = regime.get('type', 'unknown') if regime else 'unknown'
     regime_dir = regime.get('direction', 0) if regime else 0
     if regime_type == 'range':
@@ -2031,6 +2046,9 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     intraday_normalized = (intraday_net / max_possible_intraday) * 3
     
     effective_net = morning_net * morning_weight + intraday_normalized * intraday_weight
+    # Hysteresis: avoid flip-flop around neutral unless opposing evidence is meaningful.
+    if poll_count < 30 and abs(effective_net) < 1.0 and abs(morning_net) >= 1:
+        effective_net = morning_net * 0.9
     
     # Classify
     if effective_net >= 2: bias, strength = 'BULL', 'STRONG'

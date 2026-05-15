@@ -62,14 +62,17 @@ class MarketWatchService : Service() {
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
         
-        private val BNF_STOCKS = listOf(
-            BreadthStock("KOTAKBANK", "NSE_EQ|INE237A01028", "NSE_EQ:KOTAKBANK", 0.0781),
+        private const val KOTAK_KEY_PREF = "kotak_instrument_key"
+        private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
+        private const val KOTAK_KEY_LEGACY = "NSE_EQ|INE237A01028"
+
+        private val BNF_STOCKS_BASE = listOf(
             BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.2522),
             BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.2042),
             BreadthStock("ICICIBANK", "NSE_EQ|INE009A01021", "NSE_EQ:ICICIBANK", 0.1977),
             BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.0865)
         )
-        private val NF50_CONSTITUENTS = listOf(
+        private val NF50_CONSTITUENTS_BASE = listOf(
             "NSE_EQ|INE002A01018", "NSE_EQ|INE040A01034", "NSE_EQ|INE009A01021", "NSE_EQ|INE669E01016",
             "NSE_EQ|INE062A01020", "NSE_EQ|INE090A01021", "NSE_EQ|INE467B01029", "NSE_EQ|INE765G01017",
             "NSE_EQ|INE238A01034", "NSE_EQ|INE018A01030", "NSE_EQ|INE155A01022", "NSE_EQ|INE301A01014",
@@ -79,7 +82,7 @@ class MarketWatchService : Service() {
             "NSE_EQ|INE397D01024", "NSE_EQ|INE216A01030", "NSE_EQ|INE030A01027", "NSE_EQ|INE242A01010",
             "NSE_EQ|INE860A01027", "NSE_EQ|INE589A01014", "NSE_EQ|INE335Y01020", "NSE_EQ|INE129A01019",
             "NSE_EQ|INE239A01016", "NSE_EQ|INE160A01022", "NSE_EQ|INE721A01047", "NSE_EQ|INE117A01022",
-            "NSE_EQ|INE200M01039", "NSE_EQ|INE114A01011", "NSE_EQ|INE211B01039", "NSE_EQ|INE237A01028",
+            "NSE_EQ|INE200M01039", "NSE_EQ|INE114A01011", "NSE_EQ|INE211B01039",
             "NSE_EQ|INE070A01015", "NSE_EQ|INE356A01018", "NSE_EQ|INE752E01010", "NSE_EQ|INE522F01014",
             "NSE_EQ|INE742F01042", "NSE_EQ|INE758T01015", "NSE_EQ|INE191B01025", "NSE_EQ|INE020B01018",
             "NSE_EQ|INE406A01037", "NSE_EQ|INE090B01011"
@@ -102,6 +105,38 @@ class MarketWatchService : Service() {
         prefs.edit().putLong("last_service_create_ms", now).commit()
         LogBuffer.add('I', "MarketWatchService", "Service started, pid=${android.os.Process.myPid()}")
         createNotificationChannel()
+    }
+
+    private fun getCachedKotakKey(): String {
+        val cached = prefs.getString(KOTAK_KEY_PREF, KOTAK_KEY_CURRENT) ?: KOTAK_KEY_CURRENT
+        return if (cached.isNotBlank()) cached else KOTAK_KEY_CURRENT
+    }
+
+    private fun getBnfStocks(kotakKey: String = getCachedKotakKey()): List<BreadthStock> {
+        return listOf(BreadthStock("KOTAKBANK", kotakKey, "NSE_EQ:KOTAKBANK", 0.0781)) + BNF_STOCKS_BASE
+    }
+
+    private fun getNf50Constituents(kotakKey: String = getCachedKotakKey()): List<String> {
+        return NF50_CONSTITUENTS_BASE + listOf(kotakKey)
+    }
+
+    private suspend fun resolveKotakKey(token: String): String {
+        val candidates = listOf(getCachedKotakKey(), KOTAK_KEY_CURRENT, KOTAK_KEY_LEGACY).distinct()
+        for (candidate in candidates) {
+            try {
+                val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$candidate"
+                val json = fetchSync(url, token) ?: continue
+                val data = json.optJSONObject("data") ?: continue
+                val hit = findQuoteByInstrument(data, candidate, "NSE_EQ:KOTAKBANK")
+                if (hit != null) {
+                    prefs.edit().putString(KOTAK_KEY_PREF, candidate).apply()
+                    LogBuffer.add('I', TAG, "KOTAK_KEY_RESOLVED: $candidate")
+                    return candidate
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return getCachedKotakKey()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -542,7 +577,8 @@ class MarketWatchService : Service() {
             }
 
             // Step 2: Fetch BNF chain
-            val bnfStocks = BNF_STOCKS.joinToString(",") { it.requestKey }
+            val kotakKey = resolveKotakKey(token)
+            val bnfStocks = getBnfStocks(kotakKey).joinToString(",") { it.requestKey }
             Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
             val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
             val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
@@ -552,6 +588,35 @@ class MarketWatchService : Service() {
             val bnfStocksJson = fetchSync(bnfStocksUrl, token)
             LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
             if (bnfStocksJson != null) {
+                // Upstox intermittently drops KOTAKBANK in batch response; retry single key and merge.
+                try {
+                    val breadthData = bnfStocksJson.optJSONObject("data")
+                    val kotakPresent = breadthData?.optJSONObject(kotakKey) != null ||
+                        breadthData?.optJSONObject(kotakKey.replace("|", ":")) != null
+                    if (!kotakPresent) {
+                        val retryKey = if (kotakKey == KOTAK_KEY_CURRENT) KOTAK_KEY_LEGACY else KOTAK_KEY_CURRENT
+                        val kotakUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$kotakKey,$retryKey"
+                        val kotakJson = fetchSync(kotakUrl, token)
+                        val kotakData = kotakJson?.optJSONObject("data")
+                        if (kotakData != null && breadthData != null) {
+                            val mergedKotak = kotakData.optJSONObject(kotakKey)
+                                ?: kotakData.optJSONObject(kotakKey.replace("|", ":"))
+                                ?: kotakData.optJSONObject(retryKey)
+                                ?: kotakData.optJSONObject(retryKey.replace("|", ":"))
+                            if (mergedKotak != null) {
+                                breadthData.put(kotakKey, mergedKotak)
+                                LogBuffer.add('I', TAG, "BREADTH_KOTAK_RETRY_MERGED: key=$kotakKey")
+                            } else {
+                                LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_EMPTY: key=$kotakKey")
+                            }
+                        } else {
+                            LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_NULL: key=$kotakKey")
+                        }
+                    }
+                } catch (e: Exception) {
+                    LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_ERROR: ${e.message}")
+                }
+
                 val breadthData = bnfStocksJson.optJSONObject("data")
                 val breadthKeys = mutableListOf<String>()
                 val breadthKeyIter = breadthData?.keys()
@@ -956,7 +1021,8 @@ class MarketWatchService : Service() {
                 quoteKeys.add(keyIter.next())
             }
             LogBuffer.add('D', TAG, "BREADTH_KEYS: first=${quoteKeys.joinToString("|")}")
-            val configuredWeight = BNF_STOCKS.sumOf { it.weight }
+            val bnfStocks = getBnfStocks()
+            val configuredWeight = bnfStocks.sumOf { it.weight }
             var coveredWeight = 0.0
             var advancingWeight = 0.0
             var decliningWeight = 0.0
@@ -969,7 +1035,7 @@ class MarketWatchService : Service() {
             var considered = 0
             val results = JSONArray()
             
-            for (stock in BNF_STOCKS) {
+            for (stock in bnfStocks) {
                 val stockData = findQuoteByInstrument(data, stock.requestKey, stock.responseKey)
                 val ltp = quoteLtp(stockData)
                 val close = quotePrevCloseForBreadth(stockData)
@@ -1050,7 +1116,7 @@ class MarketWatchService : Service() {
                 .put("neutral", 0)
                 .put("considered", 0)
                 .put("coverageWeight", 0.0)
-                .put("configuredWeight", BNF_STOCKS.sumOf { it.weight })
+                .put("configuredWeight", getBnfStocks().sumOf { it.weight })
                 .put("coveragePct", 0.0)
                 .put("results", JSONArray())
         }
@@ -1059,7 +1125,8 @@ class MarketWatchService : Service() {
 
     private suspend fun fetchNf50Breadth(token: String): JSONObject {
         return try {
-            val keys = NF50_CONSTITUENTS.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }
+            val nf50Constituents = getNf50Constituents()
+            val keys = nf50Constituents.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }
             val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$keys"
             val response = fetchSync(url, token) ?: return defaultNf50Breadth()
             val data = response.optJSONObject("data") ?: return defaultNf50Breadth()
@@ -1069,7 +1136,7 @@ class MarketWatchService : Service() {
             var neutral = 0
             var considered = 0
 
-            for (key in NF50_CONSTITUENTS) {
+            for (key in nf50Constituents) {
                 val quote = findQuoteByInstrument(data, key)
                 val ltp = quoteLtp(quote)
                 val netChange = quote?.optDouble("net_change", Double.MIN_VALUE) ?: Double.MIN_VALUE
@@ -1084,8 +1151,8 @@ class MarketWatchService : Service() {
 
             val score = advancing * 100.0 + neutral * 50.0
             val pct = if (considered > 0) (score / considered).coerceIn(0.0, 100.0) else 50.0
-            val coverage = if (NF50_CONSTITUENTS.isNotEmpty()) {
-                considered.toDouble() / NF50_CONSTITUENTS.size.toDouble()
+            val coverage = if (nf50Constituents.isNotEmpty()) {
+                considered.toDouble() / nf50Constituents.size.toDouble()
             } else 0.0
 
             LogBuffer.add(

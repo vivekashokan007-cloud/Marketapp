@@ -456,6 +456,7 @@ class MainActivity : AppCompatActivity() {
                     setEveningClose: function(j) { return AndroidBridge.setEveningClose(j); },
                     setExpiries: function(bnf, nf) { AndroidBridge.setExpiries(bnf, nf); },
                     setContext: function(j) { AndroidBridge.setContext(j); },
+                    setTradeMode: function(mode) { AndroidBridge.setTradeMode(mode || "swing"); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },
                     
                     // Data Pull
@@ -478,6 +479,7 @@ class MainActivity : AppCompatActivity() {
                     getNfChain: function() { return AndroidBridge.getNfChain(); },
                     getBnfBreadth: function() { return AndroidBridge.getBnfBreadth(); },
                     getNf50Breadth: function() { return AndroidBridge.getNf50Breadth(); },
+                    getTradeMode: function() { return AndroidBridge.getTradeMode(); },
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
