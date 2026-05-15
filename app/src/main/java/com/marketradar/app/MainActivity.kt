@@ -457,6 +457,7 @@ class MainActivity : AppCompatActivity() {
                     setExpiries: function(bnf, nf) { AndroidBridge.setExpiries(bnf, nf); },
                     setContext: function(j) { AndroidBridge.setContext(j); },
                     setTradeMode: function(mode) { AndroidBridge.setTradeMode(mode || "swing"); },
+                    requestImmediatePoll: function() { AndroidBridge.requestImmediatePoll(); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },
                     
                     // Data Pull

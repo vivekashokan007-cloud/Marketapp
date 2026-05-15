@@ -61,6 +61,20 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun requestImmediatePoll() {
+        val intent = Intent(context, MarketWatchService::class.java).apply {
+            action = MarketWatchService.ACTION_FORCE_POLL
+        }
+        Log.i(TAG, "requestImmediatePoll")
+        LogBuffer.add('I', TAG, "requestImmediatePoll")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    @JavascriptInterface
     fun stopMarketService() {
         try {
             val now = System.currentTimeMillis()

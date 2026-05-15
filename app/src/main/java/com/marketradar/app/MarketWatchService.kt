@@ -55,6 +55,7 @@ class MarketWatchService : Service() {
         const val NOTIFICATION_ID = 1001
         const val TAG = "MarketWatchService"
         private const val ACTION_POLL_TICK = "com.marketradar.app.ACTION_POLL_TICK"
+        const val ACTION_FORCE_POLL = "com.marketradar.app.ACTION_FORCE_POLL"
         private const val POLL_ALARM_REQ_CODE = 74051
         private const val LAST_POLL_DISPATCH_MS_KEY = "last_poll_dispatch_ms"
         private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
@@ -161,6 +162,8 @@ class MarketWatchService : Service() {
 
         if (intent?.action == ACTION_POLL_TICK) {
             serviceScope.launch { maybeRunPollFromAlarm() }
+        } else if (intent?.action == ACTION_FORCE_POLL) {
+            serviceScope.launch { maybeRunForcedPoll() }
         }
 
         if (pollingJob?.isActive == true || !serviceStartInProgress.compareAndSet(false, true)) {
@@ -591,8 +594,9 @@ class MarketWatchService : Service() {
                 // Upstox intermittently drops KOTAKBANK in batch response; retry single key and merge.
                 try {
                     val breadthData = bnfStocksJson.optJSONObject("data")
-                    val kotakPresent = breadthData?.optJSONObject(kotakKey) != null ||
-                        breadthData?.optJSONObject(kotakKey.replace("|", ":")) != null
+                    val kotakPresent = breadthData?.let {
+                        findQuoteByInstrument(it, kotakKey, "NSE_EQ:KOTAKBANK") != null
+                    } ?: false
                     if (!kotakPresent) {
                         val retryKey = if (kotakKey == KOTAK_KEY_CURRENT) KOTAK_KEY_LEGACY else KOTAK_KEY_CURRENT
                         val kotakUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$kotakKey,$retryKey"
@@ -1229,21 +1233,27 @@ class MarketWatchService : Service() {
         return result
     }
 
-    private fun computeGapObject(ohlc: JSONObject, bnfSpot: Double): JSONObject {
+    private fun computeIndexGap(ohlc: JSONObject, pipeKey: String, colonKey: String): JSONObject {
         val gap = JSONObject()
         try {
-            val bnfOhlc = ohlc.getJSONObject("data").getJSONObject("NSE_INDEX:Nifty Bank").getJSONObject("ohlc")
-            val prevClose = bnfOhlc.getDouble("close")
-            val todayOpen = bnfOhlc.getDouble("open")
+            val data = ohlc.getJSONObject("data")
+            val indexOhlc = (data.optJSONObject(colonKey) ?: data.optJSONObject(pipeKey))
+                ?.getJSONObject("ohlc") ?: throw IllegalStateException("OHLC missing for $colonKey")
+            val prevClose = indexOhlc.getDouble("close")
+            val todayOpen = indexOhlc.getDouble("open")
+            val points = todayOpen - prevClose
             
-            val pct = (todayOpen - prevClose) / prevClose * 100.0
+            val pct = points / prevClose * 100.0
             val sigma = pct / 0.5 // Simplified: 1 sigma = 0.5%
             
             gap.put("type", if (pct > 0.3) "GAP_UP" else if (pct < -0.3) "GAP_DOWN" else "FLAT")
-            gap.put("pct", pct)
-            gap.put("sigma", sigma)
+            gap.put("points", Math.round(points))
+            gap.put("pct", Math.round(pct * 100.0) / 100.0)
+            gap.put("sigma", Math.round(sigma * 100.0) / 100.0)
+            gap.put("open", todayOpen)
+            gap.put("prevClose", prevClose)
         } catch (e: Exception) {
-            gap.put("type", "FLAT").put("pct", 0.0).put("sigma", 0.0)
+            gap.put("type", "FLAT").put("points", 0).put("pct", 0.0).put("sigma", 0.0)
         }
         return gap
     }
@@ -1522,12 +1532,19 @@ class MarketWatchService : Service() {
             val gapObj = JSONObject()
             if (ohlcStr != null) {
                 val ohlc = JSONObject(ohlcStr)
-                val calculatedGap = computeGapObject(ohlc, bnfSpot)
-                gapObj.put("type", calculatedGap.optString("type", "FLAT"))
-                gapObj.put("pct", calculatedGap.optDouble("pct", 0.0))
-                gapObj.put("sigma", calculatedGap.optDouble("sigma", 0.0))
+                val bnfGap = computeIndexGap(ohlc, "NSE_INDEX|Nifty Bank", "NSE_INDEX:Nifty Bank")
+                val nfGap = computeIndexGap(ohlc, "NSE_INDEX|Nifty 50", "NSE_INDEX:Nifty 50")
+                gapObj.put("bnf", bnfGap)
+                gapObj.put("nf", nfGap)
+                gapObj.put("type", bnfGap.optString("type", "FLAT"))
+                gapObj.put("points", bnfGap.optInt("points", 0))
+                gapObj.put("pct", bnfGap.optDouble("pct", 0.0))
+                gapObj.put("sigma", bnfGap.optDouble("sigma", 0.0))
             } else {
-                gapObj.put("type", "FLAT").put("pct", 0.0).put("sigma", 0.0)
+                val flatGap = JSONObject().put("type", "FLAT").put("points", 0).put("pct", 0.0).put("sigma", 0.0)
+                gapObj.put("bnf", flatGap)
+                gapObj.put("nf", JSONObject(flatGap.toString()))
+                gapObj.put("type", "FLAT").put("points", 0).put("pct", 0.0).put("sigma", 0.0)
             }
             ctxObj.put("gap", gapObj)
             
@@ -2066,6 +2083,29 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "POLL_ALARM_FAIL: ${e.message}")
             LogBuffer.add('E', TAG, "POLL_ALARM_FAIL: ${e.message}")
+        } finally {
+            releaseWakeLock()
+        }
+    }
+
+    private suspend fun maybeRunForcedPoll() {
+        if (!isMarketOpen()) {
+            LogBuffer.add('D', TAG, "POLL_FORCE_SKIP: market_closed")
+            return
+        }
+        val token = applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            .getString("auth_token", "") ?: ""
+        if (token.isBlank()) {
+            LogBuffer.add('W', TAG, "POLL_FORCE_SKIP: missing_token")
+            return
+        }
+        LogBuffer.add('I', TAG, "POLL_FORCE_TRIGGER")
+        acquirePartialWakeLock()
+        try {
+            performPoll(token)
+        } catch (e: Exception) {
+            Log.e(TAG, "POLL_FORCE_FAIL: ${e.message}")
+            LogBuffer.add('E', TAG, "POLL_FORCE_FAIL: ${e.message}")
         } finally {
             releaseWakeLock()
         }
