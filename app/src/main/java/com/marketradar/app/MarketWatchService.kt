@@ -63,11 +63,26 @@ class MarketWatchService : Service() {
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
         
         private val BNF_STOCKS = listOf(
-            BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.285),
-            BreadthStock("ICICIBANK", "NSE_EQ|INE090A01021", "NSE_EQ:ICICIBANK", 0.235),
-            BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.095),
-            BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.092),
-            BreadthStock("KOTAKBANK", "NSE_EQ|INE237A01028", "NSE_EQ:KOTAKBANK", 0.085)
+            BreadthStock("KOTAKBANK", "NSE_EQ|INE237A01028", "NSE_EQ:KOTAKBANK", 0.0781),
+            BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.2522),
+            BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.2042),
+            BreadthStock("ICICIBANK", "NSE_EQ|INE009A01021", "NSE_EQ:ICICIBANK", 0.1977),
+            BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.0865)
+        )
+        private val NF50_CONSTITUENTS = listOf(
+            "NSE_EQ|INE002A01018", "NSE_EQ|INE040A01034", "NSE_EQ|INE009A01021", "NSE_EQ|INE669E01016",
+            "NSE_EQ|INE062A01020", "NSE_EQ|INE090A01021", "NSE_EQ|INE467B01029", "NSE_EQ|INE765G01017",
+            "NSE_EQ|INE238A01034", "NSE_EQ|INE018A01030", "NSE_EQ|INE155A01022", "NSE_EQ|INE301A01014",
+            "NSE_EQ|INE721A01013", "NSE_EQ|INE101A01026", "NSE_EQ|INE361B01024", "NSE_EQ|INE881D01027",
+            "NSE_EQ|INE066A01021", "NSE_EQ|INE503A01015", "NSE_EQ|INE028A01039", "NSE_EQ|INE081A01020",
+            "NSE_EQ|INE245A01021", "NSE_EQ|INE031A01017", "NSE_EQ|INE532F01054", "NSE_EQ|INE001A01036",
+            "NSE_EQ|INE397D01024", "NSE_EQ|INE216A01030", "NSE_EQ|INE030A01027", "NSE_EQ|INE242A01010",
+            "NSE_EQ|INE860A01027", "NSE_EQ|INE589A01014", "NSE_EQ|INE335Y01020", "NSE_EQ|INE129A01019",
+            "NSE_EQ|INE239A01016", "NSE_EQ|INE160A01022", "NSE_EQ|INE721A01047", "NSE_EQ|INE117A01022",
+            "NSE_EQ|INE200M01039", "NSE_EQ|INE114A01011", "NSE_EQ|INE211B01039", "NSE_EQ|INE237A01028",
+            "NSE_EQ|INE070A01015", "NSE_EQ|INE356A01018", "NSE_EQ|INE752E01010", "NSE_EQ|INE522F01014",
+            "NSE_EQ|INE742F01042", "NSE_EQ|INE758T01015", "NSE_EQ|INE191B01025", "NSE_EQ|INE020B01018",
+            "NSE_EQ|INE406A01037", "NSE_EQ|INE090B01011"
         )
     }
 
@@ -581,7 +596,8 @@ class MarketWatchService : Service() {
 
             // Step 6: Run Python Brain
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-            runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson)
+            val nf50Breadth = fetchNf50Breadth(token)
+            runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson, nf50Breadth)
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
             Log.d(TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
@@ -628,13 +644,29 @@ class MarketWatchService : Service() {
         if (!responseKey.isNullOrBlank()) data.optJSONObject(responseKey)?.let { return it }
         data.optJSONObject(requestKey)?.let { return it }
         data.optJSONObject(requestKey.replace("|", ":"))?.let { return it }
+        val requestedSymbol = extractSymbolFromInstrumentKey(responseKey ?: requestKey)
         val keys = data.keys()
         while (keys.hasNext()) {
             val key = keys.next()
             val quote = data.optJSONObject(key)
             if (quote?.optString("instrument_token") == requestKey) return quote
+            if (!requestedSymbol.isNullOrBlank()) {
+                val keySymbol = extractSymbolFromInstrumentKey(key)
+                if (keySymbol.equals(requestedSymbol, ignoreCase = true)) return quote
+                val tradingSymbol = quote?.optString("trading_symbol", "") ?: ""
+                if (tradingSymbol.equals(requestedSymbol, ignoreCase = true)) return quote
+                val symbol = quote?.optString("symbol", "") ?: ""
+                if (symbol.equals(requestedSymbol, ignoreCase = true)) return quote
+            }
         }
         return null
+    }
+
+    private fun extractSymbolFromInstrumentKey(key: String?): String {
+        if (key.isNullOrBlank()) return ""
+        val normalized = key.trim()
+        val delimiter = if (normalized.contains(":")) ":" else "|"
+        return normalized.substringAfterLast(delimiter, "")
     }
 
     private fun quoteLtp(quote: JSONObject?): Double {
@@ -660,6 +692,19 @@ class MarketWatchService : Service() {
         val ltpcCp = quote.optJSONObject("ltpc")?.optDouble("cp", 0.0) ?: 0.0
         if (ltpcCp > 0.0) return ltpcCp
         return 0.0
+    }
+
+    private fun quotePrevCloseForBreadth(quote: JSONObject?): Double {
+        if (quote == null) return 0.0
+        val ltp = quoteLtp(quote)
+        val netChange = quote.optDouble("net_change", Double.MIN_VALUE)
+        if (ltp > 0.0 && netChange != Double.MIN_VALUE) {
+            val derived = ltp - netChange
+            if (derived > 0.0) return derived
+        }
+        val prevOhlcClose = quote.optJSONObject("prev_ohlc")?.optDouble("close", 0.0) ?: 0.0
+        if (prevOhlcClose > 0.0) return prevOhlcClose
+        return quoteClose(quote)
     }
 
     private fun extractLtpMap(chainJson: JSONObject): JSONObject {
@@ -927,7 +972,7 @@ class MarketWatchService : Service() {
             for (stock in BNF_STOCKS) {
                 val stockData = findQuoteByInstrument(data, stock.requestKey, stock.responseKey)
                 val ltp = quoteLtp(stockData)
-                val close = quoteClose(stockData)
+                val close = quotePrevCloseForBreadth(stockData)
                 if (ltp <= 0.0 || close <= 0.0) {
                     LogBuffer.add(
                         'W',
@@ -1010,6 +1055,70 @@ class MarketWatchService : Service() {
                 .put("results", JSONArray())
         }
         return result
+    }
+
+    private suspend fun fetchNf50Breadth(token: String): JSONObject {
+        return try {
+            val keys = NF50_CONSTITUENTS.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }
+            val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$keys"
+            val response = fetchSync(url, token) ?: return defaultNf50Breadth()
+            val data = response.optJSONObject("data") ?: return defaultNf50Breadth()
+
+            var advancing = 0
+            var declining = 0
+            var neutral = 0
+            var considered = 0
+
+            for (key in NF50_CONSTITUENTS) {
+                val quote = findQuoteByInstrument(data, key)
+                val ltp = quoteLtp(quote)
+                val netChange = quote?.optDouble("net_change", Double.MIN_VALUE) ?: Double.MIN_VALUE
+                if (ltp <= 0.0 || netChange == Double.MIN_VALUE) continue
+                considered++
+                when {
+                    netChange > 0.05 -> advancing++
+                    netChange < -0.05 -> declining++
+                    else -> neutral++
+                }
+            }
+
+            val score = advancing * 100.0 + neutral * 50.0
+            val pct = if (considered > 0) (score / considered).coerceIn(0.0, 100.0) else 50.0
+            val coverage = if (NF50_CONSTITUENTS.isNotEmpty()) {
+                considered.toDouble() / NF50_CONSTITUENTS.size.toDouble()
+            } else 0.0
+
+            LogBuffer.add(
+                'I',
+                TAG,
+                "NF50_BREADTH_RESULT: pct=${Math.round(pct * 10.0) / 10.0} adv=$advancing dec=$declining neu=$neutral considered=$considered coverage=${String.format(Locale.US, "%.3f", coverage)}"
+            )
+            JSONObject().apply {
+                val pctRounded = Math.round(pct * 10.0) / 10.0
+                put("pct", pctRounded)
+                put("advancing", advancing)
+                put("declining", declining)
+                put("neutral", neutral)
+                put("considered", considered)
+                put("coverage", coverage)
+                put("scaled", pctRounded)
+            }
+        } catch (e: Exception) {
+            LogBuffer.add('E', TAG, "NF50_BREADTH_ERROR: ${e.message}")
+            defaultNf50Breadth()
+        }
+    }
+
+    private fun defaultNf50Breadth(): JSONObject {
+        return JSONObject().apply {
+            put("pct", 50.0)
+            put("advancing", 0)
+            put("declining", 0)
+            put("neutral", 0)
+            put("considered", 0)
+            put("coverage", 0.0)
+            put("scaled", 50.0)
+        }
     }
 
     private fun calculateIvPercentile(vix: Double): Int {
@@ -1213,7 +1322,8 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
-                                  bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject) {
+                                         bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
+                                         nf50Breadth: JSONObject) {
         var brainSuccess = false
         var broadcastData: String? = null
 
@@ -1316,6 +1426,7 @@ class MarketWatchService : Service() {
             // Data Parity Overlays
             val breadth = calculateBreadth(stocksJson)
             ctxObj.put("bnfBreadth", breadth)
+            ctxObj.put("nf50Breadth", nf50Breadth)
             
             // Phase B: populate morning input + yesterday history for brain.py
             val morningInputStr = prefs.getString("morning_input", null)
@@ -1450,6 +1561,7 @@ class MarketWatchService : Service() {
                         "bnfExp=$bnfExpiryPref nfExp=$nfExpiryPref bnfDTE=$bnfDTE nfDTE=$nfDTE " +
                         "breadthPct=${bnfBreadth?.optDouble("pct")} breadthWeighted=${bnfBreadth?.optDouble("weightedPct")} " +
                         "breadthAdv=${bnfBreadth?.optInt("advancing")} breadthDec=${bnfBreadth?.optInt("declining")} " +
+                        "nf50Pct=${nf50Breadth.optDouble("pct")} nf50Adv=${nf50Breadth.optInt("advancing")} " +
                         "tradeMode=$resolvedTradeMode"
                 )
                 LogBuffer.add('D', TAG, "BRAIN_CHAIN_SIZE: bnfBytes=${bnfChain.toString().length} nfBytes=${nfChain.toString().length}")
