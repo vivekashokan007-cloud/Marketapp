@@ -1,0 +1,147 @@
+name: Market Radar Debug APK Validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'gradlew'
+      - '.github/workflows/debug-apk.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'build.gradle.kts'
+      - 'settings.gradle.kts'
+      - 'gradle/**'
+      - 'gradlew'
+      - '.github/workflows/debug-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  debug-apk:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: |
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null
+
+      - name: Validate Python brain mode behavior
+        run: |
+          PYTHONPATH=app/src/main/python python - <<'PY'
+          import json
+          import math
+          import brain
+
+          polls = [
+              {"time": "09:30", "bnf": 54000, "nf": 23700, "vix": 18.5, "pcr": 1.18, "nfPcr": 1.02, "breadthPct": 55},
+              {"time": "10:30", "bnf": 54030, "nf": 23720, "vix": 18.4, "pcr": 1.22, "nfPcr": 1.05, "breadthPct": 62},
+              {"time": "14:20", "bnf": 54011, "nf": 23705, "vix": 18.6, "pcr": 1.29, "nfPcr": 1.07, "breadthPct": 64},
+          ]
+
+          def option_prices(spot, strike, option_type):
+              intrinsic = max(0, spot - strike) if option_type == "CE" else max(0, strike - spot)
+              time_value = max(8, 140 * math.exp(-abs(strike - spot) / 500.0))
+              mid = intrinsic + time_value
+              return round(max(1, mid - 1.5), 2), round(max(1.5, mid + 1.5), 2)
+
+          def chain(spot, step, strikes):
+              data = {
+                  "atm": round(spot / step) * step,
+                  "allStrikes": strikes,
+                  "strikes": {},
+                  "atmIv": 18.5,
+                  "callWallStrike": max(strikes),
+                  "putWallStrike": min(strikes),
+              }
+              for strike in strikes:
+                  ce_bid, ce_ask = option_prices(spot, strike, "CE")
+                  pe_bid, pe_ask = option_prices(spot, strike, "PE")
+                  data["strikes"][str(strike)] = {
+                      "CE": {"oi": 100000, "bid": ce_bid, "ask": ce_ask, "ltp": (ce_bid + ce_ask) / 2, "iv": 18, "delta": 0.35, "pop": 0.62},
+                      "PE": {"oi": 100000, "bid": pe_bid, "ask": pe_ask, "ltp": (pe_bid + pe_ask) / 2, "iv": 18, "delta": -0.35, "pop": 0.62},
+                  }
+              return data
+
+          base = {
+              "capital": 250000,
+              "bnfSpot": 54011,
+              "nfSpot": 23705,
+              "vix": 18.6,
+              "rangeSigma": 0.13,
+              "bnfDTE": 11,
+              "nfDTE": 4,
+              "bnfExpiry": "2026-05-26",
+              "nfExpiry": "2026-05-19",
+              "bnfChain": chain(54011, 100, list(range(52600, 55601, 100))),
+              "nfChain": chain(23705, 50, list(range(22900, 24551, 50))),
+              "bnfBreadth": {"pct": 64.5, "weightedPct": 0.31, "advancing": 3, "declining": 2},
+              "nf50Breadth": {"pct": 44.7, "advancing": 21, "declining": 26, "neutral": 0, "considered": 47, "coverage": 0.94},
+              "gap": {
+                  "bnf": {"points": 56, "pct": 0.1, "sigma": 0.21, "type": "FLAT"},
+                  "nf": {"points": -49, "pct": -0.21, "sigma": -0.41, "type": "FLAT"},
+              },
+          }
+
+          summary = []
+          for mode in ("intraday", "swing"):
+              ctx = dict(base, tradeMode=mode)
+              out = json.loads(brain.analyze(json.dumps(polls), "[]", json.dumps(base), "[]", "[]", "{}", json.dumps(ctx)))
+              generated = out.get("generated_candidates") or []
+              counts = {}
+              for candidate in generated:
+                  counts[candidate.get("type")] = counts.get(candidate.get("type"), 0) + 1
+              summary.append({
+                  "mode": mode,
+                  "generated": len(generated),
+                  "watchlist": len(out.get("watchlist") or []),
+                  "iron_condor": counts.get("IRON_CONDOR", 0),
+                  "effective_bias": (out.get("effective_bias") or {}).get("bias"),
+                  "candidate_error": out.get("candidate_error"),
+              })
+
+          assert summary[0]["generated"] > 0, summary
+          assert summary[0]["iron_condor"] > 0, summary
+          assert summary[1]["iron_condor"] == 0, summary
+          print(json.dumps(summary, sort_keys=True))
+          PY
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-radar-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

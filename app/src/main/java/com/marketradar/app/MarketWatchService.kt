@@ -438,11 +438,13 @@ class MarketWatchService : Service() {
     }
 
     private fun resolveTradeMode(ctxObj: JSONObject): String {
-        val fromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
-        if (fromCtx.isNotEmpty()) return fromCtx
-
+        // User preference is the source of truth. The persisted context is a
+        // derived cache and can lag behind the UI after mode switches/rescans.
         val fromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
-        if (fromPrefs.isNotEmpty()) return fromPrefs
+        if (fromPrefs.isNotEmpty()) {
+            LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromPrefs source=prefs")
+            return fromPrefs
+        }
 
         val morningInputStr = prefs.getString("morning_input", null)
         if (!morningInputStr.isNullOrBlank()) {
@@ -451,10 +453,20 @@ class MarketWatchService : Service() {
                 val fromMorning = normalizeTradeMode(
                     morning.optString("tradeMode", morning.optString("mode", ""))
                 )
-                if (fromMorning.isNotEmpty()) return fromMorning
+                if (fromMorning.isNotEmpty()) {
+                    LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromMorning source=morning_input")
+                    return fromMorning
+                }
             } catch (_: Exception) {
             }
         }
+
+        val fromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
+        if (fromCtx.isNotEmpty()) {
+            LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromCtx source=context")
+            return fromCtx
+        }
+        LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=swing source=default")
         return "swing"
     }
 
@@ -1408,7 +1420,10 @@ class MarketWatchService : Service() {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
             val resolvedTradeMode = resolveTradeMode(ctxObj)
             ctxObj.put("tradeMode", resolvedTradeMode)
-            prefs.edit().putString("trade_mode", resolvedTradeMode).apply()
+            prefs.edit()
+                .putString("trade_mode", resolvedTradeMode)
+                .putString("context", ctxObj.toString())
+                .apply()
             
             // C1: Calculate DTE (Days to Expiry) for brain context
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)

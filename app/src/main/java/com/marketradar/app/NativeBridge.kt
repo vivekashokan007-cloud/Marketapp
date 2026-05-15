@@ -221,8 +221,8 @@ class NativeBridge(private val context: Context) {
             val modeFromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
             val modeFromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
             val resolvedMode = when {
-                modeFromCtx.isNotEmpty() -> modeFromCtx
                 modeFromPrefs.isNotEmpty() -> modeFromPrefs
+                modeFromCtx.isNotEmpty() -> modeFromCtx
                 else -> "swing"
             }
             if (ctxObj.optString("tradeMode", "") != resolvedMode) {
@@ -230,6 +230,7 @@ class NativeBridge(private val context: Context) {
                 finalJson = ctxObj.toString()
             }
             prefs.edit().putString("trade_mode", resolvedMode).commit()
+            LogBuffer.add('I', TAG, "TRADE_MODE_SET_CONTEXT: mode=$resolvedMode pref=${modeFromPrefs.ifEmpty { "none" }} ctx=${modeFromCtx.ifEmpty { "none" }}")
         } catch (e: Exception) {
             Log.w("NativeBridge", "setContext tradeMode normalize failed: ${e.message}")
         }
@@ -283,7 +284,16 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun setTradeMode(mode: String) {
         val normalized = normalizeTradeMode(mode).ifEmpty { "swing" }
-        prefs.edit().putString("trade_mode", normalized).commit()
+        val editor = prefs.edit().putString("trade_mode", normalized)
+        try {
+            val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctxObj.put("tradeMode", normalized)
+            editor.putString("context", ctxObj.toString())
+        } catch (e: Exception) {
+            Log.w(TAG, "setTradeMode context update failed: ${e.message}")
+        }
+        editor.commit()
+        LogBuffer.add('I', TAG, "TRADE_MODE_SET: mode=$normalized")
     }
 
     @JavascriptInterface
