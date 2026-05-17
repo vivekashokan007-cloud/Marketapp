@@ -600,7 +600,7 @@ class MarketWatchService : Service() {
                     async(Dispatchers.IO) { fetchSync(nfUrl, token) }
                 ).map { it.await() }
             }
-            val nf50Breadth = parallel[0]
+            val nf50Breadth = parallel[0]!!
             val quotesJson = parallel[1]
             val bnfChainJson = parallel[2]
             val bnfStocksJson = parallel[3]
