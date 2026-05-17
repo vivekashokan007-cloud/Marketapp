@@ -456,6 +456,7 @@ class MainActivity : AppCompatActivity() {
                     setEveningClose: function(j) { return AndroidBridge.setEveningClose(j); },
                     setExpiries: function(bnf, nf) { AndroidBridge.setExpiries(bnf, nf); },
                     setContext: function(j) { AndroidBridge.setContext(j); },
+                    setGlobalDirection: function(j) { AndroidBridge.setGlobalDirection(j); },
                     setTradeMode: function(mode) { AndroidBridge.setTradeMode(mode || "swing"); },
                     requestImmediatePoll: function() { AndroidBridge.requestImmediatePoll(); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },

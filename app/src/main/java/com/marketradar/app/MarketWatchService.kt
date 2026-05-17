@@ -569,6 +569,7 @@ class MarketWatchService : Service() {
             // C4: Dynamically compute next Thursday if expiry is missing
             val nextThu = getNextThursday()
             val bnfExpiry = prefs.getString("expiry_bnf", nextThu) ?: nextThu
+            val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
 
             // Expiry Rollover check
             val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
@@ -582,28 +583,35 @@ class MarketWatchService : Service() {
 
             updateForegroundNotification("Polling Market", "Fetching Quotes...")
 
-            // Step 1: Fetch Spot Prices
-            Log.d(TAG, "POLL_STEP1: Fetching spot prices")
+            // A8: Parallelize independent HTTP calls
+            val kotakKey = resolveKotakKey(token)
+            val bnfStocks = getBnfStocks(kotakKey).joinToString(",") { it.requestKey }
             val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
-            val quotesJson = fetchSync(quotesUrl, token)
+            val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
+            val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
+            val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
+
+            val nf50BreadthDeferred = async(Dispatchers.IO) { fetchNf50Breadth(token) }
+            val quotesDeferred = async(Dispatchers.IO) { fetchSync(quotesUrl, token) }
+            val bnfChainDeferred = async(Dispatchers.IO) { fetchSync(bnfUrl, token) }
+            val bnfStocksDeferred = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
+            val nfChainDeferred = async(Dispatchers.IO) { fetchSync(nfUrl, token) }
+
+            val nf50Breadth = nf50BreadthDeferred.await()
+            val quotesJson = quotesDeferred.await()
+            val bnfChainJson = bnfChainDeferred.await()
+            val bnfStocksJson = bnfStocksDeferred.await()
+            val nfChainJson = nfChainDeferred.await()
+
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
                 return
             }
 
-            // Step 2: Fetch BNF chain
-            val kotakKey = resolveKotakKey(token)
-            val bnfStocks = getBnfStocks(kotakKey).joinToString(",") { it.requestKey }
-            Log.d(TAG, "POLL_STEP2: Fetching BNF chain + Breadth stocks")
-            val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
-            val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
-            val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
-
-            val bnfChainJson = fetchSync(bnfUrl, token)
-            val bnfStocksJson = fetchSync(bnfStocksUrl, token)
+            Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null} nfChain=${nfChainJson != null} nf50=${nf50Breadth != null}")
             LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
+
             if (bnfStocksJson != null) {
-                // Upstox intermittently drops KOTAKBANK in batch response; retry single key and merge.
                 try {
                     val breadthData = bnfStocksJson.optJSONObject("data")
                     val kotakPresent = breadthData?.let {
@@ -649,17 +657,8 @@ class MarketWatchService : Service() {
                 LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
             }
 
-            if (bnfChainJson == null || bnfStocksJson == null) {
-                Log.e(TAG, "POLL_FAIL: BNF chain or stocks/futures fetch returned null")
-                return
-            }
-
-            // Step 3: Fetch NF chain
-            Log.d(TAG, "POLL_STEP3: Fetching NF option chain (expiry=$nfExpiry)")
-            val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
-            val nfChainJson = fetchSync(nfUrl, token)
-            if (nfChainJson == null) {
-                Log.e(TAG, "POLL_FAIL: NF chain fetch returned null")
+            if (bnfChainJson == null || bnfStocksJson == null || nfChainJson == null) {
+                Log.e(TAG, "POLL_FAIL: Chain or stocks fetch returned null")
                 return
             }
 
@@ -671,13 +670,12 @@ class MarketWatchService : Service() {
 
             // Step 5: Build poll object and save
             Log.d(TAG, "POLL_STEP5: Saving poll object")
-            val pollObj = parsePollData(quotesJson, bnfChainJson, bnfStocksJson, bnfSpot)
+            val pollObj = parsePollData(quotesJson, bnfChainJson, nfChainJson, bnfStocksJson, bnfSpot)
             savePoll(pollObj)
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
 
-            // Step 6: Run Python Brain
+            // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-            val nf50Breadth = fetchNf50Breadth(token)
             runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson, nf50Breadth)
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
@@ -804,7 +802,7 @@ class MarketWatchService : Service() {
 
 
 
-    private fun parsePollData(quotes: JSONObject, chain: JSONObject, stocks: JSONObject, spot: Double): JSONObject {
+    private fun parsePollData(quotes: JSONObject, bnfChain: JSONObject, nfChain: JSONObject, stocks: JSONObject, spot: Double): JSONObject {
         val data = quotes.getJSONObject("data")
         val sData = stocks.getJSONObject("data")
         val bnf = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
@@ -938,6 +936,55 @@ class MarketWatchService : Service() {
         poll.put("fp", futuresPremium)
         poll.put("futuresPremBnf", futuresPremium)
         
+        // A5: Extract ATM IV from chain data
+        fun extractAtmIv(chain: JSONObject, spot: Double): Double {
+            val data = chain.optJSONArray("data") ?: return 0.0
+            var minDist = Double.MAX_VALUE
+            var atmCeIv = 0.0
+            var atmPeIv = 0.0
+            for (i in 0 until data.length()) {
+                val item = data.getJSONObject(i)
+                val strike = item.optDouble("strike_price", 0.0)
+                val dist = Math.abs(strike - spot)
+                if (dist < minDist) {
+                    minDist = dist
+                    val call = item.optJSONObject("call_options")?.optJSONObject("market_data")
+                    val put = item.optJSONObject("put_options")?.optJSONObject("market_data")
+                    val callGreeks = item.optJSONObject("call_options")?.optJSONObject("option_greeks")
+                    val putGreeks = item.optJSONObject("put_options")?.optJSONObject("option_greeks")
+                    atmCeIv = callGreeks?.optDouble("iv", 0.0) ?: call?.optDouble("iv", 0.0) ?: 0.0
+                    atmPeIv = putGreeks?.optDouble("iv", 0.0) ?: put?.optDouble("iv", 0.0) ?: 0.0
+                }
+            }
+            return if (atmCeIv > 0 && atmPeIv > 0) (atmCeIv + atmPeIv) / 2.0 else Math.max(atmCeIv, atmPeIv)
+        }
+        poll.put("bnfAtmIv", extractAtmIv(bnfChain, bnf))
+        poll.put("nfAtmIv", extractAtmIv(nfChain, nf))
+
+        // A6: Missing poll fields (dayRange, weekday, dayHigh/Low, prevClose, change)
+        val bnfQuote = data.optJSONObject("NSE_INDEX:Nifty Bank")
+        val nfQuote = data.optJSONObject("NSE_INDEX:Nifty 50")
+        val bnfOhlc = bnfQuote?.optJSONObject("ohlc")
+        val nfOhlc = nfQuote?.optJSONObject("ohlc")
+        val bnfPrevClose = bnfOhlc?.optDouble("close", 0.0) ?: 0.0
+        val nfPrevClose = nfOhlc?.optDouble("close", 0.0) ?: 0.0
+        poll.put("bnfPrevClose", bnfPrevClose)
+        poll.put("nfPrevClose", nfPrevClose)
+        poll.put("bnfChange", if (bnfPrevClose > 0) bnf - bnfPrevClose else 0.0)
+        poll.put("nfChange", if (nfPrevClose > 0) nf - nfPrevClose else 0.0)
+        poll.put("bnfHigh", bnfQuote?.optDouble("high", 0.0) ?: 0.0)
+        poll.put("bnfLow", bnfQuote?.optDouble("low", 0.0) ?: 0.0)
+        poll.put("nfHigh", nfQuote?.optDouble("high", 0.0) ?: 0.0)
+        poll.put("nfLow", nfQuote?.optDouble("low", 0.0) ?: 0.0)
+        val bnfDayRange = poll.optDouble("bnfHigh", 0.0) - poll.optDouble("bnfLow", 0.0)
+        val nfDayRange = poll.optDouble("nfHigh", 0.0) - poll.optDouble("nfLow", 0.0)
+        poll.put("bnfDayRange", bnfDayRange)
+        poll.put("nfDayRange", nfDayRange)
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+        poll.put("weekday", cal.get(Calendar.DAY_OF_WEEK))
+        poll.put("hour", cal.get(Calendar.HOUR_OF_DAY))
+        poll.put("minute", cal.get(Calendar.MINUTE))
+
         Log.d("AUDIT_POLL", poll.toString())
         return poll
     }
@@ -1422,7 +1469,6 @@ class MarketWatchService : Service() {
             ctxObj.put("tradeMode", resolvedTradeMode)
             prefs.edit()
                 .putString("trade_mode", resolvedTradeMode)
-                .putString("context", ctxObj.toString())
                 .apply()
             
             // C1: Calculate DTE (Days to Expiry) for brain context
@@ -1625,8 +1671,12 @@ class MarketWatchService : Service() {
             val sigMove = Math.abs(bnfSpotSigma) > sigmaThreshold ||
                 Math.abs(nfSpotSigmaValue) > sigmaThreshold ||
                 Math.abs(vixSigma) > sigmaThreshold
+
+            val entryWindowActive = Math.abs(bnfSpotSigma) > 0.3 ||
+                Math.abs(nfSpotSigmaValue) > 0.3
             
             ctxObj.put("significant_move", sigMove)
+            ctxObj.put("entry_window_active", entryWindowActive)
             ctxObj.put("abs_spot_sigma", Math.abs(bnfSpotSigma))
             ctxObj.put("abs_nf_spot_sigma", Math.abs(nfSpotSigmaValue))
             ctxObj.put("abs_vix_sigma", Math.abs(vixSigma))
@@ -1671,6 +1721,29 @@ class MarketWatchService : Service() {
             // Persistence: Must save merged context back to SharedPreferences for next poll cycle
             prefs.edit().putString("context", ctxObj.toString()).apply()
 
+            // A4: Build strike_oi_json from chain data for open trade monitoring
+            fun buildStrikeOiJson(bnfChain: JSONObject, nfChain: JSONObject): String {
+                val oiData = JSONObject()
+                for ((chainKey, chain) in mapOf("bnf" to bnfChain, "nf" to nfChain)) {
+                    val data = chain.optJSONArray("data") ?: continue
+                    val strikesArr = JSONArray()
+                    for (i in 0 until data.length()) {
+                        val item = data.getJSONObject(i)
+                        val strike = item.optDouble("strike_price", 0.0)
+                        val callOi = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
+                        val putOi = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
+                        val strikeObj = JSONObject()
+                        strikeObj.put("s", strike)
+                        strikeObj.put("coi", callOi)
+                        strikeObj.put("poi", putOi)
+                        strikesArr.put(strikeObj)
+                    }
+                    oiData.put(chainKey, strikesArr)
+                }
+                return oiData.toString()
+            }
+            val strikeOiJson = buildStrikeOiJson(bnfChain, nfChain)
+
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
             val result = runBlocking {
                 withTimeoutOrNull(10_000L) {
@@ -1680,7 +1753,7 @@ class MarketWatchService : Service() {
                         baselineJson,
                         openTradesJson,
                         "[]",
-                        "{}",
+                        strikeOiJson,
                         ctxObj.toString()
                     ).toString()
                 }
@@ -1691,6 +1764,41 @@ class MarketWatchService : Service() {
                 broadcastData = result
                 brainSuccess = true
                 
+                // A1: Persist brain results back into ctxObj for next poll cycle
+                try {
+                    val eb = resultObj.optJSONObject("effective_bias")
+                    if (eb != null) ctxObj.put("effective_bias", eb)
+                    val regime = resultObj.optJSONObject("regime")
+                    if (regime != null) ctxObj.put("regime", regime)
+                    val marketPhase = resultObj.optJSONObject("marketPhase")
+                    if (marketPhase != null) ctxObj.put("marketPhase", marketPhase)
+                    val verdict = resultObj.optJSONObject("verdict")
+                    if (verdict != null) ctxObj.put("prevVerdict", verdict)
+                    val rangeSigma = resultObj.optString("rangeSigma", "")
+                    if (rangeSigma.isNotEmpty()) ctxObj.put("rangeSigma", rangeSigma)
+                    val positionLive = resultObj.optJSONObject("position_live")
+                    if (positionLive != null) ctxObj.put("positionLive", positionLive)
+
+                    // A1 COMPLETION: persist remaining brain outputs so next cycle
+                    // has morning context, chain profiles, and institutional signals
+                    for (key in listOf(
+                        "morningBias",
+                        "bnfProfile",
+                        "nfProfile",
+                        "pcrContext",
+                        "institutionalRegime",
+                        "overnightDelta",
+                        "sessionTrajectory"
+                    )) {
+                        val v = resultObj.opt(key)
+                        if (v != null && v.toString() != "null") ctxObj.put(key, v)
+                    }
+
+                    ctxObj.put("last_brain_ms", System.currentTimeMillis())
+                } catch (e: Exception) {
+                    Log.w(TAG, "BRAIN_CTX_MERGE_FAIL: ${e.message}")
+                }
+
                 // Phase E: Capture snapshots using Python-computed data
                 captureChainSnapshots(ctxObj, py)
 
@@ -1760,7 +1868,14 @@ class MarketWatchService : Service() {
                 if (generatedCands != null && generatedCands.length() > 0 && isMLModelReady()) {
                     val py = Python.getInstance()
                     val brainMod = py.getModule("brain")
+                    val mlDeadlineMs = System.currentTimeMillis() + 3_000L
+                    var mlScoredCount = 0
                     for (i in 0 until generatedCands.length()) {
+                        if (System.currentTimeMillis() > mlDeadlineMs) {
+                            Log.w("BRAIN_ML_SCORING", "ML scoring timeout after $i/${generatedCands.length()} candidates")
+                            LogBuffer.add('W', TAG, "ML_SCORING_TIMEOUT: scored=$mlScoredCount total=${generatedCands.length()}")
+                            break
+                        }
                         val cand = generatedCands.getJSONObject(i)
                         val mlResult = scoreCandidate(cand, brainMod)
                         if (mlResult != null) {
@@ -1772,9 +1887,10 @@ class MarketWatchService : Service() {
                             cand.put("mlOodWarn", mlResult.optJSONArray("ml_ood_warn") ?: JSONArray())
                             cand.put("mlOodBlocked", mlResult.optBoolean("ml_ood_blocked", false))
                             cand.put("mlRegime", mlResult.optString("ml_regime", ""))
+                            mlScoredCount++
                         }
                     }
-                    Log.d("BRAIN_ML_SCORING", "Scored ${generatedCands.length()} background candidates")
+                    Log.d("BRAIN_ML_SCORING", "Scored $mlScoredCount/${generatedCands.length()} background candidates")
                 }
 
 

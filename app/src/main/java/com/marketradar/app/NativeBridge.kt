@@ -24,6 +24,12 @@ class NativeBridge(private val context: Context) {
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
     private var lastScoredTotalLen = -1
+    private var openTradesCache = "[]"
+    private var openTradesCacheMs = 0L
+    private val openTradesCacheTtlMs = 30_000L
+    private val morningSnapshotCache = mutableMapOf<String, String>()
+    private var yesterdayHistoryCache = "[]"
+    private var yesterdayHistoryCacheKey = ""
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -119,6 +125,8 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setOpenTrades(json: String) {
+        openTradesCache = json
+        openTradesCacheMs = System.currentTimeMillis()
         val last = prefs.getString("open_trades", "")
         if (json == last) return
         prefs.edit().putString("open_trades", json).commit()
@@ -279,6 +287,21 @@ class NativeBridge(private val context: Context) {
         val lastCtx = prefs.getString("context", "")
         if (finalJson == lastCtx) return
         prefs.edit().putString("context", finalJson).commit()
+    }
+
+    @JavascriptInterface
+    fun setGlobalDirection(json: String) {
+        try {
+            val globalDirection = JSONObject(json)
+            val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
+            ctxObj.put("globalDirection", globalDirection)
+            prefs.edit()
+                .putString("context", ctxObj.toString())
+                .putString("global_direction", globalDirection.toString())
+                .commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "setGlobalDirection failed: ${e.message}")
+        }
     }
 
     @JavascriptInterface
@@ -551,11 +574,23 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getOpenTrades(): String {
+        val now = System.currentTimeMillis()
+        val prefValue = prefs.getString("open_trades", "[]") ?: "[]"
+        if (prefValue != openTradesCache) {
+            openTradesCache = prefValue
+            openTradesCacheMs = now
+            return prefValue
+        }
+        if (now - openTradesCacheMs < openTradesCacheTtlMs) return openTradesCache
         return try {
-            SupabaseClient.getOpenTrades().toString()
+            val result = SupabaseClient.getOpenTrades().toString()
+            openTradesCache = result
+            openTradesCacheMs = now
+            prefs.edit().putString("open_trades", result).commit()
+            result
         } catch (e: Exception) {
             Log.e(TAG, "getOpenTrades failed", e)
-            "[]"
+            openTradesCache
         }
     }
 
@@ -581,22 +616,32 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getMorningSnapshot(date: String): String {
+        val key = date.ifBlank { todayIsoDate() }
+        morningSnapshotCache[key]?.let { return it }
         return try {
-            val res = SupabaseClient.select("chain_snapshots", "date=eq.$date&session=eq.morning")
-            if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
+            val res = SupabaseClient.select("chain_snapshots", "date=eq.$key&session=eq.morning")
+            val result = if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
+            morningSnapshotCache[key] = result
+            result
         } catch (e: Exception) {
             Log.e(TAG, "getMorningSnapshot failed", e)
-            "{}"
+            morningSnapshotCache[key] ?: "{}"
         }
     }
 
     @JavascriptInterface
     fun getYesterdayHistory(days: Int): String {
+        val safeDays = days.coerceAtLeast(1)
+        val key = "${todayIsoDate()}:$safeDays"
+        if (key == yesterdayHistoryCacheKey) return yesterdayHistoryCache
         return try {
-            SupabaseClient.select("chain_snapshots", null, "date.desc", days).toString()
+            val result = SupabaseClient.select("chain_snapshots", null, "date.desc", safeDays).toString()
+            yesterdayHistoryCacheKey = key
+            yesterdayHistoryCache = result
+            result
         } catch (e: Exception) {
             Log.e(TAG, "getYesterdayHistory failed", e)
-            "[]"
+            yesterdayHistoryCache
         }
     }
 
@@ -691,7 +736,9 @@ class NativeBridge(private val context: Context) {
     fun getGlobalDirection(): String {
         return try {
             val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
-            ctx.optJSONObject("globalDirection")?.toString() ?: "{}"
+            ctx.optJSONObject("globalDirection")?.toString()
+                ?: prefs.getString("global_direction", "{}")
+                ?: "{}"
         } catch (e: Exception) {
             "{}"
         }
@@ -733,4 +780,9 @@ class NativeBridge(private val context: Context) {
         val value = obj.optDouble(key, fallback)
         return if (value.isFinite()) value else fallback
     }
+
+    private fun todayIsoDate(): String =
+        SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }.format(Date())
 }

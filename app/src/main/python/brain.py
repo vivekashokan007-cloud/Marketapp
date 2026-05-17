@@ -287,7 +287,9 @@ def _synthesize_market_phase(regime, ctx):
             'id': 'RANGE',
             'label': 'Range-bound',
             'detail': f'{sigma:.2f}σ range',
-            'hint': 'Credit-friendly. Watch for breakout.'
+            'hint': 'Credit-friendly. Watch for breakout.',
+            'sigma': sigma,
+            'trend_pct': trend_pct
         }
     elif rtype == 'trend':
         d = 'UP' if direction > 0 else 'DOWN'
@@ -295,14 +297,18 @@ def _synthesize_market_phase(regime, ctx):
             'id': f'TREND_{d}',
             'label': f'Trending {d.lower()}',
             'detail': f'{sigma:.2f}σ, {trend_pct:.1f}% trend',
-            'hint': 'Debit-friendly in trend direction.'
+            'hint': 'Debit-friendly in trend direction.',
+            'sigma': sigma,
+            'trend_pct': trend_pct
         }
     elif rtype == 'choppy':
         return {
             'id': 'CHOPPY',
             'label': 'Choppy',
             'detail': f'{sigma:.2f}σ, no clear direction',
-            'hint': 'Avoid directional plays. IB/IC if intraday.'
+            'hint': 'Avoid directional plays. IB/IC if intraday.',
+            'sigma': sigma,
+            'trend_pct': trend_pct
         }
     return {'id': 'UNKNOWN', 'label': 'Unknown', 'detail': '', 'hint': ''}
 
@@ -1933,9 +1939,12 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     # ═══ FIRST 15 MINUTES SUPPRESSION ═══
     # Opening noise — gap repricing, market maker activity. Signals unreliable.
     if poll_count < 3:
+        early_bias = 'BULL' if morning_net >= 1 else 'BEAR' if morning_net <= -1 else 'NEUTRAL'
+        early_strength = 'STRONG' if abs(morning_net) >= 2 else 'MILD' if abs(morning_net) >= 1 else ''
         return {
-            'bias': 'BULL' if morning_net >= 1 else 'BEAR' if morning_net <= -1 else 'NEUTRAL',
-            'strength': 'STRONG' if abs(morning_net) >= 2 else 'MILD' if abs(morning_net) >= 1 else '',
+            'bias': early_bias,
+            'strength': early_strength,
+            'label': f"{early_strength} {early_bias}".strip(),
             'net': morning_net,
             'morning_weight': 1.0,
             'signals': [0] * TOTAL_SIGNALS,
@@ -2084,6 +2093,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     return {
         'bias': bias,
         'strength': strength,
+        'label': f"{strength} {bias}".strip(),
         'net': round(effective_net, 2),
         'morning_weight': round(morning_weight, 2),
         'signals': signals,
@@ -2581,11 +2591,14 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         return alerts
 
     significant_move = ctx.get('significant_move', False)
+    entry_window = ctx.get('entry_window_active', False)
     abs_spot_sigma = ctx.get('abs_spot_sigma', 0.0)
     abs_nf_spot_sigma = ctx.get('abs_nf_spot_sigma', 0.0)
     abs_vix_sigma = ctx.get('abs_vix_sigma', 0.0)
 
-    if significant_move:
+    # WATCHLIST alerts: use entry_window (0.3σ) not significant_move (1.5σ)
+    # This allows entry notifications on normal trading days
+    if entry_window or significant_move:
         for cand in (watchlist or []):
             if not cand.get('_alignmentChanged'):
                 continue
@@ -2617,6 +2630,9 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — dropped to {aligned}/3",
                 })
 
+    # POSITION alerts: kept under significant_move (these are high-stakes;
+    # stop-loss and target alerts should only fire when market has actually moved)
+    if significant_move:
         for trade in (open_trades or []):
             t_index = trade.get('index_key', '')
             t_type = trade.get('strategy_type', '')
@@ -4017,7 +4033,8 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     # Urgency
     mins = get_time_mins(polls[-1].get('t', '')) - 555 if polls else 0
-    if 135 <= mins <= 315: urgency = 'ENTER NOW'
+    if 135 <= mins <= 315 and confidence >= 35: urgency = 'ENTER NOW'
+    elif 135 <= mins <= 315: urgency = 'READY'
     elif mins < 15: urgency = 'WAIT — opening noise'
     elif mins > 345: urgency = 'WINDOW CLOSED'
     else: urgency = 'READY'
@@ -6246,6 +6263,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     build_calibration(closed_trades)
     regime = detect_regime(polls, baseline)
+    ctx['rangeSigma'] = regime.get('sigma', 0)
+    ctx['regime'] = regime
+    result['regime'] = regime
     result['marketPhase'] = _synthesize_market_phase(regime, ctx)
 
     # Market (existing 8 + new 7)
