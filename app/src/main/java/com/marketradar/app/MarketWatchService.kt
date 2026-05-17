@@ -591,17 +591,23 @@ class MarketWatchService : Service() {
             val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
             val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
 
-            val nf50BreadthDeferred = async(Dispatchers.IO) { fetchNf50Breadth(token) }
-            val quotesDeferred = async(Dispatchers.IO) { fetchSync(quotesUrl, token) }
-            val bnfChainDeferred = async(Dispatchers.IO) { fetchSync(bnfUrl, token) }
-            val bnfStocksDeferred = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
-            val nfChainDeferred = async(Dispatchers.IO) { fetchSync(nfUrl, token) }
-
-            val nf50Breadth = nf50BreadthDeferred.await()
-            val quotesJson = quotesDeferred.await()
-            val bnfChainJson = bnfChainDeferred.await()
-            val bnfStocksJson = bnfStocksDeferred.await()
-            val nfChainJson = nfChainDeferred.await()
+            var nf50Breadth: JSONObject? = null
+            var quotesJson: JSONObject? = null
+            var bnfChainJson: JSONObject? = null
+            var bnfStocksJson: JSONObject? = null
+            var nfChainJson: JSONObject? = null
+            coroutineScope {
+                val d1 = async(Dispatchers.IO) { fetchNf50Breadth(token) }
+                val d2 = async(Dispatchers.IO) { fetchSync(quotesUrl, token) }
+                val d3 = async(Dispatchers.IO) { fetchSync(bnfUrl, token) }
+                val d4 = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
+                val d5 = async(Dispatchers.IO) { fetchSync(nfUrl, token) }
+                nf50Breadth = d1.await()
+                quotesJson = d2.await()
+                bnfChainJson = d3.await()
+                bnfStocksJson = d4.await()
+                nfChainJson = d5.await()
+            }
 
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
@@ -826,7 +832,7 @@ class MarketWatchService : Service() {
         var atmDist = Double.MAX_VALUE
         var atmStrike = 0.0
         
-        val chainData = chain.getJSONArray("data")
+        val chainData = bnfChain.getJSONArray("data")
         for (i in 0 until chainData.length()) {
             val item = chainData.getJSONObject(i)
             val strikePrice = item.getDouble("strike_price")
