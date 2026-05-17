@@ -591,23 +591,20 @@ class MarketWatchService : Service() {
             val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks,${getFuturesKey("BANKNIFTY")},${getFuturesKey("NIFTY")}"
             val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
 
-            var nf50Breadth: JSONObject? = null
-            var quotesJson: JSONObject? = null
-            var bnfChainJson: JSONObject? = null
-            var bnfStocksJson: JSONObject? = null
-            var nfChainJson: JSONObject? = null
-            coroutineScope {
-                val d1 = async(Dispatchers.IO) { fetchNf50Breadth(token) }
-                val d2 = async(Dispatchers.IO) { fetchSync(quotesUrl, token) }
-                val d3 = async(Dispatchers.IO) { fetchSync(bnfUrl, token) }
-                val d4 = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
-                val d5 = async(Dispatchers.IO) { fetchSync(nfUrl, token) }
-                nf50Breadth = d1.await()
-                quotesJson = d2.await()
-                bnfChainJson = d3.await()
-                bnfStocksJson = d4.await()
-                nfChainJson = d5.await()
+            val parallel = coroutineScope {
+                listOf(
+                    async(Dispatchers.IO) { fetchNf50Breadth(token) },
+                    async(Dispatchers.IO) { fetchSync(quotesUrl, token) },
+                    async(Dispatchers.IO) { fetchSync(bnfUrl, token) },
+                    async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
+                    async(Dispatchers.IO) { fetchSync(nfUrl, token) }
+                ).map { it.await() }
             }
+            val nf50Breadth = parallel[0]
+            val quotesJson = parallel[1]
+            val bnfChainJson = parallel[2]
+            val bnfStocksJson = parallel[3]
+            val nfChainJson = parallel[4]
 
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
