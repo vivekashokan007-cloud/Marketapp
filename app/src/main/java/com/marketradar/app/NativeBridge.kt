@@ -251,12 +251,12 @@ class NativeBridge(private val context: Context) {
                                 // NB3: Per-iteration try/catch — if one candidate fails, others still score
                                 val mlScored = scoreCandidate(cand)
                                 if (mlScored != null) {
-                                    // NB2: Copy all ML fields, not just 4
-                                    cand.put("p_ml", mlScored.optDouble("p_ml"))
+                                    // NB2: Copy all ML fields, guarding non-finite numbers rejected by JSONObject.
+                                    cand.put("p_ml", finiteDouble(mlScored, "p_ml", 0.0))
                                     cand.put("mlAction", mlScored.optString("ml_action"))
-                                    cand.put("mlEdge", mlScored.optDouble("ml_edge"))
+                                    cand.put("mlEdge", finiteDouble(mlScored, "ml_edge", 0.0))
                                     cand.put("mlOod", mlScored.optBoolean("ml_ood", false))
-                                    cand.put("mlOodConf", mlScored.optDouble("ml_ood_conf", 1.0))
+                                    cand.put("mlOodConf", finiteDouble(mlScored, "ml_ood_conf", 1.0))
                                     cand.put("mlOodWarn", mlScored.optJSONArray("ml_ood_warn") ?: JSONArray())
                                     cand.put("mlOodBlocked", mlScored.optBoolean("ml_ood_blocked", false))
                                     cand.put("mlRegime", mlScored.optString("ml_regime", ""))
@@ -726,5 +726,11 @@ class NativeBridge(private val context: Context) {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun finiteDouble(obj: JSONObject, key: String, fallback: Double): Double {
+        if (!obj.has(key) || obj.isNull(key)) return fallback
+        val value = obj.optDouble(key, fallback)
+        return if (value.isFinite()) value else fallback
     }
 }

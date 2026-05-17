@@ -1649,7 +1649,15 @@ def _is_hammer(c, prior_down):
     body = _real_body(c)
     if body == 0:
         return False
-    return _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+    candle_range = _total_range(c)
+    max_upper = max(
+        _CONST.get('CANDLE_HAMMER_UPPER_MAX_BODY', 0.5) * body,
+        _CONST.get('CANDLE_HAMMER_UPPER_MAX_RANGE', 0.10) * candle_range,
+    )
+    return (
+        _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+        and _upper_shadow(c) <= max_upper
+    )
 
 def _is_hanging_man(c, prior_up):
     if not prior_up:
@@ -1657,7 +1665,15 @@ def _is_hanging_man(c, prior_up):
     body = _real_body(c)
     if body == 0:
         return False
-    return _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+    candle_range = _total_range(c)
+    max_upper = max(
+        _CONST.get('CANDLE_HAMMER_UPPER_MAX_BODY', 0.5) * body,
+        _CONST.get('CANDLE_HAMMER_UPPER_MAX_RANGE', 0.10) * candle_range,
+    )
+    return (
+        _lower_shadow(c) >= _CONST.get('CANDLE_HAMMER_SHADOW_MIN', 2.0) * body
+        and _upper_shadow(c) <= max_upper
+    )
 
 def _is_bullish_engulfing(p1, p2, prior_down):
     if not prior_down:
@@ -1701,7 +1717,11 @@ def _is_morning_star(p1, p2, p3, prior_down):
     gap_pct = _CONST.get('CANDLE_GAP_PCT', 0.001)
     gap_down = p2['open'] < p1['close'] * (1 - gap_pct)
     gap_up = p3['open'] > p2['close'] * (1 + gap_pct)
-    return gap_down and gap_up and p3['close'] > p1['open']
+    if gap_down and gap_up and p3['close'] > p1['open']:
+        return True
+    # Intraday index candles rarely gap between adjacent 15m bars; require confirmation through midpoint recovery.
+    midpoint = (p1['open'] + p1['close']) / 2
+    return _real_body(p3) >= _real_body(p2) and p3['close'] > midpoint and p3['close'] > p2['high']
 
 def _is_evening_star(p1, p2, p3, prior_up):
     if not prior_up:
@@ -1713,7 +1733,11 @@ def _is_evening_star(p1, p2, p3, prior_up):
     gap_pct = _CONST.get('CANDLE_GAP_PCT', 0.001)
     gap_up = p2['open'] > p1['close'] * (1 + gap_pct)
     gap_down = p3['open'] < p2['close'] * (1 - gap_pct)
-    return gap_up and gap_down and p3['close'] < p1['open']
+    if gap_up and gap_down and p3['close'] < p1['open']:
+        return True
+    # Intraday index candles rarely gap between adjacent 15m bars; require confirmation through midpoint loss.
+    midpoint = (p1['open'] + p1['close']) / 2
+    return _real_body(p3) >= _real_body(p2) and p3['close'] < midpoint and p3['close'] < p2['low']
 
 def _candle_insight(pattern_name, label, detail, impact, strength, index, timeframe, candle):
     return {
@@ -1753,7 +1777,7 @@ def _detect_15m_patterns(candles, index_key):
             "caution", 2, index_key, "15m", c))
     if _is_hammer(c, prior_down):
         insights.append(_candle_insight("HAMMER",
-            f"Hammr on {index_key} (15m)",
+            f"Hammer on {index_key} (15m)",
             f"Low={c['low']:.0f} Close={c['close']:.0f}. Long lower wick in downtrend.",
             "bullish", 3, index_key, "15m", c))
     if _is_hanging_man(c, prior_up):
@@ -2956,13 +2980,13 @@ def compute_wall_drift(trade, chain):
     return res if res['severity'] > 0 else None
 
 
-def update_watchlist_forces(watchlist, ctx, vix, iv_pctl):
+def update_watchlist_forces(watchlist, ctx, vix, iv_pctl, regime=None):
     """Decision #19. Mutates watchlist in place."""
     bias = (ctx.get('effective_bias') or ctx.get('morningBias') 
             or {'bias': 'NEUTRAL', 'strength': '', 'net': 0})
     for c in watchlist:
         try:
-            c['forces'] = _get_forces(c.get('type'), bias, vix, iv_pctl)
+            c['forces'] = _get_forces(c.get('type'), bias, vix, iv_pctl, regime)
         except: pass
     return watchlist
 
@@ -4786,6 +4810,8 @@ _CONST = {
     'CANDLE_SHADOW_RATIO_MIN': 0.5,
     'CANDLE_SHADOW_RATIO_MAX': 2.0,
     'CANDLE_HAMMER_SHADOW_MIN': 2.0,
+    'CANDLE_HAMMER_UPPER_MAX_BODY': 0.5,
+    'CANDLE_HAMMER_UPPER_MAX_RANGE': 0.10,
     'CANDLE_ENGULF_BODY_MIN': 1.5,
     'CANDLE_PRIOR_TREND_CANDLES': 5,
     'CANDLE_PRIOR_TREND_THRESHOLD': 0.3,
@@ -5025,9 +5051,10 @@ def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
 
 # ─── FORCE ENGINE ───
 
-def _assess_force1(stype, bias):
+def _assess_force1(stype, bias, regime=None):
     """Direction force: does bias support this strategy?"""
     b = bias.get('bias', 'NEUTRAL')
+    rtype = regime.get('type', 'unknown') if isinstance(regime, dict) else 'unknown'
     is_neutral = stype in _CONST['NEUTRAL_TYPES']
     is_bull = stype in _CONST['DIR_BULL']
     is_bear = stype in _CONST['DIR_BEAR']
@@ -5035,8 +5062,8 @@ def _assess_force1(stype, bias):
         # Decision #1 (2026-04-26) — REVERTS BR84 back to JS behavior.
         # JS source of truth: app.js assessForce1_Intrinsic L3010 — "Neutral strategies: LOVE neutral bias".
         # NEUTRAL+NEUTRAL must auto-reward +1 to align ranking with currently-live PWA behavior.
-        if b == 'NEUTRAL':
-            return 1  # neutral bias + neutral strategy = full alignment
+        if b == 'NEUTRAL' or rtype == 'range':
+            return 1  # neutral bias or active range regime + neutral strategy = full alignment
         if bias.get('strength', '') == 'MILD':
             return 0
         return -1  # strong directional bias + neutral strategy = opposing
@@ -5064,10 +5091,10 @@ def _assess_force3(stype, vix, iv_pctl):
         return 1 if stype in _CONST['NEUTRAL_TYPES'] else 0
     if regime == 'HIGH': return 1 if is_credit else -1
     if regime == 'LOW': return 1 if is_debit else -1
-    return 0
+    return 1
 
-def _get_forces(stype, bias, vix, iv_pctl):
-    f1 = _assess_force1(stype, bias)
+def _get_forces(stype, bias, vix, iv_pctl, regime=None):
+    f1 = _assess_force1(stype, bias, regime)
     f2 = _assess_force2(stype)
     f3 = _assess_force3(stype, vix, iv_pctl)
     aligned = sum(1 for f in [f1, f2, f3] if f == 1)
@@ -5667,7 +5694,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
 
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
 
-def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx):
+def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx, regime=None):
     if not chain or not chain.get('strikes') or not chain.get('atm'): return []
     is_bnf = index_key == 'BNF'
 
@@ -5741,7 +5768,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                     if stype == 'BULL_CALL' and width > trade_sigma * 1.2: continue
                     if stype == 'BEAR_PUT' and width > trade_sigma * 1.2: continue
 
-                cand['forces'] = _get_forces(stype, bias, vix, iv_pctl)
+                cand['forces'] = _get_forces(stype, bias, vix, iv_pctl, regime)
                 cand['varsityTier'] = 'PRIMARY' if stype in varsity['primary'] else 'ALLOWED'
                 cand['wallScore'] = _compute_wall_score(cand, chain, is_bnf)
                 cand['wallTag'] = _wall_tag(cand['wallScore'], cand['type'])
@@ -5850,7 +5877,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                     'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
                     'targetProfit': round(max_profit * 0.5),
                     'stopLoss': round(max_loss * 0.6),
-                    'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl),
+                    'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl, regime),
                     'varsityTier': 'PRIMARY' if 'IRON_CONDOR' in varsity['primary'] else 'ALLOWED',
                     'wallScore': 0, 'gammaRisk': 0, 'contextScore': 0,
                     'directionSafe': True, 'capitalBlocked': False,
@@ -5913,7 +5940,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx)
                 'maxProfit': max_profit, 'maxLoss': max_loss,
                 'probProfit': round(prob, 3), 'ev': ev, 'isCredit': True,
                 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
-                'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl),
+                'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl, regime),
                 'varsityTier': 'PRIMARY' if 'IRON_BUTTERFLY' in varsity['primary'] else 'ALLOWED',
                 'wallScore': _compute_wall_score({'type': 'IRON_BUTTERFLY', 'sellStrike': atm}, chain, is_bnf),
                 'gammaRisk': 0.5 if tdte <= 2 else 0.3 if tdte <= 3 else 0.1,
@@ -6483,7 +6510,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if spot > 0:
                 expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
                 expiry = ctx.get(expiry_key, '')
-                cands = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx)
+                cands = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
                 all_cands.extend(cands)
         if all_cands:
             brain_verdict = result.get('verdict')
@@ -6554,7 +6581,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     if idx_added >= 3: break
             
             # Decision #19: Refresh forces for the top picks
-            result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl)
+            result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
 

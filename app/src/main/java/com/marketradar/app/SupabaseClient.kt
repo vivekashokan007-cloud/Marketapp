@@ -286,33 +286,6 @@ object SupabaseClient {
      * Mirrors db.js getSignalAccuracyStats() — chain_snapshots filter
      * session=315pm AND signal_correct IS NOT NULL, last 30, computes pct.
      */
-    /**
-     * Saves candlestick pattern data for a trading date to app_config.
-     * Key: candle_data_YYYY-MM-DD. Value: { bnf: {...}, nf: {...} }
-     * Used for historical candlestick review.
-     */
-    fun upsertCandleData(date: String, bnfData: JSONObject, nfData: JSONObject): Boolean {
-        val value = JSONObject()
-        value.put("bnf", bnfData)
-        value.put("nf", nfData)
-        val body = JSONObject()
-        body.put("key", "candle_data_$date")
-        body.put("value", value)
-        body.put("updated_at", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
-            timeZone = java.util.TimeZone.getTimeZone("UTC")
-        }.format(java.util.Date()))
-        val request = getBaseRequest("app_config")
-            .header("Prefer", "resolution=merge-duplicates")
-            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-            .build()
-        return try {
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.e(TAG, "Upsert candle data failed: ${e.message}")
-            false
-        }
-    }
-
     fun getSignalAccuracyStats(): JSONObject {
         val request = getBaseRequest(
             "chain_snapshots?session=eq.315pm" +
@@ -342,6 +315,33 @@ object SupabaseClient {
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing accuracy stats: ${e.message}")
             result
+        }
+    }
+
+    /**
+     * Saves candlestick pattern data for a trading date to app_config.
+     * Key: candle_data_YYYY-MM-DD. Value: { bnf: {...}, nf: {...} }
+     * Used for historical candlestick review.
+     */
+    fun upsertCandleData(date: String, bnfData: JSONObject, nfData: JSONObject): Boolean {
+        val value = JSONObject()
+        value.put("bnf", bnfData)
+        value.put("nf", nfData)
+        val body = JSONObject()
+        body.put("key", "candle_data_$date")
+        body.put("value", value)
+        body.put("updated_at", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date()))
+        val request = getBaseRequest("app_config")
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Upsert candle data failed: ${e.message}")
+            false
         }
     }
 }

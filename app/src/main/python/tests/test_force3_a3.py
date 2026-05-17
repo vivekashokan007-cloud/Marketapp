@@ -38,14 +38,14 @@ assert brain._assess_force3('BULL_CALL', 14.0, None) == 1, \
 assert brain._assess_force3('BEAR_CALL', 14.0, None) == -1, \
     "FAIL: LOW VIX + BEAR_CALL (credit) should return -1"
 
-# ── NORMAL VIX regime (15 < VIX < 20) — neutral ──
-# Test 9: NORMAL VIX + credit → 0
-assert brain._assess_force3('BEAR_CALL', 18.0, None) == 0, \
-    "FAIL: NORMAL VIX + BEAR_CALL should return 0"
+# ── NORMAL VIX regime (15 < VIX < 20) — non-opposing ──
+# Test 9: NORMAL VIX + credit → +1
+assert brain._assess_force3('BEAR_CALL', 18.0, None) == 1, \
+    "FAIL: NORMAL VIX + BEAR_CALL should return +1"
 
-# Test 10: NORMAL VIX + debit → 0
-assert brain._assess_force3('BULL_CALL', 18.0, None) == 0, \
-    "FAIL: NORMAL VIX + BULL_CALL should return 0"
+# Test 10: NORMAL VIX + debit → +1
+assert brain._assess_force3('BULL_CALL', 18.0, None) == 1, \
+    "FAIL: NORMAL VIX + BULL_CALL should return +1"
 
 # ── IV percentile override (when VIX moderate but IV pctl extreme) ──
 # Test 11: NORMAL VIX but IV pctl > 85 → VERY_HIGH regime
