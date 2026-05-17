@@ -86,3 +86,5 @@ dependencies {
     // UI & Material Design
     implementation("com.google.android.material:material:1.11.0")
 }
+
+// v2.3.34
