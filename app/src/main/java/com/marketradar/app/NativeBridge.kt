@@ -1,9 +1,13 @@
 package com.marketradar.app
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
 import java.io.File
@@ -30,6 +34,10 @@ class NativeBridge(private val context: Context) {
     private val morningSnapshotCache = mutableMapOf<String, String>()
     private var yesterdayHistoryCache = "[]"
     private var yesterdayHistoryCacheKey = ""
+    private var exportSessionId = ""
+    private var exportSessionName = ""
+    private var exportSessionMime = ""
+    private var exportSessionBase64 = StringBuilder()
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -762,6 +770,112 @@ class NativeBridge(private val context: Context) {
             Log.e(TAG, "getMLDecisions failed", e)
             "[]"
         }
+    }
+
+    @JavascriptInterface
+    fun saveExportFile(fileName: String, mimeType: String, base64Data: String): String {
+        return try {
+            saveExportBytes(fileName, mimeType, Base64.decode(base64Data, Base64.DEFAULT)).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "saveExportFile failed", e)
+            LogBuffer.add('E', TAG, "saveExportFile failed: ${e.message}")
+            JSONObject()
+                .put("ok", false)
+                .put("error", e.message ?: e.javaClass.simpleName)
+                .toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun beginExportFile(fileName: String, mimeType: String): String {
+        return try {
+            exportSessionId = "${System.currentTimeMillis()}_${fileName.hashCode()}"
+            exportSessionName = fileName
+            exportSessionMime = mimeType
+            exportSessionBase64 = StringBuilder()
+            JSONObject().put("ok", true).put("sessionId", exportSessionId).toString()
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName).toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun appendExportFileChunk(sessionId: String, base64Chunk: String): String {
+        return try {
+            if (sessionId != exportSessionId || sessionId.isBlank()) {
+                throw IllegalStateException("Invalid export session")
+            }
+            exportSessionBase64.append(base64Chunk)
+            JSONObject()
+                .put("ok", true)
+                .put("chars", exportSessionBase64.length)
+                .toString()
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName).toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun finishExportFile(sessionId: String): String {
+        return try {
+            if (sessionId != exportSessionId || sessionId.isBlank()) {
+                throw IllegalStateException("Invalid export session")
+            }
+            val bytes = Base64.decode(exportSessionBase64.toString(), Base64.DEFAULT)
+            saveExportBytes(exportSessionName, exportSessionMime, bytes).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "finishExportFile failed", e)
+            LogBuffer.add('E', TAG, "finishExportFile failed: ${e.message}")
+            JSONObject()
+                .put("ok", false)
+                .put("error", e.message ?: e.javaClass.simpleName)
+                .toString()
+        } finally {
+            exportSessionId = ""
+            exportSessionName = ""
+            exportSessionMime = ""
+            exportSessionBase64 = StringBuilder()
+        }
+    }
+
+    private fun saveExportBytes(fileName: String, mimeType: String, bytes: ByteArray): JSONObject {
+        val safeName = fileName
+            .replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .ifBlank { "MarketRadar_Export.xlsx" }
+        val resolver = context.applicationContext.contentResolver
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType.ifBlank { "application/octet-stream" })
+                put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Downloads insert returned empty URI")
+            resolver.openOutputStream(uri)?.use { out ->
+                out.write(bytes)
+                out.flush()
+            } ?: throw IllegalStateException("Unable to open Downloads output stream")
+            values.clear()
+            values.put(MediaStore.Downloads.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        } else {
+            @Suppress("DEPRECATION")
+            val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!downloads.exists() && !downloads.mkdirs()) {
+                throw IllegalStateException("Unable to create Downloads directory")
+            }
+            File(downloads, safeName).writeBytes(bytes)
+        }
+
+        Log.i(TAG, "saveExportFile ok: name=$safeName bytes=${bytes.size}")
+        LogBuffer.add('I', TAG, "saveExportFile ok: name=$safeName bytes=${bytes.size}")
+        return JSONObject()
+            .put("ok", true)
+            .put("fileName", safeName)
+            .put("bytes", bytes.size)
+            .put("location", "Downloads")
     }
 
     private fun scoreCandidate(cand: JSONObject): JSONObject? {
