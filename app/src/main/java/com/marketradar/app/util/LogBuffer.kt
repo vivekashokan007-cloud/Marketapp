@@ -50,7 +50,7 @@ object LogBuffer {
         val all = buffer.toList()  // snapshot copy
         return when (filter) {
             null, "ALL" -> all
-            "Kotlin"   -> all.filter { it.tag.startsWith("MV_") || it.tag == "MarketWatchService" || it.tag == "NativeBridge" || it.tag == "MainActivity" }
+            "Kotlin"   -> all.filter { it.tag.startsWith("MV_") || it.tag == "MarketWatchService" || it.tag == "NativeBridge" || it.tag == "MainActivity" || it.tag == "WebViewJS" }
             "Python"   -> all.filter { it.tag == "py.stdout" || it.tag == "py.stderr" || it.tag == "Chaquopy" }
             "OkHttp"   -> all.filter { it.tag.startsWith("OkHttp") || it.tag == "okhttp.OkHttpClient" }
             "Errors"   -> all.filter { it.level == 'E' || it.level == 'F' || it.level == 'W' }

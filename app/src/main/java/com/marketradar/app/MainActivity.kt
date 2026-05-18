@@ -34,6 +34,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.marketradar.app.util.LogBuffer
 import okhttp3.*
 import java.io.IOException
 import org.json.JSONObject
@@ -191,11 +192,39 @@ class MainActivity : AppCompatActivity() {
                     topProgressBar.visibility = if (newProgress < 100) View.VISIBLE else View.GONE
                 }
 
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                    val msg = consoleMessage ?: return super.onConsoleMessage(consoleMessage)
+                    val level = when (msg.messageLevel()) {
+                        ConsoleMessage.MessageLevel.ERROR -> 'E'
+                        ConsoleMessage.MessageLevel.WARNING -> 'W'
+                        ConsoleMessage.MessageLevel.DEBUG -> 'D'
+                        else -> 'I'
+                    }
+                    LogBuffer.add(
+                        level,
+                        "WebViewJS",
+                        "${msg.sourceId()}:${msg.lineNumber()} ${msg.message()}"
+                    )
+                    return super.onConsoleMessage(consoleMessage)
+                }
+
                 override fun onJsAlert(
                     view: WebView?, url: String?, message: String?, result: JsResult?
                 ): Boolean {
                     Toast.makeText(this@MainActivity, message, Toast.LENGTH_SHORT).show()
                     result?.confirm()
+                    return true
+                }
+
+                override fun onJsConfirm(
+                    view: WebView?, url: String?, message: String?, result: JsResult?
+                ): Boolean {
+                    MaterialAlertDialogBuilder(this@MainActivity)
+                        .setMessage(message ?: "")
+                        .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                        .setNegativeButton("Cancel") { _, _ -> result?.cancel() }
+                        .setOnCancelListener { result?.cancel() }
+                        .show()
                     return true
                 }
             }
