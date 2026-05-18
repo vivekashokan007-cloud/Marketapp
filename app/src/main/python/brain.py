@@ -6266,6 +6266,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     ctx['rangeSigma'] = regime.get('sigma', 0)
     ctx['regime'] = regime
     result['regime'] = regime
+    result['rangeSigma'] = regime.get('sigma', 0)
     result['marketPhase'] = _synthesize_market_phase(regime, ctx)
 
     # Market (existing 8 + new 7)

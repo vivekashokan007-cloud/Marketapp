@@ -1724,28 +1724,67 @@ class MarketWatchService : Service() {
             // Persistence: Must save merged context back to SharedPreferences for next poll cycle
             prefs.edit().putString("context", ctxObj.toString()).apply()
 
-            // A4: Build strike_oi_json from chain data for open trade monitoring
-            fun buildStrikeOiJson(bnfChain: JSONObject, nfChain: JSONObject): String {
-                val oiData = JSONObject()
-                for ((chainKey, chain) in mapOf("bnf" to bnfChain, "nf" to nfChain)) {
-                    val data = chain.optJSONArray("data") ?: continue
-                    val strikesArr = JSONArray()
+            // A4: Build per-trade strike OI history for open trade monitoring.
+            // brain.py reads strike_oi_json by trade id and expects a short time series:
+            // { trade_id: [{t, sellCOI, sellPOI, buyCOI, buyPOI}, ...] }
+            fun buildStrikeOiJson(bnfChain: JSONObject, nfChain: JSONObject, openTradesJson: String, pollTime: String): String {
+                val existing = try {
+                    JSONObject(prefs.getString("strike_oi_history", "{}") ?: "{}")
+                } catch (_: Exception) {
+                    JSONObject()
+                }
+                val output = JSONObject()
+
+                fun oiAt(chain: JSONObject, strike: Double): Pair<Double?, Double?> {
+                    val data = chain.optJSONArray("data") ?: return Pair(null, null)
                     for (i in 0 until data.length()) {
                         val item = data.getJSONObject(i)
-                        val strike = item.optDouble("strike_price", 0.0)
-                        val callOi = item.optJSONObject("call_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
-                        val putOi = item.optJSONObject("put_options")?.optJSONObject("market_data")?.optDouble("oi", 0.0) ?: 0.0
-                        val strikeObj = JSONObject()
-                        strikeObj.put("s", strike)
-                        strikeObj.put("coi", callOi)
-                        strikeObj.put("poi", putOi)
-                        strikesArr.put(strikeObj)
+                        val chainStrike = item.optDouble("strike_price", 0.0)
+                        if (Math.abs(chainStrike - strike) < 0.1) {
+                            val callOi = item.optJSONObject("call_options")
+                                ?.optJSONObject("market_data")
+                                ?.optDouble("oi", 0.0)
+                            val putOi = item.optJSONObject("put_options")
+                                ?.optJSONObject("market_data")
+                                ?.optDouble("oi", 0.0)
+                            return Pair(callOi, putOi)
+                        }
                     }
-                    oiData.put(chainKey, strikesArr)
+                    return Pair(null, null)
                 }
-                return oiData.toString()
+
+                val openTrades = try { JSONArray(openTradesJson) } catch (_: Exception) { JSONArray() }
+                for (i in 0 until openTrades.length()) {
+                    val trade = openTrades.optJSONObject(i) ?: continue
+                    val tradeId = trade.optString("id", "")
+                    if (tradeId.isBlank()) continue
+
+                    val chain = if (trade.optString("index_key", "BNF") == "NF") nfChain else bnfChain
+                    val sellStrike = trade.optDouble("sell_strike", 0.0)
+                    val buyStrike = trade.optDouble("buy_strike", 0.0)
+                    val sellOi = if (sellStrike > 0.0) oiAt(chain, sellStrike) else Pair(null, null)
+                    val buyOi = if (buyStrike > 0.0) oiAt(chain, buyStrike) else Pair(null, null)
+
+                    val row = JSONObject()
+                        .put("t", pollTime)
+                        .put("sellCOI", sellOi.first)
+                        .put("sellPOI", sellOi.second)
+                        .put("buyCOI", buyOi.first)
+                        .put("buyPOI", buyOi.second)
+
+                    val history = existing.optJSONArray(tradeId) ?: JSONArray()
+                    history.put(row)
+                    val trimmed = JSONArray()
+                    val start = Math.max(0, history.length() - 6)
+                    for (j in start until history.length()) trimmed.put(history.getJSONObject(j))
+                    existing.put(tradeId, trimmed)
+                    output.put(tradeId, trimmed)
+                }
+
+                prefs.edit().putString("strike_oi_history", existing.toString()).apply()
+                return output.toString()
             }
-            val strikeOiJson = buildStrikeOiJson(bnfChain, nfChain)
+            val strikeOiJson = buildStrikeOiJson(bnfChain, nfChain, openTradesJson, poll.optString("t", ""))
 
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
             val result = runBlocking {
