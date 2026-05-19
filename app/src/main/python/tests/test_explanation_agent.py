@@ -7,7 +7,29 @@ PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
-from brain import build_explanation_audit_agent, evaluate_alerts
+from brain import build_explanation_audit_agent, evaluate_alerts, generate_candidates
+
+
+def _fake_option_chain(atm=53600, spot=53600):
+    strikes = {}
+    all_strikes = list(range(52000, 61200, 100))
+    for strike in all_strikes:
+        # Keep test premiums simple and deterministic. Far 60000 options are
+        # intentionally non-zero to prove sigma gates reject them anyway.
+        bid = 250.0
+        ask = 25.0
+        strikes[str(strike)] = {
+            "CE": {"bid": bid, "ask": ask, "ltp": bid, "oi": 1000, "delta": 0.2, "theta": -5},
+            "PE": {"bid": bid, "ask": ask, "ltp": bid, "oi": 1000, "delta": -0.2, "theta": -5},
+        }
+    return {
+        "atm": atm,
+        "strikes": strikes,
+        "allStrikes": all_strikes,
+        "callWallStrike": 60000,
+        "putWallStrike": 53000,
+        "atmIv": 18.5,
+    }
 
 
 class ExplanationAuditAgentTests(unittest.TestCase):
@@ -58,6 +80,19 @@ class ExplanationAuditAgentTests(unittest.TestCase):
         self.assertEqual(agent["session_summary"]["state"], "SELL PREMIUM")
         self.assertTrue(agent["notification_context"]["should_notify"])
         self.assertEqual(agent["notification_context"]["severity"], "entry")
+
+    def test_verdict_confidence_not_zero_without_final_wrapper(self):
+        result = {
+            "verdict": {"action": "SELL PREMIUM", "confidence": 64, "direction": "NEUTRAL"},
+            "effective_bias": {"bias": "NEUTRAL", "net": 0.1},
+            "regime": {"type": "RANGE", "sigma": 0.2},
+            "rangeSigma": 0.2,
+            "watchlist": [{"id": "w1"}],
+        }
+
+        agent = build_explanation_audit_agent(result, {"capital": 250000}, [])
+
+        self.assertEqual(agent["session_summary"]["confidence"], 64)
 
     def test_agent_audits_ic_ib_intraday(self):
         trade = {
@@ -129,6 +164,32 @@ class ExplanationAuditAgentTests(unittest.TestCase):
         alerts = evaluate_alerts([], watchlist, {}, ctx)
 
         self.assertTrue(any(a["key"].startswith("WATCHLIST_ENTRY_BNF_54000_55000") for a in alerts))
+
+    def test_ic_rejects_far_wall_strike_anchor(self):
+        chain = _fake_option_chain()
+        ctx = {
+            "tradeMode": "intraday",
+            "rangeSigma": 0.2,
+            "bnfDTE": 1,
+            "capital": 250000,
+        }
+
+        candidates = generate_candidates(
+            chain=chain,
+            spot=53600,
+            index_key="BNF",
+            expiry="2026-05-26",
+            vix=18.5,
+            bias={"bias": "NEUTRAL", "strength": ""},
+            iv_pctl=50,
+            ctx=ctx,
+            regime=None,
+        )
+
+        ic_candidates = [c for c in candidates if c["type"] == "IRON_CONDOR"]
+        self.assertTrue(ic_candidates)
+        self.assertFalse(any(c["sellStrike"] == 60000 for c in ic_candidates))
+        self.assertTrue(all(c["sigmaOTMCall"] <= 0.8 and c["sigmaOTMPut"] <= 0.8 for c in ic_candidates))
 
 
 if __name__ == "__main__":

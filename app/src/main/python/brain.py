@@ -5035,7 +5035,8 @@ _CONST = {
     'NF_WIDTHS': [100, 150, 200, 250, 300, 400],
     'IV_HIGH': 20, 'IV_VERY_HIGH': 24, 'IV_LOW': 15,
     'MIN_PROB': 0.50, 'MIN_CREDIT_RATIO': 0.10,
-    'MIN_SIGMA_OTM': 0.5, 'MIN_WIDTH_BNF': 400, 'MIN_WIDTH_NF': 150,
+    'MIN_SIGMA_OTM': 0.5, 'MAX_SIGMA_OTM': 0.8,
+    'MIN_WIDTH_BNF': 400, 'MIN_WIDTH_NF': 150,
     'CREDIT_TYPES': ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
     'DEBIT_TYPES': ['BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT'],
     'NEUTRAL_TYPES': ['IRON_CONDOR', 'IRON_BUTTERFLY', 'DOUBLE_DEBIT'],
@@ -5551,6 +5552,26 @@ def _gamma_tag(risk):
         return '\u26a0\ufe0f \u03b3'         # ⚠️ γ
     return ''
 
+def _credit_sigma_limits():
+    return (
+        _CONST.get('MIN_SIGMA_OTM', 0.5),
+        _CONST.get('MAX_SIGMA_OTM', 0.8),
+    )
+
+def _sigma_above_max(value, max_sigma):
+    # Strike-step rounding can make a visually valid 0.8σ strike compute as
+    # 0.8004σ. Treat that as within the calibrated bucket, but still reject
+    # genuinely far OTM strikes such as 10σ wall anchors.
+    return value is not None and value > (max_sigma + 0.02)
+
+def _sigma_otm_value(strike, spot, daily_sigma):
+    if not daily_sigma or daily_sigma <= 0:
+        return None
+    try:
+        return abs(float(strike) - float(spot)) / float(daily_sigma)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
 def _compute_context_score(cand, spot, tdte, vix, ctx):
     penalty = 0.0
     is_credit = cand.get('isCredit', False)
@@ -5765,12 +5786,14 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
                 })
         return None
 
-    # Sigma OTM filter — credit directional only (0.5σ minimum)
+    # Sigma OTM filter — credit directional only.
+    # Reject both too-close sells and economically worthless far-OTM sells.
     sigma_otm = None
     ds = _daily_sigma(spot, vix)
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and ds > 0:
         sigma_otm = abs(pair['sell'] - spot) / ds
-        if sigma_otm < _CONST['MIN_SIGMA_OTM']:
+        min_sigma, max_sigma = _credit_sigma_limits()
+        if sigma_otm < min_sigma:
             # TASK 5.6 — trace rejection
             if ctx.get('_trace') is not None:
                 _active = ctx.get('_active_cand_trace')
@@ -5781,6 +5804,20 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
                         'result': 'rejected',
                         'stage': 'sigma_otm_too_close',
                         'reason': 'is_credit directional and sigma_otm < 0.5',
+                    })
+            return None
+        if _sigma_above_max(sigma_otm, max_sigma):
+            if ctx.get('_trace') is not None:
+                _active = ctx.get('_active_cand_trace')
+                if _active is not None:
+                    _trace_append(_active, 'attempts', {
+                        'stype': stype,
+                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
+                        'sigma_otm': round(sigma_otm, 2),
+                        'max_sigma': max_sigma,
+                        'result': 'rejected',
+                        'stage': 'sigma_otm_too_far',
+                        'reason': 'is_credit directional and sigma_otm > max_sigma',
                     })
             return None
         sigma_otm = round(sigma_otm, 2)
@@ -6049,7 +6086,17 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 # Add wall pairs if valid
                 if cw and pw and cw > atm and pw < atm:
                     cw_d = cw - atm; pw_d = atm - pw
-                    if (cw_d, pw_d) not in dist_pairs: dist_pairs.append((cw_d, pw_d))
+                    wall_ce_sigma = _sigma_otm_value(cw, spot, ds_local)
+                    wall_pe_sigma = _sigma_otm_value(pw, spot, ds_local)
+                    wall_max_sigma = _CONST.get('IC_WALL_MAX_SIGMA', 1.5)
+                    if (
+                        wall_ce_sigma is not None and wall_pe_sigma is not None
+                        and not _sigma_above_max(wall_ce_sigma, wall_max_sigma)
+                        and not _sigma_above_max(wall_pe_sigma, wall_max_sigma)
+                        and cw_d <= 1200 and pw_d <= 1200
+                        and (cw_d, pw_d) not in dist_pairs
+                    ):
+                        dist_pairs.append((cw_d, pw_d))
             else:
                 # Fallback: bounded geometric spacing
                 count = 0
@@ -6064,6 +6111,16 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 buy_call = sell_call + width
                 sell_put = atm - put_dist
                 buy_put = sell_put - width
+                ds_for_gate = ds_local if ds_local > 0 else _daily_sigma(spot, vix)
+                min_sigma, max_sigma = _credit_sigma_limits()
+                call_sigma = _sigma_otm_value(sell_call, spot, ds_for_gate)
+                put_sigma = _sigma_otm_value(sell_put, spot, ds_for_gate)
+                if call_sigma is None or put_sigma is None:
+                    continue
+                if call_sigma < min_sigma or put_sigma < min_sigma:
+                    continue
+                if _sigma_above_max(call_sigma, max_sigma) or _sigma_above_max(put_sigma, max_sigma):
+                    continue
                 if sell_call not in all_set or buy_call not in all_set: continue
                 if sell_put not in all_set or buy_put not in all_set: continue
                 pk = f"{sell_call}_{sell_put}_{width}"
@@ -6123,6 +6180,9 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
                     'isCredit': True, 'lotSize': lot_size, 'index': idx,
                     'expiry': expiry, 'tDTE': tdte,
+                    'sigmaOTM': round(max(call_sigma, put_sigma), 2),
+                    'sigmaOTMCall': round(call_sigma, 2),
+                    'sigmaOTMPut': round(put_sigma, 2),
                     'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
                     'targetProfit': round(max_profit * 0.5),
                     'stopLoss': round(max_loss * 0.6),
