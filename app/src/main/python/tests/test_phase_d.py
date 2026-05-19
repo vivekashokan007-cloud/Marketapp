@@ -119,6 +119,18 @@ class TestPhaseD(unittest.TestCase):
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
         self.assertIsNone(res)
 
+    def test_d1_12b_lots_one_uses_index_lot_size(self):
+        trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 1, "is_credit": True}
+        res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
+        self.assertEqual(res['lot_size_resolved'], 30)
+        self.assertEqual(res['current_pnl'], 1800)
+
+    def test_d1_12c_lots_two_scales_index_lot_size(self):
+        trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 2, "is_credit": True}
+        res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
+        self.assertEqual(res['lot_size_resolved'], 60)
+        self.assertEqual(res['current_pnl'], 3600)
+
     def test_d1_13_journey_first_point(self):
         trade = {"id": "J1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lot_size": 30, "journey": []}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)

@@ -2956,15 +2956,23 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     Replaces JS updateOpenTradePnL (2-leg only) and Kotlin 
     updateOpenTradesPnL (silently skipped on missing lot_size).
     """
-    # 1. Read lot_size from trade record if present
-    lot_size = trade.get('lot_size') or trade.get('lots') or 0
+    def _num(value, default=0):
+        try:
+            if value is None or value == '':
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
-    # 2. If missing, resolve from index_key:
-    if lot_size <= 0:
-        idx = trade.get('index_key', 'BNF')
-        lot_size = 30 if idx == 'BNF' else 65  # _CONST['BNF_LOT'] / _CONST['NF_LOT']
+    idx = trade.get('index_key', 'BNF')
+    base_lot = 30 if idx == 'BNF' else 65 if idx == 'NF' else 0
 
-    # 3. If still zero (unknown index), return None
+    # `lots` is trade quantity in lots, not lot size. App trades usually store
+    # `lots: 1`, so treating it as lot_size under-scales BNF P&L by 30x.
+    explicit_lot_size = _num(trade.get('lot_size') or trade.get('lotSize'), 0)
+    lots_count = max(_num(trade.get('lots'), 1), 1)
+    lot_size = explicit_lot_size if explicit_lot_size > 0 else base_lot * lots_count
+
     if lot_size <= 0:
         return None
 
@@ -2983,7 +2991,6 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
 
     # Build cache from chain or ltpMap
     cache = {}
-    idx = trade.get('index_key', 'BNF')
     # Prefer ltpMap from ctx if available for performance
     ltp_map = ctx.get('bnfLtpMap' if idx == 'BNF' else 'nfLtpMap')
     if ltp_map:
@@ -5047,7 +5054,7 @@ _CONST = {
     'GIFT_THRESHOLD': 0.3,
     'NOISE_WINDOW': 15,
     'LAST_ENTRY_CUTOFF': 345,
-    'ROUTINE_NOTIFY_MS': 3600000, # 60 min in ms
+    'ROUTINE_NOTIFY_MS': 1800000, # 30 min in ms
     'SIGMA_IMPORTANT_THRESHOLD': 2.0,
     'TARGET_NEAR_RATIO': 0.8,
     'STOP_LOSS_RATIO': 0.7,
