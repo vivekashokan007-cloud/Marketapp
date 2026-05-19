@@ -951,12 +951,12 @@ class MarketWatchService : Service() {
                 val dist = Math.abs(strike - spot)
                 if (dist < minDist) {
                     minDist = dist
-                    val call = item.optJSONObject("call_options")?.optJSONObject("market_data")
-                    val put = item.optJSONObject("put_options")?.optJSONObject("market_data")
-                    val callGreeks = item.optJSONObject("call_options")?.optJSONObject("option_greeks")
-                    val putGreeks = item.optJSONObject("put_options")?.optJSONObject("option_greeks")
-                    atmCeIv = callGreeks?.optDouble("iv", 0.0) ?: call?.optDouble("iv", 0.0) ?: 0.0
-                    atmPeIv = putGreeks?.optDouble("iv", 0.0) ?: put?.optDouble("iv", 0.0) ?: 0.0
+                    val callOpt = item.optJSONObject("call_options")
+                    val putOpt = item.optJSONObject("put_options")
+                    val call = callOpt?.optJSONObject("market_data")
+                    val put = putOpt?.optJSONObject("market_data")
+                    atmCeIv = optionIv(callOpt, call)
+                    atmPeIv = optionIv(putOpt, put)
                 }
             }
             return if (atmCeIv > 0 && atmPeIv > 0) (atmCeIv + atmPeIv) / 2.0 else Math.max(atmCeIv, atmPeIv)
@@ -1201,6 +1201,7 @@ class MarketWatchService : Service() {
             var declining = 0
             var neutral = 0
             var considered = 0
+            val configuredTotal = nf50Constituents.size
 
             for (key in nf50Constituents) {
                 val quote = findQuoteByInstrument(data, key)
@@ -1217,6 +1218,9 @@ class MarketWatchService : Service() {
 
             val score = advancing * 100.0 + neutral * 50.0
             val pct = if (considered > 0) (score / considered).coerceIn(0.0, 100.0) else 50.0
+            val advPct = if (configuredTotal > 0) {
+                (advancing * 100.0 / configuredTotal).coerceIn(0.0, 100.0)
+            } else 0.0
             val coverage = if (nf50Constituents.isNotEmpty()) {
                 considered.toDouble() / nf50Constituents.size.toDouble()
             } else 0.0
@@ -1233,7 +1237,9 @@ class MarketWatchService : Service() {
                 put("declining", declining)
                 put("neutral", neutral)
                 put("considered", considered)
+                put("total", configuredTotal)
                 put("coverage", coverage)
+                put("advPct", Math.round(advPct * 10.0) / 10.0)
                 put("scaled", pctRounded)
             }
         } catch (e: Exception) {
@@ -1249,7 +1255,9 @@ class MarketWatchService : Service() {
             put("declining", 0)
             put("neutral", 0)
             put("considered", 0)
+            put("total", getNf50Constituents().size)
             put("coverage", 0.0)
+            put("advPct", 0.0)
             put("scaled", 50.0)
         }
     }
@@ -1850,6 +1858,7 @@ class MarketWatchService : Service() {
                     val tradesStr = prefs.getString("open_trades", "[]") ?: "[]"
                     val trades = JSONArray(tradesStr)
                     var changed = false
+                    var updatedCount = 0
                     for (i in 0 until trades.length()) {
                         val t = trades.getJSONObject(i)
                         val tid = t.optString("id")
@@ -1857,6 +1866,7 @@ class MarketWatchService : Service() {
                         if (live != null) {
                             t.put("current_pnl", live.optDouble("current_pnl"))
                             t.put("current_spot", live.optDouble("current_spot"))
+                            t.put("current_premium", live.optDouble("current_net_premium"))
                             t.put("peak_pnl", live.optDouble("peak_pnl"))
                             t.put("trough_pnl", live.optDouble("trough_pnl"))
                             t.put("peak_erosion", live.optDouble("peak_erosion"))
@@ -1869,8 +1879,10 @@ class MarketWatchService : Service() {
                                 t.put("wallDrift", posData.optJSONObject("wallDrift"))
                             }
                             changed = true
+                            updatedCount += 1
                         }
                     }
+                    Log.d(TAG, "POSITION_LIVE_APPLIED: live=${posLive.length()} open=${trades.length()} updated=$updatedCount")
                     if (changed) {
                         prefs.edit().putString("open_trades", trades.toString()).commit()
                     }

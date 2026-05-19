@@ -2719,6 +2719,238 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         })
     return alerts
 
+
+# ───────────────────────────────────────────────────────────────
+# EXPLANATION + AUDIT AGENT — Phase A JSON only
+# ───────────────────────────────────────────────────────────────
+def _safe_num(x, default=0.0):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def _top_insights(items, limit=4):
+    scored = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label") or item.get("title") or ""
+        if not label:
+            continue
+        strength = _safe_num(item.get("strength", 1), 1)
+        scored.append((strength, label, item))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [x[2] for x in scored[:limit]]
+
+
+def build_session_explanation(result, ctx):
+    verdict = result.get("verdict") or {}
+    final = verdict.get("final") or {}
+    eb = result.get("effective_bias") or {}
+    regime = result.get("regime") or {}
+    market_phase = result.get("marketPhase") or {}
+
+    state = final.get("action") or verdict.get("action") or "WAIT"
+    confidence = int(_safe_num(final.get("confidence", verdict.get("confidence", 0)), 0))
+    bias = eb.get("bias") or verdict.get("direction") or "NEUTRAL"
+    net = _safe_num(eb.get("net", verdict.get("net", 0)), 0)
+    range_sigma = _safe_num(result.get("rangeSigma", regime.get("sigma", 0)), 0)
+    regime_type = (regime.get("type") or market_phase.get("type") or "UNKNOWN").upper()
+
+    all_insights = (
+        (result.get("market") or []) +
+        (result.get("timing") or []) +
+        (result.get("risk") or [])
+    )
+    why = []
+    for ins in _top_insights(all_insights, 5):
+        label = ins.get("label", "")
+        detail = ins.get("detail", "")
+        why.append(f"{label}: {detail}" if detail else label)
+
+    conflicts = []
+    for c in verdict.get("conflicts") or []:
+        if isinstance(c, str):
+            conflicts.append(c)
+        elif isinstance(c, dict):
+            conflicts.append(c.get("label") or c.get("reason") or str(c))
+    if regime_type == "RANGE" and abs(net) >= 1.0:
+        conflicts.append(f"Brain bias {bias} but session is range-bound")
+    if state == "WAIT" and confidence >= 50:
+        conflicts.append("Confidence rising but executable strategy is not aligned")
+
+    watch_for = []
+    if state == "WAIT":
+        watch_for.extend([
+            "3/3 force alignment",
+            "range break or confirmed range credit setup",
+            "VIX and breadth confirmation",
+        ])
+    elif state in ("BUY PREMIUM", "SELL PREMIUM", "ENTER"):
+        watch_for.extend([
+            "force alignment staying >=2/3",
+            "wall protection around sell strike",
+            "premium behavior confirming thesis",
+        ])
+
+    headline = f"{state}: {regime_type.lower()} session, bias {bias}"
+    if range_sigma:
+        headline += f", range {range_sigma:.2f} sigma"
+
+    return {
+        "headline": headline,
+        "state": state,
+        "confidence": confidence,
+        "regime": regime_type,
+        "range_sigma": range_sigma,
+        "bias": bias,
+        "bias_net": net,
+        "why": why[:5],
+        "conflicts": conflicts[:5],
+        "watch_for": watch_for[:5],
+    }
+
+
+def build_trade_audit(trade, position_result, ctx):
+    trade_id = str(trade.get("id") or "")
+    if not trade_id:
+        return "", {}
+
+    strategy = trade.get("strategy_type") or trade.get("type") or ""
+    index_key = trade.get("index_key") or trade.get("index") or ""
+    mode = trade.get("trade_mode") or trade.get("mode") or ""
+    verdict = (position_result or {}).get("verdict") or {}
+    insights = (position_result or {}).get("insights") or []
+    live = (position_result or {}).get("live") or {}
+
+    action = verdict.get("action") or "HOLD"
+    urgency = verdict.get("urgency") or "ROUTINE"
+    pnl = _safe_num(trade.get("current_pnl", live.get("current_pnl")), 0)
+    max_profit = _safe_num(trade.get("max_profit"), 0)
+    max_loss = _safe_num(trade.get("max_loss"), 0)
+    pnl_pct = round((pnl / max_profit) * 100) if max_profit > 0 else 0
+
+    forces = trade.get("forces") or {}
+    aligned = forces.get("aligned", trade.get("force_alignment"))
+    aligned_n = _safe_num(aligned, 0)
+
+    is_ic_ib = strategy in ("IRON_CONDOR", "IRON_BUTTERFLY")
+    ic_ib_intraday_ok = (not is_ic_ib) or (mode == "intraday")
+    max_loss_ok = max_loss <= _safe_num(ctx.get("capital", 250000), 250000) * 0.10
+    forces_ok = aligned is None or aligned_n >= 2
+
+    why = []
+    if verdict.get("reason"):
+        why.append(verdict["reason"])
+    if max_profit:
+        why.append(f"P&L is {pnl_pct}% of max profit")
+    if aligned is not None:
+        why.append(f"Forces are {int(aligned_n)}/3")
+    for ins in _top_insights(insights, 3):
+        label = ins.get("label", "")
+        if label:
+            why.append(label)
+
+    risk_flags = []
+    if not ic_ib_intraday_ok:
+        risk_flags.append("IC/IB must not be overnight")
+    if not max_loss_ok:
+        risk_flags.append("Max loss exceeds 10% capital")
+    if aligned is not None and aligned_n <= 1:
+        risk_flags.append("Forces weakened to danger zone")
+
+    forces_component = (aligned_n / 3.0) * 40 if aligned is not None else 20
+    pnl_component = max(0, pnl_pct) * 0.6
+    score = min(100, max(0, int(forces_component + pnl_component)))
+
+    headline = f"{action}: {index_key} {strategy}"
+    if pnl:
+        headline += f" P&L Rs {round(pnl)}"
+
+    return trade_id, {
+        "headline": headline,
+        "action": action,
+        "urgency": urgency,
+        "score": score,
+        "why": why[:5],
+        "risk_flags": risk_flags[:5],
+        "rule_checks": {
+            "max_loss_ok": bool(max_loss_ok),
+            "ic_ib_intraday_ok": bool(ic_ib_intraday_ok),
+            "forces_ok": bool(forces_ok),
+        },
+    }
+
+
+def decide_agent_notification(agent, result, ctx):
+    summary = agent.get("session_summary") or {}
+    state = summary.get("state", "WAIT")
+    confidence = int(_safe_num(summary.get("confidence"), 0))
+    regime = summary.get("regime", "UNKNOWN")
+    range_sigma = _safe_num(summary.get("range_sigma"), 0)
+    conflicts = summary.get("conflicts") or []
+
+    if state in ("BUY PREMIUM", "SELL PREMIUM", "ENTER") and confidence >= 55:
+        return {
+            "severity": "entry",
+            "dedupe_bucket": f"SETUP_{state}_{regime}",
+            "should_notify": True,
+            "reason": "Actionable setup with sufficient confidence",
+        }
+    if state == "WAIT" and conflicts and confidence >= 45:
+        return {
+            "severity": "routine",
+            "dedupe_bucket": f"WAIT_CONFLICT_{regime}",
+            "should_notify": False,
+            "reason": "Conflict explains WAIT but is not actionable",
+        }
+    if regime == "RANGE" and range_sigma <= 0.35:
+        return {
+            "severity": "routine",
+            "dedupe_bucket": "RANGE_BOUND_LOW_SIGMA",
+            "should_notify": False,
+            "reason": "Range continues without new entry trigger",
+        }
+    return {
+        "severity": "routine",
+        "dedupe_bucket": f"{state}_{regime}",
+        "should_notify": False,
+        "reason": "No actionable state change",
+    }
+
+
+def build_explanation_audit_agent(result, ctx, open_trades):
+    agent = {
+        "schema": 1,
+        "mode": "EXPLAIN_AUDIT",
+        "session_summary": build_session_explanation(result, ctx),
+        "notification_context": {},
+        "trade_audits": {},
+        "data_quality": {"missing": [], "warnings": []},
+    }
+
+    positions = result.get("positions") or {}
+    for trade in open_trades or []:
+        tid = str(trade.get("id") or "")
+        pos = positions.get(tid) or {}
+        audit_id, audit = build_trade_audit(trade, pos, ctx)
+        if audit_id:
+            agent["trade_audits"][audit_id] = audit
+
+    if not result.get("effective_bias"):
+        agent["data_quality"]["warnings"].append("effective_bias missing")
+    if result.get("rangeSigma") is None:
+        agent["data_quality"]["warnings"].append("rangeSigma missing")
+    if not result.get("watchlist"):
+        agent["data_quality"]["warnings"].append("watchlist empty")
+
+    agent["notification_context"] = decide_agent_notification(agent, result, ctx)
+    return agent
+
+
 def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     """Phase D: brain.py becomes sole producer of position P&L.
     Replaces JS updateOpenTradePnL (2-leg only) and Kotlin 
@@ -6251,6 +6483,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["generated_candidates"] = []
         result["watchlist"] = []
         result["candidateTrace"] = False
+        try:
+            result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
+        except Exception as e:
+            result["agent_error"] = str(e)
 
         # Even on early return, embed trace so consumer knows it ran
         if ctx.get('_trace'):
@@ -6408,16 +6644,6 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         tomorrow_signal_result = compute_global_boost(positioning_result, ctx)
         if tomorrow_signal_result:
             result['tomorrow_signal'] = tomorrow_signal_result
-
-    # #27 — Evaluate alerts (every poll, after positioning/signal computed)
-    alerts_result = evaluate_alerts(
-        open_trades=open_trades, # use local list
-        watchlist=result.get('watchlist') or [], # use from result
-        result=result,
-        ctx=ctx,
-    )
-    result['alerts'] = alerts_result
-
 
     # Candidates — existing + liquidity + pattern match + b92 risk evaluation
     for c in candidates:
@@ -6639,6 +6865,26 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         'sigma': gap.get('nf', {}).get('sigma', 0),
         'type': gap.get('nf', {}).get('type', 'NORMAL'),
     }
+
+    # Phase A agent: deterministic explanation/audit JSON only. This must run
+    # after candidates/watchlist/gaps/positions are populated.
+    try:
+        result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
+    except Exception as e:
+        result["agent_error"] = str(e)
+
+    # #27 — Evaluate alerts after watchlist generation. Earlier placement used
+    # an empty watchlist and silently disabled candidate/watchlist alerts.
+    try:
+        result['alerts'] = evaluate_alerts(
+            open_trades=open_trades,
+            watchlist=result.get('watchlist') or [],
+            result=result,
+            ctx=ctx,
+        )
+    except Exception as e:
+        result['alerts'] = []
+        result['alert_error'] = str(e)
 
     out_str, _ = _safe_json(result)
     return out_str

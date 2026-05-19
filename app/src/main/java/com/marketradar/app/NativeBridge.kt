@@ -589,6 +589,19 @@ class NativeBridge(private val context: Context) {
             openTradesCacheMs = now
             return prefValue
         }
+        // Live P&L/control fields are produced locally by brain.py and stored in
+        // SharedPreferences. Supabase only has the entry snapshot, so polling it
+        // here can overwrite current_pnl back to zero. Use Supabase only as a
+        // bootstrap fallback when there is no local open-trades state.
+        try {
+            if (JSONArray(prefValue).length() > 0) {
+                openTradesCache = prefValue
+                openTradesCacheMs = now
+                return prefValue
+            }
+        } catch (_: Exception) {
+            // Fall through to cached/fallback path for corrupt local state.
+        }
         if (now - openTradesCacheMs < openTradesCacheTtlMs) return openTradesCache
         return try {
             val result = SupabaseClient.getOpenTrades().toString()
