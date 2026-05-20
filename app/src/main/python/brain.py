@@ -2969,7 +2969,13 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
 
     # `lots` is trade quantity in lots, not lot size. App trades usually store
     # `lots: 1`, so treating it as lot_size under-scales BNF P&L by 30x.
-    explicit_lot_size = _num(trade.get('lot_size') or trade.get('lotSize'), 0)
+    entry_snapshot = trade.get('entry_snapshot') or {}
+    if not isinstance(entry_snapshot, dict):
+        entry_snapshot = {}
+    explicit_lot_size = _num(
+        trade.get('lot_size') or trade.get('lotSize') or entry_snapshot.get('lot_size') or entry_snapshot.get('lotSize'),
+        0
+    )
     lots_count = max(_num(trade.get('lots'), 1), 1)
     lot_size = explicit_lot_size if explicit_lot_size > 0 else base_lot * lots_count
 
@@ -5043,6 +5049,7 @@ _CONST = {
     'IV_HIGH': 20, 'IV_VERY_HIGH': 24, 'IV_LOW': 15,
     'MIN_PROB': 0.50, 'MIN_CREDIT_RATIO': 0.10,
     'MIN_SIGMA_OTM': 0.5, 'MAX_SIGMA_OTM': 0.8,
+    'IC_WALL_MAX_SIGMA': 1.5,
     'MIN_WIDTH_BNF': 400, 'MIN_WIDTH_NF': 150,
     'CREDIT_TYPES': ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
     'DEBIT_TYPES': ['BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT'],
@@ -5713,8 +5720,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         return None
 
     is_credit = stype in _CONST['CREDIT_TYPES']
-    sell_price = sell_data.get('bid', 0) if is_credit else sell_data.get('ask', 0)
-    buy_price = buy_data.get('ask', 0) if is_credit else buy_data.get('bid', 0)
+    # Use executable pricing for both credit and debit spreads:
+    # short leg sells at bid, long/protection leg buys at ask.
+    sell_price = sell_data.get('bid', 0)
+    buy_price = buy_data.get('ask', 0)
     if not sell_price or not buy_price:
         # TASK 5.6 — trace rejection
         if ctx.get('_trace') is not None:
@@ -6119,7 +6128,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 sell_put = atm - put_dist
                 buy_put = sell_put - width
                 ds_for_gate = ds_local if ds_local > 0 else _daily_sigma(spot, vix)
-                min_sigma, max_sigma = _credit_sigma_limits()
+                min_sigma = _CONST.get('MIN_SIGMA_OTM', 0.5)
+                max_sigma = _CONST.get('IC_WALL_MAX_SIGMA', 1.5)
                 call_sigma = _sigma_otm_value(sell_call, spot, ds_for_gate)
                 put_sigma = _sigma_otm_value(sell_put, spot, ds_for_gate)
                 if call_sigma is None or put_sigma is None:

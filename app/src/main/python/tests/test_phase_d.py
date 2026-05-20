@@ -131,6 +131,31 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(res['lot_size_resolved'], 60)
         self.assertEqual(res['current_pnl'], 3600)
 
+    def test_d1_12d_entry_snapshot_lot_size_wins_after_restart(self):
+        trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 1, "entry_snapshot": {"lot_size": 60}, "is_credit": True}
+        res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
+        self.assertEqual(res['lot_size_resolved'], 60)
+        self.assertEqual(res['current_pnl'], 3600)
+
+    def test_d1_12e_debit_candidate_uses_buy_ask_and_sell_bid(self):
+        strikes = {
+            "22200": {"CE": {"bid": 100, "ask": 110, "ltp": 105, "oi": 1000, "delta": 0.6, "theta": -5}},
+            "22400": {"CE": {"bid": 30, "ask": 35, "ltp": 32, "oi": 1000, "delta": 0.3, "theta": -2}},
+        }
+        pair = {"buy": 22200, "sell": 22400, "buyType": "CE", "sellType": "CE"}
+        original_chain_delta = brain._chain_delta
+        try:
+            brain._chain_delta = lambda *args, **kwargs: 0.8
+            cand = brain._build_candidate("BULL_CALL", pair, strikes, 22200, 65, 200, 1 / 252, 1, 0.2, "2026-05-19", False, 18.0, "intraday", {})
+        finally:
+            brain._chain_delta = original_chain_delta
+
+        self.assertIsNotNone(cand)
+        self.assertEqual(cand["buyLTP"], 110)
+        self.assertEqual(cand["sellLTP"], 30)
+        self.assertEqual(cand["netPremium"], 80)
+        self.assertEqual(cand["maxLoss"], 5200)
+
     def test_d1_13_journey_first_point(self):
         trade = {"id": "J1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lot_size": 30, "journey": []}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)

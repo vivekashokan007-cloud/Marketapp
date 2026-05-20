@@ -189,7 +189,9 @@ class ExplanationAuditAgentTests(unittest.TestCase):
         ic_candidates = [c for c in candidates if c["type"] == "IRON_CONDOR"]
         self.assertTrue(ic_candidates)
         self.assertFalse(any(c["sellStrike"] == 60000 for c in ic_candidates))
-        self.assertTrue(all(c["sigmaOTMCall"] <= 0.8 and c["sigmaOTMPut"] <= 0.8 for c in ic_candidates))
+        self.assertGreaterEqual(len(ic_candidates), 8)
+        self.assertTrue(all(c["sigmaOTMCall"] <= 1.5 and c["sigmaOTMPut"] <= 1.5 for c in ic_candidates))
+        self.assertTrue(any(c["sigmaOTMCall"] > 0.8 or c["sigmaOTMPut"] > 0.8 for c in ic_candidates))
 
 
 if __name__ == "__main__":
