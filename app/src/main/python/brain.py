@@ -6343,6 +6343,120 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
     ranked.sort(key=sort_key)
     return ranked
 
+def _strategy_action(strategy_type):
+    return 'BUY PREMIUM' if strategy_type in _CONST.get('DEBIT_TYPES', set()) else 'SELL PREMIUM'
+
+def _strategy_direction(strategy_type):
+    if strategy_type in ('BULL_CALL', 'BULL_PUT'):
+        return 'BULL'
+    if strategy_type in ('BEAR_CALL', 'BEAR_PUT'):
+        return 'BEAR'
+    return 'NEUTRAL'
+
+def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):
+    """Top-ranked executable list plus per-index diversity picks."""
+    watchlist = list(ranked[:head_count])
+    seen_ids = set(c.get('id') for c in watchlist)
+    for idx_pick in ('BNF', 'NF'):
+        seen_types = set()
+        idx_added = 0
+        for c in ranked:
+            if c.get('index') != idx_pick:
+                continue
+            if c.get('capitalBlocked'):
+                continue
+            if c.get('type') in seen_types:
+                continue
+            if c.get('id') in seen_ids:
+                continue
+            seen_types.add(c.get('type'))
+            seen_ids.add(c.get('id'))
+            watchlist.append(c)
+            idx_added += 1
+            if idx_added >= per_index_diverse:
+                break
+    return watchlist
+
+def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
+    """Make final brain verdict match the executable candidate lane shown to user.
+
+    synthesize_verdict() runs before native candidate generation, so it can
+    describe the market thesis while the generated executable candidates belong
+    to a different lane. The app must not display BUY PREMIUM while the primary
+    card is IC/Bear Call credit. This reconciles the final verdict to the top
+    executable candidate and records the adjustment in conflicts.
+    """
+    if not isinstance(verdict, dict):
+        return verdict
+    if verdict.get('action') in ('WAIT', 'STOP', None):
+        return verdict
+
+    executable = [
+        c for c in (watchlist or [])
+        if isinstance(c, dict) and not c.get('capitalBlocked') and c.get('type')
+    ]
+    if not executable:
+        final = dict(verdict)
+        final['pre_alignment_action'] = final.get('action')
+        final['pre_alignment_strategy'] = final.get('strategy')
+        final['action'] = 'WAIT'
+        final['strategy'] = None
+        final['direction'] = 'NEUTRAL'
+        final['confidence'] = 0
+        final['execution_aligned'] = False
+        conflicts = list(final.get('conflicts') or [])
+        conflicts.append('No executable candidates - WAIT')
+        final['conflicts'] = conflicts
+        return final
+
+    top = executable[0]
+    top_type = top.get('type')
+    if not top_type:
+        return verdict
+
+    final = dict(verdict)
+    old_action = final.get('action')
+    old_strategy = final.get('strategy')
+    new_action = _strategy_action(top_type)
+    new_direction = _strategy_direction(top_type)
+    aligned = (top.get('forces') or {}).get('aligned', 0)
+    floor = 0
+    if isinstance(aligned, (int, float)):
+        floor = 70 if aligned >= 3 else 45 if aligned >= 2 else 30
+    old_conf = final.get('confidence') or 0
+    changed = (
+        old_action != new_action
+        or old_strategy != top_type
+        or final.get('direction') != new_direction
+        or final.get('execution_candidate_id') != top.get('id')
+        or final.get('execution_candidate_index') != top.get('index')
+        or old_conf < floor
+    )
+    if not changed and final.get('execution_aligned'):
+        return verdict
+
+    final['pre_alignment_action'] = old_action
+    final['pre_alignment_strategy'] = old_strategy
+    final['action'] = new_action
+    final['strategy'] = top_type
+    final['direction'] = new_direction
+    final['execution_aligned'] = True
+    final['execution_candidate_id'] = top.get('id')
+    final['execution_candidate_index'] = top.get('index')
+
+    conflicts = list(final.get('conflicts') or [])
+    if old_action != new_action or old_strategy != top_type:
+        conflicts.append(f"Execution aligned to top candidate: {old_strategy or '--'}/{old_action or '--'} -> {top_type}/{new_action}")
+        final['conflicts'] = conflicts
+
+    if floor:
+        final['confidence'] = max(final.get('confidence') or 0, floor)
+
+    reasoning = final.get('reasoning') or ''
+    exec_reason = f"Top executable: {top.get('index', '')} {top_type}"
+    final['reasoning'] = f"{reasoning} | {exec_reason}" if reasoning else exec_reason
+    return final
+
 
 def _ltp(sd, strike, ot):
     k = str(int(strike))
@@ -6839,6 +6953,12 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         if all_cands:
             brain_verdict = result.get('verdict')
             ranked = rank_candidates(all_cands, _calibration, brain_verdict)
+            pre_watchlist = _build_watchlist_from_ranked(ranked)
+            aligned_verdict = _align_verdict_to_watchlist(brain_verdict, pre_watchlist, ctx)
+            if aligned_verdict is not brain_verdict:
+                result['verdict'] = aligned_verdict
+                brain_verdict = aligned_verdict
+                ranked = rank_candidates(all_cands, _calibration, brain_verdict)
 
             # ── SPLICE 4: Enrich ML with live context, BEFORE watchlist build ──
             engine = _ml_load_if_needed()
@@ -6886,26 +7006,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 except Exception:
                     pass
 
-            # Watchlist: top 6 + diverse picks per index
-            # BR128: Fair per-index allocation — 3 diverse picks each for BNF and NF.
-            watchlist = ranked[:6]
-            seen_ids = set(c['id'] for c in watchlist)
-            for idx_pick in ['BNF', 'NF']:
-                seen_types = set()
-                idx_added = 0
-                for c in ranked:
-                    if c['index'] != idx_pick: continue
-                    if c.get('capitalBlocked'): continue
-                    if c['type'] in seen_types: continue
-                    if c['id'] in seen_ids: continue
-                    seen_types.add(c['type'])
-                    seen_ids.add(c['id'])
-                    watchlist.append(c)
-                    idx_added += 1
-                    if idx_added >= 3: break
+            # Watchlist: top 6 + diverse picks per index.
+            # Final verdict must match the executable lane shown to the user.
+            watchlist = _build_watchlist_from_ranked(ranked)
+            final_verdict = _align_verdict_to_watchlist(result.get('verdict'), watchlist, ctx)
+            if final_verdict is not result.get('verdict'):
+                result['verdict'] = final_verdict
+                ranked = rank_candidates(all_cands, _calibration, final_verdict)
+                watchlist = _build_watchlist_from_ranked(ranked)
             
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
+            final_verdict = _align_verdict_to_watchlist(result.get('verdict'), result["watchlist"], ctx)
+            if final_verdict is not result.get('verdict'):
+                result['verdict'] = final_verdict
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
 

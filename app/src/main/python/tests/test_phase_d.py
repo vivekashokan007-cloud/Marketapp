@@ -156,6 +156,156 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(cand["netPremium"], 80)
         self.assertEqual(cand["maxLoss"], 5200)
 
+    def test_d1_12f_verdict_aligns_to_credit_watchlist(self):
+        verdict = {
+            "action": "BUY PREMIUM",
+            "strategy": "BULL_CALL",
+            "direction": "BULL",
+            "confidence": 42,
+            "conflicts": [],
+        }
+        watchlist = [{
+            "id": "NF-IC-1",
+            "index": "NF",
+            "type": "IRON_CONDOR",
+            "isCredit": True,
+            "forces": {"aligned": 3},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertEqual(aligned["action"], "SELL PREMIUM")
+        self.assertEqual(aligned["strategy"], "IRON_CONDOR")
+        self.assertEqual(aligned["direction"], "NEUTRAL")
+        self.assertEqual(aligned["confidence"], 70)
+        self.assertEqual(aligned["execution_candidate_id"], "NF-IC-1")
+        self.assertTrue(any("Execution aligned" in c for c in aligned["conflicts"]))
+
+    def test_d1_12g_verdict_aligns_to_bear_call_watchlist(self):
+        verdict = {
+            "action": "BUY PREMIUM",
+            "strategy": "BULL_CALL",
+            "direction": "BULL",
+            "confidence": 60,
+        }
+        watchlist = [{
+            "id": "BNF-BC-1",
+            "index": "BNF",
+            "type": "BEAR_CALL",
+            "isCredit": True,
+            "forces": {"aligned": 2},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertEqual(aligned["action"], "SELL PREMIUM")
+        self.assertEqual(aligned["strategy"], "BEAR_CALL")
+        self.assertEqual(aligned["direction"], "BEAR")
+        self.assertEqual(aligned["confidence"], 60)
+        self.assertEqual(aligned["execution_candidate_index"], "BNF")
+
+    def test_d1_12h_aligned_verdict_returns_same_object(self):
+        verdict = {
+            "action": "SELL PREMIUM",
+            "strategy": "IRON_CONDOR",
+            "direction": "NEUTRAL",
+            "confidence": 75,
+            "execution_aligned": True,
+            "execution_candidate_id": "NF-IC-1",
+            "execution_candidate_index": "NF",
+        }
+        watchlist = [{
+            "id": "NF-IC-1",
+            "index": "NF",
+            "type": "IRON_CONDOR",
+            "isCredit": True,
+            "forces": {"aligned": 3},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertIs(aligned, verdict)
+
+    def test_d1_12i_wait_not_overridden(self):
+        verdict = {"action": "WAIT", "strategy": None, "confidence": 0}
+        watchlist = [{
+            "id": "NF-IC-1",
+            "index": "NF",
+            "type": "IRON_CONDOR",
+            "isCredit": True,
+            "forces": {"aligned": 3},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertIs(aligned, verdict)
+        self.assertEqual(aligned["action"], "WAIT")
+        self.assertEqual(aligned["confidence"], 0)
+
+    def test_d1_12j_capital_blocked_top_candidate_skipped(self):
+        verdict = {"action": "BUY PREMIUM", "strategy": "BULL_CALL", "direction": "BULL", "confidence": 55}
+        watchlist = [
+            {
+                "id": "NF-IC-BLOCKED",
+                "index": "NF",
+                "type": "IRON_CONDOR",
+                "isCredit": True,
+                "capitalBlocked": True,
+                "forces": {"aligned": 3},
+            },
+            {
+                "id": "BNF-BC-OPEN",
+                "index": "BNF",
+                "type": "BEAR_CALL",
+                "isCredit": True,
+                "capitalBlocked": False,
+                "forces": {"aligned": 2},
+            },
+        ]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertEqual(aligned["strategy"], "BEAR_CALL")
+        self.assertEqual(aligned["action"], "SELL PREMIUM")
+        self.assertEqual(aligned["execution_candidate_id"], "BNF-BC-OPEN")
+
+    def test_d1_12k_empty_executable_becomes_wait(self):
+        verdict = {"action": "SELL PREMIUM", "strategy": "IRON_CONDOR", "direction": "NEUTRAL", "confidence": 65}
+        watchlist = [{
+            "id": "NF-IC-BLOCKED",
+            "index": "NF",
+            "type": "IRON_CONDOR",
+            "isCredit": True,
+            "capitalBlocked": True,
+            "forces": {"aligned": 3},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertEqual(aligned["action"], "WAIT")
+        self.assertIsNone(aligned["strategy"])
+        self.assertEqual(aligned["confidence"], 0)
+        self.assertFalse(aligned["execution_aligned"])
+        self.assertTrue(any("No executable candidates" in c for c in aligned["conflicts"]))
+
+    def test_d1_12l_pre_alignment_fields_preserved(self):
+        verdict = {"action": "BUY PREMIUM", "strategy": "BULL_CALL", "direction": "BULL", "confidence": 55}
+        watchlist = [{
+            "id": "NF-IC-1",
+            "index": "NF",
+            "type": "IRON_CONDOR",
+            "isCredit": True,
+            "capitalBlocked": False,
+            "forces": {"aligned": 3},
+        }]
+
+        aligned = brain._align_verdict_to_watchlist(verdict, watchlist)
+
+        self.assertEqual(aligned["pre_alignment_action"], "BUY PREMIUM")
+        self.assertEqual(aligned["pre_alignment_strategy"], "BULL_CALL")
+        self.assertEqual(aligned["action"], "SELL PREMIUM")
+        self.assertEqual(aligned["strategy"], "IRON_CONDOR")
+
     def test_d1_13_journey_first_point(self):
         trade = {"id": "J1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lot_size": 30, "journey": []}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
