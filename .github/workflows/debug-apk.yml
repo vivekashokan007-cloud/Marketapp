@@ -24,7 +24,7 @@ on:
       - '.github/workflows/debug-apk.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   debug-apk:
@@ -145,3 +145,22 @@ jobs:
           name: market-radar-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Extract version name
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | sed "s/.*\"\(.*\)\".*/\1/")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          body: |
+            Auto-built APK for v${{ steps.version.outputs.version }}
+          files: app/build/outputs/apk/debug/*.apk
+          generate_release_notes: false
+          make_latest: true
