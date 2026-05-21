@@ -46,7 +46,7 @@ class NativeBridge(private val context: Context) {
     private val startDebounceMs = 15000L
 
     init {
-        clearStalePollStateIfNeeded()
+        clearStaleSessionStateIfNeeded()
     }
 
     @JavascriptInterface
@@ -144,7 +144,12 @@ class NativeBridge(private val context: Context) {
     fun setBaseline(json: String) {
         val last = prefs.getString("morning_baseline", "")
         if (json == last) return
-        prefs.edit().putString("morning_baseline", json).commit()
+        prefs.edit()
+            .putString("morning_baseline", json)
+            .remove("brain_result")
+            .remove("candidates")
+            .putString("last_poll_date", todayIstDate())
+            .commit()
     }
 
     @JavascriptInterface
@@ -194,6 +199,9 @@ class NativeBridge(private val context: Context) {
                 .putString("morning_baseline", obj.toString())
                 .putString("expiry_bnf", bnfExpiry)
                 .putString("expiry_nf", nfExpiry)
+                .remove("brain_result")
+                .remove("candidates")
+                .putString("last_poll_date", todayIstDate())
                 .commit()
             bridgeOk()
         } catch (e: Exception) {
@@ -343,30 +351,35 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getLatestPoll(): String {
-        clearStalePollStateIfNeeded()
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) return "null"
         return prefs.getString("latest_poll", "null") ?: "null"
     }
 
     @JavascriptInterface
     fun getPollHistory(): String {
-        clearStalePollStateIfNeeded()
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) return "[]"
         return prefs.getString("poll_history", "[]") ?: "[]"
     }
 
     @JavascriptInterface
     fun getBrainResult(): String {
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) return "null"
         return prefs.getString("brain_result", "null") ?: "null"
     }
 
     @JavascriptInterface
     fun getServiceStatus(): String {
         return try {
-            clearStalePollStateIfNeeded()
+            clearStaleSessionStateIfNeeded()
             // NB6: Build JSON using JSONObject to avoid injection/escaping issues
             val status = JSONObject()
-            status.put("running", isServiceRunning())
-            status.put("lastPoll", prefs.getString("last_poll_time", "Never"))
-            status.put("polls", prefs.getInt("poll_count", 0))
+            val activeToday = hasTodayBaseline()
+            status.put("running", activeToday && isServiceRunning())
+            status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
+            status.put("polls", if (activeToday) prefs.getInt("poll_count", 0) else 0)
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"
@@ -375,6 +388,8 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getCandidates(): String {
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) return "[]"
         return prefs.getString("candidates", "[]") ?: "[]"
     }
 
@@ -483,25 +498,65 @@ class NativeBridge(private val context: Context) {
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
     }
 
-    private fun clearStalePollStateIfNeeded() {
+    private fun baselineDate(rawBaseline: String = prefs.getString("morning_baseline", "{}") ?: "{}"): String {
+        return try {
+            JSONObject(rawBaseline).optString("date", "")
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    private fun hasTodayBaseline(): Boolean {
+        return baselineDate() == todayIstDate()
+    }
+
+    private fun clearStaleSessionStateIfNeeded() {
         val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
-        if (lastPollDate == today) return
+        val baselineIsToday = hasTodayBaseline()
 
         val hasStalePollState =
+            lastPollDate != today && (
             prefs.getString("poll_history", "[]") != "[]" ||
             prefs.getInt("poll_count", 0) != 0 ||
             prefs.getString("latest_poll", "null") != "null" ||
-            prefs.contains("last_poll_time")
-        if (!hasStalePollState) return
+            prefs.contains("last_poll_time"))
+        val hasStaleDerivedState = !baselineIsToday && (
+            prefs.getString("brain_result", "null") != "null" ||
+            prefs.getString("candidates", "[]") != "[]" ||
+            prefs.getBoolean("service_running", false)
+        )
+        if (!hasStalePollState && !hasStaleDerivedState) return
 
+        val editor = prefs.edit()
+        if (hasStalePollState) {
+            editor
+                .remove("poll_history")
+                .remove("poll_count")
+                .remove("latest_poll")
+                .remove("last_poll_time")
+                .putString("last_poll_date", today)
+        }
+        if (hasStaleDerivedState) {
+            editor
+                .remove("brain_result")
+                .remove("candidates")
+                .putBoolean("service_running", false)
+        }
+        editor.commit()
+        Log.i("NativeBridge", "DAILY_RESET_BRIDGE: cleared stale session state for $today")
+    }
+
+    private fun clearDerivedSessionStateForToday() {
         prefs.edit()
+            .remove("brain_result")
+            .remove("candidates")
             .remove("poll_history")
             .remove("poll_count")
             .remove("latest_poll")
             .remove("last_poll_time")
+            .putString("last_poll_date", todayIstDate())
             .commit()
-        Log.i("NativeBridge", "DAILY_RESET_BRIDGE: cleared stale poll state for $today")
     }
 
     private fun fetchJson(url: String, token: String): JSONObject? {
@@ -680,7 +735,9 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getBaseline(): String {
         return try {
-            prefs.getString("morning_baseline", "{}") ?: "{}"
+            clearStaleSessionStateIfNeeded()
+            val baseline = prefs.getString("morning_baseline", "{}") ?: "{}"
+            if (baselineDate(baseline) == todayIstDate()) baseline else "{}"
         } catch (e: Exception) {
             "{}"
         }
