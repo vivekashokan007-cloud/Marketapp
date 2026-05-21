@@ -64,6 +64,8 @@ class MarketRadarApp : Application() {
                 LogTap.install(this)
                 LogTap.installPythonStreams()
             }
+            // Schedule day evaluation reminder at 4:30 PM IST (trading days)
+            MarketMLService.scheduleDayEvaluationReminder(this)
             Log.i("MarketRadarApp", "onCreate complete")
         } catch (e: Exception) {
             Log.e("MarketRadarApp", "onCreate FAILED: ${e.message}", e)

@@ -144,8 +144,74 @@ object SupabaseClient {
     }
 
     /**
-     * Saves a 2pm/315pm chain snapshot to chain_snapshots table
+     * Saves a brain snapshot to ml_brain_snapshots (ML Arch V2).
+     * Requires ALTER TABLE ml_brain_snapshots ADD COLUMN top_candidates_json JSONB;
      */
+    fun saveBrainSnapshot(body: JSONObject): Boolean {
+        val request = getBaseRequest("ml_brain_snapshots")
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Save brain snapshot failed: ${e.message}")
+            false
+        }
+    }
+
+    fun fetchBrainSnapshots(date: String): JSONArray {
+        val request = getBaseRequest("ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc")
+            .get()
+            .build()
+        val json = fetchSync(request) ?: return JSONArray()
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching brain snapshots: ${e.message}")
+            JSONArray()
+        }
+    }
+
+    fun fetchChainSlices(date: String): JSONArray {
+        val request = getBaseRequest("chain_slices?session_date=eq.$date&order=poll_ts.desc")
+            .get()
+            .build()
+        val json = fetchSync(request) ?: return JSONArray()
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching chain slices: ${e.message}")
+            JSONArray()
+        }
+    }
+
+    fun saveChainSlice(body: JSONObject): Boolean {
+        val request = getBaseRequest("chain_slices")
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return try {
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Save chain slice failed: ${e.message}")
+            false
+        }
+    }
+
+    fun saveEvaluationOutcomes(body: JSONArray): Boolean {
+        return try {
+            val request = getBaseRequest("ml_evaluation_outcomes")
+                .header("Prefer", "resolution=merge-duplicates")
+                .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+            client.newCall(request).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            Log.e(TAG, "Save evaluation outcomes failed: ${e.message}")
+            false
+        }
+    }
+
     fun saveChainSnapshot(session: String, data: JSONObject): Boolean {
         // SC4: Standardization - snapshots use IST date to match trading days
         val ist = java.util.TimeZone.getTimeZone("Asia/Kolkata")

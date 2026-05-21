@@ -43,6 +43,53 @@ class MLAlarmReceiver : BroadcastReceiver() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EVALUATION ALARM RECEIVER — fires at 4:30 PM, shows notification with button
+// ─────────────────────────────────────────────────────────────────────────────
+
+class EvaluationAlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        // Skip if evaluation already done today
+        val istToday = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+        }.format(java.util.Date())
+        val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+        if (istToday == prefs.getString("evaluation_done_date", null)) {
+            Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already done today")
+            return
+        }
+
+        Log.i("EvaluationAlarmReceiver", "4:30 PM+ alarm fired — showing evaluation reminder")
+        val runIntent = Intent(context, MarketMLService::class.java).apply {
+            action = "ACTION_DAY_EVALUATION"
+        }
+        val pendingIntent = PendingIntent.getService(
+            context, 1002, runIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val channel = android.app.NotificationChannel(
+            "ml_evaluation", "Day Evaluation",
+            android.app.NotificationManager.IMPORTANCE_DEFAULT
+        )
+        val nm = context.getSystemService(android.app.NotificationManager::class.java)
+        nm?.createNotificationChannel(channel)
+
+        val notification = android.app.Notification.Builder(context, "ml_evaluation")
+            .setContentTitle("Day Evaluation Ready")
+            .setContentText("Tap to evaluate today's brain recommendations")
+            .setSmallIcon(android.R.drawable.ic_menu_manage)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+
+        nm?.notify(2003, notification)
+
+        // Schedule next reminder in 30 min
+        MarketMLService.scheduleNextEvaluationReminder(context)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ML SERVICE
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -98,6 +145,65 @@ class MarketMLService : Service() {
             val intent = PendingIntent.getBroadcast(
                 context, 0,
                 Intent(context, MLAlarmReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            am.cancel(intent)
+        }
+
+        // ── Schedule first evaluation reminder at 4:30 PM IST (one-shot) ──
+        fun scheduleDayEvaluationReminder(context: Context) {
+            val istToday = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
+            }.format(java.util.Date())
+            val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            if (istToday == prefs.getString("evaluation_done_date", null)) {
+                Log.i(TAG, "Skipping schedule — evaluation already done today")
+                return
+            }
+
+            val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
+            val intent = PendingIntent.getBroadcast(
+                context, 1002,
+                Intent(context, EvaluationAlarmReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata")).apply {
+                set(Calendar.HOUR_OF_DAY, 16)
+                set(Calendar.MINUTE, 30)
+                set(Calendar.SECOND, 0)
+                if (timeInMillis <= System.currentTimeMillis()) {
+                    // 4:30 PM already passed — fire immediately
+                    add(Calendar.MINUTE, 1)
+                }
+            }
+
+            am.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, intent)
+            Log.i(TAG, "First evaluation reminder scheduled at ${cal.time}")
+        }
+
+        // ── Schedule next evaluation reminder 30 min from now (one-shot) ──
+        fun scheduleNextEvaluationReminder(context: Context) {
+            val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
+            val intent = PendingIntent.getBroadcast(
+                context, 1002,
+                Intent(context, EvaluationAlarmReceiver::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata")).apply {
+                timeInMillis = System.currentTimeMillis() + 30 * 60 * 1000L
+            }
+
+            am.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, intent)
+            Log.i(TAG, "Next evaluation reminder scheduled in 30 min at ${cal.time}")
+        }
+
+        fun cancelDayEvaluationReminder(context: Context) {
+            val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
+            val intent = PendingIntent.getBroadcast(
+                context, 1002,
+                Intent(context, EvaluationAlarmReceiver::class.java),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             am.cancel(intent)
@@ -213,6 +319,13 @@ class MarketMLService : Service() {
             "ACTION_TRAIN_TEMPORAL" -> {
                 scope.launch {
                     runTemporalTraining()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                }
+            }
+            "ACTION_DAY_EVALUATION" -> {
+                scope.launch {
+                    runDayEvaluation()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
@@ -590,6 +703,42 @@ class MarketMLService : Service() {
             Log.i(TAG, "ML engine hot-reloaded (brain cache invalidated)")
         } catch (e: Exception) {
             Log.w(TAG, "ML engine reload failed (non-critical): ${e.message}")
+        }
+    }
+
+    // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
+    private suspend fun runDayEvaluation() = withContext(Dispatchers.IO) {
+        try {
+            val py = Python.getInstance()
+            val brain = py.getModule("brain")
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
+                .format(java.util.Date())
+
+            val snapshotsJsonArray = SupabaseClient.fetchBrainSnapshots(today)
+            if (snapshotsJsonArray.length() == 0) {
+                Log.i(TAG, "EVAL_SKIP: no brain snapshots for $today")
+                return@withContext
+            }
+            val chainSlicesJsonArray = SupabaseClient.fetchChainSlices(today)
+
+            val resultJsonStr = brain.callAttr(
+                "evening_evaluator",
+                today,
+                snapshotsJsonArray.toString(),
+                chainSlicesJsonArray.toString()
+            ).toString()
+
+            val evaluatedOutcomes = org.json.JSONArray(resultJsonStr)
+            if (evaluatedOutcomes.length() > 0) {
+                SupabaseClient.saveEvaluationOutcomes(evaluatedOutcomes)
+                // Mark evaluation done for today and cancel reminder chain
+                prefs.edit().putString("evaluation_done_date", today).commit()
+                cancelDayEvaluationReminder(this@MarketMLService)
+                Log.i(TAG, "EVAL_COMPLETE: ${evaluatedOutcomes.length()} outcomes saved for $today — reminder cancelled")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "EVAL_FAIL: ${e.message}")
         }
     }
 

@@ -36,7 +36,8 @@ class MarketWatchService : Service() {
         .build()
     
     private var token401Counter = 0
-    private var lastAlertKeys = mutableSetOf<String>()
+    private var lastPositionAlertKeys = mutableSetOf<String>()
+
     private var pollingJob: Job? = null
     private val serviceStartInProgress = AtomicBoolean(false)
     private val pollInProgress = AtomicBoolean(false)
@@ -93,6 +94,20 @@ class MarketWatchService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+
+        // Restore NotificationAgent state if available
+        try {
+            val savedState = prefs.getString("notification_agent_state", null)
+            if (savedState != null) {
+                val py = Python.getInstance()
+                val brain = py.getModule("brain")
+                brain.callAttr("reset_notification_agent", savedState)
+                Log.i(TAG, "AGENT_STATE_RESTORED")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AGENT_STATE_RESTORE_FAIL: ${e.message}")
+        }
+
         Log.i(TAG, "BL_A_CHECK_ENTERED: site=Service.onCreate")
         val now = System.currentTimeMillis()
         val lastServiceCreate = prefs.getLong("last_service_create_ms", 0L)
@@ -1061,6 +1076,7 @@ class MarketWatchService : Service() {
                 remove("tomorrow_signal")
                 remove("has2pmSnapshot")
                 remove("has315pmSnapshot")
+                remove("hasDayEvalRun")
                 putString("positioning_date", today)
             }.apply()
         }
@@ -1813,6 +1829,54 @@ class MarketWatchService : Service() {
                 val resultObj = JSONObject(result)
                 broadcastData = result
                 brainSuccess = true
+
+                // ML Arch V2: Chain slice extraction + brain snapshot
+                try {
+                    val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
+                    for (sliceRow in chainSliceRows) {
+                        serviceScope.launch(Dispatchers.IO) {
+                            SupabaseClient.saveChainSlice(sliceRow)
+                        }
+                    }
+
+                    // Take poll snapshot and save to ml_brain_snapshots
+                    val snapResult = brain.callAttr("take_poll_snapshot", resultObj, ctxObj, pollsJson).toString()
+                    val snapObj = JSONObject(snapResult)
+                    serviceScope.launch(Dispatchers.IO) {
+                        SupabaseClient.saveBrainSnapshot(snapObj)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
+                }
+
+                // Notification Agent: gate setup commentary (position-risk handled separately below)
+                try {
+                    val agentResult = brain.callAttr("notification_agent_process", resultObj, ctxObj).toString()
+                    if (agentResult != "null" && agentResult.isNotBlank()) {
+                        val agentAlert = JSONObject(agentResult)
+                        val urgency = agentAlert.optString("urgency", "INFO")
+                        val notifType = when (urgency) {
+                            "HIGH" -> "entry"
+                            "WARNING" -> "important"
+                            "INFO" -> "routine"
+                            "ERROR" -> "urgent"
+                            else -> "info"
+                        }
+                        NotificationHelper.send(this,
+                            agentAlert.optString("title"),
+                            agentAlert.optString("message"),
+                            notifType
+                        )
+                        Log.d(TAG, "AGENT_NOTIFICATION: ${agentAlert.optString("title")}")
+                    }
+                    // Persist full agent state (including verdict_history) for restart survival
+                    val agentStatePython = brain.callAttr("notification_agent_state_json").toString()
+                    if (agentStatePython != "null" && agentStatePython.isNotBlank()) {
+                        prefs.edit().putString("notification_agent_state", agentStatePython).commit()
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "AGENT_NOTIFICATION_FAIL: ${e.message}")
+                }
                 
                 // A1: Persist brain results back into ctxObj for next poll cycle
                 try {
@@ -1962,7 +2026,7 @@ class MarketWatchService : Service() {
                 }
                 Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
                 
-                processBrainAlerts(resultObj)
+                sendPositionRiskAlerts(resultObj)
                 
                 // Phase E: Persist routine alert timestamp if routine alert was fired
                 val alerts = resultObj.optJSONArray("alerts")
@@ -2026,30 +2090,126 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun processBrainAlerts(result: JSONObject) {
+    private fun extractChainSlice(bnfChain: JSONObject, nfChain: JSONObject, brainResult: JSONObject): List<JSONObject> {
+        val rows = mutableListOf<JSONObject>()
+        val now = System.currentTimeMillis()
+        val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(now))
+        val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date(now))
+
+        // Collect per-index strike sets so we resolve against the correct chain
+        val bnfStrikes = mutableSetOf<Triple<Int, String, String>>()
+        val nfStrikes = mutableSetOf<Triple<Int, String, String>>()
+
+        val watchlist = brainResult.optJSONArray("watchlist")
+        val limit = Math.min(5, watchlist?.length() ?: 0)
+
+        for (i in 0 until limit) {
+            val cand = watchlist!!.optJSONObject(i)
+            val index = cand.optString("index", "BNF")
+            val expiry = cand.optString("expiry", "")
+            val target = if (index == "NF") nfStrikes else bnfStrikes
+
+            if (cand.has("sellStrike")) target.add(Triple(cand.optInt("sellStrike"), cand.optString("sellType", "CE"), expiry))
+            if (cand.has("buyStrike")) target.add(Triple(cand.optInt("buyStrike"), cand.optString("buyType", "PE"), expiry))
+            if (cand.has("sellStrike2")) target.add(Triple(cand.optInt("sellStrike2"), cand.optString("sellType2", "PE"), expiry))
+            if (cand.has("buyStrike2")) target.add(Triple(cand.optInt("buyStrike2"), cand.optString("buyType2", "PE"), expiry))
+        }
+
+        // ATM enrichment for both indices
+        val bnfProfile = brainResult.optJSONObject("bnfProfile")
+        val bnfAtm = bnfProfile?.optDouble("atm", 0.0)?.toInt() ?: 0
+        if (bnfAtm > 0) {
+            bnfStrikes.add(Triple(bnfAtm, "CE", ""))
+            bnfStrikes.add(Triple(bnfAtm, "PE", ""))
+        }
+        val nfProfile = brainResult.optJSONObject("nfProfile")
+        val nfAtm = nfProfile?.optDouble("atm", 0.0)?.toInt() ?: 0
+        if (nfAtm > 0) {
+            nfStrikes.add(Triple(nfAtm, "CE", ""))
+            nfStrikes.add(Triple(nfAtm, "PE", ""))
+        }
+
+        // Resolve BNF strikes against bnfChain
+        for ((strike, optionType, expiry) in bnfStrikes) {
+            val legData = resolveStrikeFromSlice(bnfChain, strike, optionType, "BNF")
+            if (legData != null) {
+                rows.add(JSONObject().apply {
+                    put("poll_ts", pollTs)
+                    put("session_date", sessionDate)
+                    put("index_key", "BNF")
+                    put("expiry", expiry)
+                    put("strike", strike)
+                    put("option_type", optionType)
+                    put("ltp", legData.optDouble("ltp", 0.0))
+                    put("bid", legData.optDouble("bid", 0.0))
+                    put("ask", legData.optDouble("ask", 0.0))
+                })
+            }
+        }
+
+        // Resolve NF strikes against nfChain
+        for ((strike, optionType, expiry) in nfStrikes) {
+            val legData = resolveStrikeFromSlice(nfChain, strike, optionType, "NF")
+            if (legData != null) {
+                rows.add(JSONObject().apply {
+                    put("poll_ts", pollTs)
+                    put("session_date", sessionDate)
+                    put("index_key", "NF")
+                    put("expiry", expiry)
+                    put("strike", strike)
+                    put("option_type", optionType)
+                    put("ltp", legData.optDouble("ltp", 0.0))
+                    put("bid", legData.optDouble("bid", 0.0))
+                    put("ask", legData.optDouble("ask", 0.0))
+                })
+            }
+        }
+
+        return rows
+    }
+
+    private fun resolveStrikeFromSlice(chainJson: JSONObject, targetStrike: Int, optionType: String, indexKey: String): JSONObject? {
+        val data = chainJson.optJSONArray("data") ?: return null
+        for (i in 0 until data.length()) {
+            val item = data.getJSONObject(i)
+            val strike = item.optDouble("strike_price", 0.0).toInt()
+            if (strike != targetStrike) continue
+            val optKey = if (optionType.uppercase(Locale.US) == "CE") "call_options" else "put_options"
+            val md = item.optJSONObject(optKey)?.optJSONObject("market_data") ?: continue
+            val ltp = optionLtp(md)
+            return JSONObject().apply {
+                put("index", indexKey)
+                put("ltp", ltp)
+                put("bid", md.optDouble("bid_price", 0.0))
+                put("ask", md.optDouble("ask_price", 0.0))
+            }
+        }
+        return null
+    }
+
+    private fun sendPositionRiskAlerts(result: JSONObject) {
         val alerts = result.optJSONArray("alerts") ?: return
-        val currentAlertKeys = mutableSetOf<String>()
+        val currentPositionKeys = mutableSetOf<String>()
 
         for (i in 0 until alerts.length()) {
             val alert = alerts.getJSONObject(i)
-            val key = alert.optString("key")
-            val priority = alert.optString("priority")
-            val category = alert.optString("category")
-            
-            currentAlertKeys.add(key)
-            
-            if (!lastAlertKeys.contains(key)) {
-                NotificationHelper.send(this,
-                    alert.optString("title"),
-                    alert.optString("body"),
-                    priority,
-                    if (category == "POSITION") "positions" else "main"
-                )
+            if (alert.optString("category") != "POSITION") continue
+            val key = alert.optString("key").ifBlank {
+                "${alert.optString("title")}|${alert.optString("body")}|${alert.optString("priority", "urgent")}"
             }
+            currentPositionKeys.add(key)
+            if (lastPositionAlertKeys.contains(key)) continue
+            // Critical position-risk alerts bypass notification agent entirely
+            NotificationHelper.send(this,
+                alert.optString("title"),
+                alert.optString("body"),
+                alert.optString("priority", "urgent"),
+                "positions"
+            )
         }
-        
-        lastAlertKeys.clear()
-        lastAlertKeys.addAll(currentAlertKeys)
+
+        lastPositionAlertKeys.clear()
+        lastPositionAlertKeys.addAll(currentPositionKeys)
     }
 
     private fun fetchSync(url: String, token: String): JSONObject? {
@@ -2195,6 +2355,22 @@ class MarketWatchService : Service() {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "SNAPSHOT_ERROR 315pm: ${e.message}")
+                }
+            }
+        }
+
+        // 3:30 PM+ — trigger day evaluation (evening evaluator for ML training labels)
+        if (mins in 930..960 && !prefs.getBoolean("hasDayEvalRun", false)) {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
+                        action = "ACTION_DAY_EVALUATION"
+                    }
+                    startService(mlService)
+                    prefs.edit().putBoolean("hasDayEvalRun", true).apply()
+                    Log.i(TAG, "DAY_EVAL_TRIGGERED: evening evaluator launched")
+                } catch (e: Exception) {
+                    Log.e(TAG, "DAY_EVAL_ERROR: ${e.message}")
                 }
             }
         }

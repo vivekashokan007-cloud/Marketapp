@@ -1,4 +1,5 @@
-import json, math, os as _os, statistics
+import json, math, os as _os, statistics, hashlib
+from datetime import datetime, timezone, timedelta
 
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
 _ML_ENGINE     = None
@@ -7290,3 +7291,388 @@ def replay(inputs, calibration_override=None, expected_baseline=None,
         }
 
     return {'result': result_dict, 'replay_meta': replay_meta}
+
+
+# ═══════════════════════════════════════════════════════════════
+# ML ARCHITECTURE V2 — Poll Snapshot & Labeling
+# ═══════════════════════════════════════════════════════════════
+
+def _is_labelable(result, ctx):
+    """Checks if the poll is an actionable recommendation.
+    CRITICAL: Reads entry_window_active from ctx, not result."""
+    verdict = result.get('verdict', {})
+
+    entry_window = ctx.get('entry_window_active', False)
+
+    if not entry_window:
+        return False
+    if verdict.get('action') in ('WAIT', 'STOP', None):
+        return False
+    if verdict.get('confidence', 0) < 35:
+        return False
+
+    executable = [c for c in result.get('watchlist', [])
+                  if isinstance(c, dict) and not c.get('capitalBlocked') and c.get('type')]
+    return len(executable) > 0
+
+
+def take_poll_snapshot(result, ctx, polls):
+    """Takes snapshot including the top 5 candidates.
+    primary_candidate_json = the #1 surfaced recommendation (ML truth target).
+    top_candidates_json   = all top 5 (secondary research only)."""
+    watchlist = result.get('watchlist', [])
+    top_5_cands = watchlist[:5]
+
+    top_cand = top_5_cands[0] if top_5_cands else None
+    verdict = result.get('verdict', {})
+
+    # Generate Recommendation ID
+    band = f"{(verdict.get('confidence', 0) // 10) * 10}"
+    key = f"{verdict.get('action')}|{verdict.get('strategy')}|{top_cand.get('sellStrike') if top_cand else ''}|{verdict.get('direction')}|{band}"
+    rec_id = hashlib.md5(key.encode()).hexdigest()[:8]
+
+    # Clean primary candidate (surfaced recommendation — the ML truth target)
+    primary = {}
+    if top_cand:
+        primary = {
+            'id': top_cand.get('id'),
+            'type': top_cand.get('type'),
+            'index': top_cand.get('index'),
+            'sellStrike': top_cand.get('sellStrike'),
+            'sellType': top_cand.get('sellType'),
+            'buyStrike': top_cand.get('buyStrike'),
+            'buyType': top_cand.get('buyType'),
+            'sellStrike2': top_cand.get('sellStrike2'),
+            'sellType2': top_cand.get('sellType2'),
+            'buyStrike2': top_cand.get('buyStrike2'),
+            'buyType2': top_cand.get('buyType2'),
+            'netPremium': top_cand.get('netPremium'),
+            'maxProfit': top_cand.get('maxProfit'),
+            'maxLoss': top_cand.get('maxLoss'),
+            'estCost': top_cand.get('estCost'),
+            'lotSize': top_cand.get('lotSize'),
+            'expiry': top_cand.get('expiry'),
+            'width': top_cand.get('width'),
+        }
+
+    # Clean top-5 candidates for secondary research only
+    clean_cands = []
+    for c in top_5_cands:
+        clean_cands.append({
+            'id': c.get('id'), 'type': c.get('type'), 'width': c.get('width'),
+            'sellStrike': c.get('sellStrike'), 'sellType': c.get('sellType'),
+            'buyStrike': c.get('buyStrike'), 'buyType': c.get('buyType'),
+            'sellStrike2': c.get('sellStrike2'), 'sellType2': c.get('sellType2'),
+            'buyStrike2': c.get('buyStrike2'), 'buyType2': c.get('buyType2'),
+            'netPremium': c.get('netPremium'), 'maxProfit': c.get('maxProfit'),
+            'maxLoss': c.get('maxLoss'), 'isCredit': c.get('isCredit'),
+            'lotSize': c.get('lotSize'),
+            'estCost': c.get('estCost'), 'index': c.get('index'),
+            'expiry': c.get('expiry'),
+        })
+
+    return {
+        'poll_ts': datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z"),
+        'session_date': ctx.get('today_ist'),
+        'recommendation_id': rec_id,
+        'action': verdict.get('action'),
+        'strategy': verdict.get('strategy'),
+        'confidence': verdict.get('confidence'),
+        'primary_candidate_json': json.dumps(primary),
+        'top_candidates_json': json.dumps(clean_cands),
+        'is_labelable': _is_labelable(result, ctx),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+# ML ARCHITECTURE V2 — Evening Evaluator (4-Leg Support)
+# ═══════════════════════════════════════════════════════════════
+
+def _parse_ist_hour_min(poll_ts_str):
+    """Extract (hour, minute) from ISO timestamp string. Returns None on failure."""
+    try:
+        time_part = poll_ts_str.split('T')[1] if 'T' in poll_ts_str else ''
+        h = int(time_part[:2])
+        m = int(time_part[3:5])
+        return h, m
+    except (IndexError, ValueError):
+        return None
+
+
+def _is_h2_window(poll_ts_str):
+    """True if timestamp falls inside H2 evaluation window (15:15-15:30 IST)."""
+    hm = _parse_ist_hour_min(poll_ts_str)
+    if hm is None:
+        return False
+    h, m = hm
+    return h == 15 and 15 <= m <= 30
+
+
+def _parse_iso_ts(ts_str):
+    try:
+        if not ts_str:
+            return None
+        if ts_str.endswith('Z'):
+            ts_str = ts_str[:-1] + '+00:00'
+        if len(ts_str) > 5 and (ts_str[-5] in ('+', '-')) and ts_str[-3] != ':':
+            ts_str = ts_str[:-2] + ':' + ts_str[-2:]
+        return datetime.fromisoformat(ts_str)
+    except Exception:
+        return None
+
+
+def get_price(chain_rows, cand, side, suffix=''):
+    """Pull price from chain_lookup within H2 window (15:15-15:30).
+    Returns a float or None if no valid H2 row exists (non-evaluable)."""
+    strike_key = f"{side}Strike{suffix}"
+    type_key = f"{side}Type{suffix}"
+    strike = cand.get(strike_key)
+    opt_type = cand.get(type_key)
+    if not strike or not opt_type:
+        return None
+    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    expiry = cand.get('expiry') or ''
+    target_dt = datetime.strptime('15:15', '%H:%M').time()
+    best_row = None
+    best_ts = None
+    for row_data in chain_rows:
+        if row_data.get('index_key') != index_key:
+            continue
+        if row_data.get('strike') != strike:
+            continue
+        if row_data.get('option_type') != opt_type:
+            continue
+        row_expiry = row_data.get('expiry') or ''
+        if expiry and row_expiry and row_expiry != expiry:
+            continue
+        ts_str = row_data.get('poll_ts', '')
+        if not _is_h2_window(ts_str):
+            continue
+        row_ts = _parse_iso_ts(ts_str)
+        if row_ts is None:
+            continue
+        if row_ts.time() < target_dt:
+            continue
+        if best_ts is None or row_ts < best_ts:
+            best_ts = row_ts
+            best_row = row_data
+    return None if best_row is None else best_row.get('ltp', None)
+
+
+def _eval_single_candidate(chain_rows, snap, cand):
+    """Evaluate P&L for one candidate using H2 chain data.
+    Returns outcome dict, or None if no H2 data exists (non-evaluable)."""
+    stype = cand.get('type', '')
+    is_4_leg = cand.get('sellStrike2') is not None
+
+    sell_ltp_h2 = get_price(chain_rows, cand, 'sell')
+    buy_ltp_h2 = get_price(chain_rows, cand, 'buy')
+
+    if sell_ltp_h2 is None or buy_ltp_h2 is None:
+        return None
+
+    if is_4_leg:
+        sell2_ltp_h2 = get_price(chain_rows, cand, 'sell', suffix='2')
+        buy2_ltp_h2 = get_price(chain_rows, cand, 'buy', suffix='2')
+        if sell2_ltp_h2 is None or buy2_ltp_h2 is None:
+            return None
+        later_net_credit = (sell_ltp_h2 - buy_ltp_h2) + (sell2_ltp_h2 - buy2_ltp_h2)
+    else:
+        later_net_credit = sell_ltp_h2 - buy_ltp_h2
+
+    entry_premium = cand.get('netPremium', 0)
+    lot_size = cand.get('lotSize') or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+
+    is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+    if is_credit:
+        sim_pnl = (entry_premium - later_net_credit) * lot_size
+    else:
+        sim_pnl = (later_net_credit - entry_premium) * lot_size
+
+    return {
+        'snapshot_id': snap.get('id'),
+        'candidate_id': cand.get('id'),
+        'sim_pnl_h2': sim_pnl,
+        'outcome_h2': 1 if sim_pnl > 0 else 0,
+    }
+
+
+def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_str):
+    """Evaluates P&L for both 2-leg and 4-leg strategies.
+    Data is passed as JSON strings from Kotlin. No Supabase calls inside Python.
+
+    PRIMARY outcome = surfaced recommendation (ML training target).
+    SECONDARY outcomes = top-5 research data (not used for primary labeling)."""
+    snapshots = json.loads(snapshots_json_str)
+    chain_slices = json.loads(chain_slices_json_str) if chain_slices_json_str else []
+
+    chain_rows = list(chain_slices)
+
+    outcomes = []
+
+    for snap in snapshots:
+        # PRIMARY: surfaced recommendation (the ML truth target)
+        primary_json = snap.get('primary_candidate_json', '{}')
+        if isinstance(primary_json, str) and primary_json:
+            primary = json.loads(primary_json)
+        elif isinstance(primary_json, dict):
+            primary = primary_json
+        else:
+            primary = {}
+
+        if primary and primary.get('id'):
+            outcome = _eval_single_candidate(chain_rows, snap, primary)
+            if outcome is not None:
+                outcome['role'] = 'primary'
+                outcomes.append(outcome)
+
+        # SECONDARY: top-5 research candidates
+        cands_json = snap.get('top_candidates_json', '[]')
+        if isinstance(cands_json, str) and cands_json:
+            cands = json.loads(cands_json)
+        elif isinstance(cands_json, list):
+            cands = cands_json
+        else:
+            cands = []
+
+        for cand in cands:
+            if cand.get('id') == primary.get('id'):
+                continue
+            outcome = _eval_single_candidate(chain_rows, snap, cand)
+            if outcome is not None:
+                outcome['role'] = 'secondary'
+                outcomes.append(outcome)
+
+    return json.dumps(outcomes)
+
+
+# ═══════════════════════════════════════════════════════════════
+# NOTIFICATION AGENT — State Machine with Chop Lock / Hysteresis
+# ═══════════════════════════════════════════════════════════════
+
+class NotificationAgent:
+    def __init__(self, state=None):
+        if state is None:
+            state = {
+                'action': 'WAIT',
+                'strategy': None,
+                'confidence': 0,
+                'timestamp': 0,
+                'cooldown_until': 0,
+                'verdict_history': [],
+            }
+        self.last_state = {
+            'action': state.get('action', 'WAIT'),
+            'strategy': state.get('strategy'),
+            'confidence': state.get('confidence', 0),
+            'timestamp': state.get('timestamp', 0),
+            'cooldown_until': state.get('cooldown_until', 0),
+        }
+        self.verdict_history = list(state.get('verdict_history', []) or [])
+
+    def process_poll(self, result, ctx):
+        current_time = ctx.get('now_ms', 0)
+        verdict = result.get('verdict', {})
+        action = verdict.get('action', 'WAIT')
+        strategy = verdict.get('strategy')
+        confidence = verdict.get('confidence', 0)
+
+        self.verdict_history.append(action)
+        if len(self.verdict_history) > 6:
+            self.verdict_history.pop(0)
+
+        if current_time < self.last_state['cooldown_until']:
+            return None
+
+        if self._is_market_choppy():
+            self.last_state['cooldown_until'] = current_time + (45 * 60 * 1000)
+            return self._build_alert(
+                urgency="WARNING",
+                title="Market Whipsawing",
+                message="Detected 3 direction flips in 30 minutes. Muting setup alerts for 45 mins."
+            )
+
+        if action == self.last_state['action'] and strategy == self.last_state['strategy']:
+            if abs(confidence - self.last_state['confidence']) >= 15:
+                msg = f"{strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
+                self._update_state(action, strategy, confidence, current_time)
+                return self._build_alert("UPDATE", "Conviction Update", msg)
+            else:
+                return None
+
+        if self.last_state['action'] != 'WAIT' and action == 'WAIT':
+            if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT']:
+                msg = f"Previous {self.last_state['strategy']} thesis invalidated by contrary price action."
+                self._update_state('WAIT', None, 0, current_time)
+                return self._build_alert("INFO", "Setup Invalidated", msg)
+            return None
+
+        if action != 'WAIT' and ctx.get('entry_window_active', False):
+            if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]:
+                msg = f"Entry Window OPEN. {strategy} setup confirmed with {confidence}% conviction."
+                self._update_state(action, strategy, confidence, current_time)
+                return self._build_alert("HIGH", "New Setup Ready", msg)
+            return None
+
+        return None
+
+    def _is_market_choppy(self):
+        flips = 0
+        for i in range(1, len(self.verdict_history)):
+            if self.verdict_history[i] != self.verdict_history[i-1] and self.verdict_history[i] != 'WAIT':
+                flips += 1
+        return flips >= 3
+
+    def _update_state(self, action, strategy, confidence, ts):
+        self.last_state.update({
+            'action': action, 'strategy': strategy,
+            'confidence': confidence, 'timestamp': ts,
+        })
+
+    def _build_alert(self, urgency, title, message):
+        return {
+            'type': 'NOTIFICATION',
+            'urgency': urgency,
+            'title': title,
+            'message': message,
+            'timestamp': self.last_state['timestamp'],
+        }
+
+
+# Global NotificationAgent singleton (persists across poll cycles in Chaquopy)
+_NOTIFICATION_AGENT = NotificationAgent()
+
+
+def notification_agent_process(result, ctx):
+    """Bridge for Kotlin to call NotificationAgent.process_poll()."""
+    try:
+        alert = _NOTIFICATION_AGENT.process_poll(result, ctx)
+        if alert:
+            return json.dumps(alert)
+        return 'null'
+    except Exception as e:
+        return json.dumps({'type': 'NOTIFICATION', 'urgency': 'ERROR', 'title': 'Agent Error', 'message': str(e)})
+
+
+def notification_agent_state_json():
+    """Returns the agent's full state including verdict_history for persistence."""
+    try:
+        full = dict(_NOTIFICATION_AGENT.last_state)
+        full['verdict_history'] = list(_NOTIFICATION_AGENT.verdict_history)
+        return json.dumps(full)
+    except Exception:
+        return 'null'
+
+
+def reset_notification_agent(state_json='null'):
+    """Reset agent state (used on app restart). Pass previous JSON state to restore."""
+    global _NOTIFICATION_AGENT
+    if state_json and state_json != 'null':
+        try:
+            state = json.loads(state_json)
+            _NOTIFICATION_AGENT = NotificationAgent(state)
+        except Exception:
+            _NOTIFICATION_AGENT = NotificationAgent()
+    else:
+        _NOTIFICATION_AGENT = NotificationAgent()
+    return 'ok'
