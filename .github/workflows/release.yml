@@ -1,4 +1,4 @@
-name: Market Radar Release
+name: Market Radar Signed Release
 
 on:
   push:
@@ -37,8 +37,19 @@ jobs:
           sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
           yes | sdkmanager --licenses >/dev/null
 
-      - name: Build Debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" > keystore.base64
+          base64 -d keystore.base64 > keystore.jks
+          rm keystore.base64
+
+      - name: Build Signed APK
+        run: ./gradlew :app:assembleRelease --stacktrace
+        env:
+          RELEASE_KEYSTORE_PATH: "keystore.jks"
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
 
       - name: Get Version Name
         id: get_version
@@ -52,12 +63,12 @@ jobs:
         with:
           tag_name: v${{ env.VERSION_NAME }}
           name: Market Radar v${{ env.VERSION_NAME }}
-          files: app/build/outputs/apk/debug/*.apk
+          files: app/build/outputs/apk/release/*.apk
           draft: false
           prerelease: false
           body: |
             ### Market Radar v${{ env.VERSION_NAME }}
 
-            Automated release.
+            Automated signed release.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
