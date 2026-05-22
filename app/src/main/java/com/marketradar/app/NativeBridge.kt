@@ -47,7 +47,6 @@ class NativeBridge(private val context: Context) {
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
     private val httpClient = OkHttpClient()
-    private val TAG = "NativeBridge"
     private val startDebounceMs = 15000L
 
     init {
