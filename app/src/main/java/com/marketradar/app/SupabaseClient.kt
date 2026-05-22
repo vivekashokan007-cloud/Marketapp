@@ -346,6 +346,23 @@ object SupabaseClient {
     }
 
     /**
+     * Lightweight app_config fetch used by WebView boot.
+     * Excludes large poll_history_* keys to keep startup payload small.
+     */
+    fun selectAppConfigLite(): JSONArray {
+        val request = getBaseRequest(
+            "app_config?key=not.like.poll_history_*&select=key,value,updated_at"
+        ).get().build()
+        val json = fetchSync(request) ?: return JSONArray()
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Select app_config lite failed: ${e.message}")
+            JSONArray()
+        }
+    }
+
+    /**
      * Phase B: fetch recent signals for accuracy tracking.
      * Mirrors db.js getRecentSignals(limit).
      */
