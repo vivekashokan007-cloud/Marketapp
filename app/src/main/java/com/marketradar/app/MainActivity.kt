@@ -514,6 +514,12 @@ class MainActivity : AppCompatActivity() {
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
+
+                    // File export methods
+                    saveExportFile: function(fileName, mimeType, base64Data) { return AndroidBridge.saveExportFile(fileName, mimeType, base64Data); },
+                    beginExportFile: function(fileName, mimeType) { return AndroidBridge.beginExportFile(fileName, mimeType); },
+                    appendExportFileChunk: function(sessionId, base64Chunk) { return AndroidBridge.appendExportFileChunk(sessionId, base64Chunk); },
+                    finishExportFile: function(sessionId) { return AndroidBridge.finishExportFile(sessionId); },
                     
                     // ML Methods (b105)
                     isMLModelReady: function() { return AndroidBridge.isMLModelReady(); },

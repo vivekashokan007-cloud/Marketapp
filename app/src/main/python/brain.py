@@ -6414,6 +6414,12 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     top_type = top.get('type')
     if not top_type:
         return verdict
+    lane_counts = {}
+    for cand in executable:
+        lane = cand.get('type')
+        if lane:
+            lane_counts[lane] = lane_counts.get(lane, 0) + 1
+    dominant_lane = max(lane_counts, key=lane_counts.get) if lane_counts else top_type
 
     final = dict(verdict)
     old_action = final.get('action')
@@ -6444,6 +6450,8 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     final['execution_aligned'] = True
     final['execution_candidate_id'] = top.get('id')
     final['execution_candidate_index'] = top.get('index')
+    final['dominant_lane'] = dominant_lane
+    final['dominant_count'] = lane_counts.get(dominant_lane, 0)
 
     conflicts = list(final.get('conflicts') or [])
     if old_action != new_action or old_strategy != top_type:
@@ -7316,15 +7324,30 @@ def _is_labelable(result, ctx):
     return len(executable) > 0
 
 
+def _bridge_json_obj(value):
+    """Bridge helper: accept JSON string or dict/list and return parsed object."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    return value
+
+
 def take_poll_snapshot(result, ctx, polls):
     """Takes snapshot including the top 5 candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
     top_candidates_json   = all top 5 (secondary research only)."""
+    result = _bridge_json_obj(result) or {}
+    ctx = _bridge_json_obj(ctx) or {}
+    polls = _bridge_json_obj(polls) or []
+
     watchlist = result.get('watchlist', [])
     top_5_cands = watchlist[:5]
 
     top_cand = top_5_cands[0] if top_5_cands else None
     verdict = result.get('verdict', {})
+    latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
 
     # Generate Recommendation ID
     band = f"{(verdict.get('confidence', 0) // 10) * 10}"
@@ -7371,15 +7394,46 @@ def take_poll_snapshot(result, ctx, polls):
             'expiry': c.get('expiry'),
         })
 
+    market_forces = {
+        'poll_count': len(polls) if isinstance(polls, list) else 0,
+        'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
+        'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
+        'vix': latest_poll.get('vix') or latest_poll.get('VIX'),
+        'bnf_pcr': latest_poll.get('bnfPcr') or latest_poll.get('pcr'),
+        'nf_pcr': latest_poll.get('nfPcr'),
+        'breadth': latest_poll.get('breadth') or latest_poll.get('nf50Breadth'),
+        'range_sigma': result.get('rangeSigma') or verdict.get('range_sigma') or verdict.get('rangeSigma'),
+        'regime': result.get('regime') or verdict.get('regime'),
+    }
+    poll_summary = {
+        'poll_count': len(polls) if isinstance(polls, list) else 0,
+        'latest_time': latest_poll.get('t') or latest_poll.get('time'),
+        'entry_window_active': ctx.get('entry_window_active'),
+        'trade_mode': ctx.get('trade_mode'),
+        'watchlist_count': len(watchlist) if isinstance(watchlist, list) else 0,
+        'top_candidate_type': top_cand.get('type') if top_cand else None,
+        'is_labelable': _is_labelable(result, ctx),
+    }
+
     return {
         'poll_ts': datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z"),
         'session_date': ctx.get('today_ist'),
         'recommendation_id': rec_id,
         'action': verdict.get('action'),
         'strategy': verdict.get('strategy'),
+        'direction': verdict.get('direction'),
         'confidence': verdict.get('confidence'),
+        'pre_alignment_action': verdict.get('pre_alignment_action'),
+        'pre_alignment_strategy': verdict.get('pre_alignment_strategy'),
+        'dominant_lane': verdict.get('dominant_lane'),
+        'dominant_count': verdict.get('dominant_count'),
+        'execution_aligned': verdict.get('execution_aligned'),
         'primary_candidate_json': json.dumps(primary),
         'top_candidates_json': json.dumps(clean_cands),
+        'context_json': json.dumps(ctx),
+        'verdict_json': json.dumps(verdict),
+        'market_forces_json': json.dumps(market_forces),
+        'poll_summary_json': json.dumps(poll_summary),
         'is_labelable': _is_labelable(result, ctx),
     }
 
@@ -7646,6 +7700,8 @@ _NOTIFICATION_AGENT = NotificationAgent()
 def notification_agent_process(result, ctx):
     """Bridge for Kotlin to call NotificationAgent.process_poll()."""
     try:
+        result = _bridge_json_obj(result) or {}
+        ctx = _bridge_json_obj(ctx) or {}
         alert = _NOTIFICATION_AGENT.process_poll(result, ctx)
         if alert:
             return json.dumps(alert)

@@ -15,3 +15,13 @@ phase_9d_cumulative.diff
 ANTIGRAVITY_UNVERIFIED_SNAPSHOT.txt
 app/src/main/python/tests/_antigravity_unverified/
 app/src/main/python/brain_v228_rollback.py
+
+# Local/editor and generated release artifacts
+.claude/
+.vscode/
+app/release/
+*.apk
+*.aab
+*.apks
+*.jks
+*.keystore

@@ -44,6 +44,44 @@ object SupabaseClient {
         }
     }
 
+    // ML schema can differ across environments. Try multiple table names safely.
+    private fun fetchArrayFromTables(paths: List<String>): JSONArray {
+        for (path in paths) {
+            val request = getBaseRequest(path).get().build()
+            val json = fetchSync(request) ?: continue
+            try {
+                return JSONArray(json)
+            } catch (_: Exception) {
+            }
+        }
+        return JSONArray()
+    }
+
+    private fun postToFirstWorkingTable(
+        tableNames: List<String>,
+        body: String,
+        preferHeader: String = "resolution=merge-duplicates"
+    ): Boolean {
+        for (table in tableNames) {
+            val request = getBaseRequest(table)
+                .header("Prefer", preferHeader)
+                .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) return true
+                    if (response.code !in listOf(404, 400)) {
+                        val err = response.body?.string() ?: ""
+                        Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Post exception ($table): ${e.message}")
+            }
+        }
+        return false
+    }
+
     /**
      * Reads app_config where key = morning_baseline
      */
@@ -148,68 +186,60 @@ object SupabaseClient {
      * Requires ALTER TABLE ml_brain_snapshots ADD COLUMN top_candidates_json JSONB;
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
-        val request = getBaseRequest("ml_brain_snapshots")
-            .header("Prefer", "resolution=merge-duplicates")
-            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-            .build()
-        return try {
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.e(TAG, "Save brain snapshot failed: ${e.message}")
-            false
+        val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")
+        if (postToFirstWorkingTable(tables, body.toString())) return true
+
+        // Older schemas may not yet have the expanded context columns. Keep
+        // capture alive with the original minimum payload rather than dropping
+        // the whole poll snapshot.
+        val minimal = JSONObject()
+        listOf(
+            "poll_ts",
+            "session_date",
+            "recommendation_id",
+            "action",
+            "strategy",
+            "confidence",
+            "primary_candidate_json",
+            "top_candidates_json",
+            "is_labelable"
+        ).forEach { key ->
+            if (body.has(key)) minimal.put(key, body.get(key))
         }
+        return postToFirstWorkingTable(tables, minimal.toString())
     }
 
     fun fetchBrainSnapshots(date: String): JSONArray {
-        val request = getBaseRequest("ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc")
-            .get()
-            .build()
-        val json = fetchSync(request) ?: return JSONArray()
-        return try {
-            JSONArray(json)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching brain snapshots: ${e.message}")
-            JSONArray()
-        }
+        return fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc",
+                "ml_poll_sequences?session_date=eq.$date&order=poll_ts.desc"
+            )
+        )
     }
 
     fun fetchChainSlices(date: String): JSONArray {
-        val request = getBaseRequest("chain_slices?session_date=eq.$date&order=poll_ts.desc")
-            .get()
-            .build()
-        val json = fetchSync(request) ?: return JSONArray()
-        return try {
-            JSONArray(json)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching chain slices: ${e.message}")
-            JSONArray()
-        }
+        return fetchArrayFromTables(
+            listOf(
+                "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.desc",
+                "chain_slices?session_date=eq.$date&order=poll_ts.desc",
+                "chain_snapshots?date=eq.$date&order=created_at.desc"
+            )
+        )
     }
 
     fun saveChainSlice(body: JSONObject): Boolean {
-        val request = getBaseRequest("chain_slices")
-            .header("Prefer", "resolution=merge-duplicates")
-            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-            .build()
-        return try {
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.e(TAG, "Save chain slice failed: ${e.message}")
-            false
-        }
+        return postToFirstWorkingTable(
+            listOf("ml_option_chain_snapshots", "chain_slices", "chain_snapshots"),
+            body.toString()
+        )
     }
 
     fun saveEvaluationOutcomes(body: JSONArray): Boolean {
-        return try {
-            val request = getBaseRequest("ml_evaluation_outcomes")
-                .header("Prefer", "resolution=merge-duplicates")
-                .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-                .build()
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.e(TAG, "Save evaluation outcomes failed: ${e.message}")
-            false
-        }
+        return postToFirstWorkingTable(
+            listOf("ml_recommendation_outcomes", "ml_evaluation_outcomes", "ml_decisions"),
+            body.toString()
+        )
     }
 
     fun saveChainSnapshot(session: String, data: JSONObject): Boolean {

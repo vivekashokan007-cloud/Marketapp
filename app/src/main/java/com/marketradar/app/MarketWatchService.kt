@@ -1840,7 +1840,12 @@ class MarketWatchService : Service() {
                     }
 
                     // Take poll snapshot and save to ml_brain_snapshots
-                    val snapResult = brain.callAttr("take_poll_snapshot", resultObj, ctxObj, pollsJson).toString()
+                    val snapResult = brain.callAttr(
+                        "take_poll_snapshot",
+                        result,
+                        ctxObj.toString(),
+                        pollsJson
+                    ).toString()
                     val snapObj = JSONObject(snapResult)
                     serviceScope.launch(Dispatchers.IO) {
                         SupabaseClient.saveBrainSnapshot(snapObj)
@@ -1851,7 +1856,11 @@ class MarketWatchService : Service() {
 
                 // Notification Agent: gate setup commentary (position-risk handled separately below)
                 try {
-                    val agentResult = brain.callAttr("notification_agent_process", resultObj, ctxObj).toString()
+                    val agentResult = brain.callAttr(
+                        "notification_agent_process",
+                        result,
+                        ctxObj.toString()
+                    ).toString()
                     if (agentResult != "null" && agentResult.isNotBlank()) {
                         val agentAlert = JSONObject(agentResult)
                         val urgency = agentAlert.optString("urgency", "INFO")
