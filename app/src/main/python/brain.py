@@ -7348,6 +7348,26 @@ def take_poll_snapshot(result, ctx, polls):
     top_cand = top_5_cands[0] if top_5_cands else None
     verdict = result.get('verdict', {})
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
+    bnf_profile = result.get('bnfProfile') or {}
+    nf_profile = result.get('nfProfile') or {}
+
+    def _oi_window_velocity(rows, call_key, put_key, window=6):
+        if not isinstance(rows, list) or len(rows) < 2:
+            return None
+        recent = rows[-window:]
+        first = recent[0] or {}
+        last = recent[-1] or {}
+        t0 = (first.get(call_key) or 0) + (first.get(put_key) or 0)
+        t1 = (last.get(call_key) or 0) + (last.get(put_key) or 0)
+        if t0 <= 0:
+            return None
+        try:
+            return round((t1 - t0) / t0 * 100.0, 2)
+        except Exception:
+            return None
+
+    bnf_oi_vel_pct = _oi_window_velocity(polls, 'bnfCOI', 'bnfPOI')
+    nf_oi_vel_pct = _oi_window_velocity(polls, 'nfCOI', 'nfPOI')
 
     # Generate Recommendation ID
     band = f"{(verdict.get('confidence', 0) // 10) * 10}"
@@ -7404,6 +7424,14 @@ def take_poll_snapshot(result, ctx, polls):
         'breadth': latest_poll.get('breadth') or latest_poll.get('nf50Breadth'),
         'range_sigma': result.get('rangeSigma') or verdict.get('range_sigma') or verdict.get('rangeSigma'),
         'regime': result.get('regime') or verdict.get('regime'),
+        'bnf_total_call_oi': latest_poll.get('bnfCOI'),
+        'bnf_total_put_oi': latest_poll.get('bnfPOI'),
+        'nf_total_call_oi': latest_poll.get('nfCOI'),
+        'nf_total_put_oi': latest_poll.get('nfPOI'),
+        'bnf_oi_velocity_pct': bnf_oi_vel_pct,
+        'nf_oi_velocity_pct': nf_oi_vel_pct,
+        'bnf_profile_oi_velocity_l': bnf_profile.get('oiVelocity'),
+        'nf_profile_oi_velocity_l': nf_profile.get('oiVelocity'),
     }
     poll_summary = {
         'poll_count': len(polls) if isinstance(polls, list) else 0,

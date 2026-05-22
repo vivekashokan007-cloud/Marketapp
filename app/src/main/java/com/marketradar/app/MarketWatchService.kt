@@ -63,6 +63,8 @@ class MarketWatchService : Service() {
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
+        private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
+        private const val PY_AGENT_TIMEOUT_MS = 3_000L
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -929,6 +931,15 @@ class MarketWatchService : Service() {
         poll.put("pw", pw)
         poll.put("cwOI", maxCallOi)
         poll.put("pwOI", maxPutOi)
+        // Batch 3: OI velocity wiring for brain.py oi_velocity() and ML snapshots
+        val bnfTotalCallOi = bnfChain.optDouble("totalCallOI", maxCallOi)
+        val bnfTotalPutOi = bnfChain.optDouble("totalPutOI", maxPutOi)
+        val nfTotalCallOi = nfChain.optDouble("totalCallOI", 0.0)
+        val nfTotalPutOi = nfChain.optDouble("totalPutOI", 0.0)
+        poll.put("bnfCOI", bnfTotalCallOi)
+        poll.put("bnfPOI", bnfTotalPutOi)
+        poll.put("nfCOI", nfTotalCallOi)
+        poll.put("nfPOI", nfTotalPutOi)
         poll.put("bnfCallWall", cw)
         poll.put("bnfPutWall", pw)
         poll.put("bnfCallWallOI", maxCallOi)
@@ -1840,15 +1851,23 @@ class MarketWatchService : Service() {
                     }
 
                     // Take poll snapshot and save to ml_brain_snapshots
-                    val snapResult = brain.callAttr(
-                        "take_poll_snapshot",
-                        result,
-                        ctxObj.toString(),
-                        pollsJson
-                    ).toString()
+                    val snapResult = runBlocking {
+                        withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
+                            brain.callAttr(
+                                "take_poll_snapshot",
+                                result,
+                                ctxObj.toString(),
+                                pollsJson
+                            ).toString()
+                        }
+                    }
+                    if (snapResult == null) {
+                        Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
+                    } else {
                     val snapObj = JSONObject(snapResult)
                     serviceScope.launch(Dispatchers.IO) {
                         SupabaseClient.saveBrainSnapshot(snapObj)
+                    }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
@@ -1856,11 +1875,18 @@ class MarketWatchService : Service() {
 
                 // Notification Agent: gate setup commentary (position-risk handled separately below)
                 try {
-                    val agentResult = brain.callAttr(
-                        "notification_agent_process",
-                        result,
-                        ctxObj.toString()
-                    ).toString()
+                    val agentResult = runBlocking {
+                        withTimeoutOrNull(PY_AGENT_TIMEOUT_MS) {
+                            brain.callAttr(
+                                "notification_agent_process",
+                                result,
+                                ctxObj.toString()
+                            ).toString()
+                        }
+                    }
+                    if (agentResult == null) {
+                        Log.w(TAG, "AGENT_TIMEOUT: notification_agent_process exceeded ${PY_AGENT_TIMEOUT_MS}ms")
+                    } else {
                     if (agentResult != "null" && agentResult.isNotBlank()) {
                         val agentAlert = JSONObject(agentResult)
                         val urgency = agentAlert.optString("urgency", "INFO")
@@ -1882,6 +1908,7 @@ class MarketWatchService : Service() {
                     val agentStatePython = brain.callAttr("notification_agent_state_json").toString()
                     if (agentStatePython != "null" && agentStatePython.isNotBlank()) {
                         prefs.edit().putString("notification_agent_state", agentStatePython).commit()
+                    }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "AGENT_NOTIFICATION_FAIL: ${e.message}")

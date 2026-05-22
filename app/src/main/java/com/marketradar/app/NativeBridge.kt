@@ -25,6 +25,11 @@ import org.json.JSONObject
 import com.marketradar.app.util.LogBuffer
 
 class NativeBridge(private val context: Context) {
+    companion object {
+        private const val TAG = "NativeBridge"
+        private const val PY_VALIDATE_TIMEOUT_MS = 8_000L
+        private const val PY_SCORE_TIMEOUT_MS = 2_500L
+    }
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
     private var lastScoredTotalLen = -1
@@ -406,8 +411,17 @@ class NativeBridge(private val context: Context) {
             val py = com.chaquo.python.Python.getInstance()
             val mod = py.getModule("ml_train")
             val modelPath = File(context.filesDir, "ml_model.json").absolutePath
-            // NB4: Bridge calls are synchronous, runBlocking is redundant and risky
-            mod.callAttr("validate_model", modelPath).toString()
+            val result = runBlocking {
+                withTimeoutOrNull(PY_VALIDATE_TIMEOUT_MS) {
+                    mod.callAttr("validate_model", modelPath).toString()
+                }
+            }
+            if (result == null) {
+                Log.w(TAG, "ML_VALIDATE_TIMEOUT: validate_model exceeded ${PY_VALIDATE_TIMEOUT_MS}ms")
+                "{\"ok\":false,\"error\":\"validate_model timeout\"}"
+            } else {
+                result
+            }
         } catch (e: Exception) {
             "{\"ok\":false,\"error\":\"${e.message}\"}"
         }
@@ -757,7 +771,7 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getAllConfig(): String {
         return try {
-            val res = SupabaseClient.select("app_config")
+            val res = SupabaseClient.selectAppConfigLite()
             val obj = JSONObject()
             for (i in 0 until res.length()) {
                 val item = res.getJSONObject(i)
@@ -952,7 +966,11 @@ class NativeBridge(private val context: Context) {
         return try {
             val py = com.chaquo.python.Python.getInstance()
             val brain = py.getModule("brain")
-            val result = brain.callAttr("ml_score_bridge", cand.toString()).toString()
+            val result = runBlocking {
+                withTimeoutOrNull(PY_SCORE_TIMEOUT_MS) {
+                    brain.callAttr("ml_score_bridge", cand.toString()).toString()
+                }
+            } ?: return null
             JSONObject(result)
         } catch (e: Exception) {
             null

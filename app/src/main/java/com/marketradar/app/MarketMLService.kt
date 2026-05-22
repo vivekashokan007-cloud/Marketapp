@@ -98,6 +98,8 @@ class MarketMLService : Service() {
 
     companion object {
         private const val TAG = "MarketMLService"
+        private const val EVENING_EVAL_TIMEOUT_MS = 45_000L
+        private const val MONTHLY_RETRAIN_GATE_ROWS = 500
 
         // File paths inside app's internal storage
         fun backtestPath(ctx: Context): String =
@@ -263,6 +265,7 @@ class MarketMLService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val prefs by lazy { getSharedPreferences("market_radar", Context.MODE_PRIVATE) }
+    private val istTz: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // B3: Must promote to foreground within 5s on Android 8+
@@ -723,16 +726,23 @@ class MarketMLService : Service() {
             }
             val chainSlicesJsonArray = SupabaseClient.fetchChainSlices(today)
 
-            val resultJsonStr = brain.callAttr(
-                "evening_evaluator",
-                today,
-                snapshotsJsonArray.toString(),
-                chainSlicesJsonArray.toString()
-            ).toString()
+            val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
+                brain.callAttr(
+                    "evening_evaluator",
+                    today,
+                    snapshotsJsonArray.toString(),
+                    chainSlicesJsonArray.toString()
+                ).toString()
+            }
+            if (resultJsonStr == null) {
+                Log.w(TAG, "EVAL_TIMEOUT: evening_evaluator exceeded ${EVENING_EVAL_TIMEOUT_MS}ms")
+                return@withContext
+            }
 
             val evaluatedOutcomes = org.json.JSONArray(resultJsonStr)
             if (evaluatedOutcomes.length() > 0) {
                 SupabaseClient.saveEvaluationOutcomes(evaluatedOutcomes)
+                runAggregationPipeline(today, snapshotsJsonArray, evaluatedOutcomes)
                 // Mark evaluation done for today and cancel reminder chain
                 prefs.edit().putString("evaluation_done_date", today).commit()
                 cancelDayEvaluationReminder(this@MarketMLService)
@@ -741,6 +751,200 @@ class MarketMLService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "EVAL_FAIL: ${e.message}")
         }
+    }
+
+    // ── Batch 6: daily/weekly/monthly aggregation loop ───────────────────────
+    private suspend fun runAggregationPipeline(
+        sessionDate: String,
+        snapshotsJsonArray: org.json.JSONArray,
+        evaluatedOutcomes: org.json.JSONArray
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val snapshotIdToLabelable = mutableMapOf<Int, Boolean>()
+            for (i in 0 until snapshotsJsonArray.length()) {
+                val s = snapshotsJsonArray.optJSONObject(i) ?: continue
+                val sid = s.optInt("id", -1)
+                if (sid <= 0) continue
+                snapshotIdToLabelable[sid] = s.optBoolean("is_labelable", false)
+            }
+
+            var labeledRows = 0
+            var wins = 0
+            for (i in 0 until evaluatedOutcomes.length()) {
+                val row = evaluatedOutcomes.optJSONObject(i) ?: continue
+                if (!row.optString("role", "secondary").equals("primary", ignoreCase = true)) continue
+                val sid = row.optInt("snapshot_id", -1)
+                val labelable = snapshotIdToLabelable[sid] == true
+                if (!labelable) continue
+                labeledRows += 1
+                if (row.optInt("outcome_h2", 0) == 1) wins += 1
+            }
+
+            val accuracyPct = if (labeledRows > 0) (wins * 100.0) / labeledRows else 0.0
+            val dayBody = org.json.JSONObject()
+                .put("session_date", sessionDate)
+                .put("labeled_rows", labeledRows)
+                .put("wins", wins)
+                .put("accuracy_pct", String.format(java.util.Locale.US, "%.2f", accuracyPct).toDouble())
+                .put("method", "h2_primary_labelable")
+                .put("updated_at", nowIsoUtc())
+            postAggregateRow(
+                tableNames = listOf("ml_daily_accuracy", "ml_accuracy_daily"),
+                body = dayBody,
+                onConflict = "session_date"
+            )
+
+            NotificationHelper.send(
+                this@MarketMLService,
+                "Brain accuracy today",
+                "${String.format(java.util.Locale.US, "%.1f", accuracyPct)}% on $labeledRows recommendations",
+                "info"
+            )
+
+            maybeAggregateWeek(sessionDate)
+            maybeAggregateMonth(sessionDate)
+        } catch (e: Exception) {
+            Log.w(TAG, "AGGREGATION_FAIL: ${e.message}")
+        }
+    }
+
+    private fun maybeAggregateWeek(sessionDate: String) {
+        try {
+            val dayCal = istCalendarFromDate(sessionDate)
+            if (dayCal.get(Calendar.DAY_OF_WEEK) != Calendar.SATURDAY) return
+
+            val weekEnd = dateFromIstCal(dayCal)
+            dayCal.add(Calendar.DAY_OF_YEAR, -6)
+            val weekStart = dateFromIstCal(dayCal)
+
+            val rows = SupabaseClient.select(
+                table = "ml_daily_accuracy",
+                filter = "session_date=gte.$weekStart&session_date=lte.$weekEnd",
+                order = "session_date.asc",
+                limit = 10
+            )
+            if (rows.length() == 0) return
+
+            var labeled = 0
+            var wins = 0
+            for (i in 0 until rows.length()) {
+                val r = rows.optJSONObject(i) ?: continue
+                labeled += r.optInt("labeled_rows", 0)
+                wins += r.optInt("wins", 0)
+            }
+            if (labeled <= 0) return
+            val acc = (wins * 100.0) / labeled
+            val body = org.json.JSONObject()
+                .put("week_start", weekStart)
+                .put("week_end", weekEnd)
+                .put("labeled_rows", labeled)
+                .put("wins", wins)
+                .put("accuracy_pct", String.format(java.util.Locale.US, "%.2f", acc).toDouble())
+                .put("updated_at", nowIsoUtc())
+            postAggregateRow(
+                tableNames = listOf("ml_weekly_accuracy", "ml_accuracy_weekly"),
+                body = body,
+                onConflict = "week_start"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "WEEKLY_AGG_FAIL: ${e.message}")
+        }
+    }
+
+    private fun maybeAggregateMonth(sessionDate: String) {
+        try {
+            val dayCal = istCalendarFromDate(sessionDate)
+            val isLastFriday = dayCal.get(Calendar.DAY_OF_WEEK) == Calendar.FRIDAY &&
+                dayCal.clone().let {
+                    val c = it as Calendar
+                    c.add(Calendar.DAY_OF_YEAR, 7)
+                    c.get(Calendar.MONTH) != dayCal.get(Calendar.MONTH)
+                }
+            if (!isLastFriday) return
+
+            val monthKey = String.format(
+                java.util.Locale.US,
+                "%04d-%02d",
+                dayCal.get(Calendar.YEAR),
+                dayCal.get(Calendar.MONTH) + 1
+            )
+            val startCal = dayCal.clone() as Calendar
+            startCal.set(Calendar.DAY_OF_MONTH, 1)
+            val monthStart = dateFromIstCal(startCal)
+            val monthEnd = sessionDate
+
+            val rows = SupabaseClient.select(
+                table = "ml_daily_accuracy",
+                filter = "session_date=gte.$monthStart&session_date=lte.$monthEnd",
+                order = "session_date.asc",
+                limit = 40
+            )
+            if (rows.length() == 0) return
+
+            var labeled = 0
+            var wins = 0
+            for (i in 0 until rows.length()) {
+                val r = rows.optJSONObject(i) ?: continue
+                labeled += r.optInt("labeled_rows", 0)
+                wins += r.optInt("wins", 0)
+            }
+            if (labeled <= 0) return
+            val acc = (wins * 100.0) / labeled
+            val body = org.json.JSONObject()
+                .put("month_key", monthKey)
+                .put("month_start", monthStart)
+                .put("month_end", monthEnd)
+                .put("labeled_rows", labeled)
+                .put("wins", wins)
+                .put("accuracy_pct", String.format(java.util.Locale.US, "%.2f", acc).toDouble())
+                .put("hard_gate_triggered", labeled >= MONTHLY_RETRAIN_GATE_ROWS)
+                .put("updated_at", nowIsoUtc())
+            postAggregateRow(
+                tableNames = listOf("ml_monthly_summary", "ml_accuracy_monthly"),
+                body = body,
+                onConflict = "month_key"
+            )
+
+            if (labeled >= MONTHLY_RETRAIN_GATE_ROWS) {
+                NotificationHelper.send(
+                    this@MarketMLService,
+                    "ML Retrain Gate Triggered",
+                    "Month $monthKey reached $labeled labeled rows. Review calibration and run retrain.",
+                    "important"
+                )
+                scope.launch { checkRetrainReadiness() }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MONTHLY_AGG_FAIL: ${e.message}")
+        }
+    }
+
+    private fun postAggregateRow(tableNames: List<String>, body: org.json.JSONObject, onConflict: String): Boolean {
+        for (table in tableNames) {
+            if (SupabaseClient.upsert(table, body, onConflict = onConflict)) return true
+        }
+        return false
+    }
+
+    private fun istCalendarFromDate(date: String): Calendar {
+        val cal = Calendar.getInstance(istTz)
+        val parsed = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+            timeZone = istTz
+        }.parse(date)
+        if (parsed != null) cal.time = parsed
+        return cal
+    }
+
+    private fun dateFromIstCal(cal: Calendar): String {
+        return java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
+            timeZone = istTz
+        }.format(cal.time)
+    }
+
+    private fun nowIsoUtc(): String {
+        return java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date())
     }
 
     // ── Build Python list from JSONArray (for passing to Chaquopy) ────────────
