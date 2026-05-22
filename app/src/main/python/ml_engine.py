@@ -1174,7 +1174,7 @@ class MLEngine:
         is_ood, ood_conf, ood_warns, is_strategy_blind = self.feature_engine.ood_score(candidate)
         p_gbt             = self.gbt.predict_proba(feat)
         p_nn              = self.nn.predict_proba(feat)
-        regime, reg_probs = self.regime.predict(candidate)
+        regime, reg_probs, reg_conf = self.regime.predict(candidate)
         p_meta            = self.meta.predict(p_gbt, p_nn, regime)
 
         # OOD correction: shrink toward base win rate by (1 - ood_confidence)
@@ -1187,6 +1187,8 @@ class MLEngine:
         # E12: Direction Safety (Logic Guard)
         # If strategy is bearish (BEAR_CALL, BEAR_PUT) but day_direction is UP -> Risky
         # If strategy is bullish (BULL_PUT, BULL_CALL) but day_direction is DOWN -> Risky
+        strat = str(candidate.get('strategy', '') or '').upper()
+        ddir = str(candidate.get('day_direction', '') or '').upper()
         strat_up = strat in ('BULL_PUT', 'BULL_CALL') or (strat == 'IRON_BUTTERFLY' and ddir == 'UP')
         strat_dn = strat in ('BEAR_CALL', 'BEAR_PUT') or (strat == 'IRON_BUTTERFLY' and ddir == 'DOWN')
         
@@ -1215,6 +1217,7 @@ class MLEngine:
             'action':     action,
             'regime':     regime,
             'regime_prob': {k: round(v, 3) for k, v in reg_probs.items()},
+            'regime_conf': reg_conf,
             'regime_hint': hint,
             'base_wr':    round(self.base_win_rate, 3),
             'edge':       round(p_meta - self.base_win_rate, 3),
@@ -1512,7 +1515,7 @@ def self_test():
 
     rd = RegimeDetector()
     rd.fit(rows)
-    label, probs = rd.predict(rows[0])
+    label, probs, conf = rd.predict(rows[0])
     assert label in REGIME_NAMES, f"Bad regime label: {label}"
 
     print("self_test PASSED  ✓  (features OK, GBT OK, NN OK, Regime OK)")
