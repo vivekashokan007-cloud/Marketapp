@@ -362,7 +362,7 @@ class MarketMLService : Service() {
         try {
             val closedTrades = SupabaseClient.select(
                 "ml_decisions",
-                filter = "outcome=not.is.null",
+                filter = "won=not.is.null",
                 limit = 500
             )
             val count = closedTrades.length()
