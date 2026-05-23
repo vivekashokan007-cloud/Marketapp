@@ -3438,6 +3438,8 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         return None
         
     step = (all_k[1] - all_k[0]) if len(all_k) > 1 else (100 if spot > 30000 else 50)
+    if step <= 0:
+        step = 100 if spot > 30000 else 50
 
     # IV Skew: OTM put IV vs OTM call IV at ~0.5σ
     otm_dist_raw = round(daily_sigma * 0.5 / step) * step
