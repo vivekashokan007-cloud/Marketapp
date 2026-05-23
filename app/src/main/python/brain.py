@@ -5046,6 +5046,8 @@ def _sigma_days(spot, vix, dte):
 
 _CONST = {
     'BNF_LOT': 30, 'NF_LOT': 65,
+    'BNF_SHORT_MARGIN': 75000,
+    'NF_SHORT_MARGIN': 50000,
     'CAPITAL': 250000, 'MAX_RISK_PCT': 10,
     'BNF_WIDTHS': [200, 300, 400, 500, 600, 800, 1000],
     'NF_WIDTHS': [100, 150, 200, 250, 300, 400],
