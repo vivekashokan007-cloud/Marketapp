@@ -5082,7 +5082,15 @@ _CONST = {
     'CANDLE_ENGULF_BODY_MIN': 1.5,
     'CANDLE_PRIOR_TREND_CANDLES': 5,
     'CANDLE_PRIOR_TREND_THRESHOLD': 0.3,
-    'CANDLE_GAP_PCT': 0.001
+    'CANDLE_GAP_PCT': 0.001,
+    # NSE F&O trading holidays for calendar year 2026.
+    # Source: NSE circular NSE/FAOP/71777, dated 2025-12-12.
+    'NSE_HOLIDAYS': [
+        '2026-01-26', '2026-03-03', '2026-03-26', '2026-03-31',
+        '2026-04-03', '2026-04-14', '2026-05-01', '2026-05-28',
+        '2026-06-26', '2026-09-14', '2026-10-02', '2026-10-20',
+        '2026-11-10', '2026-11-24', '2026-12-25',
+    ],
 }
 
 
@@ -7587,6 +7595,9 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
 
     PRIMARY outcome = surfaced recommendation (ML training target).
     SECONDARY outcomes = top-5 research data (not used for primary labeling)."""
+    if session_date_str in _CONST.get('NSE_HOLIDAYS', []):
+        return json.dumps([])
+
     snapshots = json.loads(snapshots_json_str)
     chain_slices = json.loads(chain_slices_json_str) if chain_slices_json_str else []
 
