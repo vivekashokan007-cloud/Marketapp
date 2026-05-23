@@ -1890,13 +1890,16 @@ class MarketWatchService : Service() {
                     if (agentResult != "null" && agentResult.isNotBlank()) {
                         val agentAlert = JSONObject(agentResult)
                         val urgency = agentAlert.optString("urgency", "INFO")
-                        val notifType = when (urgency) {
-                            "HIGH" -> "entry"
-                            "WARNING" -> "important"
-                            "UPDATE" -> "important"
-                            "INFO" -> "routine"
-                            "ERROR" -> "urgent"
-                            else -> "info"
+                        val soundClass = agentAlert.optString("sound_class", "")
+                        // Prefer explicit sound_class from brain.py; Kotlin only routes presentation.
+                        val notifType = when {
+                            soundClass.isNotBlank() -> soundClass
+                            urgency == "HIGH" -> "entry"
+                            urgency == "WARNING" -> "warning"
+                            urgency == "UPDATE" -> "update"
+                            urgency == "ERROR" -> "urgent"
+                            urgency == "INFO" -> "routine"
+                            else -> "routine"
                         }
                         NotificationHelper.send(this,
                             agentAlert.optString("title"),

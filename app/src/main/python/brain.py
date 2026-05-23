@@ -7687,14 +7687,16 @@ class NotificationAgent:
             return self._build_alert(
                 urgency="WARNING",
                 title="Market Whipsawing",
-                message="Detected 3 direction flips in 30 minutes. Muting setup alerts for 45 mins."
+                message="Detected 3 direction flips in 30 minutes. Muting setup alerts for 45 mins.",
+                sound_class='warning'
             )
 
         if action == self.last_state['action'] and strategy == self.last_state['strategy']:
             if abs(confidence - self.last_state['confidence']) >= 15:
                 msg = f"{strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
                 self._update_state(action, strategy, confidence, current_time)
-                return self._build_alert("UPDATE", "Conviction Update", msg)
+                return self._build_alert("UPDATE", "Conviction Update", msg,
+                                          sound_class='update')
             else:
                 return None
 
@@ -7702,14 +7704,18 @@ class NotificationAgent:
             if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT']:
                 msg = f"Previous {self.last_state['strategy']} thesis invalidated by contrary price action."
                 self._update_state('WAIT', None, 0, current_time)
-                return self._build_alert("INFO", "Setup Invalidated", msg)
+                return self._build_alert("INFO", "Setup Invalidated", msg,
+                                          sound_class='routine')
             return None
 
         if action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False):
             if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]:
                 msg = f"Entry Window OPEN. {strategy} setup confirmed with {confidence}% conviction."
                 self._update_state(action, strategy, confidence, current_time)
-                return self._build_alert("HIGH", "New Setup Ready", msg)
+                return self._build_alert(
+                    "HIGH", "New Setup Ready", msg,
+                    sound_class=self._compute_sound_class('HIGH', confidence)
+                )
             return None
 
         return None
@@ -7724,19 +7730,38 @@ class NotificationAgent:
                 flips += 1
         return flips >= 3
 
+    def _compute_sound_class(self, urgency, confidence):
+        """
+        Determines the notification sound class for routing in Kotlin.
+        Trading semantics stay in brain.py; Kotlin routes presentation only.
+        """
+        if urgency == 'HIGH':
+            return 'perfect' if confidence >= 75 else 'entry'
+        elif urgency == 'UPDATE':
+            return 'update'
+        elif urgency == 'WARNING':
+            return 'warning'
+        elif urgency == 'ERROR':
+            return 'urgent'
+        else:
+            return 'routine'
+
     def _update_state(self, action, strategy, confidence, ts):
         self.last_state.update({
             'action': action, 'strategy': strategy,
             'confidence': confidence, 'timestamp': ts,
         })
 
-    def _build_alert(self, urgency, title, message):
+    def _build_alert(self, urgency, title, message, sound_class=None):
         return {
             'type': 'NOTIFICATION',
             'urgency': urgency,
             'title': title,
             'message': message,
             'timestamp': self.last_state['timestamp'],
+            'sound_class': sound_class or self._compute_sound_class(
+                urgency, self.last_state.get('confidence', 0)
+            ),
         }
 
 
