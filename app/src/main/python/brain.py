@@ -7683,6 +7683,7 @@ class NotificationAgent:
 
         if self._is_market_choppy():
             self.last_state['cooldown_until'] = current_time + (45 * 60 * 1000)
+            self.last_state['timestamp'] = current_time
             return self._build_alert(
                 urgency="WARNING",
                 title="Market Whipsawing",
@@ -7704,7 +7705,7 @@ class NotificationAgent:
                 return self._build_alert("INFO", "Setup Invalidated", msg)
             return None
 
-        if action != 'WAIT' and ctx.get('entry_window_active', False):
+        if action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False):
             if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]:
                 msg = f"Entry Window OPEN. {strategy} setup confirmed with {confidence}% conviction."
                 self._update_state(action, strategy, confidence, current_time)
@@ -7714,6 +7715,9 @@ class NotificationAgent:
         return None
 
     def _is_market_choppy(self):
+        # Tracks action-level flips only (e.g., 'SELL PREMIUM' ↔ 'BUY PREMIUM').
+        # Strategy-level flips within the same action (BEAR_CALL ↔ BULL_PUT)
+        # are naturally suppressed by the two-consecutive-poll confirmation gate.
         flips = 0
         for i in range(1, len(self.verdict_history)):
             if self.verdict_history[i] != self.verdict_history[i-1] and self.verdict_history[i] != 'WAIT':

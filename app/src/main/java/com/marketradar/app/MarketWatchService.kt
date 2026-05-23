@@ -1893,6 +1893,7 @@ class MarketWatchService : Service() {
                         val notifType = when (urgency) {
                             "HIGH" -> "entry"
                             "WARNING" -> "important"
+                            "UPDATE" -> "important"
                             "INFO" -> "routine"
                             "ERROR" -> "urgent"
                             else -> "info"
