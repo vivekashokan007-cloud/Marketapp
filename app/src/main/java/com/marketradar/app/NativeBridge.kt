@@ -876,8 +876,12 @@ class NativeBridge(private val context: Context) {
             exportSessionName = fileName
             exportSessionMime = mimeType
             exportSessionBase64 = StringBuilder()
+            Log.i(TAG, "beginExportFile ok: name=$fileName mime=$mimeType session=$exportSessionId")
+            LogBuffer.add('I', TAG, "beginExportFile ok: name=$fileName mime=$mimeType session=$exportSessionId")
             JSONObject().put("ok", true).put("sessionId", exportSessionId).toString()
         } catch (e: Exception) {
+            Log.e(TAG, "beginExportFile failed", e)
+            LogBuffer.add('E', TAG, "beginExportFile failed: ${e.message}")
             JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName).toString()
         }
     }
@@ -894,6 +898,8 @@ class NativeBridge(private val context: Context) {
                 .put("chars", exportSessionBase64.length)
                 .toString()
         } catch (e: Exception) {
+            Log.e(TAG, "appendExportFileChunk failed", e)
+            LogBuffer.add('E', TAG, "appendExportFileChunk failed: ${e.message}")
             JSONObject().put("ok", false).put("error", e.message ?: e.javaClass.simpleName).toString()
         }
     }
@@ -905,7 +911,10 @@ class NativeBridge(private val context: Context) {
                 throw IllegalStateException("Invalid export session")
             }
             val bytes = Base64.decode(exportSessionBase64.toString(), Base64.DEFAULT)
-            saveExportBytes(exportSessionName, exportSessionMime, bytes).toString()
+            val result = saveExportBytes(exportSessionName, exportSessionMime, bytes)
+            Log.i(TAG, "finishExportFile ok: name=$exportSessionName bytes=${bytes.size}")
+            LogBuffer.add('I', TAG, "finishExportFile ok: name=$exportSessionName bytes=${bytes.size}")
+            result.toString()
         } catch (e: Exception) {
             Log.e(TAG, "finishExportFile failed", e)
             LogBuffer.add('E', TAG, "finishExportFile failed: ${e.message}")
