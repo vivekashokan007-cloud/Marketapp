@@ -6,10 +6,13 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.widget.Toast
 import java.io.File
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -146,10 +149,19 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setBaseline(json: String) {
+        val normalized = try {
+            val obj = JSONObject(json)
+            if (obj.optString("date", "").isBlank()) {
+                obj.put("date", todayIstDate())
+            }
+            obj.toString()
+        } catch (e: Exception) {
+            json
+        }
         val last = prefs.getString("morning_baseline", "")
-        if (json == last) return
+        if (normalized == last) return
         prefs.edit()
-            .putString("morning_baseline", json)
+            .putString("morning_baseline", normalized)
             .remove("brain_result")
             .remove("candidates")
             .putString("last_poll_date", todayIstDate())
@@ -963,11 +975,18 @@ class NativeBridge(private val context: Context) {
 
         Log.i(TAG, "saveExportFile ok: name=$safeName bytes=${bytes.size}")
         LogBuffer.add('I', TAG, "saveExportFile ok: name=$safeName bytes=${bytes.size}")
+        showToast("Saved to Downloads: $safeName")
         return JSONObject()
             .put("ok", true)
             .put("fileName", safeName)
             .put("bytes", bytes.size)
             .put("location", "Downloads")
+    }
+
+    private fun showToast(message: String) {
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun scoreCandidate(cand: JSONObject): JSONObject? {
