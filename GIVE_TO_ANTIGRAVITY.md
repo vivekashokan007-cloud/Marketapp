@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.3.71 / b202`
+Current Android release target: `v2.3.72 / b203`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -29,7 +29,7 @@ enough labeled data exists and the replacement model improves accuracy.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.3.71`.
+- `BRAIN_VERSION` is `2.3.72`.
 - EV capture constant is intentionally unchanged pending paper-trade evidence.
 - Temporal ML is wired but activates only when `val_acc >= 0.60`.
 - Python debug validation gates run in GitHub Actions before debug APK build.

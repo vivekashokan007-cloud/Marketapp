@@ -395,9 +395,17 @@ class NativeBridge(private val context: Context) {
             // NB6: Build JSON using JSONObject to avoid injection/escaping issues
             val status = JSONObject()
             val activeToday = hasTodaySession()
+            val today = todayIstDate()
+            val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+            val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
             status.put("running", activeToday && isServiceRunning())
             status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
             status.put("polls", if (activeToday) prefs.getInt("poll_count", 0) else 0)
+            status.put("evaluationDoneToday", doneDate == today)
+            status.put("evaluationDoneDate", doneDate)
+            status.put("evaluationRunning", runningDate == today)
+            status.put("lastEvaluationOutcomeCount", prefs.getInt("last_evaluation_outcome_count", 0))
+            status.put("lastEvaluationMessage", prefs.getString("last_evaluation_message", "") ?: "")
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"
@@ -474,14 +482,48 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
-    fun triggerDayEvaluation() {
-        try {
+    fun triggerDayEvaluation(): String {
+        return try {
+            val today = todayIstDate()
+            if (prefs.getString("evaluation_done_date", "") == today) {
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("status", "done")
+                    put("message", "Today's evaluation already done.")
+                    put("outcomes", prefs.getInt("last_evaluation_outcome_count", 0))
+                }.toString()
+            }
+            if (prefs.getString("evaluation_running_date", "") == today) {
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("status", "running")
+                    put("message", "Today's evaluation is already running.")
+                }.toString()
+            }
+            prefs.edit()
+                .putString("evaluation_running_date", today)
+                .putString("last_evaluation_message", "Evaluation queued...")
+                .commit()
             val intent = android.content.Intent(context, MarketMLService::class.java).apply {
                 action = "ACTION_DAY_EVALUATION"
             }
             context.startForegroundService(intent)
+            JSONObject().apply {
+                put("ok", true)
+                put("status", "started")
+                put("message", "Day evaluation started.")
+            }.toString()
         } catch (e: Exception) {
+            prefs.edit()
+                .putString("evaluation_running_date", "")
+                .putString("last_evaluation_message", "Evaluation trigger failed: ${e.message}")
+                .commit()
             android.util.Log.w("NativeBridge", "Day evaluation trigger failed: ${e.message}", e)
+            JSONObject().apply {
+                put("ok", false)
+                put("status", "failed")
+                put("message", "Day evaluation trigger failed: ${e.message}")
+            }.toString()
         }
     }
 
