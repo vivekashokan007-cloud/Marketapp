@@ -1,4 +1,4 @@
-import json, math, os as _os, statistics, hashlib
+import json, math, os as _os, statistics, hashlib, time
 from datetime import datetime, timezone, timedelta
 
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
@@ -953,11 +953,11 @@ def risk_regime_shift(polls, baseline, open_trades, closed_trades):
 _calibration = None
 _cal_count = 0
 _cal_signature = None
-_capital = 110000
+_capital = 250000
 
 def build_calibration(closed_trades):
     global _calibration, _cal_count, _cal_signature
-    trades = [t for t in closed_trades if t.get('status') == 'CLOSED' and t.get('actual_pnl') is not None]
+    trades = [t for t in closed_trades if t.get('status') == 'CLOSED' and t.get('actual_pnl') is not None and not t.get('paper')]
     # BR31: Signature detects PnL corrections at same count (dev/debug scenario)
     sig = f"{len(trades)}|{sum((t.get('actual_pnl') or 0) for t in trades):.2f}"
     if sig == _cal_signature and _calibration:
@@ -5104,7 +5104,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.4"
+BRAIN_VERSION = "2.3.67"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -5294,7 +5294,7 @@ def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
         # Use the buildable neutral premium structure as the primary lane.
         primary = ['IRON_CONDOR']
         allowed = ['BEAR_CALL', 'BULL_PUT']
-        blocked = ['BEAR_PUT', 'BULL_CALL', 'BEAR_CALL', 'BULL_PUT']
+        blocked = ['BEAR_PUT', 'BULL_CALL', 'DOUBLE_DEBIT']
 
     # VERY HIGH VIX override — debit co-PRIMARY (backtest: VIX≥24 debit 91.7%)
     if very_high:
@@ -6789,7 +6789,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     # Set capital from JS context (single source of truth: C.CAPITAL)
     global _capital
-    _capital = ctx.get('capital', 110000)
+    _capital = ctx.get('capital', 250000)
 
     build_calibration(closed_trades)
     regime = detect_regime(polls, baseline)

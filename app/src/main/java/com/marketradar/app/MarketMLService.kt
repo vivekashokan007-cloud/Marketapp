@@ -376,12 +376,12 @@ class MarketMLService : Service() {
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
 
-            val threshold = prefs.getInt("retrain_threshold", 20) // MLS12: Configurable threshold
+            val threshold = prefs.getInt("retrain_threshold", 300) // MLS12: Configurable threshold
             val title: String
             val body: String
             if (count < threshold) {
                 title = "⚠️ ML Retrain — Low Data"
-                body = "Only $count trades recorded — retrain needs $threshold+ for meaningful improvement. Tap to train anyway."
+                body = "Only $count trades recorded — retrain needs $threshold+ for meaningful improvement. Training is blocked below 100."
             } else {
                 title = "🧠 ML Retrain Ready"
                 body = "$count trades ready — tap to retrain ML model."
@@ -420,6 +420,22 @@ class MarketMLService : Service() {
         val startMs = System.currentTimeMillis()
 
         try {
+            val labeledCount = SupabaseClient.select(
+                "ml_decisions",
+                filter = "won=not.is.null",
+                limit = 500
+            ).length()
+            if (labeledCount < 100) {
+                Log.i(TAG, "ML training blocked: only $labeledCount labeled trades")
+                NotificationHelper.send(
+                    this@MarketMLService,
+                    "ML Training Blocked",
+                    "Need 100+ labeled trades before retraining. Current: $labeledCount.",
+                    "info"
+                )
+                return@withContext
+            }
+
             val py   = Python.getInstance()
             val mod  = py.getModule("ml_train")
 

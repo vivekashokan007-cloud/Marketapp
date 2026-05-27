@@ -1010,8 +1010,33 @@ class MarketWatchService : Service() {
         val nfDayRange = poll.optDouble("nfHigh", 0.0) - poll.optDouble("nfLow", 0.0)
         poll.put("bnfDayRange", bnfDayRange)
         poll.put("nfDayRange", nfDayRange)
+        val moveSigma = if (dailySigma > 0.0 && bnfPrevClose > 0.0) (bnf - bnfPrevClose) / dailySigma else spotSigma
+        val dayRangeSigma = if (dailySigma > 0.0) bnfDayRange / dailySigma else 0.0
+        val dayDirection = when {
+            moveSigma > 0.25 -> "UP"
+            moveSigma < -0.25 -> "DOWN"
+            else -> "FLAT"
+        }
+        var consecDays = 1
+        try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            val prev = if (history.length() > 0) history.optJSONObject(history.length() - 1) else null
+            val prevDirection = if (prev != null) prev.optString("dayDirection", prev.optString("day_direction", "")) else ""
+            val prevConsec = if (prev != null) prev.optInt("consecDays", prev.optInt("consec_days", 0)) else 0
+            consecDays = if (dayDirection != "FLAT" && dayDirection == prevDirection) prevConsec + 1 else 1
+        } catch (_: Exception) {
+            consecDays = 1
+        }
+        poll.put("moveSigma", moveSigma)
+        poll.put("move_sigma", moveSigma)
+        poll.put("dayRangeSigma", dayRangeSigma)
+        poll.put("day_range_sigma", dayRangeSigma)
+        poll.put("dayDirection", dayDirection)
+        poll.put("day_direction", dayDirection)
+        poll.put("consecDays", consecDays)
+        poll.put("consec_days", consecDays)
         val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
-        poll.put("weekday", cal.get(Calendar.DAY_OF_WEEK))
+        poll.put("weekday", (cal.get(Calendar.DAY_OF_WEEK) + 5) % 7)
         poll.put("hour", cal.get(Calendar.HOUR_OF_DAY))
         poll.put("minute", cal.get(Calendar.MINUTE))
 
