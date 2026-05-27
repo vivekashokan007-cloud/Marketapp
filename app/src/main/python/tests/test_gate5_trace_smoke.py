@@ -28,9 +28,9 @@ def run_gate5_smoke_test():
     # 2. Build minimal valid analyze() input fixture
     # Needs at least 3 polls to pass the len(polls) < 3 check (line 4215 approx)
     synthetic_polls = [
-        {"t": "2026-04-19 10:00:00", "spot": 48000, "vix": 15, "call_iv": 16, "put_iv": 17, "atm": 48000},
-        {"t": "2026-04-19 10:01:00", "spot": 48010, "vix": 15.1, "call_iv": 16.1, "put_iv": 17.1, "atm": 48000},
-        {"t": "2026-04-19 10:02:00", "spot": 48020, "vix": 15.2, "call_iv": 16.2, "put_iv": 17.2, "atm": 48000}
+        {"t": "10:00", "spot": 48000, "vix": 15, "call_iv": 16, "put_iv": 17, "atm": 48000},
+        {"t": "10:01", "spot": 48010, "vix": 15.1, "call_iv": 16.1, "put_iv": 17.1, "atm": 48000},
+        {"t": "10:02", "spot": 48020, "vix": 15.2, "call_iv": 16.2, "put_iv": 17.2, "atm": 48000}
     ]
     
     poll_json = json.dumps(synthetic_polls)
@@ -73,11 +73,11 @@ def run_gate5_smoke_test():
         assert k in trace, f"Trace missing required key: {k}"
     print(f"PASS: Trace contains all required keys: {required_keys}")
     
-    assert trace["meta"]["brain_version"] == "2.3.0", f"Wrong brain_version: {trace['meta']['brain_version']}"
-    assert trace["meta"]["trace_schema_version"] == "1.0", f"Wrong schema_version: {trace['meta']['trace_schema_version']}"
+    assert trace["meta"]["brain_version"] == brain.BRAIN_VERSION, f"Wrong brain_version: {trace['meta']['brain_version']}"
+    assert trace["meta"]["trace_schema_version"] == brain.TRACE_SCHEMA_VERSION, f"Wrong schema_version: {trace['meta']['trace_schema_version']}"
     assert trace["meta"]["source"] == "live", f"Wrong source: {trace['meta']['source']}"
     assert trace["meta"]["truncated"] == False, "Trace should not be truncated"
-    print("PASS: Trace meta fields verified (v2.3.0, schema 1.0, live, not truncated)")
+    print(f"PASS: Trace meta fields verified ({brain.BRAIN_VERSION}, schema {brain.TRACE_SCHEMA_VERSION}, live, not truncated)")
     
     assert isinstance(trace["verdict"]["inputs"], dict) and len(trace["verdict"]["inputs"]) > 0, "verdict['inputs'] must be non-empty dict"
     print("PASS: verdict['inputs'] populated via TASK 5.3 snapshot")
