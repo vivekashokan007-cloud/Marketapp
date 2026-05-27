@@ -253,11 +253,18 @@ object SupabaseClient {
         body.put("session", session)
         body.put("data", data)
 
+        // Do not rely on PostgREST upsert semantics here: older schemas did not
+        // always have a unique (date, session) constraint, so a plain POST can
+        // create duplicate 2pm/315pm snapshots. Patch the existing row first.
+        val existing = select("chain_snapshots", "date=eq.$today&session=eq.$session", null, 1)
+        if (existing.length() > 0 && update("chain_snapshots", body, "date=eq.$today&session=eq.$session")) {
+            return true
+        }
+
         val request = getBaseRequest("chain_snapshots")
-            .header("Prefer", "resolution=merge-duplicates")
             .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
             .build()
-        
+
         return try {
             client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {

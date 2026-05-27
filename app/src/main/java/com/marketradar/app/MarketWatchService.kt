@@ -42,6 +42,7 @@ class MarketWatchService : Service() {
     private val serviceStartInProgress = AtomicBoolean(false)
     private val pollInProgress = AtomicBoolean(false)
     private val pollSaveLock = Any()
+    private val mlPersistLock = Any()
     private var pollLoopIteration = 0L
 
     private data class BreadthStock(
@@ -1843,31 +1844,36 @@ class MarketWatchService : Service() {
 
                 // ML Arch V2: Chain slice extraction + brain snapshot
                 try {
-                    val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
-                    for (sliceRow in chainSliceRows) {
-                        serviceScope.launch(Dispatchers.IO) {
-                            SupabaseClient.saveChainSlice(sliceRow)
+                    val mlPersistKey = mlPersistKeyForPoll(poll)
+                    if (markMlPollPersistAttempt(mlPersistKey)) {
+                        val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
+                        for (sliceRow in chainSliceRows) {
+                            serviceScope.launch(Dispatchers.IO) {
+                                SupabaseClient.saveChainSlice(sliceRow)
+                            }
                         }
-                    }
 
-                    // Take poll snapshot and save to ml_brain_snapshots
-                    val snapResult = runBlocking {
-                        withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
-                            brain.callAttr(
-                                "take_poll_snapshot",
-                                result,
-                                ctxObj.toString(),
-                                pollsJson
-                            ).toString()
+                        // Take poll snapshot and save to ml_brain_snapshots
+                        val snapResult = runBlocking {
+                            withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
+                                brain.callAttr(
+                                    "take_poll_snapshot",
+                                    result,
+                                    ctxObj.toString(),
+                                    pollsJson
+                                ).toString()
+                            }
                         }
-                    }
-                    if (snapResult == null) {
-                        Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
+                        if (snapResult == null) {
+                            Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
+                        } else {
+                            val snapObj = JSONObject(snapResult)
+                            serviceScope.launch(Dispatchers.IO) {
+                                SupabaseClient.saveBrainSnapshot(snapObj)
+                            }
+                        }
                     } else {
-                    val snapObj = JSONObject(snapResult)
-                    serviceScope.launch(Dispatchers.IO) {
-                        SupabaseClient.saveBrainSnapshot(snapObj)
-                    }
+                        LogBuffer.add('W', TAG, "ML_PERSIST_DEDUP_SKIP: key=$mlPersistKey")
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
@@ -2208,6 +2214,22 @@ class MarketWatchService : Service() {
         return rows
     }
 
+    private fun mlPersistKeyForPoll(poll: JSONObject): String {
+        val date = todayIstDate()
+        val pollCount = prefs.getInt("poll_count", 0)
+        val pollTime = poll.optString("t", "")
+        val bnf = poll.optDouble("bnf", 0.0)
+        val nf = poll.optDouble("nf", 0.0)
+        return "$date|$pollCount|$pollTime|$bnf|$nf"
+    }
+
+    private fun markMlPollPersistAttempt(key: String): Boolean = synchronized(mlPersistLock) {
+        val lastKey = prefs.getString("last_ml_persist_key", "") ?: ""
+        if (key.isBlank() || key == lastKey) return@synchronized false
+        prefs.edit().putString("last_ml_persist_key", key).commit()
+        true
+    }
+
     private fun resolveStrikeFromSlice(chainJson: JSONObject, targetStrike: Int, optionType: String, indexKey: String): JSONObject? {
         val data = chainJson.optJSONArray("data") ?: return null
         for (i in 0 until data.length()) {
@@ -2363,6 +2385,7 @@ class MarketWatchService : Service() {
         // 2:00 PM Window (13:45 - 14:30)
         if (mins in 825..870 && !prefs.getBoolean("has2pmSnapshot", false)) {
             Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 2pm snapshot")
+            prefs.edit().putBoolean("has2pmSnapshot", true).apply()
             serviceScope.launch(Dispatchers.IO) {
                 try {
                     val brain = py.getModule("brain")
@@ -2371,10 +2394,12 @@ class MarketWatchService : Service() {
                     
                     if (SupabaseClient.saveChainSnapshot("2pm", data)) {
                         prefs.edit().putString("snap_2pm_today", snapJson).apply()
-                        prefs.edit().putBoolean("has2pmSnapshot", true).apply()
                         Log.i(TAG, "SNAPSHOT_SAVED: 2pm snapshot synced to Supabase & Prefs")
+                    } else {
+                        prefs.edit().remove("has2pmSnapshot").apply()
                     }
                 } catch (e: Exception) {
+                    prefs.edit().remove("has2pmSnapshot").apply()
                     Log.e(TAG, "SNAPSHOT_ERROR 2pm: ${e.message}")
                 }
             }
@@ -2383,6 +2408,7 @@ class MarketWatchService : Service() {
         // 3:15 PM Window (15:00 - 15:30)
         if (mins in 900..930 && !prefs.getBoolean("has315pmSnapshot", false)) {
             Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 315pm snapshot")
+            prefs.edit().putBoolean("has315pmSnapshot", true).apply()
             serviceScope.launch(Dispatchers.IO) {
                 try {
                     val brain = py.getModule("brain")
@@ -2390,10 +2416,12 @@ class MarketWatchService : Service() {
                     val data = JSONObject(snapJson)
                     
                     if (SupabaseClient.saveChainSnapshot("315pm", data)) {
-                        prefs.edit().putBoolean("has315pmSnapshot", true).apply()
                         Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
+                    } else {
+                        prefs.edit().remove("has315pmSnapshot").apply()
                     }
                 } catch (e: Exception) {
+                    prefs.edit().remove("has315pmSnapshot").apply()
                     Log.e(TAG, "SNAPSHOT_ERROR 315pm: ${e.message}")
                 }
             }
