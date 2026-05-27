@@ -124,20 +124,33 @@ def theta_friction_minutes(est_cost, net_theta):
 def detect_regime(polls, baseline):
     """Returns dict: {type: range|trend|choppy, sigma, direction, trend_pct}"""
     recent = last_n(polls, 6)
-    bnfs = [p.get('bnf') for p in recent if p.get('bnf')]
-    if len(bnfs) < 3:
+    def series_stats(key, base_key):
+        vals = [p.get(key) for p in recent if p.get(key)]
+        if len(vals) < 3:
+            return None
+        hi, lo = max(vals), min(vals)
+        rng = hi - lo
+        base_vix = baseline.get('vix', 15)
+        base_spot = baseline.get(base_key, vals[0])
+        daily_sigma = base_spot * (base_vix / 100) / math.sqrt(252) if base_spot > 0 else 300
+        range_sigma = rng / daily_sigma if daily_sigma > 0 else 0
+        direction_votes = 0
+        for i in range(1, len(vals)):
+            if vals[i] > vals[i-1]: direction_votes += 1
+            elif vals[i] < vals[i-1]: direction_votes -= 1
+        trend_pct = abs(direction_votes) / (len(vals) - 1) if len(vals) > 1 else 0
+        return {"sigma": range_sigma, "direction": direction_votes, "trend_pct": trend_pct}
+
+    bnf_stats = series_stats('bnf', 'bnfSpot')
+    nf_stats = series_stats('nf', 'nfSpot')
+    if not bnf_stats and not nf_stats:
         return {"type": "unknown", "sigma": 0, "direction": 0, "trend_pct": 0}
-    hi, lo = max(bnfs), min(bnfs)
-    rng = hi - lo
-    base_vix = baseline.get('vix', 15)
-    base_spot = baseline.get('bnfSpot', bnfs[0])
-    daily_sigma = base_spot * (base_vix / 100) / math.sqrt(252) if base_spot > 0 else 300
-    range_sigma = rng / daily_sigma if daily_sigma > 0 else 0
-    direction_votes = 0
-    for i in range(1, len(bnfs)):
-        if bnfs[i] > bnfs[i-1]: direction_votes += 1
-        elif bnfs[i] < bnfs[i-1]: direction_votes -= 1
-    trend_pct = abs(direction_votes) / (len(bnfs) - 1) if len(bnfs) > 1 else 0
+    primary = bnf_stats or nf_stats
+    range_sigma = primary["sigma"]
+    direction_votes = primary["direction"]
+    trend_pct = primary["trend_pct"]
+    nf_sigma = nf_stats["sigma"] if nf_stats else None
+    nf_direction = nf_stats["direction"] if nf_stats else None
     if range_sigma < 0.25 and trend_pct < 0.6:
         rtype = "range"
     elif range_sigma > 0.6 and trend_pct > 0.6:
@@ -146,7 +159,16 @@ def detect_regime(polls, baseline):
         rtype = "choppy"
     else:
         rtype = "mild_trend"
-    return {"type": rtype, "sigma": range_sigma, "direction": direction_votes, "trend_pct": trend_pct}
+    if bnf_stats and nf_stats and abs((bnf_stats["direction"] or 0) - (nf_stats["direction"] or 0)) >= 4:
+        rtype = "divergence"
+    return {
+        "type": rtype,
+        "sigma": range_sigma,
+        "direction": direction_votes,
+        "trend_pct": trend_pct,
+        "nf_sigma": nf_sigma,
+        "nf_direction": nf_direction,
+    }
 
 def get_pcr_slope(polls):
     pcrs = [p.get('pcr') for p in last_n(polls, 6) if p.get('pcr')]
@@ -308,6 +330,15 @@ def _synthesize_market_phase(regime, ctx):
             'label': 'Choppy',
             'detail': f'{sigma:.2f}σ, no clear direction',
             'hint': 'Avoid directional plays. IB/IC if intraday.',
+            'sigma': sigma,
+            'trend_pct': trend_pct
+        }
+    elif rtype == 'divergence':
+        return {
+            'id': 'DIVERGENCE',
+            'label': 'NF-BNF divergence',
+            'detail': f'BNF {direction:+d}, NF {regime.get("nf_direction", 0):+d}',
+            'hint': 'Reduce directional confidence until indices confirm.',
             'sigma': sigma,
             'trend_pct': trend_pct
         }
@@ -1356,7 +1387,6 @@ def max_pain_gravity(polls, ctx):
     # BR41: Warn if DTE missing — expected set after v2.2.7 Fix C1
     dte = ctx.get('bnfDTE')
     if dte is None:
-        # DEAD UNTIL v2.2.9 - catch verified bnfDTE wiring failure
         print("max_pain_gravity: bnfDTE missing, using default 5")
         dte = 5
     """Max pain as magnet — strongest on DTE 0-1."""
@@ -1460,7 +1490,6 @@ def fii_short_trend(ctx):
 
 def nf_bnf_divergence(polls, ctx):
     """NF and BNF moving in different directions?"""
-    # DEAD UNTIL v2.2.9 — profile.pctFromOpen not wired by Kotlin
     bnf_pct = (ctx.get('bnfProfile') or {}).get('pctFromOpen', 0)
     nf_pct = (ctx.get('nfProfile') or {}).get('pctFromOpen', 0)
     if abs(bnf_pct - nf_pct) > 0.3:
@@ -1472,7 +1501,6 @@ def nf_bnf_divergence(polls, ctx):
 
 def day_range_position(polls, ctx):
     """Where in today's range — near high (caution for bears) or low?"""
-    # DEAD UNTIL v2.2.9 — profile.dayRange not wired by Kotlin
     profile = ctx.get('bnfProfile') or {}
     pos = profile.get('dayRange', 0.5)
     if pos > 0.85:
@@ -1487,7 +1515,6 @@ def day_range_position(polls, ctx):
 
 def wall_freshness(polls, ctx):
     """Are OI walls actively defended today or stale from yesterday?"""
-    # DEAD UNTIL v2.2.9 — profile.cwFresh/pwFresh/cwOiChg not wired
     profile = ctx.get('bnfProfile') or {}
     cwF = profile.get('cwFresh', 0)
     pwF = profile.get('pwFresh', 0)
@@ -3693,7 +3720,6 @@ def chain_profile_insights(ctx):
 def daily_pnl_check(polls, ctx):
     """Prevent overtrading and chasing losses."""
     pnl = ctx.get('dailyPnl', 0)
-    # DEAD UNTIL v2.2.9 — ctx.dailyPnl/dailyTradeCount not wired
     count = ctx.get('dailyTradeCount', 0)
     if count >= 3:
         return {"type": "risk", "icon": "🛑", "label": f"3+ trades today — slow down",
@@ -3710,7 +3736,6 @@ def daily_pnl_check(polls, ctx):
 def candidate_liquidity(cand, ctx):
     """Bid-ask spread assessment from chain profile."""
     profile = ctx.get('bnfProfile' if cand.get('index')=='BNF' else 'nfProfile') or {}
-    # DEAD UNTIL v2.2.9 — profile.atmSpread not wired
     spread = profile.get('atmSpread', 0)
     if spread > 8:
         return {"icon": "⚠️", "label": f"Wide spreads (₹{spread:.0f})",
@@ -3816,7 +3841,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
                 'inputs': {'b_pct': b_pct, 'threshold': 35},
                 'reason': f'b_pct={b_pct} < 35',
             })
-    # DEAD UNTIL v2.2.9 — profile.ivSkew not wired; skew defaults to 0 making all skew logic inert
     skew = profile.get('ivSkew', 0)
     if skew > 3:
         bear += 0.2
@@ -3969,7 +3993,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             action = 'WAIT'
             strategy = None
         # BR57: IB on dte<=1 depends on correct DTE from ctx.
-        # DEAD UNTIL v2.2.9 - guard nix_z
         elif vix_z >= 0.5 and dte is not None and dte <= 1:
             strategy = 'IRON_BUTTERFLY'
         else:
@@ -4150,7 +4173,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             })
 
     # Overnight delta conflict — brain says BULL but overnight is BEAR
-    # DEAD UNTIL v2.2.9 — ctx.overnightDelta not wired
     od = ctx.get('overnightDelta')
     if od and od.get('summary'):
         if 'BEARISH' in od['summary'] and direction == 'BULL':
@@ -4175,7 +4197,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
                 })
 
     # Institutional regime — low credit confidence but selling premium
-    # DEAD UNTIL v2.2.9 — ctx.institutionalRegime not wired
     ir = ctx.get('institutionalRegime')
     if ir and ir.get('creditConfidence') == 'LOW' and action == 'SELL PREMIUM':
         conflicts.append("Low institutional credit confidence")
@@ -4189,7 +4210,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             })
 
     # Bias drift — morning thesis no longer holds
-    # DEAD UNTIL v2.2.9 — ctx.biasDrift not wired
     drift = ctx.get('biasDrift', 0)
     if abs(drift) >= 2:
         conflicts.append(f"Bias drifted {drift:+d} from morning")
@@ -4242,7 +4262,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             })
 
     # Brain flip-flop detection — prior verdict contradicts current
-    # DEAD UNTIL v2.2.9 — ctx.priorVerdict not wired
     prior = ctx.get('priorVerdict')
     if prior and prior.get('direction') and prior['direction'] != direction:
         if prior.get('confidence', 0) >= 40:
@@ -4299,7 +4318,6 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
                 'reason': f"Daily P&L {ctx.get('dailyPnl')} < -2000",
                 'running': 0,
             })
-    # DEAD UNTIL v2.2.9 — ctx.dailyPnl/dailyTradeCount not wired
     elif ctx.get('dailyTradeCount', 0) >= 3:
         confidence -= 15
         # TASK 5.3 (F22)
@@ -4407,7 +4425,6 @@ def position_verdict(trade, insights, regime, ctx):
     is_4leg = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
     is_ib = stype == 'IRON_BUTTERFLY'
     is_credit = trade.get('is_credit', False)
-    # DEAD UNTIL v2.2.9 — ctx.marketPhase not wired
     phase = ctx.get('marketPhase', 'UNKNOWN')
 
     # b89: New signals from poll loop
@@ -4782,7 +4799,7 @@ def position_verdict(trade, insights, regime, ctx):
 
     # Phase mismatch (credit in trending phase = danger)
     _phase_matched = False
-    if is_credit and phase == 'TRENDING':
+    if is_credit and str(phase).startswith('TREND'):
         danger += 10
         # TASK 5.4 (D21)
         if ctx.get('_trace') is not None and _pos_trace is not None:
@@ -5104,7 +5121,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.67"
+BRAIN_VERSION = "2.3.68"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -6118,6 +6135,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     tdte = ctx.get('bnfDTE' if is_bnf else 'nfDTE', 5)
     T = tdte / 252
     trade_mode = ctx.get('tradeMode', 'swing')
+    mins_since_open = ctx.get('mins_since_open', ctx.get('minsSinceOpen', 0)) or 0
 
     # Range detection from context
     range_detected = (ctx.get('rangeSigma') or 999) < 0.3
@@ -6166,7 +6184,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 candidates.append(cand)
 
     # ═══ 2. IRON CONDOR (intraday only — 0% overnight survival) ═══
-    if 'IRON_CONDOR' in allowed_types and trade_mode != 'swing':
+    if 'IRON_CONDOR' in allowed_types and trade_mode != 'swing' and mins_since_open < 300:
         for width in widths:
             dist_pairs = []
             # BR103: Sigma-based spacing — 5-6 candidates per width (was 17-20).
@@ -6702,6 +6720,7 @@ def generate_candidates_py(ctx, effective_bias):
     vix = ctx.get('vix', 18) or 18
     capital = ctx.get('capital', 250000)
     trade_mode = ctx.get('tradeMode', 'intraday')
+    mins_since_open = ctx.get('mins_since_open', ctx.get('minsSinceOpen', 0)) or 0
     allowed = _varsity_py(bias, iv_pctl, vix)
     range_detected = (ctx.get('rangeSigma') or 999) < 0.3
 
@@ -6732,6 +6751,8 @@ def generate_candidates_py(ctx, effective_bias):
 
         for stype in allowed:
             if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and trade_mode == 'swing' and (dte or 0) > 2:
+                continue
+            if stype == 'IRON_CONDOR' and trade_mode != 'swing' and mins_since_open >= 300:
                 continue
             forces = _forces_py(stype, bias, iv_pctl)
             if forces['aligned'] < 1 and not (range_detected and stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')):
@@ -6798,6 +6819,33 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result['regime'] = regime
     result['rangeSigma'] = regime.get('sigma', 0)
     result['marketPhase'] = _synthesize_market_phase(regime, ctx)
+    ctx['marketPhase'] = result['marketPhase'].get('id', 'UNKNOWN')
+
+    # Phase C: compute profiles before context-aware insights/verdict use them.
+    bnf_chain = ctx.get('bnfChain') or {}
+    nf_chain = ctx.get('nfChain') or {}
+    bnf_spot = ctx.get('bnfSpot') or 0
+    nf_spot = ctx.get('nfSpot') or 0
+    bnf_ohlc = ctx.get('bnfOHLC')
+    nf_ohlc = ctx.get('nfOHLC')
+    vix = ctx.get('vix') or 20
+    gap = ctx.get('gap') or {}
+
+    result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap) or {}
+    result["nfProfile"] = chain_profile(nf_chain, nf_spot, nf_ohlc, vix, gap) or {}
+    ctx["bnfProfile"] = result["bnfProfile"]
+    ctx["nfProfile"] = result["nfProfile"]
+
+    result["bnfContrarian"] = get_contrarian_pcr(result["bnfProfile"])
+    result["nfContrarian"] = get_contrarian_pcr(result["nfProfile"])
+
+    hist = ctx.get('yesterdayHistory', [])
+    result["pcrContext"] = get_institutional_pcr(
+        result["bnfProfile"].get('nearAtmPCR') or result["bnfProfile"].get('pcr'),
+        vix, gap, hist, baseline, bnf_chain
+    )
+    result["sessionTrajectory"] = get_session_trajectory(hist)
+    ctx["pcrContext"] = result["pcrContext"]
 
     # Market (existing 8 + new 7)
     for fn in [pcr_velocity, oi_wall_shift, vix_momentum, spot_exhaustion,
@@ -6824,39 +6872,6 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 result["market"].append(ins)
     except Exception as e:
         print(f"DEBUG: candlestick detection failed: {e}")
-    # Phase C: compute profiles from raw chains
-    bnf_chain = ctx.get('bnfChain') or {}
-    nf_chain = ctx.get('nfChain') or {}
-    bnf_spot = ctx.get('bnfSpot') or 0
-    nf_spot = ctx.get('nfSpot') or 0
-    bnf_ohlc = ctx.get('bnfOHLC')
-    nf_ohlc = ctx.get('nfOHLC')
-    vix = ctx.get('vix') or 20
-    gap = ctx.get('gap') or {}
-
-    result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap) or {}
-    result["nfProfile"] = chain_profile(nf_chain, nf_spot, nf_ohlc, vix, gap) or {}
-    
-    # Decision #20: Contrarian PCR flags
-    result["bnfContrarian"] = get_contrarian_pcr(result["bnfProfile"])
-    result["nfContrarian"] = get_contrarian_pcr(result["nfProfile"])
-
-    # Decision #21: Institutional PCR context
-    hist = ctx.get('yesterdayHistory', [])
-    result["pcrContext"] = get_institutional_pcr(
-        result["bnfProfile"].get('nearAtmPCR') or result["bnfProfile"].get('pcr'),
-        vix, gap, hist, baseline, bnf_chain
-    )
-
-    # Decision #22: Session Trajectory
-    result["sessionTrajectory"] = get_session_trajectory(hist)
-
-    # Make profiles available to insights via ctx
-    ctx["bnfProfile"] = result["bnfProfile"]
-    ctx["nfProfile"] = result["nfProfile"]
-    ctx["pcrContext"] = result["pcrContext"]
-
-
     # b92: chain_profile_insights returns LIST
     try:
         ci_insights = chain_profile_insights(ctx)
@@ -6973,7 +6988,6 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         import time
         _START_ML = time.time()
         _MAX_ML_BUDGET = 2.5  # seconds — BR126: prevent background service ANR
-        # DEAD UNTIL v2.2.9: dte_urgency reads 'delta_vix' not yet wired
         r = dte_urgency(polls, ctx)
         if r: result["timing"].append(r)
     except Exception as e:
@@ -6999,6 +7013,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result["morningBias"] = compute_morning_bias(ctx, polls)
     ctx["morningBias"] = result["morningBias"]
 
+    result["institutionalRegime"] = institutional_regime(ctx)
+    ctx["institutionalRegime"] = result["institutionalRegime"]
+
     # ═══ THE VERDICT ═══
     all_insights = result["market"] + result["timing"] + result["risk"]
     try:
@@ -7012,7 +7029,6 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         print(f"DEBUG: compute_effective_bias failed: {e}")
 
-    result["institutionalRegime"] = institutional_regime(ctx)
     result["fiiTrend"] = fii_short_trend(ctx)
     result["signalValidation"] = validate_yesterday_signal(ctx)
 
@@ -7030,15 +7046,12 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             chain_data = ctx.get(chain_key)
             # BR125: Explicit logging when chain missing — catches Kotlin wiring silent failures
             if not chain_data:
-                # DEAD UNTIL v2.2.9 - chain missing
                 print(f"analyze: {chain_key} missing from ctx — skipping {idx_key} candidates")
                 continue
             if not chain_data.get('strikes'):
-                # DEAD UNTIL v2.2.9 - stakes missing
                 print(f"analyze: {chain_key} has no strikes — skipping {idx_key}")
                 continue
             if not chain_data.get('atm'):
-                # DEAD UNTIL v2.2.9 - atm missing
                 print(f"analyze: {chain_key} missing atm — skipping {idx_key}")
                 continue
             
