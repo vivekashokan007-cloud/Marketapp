@@ -36,10 +36,8 @@ import java.util.TimeZone
 
 class MLAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        Log.i("MLAlarmReceiver", "11 PM alarm fired — starting ML training")
-        val svc = Intent(context, MarketMLService::class.java)
-        svc.action = "ACTION_TRAIN_NIGHTLY"
-        context.startForegroundService(svc)
+        Log.i("MLAlarmReceiver", "Ignoring stale 11 PM ML alarm — nightly training is disabled")
+        MarketMLService.cancelNightlyTraining(context)
     }
 }
 
@@ -63,7 +61,7 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
         val runIntent = Intent(context, MarketMLService::class.java).apply {
             action = "ACTION_DAY_EVALUATION"
         }
-        val pendingIntent = PendingIntent.getService(
+        val pendingIntent = PendingIntent.getForegroundService(
             context, 1002, runIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -116,30 +114,8 @@ class MarketMLService : Service() {
 
         // ── Schedule nightly 11 PM alarm ─────────────────────────────────
         fun scheduleNightlyTraining(context: Context) {
-            val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
-            val intent = PendingIntent.getBroadcast(
-                context, 0,
-                Intent(context, MLAlarmReceiver::class.java),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            // Next 11:00 PM
-            val cal = Calendar.getInstance().apply {
-                set(Calendar.HOUR_OF_DAY, 23)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                if (timeInMillis <= System.currentTimeMillis()) {
-                    add(Calendar.DAY_OF_YEAR, 1)
-                }
-            }
-
-            am.setInexactRepeating(
-                AlarmManager.RTC_WAKEUP,
-                cal.timeInMillis,
-                AlarmManager.INTERVAL_DAY,
-                intent
-            )
-            Log.i(TAG, "Nightly ML training scheduled at 11 PM")
+            cancelNightlyTraining(context)
+            Log.i(TAG, "Nightly ML training schedule skipped — manual/monthly gated retraining only")
         }
 
         // ── Cancel alarm ─────────────────────────────────────────────────
@@ -371,7 +347,7 @@ class MarketMLService : Service() {
             val trainIntent = Intent(this@MarketMLService, MarketMLService::class.java).apply {
                 action = "ACTION_CONFIRM_TRAIN"
             }
-            val pendingIntent = android.app.PendingIntent.getService(
+            val pendingIntent = android.app.PendingIntent.getForegroundService(
                 this@MarketMLService, 0, trainIntent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )

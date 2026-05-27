@@ -2485,7 +2485,7 @@ class MarketWatchService : Service() {
                     val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
                         action = "ACTION_DAY_EVALUATION"
                     }
-                    startService(mlService)
+                    startForegroundService(mlService)
                     prefs.edit().putBoolean("hasDayEvalRun", true).apply()
                     Log.i(TAG, "DAY_EVAL_TRIGGERED: evening evaluator launched")
                 } catch (e: Exception) {
@@ -2516,7 +2516,7 @@ class MarketWatchService : Service() {
 
     private fun pollAlarmIntent(): PendingIntent {
         val alarmIntent = Intent(this, MarketWatchService::class.java).apply { action = ACTION_POLL_TICK }
-        return PendingIntent.getService(
+        return PendingIntent.getForegroundService(
             this,
             POLL_ALARM_REQ_CODE,
             alarmIntent,
@@ -2528,7 +2528,12 @@ class MarketWatchService : Service() {
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
             val triggerAt = SystemClock.elapsedRealtime() + intervalMs
-            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pollAlarmIntent())
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pollAlarmIntent())
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pollAlarmIntent())
+                LogBuffer.add('W', TAG, "POLL_ALARM_EXACT_UNAVAILABLE: using inexact fallback")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "POLL_ALARM_SCHEDULE_FAIL: ${e.message}")
             LogBuffer.add('W', TAG, "POLL_ALARM_SCHEDULE_FAIL: ${e.message}")
@@ -2539,7 +2544,8 @@ class MarketWatchService : Service() {
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
             am.cancel(pollAlarmIntent())
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            LogBuffer.add('D', TAG, "POLL_ALARM_CANCEL_FAIL: ${e.message}")
         }
     }
 
