@@ -1409,6 +1409,10 @@ class MarketWatchService : Service() {
                 val put = item.optJSONObject("put_options")
                 val callMd = call?.optJSONObject("market_data")
                 val putMd = put?.optJSONObject("market_data")
+                val callInstrumentKey = call?.optString("instrument_key", "")?.trim().orEmpty()
+                val putInstrumentKey = put?.optString("instrument_key", "")?.trim().orEmpty()
+                val callSymbol = call?.optString("trading_symbol", "")?.trim().orEmpty()
+                val putSymbol = put?.optString("trading_symbol", "")?.trim().orEmpty()
                 val callOI = callMd?.optDouble("oi", 0.0) ?: 0.0
                 val putOI = putMd?.optDouble("oi", 0.0) ?: 0.0
                 totalCallOI += callOI
@@ -1444,6 +1448,10 @@ class MarketWatchService : Service() {
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", optionIv(call, md))
                     put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
+                    put("instrument_key", callInstrumentKey)
+                    put("instrumentKey", callInstrumentKey)
+                    put("trading_symbol", callSymbol)
+                    put("symbol", callSymbol)
                     
                     val gr = call?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
@@ -1464,6 +1472,10 @@ class MarketWatchService : Service() {
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
                     put("iv", optionIv(put, md))
                     put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
+                    put("instrument_key", putInstrumentKey)
+                    put("instrumentKey", putInstrumentKey)
+                    put("trading_symbol", putSymbol)
+                    put("symbol", putSymbol)
                     
                     val gr = put?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)

@@ -501,9 +501,9 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getExecutionInfraStatus(): String {
         return try {
-            val latestPollRaw = prefs.getString("latest_poll", "null") ?: "null"
-            val latestPoll = try { JSONObject(latestPollRaw) } catch (e: Exception) { JSONObject() }
-            val keyStats = extractInstrumentKeyStats(latestPoll)
+            val brainRaw = prefs.getString("brain_result", "null") ?: "null"
+            val brainResult = try { JSONObject(brainRaw) } catch (e: Exception) { JSONObject() }
+            val keyStats = extractInstrumentKeyStats(brainResult)
 
             val tokenReady = !(prefs.getString("auth_token", "") ?: "").isBlank()
             val sandboxEnabled = prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
@@ -573,17 +573,26 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun extractInstrumentKeyStats(poll: JSONObject): Pair<Int, Int> {
-        val strikeArrays = listOf("bnfStrikes", "nfStrikes")
+        val candidateArrays = listOf("watchlist", "generated_candidates")
         var total = 0
         var withKey = 0
-        for (name in strikeArrays) {
+        for (name in candidateArrays) {
             val arr = poll.optJSONArray(name) ?: continue
             for (i in 0 until arr.length()) {
-                val row = arr.optJSONObject(i) ?: continue
-                total++
-                val key = row.optString("instrument_key", "").trim()
-                if (key.isNotEmpty()) withKey++
+                val candidate = arr.optJSONObject(i) ?: continue
+                val legKeys = listOf(
+                    "sellInstrumentKey",
+                    "buyInstrumentKey",
+                    "sellInstrumentKey2",
+                    "buyInstrumentKey2"
+                )
+                for (keyName in legKeys) {
+                    if (!candidate.has(keyName) || candidate.isNull(keyName)) continue
+                    total++
+                    if (candidate.optString(keyName, "").trim().isNotEmpty()) withKey++
+                }
             }
+            if (total > 0) break
         }
         return Pair(total, withKey)
     }
