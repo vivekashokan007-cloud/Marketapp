@@ -5149,7 +5149,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.70"
+BRAIN_VERSION = "2.3.71"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -7433,14 +7433,9 @@ def replay(inputs, calibration_override=None, expected_baseline=None,
 # ═══════════════════════════════════════════════════════════════
 
 def _is_labelable(result, ctx):
-    """Checks if the poll is an actionable recommendation.
-    CRITICAL: Reads entry_window_active from ctx, not result."""
+    """Checks if the poll is an actionable recommendation worth labeling."""
     verdict = result.get('verdict', {})
 
-    entry_window = ctx.get('entry_window_active', False)
-
-    if not entry_window:
-        return False
     if verdict.get('action') in ('WAIT', 'STOP', None):
         return False
     if verdict.get('confidence', 0) < 35:
@@ -7448,7 +7443,18 @@ def _is_labelable(result, ctx):
 
     executable = [c for c in result.get('watchlist', [])
                   if isinstance(c, dict) and not c.get('capitalBlocked') and c.get('type')]
-    return len(executable) > 0
+    if len(executable) == 0:
+        return False
+
+    mins_since_open = ctx.get('mins_since_open', ctx.get('minsSinceOpen', 0)) or 0
+    try:
+        mins_since_open = int(float(mins_since_open))
+    except Exception:
+        mins_since_open = 0
+    if mins_since_open < 15 or mins_since_open > 360:
+        return False
+
+    return True
 
 
 def _bridge_json_obj(value):

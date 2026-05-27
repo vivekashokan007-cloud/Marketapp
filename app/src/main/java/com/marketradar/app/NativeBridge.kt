@@ -474,6 +474,18 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun triggerDayEvaluation() {
+        try {
+            val intent = android.content.Intent(context, MarketMLService::class.java).apply {
+                action = "ACTION_DAY_EVALUATION"
+            }
+            context.startForegroundService(intent)
+        } catch (e: Exception) {
+            android.util.Log.w("NativeBridge", "Day evaluation trigger failed: ${e.message}", e)
+        }
+    }
+
+    @JavascriptInterface
     fun setExecutionSandboxEnabled(enabled: Boolean): Boolean {
         val ok = prefs.edit().putBoolean(PREF_SANDBOX_ENABLED, enabled).commit()
         if (!ok) return false
