@@ -370,21 +370,21 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getLatestPoll(): String {
         clearStaleSessionStateIfNeeded()
-        if (!hasTodayBaseline()) return "null"
+        if (!hasTodaySession()) return "null"
         return prefs.getString("latest_poll", "null") ?: "null"
     }
 
     @JavascriptInterface
     fun getPollHistory(): String {
         clearStaleSessionStateIfNeeded()
-        if (!hasTodayBaseline()) return "[]"
+        if (!hasTodaySession()) return "[]"
         return prefs.getString("poll_history", "[]") ?: "[]"
     }
 
     @JavascriptInterface
     fun getBrainResult(): String {
         clearStaleSessionStateIfNeeded()
-        if (!hasTodayBaseline()) return "null"
+        if (!hasTodaySession()) return "null"
         return prefs.getString("brain_result", "null") ?: "null"
     }
 
@@ -394,7 +394,7 @@ class NativeBridge(private val context: Context) {
             clearStaleSessionStateIfNeeded()
             // NB6: Build JSON using JSONObject to avoid injection/escaping issues
             val status = JSONObject()
-            val activeToday = hasTodayBaseline()
+            val activeToday = hasTodaySession()
             status.put("running", activeToday && isServiceRunning())
             status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
             status.put("polls", if (activeToday) prefs.getInt("poll_count", 0) else 0)
@@ -407,7 +407,7 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getCandidates(): String {
         clearStaleSessionStateIfNeeded()
-        if (!hasTodayBaseline()) return "[]"
+        if (!hasTodaySession()) return "[]"
         return prefs.getString("candidates", "[]") ?: "[]"
     }
 
@@ -618,6 +618,14 @@ class NativeBridge(private val context: Context) {
         return baselineDate() == todayIstDate()
     }
 
+    private fun hasTodaySession(): Boolean {
+        if (hasTodayBaseline()) return true
+        val today = todayIstDate()
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        val pollCount = prefs.getInt("poll_count", 0)
+        return lastPollDate == today && pollCount > 0
+    }
+
     private fun clearStaleSessionStateIfNeeded() {
         val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
@@ -629,7 +637,7 @@ class NativeBridge(private val context: Context) {
             prefs.getInt("poll_count", 0) != 0 ||
             prefs.getString("latest_poll", "null") != "null" ||
             prefs.contains("last_poll_time"))
-        val hasStaleDerivedState = !baselineIsToday && (
+        val hasStaleDerivedState = !baselineIsToday && lastPollDate != today && (
             prefs.getString("brain_result", "null") != "null" ||
             prefs.getString("candidates", "[]") != "[]" ||
             prefs.getBoolean("service_running", false)
