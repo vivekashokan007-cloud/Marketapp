@@ -4,6 +4,10 @@ from datetime import datetime, timezone, timedelta
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
 _ML_ENGINE     = None
 _ML_MODEL_PATH = '/data/data/com.marketradar.app/files/ml_model.json'
+_TEMPORAL_ENGINE = None
+_TEMPORAL_CHECKED = False
+_TEMPORAL_MODEL_PATH = '/data/data/com.marketradar.app/files/temporal_model.json'
+_TEMPORAL_MIN_VAL_ACC = 0.60
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -20,8 +24,32 @@ def _ml_load_if_needed():
 def _ml_invalidate():
     """Forces ML engine reload on next call.
     Used by Kotlin hot-reload path (MarketMLService.kt) after importlib.reload(ml_engine)."""
-    global _ML_ENGINE
+    global _ML_ENGINE, _TEMPORAL_ENGINE, _TEMPORAL_CHECKED
     _ML_ENGINE = None
+    _TEMPORAL_ENGINE = None
+    _TEMPORAL_CHECKED = False
+
+def _temporal_load_if_ready():
+    """Load temporal model only when validation quality clears the activation gate."""
+    global _TEMPORAL_ENGINE, _TEMPORAL_CHECKED
+    if _TEMPORAL_ENGINE is not None:
+        return _TEMPORAL_ENGINE
+    if _TEMPORAL_CHECKED:
+        return None
+    _TEMPORAL_CHECKED = True
+    try:
+        import ml_temporal as _mlt
+        if not _os.path.exists(_TEMPORAL_MODEL_PATH):
+            return None
+        engine = _mlt.load_temporal(_TEMPORAL_MODEL_PATH)
+        if not getattr(engine, 'trained', False):
+            return None
+        if float(getattr(engine, 'val_acc', 0.0) or 0.0) < _TEMPORAL_MIN_VAL_ACC:
+            return None
+        _TEMPORAL_ENGINE = engine
+        return _TEMPORAL_ENGINE
+    except Exception:
+        return None
 
 def _ml_score(candidate_dict):
     """Score candidate with ML engine. Returns {} if model not loaded.
@@ -5121,7 +5149,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.68"
+BRAIN_VERSION = "2.3.69"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -5961,32 +5989,6 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     sell_symbol = (sell_data.get('symbol') or sell_data.get('trading_symbol') or '').strip()
     buy_symbol = (buy_data.get('symbol') or buy_data.get('trading_symbol') or '').strip()
 
-    # ── ML scoring (SPLICE 2) ─────────────────────────────────────────────
-    _ml_cand = {
-        'strategy':       stype,
-        'mode':           trade_mode,
-        'vix':            vix,
-        'sigma_away':     sigma_otm or 0,
-        'gap_sigma':      0,
-        'dte':            tdte,
-        'entry_credit':   round(net_prem, 2),
-        'width':          width,
-        'move_sigma':     0,
-        'day_range_sigma':0,
-        'consec_days':    0,
-        'max_profit':     round(max_profit),
-        'max_loss':       round(max_loss),
-        'legs':           2,
-        'is_credit':      is_credit,
-        'vix_regime':     ('HIGH (20-25)' if vix >= 20 else 'LOW (<15)' if vix < 15 else 'NORMAL (15-20)'),
-        'day_group':      'Mon-Wed',
-        'day_direction':  'FLAT',
-        'day_range':      'NORMAL',
-        'day_vix':        'HIGH' if vix >= 20 else ('LOW' if vix < 15 else 'NORMAL'),
-        'weekday':        0,
-    }
-    ml = _ml_score(_ml_cand)
-
     # TASK 5.6 — trace accepted candidate
     if ctx.get('_trace') is not None:
         _active = ctx.get('_active_cand_trace')
@@ -6020,14 +6022,14 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'buyInstrumentKey': buy_instrument_key or None,
         'sellSymbol': sell_symbol or None,
         'buySymbol': buy_symbol or None,
-        # ── ML fields (None if model not loaded) ──
-        'p_ml':          ml.get('p_ml'),
-        'mlAction':      ml.get('ml_action'),
-        'mlRegime':      ml.get('ml_regime'),
-        'mlEdge':        ml.get('ml_edge'),
-        'mlOod':         ml.get('ml_ood', False),
-        'mlOodConf':     ml.get('ml_ood_conf', 1.0),
-        'mlOodBlocked':  ml.get('ml_ood_blocked', False),
+        # ML fields are populated by SPLICE 4 after full live context is available.
+        'p_ml':          None,
+        'mlAction':      None,
+        'mlRegime':      None,
+        'mlEdge':        None,
+        'mlOod':         False,
+        'mlOodConf':     1.0,
+        'mlOodBlocked':  False,
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
     }
@@ -7108,6 +7110,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                                 'weekday': wday,
                             }
                             p2, reg2, d2 = engine.predict(enriched)
+                            temporal = _temporal_load_if_ready()
+                            temporal_active = False
+                            if temporal is not None and len(polls) >= 4:
+                                p2 = temporal.blend(p2, polls[-8:])
+                                temporal_active = True
                             c['p_ml']         = round(p2, 4)
                             c['mlAction']     = d2.get('action', 'WATCH')
                             c['mlRegime']     = reg2
@@ -7116,6 +7123,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                             c['mlOodConf']    = d2.get('ood_conf', 1.0)
                             c['mlOodWarn']    = d2.get('ood_warns', [])
                             c['mlOodBlocked'] = d2.get('ood_blocked', False)
+                            c['mlTemporalActive'] = temporal_active
+                            c['mlTemporalValAcc'] = round(float(getattr(temporal, 'val_acc', 0.0)), 4) if temporal_active else None
                         except Exception:
                             pass
                     ranked = rank_candidates(ranked, _calibration, brain_verdict)
