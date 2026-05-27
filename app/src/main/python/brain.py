@@ -5939,6 +5939,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     net_max_profit = round(max_profit)
     # upstoxPop: Upstox's own P(profit) from option_greeks.pop for sell leg
     upstox_pop = sell_data.get('pop')
+    sell_instrument_key = (sell_data.get('instrument_key') or sell_data.get('instrumentKey') or '').strip()
+    buy_instrument_key = (buy_data.get('instrument_key') or buy_data.get('instrumentKey') or '').strip()
+    sell_symbol = (sell_data.get('symbol') or sell_data.get('trading_symbol') or '').strip()
+    buy_symbol = (buy_data.get('symbol') or buy_data.get('trading_symbol') or '').strip()
 
     # ── ML scoring (SPLICE 2) ─────────────────────────────────────────────
     _ml_cand = {
@@ -5995,6 +5999,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'netDelta':      net_delta,
         'netMaxProfit':  net_max_profit,
         'upstoxPop':     upstox_pop,
+        'sellInstrumentKey': sell_instrument_key or None,
+        'buyInstrumentKey': buy_instrument_key or None,
+        'sellSymbol': sell_symbol or None,
+        'buySymbol': buy_symbol or None,
         # ── ML fields (None if model not loaded) ──
         'p_ml':          ml.get('p_ml'),
         'mlAction':      ml.get('ml_action'),
@@ -6005,6 +6013,64 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'mlOodBlocked':  ml.get('ml_ood_blocked', False),
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
+    }
+
+def check_execution_readiness(candidate, current_result, ctx):
+    """Phase 12A readiness contract.
+    Annotates execution gates without changing trade-selection behavior."""
+    candidate = candidate or {}
+    current_result = current_result or {}
+    ctx = ctx or {}
+
+    mode = str(ctx.get('executionMode') or 'paper').lower()
+    if mode not in ('paper', 'sandbox', 'live'):
+        mode = 'paper'
+
+    sell_key = str(candidate.get('sellInstrumentKey') or '').strip()
+    buy_key = str(candidate.get('buyInstrumentKey') or '').strip()
+    has_instrument_keys = bool(sell_key and buy_key)
+
+    token_ready = bool(ctx.get('authTokenReady'))
+    if not token_ready:
+        raw_token = str(ctx.get('authToken') or '').strip()
+        token_ready = bool(raw_token)
+
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    mins = now_ist.hour * 60 + now_ist.minute
+    is_weekday = now_ist.weekday() < 5
+    in_hours = (9 * 60 + 15) <= mins <= (15 * 60 + 30)
+    not_holiday = now_ist.strftime('%Y-%m-%d') not in _CONST.get('NSE_HOLIDAYS', [])
+    market_hours_ok = is_weekday and in_hours and not_holiday
+
+    proxy_url = str(ctx.get('orderProxyUrl') or '').strip()
+    proxy_ready = proxy_url.startswith('https://')
+    sandbox_enabled = bool(ctx.get('sandboxEnabled'))
+
+    reasons = []
+    if not has_instrument_keys:
+        reasons.append('instrument keys missing')
+    if mode in ('sandbox', 'live') and not token_ready:
+        reasons.append('token not ready')
+    if mode == 'sandbox' and not sandbox_enabled:
+        reasons.append('sandbox disabled')
+    if mode == 'live' and not proxy_ready:
+        reasons.append('proxy not configured')
+    if mode in ('sandbox', 'live') and not market_hours_ok:
+        reasons.append('outside NSE market hours')
+
+    ready = len(reasons) == 0
+    return {
+        'ready': ready,
+        'mode': mode,
+        'gate': 'READY' if ready else 'WAIT',
+        'reasons': reasons,
+        'checks': {
+            'hasInstrumentKeys': has_instrument_keys,
+            'tokenReady': token_ready,
+            'sandboxEnabled': sandbox_enabled,
+            'proxyReady': proxy_ready,
+            'marketHoursOk': market_hours_ok,
+        }
     }
 
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
@@ -6205,6 +6271,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'sellType': 'CE', 'buyType': 'CE', 'sellType2': 'PE', 'buyType2': 'PE',
                     'sellLTP': ce_s.get('bid', 0), 'buyLTP': ce_b.get('ask', 0),
                     'sellLTP2': pe_s.get('bid', 0), 'buyLTP2': pe_b.get('ask', 0),
+                    'sellInstrumentKey': (ce_s.get('instrument_key') or ce_s.get('instrumentKey') or '') or None,
+                    'buyInstrumentKey': (ce_b.get('instrument_key') or ce_b.get('instrumentKey') or '') or None,
+                    'sellInstrumentKey2': (pe_s.get('instrument_key') or pe_s.get('instrumentKey') or '') or None,
+                    'buyInstrumentKey2': (pe_b.get('instrument_key') or pe_b.get('instrumentKey') or '') or None,
+                    'sellSymbol': (ce_s.get('symbol') or ce_s.get('trading_symbol') or '') or None,
+                    'buySymbol': (ce_b.get('symbol') or ce_b.get('trading_symbol') or '') or None,
+                    'sellSymbol2': (pe_s.get('symbol') or pe_s.get('trading_symbol') or '') or None,
+                    'buySymbol2': (pe_b.get('symbol') or pe_b.get('trading_symbol') or '') or None,
                     'netPremium': round(total_credit, 2),
                     'maxProfit': max_profit, 'maxLoss': max_loss,
                     'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
@@ -6275,6 +6349,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'sellType': 'CE', 'buyType': 'CE', 'sellType2': 'PE', 'buyType2': 'PE',
                 'sellLTP': ce_s.get('bid', 0), 'buyLTP': ce_b.get('ask', 0),
                 'sellLTP2': pe_s.get('bid', 0), 'buyLTP2': pe_b.get('ask', 0),
+                'sellInstrumentKey': (ce_s.get('instrument_key') or ce_s.get('instrumentKey') or '') or None,
+                'buyInstrumentKey': (ce_b.get('instrument_key') or ce_b.get('instrumentKey') or '') or None,
+                'sellInstrumentKey2': (pe_s.get('instrument_key') or pe_s.get('instrumentKey') or '') or None,
+                'buyInstrumentKey2': (pe_b.get('instrument_key') or pe_b.get('instrumentKey') or '') or None,
+                'sellSymbol': (ce_s.get('symbol') or ce_s.get('trading_symbol') or '') or None,
+                'buySymbol': (ce_b.get('symbol') or ce_b.get('trading_symbol') or '') or None,
+                'sellSymbol2': (pe_s.get('symbol') or pe_s.get('trading_symbol') or '') or None,
+                'buySymbol2': (pe_b.get('symbol') or pe_b.get('trading_symbol') or '') or None,
                 'netPremium': round(total_credit, 2),
                 'maxProfit': max_profit, 'maxLoss': max_loss,
                 'probProfit': round(prob, 3), 'ev': ev, 'isCredit': True,
@@ -7035,9 +7117,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 result['verdict'] = final_verdict
                 ranked = rank_candidates(all_cands, _calibration, final_verdict)
                 watchlist = _build_watchlist_from_ranked(ranked)
+
+            for c in ranked:
+                readiness = check_execution_readiness(c, result, ctx)
+                c['executionReadiness'] = readiness
+                c['executionReady'] = readiness.get('ready', False)
+                c['executionGate'] = readiness.get('gate', 'WAIT')
             
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
+            for c in result["watchlist"]:
+                readiness = check_execution_readiness(c, result, ctx)
+                c['executionReadiness'] = readiness
+                c['executionReady'] = readiness.get('ready', False)
+                c['executionGate'] = readiness.get('gate', 'WAIT')
             final_verdict = _align_verdict_to_watchlist(result.get('verdict'), result["watchlist"], ctx)
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict

@@ -32,6 +32,8 @@ class NativeBridge(private val context: Context) {
         private const val TAG = "NativeBridge"
         private const val PY_VALIDATE_TIMEOUT_MS = 8_000L
         private const val PY_SCORE_TIMEOUT_MS = 2_500L
+        private const val PREF_SANDBOX_ENABLED = "execution_sandbox_enabled"
+        private const val PREF_ORDER_PROXY_URL = "order_proxy_url"
     }
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
@@ -472,6 +474,60 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun setExecutionSandboxEnabled(enabled: Boolean): Boolean {
+        val ok = prefs.edit().putBoolean(PREF_SANDBOX_ENABLED, enabled).commit()
+        if (!ok) return false
+        return persistDerivedExecutionMode()
+    }
+
+    @JavascriptInterface
+    fun getExecutionSandboxEnabled(): Boolean {
+        return prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
+    }
+
+    @JavascriptInterface
+    fun setOrderProxyUrl(url: String): Boolean {
+        val cleaned = url.trim()
+        val ok = prefs.edit().putString(PREF_ORDER_PROXY_URL, cleaned).commit()
+        if (!ok) return false
+        return persistDerivedExecutionMode()
+    }
+
+    @JavascriptInterface
+    fun getOrderProxyUrl(): String {
+        return prefs.getString(PREF_ORDER_PROXY_URL, "") ?: ""
+    }
+
+    @JavascriptInterface
+    fun getExecutionInfraStatus(): String {
+        return try {
+            val latestPollRaw = prefs.getString("latest_poll", "null") ?: "null"
+            val latestPoll = try { JSONObject(latestPollRaw) } catch (e: Exception) { JSONObject() }
+            val keyStats = extractInstrumentKeyStats(latestPoll)
+
+            val tokenReady = !(prefs.getString("auth_token", "") ?: "").isBlank()
+            val sandboxEnabled = prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
+            val proxyUrl = (prefs.getString(PREF_ORDER_PROXY_URL, "") ?: "").trim()
+            val proxyConfigured = proxyUrl.startsWith("https://")
+
+            val out = JSONObject()
+            out.put("instrumentKeyRows", keyStats.first)
+            out.put("instrumentKeyPresentRows", keyStats.second)
+            out.put("instrumentKeyFlowOk", keyStats.first > 0 && keyStats.second > 0)
+            out.put("sandboxEnabled", sandboxEnabled)
+            out.put("proxyConfigured", proxyConfigured)
+            out.put("proxyUrl", proxyUrl)
+            out.put("tokenReady", tokenReady)
+            out.put("paperReady", true)
+            out.put("sandboxReady", tokenReady && sandboxEnabled)
+            out.put("liveReady", tokenReady && proxyConfigured)
+            out.toString()
+        } catch (e: Exception) {
+            "{\"instrumentKeyFlowOk\":false,\"sandboxEnabled\":false,\"proxyConfigured\":false,\"tokenReady\":false,\"paperReady\":true,\"sandboxReady\":false,\"liveReady\":false,\"error\":\"${e.message}\"}"
+        }
+    }
+
+    @JavascriptInterface
     fun getLogBuffer(filterJson: String?): String {
         val filter = if (filterJson.isNullOrBlank()) null else {
             try { JSONObject(filterJson).optString("filter", null) }
@@ -514,6 +570,33 @@ class NativeBridge(private val context: Context) {
             val value = obj.optDouble(key, Double.NaN)
             if (!obj.has(key) || obj.isNull(key) || !java.lang.Double.isFinite(value)) label else null
         }
+    }
+
+    private fun extractInstrumentKeyStats(poll: JSONObject): Pair<Int, Int> {
+        val strikeArrays = listOf("bnfStrikes", "nfStrikes")
+        var total = 0
+        var withKey = 0
+        for (name in strikeArrays) {
+            val arr = poll.optJSONArray(name) ?: continue
+            for (i in 0 until arr.length()) {
+                val row = arr.optJSONObject(i) ?: continue
+                total++
+                val key = row.optString("instrument_key", "").trim()
+                if (key.isNotEmpty()) withKey++
+            }
+        }
+        return Pair(total, withKey)
+    }
+
+    private fun persistDerivedExecutionMode(): Boolean {
+        val sandboxEnabled = prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
+        val proxyUrl = (prefs.getString(PREF_ORDER_PROXY_URL, "") ?: "").trim()
+        val mode = when {
+            sandboxEnabled -> "sandbox"
+            proxyUrl.startsWith("https://") -> "live"
+            else -> "paper"
+        }
+        return prefs.edit().putString("execution_mode", mode).commit()
     }
 
     private data class LiveQuotes(val bnfSpot: Double, val nfSpot: Double, val vix: Double)

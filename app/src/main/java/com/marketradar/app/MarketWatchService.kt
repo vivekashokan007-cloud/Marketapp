@@ -1677,6 +1677,20 @@ class MarketWatchService : Service() {
             ctxObj.put("vix",        vix)
             ctxObj.put("bnfSpot",    bnfSpot)
             ctxObj.put("nfSpot",     nfSpot)
+            val authToken = (prefs.getString("auth_token", "") ?: "").trim()
+            val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
+            val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
+            val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)
+            val derivedExecutionMode = when {
+                explicitExecutionMode in setOf("paper", "sandbox", "live") -> explicitExecutionMode
+                sandboxEnabled -> "sandbox"
+                orderProxyUrl.startsWith("https://") -> "live"
+                else -> "paper"
+            }
+            ctxObj.put("authTokenReady", authToken.isNotEmpty())
+            ctxObj.put("sandboxEnabled", sandboxEnabled)
+            ctxObj.put("orderProxyUrl", orderProxyUrl)
+            ctxObj.put("executionMode", derivedExecutionMode)
             ctxObj.put("live", JSONObject().apply {
                 put("bnfSpot", bnfSpot)
                 put("nfSpot", nfSpot)
