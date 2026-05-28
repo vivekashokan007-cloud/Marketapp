@@ -53,7 +53,8 @@ def _temporal_load_if_ready():
 
 def _ml_score(candidate_dict):
     """Score candidate with ML engine. Returns {} if model not loaded.
-    mlAction='BLOCKED' = model has zero training data for this scenario."""
+    mlAction='BLOCKED' = model has zero training data for this scenario.
+    mlAction='UNSURE' = model is weak/OOD/ambiguous; brain math must fallback."""
     engine = _ml_load_if_needed()
     if engine is None:
         return {}
@@ -68,6 +69,9 @@ def _ml_score(candidate_dict):
             'ml_ood_conf':   detail.get('ood_conf', 1.0),
             'ml_ood_warn':   detail.get('ood_warns', []),
             'ml_ood_blocked':detail.get('ood_blocked', False),
+            'ml_unsure':     detail.get('ml_unsure', False),
+            'ml_unsure_reason': detail.get('unsure_reason', []),
+            'decision_source': detail.get('decision_source', 'ML_ADVISORY'),
         }
     except Exception:
         return {}
@@ -5149,7 +5153,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.73"
+BRAIN_VERSION = "2.3.74"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -6030,6 +6034,12 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'mlOod':         False,
         'mlOodConf':     1.0,
         'mlOodBlocked':  False,
+        'mlUnsure':      False,
+        'mlUnsureReason': [],
+        'decisionSource': 'DEFAULT_BRAIN_MATH',
+        'decision_source': 'DEFAULT_BRAIN_MATH',
+        'decisionReason': 'candidate ranked by deterministic brain rules',
+        'decision_reason': 'candidate ranked by deterministic brain rules',
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
     }
@@ -6447,9 +6457,11 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
         eff = c.get('ev', 0) / pc if pc > 0 else 0
         # 9: Probability
         prob = c.get('probProfit', 0)
-        # 10: ML score — tiebreaker. Neutralised when OOD.
+        # 10: ML score — tiebreaker. Neutralised when OOD/UNSURE.
         p_ml = c.get('p_ml') or 0.0
-        if c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
+        if c.get('mlUnsure') or c.get('mlAction') == 'UNSURE':
+            p_ml = 0.0
+        elif c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
             p_ml = 0.0
 
         return (safe, tier, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -eff, -prob, -p_ml)
@@ -6800,6 +6812,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["generated_candidates"] = []
         result["watchlist"] = []
         result["candidateTrace"] = False
+        result["decisionSource"] = "DEFAULT_BRAIN_MATH"
+        result["decision_source"] = "DEFAULT_BRAIN_MATH"
+        result["decisionReason"] = "insufficient poll history; no ML decision applied"
+        result["decision_reason"] = result["decisionReason"]
         try:
             result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
         except Exception as e:
@@ -7123,6 +7139,18 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                             c['mlOodConf']    = d2.get('ood_conf', 1.0)
                             c['mlOodWarn']    = d2.get('ood_warns', [])
                             c['mlOodBlocked'] = d2.get('ood_blocked', False)
+                            c['mlUnsure']     = bool(d2.get('ml_unsure') or c['mlAction'] == 'UNSURE')
+                            c['mlUnsureReason'] = d2.get('unsure_reason', [])
+                            if c['mlUnsure']:
+                                c['decisionSource'] = 'ML_UNSURE_FALLBACK'
+                                c['decision_source'] = 'ML_UNSURE_FALLBACK'
+                                c['decisionReason'] = 'ML returned UNSURE; ranking used deterministic brain rules'
+                                c['decision_reason'] = 'ML returned UNSURE; ranking used deterministic brain rules'
+                            else:
+                                c['decisionSource'] = 'ML_ADVISORY'
+                                c['decision_source'] = 'ML_ADVISORY'
+                                c['decisionReason'] = 'ML annotated candidate after deterministic ranking'
+                                c['decision_reason'] = 'ML annotated candidate after deterministic ranking'
                             c['mlTemporalActive'] = temporal_active
                             c['mlTemporalValAcc'] = round(float(getattr(temporal, 'val_acc', 0.0)), 4) if temporal_active else None
                         except Exception:
@@ -7156,6 +7184,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             final_verdict = _align_verdict_to_watchlist(result.get('verdict'), result["watchlist"], ctx)
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict
+            top = (result.get("watchlist") or [{}])[0] if result.get("watchlist") else {}
+            result['decisionSource'] = top.get('decisionSource', 'DEFAULT_BRAIN_MATH')
+            result['decision_source'] = result['decisionSource']
+            result['decisionReason'] = top.get('decisionReason', 'top decision ranked by deterministic brain rules')
+            result['decision_reason'] = result['decisionReason']
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
 

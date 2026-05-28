@@ -1183,6 +1183,14 @@ class MLEngine:
 
         action = ('TAKE'  if p_meta >= self.thr_take  else
                   'WATCH' if p_meta >= self.thr_watch else 'SKIP')
+        unsure_reason = []
+        boundary_distance = min(abs(p_meta - self.thr_take), abs(p_meta - self.thr_watch))
+        if boundary_distance <= 0.02:
+            unsure_reason.append('probability near ML action threshold')
+        critical = ('strategy', 'vix', 'dte', 'entry_credit', 'width')
+        missing_critical = [k for k in critical if candidate.get(k) in (None, '')]
+        if missing_critical:
+            unsure_reason.append('missing critical fields: ' + ','.join(missing_critical))
 
         # E12: Direction Safety (Logic Guard)
         # If strategy is bearish (BEAR_CALL, BEAR_PUT) but day_direction is UP -> Risky
@@ -1201,10 +1209,13 @@ class MLEngine:
         # Strategy-blind: model has zero training data for this scenario → BLOCKED
         if is_strategy_blind:
             action = 'BLOCKED'
-        # Severely OOD (ood_conf ≤ 0.40): shrinkage math keeps score in WATCH range
-        # so we must hard-reject → SKIP (Antigravity fix)
-        elif is_ood and ood_conf <= 0.40:
-            action = 'SKIP'
+        # Weak/OOD model confidence is advisory only; caller must fall back to
+        # deterministic brain math instead of silently hard-rejecting.
+        elif is_ood and ood_conf <= 0.50:
+            action = 'UNSURE'
+            unsure_reason.append(f'OOD confidence weak ({ood_conf:.2f})')
+        elif unsure_reason:
+            action = 'UNSURE'
         elif is_ood and ood_conf < 0.6 and action == 'TAKE':
             action = 'WATCH'
 
@@ -1215,6 +1226,9 @@ class MLEngine:
             'p_nn':       round(p_nn,  4),
             'p_meta':     round(p_meta, 4),
             'action':     action,
+            'ml_unsure':  action == 'UNSURE',
+            'unsure_reason': unsure_reason,
+            'decision_source': 'ML_UNSURE_FALLBACK' if action == 'UNSURE' else 'ML_ADVISORY',
             'regime':     regime,
             'regime_prob': {k: round(v, 3) for k, v in reg_probs.items()},
             'regime_conf': reg_conf,

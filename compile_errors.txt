@@ -1,14 +1,21 @@
-CURRENT BUILD STATUS - v2.3.73 / b204
+CURRENT BUILD STATUS - v2.3.74 / b205
 
 No current compile error is known.
 
 The previous historical compile failure in this file was stale pre-v2.3.57 output
 and has been removed to avoid misleading future agents.
 
-Latest verified remote build before this change:
-- Market Radar Debug APK Validation: success
-- Commit: 93b37d3
-- Completed: 2026-05-27T09:25:30Z
+Latest local verification before push/release:
+- Python compile: pass for brain.py, ml_engine.py, ml_temporal.py
+- Gate 3 structural audit: pass
+- Gate 5 trace smoke: pass
+- Node syntax: pass for MarketVivi app.js
+- git diff --check: pass in both repos
+
+Known test limitation:
+- pytest is not installed in this container.
+- Direct Gate 6 replay still has existing fixture A baseline drift:
+  expected BULL/69, current NEUTRAL/14.
 
 Current local limitation:
 - This Codex container does not have a local Java runtime configured, so Gradle

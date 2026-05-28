@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.3.73 / b204`
+Current Android release target: `v2.3.74 / b205`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -29,9 +29,13 @@ enough labeled data exists and the replacement model improves accuracy.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.3.73`.
+- `BRAIN_VERSION` is `2.3.74`.
 - EV capture constant is intentionally unchanged pending paper-trade evidence.
 - Temporal ML is wired but activates only when `val_acc >= 0.60`.
+- ML has explicit `UNSURE` fallback metadata. Weak/OOD/ambiguous ML states are
+  neutralized and surfaced as `ML_UNSURE_FALLBACK`; deterministic brain rules
+  remain the owner of candidate ranking.
+- PWA displays `decisionSource` / `decisionReason` for transparency.
 - Python debug validation gates run in GitHub Actions before debug APK build.
 - Signed release is built by `.github/workflows/release.yml` when
   `app/build.gradle.kts` changes.
