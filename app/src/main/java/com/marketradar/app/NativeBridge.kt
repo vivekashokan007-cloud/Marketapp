@@ -214,6 +214,7 @@ class NativeBridge(private val context: Context) {
             obj.put("vix", live.vix)
             obj.put("bnfExpiry", bnfExpiry)
             obj.put("nfExpiry", nfExpiry)
+            obj.put("date", todayIstDate())
 
             prefs.edit()
                 .putString("morning_input", obj.toString())
@@ -966,8 +967,25 @@ class NativeBridge(private val context: Context) {
     fun getBaseline(): String {
         return try {
             clearStaleSessionStateIfNeeded()
-            val baseline = prefs.getString("morning_baseline", "{}") ?: "{}"
-            if (baselineDate(baseline) == todayIstDate()) baseline else "{}"
+            val baselineRaw = prefs.getString("morning_baseline", "{}") ?: "{}"
+            val today = todayIstDate()
+            if (baselineDate(baselineRaw) == today) return baselineRaw
+
+            // Auto-heal legacy sessions where morning_baseline exists but "date" is missing.
+            // If today's session is active and baseline has core spot fields, stamp today's date.
+            val baselineObj = try { JSONObject(baselineRaw) } catch (_: Exception) { JSONObject() }
+            val hasCoreFields =
+                baselineObj.has("bnfSpot") &&
+                baselineObj.has("nfSpot") &&
+                baselineObj.has("vix")
+            if (hasCoreFields && hasTodaySession()) {
+                baselineObj.put("date", today)
+                val healed = baselineObj.toString()
+                prefs.edit().putString("morning_baseline", healed).commit()
+                LogBuffer.add('I', TAG, "BASELINE_HEALED_WITH_DATE: $today")
+                return healed
+            }
+            "{}"
         } catch (e: Exception) {
             "{}"
         }
