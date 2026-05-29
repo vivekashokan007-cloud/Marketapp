@@ -2199,11 +2199,12 @@ class MarketWatchService : Service() {
         val bnfStrikes = mutableSetOf<Triple<Int, String, String>>()
         val nfStrikes = mutableSetOf<Triple<Int, String, String>>()
 
-        val watchlist = brainResult.optJSONArray("watchlist")
-        val limit = Math.min(5, watchlist?.length() ?: 0)
+        val candidateSource = brainResult.optJSONArray("generated_candidates")
+            ?: brainResult.optJSONArray("watchlist")
+        val limit = candidateSource?.length() ?: 0
 
         for (i in 0 until limit) {
-            val cand = watchlist!!.optJSONObject(i)
+            val cand = candidateSource!!.optJSONObject(i) ?: continue
             val index = cand.optString("index", "BNF")
             val expiry = cand.optString("expiry", "")
             val target = if (index == "NF") nfStrikes else bnfStrikes

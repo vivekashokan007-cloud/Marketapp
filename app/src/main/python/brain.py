@@ -5178,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.77"
+BRAIN_VERSION = "2.3.78"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -7534,6 +7534,7 @@ def take_poll_snapshot(result, ctx, polls):
     polls = _bridge_json_obj(polls) or []
 
     watchlist = result.get('watchlist', [])
+    generated_candidates = result.get('generated_candidates', [])
     top_5_cands = watchlist[:5]
 
     top_cand = top_5_cands[0] if top_5_cands else None
@@ -7605,6 +7606,47 @@ def take_poll_snapshot(result, ctx, polls):
             'expiry': c.get('expiry'),
         })
 
+    # Clean ALL generated candidates for offline research/retraining.
+    # Stored inside context_json so this works even on older DB schemas.
+    clean_generated = []
+    if isinstance(generated_candidates, list):
+        for c in generated_candidates:
+            if not isinstance(c, dict):
+                continue
+            clean_generated.append({
+                'id': c.get('id'),
+                'type': c.get('type'),
+                'index': c.get('index'),
+                'expiry': c.get('expiry'),
+                'width': c.get('width'),
+                'sellStrike': c.get('sellStrike'),
+                'sellType': c.get('sellType'),
+                'buyStrike': c.get('buyStrike'),
+                'buyType': c.get('buyType'),
+                'sellStrike2': c.get('sellStrike2'),
+                'sellType2': c.get('sellType2'),
+                'buyStrike2': c.get('buyStrike2'),
+                'buyType2': c.get('buyType2'),
+                'netPremium': c.get('netPremium'),
+                'maxProfit': c.get('maxProfit'),
+                'maxLoss': c.get('maxLoss'),
+                'isCredit': c.get('isCredit'),
+                'lotSize': c.get('lotSize'),
+                'estCost': c.get('estCost'),
+                'capitalBlocked': c.get('capitalBlocked'),
+                'executionReady': c.get('executionReady'),
+                'executionGate': c.get('executionGate'),
+                'entryAction': c.get('entryAction'),
+                'directionSafe': c.get('directionSafe'),
+                'brainScore': c.get('brainScore'),
+                'p_ml': c.get('p_ml'),
+                'mlAction': c.get('mlAction'),
+                'mlEdge': c.get('mlEdge'),
+                'mlOod': c.get('mlOod'),
+                'mlOodConf': c.get('mlOodConf'),
+                'mlOodBlocked': c.get('mlOodBlocked'),
+            })
+
     market_forces = {
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
@@ -7630,8 +7672,25 @@ def take_poll_snapshot(result, ctx, polls):
         'entry_window_active': ctx.get('entry_window_active'),
         'trade_mode': ctx.get('trade_mode'),
         'watchlist_count': len(watchlist) if isinstance(watchlist, list) else 0,
+        'generated_count': len(generated_candidates) if isinstance(generated_candidates, list) else 0,
         'top_candidate_type': top_cand.get('type') if top_cand else None,
         'is_labelable': _is_labelable(result, ctx),
+    }
+
+    # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
+    # Keep existing keys intact; append under snapshot_* namespaces.
+    snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
+    snapshot_context['snapshot_generated_candidates'] = clean_generated
+    snapshot_context['snapshot_watchlist'] = clean_cands
+    snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
+    snapshot_context['snapshot_market_profiles'] = {
+        'bnfProfile': bnf_profile if isinstance(bnf_profile, dict) else {},
+        'nfProfile': nf_profile if isinstance(nf_profile, dict) else {},
+        'pcrContext': result.get('pcrContext'),
+        'marketPhase': result.get('marketPhase'),
+        'effective_bias': result.get('effective_bias'),
+        'regime': result.get('regime'),
+        'rangeSigma': result.get('rangeSigma'),
     }
 
     return {
@@ -7649,7 +7708,7 @@ def take_poll_snapshot(result, ctx, polls):
         'execution_aligned': verdict.get('execution_aligned'),
         'primary_candidate_json': json.dumps(primary),
         'top_candidates_json': json.dumps(clean_cands),
-        'context_json': json.dumps(ctx),
+        'context_json': json.dumps(snapshot_context),
         'verdict_json': json.dumps(verdict),
         'market_forces_json': json.dumps(market_forces),
         'poll_summary_json': json.dumps(poll_summary),
