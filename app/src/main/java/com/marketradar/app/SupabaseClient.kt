@@ -202,6 +202,10 @@ object SupabaseClient {
             "confidence",
             "primary_candidate_json",
             "top_candidates_json",
+            "context_json",
+            "verdict_json",
+            "market_forces_json",
+            "poll_summary_json",
             "is_labelable"
         ).forEach { key ->
             if (body.has(key)) minimal.put(key, body.get(key))
