@@ -13,6 +13,8 @@ android {
     }
 
     defaultConfig {
+        // Keep release retries rooted in this file because GitHub signed-release
+        // workflow is path-filtered to app/build.gradle.kts.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
