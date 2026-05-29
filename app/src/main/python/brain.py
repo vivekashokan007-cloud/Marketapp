@@ -3075,8 +3075,24 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
 
     spot  = spots.get('bnfSpot' if idx == 'BNF' else 'nfSpot', 0)
 
+    def _intrinsic(strike, leg):  # leg: 0=CE, 1=PE
+        if not spot or strike is None:
+            return 0.0
+        if leg == 0:  # CE
+            return max(0.0, float(spot) - float(strike))
+        return max(0.0, float(strike) - float(spot))  # PE
+
+    def _quote_present(strike):
+        try:
+            return int(strike) in cache
+        except Exception:
+            return False
+
     def _get(strike, leg):  # leg: 0=CE, 1=PE
-        return (cache.get(int(strike)) or (0, 0))[leg]
+        raw = (cache.get(int(strike)) or (0, 0))[leg]
+        # Some first-poll payloads report 0 LTP for deep OTM legs. Treat this as
+        # a valid mark and fall back to intrinsic so P&L is still computable.
+        return raw if raw > 0 else _intrinsic(strike, leg)
 
     current_net = 0.0
     if stype == 'BEAR_CALL':
@@ -3091,8 +3107,17 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     elif stype == 'BEAR_PUT':
         current_net = _get(buy_s, 1) - _get(sell_s, 1)
 
-    if current_net == 0.0 and stype:
-        return None  # chain data missing; cannot compute
+    required_legs = []
+    if stype in ('BEAR_CALL', 'BULL_CALL'):
+        required_legs = [(sell_s, 0), (buy_s, 0)]
+    elif stype in ('BULL_PUT', 'BEAR_PUT'):
+        required_legs = [(sell_s, 1), (buy_s, 1)]
+    elif stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        required_legs = [(sell_s, 0), (buy_s, 0), (sell_s2, 1), (buy_s2, 1)]
+
+    has_any_chain_leg = any(_quote_present(s) for s, _ in required_legs)
+    if not has_any_chain_leg and spot <= 0:
+        return None  # neither chain nor spot fallback available
 
     if is_credit:
         pnl = (entry_premium - current_net) * lot_size
@@ -5153,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.75"
+BRAIN_VERSION = "2.3.76"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
