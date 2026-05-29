@@ -66,6 +66,8 @@ class MarketRadarApp : Application() {
             }
             // Schedule day evaluation reminder at 4:30 PM IST (trading days)
             MarketMLService.scheduleDayEvaluationReminder(this)
+            MarketOpenScheduler.scheduleNextMarketOpen(this)
+            MarketOpenScheduler.maybeStartIngestionNow(this, "app_create")
             Log.i("MarketRadarApp", "onCreate complete")
         } catch (e: Exception) {
             Log.e("MarketRadarApp", "onCreate FAILED: ${e.message}", e)

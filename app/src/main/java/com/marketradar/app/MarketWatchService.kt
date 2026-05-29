@@ -1762,11 +1762,13 @@ class MarketWatchService : Service() {
                 Math.abs(nfSpotSigmaValue) > sigmaThreshold ||
                 Math.abs(vixSigma) > sigmaThreshold
 
-            val entryWindowActive = Math.abs(bnfSpotSigma) > 0.3 ||
-                Math.abs(nfSpotSigmaValue) > 0.3
-            
+            val hasMorningInput = !morningInputStr.isNullOrBlank()
+            val wallClockMinutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+            val entryWindowActive = hasMorningInput && wallClockMinutes in 660..915
+
             ctxObj.put("significant_move", sigMove)
             ctxObj.put("entry_window_active", entryWindowActive)
+            ctxObj.put("trading_window_active", wallClockMinutes in 660..915)
             ctxObj.put("abs_spot_sigma", Math.abs(bnfSpotSigma))
             ctxObj.put("abs_nf_spot_sigma", Math.abs(nfSpotSigmaValue))
             ctxObj.put("abs_vix_sigma", Math.abs(vixSigma))

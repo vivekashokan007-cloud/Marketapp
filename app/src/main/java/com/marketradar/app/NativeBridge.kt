@@ -138,6 +138,8 @@ class NativeBridge(private val context: Context) {
             .getSharedPreferences("market_radar", Context.MODE_PRIVATE)
             .getString("auth_token", null)
         Log.i("NativeBridge", "setApiToken: commit=$ok, stored=${token.length} chars, readback=${verify?.length ?: "NULL"}")
+        MarketOpenScheduler.scheduleNextMarketOpen(context)
+        MarketOpenScheduler.maybeStartIngestionNow(context, "token_update")
     }
 
     @JavascriptInterface
@@ -191,7 +193,7 @@ class NativeBridge(private val context: Context) {
 
             val token = (prefs.getString("auth_token", "") ?: "").trim()
             if (token.isEmpty()) {
-                return bridgeFail("Upstox token missing. Please paste token before Lock & Scan.")
+                return bridgeFail("Upstox token missing. Please paste token to enable auto polling and morning baseline lock.")
             }
 
             val bnfExpiry = resolveNearestExpiry("NSE_INDEX|Nifty Bank", token)
@@ -398,9 +400,23 @@ class NativeBridge(private val context: Context) {
             val today = todayIstDate()
             val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
             val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
-            status.put("running", activeToday && isServiceRunning())
+            val serviceRunning = isServiceRunning()
+            val marketClock = MarketOpenScheduler.currentStatus()
+            val coverage = currentPollCoverage(marketClock)
+            status.put("running", serviceRunning)
+            status.put("sessionActive", activeToday)
             status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
             status.put("polls", if (activeToday) prefs.getInt("poll_count", 0) else 0)
+            status.put("tokenReady", !(prefs.getString("auth_token", "") ?: "").isBlank())
+            status.put("marketDay", marketClock.marketDay)
+            status.put("marketOpen", marketClock.marketOpen)
+            status.put("marketReason", marketClock.reason)
+            status.put("autoStartAt", MarketOpenScheduler.nextScheduledAtMs(context))
+            status.put("expectedPollsByNow", coverage.expectedByNow)
+            status.put("expectedPollsFullDay", coverage.expectedFullDay)
+            status.put("actualPollsToday", coverage.actual)
+            status.put("missedPollsToday", coverage.missed)
+            status.put("pollCoverageState", coverage.state)
             status.put("evaluationDoneToday", doneDate == today)
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", runningDate == today)
@@ -687,6 +703,40 @@ class NativeBridge(private val context: Context) {
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         val pollCount = prefs.getInt("poll_count", 0)
         return lastPollDate == today && pollCount > 0
+    }
+
+    private data class PollCoverage(
+        val expectedByNow: Int,
+        val expectedFullDay: Int,
+        val actual: Int,
+        val missed: Int,
+        val state: String
+    )
+
+    private fun currentPollCoverage(clock: MarketOpenScheduler.MarketClockStatus): PollCoverage {
+        val actual = if (hasTodaySession()) prefs.getInt("poll_count", 0) else 0
+        val expectedFullDay = 76
+        if (!clock.marketDay) {
+            return PollCoverage(0, expectedFullDay, actual, 0, clock.reason)
+        }
+
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist)
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val expectedByNow = when {
+            minutes < 555 -> 0
+            minutes >= 930 -> expectedFullDay
+            else -> ((minutes - 555) / 5) + 1
+        }.coerceIn(0, expectedFullDay)
+        val missed = (expectedByNow - actual).coerceAtLeast(0)
+        val state = when {
+            actual <= 0 && expectedByNow <= 0 -> "PRE_OPEN"
+            actual <= 0 && expectedByNow > 0 -> "NO_POLLS"
+            missed == 0 -> "COMPLETE"
+            actual > 0 -> "PARTIAL"
+            else -> "NO_POLLS"
+        }
+        return PollCoverage(expectedByNow, expectedFullDay, actual, missed, state)
     }
 
     private fun clearStaleSessionStateIfNeeded() {
