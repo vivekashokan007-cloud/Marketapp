@@ -5178,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.79"
+BRAIN_VERSION = "2.3.80"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -7895,6 +7895,8 @@ class NotificationAgent:
                 'timestamp': 0,
                 'cooldown_until': 0,
                 'verdict_history': [],
+                'best_candidate_id': None,
+                'best_candidate_history': [],
             }
         self.last_state = {
             'action': state.get('action', 'WAIT'),
@@ -7902,8 +7904,30 @@ class NotificationAgent:
             'confidence': state.get('confidence', 0),
             'timestamp': state.get('timestamp', 0),
             'cooldown_until': state.get('cooldown_until', 0),
+            'best_candidate_id': state.get('best_candidate_id'),
         }
         self.verdict_history = list(state.get('verdict_history', []) or [])
+        self.best_candidate_history = list(state.get('best_candidate_history', []) or [])
+
+    def _best_executable_candidate(self, result):
+        watchlist = result.get('watchlist') or []
+        if not isinstance(watchlist, list):
+            return None
+        for cand in watchlist:
+            if not isinstance(cand, dict):
+                continue
+            if cand.get('capitalBlocked'):
+                continue
+            if cand.get('executionReady') is False:
+                continue
+            if cand.get('entryAction') == 'BLOCKED' or cand.get('blocked') is True:
+                continue
+            if cand.get('directionSafe') is False:
+                continue
+            if not cand.get('type'):
+                continue
+            return cand
+        return None
 
     def process_poll(self, result, ctx):
         current_time = ctx.get('now_ms', 0)
@@ -7911,10 +7935,17 @@ class NotificationAgent:
         action = verdict.get('action', 'WAIT')
         strategy = verdict.get('strategy')
         confidence = verdict.get('confidence', 0)
+        best = self._best_executable_candidate(result)
+        best_id = best.get('id') if isinstance(best, dict) else None
+        best_type = best.get('type') if isinstance(best, dict) else None
+        best_index = best.get('index') if isinstance(best, dict) else None
 
         self.verdict_history.append(action)
         if len(self.verdict_history) > 6:
             self.verdict_history.pop(0)
+        self.best_candidate_history.append(best_id)
+        if len(self.best_candidate_history) > 6:
+            self.best_candidate_history.pop(0)
 
         if current_time < self.last_state['cooldown_until']:
             return None
@@ -7929,27 +7960,30 @@ class NotificationAgent:
                 sound_class='warning'
             )
 
-        if action == self.last_state['action'] and strategy == self.last_state['strategy']:
+        if action == self.last_state['action'] and strategy == self.last_state['strategy'] and best_id == self.last_state.get('best_candidate_id'):
             if abs(confidence - self.last_state['confidence']) >= 15:
-                msg = f"{strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
-                self._update_state(action, strategy, confidence, current_time)
+                msg = f"{best_index or ''} {best_type or strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
+                self._update_state(action, strategy, confidence, current_time, best_id)
                 return self._build_alert("UPDATE", "Conviction Update", msg,
                                           sound_class='update')
             else:
                 return None
 
-        if self.last_state['action'] != 'WAIT' and action == 'WAIT':
-            if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT']:
+        if self.last_state['action'] != 'WAIT' and (action == 'WAIT' or best_id is None):
+            if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT'] and \
+               len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [None, None]:
                 msg = f"Previous {self.last_state['strategy']} thesis invalidated by contrary price action."
-                self._update_state('WAIT', None, 0, current_time)
+                self._update_state('WAIT', None, 0, current_time, None)
                 return self._build_alert("INFO", "Setup Invalidated", msg,
                                           sound_class='routine')
             return None
 
-        if action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False):
-            if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]:
-                msg = f"Entry Window OPEN. {strategy} setup confirmed with {confidence}% conviction."
-                self._update_state(action, strategy, confidence, current_time)
+        if action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False) and best_id:
+            stable_action = len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]
+            stable_best = len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [best_id, best_id]
+            if stable_action and stable_best:
+                msg = f"Entry Window OPEN. Best setup: {best_index or ''} {best_type or strategy} with {confidence}% conviction."
+                self._update_state(action, strategy, confidence, current_time, best_id)
                 return self._build_alert(
                     "HIGH", "New Setup Ready", msg,
                     sound_class=self._compute_sound_class('HIGH', confidence)
@@ -7984,10 +8018,11 @@ class NotificationAgent:
         else:
             return 'routine'
 
-    def _update_state(self, action, strategy, confidence, ts):
+    def _update_state(self, action, strategy, confidence, ts, best_candidate_id=None):
         self.last_state.update({
             'action': action, 'strategy': strategy,
             'confidence': confidence, 'timestamp': ts,
+            'best_candidate_id': best_candidate_id,
         })
 
     def _build_alert(self, urgency, title, message, sound_class=None):
@@ -8025,6 +8060,7 @@ def notification_agent_state_json():
     try:
         full = dict(_NOTIFICATION_AGENT.last_state)
         full['verdict_history'] = list(_NOTIFICATION_AGENT.verdict_history)
+        full['best_candidate_history'] = list(_NOTIFICATION_AGENT.best_candidate_history)
         return json.dumps(full)
     except Exception:
         return 'null'
