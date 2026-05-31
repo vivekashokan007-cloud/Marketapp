@@ -66,6 +66,9 @@ class MarketWatchService : Service() {
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
+        private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
+        private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
+        private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -351,6 +354,12 @@ class MarketWatchService : Service() {
                     Log.d(TAG, "SIGNAL_PRIOR_LOADED: $it")
                 }
 
+                val approvedBranchRows = SupabaseClient.select("ai_branch_proposals", "status=eq.approved", "approved_at.desc", 50)
+                prefs.edit()
+                    .putString(APPROVED_BRANCH_PROPOSALS_KEY, approvedBranchRows.toString())
+                    .putLong(APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY, now)
+                    .apply()
+
                 val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}"
                 Log.d(TAG, historyLoadedLog)
 
@@ -358,6 +367,35 @@ class MarketWatchService : Service() {
                 Log.d(TAG, "Bootstrap complete")
             } catch (e: Exception) {
                 Log.e(TAG, "Bootstrap failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun getApprovedBranchProposalsCached(): JSONArray {
+        return try {
+            JSONArray(prefs.getString(APPROVED_BRANCH_PROPOSALS_KEY, "[]") ?: "[]")
+        } catch (_: Exception) {
+            JSONArray()
+        }
+    }
+
+    private suspend fun refreshApprovedBranchProposals(force: Boolean = false): JSONArray {
+        val now = System.currentTimeMillis()
+        val lastSync = prefs.getLong(APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY, 0L)
+        if (!force && (now - lastSync) < APPROVED_BRANCH_PROPOSALS_TTL_MS) {
+            return getApprovedBranchProposalsCached()
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val rows = SupabaseClient.select("ai_branch_proposals", "status=eq.approved", "approved_at.desc", 50)
+                prefs.edit()
+                    .putString(APPROVED_BRANCH_PROPOSALS_KEY, rows.toString())
+                    .putLong(APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY, now)
+                    .commit()
+                rows
+            } catch (e: Exception) {
+                Log.e(TAG, "refreshApprovedBranchProposals failed: ${e.message}")
+                getApprovedBranchProposalsCached()
             }
         }
     }
@@ -1546,6 +1584,13 @@ class MarketWatchService : Service() {
             prefs.edit()
                 .putString("trade_mode", resolvedTradeMode)
                 .apply()
+            val approvedBranchRows = try {
+                refreshApprovedBranchProposals(force = false)
+            } catch (e: Exception) {
+                Log.e(TAG, "approved branch refresh failed: ${e.message}")
+                getApprovedBranchProposalsCached()
+            }
+            ctxObj.put("approvedProposals", approvedBranchRows)
             
             // C1: Calculate DTE (Days to Expiry) for brain context
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)

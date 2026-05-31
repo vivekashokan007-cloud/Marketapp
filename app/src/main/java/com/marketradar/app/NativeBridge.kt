@@ -22,8 +22,10 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import com.marketradar.app.util.LogBuffer
@@ -35,6 +37,11 @@ class NativeBridge(private val context: Context) {
         private const val PY_SCORE_TIMEOUT_MS = 2_500L
         private const val PREF_SANDBOX_ENABLED = "execution_sandbox_enabled"
         private const val PREF_ORDER_PROXY_URL = "order_proxy_url"
+        private const val PREF_APPROVED_BRANCH_PROPOSALS = "approved_branch_proposals"
+        private const val PREF_APPROVED_BRANCH_PROPOSALS_SYNC_MS = "approved_branch_proposals_sync_ms"
+        private const val PREF_LAST_EVALUATOR_JOB = "last_evaluator_job"
+        private const val ORACLE_BASE_URL = "http://144.24.117.114:8443"
+        private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
     }
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
@@ -355,6 +362,127 @@ class NativeBridge(private val context: Context) {
         }
         editor.commit()
         LogBuffer.add('I', TAG, "TRADE_MODE_SET: mode=$normalized")
+    }
+
+    @JavascriptInterface
+    fun triggerEvaluationJob(payloadJson: String): String {
+        return try {
+            val payload = try {
+                JSONObject(payloadJson.ifBlank { "{}" })
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            if (!payload.has("date_to") || payload.optString("date_to").isBlank()) {
+                payload.put("date_to", todayIstDate())
+            }
+            if (!payload.has("date_from") || payload.optString("date_from").isBlank()) {
+                val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+                cal.add(Calendar.DAY_OF_MONTH, -29)
+                payload.put(
+                    "date_from",
+                    SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                        timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+                    }.format(cal.time)
+                )
+            }
+            if (!payload.has("mode") || payload.optString("mode").isBlank()) {
+                payload.put("mode", "branch_evaluation")
+            }
+            if (!payload.has("index_scope") || payload.optJSONArray("index_scope") == null || payload.optJSONArray("index_scope")?.length() == 0) {
+                payload.put("index_scope", JSONArray().put("BNF").put("NF"))
+            }
+            val raw = oraclePost("/evaluation-jobs", payload.toString())
+            val obj = JSONObject(raw)
+            obj.put("ok", true)
+            obj.put("request_payload", payload)
+            obj.put("requested_at", System.currentTimeMillis())
+            val jobId = obj.optString("job_id", "")
+            if (jobId.isNotBlank()) {
+                prefs.edit()
+                    .putString("last_evaluator_job_id", jobId)
+                    .putLong("last_evaluator_job_started_ms", System.currentTimeMillis())
+                    .commit()
+            }
+            saveEvaluationJobObject(obj)
+            obj.toString()
+        } catch (e: Exception) {
+            bridgeFail("Evaluator trigger failed: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
+    fun getEvaluationJobStatus(jobId: String): String {
+        return try {
+            val resolvedJobId = jobId.trim().ifBlank {
+                getCachedEvaluationJobObject().optString("job_id", "")
+            }
+            if (resolvedJobId.isBlank()) return bridgeFail("No evaluator job id available")
+            val raw = oracleGet("/evaluation-jobs/$resolvedJobId")
+            val obj = JSONObject(raw)
+            obj.put("ok", true)
+            val cached = getCachedEvaluationJobObject()
+            if (cached.has("request_payload") && !obj.has("request_payload")) {
+                obj.put("request_payload", cached.optJSONObject("request_payload"))
+            }
+            if (cached.has("requested_at") && !obj.has("requested_at")) {
+                obj.put("requested_at", cached.optLong("requested_at"))
+            }
+            obj.put("updated_at", System.currentTimeMillis())
+            saveEvaluationJobObject(obj)
+            obj.toString()
+        } catch (e: Exception) {
+            bridgeFail("Evaluator status failed: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
+    fun getEvaluationJobProposals(jobId: String): String {
+        return try {
+            val resolvedJobId = jobId.trim().ifBlank {
+                getCachedEvaluationJobObject().optString("job_id", "")
+            }
+            if (resolvedJobId.isBlank()) return bridgeFail("No evaluator job id available")
+            val raw = oracleGet("/evaluation-jobs/$resolvedJobId/proposals")
+            val obj = JSONObject(raw)
+            obj.put("ok", true)
+            obj.toString()
+        } catch (e: Exception) {
+            bridgeFail("Evaluator proposals failed: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
+    fun getApprovedBranchProposals(): String {
+        return try {
+            readApprovedBranchProposals(force = false).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getApprovedBranchProposals failed", e)
+            prefs.getString(PREF_APPROVED_BRANCH_PROPOSALS, "[]") ?: "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun refreshApprovedBranchProposals(): String {
+        return try {
+            readApprovedBranchProposals(force = true).toString()
+        } catch (e: Exception) {
+            bridgeFail("Approved proposal refresh failed: ${e.message}")
+        }
+    }
+
+    @JavascriptInterface
+    fun getCachedEvaluationJob(): String {
+        return getCachedEvaluationJobObject().toString()
+    }
+
+    @JavascriptInterface
+    fun approveBranchProposal(rowId: String): String {
+        return updateBranchProposalStatusInternal(rowId, "approved")
+    }
+
+    @JavascriptInterface
+    fun rejectBranchProposal(rowId: String): String {
+        return updateBranchProposalStatusInternal(rowId, "rejected")
     }
 
     @JavascriptInterface
@@ -857,6 +985,92 @@ class NativeBridge(private val context: Context) {
         .put("error", error)
         .toString()
 
+    private fun oracleGet(path: String): String {
+        val request = Request.Builder()
+            .url("$ORACLE_BASE_URL$path")
+            .get()
+            .build()
+        return httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Oracle ${response.code}: ${body.ifBlank { response.message }}")
+            }
+            body
+        }
+    }
+
+    private fun oraclePost(path: String, bodyJson: String): String {
+        val request = Request.Builder()
+            .url("$ORACLE_BASE_URL$path")
+            .post(bodyJson.toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return httpClient.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) {
+                throw IllegalStateException("Oracle ${response.code}: ${body.ifBlank { response.message }}")
+            }
+            body
+        }
+    }
+
+    private fun getCachedEvaluationJobObject(): JSONObject {
+        val raw = prefs.getString(PREF_LAST_EVALUATOR_JOB, "{}") ?: "{}"
+        return try {
+            JSONObject(raw)
+        } catch (_: Exception) {
+            JSONObject()
+        }
+    }
+
+    private fun saveEvaluationJobObject(job: JSONObject) {
+        prefs.edit().putString(PREF_LAST_EVALUATOR_JOB, job.toString()).commit()
+    }
+
+    private fun readApprovedBranchProposals(force: Boolean = false): JSONArray {
+        val now = System.currentTimeMillis()
+        val cached = prefs.getString(PREF_APPROVED_BRANCH_PROPOSALS, "[]") ?: "[]"
+        val lastSync = prefs.getLong(PREF_APPROVED_BRANCH_PROPOSALS_SYNC_MS, 0L)
+        if (!force && (now - lastSync) < APPROVED_BRANCH_PROPOSALS_TTL_MS) {
+            return try {
+                JSONArray(cached)
+            } catch (_: Exception) {
+                JSONArray()
+            }
+        }
+        val rows = SupabaseClient.select("ai_branch_proposals", "status=eq.approved", "approved_at.desc", 50)
+        prefs.edit()
+            .putString(PREF_APPROVED_BRANCH_PROPOSALS, rows.toString())
+            .putLong(PREF_APPROVED_BRANCH_PROPOSALS_SYNC_MS, now)
+            .commit()
+        return rows
+    }
+
+    private fun updateBranchProposalStatusInternal(rowId: String, status: String): String {
+        val trimmed = rowId.trim()
+        if (trimmed.isBlank()) return bridgeFail("Proposal row id missing")
+        return try {
+            val body = JSONObject()
+                .put("status", status)
+                .put("approved_by", "market_radar_app")
+                .put("approved_at", if (status == "approved") nowUtcIso() else JSONObject.NULL)
+            val ok = SupabaseClient.update("ai_branch_proposals", body, "id=eq.$trimmed")
+            if (!ok) return bridgeFail("Proposal status update failed")
+            val rows = readApprovedBranchProposals(force = true)
+            JSONObject()
+                .put("ok", true)
+                .put("status", status)
+                .put("approvedCount", rows.length())
+                .put("message", when (status) {
+                    "approved" -> "Proposal approved and synced."
+                    "rejected" -> "Proposal removed from the live brain."
+                    else -> "Proposal status updated."
+                })
+                .toString()
+        } catch (e: Exception) {
+            bridgeFail("Proposal update failed: ${e.message}")
+        }
+    }
+
     private fun normalizeTradeMode(raw: String?): String {
         val m = (raw ?: "").trim().lowercase(Locale.US)
         return when (m) {
@@ -1236,5 +1450,10 @@ class NativeBridge(private val context: Context) {
     private fun todayIsoDate(): String =
         SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }.format(Date())
+
+    private fun nowUtcIso(): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
         }.format(Date())
 }

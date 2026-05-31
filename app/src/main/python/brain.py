@@ -5178,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.82"
+BRAIN_VERSION = "2.3.83"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -5653,11 +5653,22 @@ def _gamma_tag(risk):
         return '\u26a0\ufe0f \u03b3'         # ⚠️ γ
     return ''
 
-def _credit_sigma_limits():
-    return (
-        _CONST.get('MIN_SIGMA_OTM', 0.5),
-        _CONST.get('MAX_SIGMA_OTM', 0.8),
-    )
+def _credit_sigma_limits(ctx=None):
+    min_sigma = _CONST.get('MIN_SIGMA_OTM', 0.5)
+    max_sigma = _CONST.get('MAX_SIGMA_OTM', 0.8)
+    if isinstance(ctx, dict):
+        learned = ctx.get('_learned_branch_overrides') or {}
+        try:
+            if learned.get('min_sigma_otm') is not None:
+                min_sigma = float(learned.get('min_sigma_otm'))
+        except (TypeError, ValueError):
+            pass
+        try:
+            if learned.get('max_sigma_otm') is not None:
+                max_sigma = float(learned.get('max_sigma_otm'))
+        except (TypeError, ValueError):
+            pass
+    return (min_sigma, max_sigma)
 
 def _sigma_above_max(value, max_sigma):
     # Strike-step rounding can make a visually valid 0.8σ strike compute as
@@ -5672,6 +5683,112 @@ def _sigma_otm_value(strike, spot, daily_sigma):
         return abs(float(strike) - float(spot)) / float(daily_sigma)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
+
+def _normalize_approved_branch_proposals(ctx):
+    raw = ctx.get('approvedProposals') or ctx.get('approved_proposals') or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if isinstance(raw, dict):
+        raw = [raw]
+    out = []
+    for row in raw or []:
+        if not isinstance(row, dict):
+            continue
+        payload = row.get('proposal_json')
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = None
+        if not isinstance(payload, dict):
+            payload = row
+        merged = dict(payload)
+        merged.setdefault('proposal_id', row.get('proposal_id') or row.get('id') or payload.get('proposal_id') or '')
+        merged.setdefault('status', row.get('status') or payload.get('status') or '')
+        merged.setdefault('index', row.get('index_key') or payload.get('index') or payload.get('index_key') or '')
+        merged.setdefault('category', row.get('category') or payload.get('category') or '')
+        merged.setdefault('priority', row.get('priority') or payload.get('priority') or '')
+        out.append(merged)
+    return out
+
+def _proposal_list(value):
+    if isinstance(value, str) and value.strip():
+        return [value.strip().upper()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(v).strip().upper() for v in value if str(v).strip()]
+    return []
+
+def _proposal_matches(proposal, index_key, ctx, regime, vix):
+    proposal_index = str(proposal.get('index') or proposal.get('index_key') or '').upper()
+    if proposal_index and proposal_index != index_key:
+        return False
+    conditions = proposal.get('conditions') if isinstance(proposal.get('conditions'), dict) else {}
+    regime_list = _proposal_list(conditions.get('regime'))
+    if regime_list:
+        current_regime = str(regime or ctx.get('regime') or '').upper()
+        if current_regime not in regime_list:
+            return False
+    mode_required = str(conditions.get('trade_mode') or conditions.get('mode') or '').strip().lower()
+    if mode_required and str(ctx.get('tradeMode', '')).strip().lower() != mode_required:
+        return False
+    bias_list = _proposal_list(conditions.get('bias'))
+    if bias_list:
+        active_bias = str(
+            (ctx.get('effective_bias') or {}).get('bias')
+            or (ctx.get('morningBias') or {}).get('bias')
+            or ''
+        ).upper()
+        if active_bias not in bias_list:
+            return False
+    try:
+        vix_min = conditions.get('vix_min')
+        if vix_min is not None and float(vix) < float(vix_min):
+            return False
+    except (TypeError, ValueError):
+        pass
+    try:
+        vix_max = conditions.get('vix_max')
+        if vix_max is not None and float(vix) > float(vix_max):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
+
+def _learned_branch_overrides(ctx, index_key, regime, vix):
+    proposals = _normalize_approved_branch_proposals(ctx)
+    overrides = {
+        'strategy_allow': set(),
+        'strategy_block': set(),
+        'min_sigma_otm': None,
+        'max_sigma_otm': None,
+        'matched_ids': [],
+        'approved_count': len(proposals),
+    }
+    matched = []
+    for proposal in proposals:
+        if not _proposal_matches(proposal, index_key, ctx, regime, vix):
+            continue
+        matched.append(proposal.get('proposal_id') or proposal.get('id') or '')
+        action = proposal.get('action') if isinstance(proposal.get('action'), dict) else {}
+        for key in ('strategy_allow', 'allow'):
+            for item in _proposal_list(action.get(key) or proposal.get(key)):
+                overrides['strategy_allow'].add(item)
+        for key in ('strategy_block', 'block'):
+            for item in _proposal_list(action.get(key) or proposal.get(key)):
+                overrides['strategy_block'].add(item)
+        for field in ('min_sigma_otm', 'max_sigma_otm'):
+            target = action.get(field, proposal.get(field))
+            if target is None:
+                continue
+            try:
+                overrides[field] = float(target)
+            except (TypeError, ValueError):
+                pass
+    ctx.setdefault('_learned_branch_matches', {})[index_key] = [m for m in matched if m]
+    return overrides
 
 def _compute_context_score(cand, spot, tdte, vix, ctx):
     penalty = 0.0
@@ -5895,7 +6012,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     ds = _daily_sigma(spot, vix)
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and ds > 0:
         sigma_otm = abs(pair['sell'] - spot) / ds
-        min_sigma, max_sigma = _credit_sigma_limits()
+        min_sigma, max_sigma = _credit_sigma_limits(ctx)
         if sigma_otm < min_sigma:
             # TASK 5.6 — trace rejection
             if ctx.get('_trace') is not None:
@@ -6179,12 +6296,22 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 
     varsity = _get_varsity_filter(bias, vix, trade_mode, range_detected)
     allowed_types = varsity['primary'] + varsity['allowed']
+    learned = _learned_branch_overrides(ctx, index_key, regime, vix)
+    ctx['_learned_branch_overrides'] = learned
+    for stype in learned['strategy_allow']:
+        if stype and stype not in allowed_types:
+            allowed_types.append(stype)
+    if learned['strategy_block']:
+        allowed_types = [stype for stype in allowed_types if stype not in learned['strategy_block']]
     # TASK 5.5 — varsity snapshot
     if _cand_trace is not None:
         _cand_trace['varsity'] = {
             'primary': list(varsity.get('primary', [])),
             'allowed': list(varsity.get('allowed', [])),
             'blocked': list(varsity.get('blocked', [])),
+            'learned_allow': sorted(list(learned.get('strategy_allow', []))),
+            'learned_block': sorted(list(learned.get('strategy_block', []))),
+            'matched_branch_ids': list(learned.get('matched_ids', [])),
         }
     candidates = []
 
@@ -6262,7 +6389,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 sell_put = atm - put_dist
                 buy_put = sell_put - width
                 ds_for_gate = ds_local if ds_local > 0 else _daily_sigma(spot, vix)
-                min_sigma = _CONST.get('MIN_SIGMA_OTM', 0.5)
+                min_sigma, _ = _credit_sigma_limits(ctx)
                 max_sigma = _CONST.get('IC_WALL_MAX_SIGMA', 1.5)
                 call_sigma = _sigma_otm_value(sell_call, spot, ds_for_gate)
                 put_sigma = _sigma_otm_value(sell_put, spot, ds_for_gate)
@@ -6833,7 +6960,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         _trace_source = ctx.get('_trace_source_override', 'live')
         ctx['_trace'] = _new_trace(source=_trace_source)
 
-    result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": []}
+    result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": [], "learnedBranches": {}}
     if len(polls) < 3:
         # Do not return an empty stub for low-history sessions. Emit an explicit
         # WAIT verdict so UI and logs can explain why strategy generation is empty.
@@ -6855,6 +6982,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["decision_source"] = "DEFAULT_BRAIN_MATH"
         result["decisionReason"] = "insufficient poll history; no ML decision applied"
         result["decision_reason"] = result["decisionReason"]
+        result["learnedBranches"] = {
+            "approved_count": len(_normalize_approved_branch_proposals(ctx)),
+            "matched_by_index": {},
+        }
         try:
             result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
         except Exception as e:
@@ -7083,6 +7214,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     # b97: Effective bias — Bayesian decay of morning prior with intraday evidence
     try:
         result["effective_bias"] = compute_effective_bias(polls, baseline, ctx, regime)
+        ctx["effective_bias"] = result["effective_bias"]
     except Exception as e:
         print(f"DEBUG: compute_effective_bias failed: {e}")
 
@@ -7274,6 +7406,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         'pct': gap.get('nf', {}).get('pct', 0),
         'sigma': gap.get('nf', {}).get('sigma', 0),
         'type': gap.get('nf', {}).get('type', 'NORMAL'),
+    }
+    result['learnedBranches'] = {
+        'approved_count': len(_normalize_approved_branch_proposals(ctx)),
+        'matched_by_index': ctx.get('_learned_branch_matches', {}),
     }
 
     # Phase A agent: deterministic explanation/audit JSON only. This must run
