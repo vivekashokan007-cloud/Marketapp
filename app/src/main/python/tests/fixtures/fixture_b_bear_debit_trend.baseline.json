@@ -5,10 +5,10 @@
     "direction": "BEAR",
     "confidence": 74,
     "urgency": "WAIT \u2014 opening noise",
-    "reasoning": "Trend 0.9\u03c3 \u00b7 VIX 21.5 (Z:+4.7 EXTREME) \u00b7 Breadth weak (28%) \u00b7 FII \u20b9-4300Cr/5d \u00b7 Skew steep (4) \u00b7 Bull 0.0 vs Bear 2.6",
+    "reasoning": "Trend 0.9\u03c3 \u00b7 VIX 21.5 (Z:+4.7 EXTREME) \u00b7 Breadth weak (28%) \u00b7 FII \u20b9-4300Cr/5d \u00b7 Bull 0.0 vs Bear 3.5",
     "conflicts": [],
     "bull": 0.0,
-    "bear": 2.65
+    "bear": 3.5
   },
   "market": [
     {
@@ -44,6 +44,40 @@
       "strength": 3
     },
     {
+      "type": "candle",
+      "icon": "\ud83d\udd6f",
+      "label": "Bearish Marubozu on BNF (15m)",
+      "detail": "Open=47700 Close=47500. No wicks, extreme selling.",
+      "impact": "bearish",
+      "strength": 3,
+      "pattern": "BEARISH_MARUBOZU",
+      "index": "BNF",
+      "timeframe": "15m",
+      "candle": {
+        "open": 47700,
+        "high": 47700,
+        "low": 47500,
+        "close": 47500
+      }
+    },
+    {
+      "type": "candle",
+      "icon": "\ud83d\udd6f",
+      "label": "Bearish Marubozu on NF (15m)",
+      "detail": "Open=21850 Close=21750. No wicks, extreme selling.",
+      "impact": "bearish",
+      "strength": 3,
+      "pattern": "BEARISH_MARUBOZU",
+      "index": "NF",
+      "timeframe": "15m",
+      "candle": {
+        "open": 21850,
+        "high": 21850,
+        "low": 21750,
+        "close": 21750
+      }
+    },
+    {
       "type": "market",
       "icon": "\u26a0\ufe0f",
       "label": "Fragile call wall (depth 0)",
@@ -65,11 +99,129 @@
       "strength": 3
     }
   ],
+  "regime": {
+    "type": "trend",
+    "sigma": 0.9186636496752051,
+    "direction": -5,
+    "trend_pct": 1.0,
+    "nf_sigma": 1.0021785269184056,
+    "nf_direction": -5
+  },
+  "rangeSigma": 0.9186636496752051,
+  "marketPhase": {
+    "id": "TREND_DOWN",
+    "label": "Trending down",
+    "detail": "0.92\u03c3, 1.0% trend",
+    "hint": "Debit-friendly in trend direction.",
+    "sigma": 0.9186636496752051,
+    "trend_pct": 1.0
+  },
+  "bnfProfile": {},
+  "nfProfile": {},
+  "bnfContrarian": {
+    "flags": []
+  },
+  "nfContrarian": {
+    "flags": []
+  },
+  "pcrContext": null,
+  "sessionTrajectory": null,
+  "candle_bnf": {
+    "current": {
+      "open": 48000,
+      "high": 48000,
+      "low": 47500,
+      "close": 47500,
+      "ts": "",
+      "count": 6
+    },
+    "last_15m": {
+      "open": 47700,
+      "high": 47700,
+      "low": 47500,
+      "close": 47500,
+      "ts": "",
+      "count": 3
+    },
+    "patterns": [
+      {
+        "type": "candle",
+        "icon": "\ud83d\udd6f",
+        "label": "Bearish Marubozu on BNF (15m)",
+        "detail": "Open=47700 Close=47500. No wicks, extreme selling.",
+        "impact": "bearish",
+        "strength": 3,
+        "pattern": "BEARISH_MARUBOZU",
+        "index": "BNF",
+        "timeframe": "15m",
+        "candle": {
+          "open": 47700,
+          "high": 47700,
+          "low": 47500,
+          "close": 47500
+        }
+      }
+    ]
+  },
+  "candle_nf": {
+    "current": {
+      "open": 22000,
+      "high": 22000,
+      "low": 21750,
+      "close": 21750,
+      "ts": "",
+      "count": 6
+    },
+    "last_15m": {
+      "open": 21850,
+      "high": 21850,
+      "low": 21750,
+      "close": 21750,
+      "ts": "",
+      "count": 3
+    },
+    "patterns": [
+      {
+        "type": "candle",
+        "icon": "\ud83d\udd6f",
+        "label": "Bearish Marubozu on NF (15m)",
+        "detail": "Open=21850 Close=21750. No wicks, extreme selling.",
+        "impact": "bearish",
+        "strength": 3,
+        "pattern": "BEARISH_MARUBOZU",
+        "index": "NF",
+        "timeframe": "15m",
+        "candle": {
+          "open": 21850,
+          "high": 21850,
+          "low": 21750,
+          "close": 21750
+        }
+      }
+    ]
+  },
+  "position_live": {},
+  "overnightDelta": null,
+  "morningBias": {
+    "bias": "NEUTRAL",
+    "strength": "",
+    "net": 0,
+    "votes": {
+      "bull": 0,
+      "bear": 0
+    },
+    "signals": [],
+    "label": "NEUTRAL",
+    "upstoxAgrees": null,
+    "chainValidation": "NONE"
+  },
+  "institutionalRegime": null,
   "effective_bias": {
     "bias": "NEUTRAL",
     "strength": "",
-    "net": -0.51,
-    "morning_weight": 0.7,
+    "label": "NEUTRAL",
+    "net": -0.27,
+    "morning_weight": 0.82,
     "signals": [
       -1,
       -2,
@@ -77,6 +229,7 @@
       0,
       0,
       -2,
+      0,
       -2
     ],
     "intraday_net": -8,
@@ -86,5 +239,59 @@
       "Breadth 28%",
       "Trend \u2193"
     ]
-  }
+  },
+  "fiiTrend": null,
+  "signalValidation": null,
+  "gapInfo": {
+    "gap": 0,
+    "pct": 0,
+    "sigma": 0,
+    "type": "NORMAL"
+  },
+  "nfGapInfo": {
+    "gap": 0,
+    "pct": 0,
+    "sigma": 0,
+    "type": "NORMAL"
+  },
+  "agent": {
+    "schema": 1,
+    "mode": "EXPLAIN_AUDIT",
+    "session_summary": {
+      "headline": "BUY PREMIUM: trend session, bias NEUTRAL, range 0.92 sigma",
+      "state": "BUY PREMIUM",
+      "confidence": 74,
+      "regime": "TREND",
+      "range_sigma": 0.9186636496752051,
+      "bias": "NEUTRAL",
+      "bias_net": -0.27,
+      "why": [
+        "VIX climbing: VIX 18.5 \u2192 21.5 (+3.0). Fear rising.",
+        "Trending bearish (0.92\u03c3): Directional: Bear Put favored.",
+        "Signals aligned: VIX, spot, breadth all consistent. Move is real.",
+        "Bearish Marubozu on BNF (15m): Open=47700 Close=47500. No wicks, extreme selling.",
+        "Bearish Marubozu on NF (15m): Open=21850 Close=21750. No wicks, extreme selling."
+      ],
+      "conflicts": [],
+      "watch_for": [
+        "force alignment staying >=2/3",
+        "wall protection around sell strike",
+        "premium behavior confirming thesis"
+      ]
+    },
+    "notification_context": {
+      "severity": "entry",
+      "dedupe_bucket": "SETUP_BUY PREMIUM_TREND",
+      "should_notify": true,
+      "reason": "Actionable setup with sufficient confidence"
+    },
+    "trade_audits": {},
+    "data_quality": {
+      "missing": [],
+      "warnings": [
+        "watchlist empty"
+      ]
+    }
+  },
+  "alerts": []
 }

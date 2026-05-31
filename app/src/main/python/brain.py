@@ -5178,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.80"
+BRAIN_VERSION = "2.3.81"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -6730,8 +6730,22 @@ def _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot, daily_sig, idx
             'maxProfit': mp, 'maxLoss': ml, 'riskReward': round(mp/ml, 2),
             'probProfit': round(prob, 3), 'pRange': round(prob, 3),
             'ev': round(ev), 'ev1k': round(ev / (ml / 1000)) if ml > 0 else 0,
-            'forces': forces, 'varsityTier': 1 if forces['aligned'] == 3 else 2,
-            'source': 'brain'
+            'forces': forces,
+            'varsityTier': 'PRIMARY' if forces['aligned'] == 3 else 'ALLOWED',
+            'source': 'brain',
+            # Keep fallback schema aligned with primary candidate builder.
+            'sellInstrumentKey': None,
+            'buyInstrumentKey': None,
+            'sellInstrumentKey2': None,
+            'buyInstrumentKey2': None,
+            'executionReady': False,
+            'executionGate': 'WAIT',
+            'mlUnsure': False,
+            'mlUnsureReason': [],
+            'decisionSource': 'DEFAULT_BRAIN_MATH',
+            'decision_source': 'DEFAULT_BRAIN_MATH',
+            'decisionReason': 'candidate ranked by deterministic brain rules (fallback path)',
+            'decision_reason': 'candidate ranked by deterministic brain rules (fallback path)',
         }
         if sell_k2 is not None:
             cand.update({'sellStrike2': sell_k2, 'sellType2': sell_t2, 'sellLTP2': round(sl2, 2),
@@ -7109,6 +7123,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 expiry = ctx.get(expiry_key, '')
                 cands = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
                 all_cands.extend(cands)
+        # Fallback path: only when primary generator yields no candidates.
+        # Keeps legacy safety net explicit instead of dead/unreachable.
+        if not all_cands:
+            try:
+                fallback = generate_candidates_py(ctx, active_bias) or []
+                if fallback:
+                    all_cands = fallback
+                    result["candidate_fallback_used"] = True
+                    result["candidate_fallback_count"] = len(fallback)
+            except Exception as e:
+                result["candidate_fallback_error"] = str(e)
         if all_cands:
             brain_verdict = result.get('verdict')
             ranked = rank_candidates(all_cands, _calibration, brain_verdict)

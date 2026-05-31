@@ -2,12 +2,14 @@
   "verdict": {
     "action": "SELL PREMIUM",
     "strategy": "IRON_CONDOR",
-    "direction": "NEUTRAL",
-    "confidence": 74,
+    "direction": "BULL",
+    "confidence": 54,
     "urgency": "WAIT \u2014 opening noise",
-    "reasoning": "Range 0.2\u03c3 \u00b7 Mode: INTRADAY \u00b7 Bull 0.0 vs Bear 0.4",
-    "conflicts": [],
-    "bull": 0.0,
+    "reasoning": "Range 0.2\u03c3 \u00b7 Mode: INTRADAY \u00b7 Bull 1.2 vs Bear 0.4",
+    "conflicts": [
+      "Range but bias BULL"
+    ],
+    "bull": 1.2,
     "bear": 0.4
   },
   "market": [
@@ -44,6 +46,40 @@
       "strength": 4
     },
     {
+      "type": "candle",
+      "icon": "\ud83d\udd6f",
+      "label": "Bullish Marubozu on BNF (15m)",
+      "detail": "Open=48010 Close=48090. No wicks, extreme buying.",
+      "impact": "bullish",
+      "strength": 3,
+      "pattern": "BULLISH_MARUBOZU",
+      "index": "BNF",
+      "timeframe": "15m",
+      "candle": {
+        "open": 48010,
+        "high": 48090,
+        "low": 48010,
+        "close": 48090
+      }
+    },
+    {
+      "type": "candle",
+      "icon": "\ud83d\udd6f",
+      "label": "Bullish Marubozu on NF (15m)",
+      "detail": "Open=22010 Close=22050. No wicks, extreme buying.",
+      "impact": "bullish",
+      "strength": 3,
+      "pattern": "BULLISH_MARUBOZU",
+      "index": "NF",
+      "timeframe": "15m",
+      "candle": {
+        "open": 22010,
+        "high": 22050,
+        "low": 22010,
+        "close": 22050
+      }
+    },
+    {
       "type": "market",
       "icon": "\u26a0\ufe0f",
       "label": "Fragile call wall (depth 0)",
@@ -74,14 +110,133 @@
       "strength": 3
     }
   ],
+  "regime": {
+    "type": "range",
+    "sigma": 0.24368762075594913,
+    "direction": 1,
+    "trend_pct": 0.2,
+    "nf_sigma": 0.2658410408246718,
+    "nf_direction": 1
+  },
+  "rangeSigma": 0.24368762075594913,
+  "marketPhase": {
+    "id": "RANGE",
+    "label": "Range-bound",
+    "detail": "0.24\u03c3 range",
+    "hint": "Credit-friendly. Watch for breakout.",
+    "sigma": 0.24368762075594913,
+    "trend_pct": 0.2
+  },
+  "bnfProfile": {},
+  "nfProfile": {},
+  "bnfContrarian": {
+    "flags": []
+  },
+  "nfContrarian": {
+    "flags": []
+  },
+  "pcrContext": null,
+  "sessionTrajectory": null,
+  "candle_bnf": {
+    "current": {
+      "open": 48000,
+      "high": 48100,
+      "low": 47950,
+      "close": 48090,
+      "ts": "",
+      "count": 8
+    },
+    "last_15m": {
+      "open": 48010,
+      "high": 48090,
+      "low": 48010,
+      "close": 48090,
+      "ts": "",
+      "count": 2
+    },
+    "patterns": [
+      {
+        "type": "candle",
+        "icon": "\ud83d\udd6f",
+        "label": "Bullish Marubozu on BNF (15m)",
+        "detail": "Open=48010 Close=48090. No wicks, extreme buying.",
+        "impact": "bullish",
+        "strength": 3,
+        "pattern": "BULLISH_MARUBOZU",
+        "index": "BNF",
+        "timeframe": "15m",
+        "candle": {
+          "open": 48010,
+          "high": 48090,
+          "low": 48010,
+          "close": 48090
+        }
+      }
+    ]
+  },
+  "candle_nf": {
+    "current": {
+      "open": 22000,
+      "high": 22050,
+      "low": 21980,
+      "close": 22050,
+      "ts": "",
+      "count": 8
+    },
+    "last_15m": {
+      "open": 22010,
+      "high": 22050,
+      "low": 22010,
+      "close": 22050,
+      "ts": "",
+      "count": 2
+    },
+    "patterns": [
+      {
+        "type": "candle",
+        "icon": "\ud83d\udd6f",
+        "label": "Bullish Marubozu on NF (15m)",
+        "detail": "Open=22010 Close=22050. No wicks, extreme buying.",
+        "impact": "bullish",
+        "strength": 3,
+        "pattern": "BULLISH_MARUBOZU",
+        "index": "NF",
+        "timeframe": "15m",
+        "candle": {
+          "open": 22010,
+          "high": 22050,
+          "low": 22010,
+          "close": 22050
+        }
+      }
+    ]
+  },
+  "position_live": {},
+  "overnightDelta": null,
+  "morningBias": {
+    "bias": "NEUTRAL",
+    "strength": "",
+    "net": 0,
+    "votes": {
+      "bull": 0,
+      "bear": 0
+    },
+    "signals": [],
+    "label": "NEUTRAL",
+    "upstoxAgrees": null,
+    "chainValidation": "NONE"
+  },
+  "institutionalRegime": null,
   "effective_bias": {
     "bias": "NEUTRAL",
     "strength": "",
-    "net": -0.09,
-    "morning_weight": 0.6,
+    "label": "NEUTRAL",
+    "net": -0.04,
+    "morning_weight": 0.76,
     "signals": [
       0,
       -1,
+      0,
       0,
       0,
       0,
@@ -90,5 +245,61 @@
     ],
     "intraday_net": -1,
     "drift_reasons": []
-  }
+  },
+  "fiiTrend": null,
+  "signalValidation": null,
+  "gapInfo": {
+    "gap": 0,
+    "pct": 0,
+    "sigma": 0,
+    "type": "NORMAL"
+  },
+  "nfGapInfo": {
+    "gap": 0,
+    "pct": 0,
+    "sigma": 0,
+    "type": "NORMAL"
+  },
+  "agent": {
+    "schema": 1,
+    "mode": "EXPLAIN_AUDIT",
+    "session_summary": {
+      "headline": "SELL PREMIUM: range session, bias NEUTRAL, range 0.24 sigma",
+      "state": "SELL PREMIUM",
+      "confidence": 54,
+      "regime": "RANGE",
+      "range_sigma": 0.24368762075594913,
+      "bias": "NEUTRAL",
+      "bias_net": -0.04,
+      "why": [
+        "VIX-Spot divergence: VIX rising WITH spot rising. Unusual \u2014 proceed with caution.",
+        "VIX climbing: VIX 19.0 \u2192 20.5 (+1.5). Fear rising.",
+        "Range-bound (0.24\u03c3): IB/IC candidates favored. Vol crush likely.",
+        "Bullish Marubozu on BNF (15m): Open=48010 Close=48090. No wicks, extreme buying.",
+        "Bullish Marubozu on NF (15m): Open=22010 Close=22050. No wicks, extreme buying."
+      ],
+      "conflicts": [
+        "Range but bias BULL"
+      ],
+      "watch_for": [
+        "force alignment staying >=2/3",
+        "wall protection around sell strike",
+        "premium behavior confirming thesis"
+      ]
+    },
+    "notification_context": {
+      "severity": "routine",
+      "dedupe_bucket": "RANGE_BOUND_LOW_SIGMA",
+      "should_notify": false,
+      "reason": "Range continues without new entry trigger"
+    },
+    "trade_audits": {},
+    "data_quality": {
+      "missing": [],
+      "warnings": [
+        "watchlist empty"
+      ]
+    }
+  },
+  "alerts": []
 }
