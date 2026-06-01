@@ -70,6 +70,9 @@ class MarketWatchService : Service() {
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
+        private const val NF50_REMOTE_CACHE_KEY = "nf50_remote_constituents_json"
+        private const val NF50_REMOTE_CACHE_MS_KEY = "nf50_remote_constituents_sync_ms"
+        private const val NF50_REMOTE_TTL_MS = 12 * 60 * 60 * 1000L
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5
@@ -146,6 +149,82 @@ class MarketWatchService : Service() {
 
     private fun getNf50Constituents(kotakKey: String = getCachedKotakKey()): List<String> {
         return NF50_CONSTITUENTS_BASE + listOf(kotakKey)
+    }
+
+    private fun parseRemoteNf50Constituents(rows: JSONArray, kotakKey: String = getCachedKotakKey()): List<String> {
+        var latestEffectiveDate: String? = null
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val active = row.optBoolean("active", true)
+            if (!active) continue
+            val effectiveDate = row.optString("effective_date")
+            if (effectiveDate.isBlank()) continue
+            if (latestEffectiveDate == null || effectiveDate > latestEffectiveDate) {
+                latestEffectiveDate = effectiveDate
+            }
+        }
+        val out = mutableListOf<String>()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val active = row.optBoolean("active", true)
+            if (!active) continue
+            if (!latestEffectiveDate.isNullOrBlank()) {
+                val effectiveDate = row.optString("effective_date")
+                if (effectiveDate != latestEffectiveDate) continue
+            }
+            val rawKey = listOf(
+                row.optString("instrument_key"),
+                row.optString("request_key"),
+                row.optString("symbol")
+            ).firstOrNull { it.isNotBlank() } ?: continue
+            val normalized = when {
+                rawKey.startsWith("NSE_EQ|") -> rawKey
+                rawKey.equals("KOTAKBANK", ignoreCase = true) -> kotakKey
+                else -> ""
+            }
+            if (normalized.isNotBlank()) out.add(normalized)
+        }
+        val unique = LinkedHashSet(out)
+        if (!unique.contains(kotakKey)) unique.add(kotakKey)
+        return unique.toList()
+    }
+
+    private fun getRemoteNf50Constituents(kotakKey: String = getCachedKotakKey()): List<String>? {
+        val now = System.currentTimeMillis()
+        val cachedAt = prefs.getLong(NF50_REMOTE_CACHE_MS_KEY, 0L)
+        val cachedJson = prefs.getString(NF50_REMOTE_CACHE_KEY, "") ?: ""
+        if (cachedJson.isNotBlank() && now - cachedAt < NF50_REMOTE_TTL_MS) {
+            return try {
+                val cached = JSONArray(cachedJson)
+                val parsed = parseRemoteNf50Constituents(cached, kotakKey)
+                if (parsed.isNotEmpty()) parsed else null
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        return try {
+            val rows = SupabaseClient.fetchNf50ConstituentRows()
+            if (rows.length() <= 0) return null
+            val parsed = parseRemoteNf50Constituents(rows, kotakKey)
+            if (parsed.isEmpty()) return null
+            prefs.edit()
+                .putString(NF50_REMOTE_CACHE_KEY, rows.toString())
+                .putLong(NF50_REMOTE_CACHE_MS_KEY, now)
+                .apply()
+            parsed
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "NF50_REMOTE_CONFIG_FAIL: ${e.message}")
+            if (cachedJson.isNotBlank()) {
+                try {
+                    val cached = JSONArray(cachedJson)
+                    val parsed = parseRemoteNf50Constituents(cached, kotakKey)
+                    if (parsed.isNotEmpty()) return parsed
+                } catch (_: Exception) {
+                }
+            }
+            null
+        }
     }
 
     private suspend fun resolveKotakKey(token: String): String {
@@ -1278,7 +1357,9 @@ class MarketWatchService : Service() {
 
     private suspend fun fetchNf50Breadth(token: String): JSONObject {
         return try {
-            val nf50Constituents = getNf50Constituents()
+            val kotakKey = getCachedKotakKey()
+            val remoteConstituents = getRemoteNf50Constituents(kotakKey)
+            val nf50Constituents = remoteConstituents ?: getNf50Constituents(kotakKey)
             val keys = nf50Constituents.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }
             val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$keys"
             val response = fetchSync(url, token) ?: return defaultNf50Breadth()
@@ -1288,13 +1369,17 @@ class MarketWatchService : Service() {
             var declining = 0
             var neutral = 0
             var considered = 0
+            val missingKeys = mutableListOf<String>()
             val configuredTotal = nf50Constituents.size
 
             for (key in nf50Constituents) {
                 val quote = findQuoteByInstrument(data, key)
                 val ltp = quoteLtp(quote)
                 val netChange = quote?.optDouble("net_change", Double.MIN_VALUE) ?: Double.MIN_VALUE
-                if (ltp <= 0.0 || netChange == Double.MIN_VALUE) continue
+                if (ltp <= 0.0 || netChange == Double.MIN_VALUE) {
+                    missingKeys.add(key)
+                    continue
+                }
                 considered++
                 when {
                     netChange > 0.05 -> advancing++
@@ -1315,7 +1400,7 @@ class MarketWatchService : Service() {
             LogBuffer.add(
                 'I',
                 TAG,
-                "NF50_BREADTH_RESULT: pct=${Math.round(pct * 10.0) / 10.0} adv=$advancing dec=$declining neu=$neutral considered=$considered coverage=${String.format(Locale.US, "%.3f", coverage)}"
+                "NF50_BREADTH_RESULT: pct=${Math.round(pct * 10.0) / 10.0} adv=$advancing dec=$declining neu=$neutral considered=$considered coverage=${String.format(Locale.US, "%.3f", coverage)} missing=${missingKeys.size} source=${if (remoteConstituents != null) "remote_or_cached" else "bundled"} sample=${missingKeys.take(3).joinToString("|")}"
             )
             JSONObject().apply {
                 val pctRounded = Math.round(pct * 10.0) / 10.0
@@ -1328,6 +1413,9 @@ class MarketWatchService : Service() {
                 put("coverage", coverage)
                 put("advPct", Math.round(advPct * 10.0) / 10.0)
                 put("scaled", pctRounded)
+                put("source", if (remoteConstituents != null) "remote_or_cached" else "bundled")
+                put("missingCount", missingKeys.size)
+                put("missingKeys", JSONArray(missingKeys.take(10)))
             }
         } catch (e: Exception) {
             LogBuffer.add('E', TAG, "NF50_BREADTH_ERROR: ${e.message}")
@@ -1346,6 +1434,9 @@ class MarketWatchService : Service() {
             put("coverage", 0.0)
             put("advPct", 0.0)
             put("scaled", 50.0)
+            put("source", "bundled")
+            put("missingCount", 0)
+            put("missingKeys", JSONArray())
         }
     }
 

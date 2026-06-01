@@ -246,6 +246,30 @@ object SupabaseClient {
         )
     }
 
+    fun fetchNf50ConstituentRows(): JSONArray {
+        val tableRows = fetchArrayFromTables(
+            listOf(
+                "config_nf50_constituents?select=*&active=eq.true&order=effective_date.desc,symbol.asc",
+                "nf50_constituents?select=*&active=eq.true&order=effective_date.desc,symbol.asc"
+            )
+        )
+        if (tableRows.length() > 0) return tableRows
+
+        return try {
+            val appConfig = select("app_config", "key=eq.nf50_constituents")
+            if (appConfig.length() <= 0) return JSONArray()
+            val value = appConfig.optJSONObject(0)?.opt("value")
+            when (value) {
+                is JSONArray -> value
+                is String -> JSONArray(value)
+                else -> JSONArray()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchNf50ConstituentRows failed: ${e.message}")
+            JSONArray()
+        }
+    }
+
     fun saveChainSnapshot(session: String, data: JSONObject): Boolean {
         // SC4: Standardization - snapshots use IST date to match trading days
         val ist = java.util.TimeZone.getTimeZone("Asia/Kolkata")
