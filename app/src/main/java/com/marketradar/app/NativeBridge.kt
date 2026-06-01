@@ -852,12 +852,19 @@ class NativeBridge(private val context: Context) {
 
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)
+        cal.add(Calendar.MINUTE, -2)
         val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        val expectedByNow = when {
+        val rawExpectedByNow = when {
             minutes < 555 -> 0
             minutes >= 930 -> expectedFullDay
             else -> ((minutes - 555) / 5) + 1
         }.coerceIn(0, expectedFullDay)
+        val firstSlot = firstPollSlotOrdinalToday()
+        val expectedByNow = when {
+            actual <= 0 -> rawExpectedByNow
+            firstSlot != null -> (rawExpectedByNow - firstSlot + 1).coerceAtLeast(actual).coerceAtMost(expectedFullDay)
+            else -> rawExpectedByNow
+        }
         val missed = (expectedByNow - actual).coerceAtLeast(0)
         val state = when {
             actual <= 0 && expectedByNow <= 0 -> "PRE_OPEN"
@@ -867,6 +874,30 @@ class NativeBridge(private val context: Context) {
             else -> "NO_POLLS"
         }
         return PollCoverage(expectedByNow, expectedFullDay, actual, missed, state)
+    }
+
+    private fun firstPollSlotOrdinalToday(): Int? {
+        val today = todayIstDate()
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != today) return null
+        return try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            if (history.length() <= 0) return null
+            val first = history.optJSONObject(0) ?: return null
+            slotOrdinalFromPollTime(first.optString("t", ""))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun slotOrdinalFromPollTime(time: String): Int? {
+        val parts = time.split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        val totalMinutes = hour * 60 + minute
+        if (totalMinutes < 555 || totalMinutes > 930) return null
+        return ((totalMinutes - 555) / 5) + 1
     }
 
     private fun clearStaleSessionStateIfNeeded() {
@@ -894,6 +925,8 @@ class NativeBridge(private val context: Context) {
                 .remove("poll_count")
                 .remove("latest_poll")
                 .remove("last_poll_time")
+                .remove("last_poll_dispatch_slot")
+                .remove("last_successful_poll_slot")
                 .putString("last_poll_date", today)
         }
         if (hasStaleDerivedState) {
@@ -914,6 +947,8 @@ class NativeBridge(private val context: Context) {
             .remove("poll_count")
             .remove("latest_poll")
             .remove("last_poll_time")
+            .remove("last_poll_dispatch_slot")
+            .remove("last_successful_poll_slot")
             .putString("last_poll_date", todayIstDate())
             .commit()
     }

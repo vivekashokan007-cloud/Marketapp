@@ -59,7 +59,8 @@ class MarketWatchService : Service() {
         private const val ACTION_POLL_TICK = "com.marketradar.app.ACTION_POLL_TICK"
         const val ACTION_FORCE_POLL = "com.marketradar.app.ACTION_FORCE_POLL"
         private const val POLL_ALARM_REQ_CODE = 74051
-        private const val LAST_POLL_DISPATCH_MS_KEY = "last_poll_dispatch_ms"
+        private const val LAST_POLL_DISPATCH_SLOT_KEY = "last_poll_dispatch_slot"
+        private const val LAST_SUCCESSFUL_POLL_SLOT_KEY = "last_successful_poll_slot"
         private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
@@ -69,6 +70,11 @@ class MarketWatchService : Service() {
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
+        private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+        private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
+        private const val POLL_SLOT_MINUTES = 5
+        private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
+        private const val POLL_SLOT_TRIGGER_LAG_MS = 5_000L
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -337,6 +343,8 @@ class MarketWatchService : Service() {
                         remove("poll_count")
                         remove("latest_poll")
                         remove("last_poll_time")
+                        remove(LAST_POLL_DISPATCH_SLOT_KEY)
+                        remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
                         putString("last_poll_date", today)
                     }.apply()
                     Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
@@ -533,24 +541,14 @@ class MarketWatchService : Service() {
             return
         }
         pollingJob = serviceScope.launch {
-            val lastSuccessfulPollMs = prefs.getLong("last_successful_poll_ms", 0L)
-            if (lastSuccessfulPollMs > 0L) {
-                val ageMs = System.currentTimeMillis() - lastSuccessfulPollMs
-                if (ageMs in 1 until 60_000L) {
-                    val waitMs = 60_000L - ageMs
-                    Log.w(TAG, "BL_A_FIRST_POLL_THROTTLE waitMs=$waitMs ageMs=$ageMs")
-                    LogBuffer.add('W', TAG, "BL_A_FIRST_POLL_THROTTLE waitMs=$waitMs ageMs=$ageMs")
-                    delay(waitMs)
-                }
-            }
             while (isActive) {
                 pollLoopIteration += 1
                 val now = System.currentTimeMillis()
-                val sinceLast = prefs.getLong("last_successful_poll_ms", 0L).let { if (it > 0L) now - it else -1L }
                 val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5)
                 val pollIntervalMins = if (configuredPollIntervalMins > 0) configuredPollIntervalMins else 5
-                Log.d(TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration sinceLastMs=$sinceLast delayMins=$pollIntervalMins")
-                LogBuffer.add('D', TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration sinceLastMs=$sinceLast delayMins=$pollIntervalMins")
+                val slotKey = currentPollSlotKey(now) ?: "closed"
+                Log.d(TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration slot=$slotKey delayMins=$pollIntervalMins")
+                LogBuffer.add('D', TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration slot=$slotKey delayMins=$pollIntervalMins")
                 if (isMarketOpen()) {
                     // Re-read token dynamically on each poll cycle (Bug 1 Fix)
                     val appCtx = applicationContext
@@ -560,7 +558,7 @@ class MarketWatchService : Service() {
                     if (currentToken.isNotEmpty()) {
                         acquirePartialWakeLock()
                         try {
-                            dispatchPollIfDue("loop", currentToken, pollIntervalMins * 60 * 1000L)
+                            dispatchPollIfDue("loop", currentToken)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
                             LogBuffer.add('E', "MarketWatchService", "Poll #${nextPollNumberForToday()} FAILED: ${e.message}")
@@ -580,15 +578,8 @@ class MarketWatchService : Service() {
                 if (configuredPollIntervalMins <= 0) {
                     LogBuffer.add('W', TAG, "POLL_INTERVAL_INVALID: $configuredPollIntervalMins, using 5")
                 }
-                val intervalMs = pollIntervalMins * 60 * 1000L
-                ensurePollAlarmScheduled(intervalMs)
-                val lastSuccessAfterPoll = prefs.getLong("last_successful_poll_ms", 0L)
-                val elapsedSinceSuccess = if (lastSuccessAfterPoll > 0L) {
-                    System.currentTimeMillis() - lastSuccessAfterPoll
-                } else {
-                    0L
-                }
-                val waitMs = (intervalMs - elapsedSinceSuccess).coerceAtLeast(0L)
+                ensurePollAlarmScheduled()
+                val waitMs = nextPollLoopDelayMs()
                 val sleepStart = SystemClock.elapsedRealtime()
                 delay(waitMs)
                 val actualSleepMs = SystemClock.elapsedRealtime() - sleepStart
@@ -1096,6 +1087,10 @@ class MarketWatchService : Service() {
                 Log.i(TAG, "DAILY_RESET: New trading day detected ($today). Resetting history.")
                 history = JSONArray()
                 pollCount = 0
+                prefs.edit()
+                    .remove(LAST_POLL_DISPATCH_SLOT_KEY)
+                    .remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
+                    .apply()
             }
 
             // Append new poll
@@ -1118,6 +1113,7 @@ class MarketWatchService : Service() {
                 putString("last_poll_time", poll.getString("t"))
                 putInt("poll_count", pollCount)
                 putLong("last_successful_poll_ms", System.currentTimeMillis())
+                currentPollSlotKey(System.currentTimeMillis())?.let { putString(LAST_SUCCESSFUL_POLL_SLOT_KEY, it) }
             }.commit()
 
             // GAP 12: Institutional Positioning
@@ -2239,6 +2235,14 @@ class MarketWatchService : Service() {
         val now = System.currentTimeMillis()
         val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(now))
         val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date(now))
+        val captureFullH2Chain = isH2PersistenceWindow(now)
+
+        if (captureFullH2Chain) {
+            appendFullChainSlice(rows, bnfChain, "BNF", sessionDate, pollTs)
+            appendFullChainSlice(rows, nfChain, "NF", sessionDate, pollTs)
+            LogBuffer.add('I', TAG, "ML_CHAIN_SLICE_H2_FULL: rows=${rows.size} pollTs=$pollTs")
+            return rows
+        }
 
         // Collect per-index strike sets so we resolve against the correct chain
         val bnfStrikes = mutableSetOf<Triple<Int, String, String>>()
@@ -2311,6 +2315,46 @@ class MarketWatchService : Service() {
         }
 
         return rows
+    }
+
+    private fun isH2PersistenceWindow(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist).apply { timeInMillis = nowMs }
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        return minutes in 915..930
+    }
+
+    private fun appendFullChainSlice(
+        rows: MutableList<JSONObject>,
+        chainJson: JSONObject,
+        indexKey: String,
+        sessionDate: String,
+        pollTs: String
+    ) {
+        val data = chainJson.optJSONArray("data") ?: return
+        val defaultExpiry = chainJson.optString("expiry", "")
+        for (i in 0 until data.length()) {
+            val item = data.optJSONObject(i) ?: continue
+            val strike = item.optDouble("strike_price", 0.0).toInt()
+            if (strike <= 0) continue
+            val expiry = item.optString("expiry", defaultExpiry)
+            for (optionType in listOf("CE", "PE")) {
+                val optKey = if (optionType == "CE") "call_options" else "put_options"
+                val md = item.optJSONObject(optKey)?.optJSONObject("market_data") ?: continue
+                val ltp = optionLtp(md)
+                rows.add(JSONObject().apply {
+                    put("poll_ts", pollTs)
+                    put("session_date", sessionDate)
+                    put("index_key", indexKey)
+                    put("expiry", expiry)
+                    put("strike", strike)
+                    put("option_type", optionType)
+                    put("ltp", ltp)
+                    put("bid", md.optDouble("bid_price", 0.0))
+                    put("ask", md.optDouble("ask_price", 0.0))
+                })
+            }
+        }
     }
 
     private fun mlPersistKeyForPoll(poll: JSONObject): String {
@@ -2572,10 +2616,10 @@ class MarketWatchService : Service() {
         )
     }
 
-    private fun ensurePollAlarmScheduled(intervalMs: Long = 5 * 60 * 1000L) {
+    private fun ensurePollAlarmScheduled() {
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
-            val triggerAt = SystemClock.elapsedRealtime() + intervalMs
+            val triggerAt = SystemClock.elapsedRealtime() + nextPollLoopDelayMs()
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
                 am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pollAlarmIntent())
             } else {
@@ -2598,8 +2642,6 @@ class MarketWatchService : Service() {
     }
 
     private suspend fun maybeRunPollFromAlarm() {
-        val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5).let { if (it > 0) it else 5 }
-        val intervalMs = configuredPollIntervalMins * 60 * 1000L
         if (!isMarketOpen()) {
             LogBuffer.add('D', TAG, "POLL_ALARM_SKIP: market_closed")
             return
@@ -2610,10 +2652,10 @@ class MarketWatchService : Service() {
             LogBuffer.add('W', TAG, "POLL_ALARM_SKIP: missing_token")
             return
         }
-        LogBuffer.add('I', TAG, "POLL_ALARM_TRIGGER: intervalMs=$intervalMs")
+        LogBuffer.add('I', TAG, "POLL_ALARM_TRIGGER: slot=${currentPollSlotKey() ?: "closed"}")
         acquirePartialWakeLock()
         try {
-            dispatchPollIfDue("alarm", token, intervalMs)
+            dispatchPollIfDue("alarm", token)
         } catch (e: Exception) {
             Log.e(TAG, "POLL_ALARM_FAIL: ${e.message}")
             LogBuffer.add('E', TAG, "POLL_ALARM_FAIL: ${e.message}")
@@ -2645,27 +2687,66 @@ class MarketWatchService : Service() {
         }
     }
 
-    private suspend fun dispatchPollIfDue(trigger: String, token: String, intervalMs: Long) {
-        val now = System.currentTimeMillis()
-        val lastSuccess = prefs.getLong("last_successful_poll_ms", 0L)
-        val elapsedSinceSuccess = if (lastSuccess > 0L) now - lastSuccess else Long.MAX_VALUE
-        val minGapMs = (intervalMs - 30_000L).coerceAtLeast(60_000L)
-        if (elapsedSinceSuccess < minGapMs) {
-            LogBuffer.add('D', TAG, "POLL_DISPATCH_SKIP[$trigger]: elapsedMs=$elapsedSinceSuccess minGapMs=$minGapMs")
+    private suspend fun dispatchPollIfDue(trigger: String, token: String) {
+        val slotKey = currentPollSlotKey()
+        if (slotKey == null) {
+            LogBuffer.add('D', TAG, "POLL_DISPATCH_SKIP[$trigger]: no_open_slot")
+            return
+        }
+        if (prefs.getString(LAST_SUCCESSFUL_POLL_SLOT_KEY, "") == slotKey) {
+            LogBuffer.add('D', TAG, "POLL_DISPATCH_SKIP[$trigger]: slot_already_completed=$slotKey")
+            return
+        }
+        if (prefs.getString(LAST_POLL_DISPATCH_SLOT_KEY, "") == slotKey) {
+            LogBuffer.add('D', TAG, "POLL_DISPATCH_DEDUP[$trigger]: slot_already_dispatched=$slotKey")
             return
         }
 
-        val lastDispatch = prefs.getLong(LAST_POLL_DISPATCH_MS_KEY, 0L)
-        val sinceDispatch = if (lastDispatch > 0L) now - lastDispatch else Long.MAX_VALUE
-        val dispatchCooldownMs = 60_000L
-        if (sinceDispatch < dispatchCooldownMs) {
-            LogBuffer.add('D', TAG, "POLL_DISPATCH_DEDUP[$trigger]: sinceDispatchMs=$sinceDispatch")
-            return
-        }
-
-        prefs.edit().putLong(LAST_POLL_DISPATCH_MS_KEY, now).commit()
-        LogBuffer.add('I', TAG, "POLL_DISPATCH[$trigger]: elapsedMs=$elapsedSinceSuccess intervalMs=$intervalMs")
+        prefs.edit().putString(LAST_POLL_DISPATCH_SLOT_KEY, slotKey).commit()
+        LogBuffer.add('I', TAG, "POLL_DISPATCH[$trigger]: slot=$slotKey")
         performPoll(token)
+    }
+
+    private fun nextPollLoopDelayMs(nowMs: Long = System.currentTimeMillis()): Long {
+        if (!isMarketOpen()) return 60_000L
+        val nextSlotEpochMs = nextPollSlotEpochMs(nowMs)
+        return (nextSlotEpochMs - nowMs).coerceAtLeast(15_000L)
+    }
+
+    private fun nextPollSlotEpochMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist).apply {
+            timeInMillis = nowMs
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        return when {
+            minutes < MARKET_OPEN_MINUTE -> {
+                cal.set(Calendar.HOUR_OF_DAY, 9)
+                cal.set(Calendar.MINUTE, 15)
+                cal.timeInMillis + POLL_SLOT_TRIGGER_LAG_MS
+            }
+            minutes >= MARKET_CLOSE_MINUTE -> nowMs + 60_000L
+            else -> {
+                val slotOffset = (minutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES
+                val nextMinute = MARKET_OPEN_MINUTE + ((slotOffset + 1) * POLL_SLOT_MINUTES)
+                cal.set(Calendar.HOUR_OF_DAY, nextMinute / 60)
+                cal.set(Calendar.MINUTE, nextMinute % 60)
+                cal.timeInMillis + POLL_SLOT_TRIGGER_LAG_MS
+            }
+        }
+    }
+
+    private fun currentPollSlotKey(nowMs: Long = System.currentTimeMillis()): String? {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist).apply { timeInMillis = nowMs }
+        val day = cal.get(Calendar.DAY_OF_WEEK)
+        if (day == Calendar.SATURDAY || day == Calendar.SUNDAY || !isMarketDay()) return null
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        if (minutes < MARKET_OPEN_MINUTE || minutes > MARKET_CLOSE_MINUTE) return null
+        val slotOrdinal = ((minutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
+        return "${todayIstDate()}|$slotOrdinal"
     }
 
     override fun onDestroy() {

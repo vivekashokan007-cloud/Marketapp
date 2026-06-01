@@ -28,6 +28,8 @@ import com.chaquo.python.PyObject
 import kotlinx.coroutines.*
 import java.io.File
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import java.util.TimeZone
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -47,13 +49,21 @@ class MLAlarmReceiver : BroadcastReceiver() {
 
 class EvaluationAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        // Skip if evaluation already done today
-        val istToday = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
-            timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
-        }.format(java.util.Date())
+        val istToday = MarketMLService.todayIstDate()
         val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
         if (istToday == prefs.getString("evaluation_done_date", null)) {
             Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already done today")
+            return
+        }
+        val nowIst = Calendar.getInstance(MarketMLService.IST)
+        val marketStatus = MarketOpenScheduler.currentStatus(nowIst)
+        if (!MarketMLService.isEvaluationReminderWindow(nowIst, marketStatus)) {
+            Log.i("EvaluationAlarmReceiver", "Skipping — outside evaluation reminder window")
+            MarketMLService.scheduleDayEvaluationReminder(context)
+            return
+        }
+        if (istToday == prefs.getString("evaluation_running_date", null)) {
+            Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already running today")
             return
         }
 
@@ -98,6 +108,9 @@ class MarketMLService : Service() {
         private const val TAG = "MarketMLService"
         private const val EVENING_EVAL_TIMEOUT_MS = 45_000L
         private const val MONTHLY_RETRAIN_GATE_ROWS = 500
+        internal val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
+        private const val EVAL_REMINDER_END_MIN = 18 * 60 + 30
 
         // File paths inside app's internal storage
         fun backtestPath(ctx: Context): String =
@@ -131,12 +144,11 @@ class MarketMLService : Service() {
 
         // ── Schedule first evaluation reminder at 4:30 PM IST (one-shot) ──
         fun scheduleDayEvaluationReminder(context: Context) {
-            val istToday = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
-                timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata")
-            }.format(java.util.Date())
+            val istToday = todayIstDate()
             val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
             if (istToday == prefs.getString("evaluation_done_date", null)) {
                 Log.i(TAG, "Skipping schedule — evaluation already done today")
+                cancelDayEvaluationReminder(context)
                 return
             }
 
@@ -147,15 +159,7 @@ class MarketMLService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata")).apply {
-                set(Calendar.HOUR_OF_DAY, 16)
-                set(Calendar.MINUTE, 30)
-                set(Calendar.SECOND, 0)
-                if (timeInMillis <= System.currentTimeMillis()) {
-                    // 4:30 PM already passed — fire immediately
-                    add(Calendar.MINUTE, 1)
-                }
-            }
+            val cal = nextEvaluationReminderAt()
 
             am.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, intent)
             Log.i(TAG, "First evaluation reminder scheduled at ${cal.time}")
@@ -163,6 +167,18 @@ class MarketMLService : Service() {
 
         // ── Schedule next evaluation reminder 30 min from now (one-shot) ──
         fun scheduleNextEvaluationReminder(context: Context) {
+            val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            val today = todayIstDate()
+            if (prefs.getString("evaluation_done_date", null) == today) {
+                cancelDayEvaluationReminder(context)
+                return
+            }
+            val nowIst = Calendar.getInstance(IST)
+            val marketStatus = MarketOpenScheduler.currentStatus(nowIst)
+            if (!isEvaluationReminderWindow(nowIst, marketStatus)) {
+                scheduleDayEvaluationReminder(context)
+                return
+            }
             val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
             val intent = PendingIntent.getBroadcast(
                 context, 1002,
@@ -170,8 +186,10 @@ class MarketMLService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata")).apply {
+            val cal = Calendar.getInstance(IST).apply {
                 timeInMillis = System.currentTimeMillis() + 30 * 60 * 1000L
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
             }
 
             am.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, intent)
@@ -186,6 +204,42 @@ class MarketMLService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             am.cancel(intent)
+        }
+
+        internal fun todayIstDate(): String {
+            return java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = IST
+            }.format(Date())
+        }
+
+        internal fun isEvaluationReminderWindow(
+            now: Calendar = Calendar.getInstance(IST),
+            status: MarketOpenScheduler.MarketClockStatus = MarketOpenScheduler.currentStatus(now)
+        ): Boolean {
+            if (!status.marketDay) return false
+            val minutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+            return minutes in EVAL_REMINDER_START_MIN..EVAL_REMINDER_END_MIN
+        }
+
+        private fun nextEvaluationReminderAt(from: Calendar = Calendar.getInstance(IST)): Calendar {
+            val next = Calendar.getInstance(IST).apply {
+                timeInMillis = from.timeInMillis
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            while (true) {
+                val status = MarketOpenScheduler.currentStatus(next)
+                val minutes = next.get(Calendar.HOUR_OF_DAY) * 60 + next.get(Calendar.MINUTE)
+                if (status.marketDay && minutes < EVAL_REMINDER_START_MIN) {
+                    next.set(Calendar.HOUR_OF_DAY, 16)
+                    next.set(Calendar.MINUTE, 30)
+                    return next
+                }
+                next.add(Calendar.DATE, 1)
+                next.set(Calendar.HOUR_OF_DAY, 16)
+                next.set(Calendar.MINUTE, 30)
+                if (MarketOpenScheduler.currentStatus(next).marketDay) return next
+            }
         }
 
         // ── Validate model is loaded and usable ───────────────────────────
@@ -738,6 +792,7 @@ class MarketMLService : Service() {
                 return@withContext
             }
             val chainSlicesJsonArray = SupabaseClient.fetchChainSlices(today)
+            Log.i(TAG, "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} date=$today")
 
             val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
                 brain.callAttr(
@@ -761,11 +816,16 @@ class MarketMLService : Service() {
                 SupabaseClient.saveEvaluationOutcomes(evaluatedOutcomes)
                 runAggregationPipeline(today, snapshotsJsonArray, evaluatedOutcomes)
             }
+            val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
+                "Today's evaluation done: ${evaluatedOutcomes.length()} outcomes saved."
+            } else {
+                "Today's evaluation done: 0 evaluable H2 outcomes saved from the day's recommendations."
+            }
             prefs.edit()
                 .putString("evaluation_done_date", today)
                 .putString("evaluation_running_date", "")
                 .putInt("last_evaluation_outcome_count", evaluatedOutcomes.length())
-                .putString("last_evaluation_message", "Today's evaluation done: ${evaluatedOutcomes.length()} outcomes saved.")
+                .putString("last_evaluation_message", evaluationMessage)
                 .commit()
             cancelDayEvaluationReminder(this@MarketMLService)
             Log.i(TAG, "EVAL_COMPLETE: ${evaluatedOutcomes.length()} outcomes saved for $today — reminder cancelled")
