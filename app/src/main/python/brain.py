@@ -5178,7 +5178,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.84"
+BRAIN_VERSION = "2.3.85"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -7687,9 +7687,10 @@ def _bridge_json_obj(value):
 
 
 def take_poll_snapshot(result, ctx, polls):
-    """Takes snapshot including the top 5 candidates.
+    """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
-    top_candidates_json   = all top 5 (secondary research only)."""
+    top_candidates_json   = top watchlist candidates kept for compatibility.
+    context_json         = carries full generated candidate set for evaluator/research."""
     result = _bridge_json_obj(result) or {}
     ctx = _bridge_json_obj(ctx) or {}
     polls = _bridge_json_obj(polls) or []
@@ -7808,6 +7809,46 @@ def take_poll_snapshot(result, ctx, polls):
                 'mlOodBlocked': c.get('mlOodBlocked'),
             })
 
+    def _candidate_leg_ledger(cand):
+        if not isinstance(cand, dict):
+            return None
+        legs = []
+
+        def _append_leg(prefix, suffix=''):
+            strike = cand.get(f'{prefix}Strike{suffix}')
+            opt_type = cand.get(f'{prefix}Type{suffix}')
+            if not strike or not opt_type:
+                return
+            leg = {
+                'side': prefix,
+                'strike': strike,
+                'option_type': opt_type,
+                'entry_ltp': cand.get(f'{prefix}LTP{suffix}'),
+            }
+            if suffix:
+                leg['suffix'] = suffix
+            legs.append(leg)
+
+        _append_leg('sell')
+        _append_leg('buy')
+        _append_leg('sell', '2')
+        _append_leg('buy', '2')
+
+        return {
+            'candidate_id': cand.get('id'),
+            'strategy_type': cand.get('type'),
+            'index': cand.get('index'),
+            'expiry': cand.get('expiry'),
+            'trade_mode': ctx.get('trade_mode'),
+            'legs': legs,
+        }
+
+    evaluation_ledger = []
+    for c in generated_candidates if isinstance(generated_candidates, list) else []:
+        ledger_row = _candidate_leg_ledger(c)
+        if ledger_row and ledger_row.get('candidate_id'):
+            evaluation_ledger.append(ledger_row)
+
     market_forces = {
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
@@ -7843,6 +7884,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_watchlist'] = clean_cands
+    snapshot_context['snapshot_evaluation_legs'] = evaluation_ledger
     snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
     snapshot_context['snapshot_market_profiles'] = {
         'bnfProfile': bnf_profile if isinstance(bnf_profile, dict) else {},
@@ -7901,6 +7943,24 @@ def _is_h2_window(poll_ts_str):
     return h == 15 and 15 <= m <= 30
 
 
+def _is_h2_preferred_window(poll_ts_str):
+    """Preferred evaluation window (15:15-15:25 IST)."""
+    hm = _parse_ist_hour_min(poll_ts_str)
+    if hm is None:
+        return False
+    h, m = hm
+    return h == 15 and 15 <= m <= 25
+
+
+def _is_h2_final_fallback_window(poll_ts_str):
+    """Final fallback window near close (15:26-15:30 IST)."""
+    hm = _parse_ist_hour_min(poll_ts_str)
+    if hm is None:
+        return False
+    h, m = hm
+    return h == 15 and 26 <= m <= 30
+
+
 def _parse_iso_ts(ts_str):
     try:
         if not ts_str:
@@ -7915,8 +7975,14 @@ def _parse_iso_ts(ts_str):
 
 
 def get_price(chain_rows, cand, side, suffix=''):
-    """Pull price from chain_lookup within H2 window (15:15-15:30).
-    Returns a float or None if no valid H2 row exists (non-evaluable)."""
+    """Pull price from chain_lookup within H2 window.
+
+    Preferred source:
+    - earliest valid mark in 15:15-15:25 IST
+    Fallback source:
+    - latest valid mark in the final 15:26-15:30 IST close window
+    Returns a float or None if no valid row exists.
+    """
     strike_key = f"{side}Strike{suffix}"
     type_key = f"{side}Type{suffix}"
     strike = cand.get(strike_key)
@@ -7925,9 +7991,10 @@ def get_price(chain_rows, cand, side, suffix=''):
         return None
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
     expiry = cand.get('expiry') or ''
-    target_dt = datetime.strptime('15:15', '%H:%M').time()
-    best_row = None
-    best_ts = None
+    preferred_row = None
+    preferred_ts = None
+    fallback_row = None
+    fallback_ts = None
     for row_data in chain_rows:
         if row_data.get('index_key') != index_key:
             continue
@@ -7944,12 +8011,17 @@ def get_price(chain_rows, cand, side, suffix=''):
         row_ts = _parse_iso_ts(ts_str)
         if row_ts is None:
             continue
-        if row_ts.time() < target_dt:
+        if _is_h2_preferred_window(ts_str):
+            if preferred_ts is None or row_ts < preferred_ts:
+                preferred_ts = row_ts
+                preferred_row = row_data
             continue
-        if best_ts is None or row_ts < best_ts:
-            best_ts = row_ts
-            best_row = row_data
-    return None if best_row is None else best_row.get('ltp', None)
+        if _is_h2_final_fallback_window(ts_str):
+            if fallback_ts is None or row_ts > fallback_ts:
+                fallback_ts = row_ts
+                fallback_row = row_data
+    chosen = preferred_row or fallback_row
+    return None if chosen is None else chosen.get('ltp', None)
 
 
 def _eval_single_candidate(chain_rows, snap, cand):
@@ -7995,7 +8067,7 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
     Data is passed as JSON strings from Kotlin. No Supabase calls inside Python.
 
     PRIMARY outcome = surfaced recommendation (ML training target).
-    SECONDARY outcomes = top-5 research data (not used for primary labeling)."""
+    SECONDARY outcomes = all generated candidates captured in snapshot context."""
     if session_date_str in _CONST.get('NSE_HOLIDAYS', []):
         return json.dumps([])
 
@@ -8022,18 +8094,34 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
                 outcome['role'] = 'primary'
                 outcomes.append(outcome)
 
-        # SECONDARY: top-5 research candidates
-        cands_json = snap.get('top_candidates_json', '[]')
-        if isinstance(cands_json, str) and cands_json:
-            cands = json.loads(cands_json)
-        elif isinstance(cands_json, list):
-            cands = cands_json
+        # SECONDARY: all generated candidates captured for offline evaluation
+        context_json = snap.get('context_json', '{}')
+        if isinstance(context_json, str) and context_json:
+            snap_ctx = json.loads(context_json)
+        elif isinstance(context_json, dict):
+            snap_ctx = context_json
         else:
-            cands = []
+            snap_ctx = {}
 
-        for cand in cands:
-            if cand.get('id') == primary.get('id'):
+        generated = snap_ctx.get('snapshot_generated_candidates')
+        if not isinstance(generated, list) or not generated:
+            cands_json = snap.get('top_candidates_json', '[]')
+            if isinstance(cands_json, str) and cands_json:
+                generated = json.loads(cands_json)
+            elif isinstance(cands_json, list):
+                generated = cands_json
+            else:
+                generated = []
+
+        seen_ids = set()
+        if primary and primary.get('id'):
+            seen_ids.add(primary.get('id'))
+
+        for cand in generated:
+            cand_id = cand.get('id')
+            if cand_id in seen_ids:
                 continue
+            seen_ids.add(cand_id)
             outcome = _eval_single_candidate(chain_rows, snap, cand)
             if outcome is not None:
                 outcome['role'] = 'secondary'
