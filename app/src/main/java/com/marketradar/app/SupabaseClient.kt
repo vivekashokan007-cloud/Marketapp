@@ -82,6 +82,75 @@ object SupabaseClient {
         return false
     }
 
+    data class EvaluationSaveResult(
+        val success: Boolean,
+        val producedCount: Int,
+        val persistedCount: Int,
+        val primaryPersistedCount: Int,
+        val evaluationPersistedCount: Int,
+        val message: String
+    )
+
+    private fun postArrayToTable(table: String, body: JSONArray): Boolean {
+        if (body.length() == 0) return true
+        val request = getBaseRequest(table)
+            .header("Prefer", "resolution=merge-duplicates")
+            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    true
+                } else {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Post exception ($table): ${e.message}")
+            false
+        }
+    }
+
+    private fun buildEvaluationRows(body: JSONArray): JSONArray {
+        val nowIso = java.time.Instant.now().toString()
+        val rows = JSONArray()
+        for (i in 0 until body.length()) {
+            val src = body.optJSONObject(i) ?: continue
+            val row = JSONObject()
+            row.put("snapshot_id", src.opt("snapshot_id"))
+            row.put("candidate_id", src.opt("candidate_id"))
+            row.put("role", src.optString("role", "secondary"))
+            row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
+            if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
+            if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
+            row.put("created_at", nowIso)
+            rows.put(row)
+        }
+        return rows
+    }
+
+    private fun buildRecommendationRows(sessionDate: String, body: JSONArray): JSONArray {
+        val nowIso = java.time.Instant.now().toString()
+        val rows = JSONArray()
+        for (i in 0 until body.length()) {
+            val src = body.optJSONObject(i) ?: continue
+            if (!src.optString("role", "secondary").equals("primary", ignoreCase = true)) continue
+            val row = JSONObject()
+            row.put("snapshot_id", src.opt("snapshot_id"))
+            row.put("session_date", sessionDate)
+            row.put("candidate_id", src.opt("candidate_id"))
+            row.put("role", "primary")
+            row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
+            if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
+            if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
+            row.put("created_at", nowIso)
+            rows.put(row)
+        }
+        return rows
+    }
+
     /**
      * Reads app_config where key = morning_baseline
      */
@@ -239,22 +308,41 @@ object SupabaseClient {
         )
     }
 
-    fun saveEvaluationOutcomes(body: JSONArray): Boolean {
-        if (postToFirstWorkingTable(
-            listOf("ml_recommendation_outcomes", "ml_evaluation_outcomes", "ml_decisions"),
-            body.toString()
-        )) return true
+    fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {
+        val evaluationRows = buildEvaluationRows(body)
+        val recommendationRows = buildRecommendationRows(sessionDate, body)
 
-        val legacy = JSONArray()
-        for (i in 0 until body.length()) {
-            val src = body.optJSONObject(i) ?: continue
-            val row = JSONObject(src.toString())
-            row.remove("canonical_won")
-            legacy.put(row)
+        fun stripCanonical(rows: JSONArray): JSONArray {
+            val legacy = JSONArray()
+            for (i in 0 until rows.length()) {
+                val src = rows.optJSONObject(i) ?: continue
+                val row = JSONObject(src.toString())
+                row.remove("canonical_won")
+                legacy.put(row)
+            }
+            return legacy
         }
-        return postToFirstWorkingTable(
-            listOf("ml_recommendation_outcomes", "ml_evaluation_outcomes", "ml_decisions"),
-            legacy.toString()
+
+        val evaluationSaved = postArrayToTable("ml_evaluation_outcomes", evaluationRows) ||
+            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRows))
+        val recommendationSaved = postArrayToTable("ml_recommendation_outcomes", recommendationRows) ||
+            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRows))
+
+        val persisted = (if (evaluationSaved) evaluationRows.length() else 0) +
+            (if (recommendationSaved) recommendationRows.length() else 0)
+        val success = evaluationSaved || recommendationSaved
+        val message = when {
+            success -> "Persisted $persisted rows to Supabase (${"%d".format(evaluationRows.length())} eval, ${recommendationRows.length()} primary recommendations produced)."
+            else -> "Supabase persistence failed for evaluation outcomes."
+        }
+
+        return EvaluationSaveResult(
+            success = success,
+            producedCount = body.length(),
+            persistedCount = persisted,
+            primaryPersistedCount = if (recommendationSaved) recommendationRows.length() else 0,
+            evaluationPersistedCount = if (evaluationSaved) evaluationRows.length() else 0,
+            message = message
         )
     }
 
@@ -391,6 +479,40 @@ object SupabaseClient {
             Log.e(TAG, "Update to $table failed: ${e.message}")
             false
         }
+    }
+
+    fun delete(table: String, filter: String): Boolean {
+        val request = getBaseRequest("$table?$filter")
+            .delete()
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "Delete from $table failed: ${response.code} ${response.message} | $err")
+                    return@use false
+                }
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Delete from $table failed: ${e.message}")
+            false
+        }
+    }
+
+    fun clearEvaluationOutcomesForSession(sessionDate: String, snapshots: JSONArray): Boolean {
+        var ok = delete("ml_recommendation_outcomes", "session_date=eq.$sessionDate")
+        val snapshotIds = mutableListOf<String>()
+        for (i in 0 until snapshots.length()) {
+            val id = snapshots.optJSONObject(i)?.optLong("id") ?: continue
+            if (id > 0) snapshotIds.add(id.toString())
+        }
+        if (snapshotIds.isNotEmpty()) {
+            val joined = snapshotIds.joinToString(",")
+            ok = delete("ml_evaluation_outcomes", "snapshot_id=in.($joined)") && ok
+        }
+        return ok
     }
 
     fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {

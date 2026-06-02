@@ -364,9 +364,10 @@ class MarketMLService : Service() {
                     stopSelf(startId)
                 }
             }
-            "ACTION_DAY_EVALUATION" -> {
+            "ACTION_DAY_EVALUATION", "ACTION_DAY_EVALUATION_FORCE" -> {
+                val force = intent?.action == "ACTION_DAY_EVALUATION_FORCE"
                 scope.launch {
-                    runDayEvaluation()
+                    runDayEvaluation(force = force)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
@@ -774,12 +775,12 @@ class MarketMLService : Service() {
     }
 
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
-    private suspend fun runDayEvaluation() = withContext(Dispatchers.IO) {
+    private suspend fun runDayEvaluation(force: Boolean = false) = withContext(Dispatchers.IO) {
         val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
             .format(java.util.Date())
         try {
-            if (prefs.getString("evaluation_done_date", null) == today) {
+            if (!force && prefs.getString("evaluation_done_date", null) == today) {
                 prefs.edit()
                     .putString("evaluation_running_date", "")
                     .putString("last_evaluation_message", "Today's evaluation already done.")
@@ -790,7 +791,7 @@ class MarketMLService : Service() {
 
             prefs.edit()
                 .putString("evaluation_running_date", today)
-                .putString("last_evaluation_message", "Evaluation running...")
+                .putString("last_evaluation_message", if (force) "Forced re-evaluation running..." else "Evaluation running...")
                 .commit()
 
             val py = Python.getInstance()
@@ -802,6 +803,7 @@ class MarketMLService : Service() {
                     .putString("evaluation_done_date", today)
                     .putString("evaluation_running_date", "")
                     .putInt("last_evaluation_outcome_count", 0)
+                    .putInt("last_evaluation_produced_count", 0)
                     .putString("last_evaluation_message", "Today's evaluation done: no brain snapshots found.")
                     .commit()
                 cancelDayEvaluationReminder(this@MarketMLService)
@@ -810,6 +812,11 @@ class MarketMLService : Service() {
             }
             val chainSlicesJsonArray = SupabaseClient.fetchChainSlices(today)
             Log.i(TAG, "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} date=$today")
+
+            if (force) {
+                val cleared = SupabaseClient.clearEvaluationOutcomesForSession(today, snapshotsJsonArray)
+                Log.i(TAG, "EVAL_FORCE_CLEAR: date=$today cleared=$cleared snapshots=${snapshotsJsonArray.length()}")
+            }
 
             val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
                 brain.callAttr(
@@ -829,23 +836,40 @@ class MarketMLService : Service() {
             }
 
             val evaluatedOutcomes = org.json.JSONArray(resultJsonStr)
+            val saveResult = if (evaluatedOutcomes.length() > 0) {
+                SupabaseClient.saveEvaluationOutcomes(today, evaluatedOutcomes)
+            } else {
+                SupabaseClient.EvaluationSaveResult(
+                    success = true,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    primaryPersistedCount = 0,
+                    evaluationPersistedCount = 0,
+                    message = "No evaluable H2 labels were produced from today's saved recommendations."
+                )
+            }
             if (evaluatedOutcomes.length() > 0) {
-                SupabaseClient.saveEvaluationOutcomes(evaluatedOutcomes)
                 runAggregationPipeline(today, snapshotsJsonArray, evaluatedOutcomes)
             }
-            val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
-                "Today's evaluation done: ${evaluatedOutcomes.length()} outcomes saved."
+            val evaluationMessage = if (evaluatedOutcomes.length() > 0 && saveResult.success) {
+                "${if (force) "Forced re-evaluation complete" else "Today's evaluation done"}: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
+            } else if (evaluatedOutcomes.length() > 0) {
+                "${if (force) "Forced re-evaluation produced" else "Today's evaluation produced"} ${saveResult.producedCount} outcomes, but Supabase persistence failed."
             } else {
-                "Today's evaluation done: 0 evaluable H2 outcomes saved from the day's recommendations."
+                "${if (force) "Forced re-evaluation complete" else "Today's evaluation done"}: 0 evaluable H2 outcomes saved from the day's recommendations."
             }
             prefs.edit()
                 .putString("evaluation_done_date", today)
                 .putString("evaluation_running_date", "")
-                .putInt("last_evaluation_outcome_count", evaluatedOutcomes.length())
+                .putInt("last_evaluation_outcome_count", saveResult.persistedCount)
+                .putInt("last_evaluation_produced_count", saveResult.producedCount)
                 .putString("last_evaluation_message", evaluationMessage)
                 .commit()
             cancelDayEvaluationReminder(this@MarketMLService)
-            Log.i(TAG, "EVAL_COMPLETE: ${evaluatedOutcomes.length()} outcomes saved for $today — reminder cancelled")
+            Log.i(
+                TAG,
+                "EVAL_COMPLETE: force=$force produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $today — reminder cancelled"
+            )
         } catch (e: Exception) {
             prefs.edit()
                 .putString("evaluation_running_date", "")

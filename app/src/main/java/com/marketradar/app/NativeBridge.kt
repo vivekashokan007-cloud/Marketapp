@@ -552,6 +552,7 @@ class NativeBridge(private val context: Context) {
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", runningDate == today)
             status.put("lastEvaluationOutcomeCount", prefs.getInt("last_evaluation_outcome_count", 0))
+            status.put("lastEvaluationProducedCount", prefs.getInt("last_evaluation_produced_count", 0))
             status.put("lastEvaluationMessage", prefs.getString("last_evaluation_message", "") ?: "")
             status.toString()
         } catch (e: Exception) {
@@ -638,6 +639,7 @@ class NativeBridge(private val context: Context) {
                     put("status", "done")
                     put("message", "Today's evaluation already done.")
                     put("outcomes", prefs.getInt("last_evaluation_outcome_count", 0))
+                    put("produced", prefs.getInt("last_evaluation_produced_count", 0))
                 }.toString()
             }
             if (prefs.getString("evaluation_running_date", "") == today) {
@@ -670,6 +672,44 @@ class NativeBridge(private val context: Context) {
                 put("ok", false)
                 put("status", "failed")
                 put("message", "Day evaluation trigger failed: ${e.message}")
+            }.toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun forceDayEvaluation(): String {
+        return try {
+            val today = todayIstDate()
+            if (prefs.getString("evaluation_running_date", "") == today) {
+                return JSONObject().apply {
+                    put("ok", true)
+                    put("status", "running")
+                    put("message", "Today's evaluation is already running.")
+                }.toString()
+            }
+            prefs.edit()
+                .putString("evaluation_running_date", today)
+                .putString("last_evaluation_message", "Forced re-evaluation queued...")
+                .commit()
+            val intent = android.content.Intent(context, MarketMLService::class.java).apply {
+                action = "ACTION_DAY_EVALUATION_FORCE"
+            }
+            context.startForegroundService(intent)
+            JSONObject().apply {
+                put("ok", true)
+                put("status", "started")
+                put("message", "Forced re-evaluation started for today.")
+            }.toString()
+        } catch (e: Exception) {
+            prefs.edit()
+                .putString("evaluation_running_date", "")
+                .putString("last_evaluation_message", "Forced re-evaluation trigger failed: ${e.message}")
+                .commit()
+            android.util.Log.w("NativeBridge", "Forced day evaluation trigger failed: ${e.message}", e)
+            JSONObject().apply {
+                put("ok", false)
+                put("status", "failed")
+                put("message", "Forced re-evaluation trigger failed: ${e.message}")
             }.toString()
         }
     }
