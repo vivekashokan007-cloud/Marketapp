@@ -151,7 +151,7 @@ def _app_trade_to_row(t):
         'vix': vix,
         'spot': spot,
         'sigma_away': sigma_away,
-        'gap_sigma': t.get('gap_sigma') or t.get('sigmaScore') or 0,
+        'gap_sigma': t.get('gap_sigma') or 0,
         'weekday': t.get('weekday') or 0,
         'dte': dte,
         'sell_strike2': t.get('sell_strike2') or '',

@@ -1236,6 +1236,7 @@ class MLEngine:
             'base_wr':    round(self.base_win_rate, 3),
             'edge':       round(p_meta - self.base_win_rate, 3),
             'ood':        is_ood,
+            'ood_flag':   is_ood,
             'ood_conf':   round(ood_conf, 3),
             'ood_warns':  ood_warns,
             'ood_blocked': is_strategy_blind,

@@ -309,6 +309,7 @@ class NativeBridge(private val context: Context) {
                                     cand.put("mlAction", mlScored.optString("ml_action"))
                                     cand.put("mlEdge", finiteDouble(mlScored, "ml_edge", 0.0))
                                     cand.put("mlOod", mlScored.optBoolean("ml_ood", false))
+                                    cand.put("mlOodFlag", mlScored.optBoolean("ml_ood_flag", mlScored.optBoolean("ml_ood", false)))
                                     cand.put("mlOodConf", finiteDouble(mlScored, "ml_ood_conf", 1.0))
                                     cand.put("mlOodWarn", mlScored.optJSONArray("ml_ood_warn") ?: JSONArray())
                                     cand.put("mlOodBlocked", mlScored.optBoolean("ml_ood_blocked", false))

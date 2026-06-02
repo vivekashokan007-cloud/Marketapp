@@ -66,6 +66,7 @@ def _ml_score(candidate_dict):
             'ml_regime':     reg,
             'ml_edge':       detail.get('edge', 0.0),
             'ml_ood':        detail.get('ood', False),
+            'ml_ood_flag':   detail.get('ood_flag', detail.get('ood', False)),
             'ml_ood_conf':   detail.get('ood_conf', 1.0),
             'ml_ood_warn':   detail.get('ood_warns', []),
             'ml_ood_blocked':detail.get('ood_blocked', False),
@@ -6174,6 +6175,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'mlRegime':      None,
         'mlEdge':        None,
         'mlOod':         False,
+        'mlOodFlag':     False,
         'mlOodConf':     1.0,
         'mlOodBlocked':  False,
         'mlUnsure':      False,
@@ -7008,12 +7010,25 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result['rangeSigma'] = regime.get('sigma', 0)
     result['marketPhase'] = _synthesize_market_phase(regime, ctx)
     ctx['marketPhase'] = result['marketPhase'].get('id', 'UNKNOWN')
+    latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
+
+    def _latest_spot_value(index_key):
+        base_key = 'bnfSpot' if index_key == 'BNF' else 'nfSpot'
+        poll_key = 'bnf' if index_key == 'BNF' else 'nf'
+        return (
+            latest_poll.get(base_key)
+            or latest_poll.get(poll_key)
+            or latest_poll.get(poll_key.upper())
+            or ctx.get(base_key)
+            or baseline.get(base_key)
+            or 0
+        )
 
     # Phase C: compute profiles before context-aware insights/verdict use them.
     bnf_chain = ctx.get('bnfChain') or {}
     nf_chain = ctx.get('nfChain') or {}
-    bnf_spot = ctx.get('bnfSpot') or 0
-    nf_spot = ctx.get('nfSpot') or 0
+    bnf_spot = _latest_spot_value('BNF')
+    nf_spot = _latest_spot_value('NF')
     bnf_ohlc = ctx.get('bnfOHLC')
     nf_ohlc = ctx.get('nfOHLC')
     vix = ctx.get('vix') or 20
@@ -7244,12 +7259,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 print(f"analyze: {chain_key} missing atm — skipping {idx_key}")
                 continue
             
-            spot_key = 'bnfSpot' if idx_key == 'BNF' else 'nfSpot'
-            spot = None
-            for p in reversed(polls):
-                s = p.get('bnf' if idx_key == 'BNF' else 'nf')
-                if s: spot = s; break
-            if not spot: spot = baseline.get(spot_key, 0)
+            spot = _latest_spot_value(idx_key)
             if spot > 0:
                 expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
                 expiry = ctx.get(expiry_key, '')
@@ -7318,6 +7328,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                             c['mlRegime']     = reg2
                             c['mlEdge']       = d2.get('edge', 0.0)
                             c['mlOod']        = d2.get('ood', False)
+                            c['mlOodFlag']    = d2.get('ood_flag', d2.get('ood', False))
                             c['mlOodConf']    = d2.get('ood_conf', 1.0)
                             c['mlOodWarn']    = d2.get('ood_warns', [])
                             c['mlOodBlocked'] = d2.get('ood_blocked', False)
@@ -7805,6 +7816,7 @@ def take_poll_snapshot(result, ctx, polls):
                 'mlAction': c.get('mlAction'),
                 'mlEdge': c.get('mlEdge'),
                 'mlOod': c.get('mlOod'),
+                'mlOodFlag': c.get('mlOodFlag'),
                 'mlOodConf': c.get('mlOodConf'),
                 'mlOodBlocked': c.get('mlOodBlocked'),
             })
