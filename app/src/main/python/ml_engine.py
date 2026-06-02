@@ -287,7 +287,7 @@ class FeatureEngine:
                 print(f"DEBUG: ood_score sigma_away check failed: {e}")
 
         if checks == 0:
-            return False, 1.0, []
+            return False, 1.0, [], False
 
         raw_conf = max(0.0, 1.0 - violations / max(checks + 2, 3))
         # Hard cap: critical strategy-specific violation → max 40% confidence

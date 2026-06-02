@@ -2292,8 +2292,9 @@ class MarketWatchService : Service() {
                 val openTradesUpdated = prefs.getString("open_trades", "[]") ?: "[]"
                 val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
                 
+                val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
                 broadcastData = JSONObject().apply {
-                    put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).format(Date())) // A4
+                    put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = istTimeZone }.format(Date())) // A4
                     put("spots", JSONObject().apply {
                         put("bnfSpot", bnfSpot)
                         put("nfSpot",  nfSpot)
@@ -2324,8 +2325,9 @@ class MarketWatchService : Service() {
     private fun extractChainSlice(bnfChain: JSONObject, nfChain: JSONObject, brainResult: JSONObject): List<JSONObject> {
         val rows = mutableListOf<JSONObject>()
         val now = System.currentTimeMillis()
-        val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).format(Date(now))
-        val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date(now))
+        val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
+        val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
         val captureFullH2Chain = isH2PersistenceWindow(now)
 
         if (captureFullH2Chain) {

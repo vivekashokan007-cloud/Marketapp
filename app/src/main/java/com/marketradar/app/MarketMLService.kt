@@ -108,6 +108,7 @@ class MarketMLService : Service() {
         private const val TAG = "MarketMLService"
         private const val EVENING_EVAL_TIMEOUT_MS = 45_000L
         private const val MONTHLY_RETRAIN_GATE_ROWS = 500
+        private const val RETRAIN_DISABLED_REASON = "Retrain paused until canonical won-label unification is completed."
         internal val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
         private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
         private const val EVAL_REMINDER_END_MIN = 18 * 60 + 30
@@ -390,13 +391,6 @@ class MarketMLService : Service() {
 
     private suspend fun checkRetrainReadiness() = withContext(Dispatchers.IO) {
         try {
-            val closedTrades = SupabaseClient.select(
-                "ml_decisions",
-                filter = "won=not.is.null",
-                limit = 500
-            )
-            val count = closedTrades.length()
-
             // Build a PendingIntent that starts training when tapped
             val trainIntent = Intent(this@MarketMLService, MarketMLService::class.java).apply {
                 action = "ACTION_CONFIRM_TRAIN"
@@ -406,16 +400,8 @@ class MarketMLService : Service() {
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
 
-            val threshold = prefs.getInt("retrain_threshold", 300) // MLS12: Configurable threshold
-            val title: String
-            val body: String
-            if (count < threshold) {
-                title = "⚠️ ML Retrain — Low Data"
-                body = "Only $count trades recorded — retrain needs $threshold+ for meaningful improvement. Training is blocked below 100."
-            } else {
-                title = "🧠 ML Retrain Ready"
-                body = "$count trades ready — tap to retrain ML model."
-            }
+            val title = "⏸ ML Retrain Paused"
+            val body = RETRAIN_DISABLED_REASON
 
             // Show actionable notification
             val channel = android.app.NotificationChannel(
@@ -434,7 +420,7 @@ class MarketMLService : Service() {
                 .build()
 
             nm.notify(2001, notification)
-            Log.i(TAG, "Retrain check: $count trades → notification shown")
+            Log.i(TAG, "Retrain check: paused pending canonical label unification")
 
         } catch (e: Exception) {
             Log.w(TAG, "Retrain check failed: ${e.message}")
@@ -450,19 +436,14 @@ class MarketMLService : Service() {
         val startMs = System.currentTimeMillis()
 
         try {
-            val labeledCount = SupabaseClient.select(
-                "ml_decisions",
-                filter = "won=not.is.null",
-                limit = 500
-            ).length()
-            if (labeledCount < 100) {
-                Log.i(TAG, "ML training blocked: only $labeledCount labeled trades")
-                NotificationHelper.send(
-                    this@MarketMLService,
-                    "ML Training Blocked",
-                    "Need 100+ labeled trades before retraining. Current: $labeledCount.",
-                    "info"
-                )
+            Log.i(TAG, "ML training blocked: $RETRAIN_DISABLED_REASON")
+            NotificationHelper.send(
+                this@MarketMLService,
+                "ML Training Paused",
+                RETRAIN_DISABLED_REASON,
+                "info"
+            )
+            if (!prefs.getBoolean("ml_retrain_force_enable", false)) {
                 return@withContext
             }
 
@@ -586,15 +567,25 @@ class MarketMLService : Service() {
             }
             
             val json = org.json.JSONObject(result)
+            val success = json.optBoolean("success", false)
+            val reason = json.optString("reason", "")
             val pBefore = json.optDouble("p_before", 0.5)
             val pAfter  = json.optDouble("p_after", 0.5)
             val correct = json.optBoolean("direction_correct", false)
 
-            Log.i(TAG, "Online update: p $pBefore → $pAfter  correct=$correct")
+            if (success) {
+                Log.i(TAG, "Online update: p $pBefore → $pAfter  correct=$correct")
+            } else {
+                Log.i(TAG, "Online update skipped: ${if (reason.isNotBlank()) reason else "no reason"}")
+            }
 
             // Store prediction record in ml_features table
             val tradeId = tradeDict.optInt("id", -1)
-            val won     = tradeDict.optBoolean("won", false)
+            val won = when {
+                tradeDict.has("canonical_won") -> tradeDict.optBoolean("canonical_won", false)
+                tradeDict.has("outcome_h2") -> tradeDict.optInt("outcome_h2", 0) == 1
+                else -> tradeDict.optBoolean("won", false)
+            }
             if (tradeId > 0) {
                 updateMLFeatureOutcome(tradeId, won, tradeDict.optDouble("pnl", 0.0))
             }

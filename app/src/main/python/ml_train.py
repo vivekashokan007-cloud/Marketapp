@@ -37,11 +37,41 @@ MIN_IMPROVEMENT  = 0.005   # deploy new model only if accuracy improves by >0.5%
 MIN_TRAIN_ROWS   = 500     # skip training if less than this (not enough data)
 APP_TRADE_WEIGHT = 3       # each real app trade replicated 3× in training mix
 MAX_APP_ROWS     = 500     # cap app trades to prevent distribution shift
+RETRAIN_DISABLED_REASON = 'retrain_disabled_pending_canonical_won_unification'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # APP TRADE CONVERTER
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_training_won(trade_dict, pnl=None):
+    """Resolve the training label from the most explicit source available."""
+    for key in ('canonical_won', 'outcome_h2', 'won'):
+        value = trade_dict.get(key)
+        if value is None or value == '':
+            continue
+        text = str(value).strip().lower()
+        if text in ('1', 'true', 'yes'):
+            return True
+        if text in ('0', 'false', 'no'):
+            return False
+    if pnl is None:
+        return None
+    return float(pnl) > 0
+
+
+def _row_label_value(row):
+    """Read the canonical label from any training/evaluation row shape."""
+    for key in ('canonical_won', 'outcome_h2', 'won'):
+        value = row.get(key)
+        if value is None or value == '':
+            continue
+        text = str(value).strip().lower()
+        if text in ('true', '1', 'yes'):
+            return 1
+        if text in ('false', '0', 'no'):
+            return 0
+    return None
 
 def _app_trade_to_row(t):
     """
@@ -58,7 +88,9 @@ def _app_trade_to_row(t):
     except:
         return None
 
-    won = pnl > 0
+    won = _resolve_training_won(t, pnl)
+    if won is None:
+        return None
 
     # Strategy type normalisation
     stype = str(t.get('strategy', t.get('type', ''))).upper()
@@ -187,7 +219,10 @@ def _evaluate_on_holdout(engine, rows):
 
     correct = 0
     for r in val_rows:
-        won = str(r.get('won', '')).lower() in ('true', '1')
+        won = _row_label_value(r)
+        if won is None:
+            continue
+        won = won == 1
         p, _, _ = engine.predict(r)
         if (p >= engine.thr_take) == won or (p < engine.thr_watch) == (not won):
             correct += 1
@@ -228,6 +263,11 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
     }
 
     try:
+        result['reason'] = RETRAIN_DISABLED_REASON
+        log(f"ml_train: SKIPPED — {RETRAIN_DISABLED_REASON}")
+        result['duration_sec'] = round(time.time() - t0, 1)
+        return json.dumps(result)
+
         # ── 1. Load data ─────────────────────────────────────────────────────
         log("ml_train: loading backtest CSV …")
         bt_rows   = _load_csv_rows(backtest_csv_path)
@@ -331,11 +371,11 @@ def _train_from_rows(rows, log_fn=None, sample_weights=None):
     y = []
     clean = []
     for r in rows:
-        v = r.get('won', '')
-        if str(v).strip().lower() in ('true', '1'):
-            y.append(1); clean.append(r)
-        elif str(v).strip().lower() in ('false', '0'):
-            y.append(0); clean.append(r)
+        label = _row_label_value(r)
+        if label is None:
+            continue
+        y.append(label)
+        clean.append(r)
 
     n = len(clean)
     if n == 0:
@@ -422,13 +462,20 @@ def online_update(model_path, trade_dict, log_fn=None):
     result = {'success': False, 'p_before': 0.0, 'p_after': 0.0,
                'direction_correct': False}
     try:
+        result['reason'] = 'online_update_disabled_pending_label_unification'
+        log("online_update: skipped (pending canonical won-label unification)")
+        return json.dumps(result)
+
         engine = _ml.load_model(model_path)
         row    = _app_trade_to_row(trade_dict)
         if row is None:
             result['reason'] = 'Could not convert trade'
             return json.dumps(result)
 
-        won = str(trade_dict.get('won', '')).lower() in ('true', '1')
+        won = _resolve_training_won(trade_dict, row.get('net_pnl'))
+        if won is None:
+            result['reason'] = 'Could not resolve canonical won label'
+            return json.dumps(result)
         feat = engine.feature_engine.extract(row)
 
         # Score before update

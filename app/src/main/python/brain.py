@@ -7839,7 +7839,7 @@ def take_poll_snapshot(result, ctx, polls):
             'strategy_type': cand.get('type'),
             'index': cand.get('index'),
             'expiry': cand.get('expiry'),
-            'trade_mode': ctx.get('trade_mode'),
+            'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
             'legs': legs,
         }
 
@@ -7872,7 +7872,7 @@ def take_poll_snapshot(result, ctx, polls):
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'latest_time': latest_poll.get('t') or latest_poll.get('time'),
         'entry_window_active': ctx.get('entry_window_active'),
-        'trade_mode': ctx.get('trade_mode'),
+        'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
         'watchlist_count': len(watchlist) if isinstance(watchlist, list) else 0,
         'generated_count': len(generated_candidates) if isinstance(generated_candidates, list) else 0,
         'top_candidate_type': top_cand.get('type') if top_cand else None,
@@ -7926,11 +7926,16 @@ def take_poll_snapshot(result, ctx, polls):
 def _parse_ist_hour_min(poll_ts_str):
     """Extract (hour, minute) from ISO timestamp string. Returns None on failure."""
     try:
-        time_part = poll_ts_str.split('T')[1] if 'T' in poll_ts_str else ''
-        h = int(time_part[:2])
-        m = int(time_part[3:5])
-        return h, m
-    except (IndexError, ValueError):
+        dt = _parse_iso_ts(poll_ts_str)
+        if dt is None:
+            return None
+        ist = timezone(timedelta(hours=5, minutes=30))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ist)
+        else:
+            dt = dt.astimezone(ist)
+        return dt.hour, dt.minute
+    except Exception:
         return None
 
 
