@@ -1340,6 +1340,26 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun getMLEvaluationOutcomes(limit: Int): String {
+        return try {
+            SupabaseClient.fetchRecentEvaluationOutcomes(limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getMLEvaluationOutcomes failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
+    fun getMLBrainSnapshots(limit: Int): String {
+        return try {
+            SupabaseClient.fetchRecentBrainSnapshots(limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getMLBrainSnapshots failed", e)
+            "[]"
+        }
+    }
+
+    @JavascriptInterface
     fun saveExportFile(fileName: String, mimeType: String, base64Data: String): String {
         return try {
             saveExportBytes(fileName, mimeType, Base64.decode(base64Data, Base64.DEFAULT)).toString()

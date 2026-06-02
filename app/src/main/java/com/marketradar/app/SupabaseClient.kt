@@ -246,6 +246,25 @@ object SupabaseClient {
         )
     }
 
+    fun fetchRecentEvaluationOutcomes(limit: Int = 200): JSONArray {
+        return fetchArrayFromTables(
+            listOf(
+                "ml_recommendation_outcomes?select=*&order=created_at.desc&limit=$limit",
+                "ml_evaluation_outcomes?select=*&order=created_at.desc&limit=$limit",
+                "ml_decisions?select=*&order=created_at.desc&limit=$limit"
+            )
+        )
+    }
+
+    fun fetchRecentBrainSnapshots(limit: Int = 200): JSONArray {
+        return fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=$limit",
+                "ml_poll_sequences?select=*&order=poll_ts.desc&limit=$limit"
+            )
+        )
+    }
+
     fun fetchNf50ConstituentRows(): JSONArray {
         val tableRows = fetchArrayFromTables(
             listOf(
