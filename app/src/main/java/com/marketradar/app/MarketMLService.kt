@@ -684,7 +684,9 @@ class MarketMLService : Service() {
     private suspend fun updateMLFeatureOutcome(tradeId: Int, won: Boolean, pnl: Double) {
         try {
             val body = org.json.JSONObject().apply {
-                put("won",        won)
+                put("canonical_won", won)
+                put("won", won)
+                put("outcome_h2", if (won) 1 else 0)
                 put("actual_pnl", pnl)
             }
             SupabaseClient.update("ml_features", body, "trade_id=eq.$tradeId")
@@ -852,8 +854,15 @@ class MarketMLService : Service() {
                 val sid = row.optInt("snapshot_id", -1)
                 val labelable = snapshotIdToLabelable[sid] == true
                 if (!labelable) continue
+                val won = when {
+                    row.has("canonical_won") -> row.optInt("canonical_won", -1)
+                    row.has("outcome_h2") -> row.optInt("outcome_h2", -1)
+                    row.has("won") -> if (row.optBoolean("won", false)) 1 else 0
+                    else -> -1
+                }
+                if (won !in listOf(0, 1)) continue
                 labeledRows += 1
-                if (row.optInt("outcome_h2", 0) == 1) wins += 1
+                if (won == 1) wins += 1
             }
 
             val accuracyPct = if (labeledRows > 0) (wins * 100.0) / labeledRows else 0.0

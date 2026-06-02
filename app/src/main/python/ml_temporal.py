@@ -344,6 +344,18 @@ def _synthetic_seq(row, n=N_SEQ):
 # TEMPORAL ENGINE — wraps MiniGRU + metadata
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _row_label_value(row):
+    for key in ('canonical_won', 'outcome_h2', 'won'):
+        value = row.get(key)
+        if value is None or value == '':
+            continue
+        text = str(value).strip().lower()
+        if text in ('true', '1', 'yes'):
+            return 1
+        if text in ('false', '0', 'no'):
+            return 0
+    return None
+
 class TemporalEngine:
 
     WEIGHT = 0.15   # blend weight in ensemble: p_final = (1-W)*p_base + W*p_temporal
@@ -357,7 +369,6 @@ class TemporalEngine:
         self.version    = TEMPORAL_VERSION
 
     # ── Synthetic pre-training from backtest CSV rows ────────────────────────
-
     def fit_synthetic(self, rows, epochs=8, lr=0.005, log_fn=None):
         """
         Pre-train on synthetic sequences derived from backtest trade rows.
@@ -369,10 +380,10 @@ class TemporalEngine:
         seqs = []
         labels = []
         for r in rows:
-            y = str(r.get('won', '')).lower()
-            if y not in ('true', '1', 'false', '0'):
+            label = _row_label_value(r)
+            if label is None:
                 continue
-            labels.append(1 if y in ('true', '1') else 0)
+            labels.append(label)
             seqs.append(_synthetic_seq(r))
 
         n = len(seqs)

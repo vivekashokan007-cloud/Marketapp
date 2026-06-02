@@ -240,9 +240,21 @@ object SupabaseClient {
     }
 
     fun saveEvaluationOutcomes(body: JSONArray): Boolean {
-        return postToFirstWorkingTable(
+        if (postToFirstWorkingTable(
             listOf("ml_recommendation_outcomes", "ml_evaluation_outcomes", "ml_decisions"),
             body.toString()
+        )) return true
+
+        val legacy = JSONArray()
+        for (i in 0 until body.length()) {
+            val src = body.optJSONObject(i) ?: continue
+            val row = JSONObject(src.toString())
+            row.remove("canonical_won")
+            legacy.put(row)
+        }
+        return postToFirstWorkingTable(
+            listOf("ml_recommendation_outcomes", "ml_evaluation_outcomes", "ml_decisions"),
+            legacy.toString()
         )
     }
 

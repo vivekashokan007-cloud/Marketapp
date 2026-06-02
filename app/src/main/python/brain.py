@@ -8075,7 +8075,9 @@ def _eval_single_candidate(chain_rows, snap, cand):
         'snapshot_id': snap.get('id'),
         'candidate_id': cand.get('id'),
         'sim_pnl_h2': sim_pnl,
+        'canonical_won': 1 if sim_pnl > 0 else 0,
         'outcome_h2': 1 if sim_pnl > 0 else 0,
+        'won': 1 if sim_pnl > 0 else 0,
     }
 
 

@@ -23,6 +23,19 @@ import math
 import csv
 import random
 
+
+def _row_label_value(row):
+    for key in ('canonical_won', 'outcome_h2', 'won'):
+        value = row.get(key)
+        if value is None or value == '':
+            continue
+        text = str(value).strip().lower()
+        if text in ('true', '1', 'yes'):
+            return 1
+        if text in ('false', '0', 'no'):
+            return 0
+    return None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # VERSION & CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1319,13 +1332,11 @@ def train_from_csv(path, log_fn=None, skip_nn=False):
     y = []
     clean_rows = []
     for r in rows:
-        v = r.get('won', '')
-        if str(v).strip().lower() in ('true', '1'):
-            y.append(1)
-            clean_rows.append(r)
-        elif str(v).strip().lower() in ('false', '0'):
-            y.append(0)
-            clean_rows.append(r)
+        label = _row_label_value(r)
+        if label is None:
+            continue
+        y.append(label)
+        clean_rows.append(r)
         # drop rows with missing target
 
     n = len(clean_rows)

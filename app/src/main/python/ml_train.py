@@ -144,6 +144,8 @@ def _app_trade_to_row(t):
         'paper_pnl': max_profit if won else -max_loss,
         'cost': 0,
         'net_pnl': pnl,
+        'canonical_won': str(won),
+        'outcome_h2': 1 if won else 0,
         'won': str(won),
         'exit_reason': str(t.get('exit_reason', t.get('exitReason', 'CLOSE'))),
         'target_hit': str(won),
