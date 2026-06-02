@@ -527,7 +527,6 @@ class MainActivity : AppCompatActivity() {
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { return AndroidBridge.triggerMLRetrain(); },
                     triggerDayEvaluation: function() { return AndroidBridge.triggerDayEvaluation(); },
-                    forceDayEvaluation: function() { return AndroidBridge.forceDayEvaluation(); },
                     
                     // Diagnostic Methods (LV.1)
                     getLogBuffer: function(f) { return AndroidBridge.getLogBuffer(f); },

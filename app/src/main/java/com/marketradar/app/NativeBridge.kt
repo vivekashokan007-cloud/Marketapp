@@ -677,44 +677,6 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
-    fun forceDayEvaluation(): String {
-        return try {
-            val today = todayIstDate()
-            if (prefs.getString("evaluation_running_date", "") == today) {
-                return JSONObject().apply {
-                    put("ok", true)
-                    put("status", "running")
-                    put("message", "Today's evaluation is already running.")
-                }.toString()
-            }
-            prefs.edit()
-                .putString("evaluation_running_date", today)
-                .putString("last_evaluation_message", "Forced re-evaluation queued...")
-                .commit()
-            val intent = android.content.Intent(context, MarketMLService::class.java).apply {
-                action = "ACTION_DAY_EVALUATION_FORCE"
-            }
-            context.startForegroundService(intent)
-            JSONObject().apply {
-                put("ok", true)
-                put("status", "started")
-                put("message", "Forced re-evaluation started for today.")
-            }.toString()
-        } catch (e: Exception) {
-            prefs.edit()
-                .putString("evaluation_running_date", "")
-                .putString("last_evaluation_message", "Forced re-evaluation trigger failed: ${e.message}")
-                .commit()
-            android.util.Log.w("NativeBridge", "Forced day evaluation trigger failed: ${e.message}", e)
-            JSONObject().apply {
-                put("ok", false)
-                put("status", "failed")
-                put("message", "Forced re-evaluation trigger failed: ${e.message}")
-            }.toString()
-        }
-    }
-
-    @JavascriptInterface
     fun setExecutionSandboxEnabled(enabled: Boolean): Boolean {
         val ok = prefs.edit().putBoolean(PREF_SANDBOX_ENABLED, enabled).commit()
         if (!ok) return false

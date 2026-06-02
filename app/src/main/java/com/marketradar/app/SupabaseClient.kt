@@ -346,14 +346,10 @@ object SupabaseClient {
         )
     }
 
-    fun fetchRecentEvaluationOutcomes(limit: Int = 200): JSONArray {
-        return fetchArrayFromTables(
-            listOf(
-                "ml_recommendation_outcomes?select=*&order=created_at.desc&limit=$limit",
-                "ml_evaluation_outcomes?select=*&order=created_at.desc&limit=$limit",
-                "ml_decisions?select=*&order=created_at.desc&limit=$limit"
-            )
-        )
+    fun fetchRecentEvaluationOutcomes(limit: Int = 1000): JSONArray {
+        val evaluationRows = select("ml_evaluation_outcomes", null, "created_at.desc", limit)
+        if (evaluationRows.length() > 0) return evaluationRows
+        return select("ml_decisions", null, "created_at.desc", limit)
     }
 
     fun fetchRecentBrainSnapshots(limit: Int = 200): JSONArray {
@@ -479,40 +475,6 @@ object SupabaseClient {
             Log.e(TAG, "Update to $table failed: ${e.message}")
             false
         }
-    }
-
-    fun delete(table: String, filter: String): Boolean {
-        val request = getBaseRequest("$table?$filter")
-            .delete()
-            .build()
-
-        return try {
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val err = response.body?.string() ?: ""
-                    Log.e(TAG, "Delete from $table failed: ${response.code} ${response.message} | $err")
-                    return@use false
-                }
-                true
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Delete from $table failed: ${e.message}")
-            false
-        }
-    }
-
-    fun clearEvaluationOutcomesForSession(sessionDate: String, snapshots: JSONArray): Boolean {
-        var ok = delete("ml_recommendation_outcomes", "session_date=eq.$sessionDate")
-        val snapshotIds = mutableListOf<String>()
-        for (i in 0 until snapshots.length()) {
-            val id = snapshots.optJSONObject(i)?.optLong("id") ?: continue
-            if (id > 0) snapshotIds.add(id.toString())
-        }
-        if (snapshotIds.isNotEmpty()) {
-            val joined = snapshotIds.joinToString(",")
-            ok = delete("ml_evaluation_outcomes", "snapshot_id=in.($joined)") && ok
-        }
-        return ok
     }
 
     fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
