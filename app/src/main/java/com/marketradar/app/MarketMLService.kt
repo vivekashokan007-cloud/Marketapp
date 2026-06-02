@@ -120,6 +120,12 @@ class MarketMLService : Service() {
         fun appTradesPath(ctx: Context): String =
             File(ctx.filesDir, "app_trades.json").absolutePath
 
+        fun evalOutcomesPath(ctx: Context): String =
+            File(ctx.filesDir, "evaluation_outcomes.json").absolutePath
+
+        fun brainSnapshotsPath(ctx: Context): String =
+            File(ctx.filesDir, "brain_snapshots.json").absolutePath
+
         fun modelPath(ctx: Context): String =
             File(ctx.filesDir, "ml_model.json").absolutePath
 
@@ -450,8 +456,9 @@ class MarketMLService : Service() {
             val py   = Python.getInstance()
             val mod  = py.getModule("ml_train")
 
-            // 1. Export closed trades to JSON for app_trades.json
+            // 1. Export closed trades and evaluator-backed labels to disk
             exportAppTrades()
+            exportCanonicalEvaluationInputs()
 
             // 2. Run training (MLS5: Timeout increased to 300s for large NN/GBT datasets)
             val result = withTimeoutOrNull(300_000L) {
@@ -460,7 +467,9 @@ class MarketMLService : Service() {
                     backtestPath(this@MarketMLService),
                     appTradesPath(this@MarketMLService),
                     modelPath(this@MarketMLService),
-                    py.builtins.callAttr("print")          // log_fn = print → logcat
+                    py.builtins.callAttr("print"),         // log_fn = print → logcat
+                    evalOutcomesPath(this@MarketMLService),
+                    brainSnapshotsPath(this@MarketMLService)
                 ).toString()
             }
             
@@ -723,6 +732,21 @@ class MarketMLService : Service() {
             Log.i(TAG, "App trades exported to ${appTradesPath(this)}")
         } catch (e: Exception) {
             Log.w(TAG, "Could not export app trades: ${e.message}")
+        }
+    }
+
+    private suspend fun exportCanonicalEvaluationInputs() {
+        try {
+            val outcomes = SupabaseClient.fetchRecentEvaluationOutcomes(1000)
+            val snapshots = SupabaseClient.fetchRecentBrainSnapshots(1000)
+            File(evalOutcomesPath(this)).writeText(outcomes.toString())
+            File(brainSnapshotsPath(this)).writeText(snapshots.toString())
+            Log.i(
+                TAG,
+                "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()}"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not export canonical evaluator inputs: ${e.message}")
         }
     }
 

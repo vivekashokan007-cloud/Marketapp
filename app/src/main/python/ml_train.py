@@ -6,12 +6,14 @@ Called by Kotlin TrainingService via Chaquopy at 11 PM nightly.
 Usage (Kotlin via Chaquopy):
     Python.getModule("ml_train").callAttr("run",
         "/data/backtest_trades.csv",   # primary training data
-        "/data/app_trades.json",        # live app trades (may be empty)
+        "/data/app_trades.json",       # live app trades (may be empty)
         "/data/ml_model.json",          # current model (replaced if better)
-        log_fn)                         # optional Kotlin callback for logs
+        log_fn,                         # optional Kotlin callback for logs
+        "/data/evaluation_outcomes.json",
+        "/data/brain_snapshots.json")
 
 Usage (CLI for testing):
-    python3 ml_train.py /data/backtest.csv /data/app_trades.json /data/model.json
+    python3 ml_train.py /data/backtest.csv /data/app_trades.json /data/model.json [/data/evaluation_outcomes.json] [/data/brain_snapshots.json]
 
 Returns JSON string with:
     {success, deployed, accuracy_new, accuracy_old, n_train, duration_sec, reason}
@@ -36,6 +38,7 @@ except ImportError:
 MIN_IMPROVEMENT  = 0.005   # deploy new model only if accuracy improves by >0.5%
 MIN_TRAIN_ROWS   = 500     # skip training if less than this (not enough data)
 APP_TRADE_WEIGHT = 3       # each real app trade replicated 3× in training mix
+EVAL_OUTCOME_WEIGHT = 4    # evaluator-backed labels should outrank raw trade-close inference
 MAX_APP_ROWS     = 500     # cap app trades to prevent distribution shift
 RETRAIN_DISABLED_REASON = 'retrain_disabled_pending_canonical_won_unification'
 
@@ -209,6 +212,167 @@ def _load_csv_rows(path):
         return []
 
 
+def _load_json_array(path):
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def _parse_jsonish(value, default):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+            if isinstance(default, list) and isinstance(parsed, list):
+                return parsed
+            if isinstance(default, dict) and isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return default
+    return default
+
+
+def _snapshot_candidate_to_row(cand, snap_ctx, outcome, snap):
+    if not isinstance(cand, dict):
+        return None
+    latest = snap_ctx.get('snapshot_latest_poll') if isinstance(snap_ctx, dict) else {}
+    latest = latest if isinstance(latest, dict) else {}
+    gap = snap_ctx.get('gap') if isinstance(snap_ctx, dict) else {}
+    gap = gap if isinstance(gap, dict) else {}
+    strategy = str(cand.get('type') or cand.get('strategy') or '').upper()
+    if not strategy:
+        return None
+    index = str(cand.get('index') or 'NF').upper()
+    won = _row_label_value(outcome)
+    if won is None:
+        return None
+    mode = str(
+        cand.get('trade_mode')
+        or cand.get('mode')
+        or snap_ctx.get('tradeMode')
+        or snap_ctx.get('trade_mode')
+        or _parse_jsonish(snap.get('poll_summary_json'), {}).get('trade_mode')
+        or 'intraday'
+    ).lower()
+    vix = latest.get('vix') or latest.get('VIX') or snap_ctx.get('vix') or 17.0
+    spot = (
+        latest.get('bnfSpot') or latest.get('bnf') or latest.get('BNF')
+        if index == 'BNF'
+        else latest.get('nfSpot') or latest.get('nf') or latest.get('NF')
+    ) or 0
+    width = cand.get('width')
+    if not width:
+        try:
+            width = abs(float(cand.get('sellStrike') or 0) - float(cand.get('buyStrike') or 0))
+        except Exception:
+            width = 0
+    sigma_away = cand.get('sigmaOTM') or cand.get('sigma_away') or 0
+    move_sigma = latest.get('moveSigma') or latest.get('move_sigma') or 0
+    day_range_sigma = latest.get('dayRangeSigma') or latest.get('day_range_sigma') or 0
+    day_direction = str(latest.get('dayDirection') or latest.get('day_direction') or 'FLAT').upper()
+    day_range = str(latest.get('dayRange') or latest.get('day_range') or 'NORMAL').upper()
+    weekday = latest.get('weekday') or 0
+    try:
+        weekday = int(weekday)
+    except Exception:
+        weekday = 0
+    is_credit = cand.get('isCredit')
+    if is_credit is None:
+        is_credit = strategy in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+    pnl = outcome.get('sim_pnl_h2') or 0
+    try:
+        pnl = float(pnl)
+    except Exception:
+        pnl = 0.0
+    return {
+        'date': str(snap.get('session_date') or outcome.get('session_date') or ''),
+        'index': index,
+        'strategy': strategy,
+        'mode': mode,
+        'sell_strike': cand.get('sellStrike') or 0,
+        'buy_strike': cand.get('buyStrike') or 0,
+        'width': width or 0,
+        'legs': 4 if (cand.get('sellStrike2') is not None or cand.get('buyStrike2') is not None) else 2,
+        'entry_credit': cand.get('netPremium') or 0,
+        'max_profit': cand.get('maxProfit') or 0,
+        'max_loss': cand.get('maxLoss') or 0,
+        'paper_pnl': pnl,
+        'cost': 0,
+        'net_pnl': pnl,
+        'canonical_won': won,
+        'outcome_h2': won,
+        'won': won,
+        'exit_reason': 'H2_EVAL',
+        'target_hit': str(won == 1),
+        'stop_hit': str(won == 0),
+        'vix': vix,
+        'spot': spot,
+        'sigma_away': sigma_away,
+        'gap_sigma': gap.get('sigma') or 0,
+        'weekday': weekday,
+        'dte': cand.get('tDTE') or cand.get('dte') or 3,
+        'sell_strike2': cand.get('sellStrike2') or '',
+        'buy_strike2': cand.get('buyStrike2') or '',
+        'vix_regime': 'HIGH (20-25)' if float(vix) >= 20 else ('LOW (<15)' if float(vix) < 15 else 'NORMAL (15-20)'),
+        'is_credit': str(bool(is_credit)),
+        'day_group': 'Thu-Fri' if weekday >= 3 else 'Mon-Wed',
+        'inside_day': latest.get('insideDay') or latest.get('inside_day') or '',
+        'outside_day': latest.get('outsideDay') or latest.get('outside_day') or '',
+        'uptrend': latest.get('uptrend') or '',
+        'downtrend': latest.get('downtrend') or '',
+        'bullish_close': latest.get('bullishClose') or latest.get('bullish_close') or '',
+        'bearish_close': latest.get('bearishClose') or latest.get('bearish_close') or '',
+        'day_range_sigma': day_range_sigma,
+        'consec_days': latest.get('consecDays') or latest.get('consec_days') or 0,
+        'day_direction': day_direction,
+        'day_range': day_range,
+        'day_vix': 'HIGH' if float(vix) >= 20 else ('LOW' if float(vix) < 15 else 'NORMAL'),
+        'move_sigma': move_sigma,
+        'training_role': str(outcome.get('role') or 'secondary').lower(),
+        'snapshot_id': outcome.get('snapshot_id'),
+        'candidate_id': outcome.get('candidate_id'),
+    }
+
+
+def _load_canonical_eval_rows(outcomes_path, snapshots_path):
+    outcomes = _load_json_array(outcomes_path)
+    snapshots = _load_json_array(snapshots_path)
+    if not outcomes or not snapshots:
+        return []
+    snapshot_map = {}
+    for snap in snapshots:
+        try:
+            sid = int(snap.get('id'))
+        except Exception:
+            continue
+        snapshot_map[sid] = snap
+    rows = []
+    for outcome in outcomes:
+        if str(outcome.get('role') or 'secondary').lower() != 'primary':
+            continue
+        try:
+            sid = int(outcome.get('snapshot_id'))
+        except Exception:
+            continue
+        snap = snapshot_map.get(sid)
+        if not snap:
+            continue
+        snap_ctx = _parse_jsonish(snap.get('context_json'), {})
+        primary = _parse_jsonish(snap.get('primary_candidate_json'), {})
+        row = _snapshot_candidate_to_row(primary, snap_ctx, outcome, snap)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 def _evaluate_on_holdout(engine, rows):
     """
     Quick holdout accuracy: last 15% of rows.
@@ -235,7 +399,7 @@ def _evaluate_on_holdout(engine, rows):
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
+def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_path=None, snapshots_path=None):
     """
     Nightly training run.
 
@@ -259,7 +423,7 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
     result = {
         'success': False, 'deployed': False,
         'accuracy_new': 0.0, 'accuracy_old': 0.0,
-        'n_train': 0, 'n_app': 0,
+        'n_train': 0, 'n_app': 0, 'n_eval': 0,
         'duration_sec': 0.0, 'reason': '',
         'top_features': [],
     }
@@ -280,15 +444,29 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None):
         log(f"ml_train: {len(app_rows)} app trades loaded")
         result['n_app'] = len(app_rows)
 
+        log("ml_train: loading canonical evaluation rows …")
+        eval_rows = _load_canonical_eval_rows(outcomes_path, snapshots_path)
+        log(f"ml_train: {len(eval_rows)} evaluator-backed rows loaded")
+        result['n_eval'] = len(eval_rows)
+
         # ── 2. Mix ───────────────────────────────────────────────────────────
-        # App trades go last (most recent), replicated for recency weight
-        # Issue 1 (Antigravity): row duplication destroys GBT MSE splitting.
-        # Use sample_weights instead — app rows weighted 3x, backtest weighted 1x.
-        all_rows       = bt_rows + app_rows   # app_rows appended ONCE, not duplicated
-        sample_weights = [1.0] * len(bt_rows) + [float(APP_TRADE_WEIGHT)] * len(app_rows)
+        # Evaluator-backed rows are the strongest ground truth because they are
+        # derived from captured brain recommendations plus H2 market outcomes.
+        # Raw app trade closes remain useful, but lower in trust than canonical
+        # evaluator labels and higher than historical backtest rows.
+        all_rows = bt_rows + eval_rows + app_rows
+        sample_weights = (
+            [1.0] * len(bt_rows)
+            + [float(EVAL_OUTCOME_WEIGHT)] * len(eval_rows)
+            + [float(APP_TRADE_WEIGHT)] * len(app_rows)
+        )
 
         n = len(all_rows)
-        log(f"ml_train: {n} rows ({len(bt_rows)} backtest + {len(app_rows)} live @ weight={APP_TRADE_WEIGHT})")
+        log(
+            f"ml_train: {n} rows "
+            f"({len(bt_rows)} backtest + {len(eval_rows)} canonical eval @ weight={EVAL_OUTCOME_WEIGHT} "
+            f"+ {len(app_rows)} live trades @ weight={APP_TRADE_WEIGHT})"
+        )
 
         if n < MIN_TRAIN_ROWS:
             result['reason'] = f'Insufficient data: {n} rows < {MIN_TRAIN_ROWS} minimum'
@@ -564,8 +742,10 @@ if __name__ == '__main__':
 
     # Default: full training
     bt_path    = sys.argv[1] if len(sys.argv) > 1 else 'backtest_trades.csv'
-    app_path   = sys.argv[2] if len(sys.argv) > 2 else 'app_trades.json'
-    model_path = sys.argv[3] if len(sys.argv) > 3 else 'model.json'
+    app_path      = sys.argv[2] if len(sys.argv) > 2 else 'app_trades.json'
+    model_path    = sys.argv[3] if len(sys.argv) > 3 else 'model.json'
+    outcomes_path = sys.argv[4] if len(sys.argv) > 4 else None
+    snapshots_path = sys.argv[5] if len(sys.argv) > 5 else None
 
-    result = run(bt_path, app_path, model_path, log_fn=print)
+    result = run(bt_path, app_path, model_path, log_fn=print, outcomes_path=outcomes_path, snapshots_path=snapshots_path)
     print('\nResult:', result)
