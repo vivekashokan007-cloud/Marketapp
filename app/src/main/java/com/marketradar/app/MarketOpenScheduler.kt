@@ -97,14 +97,18 @@ object MarketOpenScheduler {
             return
         }
 
-        val serviceIntent = Intent(context, MarketWatchService::class.java)
+        val serviceIntent = Intent(context, MarketWatchService::class.java).apply {
+            // Force one immediate poll on auto-start so 9:15 open and late app-resume
+            // do not sit idle waiting for the next loop slot.
+            action = MarketWatchService.ACTION_FORCE_POLL
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
             } else {
                 context.startService(serviceIntent)
             }
-            LogBuffer.add('I', TAG, "AUTO_START_TRIGGERED: reason=$reason")
+            LogBuffer.add('I', TAG, "AUTO_START_TRIGGERED: reason=$reason action=${MarketWatchService.ACTION_FORCE_POLL}")
         } catch (e: Exception) {
             Log.e(TAG, "AUTO_START_FAIL: ${e.message}", e)
             LogBuffer.add('E', TAG, "AUTO_START_FAIL: reason=$reason ${e.message}")
