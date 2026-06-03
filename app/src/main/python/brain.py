@@ -841,6 +841,12 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     max_l = cand.get('maxLoss', 0)
     est_cost = cand.get('estCost', 0)
     est_cost_pct = cand.get('estCostPct', 0)
+    prob = cand.get('trueProb', cand.get('probProfit', 0.5)) or 0.5
+    forces = cand.get('forces') or {}
+    profile = ctx.get('bnfProfile' if idx == 'BNF' else 'nfProfile') or {}
+    ctx_score = cand.get('contextScore')
+    if ctx_score is None:
+        ctx_score = profile.get('contextScore', 0)
     # 1. COST TRAP — est. cost eats too much of max profit
     if max_p > 0 and est_cost > 0:
         cost_ratio = est_cost / max_p
@@ -853,7 +859,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     # 2. R:R SANITY — maxLoss > 2× maxProfit is dangerous
     if max_p > 0 and max_l > 0:
         rr = max_p / max_l
-        if rr < 0.5 and prob < 0.85:
+        if rr < 0.5:
             insights.append({"icon": "⚖️", "label": f"Poor R:R (1:{1/rr:.1f})",
                     "detail": f"Risk ₹{max_l:.0f} to make ₹{max_p:.0f}. Need {1/(rr+0.001):.0f}x wins per loss.",
                     "impact": "caution", "strength": 3})
@@ -884,7 +890,6 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     
     # 5. WIDTH ADEQUACY — narrow widths at high VIX = stop loss hunting
     width = cand.get('width', 0)
-    profile = ctx.get('bnfProfile' if idx == 'BNF' else 'nfProfile') or {}
     if width and width > 0:
         min_w = 400 if idx == 'BNF' else 200
         if cand.get('isCredit') and width < min_w:
@@ -5113,6 +5118,16 @@ def _daily_sigma(spot, vix):
     if spot <= 0 or vix <= 0: return 300
     return spot * (vix / 100) / math.sqrt(252)
 
+def _realized_vol_proxy(vix):
+    """Bootstrap realized-vol proxy from VIX until a trailing realized series exists."""
+    try:
+        value = float(vix)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return (value * 0.85) / 100.0
+
 def _sigma_days(spot, vix, dte):
     """Multi-day σ move"""
     return _daily_sigma(spot, vix) * math.sqrt(max(1, dte))
@@ -5128,6 +5143,7 @@ _CONST = {
     'NF_WIDTHS': [100, 150, 200, 250, 300, 400],
     'IV_HIGH': 20, 'IV_VERY_HIGH': 24, 'IV_LOW': 15,
     'MIN_PROB': 0.50, 'MIN_CREDIT_RATIO': 0.10,
+    'IV_RICH_MIN': 1.15, 'MIN_CREDIT_DTE': 1,
     'MIN_SIGMA_OTM': 0.5, 'MAX_SIGMA_OTM': 0.8,
     'IC_WALL_MAX_SIGMA': 1.5,
     'MIN_WIDTH_BNF': 400, 'MIN_WIDTH_NF': 150,
@@ -5179,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.96"
+BRAIN_VERSION = "2.3.97"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -6059,6 +6075,53 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
                         'reason': 'is_credit directional and width < min_width',
                     })
             return None
+        if tdte < _CONST['MIN_CREDIT_DTE']:
+            if ctx.get('_trace') is not None:
+                _active = ctx.get('_active_cand_trace')
+                if _active is not None:
+                    _trace_append(_active, 'attempts', {
+                        'stype': stype,
+                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
+                        'tdte': tdte,
+                        'result': 'rejected',
+                        'stage': 'credit_dte_below_floor',
+                        'reason': 'is_credit directional and tdte < MIN_CREDIT_DTE',
+                    })
+            return None
+        credit_ratio = (net_prem / width) if width > 0 else 0
+        if credit_ratio < _CONST['MIN_CREDIT_RATIO']:
+            if ctx.get('_trace') is not None:
+                _active = ctx.get('_active_cand_trace')
+                if _active is not None:
+                    _trace_append(_active, 'attempts', {
+                        'stype': stype,
+                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
+                        'credit_ratio': round(credit_ratio, 4),
+                        'result': 'rejected',
+                        'stage': 'credit_ratio_below_floor',
+                        'reason': 'is_credit directional and credit/width < MIN_CREDIT_RATIO',
+                    })
+            return None
+        realized_vol = _realized_vol_proxy(vix)
+        iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
+        if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
+            if ctx.get('_trace') is not None:
+                _active = ctx.get('_active_cand_trace')
+                if _active is not None:
+                    _trace_append(_active, 'attempts', {
+                        'stype': stype,
+                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
+                        'iv_richness': round(iv_richness, 3),
+                        'atm_iv_pct': round(vol * 100, 2),
+                        'vix': vix,
+                        'result': 'rejected',
+                        'stage': 'iv_not_rich',
+                        'reason': 'is_credit directional and iv_richness < IV_RICH_MIN',
+                    })
+            return None
+    else:
+        credit_ratio = (net_prem / width) if (is_credit and width > 0) else None
+        iv_richness = None
 
     # Probability at breakeven
     if is_credit:
@@ -6113,6 +6176,12 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
                     })
             return None
 
+    true_prob = prob
+    if is_credit:
+        realized_vol = _realized_vol_proxy(vix)
+        if realized_vol:
+            true_prob = 1 - abs(_chain_delta(strikes, be, pair['sellType'], spot, T, realized_vol))
+    premium_edge = round(true_prob * max_profit - (1 - true_prob) * max_loss)
     ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)
     sell_theta = _chain_theta(strikes, pair['sell'], pair['sellType'], spot, T, vol) * lot_size
     buy_theta = _chain_theta(strikes, pair['buy'], pair['buyType'], spot, T, vol) * lot_size
@@ -6153,6 +6222,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'sellOI': sell_data.get('oi', 0), 'buyOI': buy_data.get('oi', 0),
         'netPremium': round(net_prem, 2), 'maxProfit': round(max_profit),
         'maxLoss': round(max_loss), 'probProfit': round(prob, 3),
+        'trueProb': round(true_prob, 3),
+        'premiumEdge': premium_edge,
+        'creditWidthRatio': round(credit_ratio, 4) if credit_ratio is not None else None,
+        'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
         'ev': ev, 'netTheta': net_theta, 'isCredit': is_credit,
         'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
         'sigmaOTM': sigma_otm,
@@ -6572,7 +6645,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 # ─── RANK CANDIDATES ───
 
 def rank_candidates(candidates, calibration=None, brain_verdict=None):
-    """Varsity waterfall ranking. Premium is king — EV/capital efficiency is key metric."""
+    """Varsity waterfall ranking. Premium edge outranks raw win-rate once safety gates pass."""
     cal = calibration or {}
     strat_cal = cal.get('strategy', {})
 
@@ -6605,10 +6678,8 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
         gamma = c.get('gammaRisk', 0)
         # 7: Wall score
         wall = c.get('wallScore', 0)
-        # 8: EV / peak cash
-        buy_leg = (c.get('buyLTP', 0) or 0) + (c.get('buyLTP2', 0) or 0) if c.get('legs', 2) == 4 else (c.get('buyLTP', 0) or 0)
-        pc = max(1, round(buy_leg * c.get('lotSize', 30)))
-        eff = c.get('ev', 0) / pc if pc > 0 else 0
+        # 8: Premium edge — honest EV-like ranking signal after hard gates pass
+        premium_edge = c.get('premiumEdge', c.get('ev', 0))
         # 9: Probability
         prob = c.get('probProfit', 0)
         # 10: ML score — tiebreaker. Neutralised when OOD/UNSURE.
@@ -6618,7 +6689,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
         elif c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
             p_ml = 0.0
 
-        return (safe, tier, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -eff, -prob, -p_ml)
+        return (safe, tier, -premium_edge, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml)
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
     ranked.sort(key=sort_key)

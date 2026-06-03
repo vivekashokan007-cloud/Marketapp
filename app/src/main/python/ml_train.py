@@ -83,7 +83,9 @@ def _app_trade_to_row(t):
     Returns None if essential fields missing or trade not closed.
     """
     # Must be closed with a known outcome
-    pnl = t.get('pnl') or t.get('net_pnl') or t.get('final_pnl')
+    pnl = t.get('actual_pnl')
+    if pnl is None or pnl == '':
+        pnl = t.get('pnl') or t.get('net_pnl') or t.get('final_pnl')
     if pnl is None:
         return None
     try:
