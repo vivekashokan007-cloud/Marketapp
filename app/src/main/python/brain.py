@@ -5195,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.3.99"
+BRAIN_VERSION = "2.4.00"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -6818,206 +6818,6 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     return final
 
 
-def _ltp(sd, strike, ot):
-    k = str(int(strike))
-    return ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('ltp', 0) or 0
-
-def _delta_val(sd, strike, ot):
-    k = str(int(strike))
-    d = ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('delta', None)
-    return d
-
-def _oi_val(sd, strike, ot):
-    k = str(int(strike))
-    return ((sd.get(k) or sd.get(int(strike)) or {}).get(ot) or {}).get('oi', 0) or 0
-
-def _forces_py(stype, bias, iv_pctl):
-    credit = stype in ('BULL_PUT', 'BEAR_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY')
-    debit = stype in ('BULL_CALL', 'BEAR_PUT')
-    bull_dir = stype in ('BULL_CALL', 'BULL_PUT')
-    bear_dir = stype in ('BEAR_CALL', 'BEAR_PUT')
-    f1 = 0
-    if bull_dir: f1 = 1 if bias in ('BULL', 'MILD_BULL', 'STRONG_BULL') else (-1 if bias in ('BEAR', 'MILD_BEAR', 'STRONG_BEAR') else 0)
-    if bear_dir: f1 = 1 if bias in ('BEAR', 'MILD_BEAR', 'STRONG_BEAR') else (-1 if bias in ('BULL', 'MILD_BULL', 'STRONG_BULL') else 0)
-    f2 = 1 if credit else -1
-    iv_high = iv_pctl is None or iv_pctl >= 25
-    if iv_high: f3 = 1 if credit else 0
-    else: f3 = 1 if debit else -1
-    return {'f1': f1, 'f2': f2, 'f3': f3, 'aligned': f1 + f2 + f3}
-
-# ═══════════════════════════════════════════════════════
-# DEAD CODE — Phase 3 brain candidate helpers.
-# No longer called since v2.2.8 BR119 removed the Phase 3 overwrite at analyze() end.
-# Preserved for reference. generate_candidates() at line ~2646 is the single source of truth.
-# Functions below: _varsity_py, _forces_py, _closest, _ltp, _delta_val, _oi_val,
-#                  _build_cand_py, generate_candidates_py
-# ═══════════════════════════════════════════════════════
-def _varsity_py(bias, iv_pctl, vix):
-    iv_high = vix >= 20 or (iv_pctl is not None and iv_pctl >= 25)
-    if 'BULL' in (bias or ''):
-        return ['BULL_PUT', 'BULL_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY'] if iv_high else ['BULL_CALL', 'BULL_PUT', 'IRON_BUTTERFLY', 'IRON_CONDOR']
-    elif 'BEAR' in (bias or ''):
-        return ['BEAR_CALL', 'BEAR_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'] if iv_high else ['BEAR_PUT', 'BEAR_CALL', 'IRON_BUTTERFLY', 'IRON_CONDOR']
-    else:
-        return ['IRON_BUTTERFLY', 'IRON_CONDOR', 'BULL_PUT', 'BEAR_CALL']
-
-def _closest(all_s, target):
-    return min(all_s, key=lambda x: abs(x - target))
-
-def _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot, daily_sig, idx, expiry, dte, forces, capital, chain):
-    try:
-        sell_k = sell_t = buy_k = buy_t = None
-        sell_k2 = sell_t2 = buy_k2 = buy_t2 = None
-
-        if stype == 'BULL_CALL':
-            buy_k, sell_k, buy_t, sell_t = atm, _closest(all_s, atm + width), 'CE', 'CE'
-        elif stype == 'BEAR_PUT':
-            buy_k, sell_k, buy_t, sell_t = atm, _closest(all_s, atm - width), 'PE', 'PE'
-        elif stype == 'BULL_PUT':
-            sell_k = _closest(all_s, atm - round(0.5 * daily_sig / step) * step)
-            buy_k = _closest(all_s, sell_k - width)
-            buy_t = sell_t = 'PE'
-        elif stype == 'BEAR_CALL':
-            sell_k = _closest(all_s, atm + round(0.5 * daily_sig / step) * step)
-            buy_k = _closest(all_s, sell_k + width)
-            buy_t = sell_t = 'CE'
-        elif stype == 'IRON_BUTTERFLY':
-            sell_k, buy_k, sell_t, buy_t = atm, _closest(all_s, atm + width), 'CE', 'CE'
-            sell_k2, buy_k2, sell_t2, buy_t2 = atm, _closest(all_s, atm - width), 'PE', 'PE'
-        elif stype == 'IRON_CONDOR':
-            sell_k = _closest(all_s, atm + round(0.5 * daily_sig / step) * step)
-            buy_k = _closest(all_s, sell_k + width)
-            sell_k2 = _closest(all_s, atm - round(0.5 * daily_sig / step) * step)
-            buy_k2 = _closest(all_s, sell_k2 - width)
-            sell_t = buy_t = 'CE'; sell_t2 = buy_t2 = 'PE'
-
-        if sell_k is None or buy_k is None: return None
-
-        sl = _ltp(sd, sell_k, sell_t); bl = _ltp(sd, buy_k, buy_t)
-        if sl <= 0 or bl <= 0: return None
-
-        sl2 = bl2 = 0
-        if sell_k2 is not None:
-            sl2 = _ltp(sd, sell_k2, sell_t2); bl2 = _ltp(sd, buy_k2, buy_t2)
-            if sl2 <= 0 or bl2 <= 0: return None
-
-        credit = stype in ('BULL_PUT', 'BEAR_CALL', 'IRON_CONDOR', 'IRON_BUTTERFLY')
-        if stype in ('IRON_BUTTERFLY', 'IRON_CONDOR'):
-            net = (sl + sl2) - (bl + bl2)
-        elif credit: net = sl - bl
-        else: net = bl - sl
-
-        if net <= 0: return None
-
-        if credit: mp = round(net * lot); ml = round((width - net) * lot)
-        else: mp = round((width - net) * lot); ml = round(net * lot)
-
-        if ml <= 0 or mp <= 0: return None
-        if ml > capital * 0.10: return None
-
-        sd_val = _delta_val(sd, sell_k, sell_t)
-        prob = max(0.50, min(0.97, (1 - abs(sd_val)) if sd_val is not None else 0.65))
-
-        ev = prob * mp - (1 - prob) * ml
-        if ev <= 0: return None
-
-        cand = {
-            'id': f"{idx}_{stype}_{sell_k}_{width}_py",
-            'index': idx, 'type': stype, 'expiry': expiry, 'tDTE': dte,
-            'sellStrike': sell_k, 'sellType': sell_t, 'sellLTP': round(sl, 2),
-            'buyStrike': buy_k, 'buyType': buy_t, 'buyLTP': round(bl, 2),
-            'width': width, 'netPremium': round(net, 2), 'isCredit': credit,
-            'maxProfit': mp, 'maxLoss': ml, 'riskReward': round(mp/ml, 2),
-            'probProfit': round(prob, 3), 'pRange': round(prob, 3),
-            'ev': round(ev), 'ev1k': round(ev / (ml / 1000)) if ml > 0 else 0,
-            'forces': forces,
-            'varsityTier': 'PRIMARY' if forces['aligned'] == 3 else 'ALLOWED',
-            'source': 'brain',
-            # Keep fallback schema aligned with primary candidate builder.
-            'sellInstrumentKey': None,
-            'buyInstrumentKey': None,
-            'sellInstrumentKey2': None,
-            'buyInstrumentKey2': None,
-            'executionReady': False,
-            'executionGate': 'WAIT',
-            'mlUnsure': False,
-            'mlUnsureReason': [],
-            'decisionSource': 'DEFAULT_BRAIN_MATH',
-            'decision_source': 'DEFAULT_BRAIN_MATH',
-            'decisionReason': 'candidate ranked by deterministic brain rules (fallback path)',
-            'decision_reason': 'candidate ranked by deterministic brain rules (fallback path)',
-        }
-        if sell_k2 is not None:
-            cand.update({'sellStrike2': sell_k2, 'sellType2': sell_t2, 'sellLTP2': round(sl2, 2),
-                         'buyStrike2': buy_k2, 'buyType2': buy_t2, 'buyLTP2': round(bl2, 2)})
-        # b115: Breakeven — real danger lines
-        if stype in ('IRON_BUTTERFLY', 'IRON_CONDOR'):
-            cand['beUpper'] = round(sell_k + net)
-            cand['beLower'] = round((sell_k2 if sell_k2 else sell_k) - net)
-        elif credit:
-            if sell_t == 'CE': cand['beUpper'] = round(sell_k + net)
-            else: cand['beLower'] = round(sell_k - net)
-        else:
-            if buy_t == 'CE': cand['beUpper'] = round(buy_k + net)
-            else: cand['beLower'] = round(buy_k - net)
-        return cand
-    except Exception as e:
-        print(f"_build_cand_py: {stype} failed: {e}")
-        return None
-
-def generate_candidates_py(ctx, effective_bias):
-    """Phase 3: Brain generates trade candidates directly from chain data."""
-    eb = effective_bias or {}
-    bias = eb.get('bias', 'NEUTRAL')
-    iv_pctl = ctx.get('ivPercentile', None)
-    vix = ctx.get('vix', 18) or 18
-    capital = ctx.get('capital', 250000)
-    trade_mode = ctx.get('tradeMode', 'intraday')
-    mins_since_open = ctx.get('mins_since_open', ctx.get('minsSinceOpen', 0)) or 0
-    allowed = _varsity_py(bias, iv_pctl, vix)
-    range_detected = (ctx.get('rangeSigma') or 999) < 0.3
-
-    candidates = []
-    for idx in ['NF', 'BNF']:
-        chain = ctx.get('bnfChain' if idx == 'BNF' else 'nfChain', {})
-        if not chain: continue
-        atm = chain.get('atm')
-        sd = chain.get('strikes', {})
-        all_s_raw = chain.get('allStrikes', list(sd.keys()))
-        if not atm or not sd or not all_s_raw: continue
-        try:
-            all_s = sorted([int(k) for k in all_s_raw])
-        except Exception as e:
-            print(f"gen_cand_py: {idx} strike parse: {e}")
-            continue
-        if len(all_s) < 4: continue
-        step = all_s[1] - all_s[0] if len(all_s) > 1 else (100 if idx == 'BNF' else 50)
-        spot = chain.get('spot', atm)
-        lot = 30 if idx == 'BNF' else 65
-        atm_iv = chain.get('atmIv', 0) or 0
-        # BR73: Annualized to daily volatility denominator fix
-        daily_vol = vix / math.sqrt(252)
-        daily_sig = (atm_iv / 100) * spot / math.sqrt(252) if atm_iv > 0 else step * 3
-        expiry = chain.get('expiry', ctx.get('bnfExpiry' if idx == 'BNF' else 'nfExpiry', ''))
-        dte = ctx.get('bnfDTE' if idx == 'BNF' else 'nfDTE', 4)
-        widths = [400, 500, 600, 800, 1000] if idx == 'BNF' else [100, 150, 200, 250, 300, 400]
-
-        for stype in allowed:
-            if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and trade_mode == 'swing' and (dte or 0) > 2:
-                continue
-            if stype == 'IRON_CONDOR' and trade_mode != 'swing' and mins_since_open >= 300:
-                continue
-            forces = _forces_py(stype, bias, iv_pctl)
-            if forces['aligned'] < 1 and not (range_detected and stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')):
-                continue
-            for width in widths:
-                c = _build_cand_py(stype, atm, width, step, all_s, sd, spot, lot,
-                                   daily_sig, idx, expiry, dte, forces, capital, chain)
-                if c: candidates.append(c)
-
-    candidates.sort(key=lambda c: c.get('ev', 0), reverse=True)
-    return candidates[:25]
-
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -7336,17 +7136,31 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 expiry = ctx.get(expiry_key, '')
                 cands = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
                 all_cands.extend(cands)
-        # Fallback path: only when primary generator yields no candidates.
-        # Keeps legacy safety net explicit instead of dead/unreachable.
         if not all_cands:
-            try:
-                fallback = generate_candidates_py(ctx, active_bias) or []
-                if fallback:
-                    all_cands = fallback
-                    result["candidate_fallback_used"] = True
-                    result["candidate_fallback_count"] = len(fallback)
-            except Exception as e:
-                result["candidate_fallback_error"] = str(e)
+            no_trade_reason = (
+                "All candidates rejected by the gate waterfall. "
+                "No tradeable setup right now; most common causes are weak premium edge, "
+                "poor credit-vs-width economics, low IV richness, or incomplete chain data."
+            )
+            verdict = dict(result.get('verdict') or {})
+            existing_conflicts = list(verdict.get('conflicts') or [])
+            existing_conflicts.append("No viable candidates passed economic and structure gates")
+            verdict.update({
+                'action': 'WAIT',
+                'strategy': None,
+                'confidence': 0,
+                'urgency': 'WAIT — no viable candidates today',
+                'reasoning': no_trade_reason,
+                'conflicts': existing_conflicts,
+            })
+            result['verdict'] = verdict
+            result['decisionSource'] = 'NO_CANDIDATES'
+            result['decision_source'] = result['decisionSource']
+            result['decisionReason'] = no_trade_reason
+            result['decision_reason'] = no_trade_reason
+            result['no_candidates_reason'] = no_trade_reason
+            result['generated_candidates'] = []
+            result['watchlist'] = []
         if all_cands:
             brain_verdict = result.get('verdict')
             ranked = rank_candidates(all_cands, _calibration, brain_verdict)

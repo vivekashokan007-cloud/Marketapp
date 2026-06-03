@@ -486,7 +486,8 @@ class MainActivity : AppCompatActivity() {
                     setExpiries: function(bnf, nf) { AndroidBridge.setExpiries(bnf, nf); },
                     setContext: function(j) { AndroidBridge.setContext(j); },
                     setGlobalDirection: function(j) { AndroidBridge.setGlobalDirection(j); },
-                    setTradeMode: function(mode) { AndroidBridge.setTradeMode(mode || "swing"); },
+                    setTradeMode: function(mode) { AndroidBridge.setTradeMode(mode || "intraday"); },
+                    setTradeModeDefault: function(mode) { AndroidBridge.setTradeModeDefault(mode || "intraday"); },
                     requestImmediatePoll: function() { AndroidBridge.requestImmediatePoll(); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },
                     
@@ -511,6 +512,7 @@ class MainActivity : AppCompatActivity() {
                     getBnfBreadth: function() { return AndroidBridge.getBnfBreadth(); },
                     getNf50Breadth: function() { return AndroidBridge.getNf50Breadth(); },
                     getTradeMode: function() { return AndroidBridge.getTradeMode(); },
+                    getTradeModeExplicit: function() { return AndroidBridge.getTradeModeExplicit(); },
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },

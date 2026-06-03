@@ -40,6 +40,8 @@ class NativeBridge(private val context: Context) {
         private const val PREF_APPROVED_BRANCH_PROPOSALS = "approved_branch_proposals"
         private const val PREF_APPROVED_BRANCH_PROPOSALS_SYNC_MS = "approved_branch_proposals_sync_ms"
         private const val PREF_LAST_EVALUATOR_JOB = "last_evaluator_job"
+        private const val PREF_TRADE_MODE = "trade_mode"
+        private const val PREF_TRADE_MODE_EXPLICIT = "trade_mode_explicit"
         private const val ORACLE_BASE_URL = "http://144.24.117.114:8443"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
     }
@@ -65,6 +67,10 @@ class NativeBridge(private val context: Context) {
     init {
         clearStaleSessionStateIfNeeded()
     }
+
+    private fun defaultTradeMode(): String = "intraday"
+
+    private fun isTradeModeExplicit(): Boolean = prefs.getBoolean(PREF_TRADE_MODE_EXPLICIT, false)
 
     @JavascriptInterface
     fun isNative(): Boolean = true
@@ -272,18 +278,23 @@ class NativeBridge(private val context: Context) {
         try {
             val ctxObj = JSONObject(finalJson)
             val modeFromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
-            val modeFromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
+            val modeFromPrefs = normalizeTradeMode(prefs.getString(PREF_TRADE_MODE, ""))
+            val explicit = isTradeModeExplicit()
             val resolvedMode = when {
-                modeFromPrefs.isNotEmpty() -> modeFromPrefs
-                modeFromCtx.isNotEmpty() -> modeFromCtx
-                else -> "swing"
+                explicit && modeFromPrefs.isNotEmpty() -> modeFromPrefs
+                modeFromCtx == "intraday" -> modeFromCtx
+                modeFromPrefs == "intraday" -> modeFromPrefs
+                else -> defaultTradeMode()
             }
             if (ctxObj.optString("tradeMode", "") != resolvedMode) {
                 ctxObj.put("tradeMode", resolvedMode)
                 finalJson = ctxObj.toString()
             }
-            prefs.edit().putString("trade_mode", resolvedMode).commit()
-            LogBuffer.add('I', TAG, "TRADE_MODE_SET_CONTEXT: mode=$resolvedMode pref=${modeFromPrefs.ifEmpty { "none" }} ctx=${modeFromCtx.ifEmpty { "none" }}")
+            prefs.edit()
+                .putString(PREF_TRADE_MODE, resolvedMode)
+                .putBoolean(PREF_TRADE_MODE_EXPLICIT, explicit)
+                .commit()
+            LogBuffer.add('I', TAG, "TRADE_MODE_SET_CONTEXT: mode=$resolvedMode explicit=$explicit pref=${modeFromPrefs.ifEmpty { "none" }} ctx=${modeFromCtx.ifEmpty { "none" }}")
         } catch (e: Exception) {
             Log.w("NativeBridge", "setContext tradeMode normalize failed: ${e.message}")
         }
@@ -352,8 +363,19 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setTradeMode(mode: String) {
-        val normalized = normalizeTradeMode(mode).ifEmpty { "swing" }
-        val editor = prefs.edit().putString("trade_mode", normalized)
+        persistTradeMode(mode, explicit = true)
+    }
+
+    @JavascriptInterface
+    fun setTradeModeDefault(mode: String) {
+        persistTradeMode(mode, explicit = false)
+    }
+
+    private fun persistTradeMode(mode: String, explicit: Boolean) {
+        val normalized = normalizeTradeMode(mode).ifEmpty { defaultTradeMode() }
+        val editor = prefs.edit()
+            .putString(PREF_TRADE_MODE, normalized)
+            .putBoolean(PREF_TRADE_MODE_EXPLICIT, explicit)
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
             ctxObj.put("tradeMode", normalized)
@@ -362,7 +384,7 @@ class NativeBridge(private val context: Context) {
             Log.w(TAG, "setTradeMode context update failed: ${e.message}")
         }
         editor.commit()
-        LogBuffer.add('I', TAG, "TRADE_MODE_SET: mode=$normalized")
+        LogBuffer.add('I', TAG, "TRADE_MODE_SET: mode=$normalized explicit=$explicit")
     }
 
     @JavascriptInterface
@@ -488,8 +510,16 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getTradeMode(): String {
-        return normalizeTradeMode(prefs.getString("trade_mode", "")).ifEmpty { "swing" }
+        val stored = normalizeTradeMode(prefs.getString(PREF_TRADE_MODE, ""))
+        return when {
+            isTradeModeExplicit() && stored.isNotEmpty() -> stored
+            stored == "intraday" -> stored
+            else -> defaultTradeMode()
+        }
     }
+
+    @JavascriptInterface
+    fun getTradeModeExplicit(): Boolean = isTradeModeExplicit()
 
     @JavascriptInterface
     fun setClosedTrades(json: String) {

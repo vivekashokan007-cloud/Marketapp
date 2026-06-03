@@ -584,8 +584,13 @@ class MarketWatchService : Service() {
         // User preference is the source of truth. The persisted context is a
         // derived cache and can lag behind the UI after mode switches/rescans.
         val fromPrefs = normalizeTradeMode(prefs.getString("trade_mode", ""))
-        if (fromPrefs.isNotEmpty()) {
-            LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromPrefs source=prefs")
+        val explicit = prefs.getBoolean("trade_mode_explicit", false)
+        if (explicit && fromPrefs.isNotEmpty()) {
+            LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromPrefs source=prefs explicit=true")
+            return fromPrefs
+        }
+        if (fromPrefs == "intraday") {
+            LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromPrefs source=prefs explicit=false")
             return fromPrefs
         }
 
@@ -596,7 +601,7 @@ class MarketWatchService : Service() {
                 val fromMorning = normalizeTradeMode(
                     morning.optString("tradeMode", morning.optString("mode", ""))
                 )
-                if (fromMorning.isNotEmpty()) {
+                if (fromMorning == "intraday") {
                     LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromMorning source=morning_input")
                     return fromMorning
                 }
@@ -605,12 +610,12 @@ class MarketWatchService : Service() {
         }
 
         val fromCtx = normalizeTradeMode(ctxObj.optString("tradeMode", ""))
-        if (fromCtx.isNotEmpty()) {
+        if (fromCtx == "intraday") {
             LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=$fromCtx source=context")
             return fromCtx
         }
-        LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=swing source=default")
-        return "swing"
+        LogBuffer.add('I', TAG, "TRADE_MODE_RESOLVED: mode=intraday source=default")
+        return "intraday"
     }
 
     private fun startPolling() {
