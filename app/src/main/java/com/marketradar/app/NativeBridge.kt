@@ -1015,24 +1015,31 @@ class NativeBridge(private val context: Context) {
         } else {
             prefs.getString("expiry_nf", "")
         } ?: "").trim()
-        if (existing.isNotEmpty() && existing >= today) return existing
 
         val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
         val url = "https://api.upstox.com/v2/option/contract?instrument_key=$encodedKey"
-        val json = fetchJson(url, token) ?: return null
-        val arr = json.optJSONArray("data") ?: return null
+        val json = fetchJson(url, token)
+        val arr = json?.optJSONArray("data")
 
         var nearest: String? = null
-        for (i in 0 until arr.length()) {
-            val date = arr.optJSONObject(i)?.optString("expiry", "") ?: ""
-            if (date.length != 10) continue
-            if (date < today) continue
-            if (nearest == null || date < nearest) nearest = date
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val date = arr.optJSONObject(i)?.optString("expiry", "") ?: ""
+                if (date.length != 10) continue
+                if (date < today) continue
+                if (nearest == null || date < nearest) nearest = date
+            }
         }
-        if (nearest == null) {
-            Log.w("NativeBridge", "No live expiry found for $instrumentKey; contracts=${arr.length()}, today=$today")
+        if (nearest != null) {
+            return nearest
         }
-        return nearest
+        if (existing.isNotEmpty() && existing >= today) {
+            Log.w("NativeBridge", "Using stored expiry fallback for $instrumentKey: $existing")
+            return existing
+        }
+        val contractCount = arr?.length() ?: -1
+        Log.w("NativeBridge", "No live expiry found for $instrumentKey; contracts=$contractCount, today=$today")
+        return null
     }
 
     private fun fetchLiveIndexQuotes(token: String): LiveQuotes? {
