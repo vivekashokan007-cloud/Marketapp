@@ -16,6 +16,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import okhttp3.logging.HttpLoggingInterceptor
 import com.marketradar.app.util.LogBuffer
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -73,6 +74,7 @@ class MarketWatchService : Service() {
         private const val NF50_REMOTE_CACHE_KEY = "nf50_remote_constituents_json"
         private const val NF50_REMOTE_CACHE_MS_KEY = "nf50_remote_constituents_sync_ms"
         private const val NF50_REMOTE_TTL_MS = 12 * 60 * 60 * 1000L
+        private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5
@@ -697,10 +699,7 @@ class MarketWatchService : Service() {
             Log.d(TAG, "POLL_START: performPoll() entered")
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
 
-            // C4: Dynamically compute next Thursday if expiry is missing
-            val nextThu = getNextThursday()
-            val bnfExpiry = prefs.getString("expiry_bnf", nextThu) ?: nextThu
-            val nfExpiry = prefs.getString("expiry_nf", bnfExpiry) ?: bnfExpiry
+            val (bnfExpiry, nfExpiry) = refreshActiveExpiries(token)
 
             // Expiry Rollover check
             val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
@@ -2197,10 +2196,32 @@ class MarketWatchService : Service() {
                     val generated = resultObj.optJSONArray("generated_candidates")
                     val watchlist = resultObj.optJSONArray("watchlist")
                     val actualCandidates = resultObj.optJSONObject("candidates")
+                    var generatedBnf = 0
+                    var generatedNf = 0
+                    var watchlistBnf = 0
+                    var watchlistNf = 0
+                    if (generated != null) {
+                        for (i in 0 until generated.length()) {
+                            when (generated.optJSONObject(i)?.optString("index", "")) {
+                                "BNF" -> generatedBnf += 1
+                                "NF" -> generatedNf += 1
+                            }
+                        }
+                    }
+                    if (watchlist != null) {
+                        for (i in 0 until watchlist.length()) {
+                            when (watchlist.optJSONObject(i)?.optString("index", "")) {
+                                "BNF" -> watchlistBnf += 1
+                                "NF" -> watchlistNf += 1
+                            }
+                        }
+                    }
                     Log.d("BRAIN_CANDIDATES_DETAIL",
                         "generated=${generated?.length() ?: 0}, " +
                         "watchlist=${watchlist?.length() ?: 0}, " +
-                        "candidates_in_result=${actualCandidates?.length() ?: 0}"
+                        "candidates_in_result=${actualCandidates?.length() ?: 0}, " +
+                        "generated_bnf=$generatedBnf, generated_nf=$generatedNf, " +
+                        "watchlist_bnf=$watchlistBnf, watchlist_nf=$watchlistNf"
                     )
                     val resultKeys = mutableListOf<String>()
                     val resultIter = resultObj.keys()
@@ -2210,7 +2231,7 @@ class MarketWatchService : Service() {
                     LogBuffer.add(
                         'D',
                         TAG,
-                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} candidateTrace=${resultObj.has("candidateTrace")}"
+                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} generatedBNF=$generatedBnf generatedNF=$generatedNf watchlistBNF=$watchlistBnf watchlistNF=$watchlistNf candidateTrace=${resultObj.has("candidateTrace")}"
                     )
                 } catch(e: Exception) {
                     Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
@@ -2542,6 +2563,61 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun resolveNearestExpiryLive(instrumentKey: String, token: String, fallback: String): String {
+        val today = todayIstDate()
+        return try {
+            val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
+            val url = "https://api.upstox.com/v2/option/contract?instrument_key=$encodedKey"
+            val json = fetchSync(url, token)
+            val arr = json?.optJSONArray("data")
+            var nearest: String? = null
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val date = arr.optJSONObject(i)?.optString("expiry", "") ?: ""
+                    if (date.length != 10) continue
+                    if (date < today) continue
+                    if (nearest == null || date < nearest) nearest = date
+                }
+            }
+            when {
+                !nearest.isNullOrBlank() -> nearest
+                fallback.isNotBlank() && fallback >= today -> fallback
+                else -> getNextThursday()
+            }
+        } catch (e: Exception) {
+            if (fallback.isNotBlank() && fallback >= today) fallback else getNextThursday()
+        }
+    }
+
+    private fun refreshActiveExpiries(token: String): Pair<String, String> {
+        val today = todayIstDate()
+        val nextThu = getNextThursday()
+        val storedBnf = (prefs.getString("expiry_bnf", nextThu) ?: nextThu).trim()
+        val storedNf = (prefs.getString("expiry_nf", storedBnf.ifBlank { nextThu }) ?: storedBnf.ifBlank { nextThu }).trim()
+        val lastRefreshDate = prefs.getString(EXPIRY_REFRESH_DATE_KEY, "") ?: ""
+
+        if (
+            lastRefreshDate == today &&
+            storedBnf.isNotBlank() && storedBnf >= today &&
+            storedNf.isNotBlank() && storedNf >= today
+        ) {
+            return Pair(storedBnf, storedNf)
+        }
+
+        val resolvedBnf = resolveNearestExpiryLive("NSE_INDEX|Nifty Bank", token, storedBnf.ifBlank { nextThu })
+        val resolvedNf = resolveNearestExpiryLive("NSE_INDEX|Nifty 50", token, storedNf.ifBlank { resolvedBnf })
+
+        prefs.edit()
+            .putString("expiry_bnf", resolvedBnf)
+            .putString("expiry_nf", resolvedNf)
+            .putString(EXPIRY_REFRESH_DATE_KEY, today)
+            .commit()
+
+        Log.i(TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
+        LogBuffer.add('I', TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
+        return Pair(resolvedBnf, resolvedNf)
     }
 
     private val NSE_HOLIDAYS_2026 = setOf(
