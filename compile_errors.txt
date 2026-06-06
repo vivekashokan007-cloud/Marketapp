@@ -1,4 +1,4 @@
-CURRENT BUILD STATUS - v2.3.74 / b205
+CURRENT BUILD STATUS - v2.4.03 / b234
 
 No current compile error is known.
 
@@ -11,6 +11,12 @@ Latest local verification before push/release:
 - Gate 5 trace smoke: pass
 - Node syntax: pass for MarketVivi app.js
 - git diff --check: pass in both repos
+- Current Wave 1 local-only verification:
+  - `python3 -m py_compile app/src/main/python/brain.py`: pass
+  - `node --check ../MarketVivi/app.js`: pass
+  - Rejected-candidate output path restored end-to-end in `brain.py`
+  - IC/IB multi-leg rejection coverage expanded for the main actionable gate failures
+  - Remaining missing-VIX Python defaults normalized from `20` to `15`
 
 Known test limitation:
 - pytest is not installed in this container.
@@ -18,5 +24,6 @@ Known test limitation:
   expected BULL/69, current NEUTRAL/14.
 
 Current local limitation:
-- This Codex container does not have a local Java runtime configured, so Gradle
-  build verification is performed through GitHub Actions after push.
+- This Codex container does not have a local Java runtime configured, so Kotlin/
+  Gradle build verification cannot be completed locally. Android verification is
+  static-review plus GitHub Actions after push.

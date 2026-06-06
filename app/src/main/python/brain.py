@@ -1026,7 +1026,7 @@ _capital = 250000
 
 def build_calibration(closed_trades):
     global _calibration, _cal_count, _cal_signature
-    trades = [t for t in closed_trades if t.get('status') == 'CLOSED' and t.get('actual_pnl') is not None and not t.get('paper')]
+    trades = [t for t in closed_trades if t.get('status') == 'CLOSED' and t.get('actual_pnl') is not None]
     # BR31: Signature detects PnL corrections at same count (dev/debug scenario)
     sig = f"{len(trades)}|{sum((t.get('actual_pnl') or 0) for t in trades):.2f}"
     if sig == _cal_signature and _calibration:
@@ -1057,7 +1057,7 @@ def build_calibration(closed_trades):
     # 2. VIX regime rates
     cal['vix_regime'] = {}
     for t in trades:
-        vix = t.get('entry_vix') or 20
+        vix = t.get('entry_vix') or 15
         regime = 'VH' if vix >= 24 else 'H' if vix >= 20 else 'N' if vix >= 16 else 'L'
         if regime not in cal['vix_regime']:
             cal['vix_regime'][regime] = {'wins': 0, 'total': 0}
@@ -1083,7 +1083,7 @@ def build_calibration(closed_trades):
     cal['multi'] = {}
     for t in trades:
         st = t.get('strategy_type', 'UNKNOWN')
-        vix = t.get('entry_vix') or 20
+        vix = t.get('entry_vix') or 15
         regime = 'VH' if vix >= 24 else 'H' if vix >= 20 else 'N' if vix >= 16 else 'L'
         key = f"{st}|{regime}"
         if key not in cal['multi']:
@@ -1185,7 +1185,7 @@ def build_calibration(closed_trades):
     # 10. Multi-factor: strategy + VIX + wall protection
     for t in trades:
         st = t.get('strategy_type', 'UNKNOWN')
-        vix = t.get('entry_vix') or 20
+        vix = t.get('entry_vix') or 15
         regime = 'VH' if vix >= 24 else 'H' if vix >= 20 else 'N' if vix >= 16 else 'L'
         snap = t.get('entry_snapshot') or {}
         ws = snap.get('wall_score', 0)
@@ -3146,7 +3146,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
 
     # VIX change since entry
     entry_vix = trade.get('entry_vix', 0) or 0
-    v_curr = vix or 20
+    v_curr = vix or 15
     vix_change = round(v_curr - entry_vix, 2) if entry_vix > 0 else 0.0
 
     # Journey point (10-min throttle)
@@ -5195,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.03"
+BRAIN_VERSION = "2.4.04"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -5921,106 +5921,193 @@ def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw
 
 # ─── BUILD SINGLE 2-LEG CANDIDATE ───
 
-def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx):
+LEG_SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 1
+
+def _leg_market_value(leg_data):
+    if not isinstance(leg_data, dict):
+        return None
+    return (
+        leg_data.get('ltp')
+        or leg_data.get('last_price')
+        or leg_data.get('lastPrice')
+        or leg_data.get('bid')
+        or leg_data.get('ask')
+    )
+
+def _build_leg_record(strike, option_type, action, expiry, leg_data, atm):
+    leg_data = leg_data or {}
+    return {
+        'leg_schema_version': LEG_SCHEMA_VERSION,
+        'strike': strike,
+        'option_type': option_type,
+        'action': action,
+        'expiry': expiry,
+        'ltp': _leg_market_value(leg_data),
+        'bid': leg_data.get('bid'),
+        'ask': leg_data.get('ask'),
+        'oi': leg_data.get('oi'),
+        'volume': leg_data.get('volume'),
+        'iv': leg_data.get('iv'),
+        'delta': leg_data.get('delta'),
+        'theta': leg_data.get('theta'),
+        'gamma': leg_data.get('gamma'),
+        'vega': leg_data.get('vega'),
+        'pop': leg_data.get('pop'),
+        'instrument_key': (leg_data.get('instrument_key') or leg_data.get('instrumentKey') or '') or None,
+        'distance_from_atm': None if atm in (None, 0) else round(strike - atm, 2),
+    }
+
+def _candidate_lane(index_key, trade_mode):
+    mode = 'swing' if str(trade_mode or 'intraday').lower() == 'swing' else 'intraday'
+    return f"{index_key}_{mode}"
+
+def _current_ist_poll_ts():
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+def _record_rejected_candidate(
+    ctx,
+    *,
+    index_key,
+    trade_mode,
+    expiry,
+    stype,
+    width,
+    stage,
+    reason,
+    pair=None,
+    atm=None,
+    legs=None,
+    is_credit=None,
+    net_premium=None,
+    max_profit=None,
+    max_loss=None,
+    tdte=None,
+    iv_richness=None,
+    credit_width_ratio=None,
+    sigma_otm=None,
+    extra=None,
+):
+    rejected = ctx.setdefault('_rejected_candidates', [])
+    rec = {
+        'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
+        'leg_schema_version': LEG_SCHEMA_VERSION,
+        'index': index_key,
+        'lane': _candidate_lane(index_key, trade_mode),
+        'strategy_type': stype,
+        'expiry': expiry,
+        'width': width,
+        'is_credit': is_credit,
+        'netPremium': net_premium,
+        'maxProfit': max_profit,
+        'maxLoss': max_loss,
+        'tDTE': tdte,
+        'ivRichness': iv_richness,
+        'creditWidthRatio': credit_width_ratio,
+        'sigmaOTM': sigma_otm,
+        'poll_ts': _current_ist_poll_ts(),
+        'rejection_stage': stage,
+        'rejection_reason': reason,
+        'sellStrike': pair.get('sell') if isinstance(pair, dict) else None,
+        'sellType': pair.get('sellType') if isinstance(pair, dict) else None,
+        'buyStrike': pair.get('buy') if isinstance(pair, dict) else None,
+        'buyType': pair.get('buyType') if isinstance(pair, dict) else None,
+        'legs': legs or [],
+    }
+    if isinstance(extra, dict):
+        rec.update(extra)
+    rejected.append(rec)
+
+def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx, atm):
     sp_sell = str(int(pair['sell']))
     sp_buy = str(int(pair['buy']))
     sell_data = strikes.get(sp_sell, {}).get(pair['sellType'], {})
     buy_data = strikes.get(sp_buy, {}).get(pair['buyType'], {})
+    idx = 'BNF' if is_bnf else 'NF'
+    base_is_credit = stype in _CONST['CREDIT_TYPES']
+
+    def leg_records():
+        return [
+            _build_leg_record(pair.get('buy'), pair.get('buyType'), 'BUY', expiry, buy_data, atm),
+            _build_leg_record(pair.get('sell'), pair.get('sellType'), 'SELL', expiry, sell_data, atm),
+        ]
+
+    def trace_attempt(payload):
+        if ctx.get('_trace') is None:
+            return
+        _active = ctx.get('_active_cand_trace')
+        if _active is not None:
+            _trace_append(_active, 'attempts', payload)
+
+    def record_rejection(stage, reason, **extra):
+        payload = {
+            'stype': stype,
+            'sell': pair.get('sell'),
+            'buy': pair.get('buy'),
+            'result': 'rejected',
+            'stage': stage,
+            'reason': reason,
+        }
+        payload.update(extra)
+        trace_attempt(payload)
+        _record_rejected_candidate(
+            ctx,
+            index_key=idx,
+            trade_mode=trade_mode,
+            expiry=expiry,
+            stype=stype,
+            width=width,
+            stage=stage,
+            reason=reason,
+            pair=pair,
+            atm=atm,
+            legs=leg_records(),
+            is_credit=base_is_credit,
+            net_premium=extra.get('net_prem'),
+            max_profit=extra.get('max_profit'),
+            max_loss=extra.get('max_loss'),
+            tdte=tdte,
+            iv_richness=extra.get('iv_richness'),
+            credit_width_ratio=extra.get('credit_ratio'),
+            sigma_otm=extra.get('sigma_otm'),
+            extra={k: v for k, v in extra.items() if k not in {'net_prem', 'max_profit', 'max_loss', 'iv_richness', 'credit_ratio', 'sigma_otm'}},
+        )
+
     if not sell_data or not buy_data:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'strike_data_missing',
-                    'reason': 'sell_data or buy_data missing',
-                })
+        record_rejection('strike_data_missing', 'sell_data or buy_data missing')
         return None
 
-    is_credit = stype in _CONST['CREDIT_TYPES']
+    is_credit = base_is_credit
     # Use executable pricing for both credit and debit spreads:
     # short leg sells at bid, long/protection leg buys at ask.
     sell_price = sell_data.get('bid', 0)
     buy_price = buy_data.get('ask', 0)
     if not sell_price or not buy_price:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'price_zero',
-                    'reason': 'sell_price or buy_price zero',
-                })
+        record_rejection('price_zero', 'sell_price or buy_price zero')
         return None
 
     if is_credit:
         net_prem = sell_price - buy_price
         if net_prem <= 0:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'credit_non_positive',
-                        'reason': 'is_credit and net_prem <= 0',
-                    })
+            record_rejection('credit_non_positive', 'is_credit and net_prem <= 0', net_prem=round(net_prem, 4))
             return None
         max_profit = net_prem * lot_size
         max_loss = (width - net_prem) * lot_size
     else:
         net_prem = buy_price - sell_price
         if net_prem <= 0:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_credit_conflict_non_positive_net',
-                        'reason': 'net_prem <= 0 in debit block',
-                    })
+            record_rejection('debit_credit_conflict_non_positive_net', 'net_prem <= 0 in debit block', net_prem=round(net_prem, 4))
             return None
         max_profit = (width - net_prem) * lot_size
         max_loss = net_prem * lot_size
 
     if max_loss <= 0 or max_profit <= 0:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'max_loss_non_positive',
-                    'reason': 'max_loss <= 0 or max_profit <= 0',
-                })
+        record_rejection('max_loss_non_positive', 'max_loss <= 0 or max_profit <= 0', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2))
         return None
     capital = _capital
     # BR118: Risk limit check (10% of capital)
     if max_loss > capital * 0.10:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'capital_limit_exceeded',
-                    'reason': 'max_loss > capital * 0.10',
-                })
+        record_rejection('capital_limit_exceeded', 'max_loss > capital * 0.10', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2))
         return None
 
     # Sigma OTM filter — credit directional only.
@@ -6031,31 +6118,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         sigma_otm = abs(pair['sell'] - spot) / ds
         min_sigma, max_sigma = _credit_sigma_limits(ctx)
         if sigma_otm < min_sigma:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'sigma_otm_too_close',
-                        'reason': 'is_credit directional and sigma_otm < 0.5',
-                    })
+            record_rejection('sigma_otm_too_close', 'is_credit directional and sigma_otm < 0.5', sigma_otm=round(sigma_otm, 2))
             return None
         if _sigma_above_max(sigma_otm, max_sigma):
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype,
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'sigma_otm': round(sigma_otm, 2),
-                        'max_sigma': max_sigma,
-                        'result': 'rejected',
-                        'stage': 'sigma_otm_too_far',
-                        'reason': 'is_credit directional and sigma_otm > max_sigma',
-                    })
+            record_rejection('sigma_otm_too_far', 'is_credit directional and sigma_otm > max_sigma', sigma_otm=round(sigma_otm, 2), max_sigma=max_sigma)
             return None
         sigma_otm = round(sigma_otm, 2)
 
@@ -6063,61 +6129,19 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT'):
         min_w = _CONST['MIN_WIDTH_BNF'] if is_bnf else _CONST['MIN_WIDTH_NF']
         if width < min_w:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'width_too_narrow',
-                        'reason': 'is_credit directional and width < min_width',
-                    })
+            record_rejection('width_too_narrow', 'is_credit directional and width < min_width')
             return None
         if tdte < _CONST['MIN_CREDIT_DTE']:
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype,
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'tdte': tdte,
-                        'result': 'rejected',
-                        'stage': 'credit_dte_below_floor',
-                        'reason': 'is_credit directional and tdte < MIN_CREDIT_DTE',
-                    })
+            record_rejection('credit_dte_below_floor', 'is_credit directional and tdte < MIN_CREDIT_DTE')
             return None
         credit_ratio = (net_prem / width) if width > 0 else 0
         if credit_ratio < _CONST['MIN_CREDIT_RATIO']:
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype,
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'credit_ratio': round(credit_ratio, 4),
-                        'result': 'rejected',
-                        'stage': 'credit_ratio_below_floor',
-                        'reason': 'is_credit directional and credit/width < MIN_CREDIT_RATIO',
-                    })
+            record_rejection('credit_ratio_below_floor', 'is_credit directional and credit/width < MIN_CREDIT_RATIO', credit_ratio=round(credit_ratio, 4), net_prem=round(net_prem, 4))
             return None
         realized_vol = _realized_vol_proxy(vix)
         iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
         if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype,
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'iv_richness': round(iv_richness, 3),
-                        'atm_iv_pct': round(vol * 100, 2),
-                        'vix': vix,
-                        'result': 'rejected',
-                        'stage': 'iv_not_rich',
-                        'reason': 'is_credit directional and iv_richness < IV_RICH_MIN',
-                    })
+            record_rejection('iv_not_rich', 'is_credit directional and iv_richness < IV_RICH_MIN', iv_richness=round(iv_richness, 3), atm_iv_pct=round(vol * 100, 2), vix=vix, net_prem=round(net_prem, 4), credit_ratio=round(credit_ratio, 4))
             return None
     else:
         credit_ratio = (net_prem / width) if (is_credit and width > 0) else None
@@ -6133,47 +6157,17 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
 
     # BR98: Credit requires 50% prob floor. Debit can be acceptable <50% if EV clearly positive.
     if is_credit and prob < _CONST['MIN_PROB']:
-        # TASK 5.6 — trace rejection
-        if ctx.get('_trace') is not None:
-            _active = ctx.get('_active_cand_trace')
-            if _active is not None:
-                _trace_append(_active, 'attempts', {
-                    'stype': stype, 
-                    'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                    'result': 'rejected',
-                    'stage': 'credit_prob_below_floor',
-                    'reason': 'is_credit and prob < MIN_PROB',
-                })
+        record_rejection('credit_prob_below_floor', 'is_credit and prob < MIN_PROB', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4))
         return None
     if not is_credit:
         # For debit: require prob >= 40% floor AND 10% positive EV buffer
         if prob < 0.40:
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_prob_below_floor',
-                        'reason': 'not is_credit and prob < 0.40',
-                    })
+            record_rejection('debit_prob_below_floor', 'not is_credit and prob < 0.40', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4))
             return None
         expected_win = prob * max_profit
         expected_loss = (1 - prob) * max_loss
         if expected_win < expected_loss * 1.10:  # require 10% positive EV buffer
-            # TASK 5.6 — trace rejection
-            if ctx.get('_trace') is not None:
-                _active = ctx.get('_active_cand_trace')
-                if _active is not None:
-                    _trace_append(_active, 'attempts', {
-                        'stype': stype, 
-                        'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                        'result': 'rejected',
-                        'stage': 'debit_negative_ev',
-                        'reason': 'not is_credit and EV check fails',
-                    })
+            record_rejection('debit_negative_ev', 'not is_credit and EV check fails', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), expected_win=round(expected_win, 2), expected_loss=round(expected_loss, 2))
             return None
 
     true_prob = prob
@@ -6186,7 +6180,6 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     sell_theta = _chain_theta(strikes, pair['sell'], pair['sellType'], spot, T, vol) * lot_size
     buy_theta = _chain_theta(strikes, pair['buy'], pair['buyType'], spot, T, vol) * lot_size
     net_theta = round(-(sell_theta - buy_theta) if is_credit else (sell_theta - buy_theta))
-    idx = 'BNF' if is_bnf else 'NF'
     cid = f"{stype}_{idx}_{pair['sell']}_{pair['buy']}_W{width}"
 
     # BR100: IC margin typically 1.05× max_loss.
@@ -6206,16 +6199,20 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     buy_symbol = (buy_data.get('symbol') or buy_data.get('trading_symbol') or '').strip()
 
     # TASK 5.6 — trace accepted candidate
-    if ctx.get('_trace') is not None:
-        _active = ctx.get('_active_cand_trace')
-        if _active is not None:
-            _trace_append(_active, 'attempts', {
-                'stype': stype,
-                'sell': pair.get('sell'), 'buy': pair.get('buy'),
-                'width': width, 'result': 'accepted',
-            })
+    trace_attempt({
+        'stype': stype,
+        'sell': pair.get('sell'), 'buy': pair.get('buy'),
+        'width': width, 'result': 'accepted',
+    })
     return {
-        'id': cid, 'type': stype, 'width': width, 'legs': 2,
+        'id': cid, 'type': stype, 'width': width, 'legs': [
+        _build_leg_record(pair['buy'], pair['buyType'], 'BUY', expiry, buy_data, atm),
+        _build_leg_record(pair['sell'], pair['sellType'], 'SELL', expiry, sell_data, atm),
+        ],
+        'legCount': 2,
+        'lane': _candidate_lane(idx, trade_mode),
+        'leg_schema_version': LEG_SCHEMA_VERSION,
+        'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
         'sellStrike': pair['sell'], 'buyStrike': pair['buy'],
         'sellType': pair['sellType'], 'buyType': pair['buyType'],
         'sellLTP': sell_price, 'buyLTP': buy_price,
@@ -6322,8 +6319,10 @@ def check_execution_readiness(candidate, current_result, ctx):
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
 
 def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx, regime=None):
-    if not chain or not chain.get('strikes') or not chain.get('atm'): return []
+    if not chain or not chain.get('strikes') or not chain.get('atm'):
+        return [], []
     is_bnf = index_key == 'BNF'
+    idx = 'BNF' if is_bnf else 'NF'
 
     # TASK 5.5 — trace init for this index
     _trace_root = ctx.get('_trace')
@@ -6389,6 +6388,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             'matched_branch_ids': list(learned.get('matched_ids', [])),
         }
     candidates = []
+    rejected_baseline = len(ctx.setdefault('_rejected_candidates', []))
 
     # ═══ 1. DIRECTIONAL 2-LEG SPREADS ═══
     dir_types = [t for t in ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'] if t in allowed_types]
@@ -6396,7 +6396,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         for width in widths:
             pairs = _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw)
             for pair in pairs:
-                cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx)
+                cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx, atm)
                 if not cand: continue
 
                 # Range budget filter — debit only
@@ -6421,6 +6421,69 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     cand['capitalBlocked'] = True
 
                 candidates.append(cand)
+
+    def _record_multi_leg_rejection(
+        *,
+        stype,
+        width,
+        stage,
+        reason,
+        legs=None,
+        is_credit=True,
+        net_premium=None,
+        max_profit=None,
+        max_loss=None,
+        iv_richness=None,
+        credit_width_ratio=None,
+        sigma_otm=None,
+        extra=None,
+    ):
+        if ctx.get('_trace') is not None:
+            _active = ctx.get('_active_cand_trace')
+            if _active is not None:
+                payload = {
+                    'stype': stype,
+                    'width': width,
+                    'result': 'rejected',
+                    'stage': stage,
+                    'reason': reason,
+                }
+                if isinstance(extra, dict):
+                    payload.update(extra)
+                if net_premium is not None:
+                    payload['net_premium'] = round(net_premium, 4)
+                if max_profit is not None:
+                    payload['max_profit'] = round(max_profit, 2)
+                if max_loss is not None:
+                    payload['max_loss'] = round(max_loss, 2)
+                if iv_richness is not None:
+                    payload['iv_richness'] = round(iv_richness, 3)
+                if credit_width_ratio is not None:
+                    payload['credit_ratio'] = round(credit_width_ratio, 4)
+                if sigma_otm is not None:
+                    payload['sigma_otm'] = round(sigma_otm, 2)
+                _trace_append(_active, 'attempts', payload)
+        _record_rejected_candidate(
+            ctx,
+            index_key=idx,
+            trade_mode=trade_mode,
+            expiry=expiry,
+            stype=stype,
+            width=width,
+            stage=stage,
+            reason=reason,
+            atm=atm,
+            legs=legs or [],
+            is_credit=is_credit,
+            net_premium=round(net_premium, 4) if net_premium is not None else None,
+            max_profit=max_profit,
+            max_loss=max_loss,
+            tdte=tdte,
+            iv_richness=round(iv_richness, 3) if iv_richness is not None else None,
+            credit_width_ratio=round(credit_width_ratio, 4) if credit_width_ratio is not None else None,
+            sigma_otm=round(sigma_otm, 2) if sigma_otm is not None else None,
+            extra=extra,
+        )
 
     # ═══ 2. IRON CONDOR (intraday only — 0% overnight survival) ═══
     if 'IRON_CONDOR' in allowed_types and trade_mode != 'swing' and mins_since_open < 300:
@@ -6469,13 +6532,45 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 call_sigma = _sigma_otm_value(sell_call, spot, ds_for_gate)
                 put_sigma = _sigma_otm_value(sell_put, spot, ds_for_gate)
                 if call_sigma is None or put_sigma is None:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='sigma_data_missing',
+                        reason='iron_condor missing sigma values for sell legs',
+                        sigma_otm=None,
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
                     continue
                 if call_sigma < min_sigma or put_sigma < min_sigma:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='sigma_otm_too_close',
+                        reason='iron_condor sell leg sigma below minimum',
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
                     continue
                 if _sigma_above_max(call_sigma, max_sigma) or _sigma_above_max(put_sigma, max_sigma):
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='sigma_otm_too_far',
+                        reason='iron_condor sell leg sigma above maximum',
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'max_sigma': max_sigma},
+                    )
                     continue
-                if sell_call not in all_set or buy_call not in all_set: continue
-                if sell_put not in all_set or buy_put not in all_set: continue
+                if sell_call not in all_set or buy_call not in all_set or sell_put not in all_set or buy_put not in all_set:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='strike_missing',
+                        reason='iron_condor strike missing in chain strike set',
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
                 pk = f"{sell_call}_{sell_put}_{width}"
                 if pk in seen_ic: continue
                 seen_ic.add(pk)
@@ -6486,21 +6581,85 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 ce_b = strikes.get(bc, {}).get('CE', {})
                 pe_s = strikes.get(sp, {}).get('PE', {})
                 pe_b = strikes.get(bp, {}).get('PE', {})
-                if not all([ce_s, ce_b, pe_s, pe_b]): continue
+                ic_legs = [
+                    _build_leg_record(buy_call, 'CE', 'BUY', expiry, ce_b, atm),
+                    _build_leg_record(sell_call, 'CE', 'SELL', expiry, ce_s, atm),
+                    _build_leg_record(buy_put, 'PE', 'BUY', expiry, pe_b, atm),
+                    _build_leg_record(sell_put, 'PE', 'SELL', expiry, pe_s, atm),
+                ]
+                if not all([ce_s, ce_b, pe_s, pe_b]):
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='leg_data_missing',
+                        reason='iron_condor CE/PE leg data missing',
+                        legs=ic_legs,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
 
                 call_credit = (ce_s.get('bid', 0) or 0) - (ce_b.get('ask', 0) or 0)
                 put_credit = (pe_s.get('bid', 0) or 0) - (pe_b.get('ask', 0) or 0)
-                if call_credit <= 0 or put_credit <= 0: continue
+                if call_credit <= 0 or put_credit <= 0:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='credit_non_positive',
+                        reason='iron_condor leg credit non-positive',
+                        legs=ic_legs,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'call_credit': round(call_credit, 4), 'put_credit': round(put_credit, 4)},
+                    )
+                    continue
                 total_credit = call_credit + put_credit
                 max_loss_ps = width - total_credit
-                if max_loss_ps <= 0: continue
+                if max_loss_ps <= 0:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='max_loss_non_positive',
+                        reason='iron_condor width minus total credit <= 0',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_loss=max_loss_ps * lot_size,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
 
                 max_profit = round(total_credit * lot_size)
                 max_loss = round(max_loss_ps * lot_size)
                 capital = _capital
                 # BR118: Risk limit check
-                if max_loss > capital * 0.10: continue
-                if max_loss <= 0 or max_profit <= 0: continue
+                if max_loss > capital * 0.10:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='capital_limit_exceeded',
+                        reason='iron_condor max_loss exceeds capital risk limit',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_profit=max_profit,
+                        max_loss=max_loss,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
+                if max_loss <= 0 or max_profit <= 0:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='economics_invalid',
+                        reason='iron_condor max_loss <= 0 or max_profit <= 0',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_profit=max_profit,
+                        max_loss=max_loss,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
 
                 # Probability: spot stays between breakevens
                 upper_be = sell_call + total_credit
@@ -6508,8 +6667,54 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 prob_above_put = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
                 prob_below_call = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
                 prob = max(0, prob_above_put + prob_below_call - 1)
-                if prob < _CONST['MIN_PROB']: continue
-                if total_credit / width < _CONST['MIN_CREDIT_RATIO']: continue
+                if prob < _CONST['MIN_PROB']:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='prob_below_floor',
+                        reason='iron_condor probability below minimum floor',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_profit=max_profit,
+                        max_loss=max_loss,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4)},
+                    )
+                    continue
+                credit_ratio = total_credit / width if width else None
+                if credit_ratio is not None and credit_ratio < _CONST['MIN_CREDIT_RATIO']:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='credit_ratio_below_floor',
+                        reason='iron_condor credit/width below minimum ratio',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_profit=max_profit,
+                        max_loss=max_loss,
+                        credit_width_ratio=credit_ratio,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                    )
+                    continue
+                realized_vol = _realized_vol_proxy(vix)
+                iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
+                if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
+                    _record_multi_leg_rejection(
+                        stype='IRON_CONDOR',
+                        width=width,
+                        stage='iv_not_rich',
+                        reason='iron_condor and iv_richness < IV_RICH_MIN',
+                        legs=ic_legs,
+                        net_premium=total_credit,
+                        max_profit=max_profit,
+                        max_loss=max_loss,
+                        iv_richness=iv_richness,
+                        credit_width_ratio=credit_ratio,
+                        sigma_otm=max(call_sigma, put_sigma),
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix},
+                    )
+                    continue
 
                 ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
                 net_theta = round(abs(
@@ -6519,10 +6724,18 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     _chain_theta(strikes, buy_put, 'PE', spot, T, vol)
                 ) * lot_size)
 
-                idx = 'BNF' if is_bnf else 'NF'
                 ic = {
                     'id': f"IC_{idx}_{sell_call}_{sell_put}_W{width}",
-                    'type': 'IRON_CONDOR', 'width': width, 'legs': 4,
+                    'type': 'IRON_CONDOR', 'width': width, 'legs': [
+                        _build_leg_record(buy_call, 'CE', 'BUY', expiry, ce_b, atm),
+                        _build_leg_record(sell_call, 'CE', 'SELL', expiry, ce_s, atm),
+                        _build_leg_record(buy_put, 'PE', 'BUY', expiry, pe_b, atm),
+                        _build_leg_record(sell_put, 'PE', 'SELL', expiry, pe_s, atm),
+                    ],
+                    'legCount': 4,
+                    'lane': _candidate_lane(idx, trade_mode),
+                    'leg_schema_version': LEG_SCHEMA_VERSION,
+                    'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
                     'sellStrike': sell_call, 'buyStrike': buy_call,
                     'sellStrike2': sell_put, 'buyStrike2': buy_put,
                     'sellType': 'CE', 'buyType': 'CE', 'sellType2': 'PE', 'buyType2': 'PE',
@@ -6541,6 +6754,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
                     'isCredit': True, 'lotSize': lot_size, 'index': idx,
                     'expiry': expiry, 'tDTE': tdte,
+                    'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
                     'sigmaOTM': round(max(call_sigma, put_sigma), 2),
                     'sigmaOTMCall': round(call_sigma, 2),
                     'sigmaOTMPut': round(put_sigma, 2),
@@ -6568,39 +6782,137 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         for width in widths:
             sell_call = atm; buy_call = atm + width
             sell_put = atm; buy_put = atm - width
-            if buy_call not in all_set or buy_put not in all_set: continue
+            if buy_call not in all_set or buy_put not in all_set:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='strike_missing',
+                    reason='iron_butterfly strike missing in chain strike set',
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put},
+                )
+                continue
 
             sc = str(int(atm))
             ce_s = strikes.get(sc, {}).get('CE', {})
             pe_s = strikes.get(sc, {}).get('PE', {})
             ce_b = strikes.get(str(int(buy_call)), {}).get('CE', {})
             pe_b = strikes.get(str(int(buy_put)), {}).get('PE', {})
-            if not all([ce_s, pe_s, ce_b, pe_b]): continue
+            ib_legs = [
+                _build_leg_record(buy_call, 'CE', 'BUY', expiry, ce_b, atm),
+                _build_leg_record(atm, 'CE', 'SELL', expiry, ce_s, atm),
+                _build_leg_record(buy_put, 'PE', 'BUY', expiry, pe_b, atm),
+                _build_leg_record(atm, 'PE', 'SELL', expiry, pe_s, atm),
+            ]
+            if not all([ce_s, pe_s, ce_b, pe_b]):
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='leg_data_missing',
+                    reason='iron_butterfly CE/PE leg data missing',
+                    legs=ib_legs,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put},
+                )
+                continue
 
             call_credit = (ce_s.get('bid', 0) or 0) - (ce_b.get('ask', 0) or 0)
             put_credit = (pe_s.get('bid', 0) or 0) - (pe_b.get('ask', 0) or 0)
-            if call_credit <= 0 or put_credit <= 0: continue
+            if call_credit <= 0 or put_credit <= 0:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='credit_non_positive',
+                    reason='iron_butterfly leg credit non-positive',
+                    legs=ib_legs,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'call_credit': round(call_credit, 4), 'put_credit': round(put_credit, 4)},
+                )
+                continue
             total_credit = call_credit + put_credit
             max_loss_ps = width - total_credit
-            if max_loss_ps <= 0: continue
+            if max_loss_ps <= 0:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='max_loss_non_positive',
+                    reason='iron_butterfly width minus total credit <= 0',
+                    legs=ib_legs,
+                    net_premium=total_credit,
+                    max_loss=max_loss_ps * lot_size,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put},
+                )
+                continue
 
             max_profit = round(total_credit * lot_size)
             max_loss = round(max_loss_ps * lot_size)
             # BR118: Risk limit check
-            if max_loss > _capital * 0.10: continue
+            if max_loss > _capital * 0.10:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='capital_limit_exceeded',
+                    reason='iron_butterfly max_loss exceeds capital risk limit',
+                    legs=ib_legs,
+                    net_premium=total_credit,
+                    max_profit=max_profit,
+                    max_loss=max_loss,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put},
+                )
+                continue
 
             upper_be = atm + total_credit
             lower_be = atm - total_credit
             prob_above = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
             prob_below = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
             prob = max(0, prob_above + prob_below - 1)
-            if prob < _CONST['MIN_PROB']: continue
+            if prob < _CONST['MIN_PROB']:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='prob_below_floor',
+                    reason='iron_butterfly probability below minimum floor',
+                    legs=ib_legs,
+                    net_premium=total_credit,
+                    max_profit=max_profit,
+                    max_loss=max_loss,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4)},
+                )
+                continue
+            realized_vol = _realized_vol_proxy(vix)
+            iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
+            if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
+                _record_multi_leg_rejection(
+                    stype='IRON_BUTTERFLY',
+                    width=width,
+                    stage='iv_not_rich',
+                    reason='iron_butterfly and iv_richness < IV_RICH_MIN',
+                    legs=ib_legs,
+                    net_premium=total_credit,
+                    max_profit=max_profit,
+                    max_loss=max_loss,
+                    iv_richness=iv_richness,
+                    sigma_otm=0.0,
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix},
+                )
+                continue
 
             ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
-            idx = 'BNF' if is_bnf else 'NF'
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",
-                'type': 'IRON_BUTTERFLY', 'width': width, 'legs': 4,
+                'type': 'IRON_BUTTERFLY', 'width': width, 'legs': [
+                    _build_leg_record(buy_call, 'CE', 'BUY', expiry, ce_b, atm),
+                    _build_leg_record(atm, 'CE', 'SELL', expiry, ce_s, atm),
+                    _build_leg_record(buy_put, 'PE', 'BUY', expiry, pe_b, atm),
+                    _build_leg_record(atm, 'PE', 'SELL', expiry, pe_s, atm),
+                ],
+                'legCount': 4,
+                'lane': _candidate_lane(idx, trade_mode),
+                'leg_schema_version': LEG_SCHEMA_VERSION,
+                'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
                 'sellStrike': atm, 'buyStrike': buy_call,
                 'sellStrike2': atm, 'buyStrike2': buy_put,
                 'sellType': 'CE', 'buyType': 'CE', 'sellType2': 'PE', 'buyType2': 'PE',
@@ -6618,6 +6930,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'maxProfit': max_profit, 'maxLoss': max_loss,
                 'probProfit': round(prob, 3), 'ev': ev, 'isCredit': True,
                 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
+                'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
                 'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl, regime),
                 'varsityTier': 'PRIMARY' if 'IRON_BUTTERFLY' in varsity['primary'] else 'ALLOWED',
                 'wallScore': _compute_wall_score({'type': 'IRON_BUTTERFLY', 'sellStrike': atm}, chain, is_bnf),
@@ -6640,7 +6953,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             'primary_found': len([c for c in candidates if c.get('varsityTier') == 'PRIMARY']),
             'timestamp': time.time() if 'time' in dir() else 0,
         }
-    return candidates
+    return candidates, ctx.get('_rejected_candidates', [])[rejected_baseline:]
 
 # ─── RANK CANDIDATES ───
 
@@ -6902,7 +7215,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     nf_spot = _latest_spot_value('NF')
     bnf_ohlc = ctx.get('bnfOHLC')
     nf_ohlc = ctx.get('nfOHLC')
-    vix = ctx.get('vix') or 20
+    vix = ctx.get('vix') or 15
     gap = ctx.get('gap') or {}
 
     result["bnfProfile"] = chain_profile(bnf_chain, bnf_spot, bnf_ohlc, vix, gap) or {}
@@ -7117,6 +7430,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         cur_vix = vixs[-1] if vixs else 20
         iv_pctl = ctx.get('ivPercentile', 50)
         all_cands = []
+        all_rejected = []
         for chain_key, idx_key in [('bnfChain', 'BNF'), ('nfChain', 'NF')]:
             chain_data = ctx.get(chain_key)
             # BR125: Explicit logging when chain missing — catches Kotlin wiring silent failures
@@ -7134,8 +7448,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if spot > 0:
                 expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
                 expiry = ctx.get(expiry_key, '')
-                cands = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
+                cands, rejected = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
                 all_cands.extend(cands)
+                all_rejected.extend(rejected)
+        result['rejected_candidates'] = all_rejected
         if not all_cands:
             no_trade_reason = (
                 "All candidates rejected by the gate waterfall. "
@@ -7269,11 +7585,37 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             result['decision_reason'] = result['decisionReason']
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
+            result["rejected_candidates"] = all_rejected
+
+            by_index = {"BNF": 0, "NF": 0}
+            by_lane = {}
+            for c in all_cands:
+                idx = c.get("index")
+                lane = c.get("lane")
+                if idx in by_index:
+                    by_index[idx] += 1
+                if lane:
+                    by_lane[lane] = by_lane.get(lane, 0) + 1
+
+            rejected_by_index = {"BNF": 0, "NF": 0}
+            rejected_by_stage = {}
+            for c in all_rejected:
+                idx = c.get("index")
+                stage = c.get("rejection_stage")
+                if idx in rejected_by_index:
+                    rejected_by_index[idx] += 1
+                if stage:
+                    rejected_by_stage[stage] = rejected_by_stage.get(stage, 0) + 1
 
             result["candidate_stats"] = {
                 "total": len(all_cands),
+                "rejected": len(all_rejected),
                 "ranked": len(ranked),
                 "watchlist": len(watchlist),
+                "by_index": by_index,
+                "rejected_by_index": rejected_by_index,
+                "rejected_by_stage": rejected_by_stage,
+                "by_lane": by_lane,
                 "by_type": {}
             }
             for c in all_cands:
@@ -7582,6 +7924,154 @@ def _bridge_json_obj(value):
     return value
 
 
+def _compute_signal_independence(result, ctx):
+    groups = set()
+    details = []
+    if result.get('pcrContext') or result.get('bnfProfile') or result.get('nfProfile'):
+        groups.add('oi')
+        details.append('oi-derived')
+    if result.get('gapInfo') or result.get('nfGapInfo') or result.get('overnightDelta') or result.get('sessionTrajectory'):
+        groups.add('price')
+        details.append('price-derived')
+    if result.get('institutionalRegime') or ctx.get('fiiCash') is not None or ctx.get('diiCash') is not None:
+        groups.add('macro')
+        details.append('macro')
+    if result.get('regime') or result.get('marketPhase') or result.get('rangeSigma') is not None:
+        groups.add('structural')
+        details.append('structural')
+    base_score = len(groups) / 4.0
+    if 'structural' in groups:
+        base_score += 0.1
+    return {
+        'score': round(min(1.0, base_score), 3),
+        'groups': sorted(groups),
+        'details': details,
+    }
+
+
+def _candidate_view(c):
+    return {
+        'id': c.get('id'),
+        'type': c.get('type'),
+        'index': c.get('index'),
+        'lane': c.get('lane'),
+        'width': c.get('width'),
+        'expiry': c.get('expiry'),
+        'legs': c.get('legs'),
+        'legCount': c.get('legCount', len(c.get('legs') or [])),
+        'leg_schema_version': c.get('leg_schema_version'),
+        'candidate_schema_version': c.get('candidate_schema_version'),
+        'sellStrike': c.get('sellStrike'),
+        'sellType': c.get('sellType'),
+        'buyStrike': c.get('buyStrike'),
+        'buyType': c.get('buyType'),
+        'sellStrike2': c.get('sellStrike2'),
+        'sellType2': c.get('sellType2'),
+        'buyStrike2': c.get('buyStrike2'),
+        'buyType2': c.get('buyType2'),
+        'netPremium': c.get('netPremium'),
+        'maxProfit': c.get('maxProfit'),
+        'maxLoss': c.get('maxLoss'),
+        'isCredit': c.get('isCredit'),
+        'lotSize': c.get('lotSize'),
+        'estCost': c.get('estCost'),
+        'capitalBlocked': c.get('capitalBlocked'),
+        'executionReady': c.get('executionReady'),
+        'executionGate': c.get('executionGate'),
+        'entryAction': c.get('entryAction'),
+        'directionSafe': c.get('directionSafe'),
+        'brainScore': c.get('brainScore'),
+        'p_ml': c.get('p_ml'),
+        'mlAction': c.get('mlAction'),
+        'mlEdge': c.get('mlEdge'),
+        'mlOod': c.get('mlOod'),
+        'mlOodFlag': c.get('mlOodFlag'),
+        'mlOodConf': c.get('mlOodConf'),
+        'mlOodBlocked': c.get('mlOodBlocked'),
+        'ivRichness': c.get('ivRichness'),
+        'creditWidthRatio': c.get('creditWidthRatio'),
+        'sigmaOTM': c.get('sigmaOTM'),
+        'premiumEdge': c.get('premiumEdge'),
+    }
+
+
+def _snapshot_teaching_band(index_key, chain, spot, vix, expiry):
+    if not isinstance(chain, dict):
+        return []
+    strikes = chain.get('strikes') or {}
+    atm = chain.get('atm')
+    all_strikes = chain.get('allStrikes') or sorted(int(k) for k in strikes.keys())
+    if not strikes or not atm or len(all_strikes) < 2:
+        return []
+    step = all_strikes[1] - all_strikes[0]
+    lo = atm - (8 * step)
+    hi = atm + (8 * step)
+    band_rows = []
+    for strike in all_strikes:
+        if strike < lo or strike > hi:
+            continue
+        strike_row = strikes.get(str(int(strike))) or strikes.get(strike) or {}
+        for opt_type in ('CE', 'PE'):
+            leg_data = strike_row.get(opt_type) or {}
+            if not leg_data:
+                continue
+            row = _build_leg_record(strike, opt_type, 'OBSERVE', expiry, leg_data, atm)
+            row.update({
+                'index': index_key,
+                'atm_strike': atm,
+                'spot': spot,
+                'vix': vix,
+            })
+            band_rows.append(row)
+    return band_rows
+
+
+def _compact_candidate_trace(trace_root):
+    if not isinstance(trace_root, dict):
+        return {'meta': {}, 'by_index': {}, 'rejected_count': 0, 'accepted_count': 0}
+    out = {
+        'meta': dict(trace_root.get('meta') or {}),
+        'by_index': {},
+        'rejected_count': 0,
+        'accepted_count': 0,
+    }
+    candidates = trace_root.get('candidates') or {}
+    for index_key in ('BNF', 'NF'):
+        row = candidates.get(index_key)
+        if not isinstance(row, dict):
+            continue
+        attempts = row.get('attempts') or []
+        compact_attempts = []
+        for a in attempts:
+            if not isinstance(a, dict):
+                continue
+            compact_attempts.append({
+                'stype': a.get('stype'),
+                'result': a.get('result'),
+                'stage': a.get('stage'),
+                'reason': a.get('reason'),
+                'width': a.get('width'),
+                'sell': a.get('sell'),
+                'buy': a.get('buy'),
+                'sell_call': a.get('sell_call'),
+                'sell_put': a.get('sell_put'),
+                'iv_richness': a.get('iv_richness'),
+                'credit_width_ratio': a.get('credit_width_ratio'),
+                'premium_edge': a.get('premium_edge'),
+            })
+            if a.get('result') == 'rejected':
+                out['rejected_count'] += 1
+            elif a.get('result') == 'accepted':
+                out['accepted_count'] += 1
+        out['by_index'][index_key] = {
+            'config': dict(row.get('config') or {}),
+            'summary': dict(row.get('summary') or {}),
+            'varsity': dict(row.get('varsity') or {}),
+            'attempts': compact_attempts,
+        }
+    return out
+
+
 def take_poll_snapshot(result, ctx, polls):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -7593,13 +8083,20 @@ def take_poll_snapshot(result, ctx, polls):
 
     watchlist = result.get('watchlist', [])
     generated_candidates = result.get('generated_candidates', [])
-    top_5_cands = watchlist[:5]
+    rejected_candidates = result.get('rejected_candidates', [])
+    top_5_nf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'NF'][:5]
+    top_5_bnf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'BNF'][:5]
+    top_5_cands = (top_5_nf + top_5_bnf)[:10]
 
     top_cand = top_5_cands[0] if top_5_cands else None
     verdict = result.get('verdict', {})
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
     bnf_profile = result.get('bnfProfile') or {}
     nf_profile = result.get('nfProfile') or {}
+    signal_independence = _compute_signal_independence(result, ctx)
+    if isinstance(verdict, dict):
+        verdict['signal_independence_score'] = signal_independence.get('score')
+        verdict['signal_independence_groups'] = signal_independence.get('groups')
 
     def _oi_window_velocity(rows, call_key, put_key, window=6):
         if not isinstance(rows, list) or len(rows) < 2:
@@ -7631,6 +8128,11 @@ def take_poll_snapshot(result, ctx, polls):
             'id': top_cand.get('id'),
             'type': top_cand.get('type'),
             'index': top_cand.get('index'),
+            'lane': top_cand.get('lane'),
+            'legs': top_cand.get('legs'),
+            'legCount': top_cand.get('legCount', len(top_cand.get('legs') or [])),
+            'leg_schema_version': top_cand.get('leg_schema_version'),
+            'candidate_schema_version': top_cand.get('candidate_schema_version'),
             'sellStrike': top_cand.get('sellStrike'),
             'sellType': top_cand.get('sellType'),
             'buyStrike': top_cand.get('buyStrike'),
@@ -7651,18 +8153,9 @@ def take_poll_snapshot(result, ctx, polls):
     # Clean top-5 candidates for secondary research only
     clean_cands = []
     for c in top_5_cands:
-        clean_cands.append({
-            'id': c.get('id'), 'type': c.get('type'), 'width': c.get('width'),
-            'sellStrike': c.get('sellStrike'), 'sellType': c.get('sellType'),
-            'buyStrike': c.get('buyStrike'), 'buyType': c.get('buyType'),
-            'sellStrike2': c.get('sellStrike2'), 'sellType2': c.get('sellType2'),
-            'buyStrike2': c.get('buyStrike2'), 'buyType2': c.get('buyType2'),
-            'netPremium': c.get('netPremium'), 'maxProfit': c.get('maxProfit'),
-            'maxLoss': c.get('maxLoss'), 'isCredit': c.get('isCredit'),
-            'lotSize': c.get('lotSize'),
-            'estCost': c.get('estCost'), 'index': c.get('index'),
-            'expiry': c.get('expiry'),
-        })
+        clean_cands.append(_candidate_view(c))
+    clean_top_5_nf = [_candidate_view(c) for c in top_5_nf]
+    clean_top_5_bnf = [_candidate_view(c) for c in top_5_bnf]
 
     # Clean ALL generated candidates for offline research/retraining.
     # Stored inside context_json so this works even on older DB schemas.
@@ -7671,40 +8164,13 @@ def take_poll_snapshot(result, ctx, polls):
         for c in generated_candidates:
             if not isinstance(c, dict):
                 continue
-            clean_generated.append({
-                'id': c.get('id'),
-                'type': c.get('type'),
-                'index': c.get('index'),
-                'expiry': c.get('expiry'),
-                'width': c.get('width'),
-                'sellStrike': c.get('sellStrike'),
-                'sellType': c.get('sellType'),
-                'buyStrike': c.get('buyStrike'),
-                'buyType': c.get('buyType'),
-                'sellStrike2': c.get('sellStrike2'),
-                'sellType2': c.get('sellType2'),
-                'buyStrike2': c.get('buyStrike2'),
-                'buyType2': c.get('buyType2'),
-                'netPremium': c.get('netPremium'),
-                'maxProfit': c.get('maxProfit'),
-                'maxLoss': c.get('maxLoss'),
-                'isCredit': c.get('isCredit'),
-                'lotSize': c.get('lotSize'),
-                'estCost': c.get('estCost'),
-                'capitalBlocked': c.get('capitalBlocked'),
-                'executionReady': c.get('executionReady'),
-                'executionGate': c.get('executionGate'),
-                'entryAction': c.get('entryAction'),
-                'directionSafe': c.get('directionSafe'),
-                'brainScore': c.get('brainScore'),
-                'p_ml': c.get('p_ml'),
-                'mlAction': c.get('mlAction'),
-                'mlEdge': c.get('mlEdge'),
-                'mlOod': c.get('mlOod'),
-                'mlOodFlag': c.get('mlOodFlag'),
-                'mlOodConf': c.get('mlOodConf'),
-                'mlOodBlocked': c.get('mlOodBlocked'),
-            })
+            clean_generated.append(_candidate_view(c))
+    clean_rejected = []
+    if isinstance(rejected_candidates, list):
+        for c in rejected_candidates:
+            if not isinstance(c, dict):
+                continue
+            clean_rejected.append(c)
 
     def _candidate_leg_ledger(cand):
         if not isinstance(cand, dict):
@@ -7735,9 +8201,12 @@ def take_poll_snapshot(result, ctx, polls):
             'candidate_id': cand.get('id'),
             'strategy_type': cand.get('type'),
             'index': cand.get('index'),
+            'lane': cand.get('lane'),
             'expiry': cand.get('expiry'),
             'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
-            'legs': legs,
+            'legs': cand.get('legs') or legs,
+            'leg_schema_version': cand.get('leg_schema_version'),
+            'candidate_schema_version': cand.get('candidate_schema_version'),
         }
 
     evaluation_ledger = []
@@ -7772,7 +8241,9 @@ def take_poll_snapshot(result, ctx, polls):
         'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
         'watchlist_count': len(watchlist) if isinstance(watchlist, list) else 0,
         'generated_count': len(generated_candidates) if isinstance(generated_candidates, list) else 0,
+        'rejected_count': len(rejected_candidates) if isinstance(rejected_candidates, list) else 0,
         'top_candidate_type': top_cand.get('type') if top_cand else None,
+        'signal_independence_score': signal_independence.get('score'),
         'is_labelable': _is_labelable(result, ctx),
     }
 
@@ -7780,9 +8251,30 @@ def take_poll_snapshot(result, ctx, polls):
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_generated_candidates'] = clean_generated
+    snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_watchlist'] = clean_cands
     snapshot_context['snapshot_evaluation_legs'] = evaluation_ledger
     snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
+    snapshot_context['top_5_nf'] = clean_top_5_nf
+    snapshot_context['top_5_bnf'] = clean_top_5_bnf
+    snapshot_context['signal_independence'] = signal_independence
+    snapshot_context['candidate_generation_trace'] = _compact_candidate_trace(result.get('_trace'))
+    snapshot_context['teaching_snapshot_staging'] = {
+        'bnf': _snapshot_teaching_band(
+            'BNF',
+            ctx.get('bnfChain') or {},
+            latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
+            latest_poll.get('vix') or latest_poll.get('VIX') or ctx.get('vix'),
+            ctx.get('expiry_bnf'),
+        ),
+        'nf': _snapshot_teaching_band(
+            'NF',
+            ctx.get('nfChain') or {},
+            latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
+            latest_poll.get('vix') or latest_poll.get('VIX') or ctx.get('vix'),
+            ctx.get('expiry_nf'),
+        ),
+    }
     snapshot_context['snapshot_market_profiles'] = {
         'bnfProfile': bnf_profile if isinstance(bnf_profile, dict) else {},
         'nfProfile': nf_profile if isinstance(nf_profile, dict) else {},

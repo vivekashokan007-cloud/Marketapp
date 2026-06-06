@@ -27,6 +27,7 @@ class MarketWatchService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
+    private var sessionWakeLock: PowerManager.WakeLock? = null
     private lateinit var prefs: SharedPreferences
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -66,6 +67,7 @@ class MarketWatchService : Service() {
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
+        private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
@@ -75,11 +77,14 @@ class MarketWatchService : Service() {
         private const val NF50_REMOTE_CACHE_MS_KEY = "nf50_remote_constituents_sync_ms"
         private const val NF50_REMOTE_TTL_MS = 12 * 60 * 60 * 1000L
         private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
+        private const val LAST_POLL_GAP_WARNING_SLOT_KEY = "last_poll_gap_warning_slot"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5
         private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
         private const val POLL_SLOT_TRIGGER_LAG_MS = 5_000L
+        private const val SERVICE_SELF_HEAL_REQ_CODE = 74052
+        private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -266,6 +271,7 @@ class MarketWatchService : Service() {
 
         startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
+        maintainSessionWakeLock()
         ensurePollAlarmScheduled()
 
         if (intent?.action == ACTION_POLL_TICK) {
@@ -636,6 +642,8 @@ class MarketWatchService : Service() {
                 Log.d(TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration slot=$slotKey delayMins=$pollIntervalMins")
                 LogBuffer.add('D', TAG, "POLL_LOOP_ITERATION: iter=$pollLoopIteration slot=$slotKey delayMins=$pollIntervalMins")
                 if (isMarketOpen()) {
+                    maintainSessionWakeLock()
+                    maybeWarnOnPollGap()
                     // Re-read token dynamically on each poll cycle (Bug 1 Fix)
                     val appCtx = applicationContext
                     val currentPrefs = appCtx.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -656,6 +664,7 @@ class MarketWatchService : Service() {
                         updateForegroundNotification("Waiting for Token", "Open app to sync Upstox token")
                     }
                 } else {
+                    maintainSessionWakeLock()
                     Log.d(TAG, "Market closed. Skipping poll.")
                     updateForegroundNotification("Market Closed", "Waiting for next session...")
                 }
@@ -1196,6 +1205,7 @@ class MarketWatchService : Service() {
                 putString("last_poll_time", poll.getString("t"))
                 putInt("poll_count", pollCount)
                 putLong("last_successful_poll_ms", System.currentTimeMillis())
+                remove(LAST_POLL_GAP_WARNING_SLOT_KEY)
                 currentPollSlotKey(System.currentTimeMillis())?.let { putString(LAST_SUCCESSFUL_POLL_SLOT_KEY, it) }
             }.commit()
 
@@ -2196,6 +2206,7 @@ class MarketWatchService : Service() {
                     val generated = resultObj.optJSONArray("generated_candidates")
                     val watchlist = resultObj.optJSONArray("watchlist")
                     val actualCandidates = resultObj.optJSONObject("candidates")
+                    val candidateStats = resultObj.optJSONObject("candidate_stats")
                     var generatedBnf = 0
                     var generatedNf = 0
                     var watchlistBnf = 0
@@ -2216,12 +2227,22 @@ class MarketWatchService : Service() {
                             }
                         }
                     }
+                    val statsTotal = candidateStats?.optInt("total", -1) ?: -1
+                    val statsRejected = candidateStats?.optInt("rejected", -1) ?: -1
+                    val statsRanked = candidateStats?.optInt("ranked", -1) ?: -1
+                    val statsWatchlist = candidateStats?.optInt("watchlist", -1) ?: -1
+                    val statsByIndex = candidateStats?.optJSONObject("by_index")
+                    val statsRejectedByIndex = candidateStats?.optJSONObject("rejected_by_index")
                     Log.d("BRAIN_CANDIDATES_DETAIL",
                         "generated=${generated?.length() ?: 0}, " +
                         "watchlist=${watchlist?.length() ?: 0}, " +
                         "candidates_in_result=${actualCandidates?.length() ?: 0}, " +
                         "generated_bnf=$generatedBnf, generated_nf=$generatedNf, " +
-                        "watchlist_bnf=$watchlistBnf, watchlist_nf=$watchlistNf"
+                        "watchlist_bnf=$watchlistBnf, watchlist_nf=$watchlistNf, " +
+                        "stats_total=$statsTotal, stats_rejected=$statsRejected, " +
+                        "stats_ranked=$statsRanked, stats_watchlist=$statsWatchlist, " +
+                        "stats_by_index_bnf=${statsByIndex?.optInt("BNF", -1)}, stats_by_index_nf=${statsByIndex?.optInt("NF", -1)}, " +
+                        "stats_rejected_bnf=${statsRejectedByIndex?.optInt("BNF", -1)}, stats_rejected_nf=${statsRejectedByIndex?.optInt("NF", -1)}"
                     )
                     val resultKeys = mutableListOf<String>()
                     val resultIter = resultObj.keys()
@@ -2231,7 +2252,7 @@ class MarketWatchService : Service() {
                     LogBuffer.add(
                         'D',
                         TAG,
-                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} generatedBNF=$generatedBnf generatedNF=$generatedNf watchlistBNF=$watchlistBnf watchlistNF=$watchlistNf candidateTrace=${resultObj.has("candidateTrace")}"
+                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} generatedBNF=$generatedBnf generatedNF=$generatedNf watchlistBNF=$watchlistBnf watchlistNF=$watchlistNf statsTotal=$statsTotal statsRejected=$statsRejected statsByBNF=${statsByIndex?.optInt("BNF", -1)} statsByNF=${statsByIndex?.optInt("NF", -1)} candidateTrace=${resultObj.has("candidateTrace")}"
                     )
                 } catch(e: Exception) {
                     Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
@@ -2790,6 +2811,16 @@ class MarketWatchService : Service() {
         )
     }
 
+    private fun selfHealIntent(): PendingIntent {
+        val restartIntent = Intent(this, MarketWatchService::class.java)
+        return PendingIntent.getForegroundService(
+            this,
+            SERVICE_SELF_HEAL_REQ_CODE,
+            restartIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private fun ensurePollAlarmScheduled() {
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
@@ -2810,6 +2841,7 @@ class MarketWatchService : Service() {
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
             am.cancel(pollAlarmIntent())
+            am.cancel(selfHealIntent())
         } catch (e: Exception) {
             LogBuffer.add('D', TAG, "POLL_ALARM_CANCEL_FAIL: ${e.message}")
         }
@@ -2923,9 +2955,72 @@ class MarketWatchService : Service() {
         return "${todayIstDate()}|$slotOrdinal"
     }
 
+    private fun maintainSessionWakeLock() {
+        if (!isMarketOpen()) {
+            releaseSessionWakeLock()
+            return
+        }
+        val held = sessionWakeLock?.isHeld == true
+        if (held) return
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        sessionWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MarketRadar::Session").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        LogBuffer.add('I', TAG, "SESSION_WAKELOCK_ACQUIRED")
+    }
+
+    private fun releaseSessionWakeLock() {
+        sessionWakeLock?.let {
+            if (it.isHeld) {
+                it.release()
+                LogBuffer.add('I', TAG, "SESSION_WAKELOCK_RELEASED")
+            }
+        }
+        sessionWakeLock = null
+    }
+
+    private fun maybeWarnOnPollGap(nowMs: Long = System.currentTimeMillis()) {
+        if (!isMarketOpen()) return
+        val lastSuccessfulMs = prefs.getLong("last_successful_poll_ms", 0L)
+        if (lastSuccessfulMs <= 0L) return
+        val gapMs = nowMs - lastSuccessfulMs
+        if (gapMs < SESSION_POLL_GAP_WARNING_MS) return
+        val slotKey = currentPollSlotKey(nowMs) ?: return
+        if (prefs.getString(LAST_POLL_GAP_WARNING_SLOT_KEY, "") == slotKey) return
+        val gapMinutes = gapMs / 60_000L
+        NotificationHelper.send(
+            this,
+            "Service health warning",
+            "Polling gap detected during market hours: ${gapMinutes}m since last successful poll.",
+            "warning"
+        )
+        prefs.edit().putString(LAST_POLL_GAP_WARNING_SLOT_KEY, slotKey).apply()
+        LogBuffer.add('W', TAG, "SERVICE_HEALTH_WARNING: gapMin=$gapMinutes slot=$slotKey")
+    }
+
+    private fun scheduleSelfHealRestart() {
+        if (!prefs.getBoolean("service_running", false)) return
+        if (!isMarketOpen()) return
+        try {
+            val am = getSystemService(ALARM_SERVICE) as AlarmManager
+            val triggerAt = SystemClock.elapsedRealtime() + SERVICE_SELF_HEAL_DELAY_MS
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, selfHealIntent())
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, selfHealIntent())
+            }
+            LogBuffer.add('W', TAG, "SERVICE_SELF_HEAL_SCHEDULED")
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "SERVICE_SELF_HEAL_FAIL: ${e.message}")
+        }
+    }
+
     override fun onDestroy() {
         // E5: Ensure wakelock is released when service is killed
         releaseWakeLock()
+        releaseSessionWakeLock()
+        scheduleSelfHealRestart()
         serviceScope.cancel()
         super.onDestroy()
     }

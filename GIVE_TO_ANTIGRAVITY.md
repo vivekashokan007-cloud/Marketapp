@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.3.83 / b214`
+Current Android release target: `v2.4.04 / b235`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -52,6 +52,22 @@ No agent should treat the PWA repo as a second live brain.
   - `min_sigma_otm`
   - `max_sigma_otm`
 - Only approved proposals can affect live brain behavior.
+- Wave 1 app-side data-foundation work is now in active local implementation:
+  - paper trades included in calibration
+  - neutral missing-VIX fallback lowered to `15` consistently across live analyze + calibration defaults
+  - IV-richness gate extended to `IRON_CONDOR` / `IRON_BUTTERFLY`
+  - additive leg-first candidate capture (`legs[]`, `legCount`, `lane`, schema versions)
+  - snapshot staging for teaching-band capture
+  - compact rejected-candidate trace persisted into snapshot context
+  - full Python rejected-candidate output path wired:
+    - `generate_candidates(...)` returns accepted + rejected
+    - `analyze(...)` stores `rejected_candidates`
+    - `candidate_stats.by_index`, `candidate_stats.rejected_by_index`, `candidate_stats.rejected_by_stage`, and `candidate_stats.by_lane` expose BNF/NF diagnostics directly
+    - `take_poll_snapshot(...)` persists `snapshot_rejected_candidates`
+  - IC/IB multi-leg rejection coverage expanded for the main actionable gate failures
+  - signal-independence score persisted into verdict/snapshot
+  - NF/BNF top-5 snapshot split persisted separately
+  - service reliability hardening in progress in `MarketWatchService.kt`
 - Signed release is built by `.github/workflows/release.yml` when
   `app/build.gradle.kts` changes.
 
