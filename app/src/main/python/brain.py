@@ -5195,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.04"
+BRAIN_VERSION = "2.4.05"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 
@@ -5962,8 +5962,256 @@ def _candidate_lane(index_key, trade_mode):
     mode = 'swing' if str(trade_mode or 'intraday').lower() == 'swing' else 'intraday'
     return f"{index_key}_{mode}"
 
+def _trade_lane(trade):
+    if not isinstance(trade, dict):
+        return 'NF_intraday'
+    index_key = str(trade.get('index_key') or trade.get('index') or 'NF').upper()
+    if index_key not in ('BNF', 'NF'):
+        index_key = 'BNF' if 'BANK' in index_key else 'NF'
+    trade_mode = str(trade.get('trade_mode') or trade.get('mode') or 'intraday').lower()
+    return _candidate_lane(index_key, trade_mode)
+
 def _current_ist_poll_ts():
     return datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z")
+
+def _derive_poll_timestamp(session_date, latest_poll):
+    poll = latest_poll if isinstance(latest_poll, dict) else {}
+    date_str = str(session_date or '').strip()
+    time_str = str(poll.get('t') or poll.get('time') or '').strip()
+    if date_str and time_str:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p"):
+            try:
+                dt = datetime.strptime(f"{date_str} {time_str.upper()}", fmt)
+                return dt.replace(tzinfo=timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z")
+            except Exception:
+                continue
+    return _current_ist_poll_ts()
+
+def _trade_outcome_bool(trade):
+    if not isinstance(trade, dict):
+        return None
+    canonical = trade.get('canonical_won')
+    if canonical is True or canonical is False:
+        return canonical
+    outcome_h2 = trade.get('outcome_h2')
+    if outcome_h2 in (1, '1', True):
+        return True
+    if outcome_h2 in (0, '0', False):
+        return False
+    won = trade.get('won')
+    if won is True or won is False:
+        return won
+    pnl = trade.get('actual_pnl')
+    if pnl is None:
+        return None
+    try:
+        pnl_num = float(pnl)
+    except Exception:
+        return None
+    if pnl_num > 0:
+        return True
+    if pnl_num < 0:
+        return False
+    return None
+
+def _load_signal_reliability(lane, ctx):
+    rows = ctx.get('signalReliability') or ctx.get('signal_reliability') or []
+    lane_key = str(lane or '').strip().lower()
+    signals = {}
+    low_sample = []
+
+    if isinstance(rows, dict):
+        rows = rows.get('rows') or rows.get('data') or rows.get(lane) or rows.get(lane_key) or []
+
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        row_lane = str(row.get('lane') or '').strip().lower()
+        if row_lane and row_lane != lane_key:
+            continue
+        signal_name = str(row.get('signal_name') or row.get('signal') or '').strip()
+        if not signal_name:
+            continue
+        sample_size = row.get('sample_size')
+        try:
+            sample_size = int(sample_size if sample_size is not None else 0)
+        except Exception:
+            sample_size = 0
+        raw_score = row.get('reliability_score')
+        try:
+            raw_score = float(raw_score) if raw_score is not None else None
+        except Exception:
+            raw_score = None
+        effective_score = 0.5 if raw_score is None or sample_size < 30 else raw_score
+        if sample_size < 30:
+            low_sample.append(signal_name)
+        signals[signal_name] = {
+            'reliability_score': round(max(0.0, min(1.0, effective_score)), 4),
+            'sample_size': sample_size,
+            'raw_score': None if raw_score is None else round(raw_score, 4),
+            'fallback_applied': sample_size < 30 or raw_score is None,
+        }
+
+    return {
+        'lane': lane,
+        'coverage': len(signals),
+        'low_sample_signals': sorted(low_sample),
+        'signals': signals,
+    }
+
+def build_ml_memory_block(candidate, ctx, calibration, closed_trades):
+    lane = candidate.get('lane') or _candidate_lane(candidate.get('index'), ctx.get('tradeMode'))
+    lane_trades = [
+        t for t in (closed_trades or [])
+        if isinstance(t, dict)
+        and str(t.get('status') or '').upper() == 'CLOSED'
+        and _trade_lane(t) == lane
+    ]
+    labeled_trades = [t for t in lane_trades if _trade_outcome_bool(t) is not None]
+    wins = [t for t in labeled_trades if _trade_outcome_bool(t) is True]
+    recent_trades = sorted(
+        lane_trades,
+        key=lambda t: str(t.get('exit_date') or t.get('updated_at') or t.get('created_at') or ''),
+        reverse=True
+    )[:5]
+    recent_summary = []
+    for trade in recent_trades:
+        recent_summary.append({
+            'id': trade.get('id'),
+            'strategy_type': trade.get('strategy_type'),
+            'actual_pnl': trade.get('actual_pnl'),
+            'canonical_won': _trade_outcome_bool(trade),
+            'exit_date': trade.get('exit_date') or trade.get('updated_at') or trade.get('created_at'),
+        })
+
+    lane_pnls = []
+    for trade in labeled_trades:
+        pnl = trade.get('actual_pnl')
+        try:
+            if pnl is not None:
+                lane_pnls.append(float(pnl))
+        except Exception:
+            pass
+    avg_pnl = round(sum(lane_pnls) / len(lane_pnls), 2) if lane_pnls else 0.0
+    win_rate = round(len(wins) / len(labeled_trades), 4) if labeled_trades else None
+
+    return {
+        'lane': lane,
+        'trade_count_closed': len(lane_trades),
+        'trade_count_labeled': len(labeled_trades),
+        'win_count': len(wins),
+        'win_rate': win_rate,
+        'avg_pnl': avg_pnl,
+        'signal_reliability': _load_signal_reliability(lane, ctx),
+        'recent_closed_trades': recent_summary,
+        'calibration_signature': calibration.get('signature') if isinstance(calibration, dict) else None,
+        'max_loss_streak': calibration.get('max_loss_streak') if isinstance(calibration, dict) else None,
+    }
+
+def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
+    result = result if isinstance(result, dict) else {}
+    ctx = ctx if isinstance(ctx, dict) else {}
+    polls = polls if isinstance(polls, list) else []
+    latest_poll = polls[-1] if polls else {}
+    verdict = result.get('verdict') or {}
+    generated = result.get('generated_candidates') or []
+    watchlist = result.get('watchlist') or []
+    signal_independence = _compute_signal_independence(result, ctx)
+    poll_ts = _derive_poll_timestamp(ctx.get('today_ist'), latest_poll)
+
+    candidates = []
+    for rank, cand in enumerate(generated, start=1):
+        if not isinstance(cand, dict):
+            continue
+        lane = cand.get('lane') or _candidate_lane(cand.get('index'), ctx.get('tradeMode'))
+        candidates.append({
+            'candidate_id': cand.get('id'),
+            'rank': rank,
+            'lane': lane,
+            'index': cand.get('index'),
+            'strategy_type': cand.get('type'),
+            'trade_mode': 'swing' if lane.endswith('_swing') else 'intraday',
+            'watchlist_rank': next((i + 1 for i, w in enumerate(watchlist) if isinstance(w, dict) and w.get('id') == cand.get('id')), None),
+            'economics': {
+                'net_premium': cand.get('netPremium'),
+                'max_profit': cand.get('maxProfit'),
+                'max_loss': cand.get('maxLoss'),
+                'risk_reward': cand.get('riskReward'),
+                'premium_edge': cand.get('premiumEdge'),
+                'ev_per_1k': cand.get('evPer1k'),
+                'est_cost': cand.get('estCost'),
+                'capital_blocked': cand.get('capitalBlocked'),
+            },
+            'structure': {
+                'width': cand.get('width'),
+                'expiry': cand.get('expiry'),
+                'sigma_otm': cand.get('sigmaOTM'),
+                'iv_richness': cand.get('ivRichness'),
+                'credit_width_ratio': cand.get('creditWidthRatio'),
+                'is_credit': cand.get('isCredit'),
+                'legs': cand.get('legs'),
+                'candidate_schema_version': cand.get('candidate_schema_version'),
+                'leg_schema_version': cand.get('leg_schema_version'),
+            },
+            'execution': {
+                'execution_ready': cand.get('executionReady'),
+                'execution_gate': cand.get('executionGate'),
+                'entry_action': cand.get('entryAction'),
+                'direction_safe': cand.get('directionSafe'),
+            },
+            'ml_overlay': {
+                'brain_score': cand.get('brainScore'),
+                'p_ml': cand.get('p_ml'),
+                'ml_action': cand.get('mlAction'),
+                'ml_edge': cand.get('mlEdge'),
+                'ml_regime': cand.get('mlRegime'),
+                'ml_unsure': cand.get('mlUnsure'),
+                'ml_ood_flag': cand.get('mlOodFlag'),
+                'decision_source': cand.get('decisionSource'),
+                'decision_reason': cand.get('decisionReason'),
+            },
+            'ml_memory': build_ml_memory_block(cand, ctx, calibration, closed_trades),
+        })
+
+    return {
+        'schema_version': 1,
+        'observe_only': True,
+        'quality_tag': 'placeholder_prompt_era',
+        'poll_timestamp': poll_ts,
+        'session_date': ctx.get('today_ist'),
+        'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
+        'decision_source': result.get('decision_source') or result.get('decisionSource'),
+        'signal_independence': signal_independence,
+        'market_context': {
+            'vix': latest_poll.get('vix') or latest_poll.get('VIX') or ctx.get('vix'),
+            'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF') or ctx.get('bnfSpot'),
+            'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF') or ctx.get('nfSpot'),
+            'gap_info': result.get('gapInfo'),
+            'nf_gap_info': result.get('nfGapInfo'),
+            'range_sigma': result.get('rangeSigma'),
+            'regime': result.get('regime'),
+            'market_phase': result.get('marketPhase'),
+            'institutional_regime': result.get('institutionalRegime'),
+            'effective_bias': result.get('effective_bias'),
+            'morning_bias': result.get('morningBias'),
+            'bnf_breadth': ctx.get('bnfBreadth'),
+            'nf50_breadth': ctx.get('nf50Breadth'),
+            'signal_accuracy': ctx.get('signalAccuracy'),
+        },
+        'verdict_context': {
+            'action': verdict.get('action'),
+            'strategy': verdict.get('strategy'),
+            'direction': verdict.get('direction'),
+            'confidence': verdict.get('confidence'),
+            'reasoning': verdict.get('reasoning'),
+            'conflicts': verdict.get('conflicts'),
+        },
+        'candidate_counts': {
+            'generated': len(generated) if isinstance(generated, list) else 0,
+            'watchlist': len(watchlist) if isinstance(watchlist, list) else 0,
+        },
+        'candidates': candidates,
+    }
 
 def _record_rejected_candidate(
     ctx,
@@ -7669,6 +7917,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         result['alerts'] = []
         result['alert_error'] = str(e)
+
+    try:
+        result['elephant_fact_pack'] = build_elephant_fact_pack(
+            result=result,
+            ctx=ctx,
+            polls=polls,
+            calibration=_calibration,
+            closed_trades=closed_trades,
+        )
+    except Exception as e:
+        result['elephant_fact_pack_error'] = str(e)
 
     out_str, _ = _safe_json(result)
     return out_str

@@ -42,7 +42,7 @@ class NativeBridge(private val context: Context) {
         private const val PREF_LAST_EVALUATOR_JOB = "last_evaluator_job"
         private const val PREF_TRADE_MODE = "trade_mode"
         private const val PREF_TRADE_MODE_EXPLICIT = "trade_mode_explicit"
-        private const val ORACLE_BASE_URL = "http://144.24.117.114:8443"
+        private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
     }
     private var lastScoredCandCount = -1

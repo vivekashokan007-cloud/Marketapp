@@ -11,7 +11,9 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import kotlinx.coroutines.*
 import okhttp3.OkHttpClient
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import okhttp3.logging.HttpLoggingInterceptor
@@ -76,6 +78,8 @@ class MarketWatchService : Service() {
         private const val NF50_REMOTE_CACHE_KEY = "nf50_remote_constituents_json"
         private const val NF50_REMOTE_CACHE_MS_KEY = "nf50_remote_constituents_sync_ms"
         private const val NF50_REMOTE_TTL_MS = 12 * 60 * 60 * 1000L
+        private const val SIGNAL_RELIABILITY_CACHE_KEY = "signal_reliability_rows_json"
+        private const val SIGNAL_RELIABILITY_CACHE_MONTH_KEY = "signal_reliability_cache_month"
         private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
         private const val LAST_POLL_GAP_WARNING_SLOT_KEY = "last_poll_gap_warning_slot"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
@@ -85,6 +89,7 @@ class MarketWatchService : Service() {
         private const val POLL_SLOT_TRIGGER_LAG_MS = 5_000L
         private const val SERVICE_SELF_HEAL_REQ_CODE = 74052
         private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
+        private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -1799,6 +1804,9 @@ class MarketWatchService : Service() {
             // Phase B: accuracy stats from Supabase (refresh once per day or per session)
             val accuracyStats = SupabaseClient.getSignalAccuracyStats()
             ctxObj.put("signalAccuracy", accuracyStats)
+            val signalReliabilityRows = loadSignalReliabilityRows()
+            ctxObj.put("signalReliability", signalReliabilityRows)
+            ctxObj.put("elephantObserveOnly", true)
             
             // Phase B: evening close data for overnight delta
             val eveningCloseStr = prefs.getString("evening_close_baseline", null)
@@ -2071,6 +2079,8 @@ class MarketWatchService : Service() {
                                 SupabaseClient.saveBrainSnapshot(snapObj)
                             }
                         }
+
+                        launchElephantObserveOnly(resultObj)
                     } else {
                         LogBuffer.add('W', TAG, "ML_PERSIST_DEDUP_SKIP: key=$mlPersistKey")
                     }
@@ -2555,6 +2565,135 @@ class MarketWatchService : Service() {
 
         lastPositionAlertKeys.clear()
         lastPositionAlertKeys.addAll(currentPositionKeys)
+    }
+
+    private fun currentIstMonthKey(): String = todayIstDate().take(7)
+
+    private fun parseJsonArraySafe(raw: String?): JSONArray {
+        return try {
+            JSONArray(raw ?: "[]")
+        } catch (_: Exception) {
+            JSONArray()
+        }
+    }
+
+    private fun loadSignalReliabilityRows(): JSONArray {
+        val currentMonth = currentIstMonthKey()
+        val cachedMonth = prefs.getString(SIGNAL_RELIABILITY_CACHE_MONTH_KEY, "") ?: ""
+        val cachedRowsRaw = prefs.getString(SIGNAL_RELIABILITY_CACHE_KEY, "[]")
+        val cachedRows = parseJsonArraySafe(cachedRowsRaw)
+        if (cachedMonth == currentMonth && cachedRows.length() > 0) {
+            return cachedRows
+        }
+
+        return try {
+            val freshRows = SupabaseClient.getSignalReliabilityRows()
+            if (freshRows.length() > 0) {
+                prefs.edit()
+                    .putString(SIGNAL_RELIABILITY_CACHE_KEY, freshRows.toString())
+                    .putString(SIGNAL_RELIABILITY_CACHE_MONTH_KEY, currentMonth)
+                    .apply()
+                freshRows
+            } else {
+                cachedRows
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "SIGNAL_RELIABILITY_FETCH_FAIL: ${e.message}")
+            cachedRows
+        }
+    }
+
+    private fun nowUtcIso(): String = java.time.Instant.now().toString()
+
+    private fun postElephantObserveOnly(payload: JSONObject): JSONObject {
+        val request = Request.Builder()
+            .url("$ELEPHANT_BASE_URL/elephant")
+            .addHeader("Accept", "application/json")
+            .post(payload.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                val raw = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    JSONObject()
+                        .put("status", "WAIT")
+                        .put("reason", "http_${response.code}")
+                        .put("raw", raw)
+                } else {
+                    try {
+                        JSONObject(raw)
+                    } catch (_: Exception) {
+                        JSONObject()
+                            .put("status", "WAIT")
+                            .put("reason", "invalid_json")
+                            .put("raw", raw)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            JSONObject()
+                .put("status", "WAIT")
+                .put("reason", e.message ?: "network_error")
+        }
+    }
+
+    private fun launchElephantObserveOnly(resultObj: JSONObject) {
+        val factPack = resultObj.optJSONObject("elephant_fact_pack") ?: return
+        if (!factPack.optBoolean("observe_only", false)) return
+        val candidates = factPack.optJSONArray("candidates") ?: return
+        if (candidates.length() == 0) return
+        val pollTimestamp = factPack.optString("poll_timestamp", "").trim()
+        if (pollTimestamp.isBlank()) return
+
+        val grouped = linkedMapOf<String, MutableList<JSONObject>>()
+        for (i in 0 until candidates.length()) {
+            val candidate = candidates.optJSONObject(i) ?: continue
+            val lane = candidate.optString("lane", "").trim()
+            if (lane.isBlank()) continue
+            grouped.getOrPut(lane) { mutableListOf() }.add(JSONObject(candidate.toString()))
+        }
+        if (grouped.isEmpty()) return
+
+        for ((lane, laneCandidates) in grouped) {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val limitedCandidates = JSONArray()
+                    laneCandidates.take(15).forEach { limitedCandidates.put(it) }
+                    val lanePayload = JSONObject().apply {
+                        put("poll_timestamp", pollTimestamp)
+                        put("session_date", factPack.optString("session_date"))
+                        put("lane", lane)
+                        put("observe_only", true)
+                        put("quality_tag", factPack.optString("quality_tag", "placeholder_prompt_era"))
+                        put("trade_mode", factPack.optString("trade_mode"))
+                        put("decision_source", factPack.optString("decision_source"))
+                        put("market_context", factPack.optJSONObject("market_context") ?: JSONObject())
+                        put("verdict_context", factPack.optJSONObject("verdict_context") ?: JSONObject())
+                        put("signal_independence", factPack.optJSONObject("signal_independence") ?: JSONObject())
+                        put("candidate_counts", factPack.optJSONObject("candidate_counts") ?: JSONObject())
+                        put("candidates", limitedCandidates)
+                    }
+                    val responseJson = postElephantObserveOnly(lanePayload)
+                    val assessments = JSONObject().apply {
+                        put("request", lanePayload)
+                        put("response", responseJson)
+                        put("status", responseJson.optString("status", "WAIT"))
+                        put("observe_only", true)
+                        put("quality_tag", lanePayload.optString("quality_tag", "placeholder_prompt_era"))
+                        put("persisted_at", nowUtcIso())
+                    }
+                    val persisted = SupabaseClient.saveElephantAssessment(pollTimestamp, lane, assessments)
+                    LogBuffer.add(
+                        if (persisted) 'I' else 'W',
+                        TAG,
+                        "ELEPHANT_OBSERVE_ONLY: lane=$lane status=${responseJson.optString("status", "WAIT")} persisted=$persisted"
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "ELEPHANT_OBSERVE_ONLY_FAIL lane=$lane: ${e.message}")
+                }
+            }
+        }
     }
 
     private fun fetchSync(url: String, token: String): JSONObject? {
