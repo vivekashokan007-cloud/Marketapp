@@ -1681,7 +1681,6 @@ class MarketWatchService : Service() {
                                          bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
                                          nf50Breadth: JSONObject) {
         var brainSuccess = false
-        var broadcastData: String? = null
 
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
@@ -2046,7 +2045,6 @@ class MarketWatchService : Service() {
             
             if (result != null) {
                 val resultObj = JSONObject(result)
-                broadcastData = result
                 brainSuccess = true
 
                 // ML Arch V2: Chain slice extraction + brain snapshot
@@ -2343,26 +2341,6 @@ class MarketWatchService : Service() {
                 }
 
                 brainSuccess = true
-                
-                // Build the data payload for syncFromNative() in WebView
-                val pollCount = prefs.getInt("poll_count", 0)
-                val openTradesUpdated = prefs.getString("open_trades", "[]") ?: "[]"
-                val historyStr = prefs.getString("poll_history", "[]") ?: "[]"
-                
-                val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
-                broadcastData = JSONObject().apply {
-                    put("dateISO", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = istTimeZone }.format(Date())) // A4
-                    put("spots", JSONObject().apply {
-                        put("bnfSpot", bnfSpot)
-                        put("nfSpot",  nfSpot)
-                        put("vix",     vix)
-                    })
-                    put("brainResult",  resultObj) // WS19: use mutated object
-                    put("candidates",   candidates ?: JSONArray())
-                    put("pollCount",    pollCount)
-                    put("pollHistory",  JSONArray(historyStr)) // A4
-                    put("openTrades",   JSONArray(openTradesUpdated))
-                }.toString()
             } else {
                 Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after 10s")
             }
@@ -2370,9 +2348,10 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
         } finally {
-            // CRITICAL: Always send broadcast so WebView wakes up, even if brain threw
+            // Keep the Binder payload empty. The WebView pulls the latest native
+            // state directly, and sending the full brain payload here can exceed
+            // Android's parcel limit and crash the poll loop.
             val tickIntent = Intent("com.marketradar.POLL_TICK")
-            broadcastData?.let { tickIntent.putExtra("data", it) }
             sendBroadcast(tickIntent)
             val pollCount = prefs.getInt("poll_count", 0)
             Log.d(TAG, "BROADCAST_SENT: Poll #$pollCount (brain success=$brainSuccess)")
