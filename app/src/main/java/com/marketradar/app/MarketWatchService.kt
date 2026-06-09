@@ -38,6 +38,11 @@ class MarketWatchService : Service() {
             LogBuffer.add('I', "OkHttp", msg)
         }.apply { level = HttpLoggingInterceptor.Level.BASIC })
         .build()
+    private val elephantHandoffClient = client.newBuilder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .build()
     
     private var token401Counter = 0
     private var lastPositionAlertKeys = mutableSetOf<String>()
@@ -2582,9 +2587,7 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun nowUtcIso(): String = java.time.Instant.now().toString()
-
-    private fun postElephantObserveOnly(payload: JSONObject): JSONObject {
+    private fun handoffElephantObserveOnly(payload: JSONObject): Boolean {
         val request = Request.Builder()
             .url("$ELEPHANT_BASE_URL/elephant")
             .addHeader("Accept", "application/json")
@@ -2592,28 +2595,9 @@ class MarketWatchService : Service() {
             .build()
 
         return try {
-            client.newCall(request).execute().use { response ->
-                val raw = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    JSONObject()
-                        .put("status", "WAIT")
-                        .put("reason", "http_${response.code}")
-                        .put("raw", raw)
-                } else {
-                    try {
-                        JSONObject(raw)
-                    } catch (_: Exception) {
-                        JSONObject()
-                            .put("status", "WAIT")
-                            .put("reason", "invalid_json")
-                            .put("raw", raw)
-                    }
-                }
-            }
+            elephantHandoffClient.newCall(request).execute().use { response -> response.isSuccessful }
         } catch (e: Exception) {
-            JSONObject()
-                .put("status", "WAIT")
-                .put("reason", e.message ?: "network_error")
+            false
         }
     }
 
@@ -2637,8 +2621,8 @@ class MarketWatchService : Service() {
         for ((lane, laneCandidates) in grouped) {
             serviceScope.launch(Dispatchers.IO) {
                 try {
-                    val limitedCandidates = JSONArray()
-                    laneCandidates.take(15).forEach { limitedCandidates.put(it) }
+                    val laneCandidatePayload = JSONArray()
+                    laneCandidates.forEach { laneCandidatePayload.put(it) }
                     val lanePayload = JSONObject().apply {
                         put("poll_timestamp", pollTimestamp)
                         put("session_date", factPack.optString("session_date"))
@@ -2651,22 +2635,13 @@ class MarketWatchService : Service() {
                         put("verdict_context", factPack.optJSONObject("verdict_context") ?: JSONObject())
                         put("signal_independence", factPack.optJSONObject("signal_independence") ?: JSONObject())
                         put("candidate_counts", factPack.optJSONObject("candidate_counts") ?: JSONObject())
-                        put("candidates", limitedCandidates)
+                        put("candidates", laneCandidatePayload)
                     }
-                    val responseJson = postElephantObserveOnly(lanePayload)
-                    val assessments = JSONObject().apply {
-                        put("request", lanePayload)
-                        put("response", responseJson)
-                        put("status", responseJson.optString("status", "WAIT"))
-                        put("observe_only", true)
-                        put("quality_tag", lanePayload.optString("quality_tag", "placeholder_prompt_era"))
-                        put("persisted_at", nowUtcIso())
-                    }
-                    val persisted = SupabaseClient.saveElephantAssessment(pollTimestamp, lane, assessments)
+                    val accepted = handoffElephantObserveOnly(lanePayload)
                     LogBuffer.add(
-                        if (persisted) 'I' else 'W',
+                        if (accepted) 'I' else 'W',
                         TAG,
-                        "ELEPHANT_OBSERVE_ONLY: lane=$lane status=${responseJson.optString("status", "WAIT")} persisted=$persisted"
+                        "ELEPHANT_HANDOFF: lane=$lane accepted=$accepted candidates=${laneCandidates.size}"
                     )
                 } catch (e: Exception) {
                     Log.w(TAG, "ELEPHANT_OBSERVE_ONLY_FAIL lane=$lane: ${e.message}")

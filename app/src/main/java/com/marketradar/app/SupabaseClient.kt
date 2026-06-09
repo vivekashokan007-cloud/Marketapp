@@ -328,20 +328,25 @@ object SupabaseClient {
         val recommendationSaved = postArrayToTable("ml_recommendation_outcomes", recommendationRows) ||
             postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRows))
 
-        val persisted = (if (evaluationSaved) evaluationRows.length() else 0) +
-            (if (recommendationSaved) recommendationRows.length() else 0)
+        val evaluationPersisted = if (evaluationSaved) evaluationRows.length() else 0
+        val recommendationPersisted = if (recommendationSaved) recommendationRows.length() else 0
         val success = evaluationSaved || recommendationSaved
         val message = when {
-            success -> "Persisted $persisted rows to Supabase (${"%d".format(evaluationRows.length())} eval, ${recommendationRows.length()} primary recommendations produced)."
+            evaluationSaved && recommendationSaved ->
+                "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted primary recommendation rows persisted separately."
+            evaluationSaved ->
+                "Persisted $evaluationPersisted evaluation rows to Supabase."
+            recommendationSaved ->
+                "Persisted $recommendationPersisted primary recommendation rows to Supabase; evaluation rows were not saved."
             else -> "Supabase persistence failed for evaluation outcomes."
         }
 
         return EvaluationSaveResult(
             success = success,
-            producedCount = body.length(),
-            persistedCount = persisted,
-            primaryPersistedCount = if (recommendationSaved) recommendationRows.length() else 0,
-            evaluationPersistedCount = if (evaluationSaved) evaluationRows.length() else 0,
+            producedCount = evaluationRows.length(),
+            persistedCount = evaluationPersisted,
+            primaryPersistedCount = recommendationPersisted,
+            evaluationPersistedCount = evaluationPersisted,
             message = message
         )
     }
