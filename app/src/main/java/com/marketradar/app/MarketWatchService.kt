@@ -2078,6 +2078,32 @@ class MarketWatchService : Service() {
                             Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
                         } else {
                             val snapObj = JSONObject(snapResult)
+                            // FIX: brain.py returns JSONB payload fields as pre-serialised json.dumps()
+                            // strings. Re-parse each into a proper JSONObject/JSONArray so PostgREST
+                            // stores them as JSONB objects, not JSONB strings. Without this, every
+                            // ->> extraction on these columns returns NULL.
+                            val jsonObjectFields = listOf(
+                                "primary_candidate_json",
+                                "context_json",
+                                "verdict_json",
+                                "market_forces_json",
+                                "poll_summary_json"
+                            )
+                            val jsonArrayFields = listOf("top_candidates_json")
+                            for (field in jsonObjectFields) {
+                                val raw = snapObj.optString(field, "")
+                                if (raw.isNotBlank()) {
+                                    try { snapObj.put(field, JSONObject(raw)) }
+                                    catch (_: Exception) { /* leave as-is — don't drop the row */ }
+                                }
+                            }
+                            for (field in jsonArrayFields) {
+                                val raw = snapObj.optString(field, "")
+                                if (raw.isNotBlank()) {
+                                    try { snapObj.put(field, JSONArray(raw)) }
+                                    catch (_: Exception) { /* leave as-is — don't drop the row */ }
+                                }
+                            }
                             serviceScope.launch(Dispatchers.IO) {
                                 SupabaseClient.saveBrainSnapshot(snapObj)
                             }
