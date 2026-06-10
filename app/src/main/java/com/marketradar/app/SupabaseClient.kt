@@ -7,6 +7,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.TimeUnit
 
 object SupabaseClient {
@@ -55,6 +58,43 @@ object SupabaseClient {
             }
         }
         return JSONArray()
+    }
+
+    private fun filterRowsByIstSessionDate(rows: JSONArray, date: String): JSONArray {
+        val out = JSONArray()
+        val istTsFormats = listOf(
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX", Locale.US),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssX", Locale.US)
+        ).onEach { fmt -> fmt.timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
+        val istDateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }
+
+        fun rowMatches(obj: JSONObject): Boolean {
+            val sessionDate = obj.optString("session_date", "").trim()
+            if (sessionDate == date) return true
+
+            val pollTs = obj.optString("poll_ts", "").trim()
+            if (pollTs.startsWith(date)) return true
+            if (pollTs.isNotBlank()) {
+                for (fmt in istTsFormats) {
+                    try {
+                        if (istDateFmt.format(fmt.parse(pollTs) ?: continue) == date) return true
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+
+            val legacyDate = obj.optString("date", "").trim()
+            return legacyDate == date
+        }
+
+        for (i in 0 until rows.length()) {
+            val obj = rows.optJSONObject(i) ?: continue
+            if (rowMatches(obj)) out.put(obj)
+        }
+        return out
     }
 
     private fun postToFirstWorkingTable(
@@ -283,22 +323,44 @@ object SupabaseClient {
     }
 
     fun fetchBrainSnapshots(date: String): JSONArray {
-        return fetchArrayFromTables(
+        val exact = fetchArrayFromTables(
             listOf(
                 "ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc",
                 "ml_poll_sequences?session_date=eq.$date&order=poll_ts.desc"
             )
         )
+        if (exact.length() > 0) return exact
+
+        // Recovery path: older or partially migrated rows may have a valid poll_ts
+        // but a null/missing session_date, which makes the exact server-side filter
+        // look empty and causes day evaluation to skip.
+        val recent = fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=500",
+                "ml_poll_sequences?select=*&order=poll_ts.desc&limit=500"
+            )
+        )
+        return filterRowsByIstSessionDate(recent, date)
     }
 
     fun fetchChainSlices(date: String): JSONArray {
-        return fetchArrayFromTables(
+        val exact = fetchArrayFromTables(
             listOf(
                 "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.desc",
                 "chain_slices?session_date=eq.$date&order=poll_ts.desc",
                 "chain_snapshots?date=eq.$date&order=created_at.desc"
             )
         )
+        if (exact.length() > 0) return exact
+
+        val recent = fetchArrayFromTables(
+            listOf(
+                "ml_option_chain_snapshots?select=*&order=poll_ts.desc&limit=3000",
+                "chain_slices?select=*&order=poll_ts.desc&limit=3000",
+                "chain_snapshots?select=*&order=created_at.desc&limit=3000"
+            )
+        )
+        return filterRowsByIstSessionDate(recent, date)
     }
 
     fun saveChainSlice(body: JSONObject): Boolean {

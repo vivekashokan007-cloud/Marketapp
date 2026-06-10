@@ -1,4 +1,4 @@
-CURRENT BUILD STATUS - v2.4.03 / b234
+CURRENT BUILD STATUS - v2.4.10 / b241
 
 No current compile error is known.
 
@@ -11,7 +11,7 @@ Latest local verification before push/release:
 - Gate 5 trace smoke: pass
 - Node syntax: pass for MarketVivi app.js
 - git diff --check: pass in both repos
-- Current Wave 1 local-only verification:
+- Current local verification:
   - `python3 -m py_compile app/src/main/python/brain.py`: pass
   - `node --check ../MarketVivi/app.js`: pass
   - Rejected-candidate output path restored end-to-end in `brain.py`
@@ -24,6 +24,6 @@ Known test limitation:
   expected BULL/69, current NEUTRAL/14.
 
 Current local limitation:
-- This Codex container does not have a local Java runtime configured, so Kotlin/
-  Gradle build verification cannot be completed locally. Android verification is
-  static-review plus GitHub Actions after push.
+- Java/Gradle are installed locally, but Android resource packaging still cannot
+  complete in this container because SDK `aapt2` is x86_64 while the container
+  runtime is `aarch64`. Release verification therefore depends on GitHub Actions.
