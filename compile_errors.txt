@@ -1,4 +1,4 @@
-CURRENT BUILD STATUS - v2.4.10 / b241
+CURRENT BUILD STATUS - v2.4.11 / b242
 
 No current compile error is known.
 

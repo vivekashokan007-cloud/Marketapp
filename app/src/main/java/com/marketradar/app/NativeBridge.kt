@@ -561,6 +561,7 @@ class NativeBridge(private val context: Context) {
             val today = todayIstDate()
             val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
             val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+            val retryEvaluation = shouldRetryDayEvaluation(today)
             val serviceRunning = isServiceRunning()
             val marketClock = MarketOpenScheduler.currentStatus()
             val coverage = currentPollCoverage(marketClock)
@@ -578,12 +579,21 @@ class NativeBridge(private val context: Context) {
             status.put("actualPollsToday", coverage.actual)
             status.put("missedPollsToday", coverage.missed)
             status.put("pollCoverageState", coverage.state)
-            status.put("evaluationDoneToday", doneDate == today)
+            status.put("evaluationDoneToday", doneDate == today && !retryEvaluation)
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", runningDate == today)
+            status.put("evaluationRetryRecommended", retryEvaluation)
             status.put("lastEvaluationOutcomeCount", prefs.getInt("last_evaluation_outcome_count", 0))
             status.put("lastEvaluationProducedCount", prefs.getInt("last_evaluation_produced_count", 0))
-            status.put("lastEvaluationMessage", prefs.getString("last_evaluation_message", "") ?: "")
+            val lastEvaluationMessage = prefs.getString("last_evaluation_message", "") ?: ""
+            status.put(
+                "lastEvaluationMessage",
+                if (retryEvaluation) {
+                    "Earlier evaluation missed today's brain snapshots. Tap Evaluate Today to rerun with the repaired fetch path."
+                } else {
+                    lastEvaluationMessage
+                }
+            )
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"
@@ -663,7 +673,8 @@ class NativeBridge(private val context: Context) {
     fun triggerDayEvaluation(): String {
         return try {
             val today = todayIstDate()
-            if (prefs.getString("evaluation_done_date", "") == today) {
+            val retryEvaluation = shouldRetryDayEvaluation(today)
+            if (prefs.getString("evaluation_done_date", "") == today && !retryEvaluation) {
                 return JSONObject().apply {
                     put("ok", true)
                     put("status", "done")
@@ -680,8 +691,12 @@ class NativeBridge(private val context: Context) {
                 }.toString()
             }
             prefs.edit()
+                .putString("evaluation_done_date", "")
                 .putString("evaluation_running_date", today)
-                .putString("last_evaluation_message", "Evaluation queued...")
+                .putString(
+                    "last_evaluation_message",
+                    if (retryEvaluation) "Evaluation requeued after stale no-snapshot result..." else "Evaluation queued..."
+                )
                 .commit()
             val intent = android.content.Intent(context, MarketMLService::class.java).apply {
                 action = "ACTION_DAY_EVALUATION"
@@ -689,8 +704,8 @@ class NativeBridge(private val context: Context) {
             context.startForegroundService(intent)
             JSONObject().apply {
                 put("ok", true)
-                put("status", "started")
-                put("message", "Day evaluation started.")
+                put("status", if (retryEvaluation) "restarted" else "started")
+                put("message", if (retryEvaluation) "Day evaluation restarted for today's recovered snapshots." else "Day evaluation started.")
             }.toString()
         } catch (e: Exception) {
             prefs.edit()
@@ -866,6 +881,21 @@ class NativeBridge(private val context: Context) {
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         val pollCount = prefs.getInt("poll_count", 0)
         return lastPollDate == today && pollCount > 0
+    }
+
+    private fun shouldRetryDayEvaluation(today: String): Boolean {
+        val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+        if (doneDate != today) return false
+        val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+        if (runningDate == today) return false
+        val lastMessage = (prefs.getString("last_evaluation_message", "") ?: "").lowercase(Locale.US)
+        if (!lastMessage.contains("no brain snapshots found")) return false
+        return try {
+            SupabaseClient.fetchBrainSnapshots(today).length() > 0
+        } catch (e: Exception) {
+            Log.w(TAG, "shouldRetryDayEvaluation check failed: ${e.message}")
+            false
+        }
     }
 
     private data class PollCoverage(
