@@ -890,12 +890,10 @@ class NativeBridge(private val context: Context) {
         if (runningDate == today) return false
         val lastMessage = (prefs.getString("last_evaluation_message", "") ?: "").lowercase(Locale.US)
         if (!lastMessage.contains("no brain snapshots found")) return false
-        return try {
-            SupabaseClient.fetchBrainSnapshots(today).length() > 0
-        } catch (e: Exception) {
-            Log.w(TAG, "shouldRetryDayEvaluation check failed: ${e.message}")
-            false
-        }
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        val pollCount = prefs.getInt("poll_count", 0)
+        val latestPoll = prefs.getString("latest_poll", "null") ?: "null"
+        return lastPollDate == today && (pollCount > 0 || latestPoll != "null")
     }
 
     private data class PollCoverage(
