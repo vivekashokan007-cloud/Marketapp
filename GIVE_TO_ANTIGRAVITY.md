@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.12 / b243`
+Current Android release target: `v2.4.13 / b244`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -34,7 +34,7 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.12`.
+- `BRAIN_VERSION` is `2.4.13`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.

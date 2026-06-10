@@ -1,5 +1,6 @@
 package com.marketradar.app
 
+import android.app.ActivityManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -560,6 +561,7 @@ class NativeBridge(private val context: Context) {
             val activeToday = hasTodaySession()
             val today = todayIstDate()
             val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+            clearStaleEvaluationRunningIfNeeded(today)
             val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
             val retryEvaluation = shouldRetryDayEvaluation(today)
             val serviceRunning = isServiceRunning()
@@ -673,6 +675,7 @@ class NativeBridge(private val context: Context) {
     fun triggerDayEvaluation(): String {
         return try {
             val today = todayIstDate()
+            clearStaleEvaluationRunningIfNeeded(today)
             val retryEvaluation = shouldRetryDayEvaluation(today)
             if (prefs.getString("evaluation_done_date", "") == today && !retryEvaluation) {
                 return JSONObject().apply {
@@ -883,7 +886,31 @@ class NativeBridge(private val context: Context) {
         return lastPollDate == today && pollCount > 0
     }
 
+    private fun isMlServiceRunning(): Boolean {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+            @Suppress("DEPRECATION")
+            am.getRunningServices(Int.MAX_VALUE).any { it.service.className == MarketMLService::class.java.name }
+        } catch (e: Exception) {
+            Log.w(TAG, "isMlServiceRunning check failed: ${e.message}")
+            false
+        }
+    }
+
+    private fun clearStaleEvaluationRunningIfNeeded(today: String): Boolean {
+        val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+        if (runningDate != today) return false
+        if (isMlServiceRunning()) return false
+        prefs.edit()
+            .putString("evaluation_running_date", "")
+            .putString("last_evaluation_message", "Previous evaluation was interrupted. Tap Evaluate Today to retry.")
+            .commit()
+        Log.i(TAG, "Cleared stale evaluation_running_date for $today")
+        return true
+    }
+
     private fun shouldRetryDayEvaluation(today: String): Boolean {
+        clearStaleEvaluationRunningIfNeeded(today)
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
         if (doneDate != today) return false
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""

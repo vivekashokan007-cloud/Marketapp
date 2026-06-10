@@ -387,6 +387,19 @@ class MarketMLService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        try {
+            val today = todayIstDate()
+            val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+            if (runningDate == today) {
+                prefs.edit()
+                    .putString("evaluation_running_date", "")
+                    .putString("last_evaluation_message", "Evaluation interrupted. Tap Evaluate Today to retry.")
+                    .commit()
+                Log.w(TAG, "EVAL_INTERRUPT: cleared stale running flag in onDestroy for $today")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "onDestroy evaluation cleanup failed: ${e.message}")
+        }
         scope.cancel()
         super.onDestroy()
     }
