@@ -566,6 +566,15 @@ class NativeBridge(private val context: Context) {
             val serviceRunning = isServiceRunning()
             val marketClock = MarketOpenScheduler.currentStatus()
             val coverage = currentPollCoverage(marketClock)
+            val evaluationReady = !serviceRunning && !marketClock.marketOpen && activeToday && coverage.actual > 0 && runningDate != today && !(doneDate == today && !retryEvaluation)
+            val evaluationBlockedReason = when {
+                serviceRunning -> "WAIT_FOR_POST_CLOSE_HANDOFF"
+                marketClock.marketOpen -> "MARKET_OPEN"
+                !activeToday || coverage.actual <= 0 -> "NO_SESSION"
+                runningDate == today -> "RUNNING"
+                doneDate == today && !retryEvaluation -> "DONE"
+                else -> ""
+            }
             status.put("running", serviceRunning)
             status.put("sessionActive", activeToday)
             status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
@@ -580,6 +589,8 @@ class NativeBridge(private val context: Context) {
             status.put("actualPollsToday", coverage.actual)
             status.put("missedPollsToday", coverage.missed)
             status.put("pollCoverageState", coverage.state)
+            status.put("evaluationReady", evaluationReady)
+            status.put("evaluationBlockedReason", evaluationBlockedReason)
             status.put("evaluationDoneToday", doneDate == today && !retryEvaluation)
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", runningDate == today)
@@ -676,6 +687,30 @@ class NativeBridge(private val context: Context) {
             val today = todayIstDate()
             clearStaleEvaluationRunningIfNeeded(today)
             val retryEvaluation = shouldRetryDayEvaluation(today)
+            val marketClock = MarketOpenScheduler.currentStatus()
+            val coverage = currentPollCoverage(marketClock)
+            val serviceRunning = isServiceRunning()
+            if (serviceRunning) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("status", "blocked")
+                    put("message", "Day evaluation is blocked while the live watch service is still active. Wait for the post-close handoff or retry after the service stops.")
+                }.toString()
+            }
+            if (marketClock.marketOpen) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("status", "blocked")
+                    put("message", "Day evaluation is available only after market close.")
+                }.toString()
+            }
+            if (coverage.actual <= 0) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("status", "blocked")
+                    put("message", "No completed market session was found for today yet.")
+                }.toString()
+            }
             if (prefs.getString("evaluation_done_date", "") == today && !retryEvaluation) {
                 return JSONObject().apply {
                     put("ok", true)

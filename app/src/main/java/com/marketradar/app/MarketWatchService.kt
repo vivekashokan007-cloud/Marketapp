@@ -674,7 +674,8 @@ class MarketWatchService : Service() {
                         updateForegroundNotification("Waiting for Token", "Open app to sync Upstox token")
                     }
                 } else {
-                    maintainSessionWakeLock()
+                    releaseSessionWakeLock()
+                    if (handlePostCloseEvaluationHandoff(now)) return@launch
                     Log.d(TAG, "Market closed. Skipping poll.")
                     updateForegroundNotification("Market Closed", "Waiting for next session...")
                 }
@@ -705,6 +706,37 @@ class MarketWatchService : Service() {
         serviceScope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun handlePostCloseEvaluationHandoff(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val ist = TimeZone.getTimeZone("Asia/Kolkata")
+        val cal = Calendar.getInstance(ist).apply { timeInMillis = nowMs }
+        val status = MarketOpenScheduler.currentStatus(cal)
+        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        if (!status.marketDay || status.marketOpen || minutes <= MARKET_CLOSE_MINUTE) return false
+
+        val today = todayIstDate()
+        val doneToday = prefs.getString("evaluation_done_date", "") == today
+        val runningToday = prefs.getString("evaluation_running_date", "") == today
+        val alreadyHandedOff = prefs.getBoolean("hasDayEvalRun", false)
+
+        if (!alreadyHandedOff && !doneToday && !runningToday) {
+            try {
+                val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
+                    action = "ACTION_DAY_EVALUATION"
+                }
+                startForegroundService(mlService)
+                prefs.edit().putBoolean("hasDayEvalRun", true).apply()
+                Log.i(TAG, "DAY_EVAL_HANDOFF: launched post-close evaluation")
+            } catch (e: Exception) {
+                Log.e(TAG, "DAY_EVAL_HANDOFF_FAIL: ${e.message}")
+            }
+        }
+
+        MarketOpenScheduler.scheduleNextMarketOpen(this)
+        Log.i(TAG, "POST_CLOSE_SHUTDOWN: stopping watch service after market close")
+        stopPolling()
+        return true
     }
 
     private suspend fun performPoll(token: String) {
@@ -2880,22 +2912,6 @@ class MarketWatchService : Service() {
                 } catch (e: Exception) {
                     prefs.edit().remove("has315pmSnapshot").apply()
                     Log.e(TAG, "SNAPSHOT_ERROR 315pm: ${e.message}")
-                }
-            }
-        }
-
-        // 3:30 PM+ — trigger day evaluation (evening evaluator for ML training labels)
-        if (mins in 930..960 && !prefs.getBoolean("hasDayEvalRun", false)) {
-            serviceScope.launch(Dispatchers.IO) {
-                try {
-                    val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
-                        action = "ACTION_DAY_EVALUATION"
-                    }
-                    startForegroundService(mlService)
-                    prefs.edit().putBoolean("hasDayEvalRun", true).apply()
-                    Log.i(TAG, "DAY_EVAL_TRIGGERED: evening evaluator launched")
-                } catch (e: Exception) {
-                    Log.e(TAG, "DAY_EVAL_ERROR: ${e.message}")
                 }
             }
         }

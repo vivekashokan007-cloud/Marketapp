@@ -18,6 +18,11 @@ sudo dnf install -y python3 python3-pip nginx certbot python3-certbot-nginx poli
 mkdir -p ~/market-relay
 cd ~/market-relay
 
+# 2.1 Copy the current Oracle app files into the runtime directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cp "${SCRIPT_DIR}/evaluator_app.py" .
+cp "${SCRIPT_DIR}/requirements.txt" .
+
 # 3. Setup Virtual Environment
 if [ ! -d "venv" ]; then
     python3 -m venv venv
@@ -25,7 +30,8 @@ fi
 source venv/bin/activate
 
 # 4. Install Dependencies
-pip install fastapi uvicorn google-generativeai pydantic
+pip install -r requirements.txt
+pip install python-dotenv
 
 # 5. Create .env file with runtime secrets
 cat > .env << EOF
