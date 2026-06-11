@@ -95,6 +95,7 @@ class MarketWatchService : Service() {
         private const val SERVICE_SELF_HEAL_REQ_CODE = 74052
         private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
         private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
+        private const val GENERATED_CANDIDATE_PERSIST_CAP = 50
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -2137,7 +2138,17 @@ class MarketWatchService : Service() {
                                 }
                             }
                             serviceScope.launch(Dispatchers.IO) {
-                                SupabaseClient.saveBrainSnapshot(snapObj)
+                                val snapshotSaved = SupabaseClient.saveBrainSnapshot(snapObj)
+                                if (snapshotSaved) {
+                                    try {
+                                        val factPack = resultObj.optJSONObject("elephant_fact_pack")
+                                        if (factPack != null) {
+                                            persistCompactGeneratedCandidates(factPack, snapObj)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "ML_GENERATED_CANDIDATES_FAIL: ${e.message}")
+                                    }
+                                }
                             }
                         }
 
@@ -2706,6 +2717,156 @@ class MarketWatchService : Service() {
                 }
             }
         }
+    }
+
+    private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject) {
+        val candidates = factPack.optJSONArray("candidates") ?: return
+        if (candidates.length() == 0) return
+
+        val selected = boundedGeneratedCandidates(candidates, GENERATED_CANDIDATE_PERSIST_CAP)
+        if (selected.length() == 0) return
+
+        val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
+        val sessionDate = factPack.optString("session_date", snapObj.optString("session_date", "")).trim()
+        val recommendationId = snapObj.opt("recommendation_id")
+        val qualityTag = factPack.optString("quality_tag", "placeholder_prompt_era")
+        val decisionSource = factPack.optString("decision_source", "")
+        val signalIndependence = factPack.optJSONObject("signal_independence") ?: JSONObject()
+        val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
+
+        fun JSONObject.putIfValue(key: String, value: Any?) {
+            if (value == null || value == JSONObject.NULL) return
+            when (value) {
+                is String -> if (value.isNotBlank()) put(key, value)
+                else -> put(key, value)
+            }
+        }
+
+        val rows = JSONArray()
+        for (i in 0 until selected.length()) {
+            val candidate = selected.optJSONObject(i) ?: continue
+            val row = JSONObject()
+            row.putIfValue("snapshot_poll_ts", pollTs)
+            row.putIfValue("session_date", sessionDate)
+            row.putIfValue("recommendation_id", recommendationId)
+            row.putIfValue("quality_tag", qualityTag)
+            row.putIfValue("decision_source", decisionSource)
+            row.putIfValue("candidate_id", candidate.opt("candidate_id"))
+            row.putIfValue("lane", candidate.optString("lane"))
+            row.putIfValue("index_key", candidate.optString("index"))
+            row.putIfValue("strategy_type", candidate.optString("strategy_type"))
+            row.putIfValue("trade_mode", candidate.optString("trade_mode"))
+            row.putIfValue("rank", candidate.opt("rank"))
+            if (!candidate.isNull("watchlist_rank")) {
+                row.put("watchlist_rank", candidate.opt("watchlist_rank"))
+                row.put("was_surfaced", true)
+            } else {
+                row.put("was_surfaced", false)
+            }
+
+            val economics = candidate.optJSONObject("economics") ?: JSONObject()
+            row.putIfValue("net_premium", economics.opt("net_premium"))
+            row.putIfValue("max_profit", economics.opt("max_profit"))
+            row.putIfValue("max_loss", economics.opt("max_loss"))
+            row.putIfValue("risk_reward", economics.opt("risk_reward"))
+            row.putIfValue("premium_edge", economics.opt("premium_edge"))
+            row.putIfValue("ev_per_1k", economics.opt("ev_per_1k"))
+            row.putIfValue("est_cost", economics.opt("est_cost"))
+            row.putIfValue("capital_blocked", economics.opt("capital_blocked"))
+
+            val structure = candidate.optJSONObject("structure") ?: JSONObject()
+            row.putIfValue("width", structure.opt("width"))
+            row.putIfValue("expiry", structure.optString("expiry"))
+            row.putIfValue("sigma_otm", structure.opt("sigma_otm"))
+            row.putIfValue("iv_richness", structure.opt("iv_richness"))
+            row.putIfValue("credit_width_ratio", structure.opt("credit_width_ratio"))
+            row.putIfValue("is_credit", structure.opt("is_credit"))
+
+            val execution = candidate.optJSONObject("execution") ?: JSONObject()
+            row.putIfValue("execution_ready", execution.opt("execution_ready"))
+            row.putIfValue("execution_gate", execution.optString("execution_gate"))
+            row.putIfValue("entry_action", execution.optString("entry_action"))
+            row.putIfValue("direction_safe", execution.opt("direction_safe"))
+
+            val overlay = candidate.optJSONObject("ml_overlay") ?: JSONObject()
+            row.putIfValue("brain_score", overlay.opt("brain_score"))
+            row.putIfValue("p_ml", overlay.opt("p_ml"))
+            row.putIfValue("ml_action", overlay.optString("ml_action"))
+            row.putIfValue("ml_edge", overlay.opt("ml_edge"))
+            row.putIfValue("ml_regime", overlay.optString("ml_regime"))
+            row.putIfValue("ml_unsure", overlay.opt("ml_unsure"))
+            row.putIfValue("ml_ood_flag", overlay.opt("ml_ood_flag"))
+
+            row.putIfValue("signal_independence_score", signalIndependence.opt("score"))
+            row.putIfValue("generated_count", candidateCounts.opt("generated"))
+            row.putIfValue("watchlist_count", candidateCounts.opt("watchlist"))
+            rows.put(row)
+        }
+
+        if (rows.length() == 0) return
+        val saved = SupabaseClient.saveGeneratedCandidates(rows)
+        LogBuffer.add(
+            if (saved) 'I' else 'W',
+            TAG,
+            "ML_GENERATED_CANDIDATES: saved=$saved rows=${rows.length()} pollTs=$pollTs"
+        )
+    }
+
+    private fun boundedGeneratedCandidates(candidates: JSONArray, cap: Int): JSONArray {
+        if (cap <= 0 || candidates.length() == 0) return JSONArray()
+
+        fun candidateId(candidate: JSONObject): String =
+            candidate.optString("candidate_id", candidate.optString("id", "")).trim()
+
+        val surfaced = mutableListOf<JSONObject>()
+        val unsurfacedByLane = linkedMapOf<String, MutableList<JSONObject>>()
+        for (i in 0 until candidates.length()) {
+            val candidate = candidates.optJSONObject(i) ?: continue
+            val lane = candidate.optString("lane", "").trim()
+            if (!candidate.isNull("watchlist_rank")) {
+                surfaced.add(JSONObject(candidate.toString()))
+            } else {
+                unsurfacedByLane.getOrPut(lane.ifBlank { "unknown" }) { mutableListOf() }
+                    .add(JSONObject(candidate.toString()))
+            }
+        }
+
+        surfaced.sortWith(
+            compareBy<JSONObject> { candidate ->
+                if (candidate.isNull("watchlist_rank")) Int.MAX_VALUE else candidate.optInt("watchlist_rank", Int.MAX_VALUE)
+            }.thenBy { candidate ->
+                if (candidate.isNull("rank")) Int.MAX_VALUE else candidate.optInt("rank", Int.MAX_VALUE)
+            }
+        )
+
+        val selected = JSONArray()
+        val seenIds = linkedSetOf<String>()
+
+        fun addCandidate(candidate: JSONObject): Boolean {
+            if (selected.length() >= cap) return false
+            val id = candidateId(candidate)
+            if (id.isNotBlank() && !seenIds.add(id)) return true
+            selected.put(candidate)
+            return selected.length() < cap
+        }
+
+        for (candidate in surfaced) {
+            if (!addCandidate(candidate)) return selected
+        }
+
+        var madeProgress: Boolean
+        do {
+            madeProgress = false
+            for ((_, laneCandidates) in unsurfacedByLane) {
+                if (selected.length() >= cap) break
+                if (laneCandidates.isEmpty()) continue
+                val candidate = laneCandidates.removeAt(0)
+                madeProgress = true
+                if (!addCandidate(candidate)) return selected
+            }
+        } while (madeProgress && selected.length() < cap)
+
+        return selected
     }
 
     private fun fetchSync(url: String, token: String): JSONObject? {

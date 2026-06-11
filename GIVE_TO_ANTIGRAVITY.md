@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.13 / b244`
+Current Android release target: `v2.4.17 / b248`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -34,7 +34,7 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.13`.
+- `BRAIN_VERSION` is `2.4.17`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.
@@ -71,18 +71,98 @@ No agent should treat the PWA repo as a second live brain.
 - Signed release is built by `.github/workflows/release.yml` when
   `app/build.gradle.kts` changes.
 
+## Recent Runtime Repairs
+
+- `v2.4.14 / b245`
+  - restored calibration read for `entry_snapshot.sigma_from_atm`
+  - removed dead app-side `elephant_assessments` writer so that table remains
+    Oracle-owned
+  - Oracle deploy scripts now carry Supabase envs and copy runtime files more
+    explicitly
+- `v2.4.15 / b246`
+  - post-close evaluation ownership moved toward `MarketWatchService` handoff
+  - watch service now stops after close/evaluation handoff instead of lingering
+  - manual `Evaluate Today` was blocked while live watch service remained active
+- `v2.4.16 / b247`
+  - manual evaluation is now also blocked for partial sessions
+    (for example `75/76`, missed close poll)
+  - evaluation fetch path no longer loads giant `context_json` blobs into the
+    Kotlin→Python bridge
+  - dedicated slim evaluation fetchers now use only fields consumed by
+    `brain.evening_evaluator()`
+  - measured same-day snapshot payload on 2026-06-11:
+    - with `context_json`: ~47 MB
+    - without `context_json`: ~125 KB
+- `v2.4.17 / b248`
+  - first compact generated-candidate persistence groundwork landed
+  - app now prepares bounded best-effort writes to `ml_generated_candidates`
+    after successful snapshot save
+  - hard cap remains `50` rows per poll with surfaced-first selection and
+    lane-balanced sampled remainder
+  - feature is safe before schema rollout because table absence fails closed
+
+## Learning Control Plane (Current Decision)
+
+- The slim-payload change in `b247` is considered the correct emergency
+  stability fix, not the final ML architecture.
+- Current verified tradeoff:
+  - PRIMARY labels are preserved (`primary_candidate_json`)
+  - SECONDARY breadth is temporarily narrowed because full generated-candidate
+    fallback previously lived inside `context_json`
+- Long-term recovery path:
+  - add normalized compact table `ml_generated_candidates`
+  - app owns writes because the app is the deterministic candidate producer
+  - evaluator should eventually use that compact table for secondary outcomes
+  - do not restore full `context_json` day-evaluation fetches
+- App-side groundwork for `ml_generated_candidates` is now prepared locally:
+  - bounded best-effort writes
+  - hard cap `50` rows per poll
+  - surfaced-first plus lane-balanced sampled remainder
+  - safe no-op behavior until Supabase schema exists
+- Learned judgment should reach live brain only through reviewed committed
+  release artifacts, not runtime-fetched config.
+- Current recommendation is a committed `calibration.json` control plane with:
+  - fixture replay before release
+  - human review of proposed parameter changes
+  - no remote mid-session mutation
+
 ## Current Known Watch Items
 
 - Real-money trading is intentionally blocked by process, not code. Continue
   paper/data collection until enough outcome evidence exists.
-- Oracle evaluator base URL is currently `http://144.24.117.114:8443`.
-  This is acceptable only for current evaluator development traffic.
-- `android:usesCleartextTraffic="true"` is temporarily enabled because Oracle is plain HTTP.
-- Do not route Upstox auth or order relay traffic through Oracle until TLS is deployed.
+- Oracle live runtime now responds correctly over trusted HTTPS:
+  - public endpoint: `https://marketradar-oracle.online`
+  - live `/elephant` now matches the observe-only `202 Accepted` contract
+- Oracle VM operational details:
+  - host `144.24.117.114`
+  - user `opc`
+  - runtime dir `/home/opc/oracle_server/`
+  - env file `/home/opc/oracle_server/.env`
+  - no systemd unit; managed by `/home/opc/oracle_server/restart.sh`
+- The VM is still operationally fragile:
+  - not a proper git-controlled deployment on host
+  - `git` not present on VM runtime
+  - deployment drift is possible unless repo scripts are treated as source of
+    truth
 - Approved branch proposals currently refresh into the service path on a 15-minute TTL,
   with forced refresh after native approve/reject actions.
 - If Upstox changes option-chain JSON shape, verify `instrument_key` still flows
   from `call_options` / `put_options` into brain candidates.
+- Oracle persistence incident summary:
+  - live VM had a stale `evaluator_app.py`
+  - live `restart.sh` overwrote `.env` with only `GEMINI_API_KEY`
+  - every restart could drop `SUPABASE_URL` and `SUPABASE_ANON_KEY`
+  - this caused Gemini calls to work while `elephant_assessments` persistence
+    silently disappeared
+  - direct VM reconciliation fixed this live on 2026-06-11
+- Oracle persistence status is now:
+  - live persistence verified working again
+  - a probe row for `2026-06-11T18:45:00+00:00 / NF_intraday` was written to
+    `elephant_assessments`
+- ML evaluation remains the highest app-side stability risk area:
+  - verify post-close automatic evaluation on real market-day closes
+  - verify stale `RUNNING` latch cleanup after interruptions
+  - do not trust manual evaluation on older builds before `b247`
 
 ## Antigravity Responsibility Boundary
 
@@ -109,3 +189,6 @@ Codex owns app/runtime work:
 - GitHub debug workflow must pass after APK logic changes.
 - Signed release must publish `app-release.apk` for phone updater visibility.
 - Full Kotlin/Gradle compile still requires a Java toolchain in the local environment.
+- Local Android compilation in this environment is still constrained by the
+  known `aapt2` x86_64-on-ARM packaging blocker, so source review + targeted
+  checks remain part of the practical verification baseline here.

@@ -322,6 +322,17 @@ object SupabaseClient {
         return postToFirstWorkingTable(tables, minimal.toString())
     }
 
+    /**
+     * Best-effort compact candidate persistence for offline ML evaluation breadth.
+     *
+     * The table may not exist yet in every environment; fail closed without
+     * affecting the live poll path.
+     */
+    fun saveGeneratedCandidates(rows: JSONArray): Boolean {
+        if (rows.length() == 0) return true
+        return postToFirstWorkingTable(listOf("ml_generated_candidates"), rows.toString())
+    }
+
     fun fetchBrainSnapshots(date: String): JSONArray {
         val exact = fetchArrayFromTables(
             listOf(
