@@ -343,6 +343,25 @@ object SupabaseClient {
         return filterRowsByIstSessionDate(recent, date)
     }
 
+    fun fetchEvaluationSnapshots(date: String): JSONArray {
+        val select = "id,poll_ts,primary_candidate_json,top_candidates_json,is_labelable,session_date"
+        val exact = fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
+                "ml_poll_sequences?session_date=eq.$date&select=$select&order=poll_ts.desc"
+            )
+        )
+        if (exact.length() > 0) return exact
+
+        val recent = fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?select=$select&order=poll_ts.desc&limit=500",
+                "ml_poll_sequences?select=$select&order=poll_ts.desc&limit=500"
+            )
+        )
+        return filterRowsByIstSessionDate(recent, date)
+    }
+
     fun fetchChainSlices(date: String): JSONArray {
         val exact = fetchArrayFromTables(
             listOf(
@@ -358,6 +377,27 @@ object SupabaseClient {
                 "ml_option_chain_snapshots?select=*&order=poll_ts.desc&limit=3000",
                 "chain_slices?select=*&order=poll_ts.desc&limit=3000",
                 "chain_snapshots?select=*&order=created_at.desc&limit=3000"
+            )
+        )
+        return filterRowsByIstSessionDate(recent, date)
+    }
+
+    fun fetchEvaluationChainSlices(date: String): JSONArray {
+        val select = "index_key,strike,option_type,expiry,poll_ts,ltp,session_date"
+        val exact = fetchArrayFromTables(
+            listOf(
+                "ml_option_chain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
+                "chain_slices?session_date=eq.$date&select=$select&order=poll_ts.desc",
+                "chain_snapshots?date=eq.$date&select=$select&order=created_at.desc"
+            )
+        )
+        if (exact.length() > 0) return exact
+
+        val recent = fetchArrayFromTables(
+            listOf(
+                "ml_option_chain_snapshots?select=$select&order=poll_ts.desc&limit=3000",
+                "chain_slices?select=$select&order=poll_ts.desc&limit=3000",
+                "chain_snapshots?select=$select&order=created_at.desc&limit=3000"
             )
         )
         return filterRowsByIstSessionDate(recent, date)

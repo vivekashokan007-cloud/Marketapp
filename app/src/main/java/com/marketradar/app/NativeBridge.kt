@@ -566,11 +566,18 @@ class NativeBridge(private val context: Context) {
             val serviceRunning = isServiceRunning()
             val marketClock = MarketOpenScheduler.currentStatus()
             val coverage = currentPollCoverage(marketClock)
-            val evaluationReady = !serviceRunning && !marketClock.marketOpen && activeToday && coverage.actual > 0 && runningDate != today && !(doneDate == today && !retryEvaluation)
+            val evaluationReady = !serviceRunning &&
+                !marketClock.marketOpen &&
+                activeToday &&
+                coverage.actual > 0 &&
+                (coverage.missed == 0 || retryEvaluation) &&
+                runningDate != today &&
+                !(doneDate == today && !retryEvaluation)
             val evaluationBlockedReason = when {
                 serviceRunning -> "WAIT_FOR_POST_CLOSE_HANDOFF"
                 marketClock.marketOpen -> "MARKET_OPEN"
                 !activeToday || coverage.actual <= 0 -> "NO_SESSION"
+                coverage.missed > 0 && !retryEvaluation -> "SESSION_PARTIAL"
                 runningDate == today -> "RUNNING"
                 doneDate == today && !retryEvaluation -> "DONE"
                 else -> ""
@@ -709,6 +716,13 @@ class NativeBridge(private val context: Context) {
                     put("ok", false)
                     put("status", "blocked")
                     put("message", "No completed market session was found for today yet.")
+                }.toString()
+            }
+            if (coverage.missed > 0 && !retryEvaluation) {
+                return JSONObject().apply {
+                    put("ok", false)
+                    put("status", "blocked")
+                    put("message", "Day evaluation is blocked because today's session is still partial (${coverage.actual}/${coverage.expectedFullDay} polls). Wait for the automatic post-close run or retry only after a completed session.")
                 }.toString()
             }
             if (prefs.getString("evaluation_done_date", "") == today && !retryEvaluation) {

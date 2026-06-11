@@ -812,7 +812,7 @@ class MarketMLService : Service() {
             val py = Python.getInstance()
             val brain = py.getModule("brain")
 
-            val snapshotsJsonArray = SupabaseClient.fetchBrainSnapshots(today)
+            val snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(today)
             if (snapshotsJsonArray.length() == 0) {
                 prefs.edit()
                     .putString("evaluation_done_date", today)
@@ -826,8 +826,11 @@ class MarketMLService : Service() {
                 Log.i(TAG, "EVAL_SKIP: no brain snapshots for $today")
                 return@withContext
             }
-            val chainSlicesJsonArray = SupabaseClient.fetchChainSlices(today)
-            Log.i(TAG, "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} date=$today")
+            val chainSlicesJsonArray = SupabaseClient.fetchEvaluationChainSlices(today)
+            Log.i(
+                TAG,
+                "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} date=$today snapshotBytes=${snapshotsJsonArray.toString().length} chainBytes=${chainSlicesJsonArray.toString().length}"
+            )
 
             val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
                 brain.callAttr(
