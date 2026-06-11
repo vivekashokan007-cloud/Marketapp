@@ -1,6 +1,5 @@
 package com.marketradar.app
 
-import android.app.ActivityManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -886,26 +885,19 @@ class NativeBridge(private val context: Context) {
         return lastPollDate == today && pollCount > 0
     }
 
-    private fun isMlServiceRunning(): Boolean {
-        return try {
-            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
-            @Suppress("DEPRECATION")
-            am.getRunningServices(Int.MAX_VALUE).any { it.service.className == MarketMLService::class.java.name }
-        } catch (e: Exception) {
-            Log.w(TAG, "isMlServiceRunning check failed: ${e.message}")
-            false
-        }
-    }
-
     private fun clearStaleEvaluationRunningIfNeeded(today: String): Boolean {
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate != today) return false
-        if (isMlServiceRunning()) return false
+        val startedAtMs = prefs.getLong("evaluation_started_at_ms", 0L)
+        val ageMs = if (startedAtMs > 0L) System.currentTimeMillis() - startedAtMs else Long.MAX_VALUE
+        val staleAfterMs = 2 * 60 * 1000L
+        if (ageMs in 0 until staleAfterMs) return false
         prefs.edit()
             .putString("evaluation_running_date", "")
+            .putLong("evaluation_started_at_ms", 0L)
             .putString("last_evaluation_message", "Previous evaluation was interrupted. Tap Evaluate Today to retry.")
             .commit()
-        Log.i(TAG, "Cleared stale evaluation_running_date for $today")
+        Log.i(TAG, "Cleared stale evaluation_running_date for $today after ${ageMs}ms")
         return true
     }
 

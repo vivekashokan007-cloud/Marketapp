@@ -4,6 +4,8 @@
 
 DOMAIN="marketradar-oracle.online"
 API_KEY="INSERT_KEY_HERE"
+SUPABASE_URL_VALUE="https://fdynxkfxohbnlvayouje.supabase.co"
+SUPABASE_ANON_KEY_VALUE="INSERT_SUPABASE_ANON_KEY_HERE"
 EMAIL="vivekashokan007@gmail.com"  # Used for Certbot expiration notices
 
 echo "Starting Oracle Relay Deployment for Wave 2 on Oracle Linux..."
@@ -25,8 +27,12 @@ source venv/bin/activate
 # 4. Install Dependencies
 pip install fastapi uvicorn google-generativeai pydantic
 
-# 5. Create .env file with the Gemini API Key
-echo "GEMINI_API_KEY=${API_KEY}" > .env
+# 5. Create .env file with runtime secrets
+cat > .env << EOF
+GEMINI_API_KEY=${API_KEY}
+SUPABASE_URL=${SUPABASE_URL_VALUE}
+SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY_VALUE}
+EOF
 chmod 600 .env
 
 # 6. Configure Nginx Reverse Proxy

@@ -652,15 +652,6 @@ object SupabaseClient {
         return select("signal_reliability", null, "lane.asc,signal_name.asc", 200)
     }
 
-    fun saveElephantAssessment(pollTimestamp: String, lane: String, assessments: JSONObject): Boolean {
-        if (pollTimestamp.isBlank() || lane.isBlank()) return false
-        val body = JSONObject()
-            .put("poll_timestamp", pollTimestamp)
-            .put("lane", lane)
-            .put("assessments", assessments)
-        return upsert("elephant_assessments", body, onConflict = "poll_timestamp,lane")
-    }
-
     /**
      * Saves candlestick pattern data for a trading date to app_config.
      * Key: candle_data_YYYY-MM-DD. Value: { bnf: {...}, nf: {...} }

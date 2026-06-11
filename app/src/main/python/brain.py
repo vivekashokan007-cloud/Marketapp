@@ -1279,7 +1279,7 @@ def build_calibration(closed_trades):
     cal['sigma_otm'] = {}
     for t in trades:
         snap = t.get('entry_snapshot') or {}
-        sigma = snap.get('sigma_otm') or snap.get('sigmaOTM')
+        sigma = snap.get('sigma_otm') or snap.get('sigmaOTM') or snap.get('sigma_from_atm')
         if sigma is not None:
             bucket = 'close' if sigma < 0.4 else 'sweet' if sigma <= 0.8 else 'far'
             if bucket not in cal['sigma_otm']:
@@ -5195,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.13"
+BRAIN_VERSION = "2.4.14"
 TRACE_SCHEMA_VERSION = "1.0"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 

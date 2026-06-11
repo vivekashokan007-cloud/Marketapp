@@ -393,6 +393,7 @@ class MarketMLService : Service() {
             if (runningDate == today) {
                 prefs.edit()
                     .putString("evaluation_running_date", "")
+                    .putLong("evaluation_started_at_ms", 0L)
                     .putString("last_evaluation_message", "Evaluation interrupted. Tap Evaluate Today to retry.")
                     .commit()
                 Log.w(TAG, "EVAL_INTERRUPT: cleared stale running flag in onDestroy for $today")
@@ -795,6 +796,7 @@ class MarketMLService : Service() {
             if (prefs.getString("evaluation_done_date", null) == today) {
                 prefs.edit()
                     .putString("evaluation_running_date", "")
+                    .putLong("evaluation_started_at_ms", 0L)
                     .putString("last_evaluation_message", "Today's evaluation already done.")
                     .commit()
                 Log.i(TAG, "EVAL_SKIP: already done for $today")
@@ -803,6 +805,7 @@ class MarketMLService : Service() {
 
             prefs.edit()
                 .putString("evaluation_running_date", today)
+                .putLong("evaluation_started_at_ms", System.currentTimeMillis())
                 .putString("last_evaluation_message", "Evaluation running...")
                 .commit()
 
@@ -814,6 +817,7 @@ class MarketMLService : Service() {
                 prefs.edit()
                     .putString("evaluation_done_date", today)
                     .putString("evaluation_running_date", "")
+                    .putLong("evaluation_started_at_ms", 0L)
                     .putInt("last_evaluation_outcome_count", 0)
                     .putInt("last_evaluation_produced_count", 0)
                     .putString("last_evaluation_message", "Today's evaluation done: no brain snapshots found.")
@@ -836,6 +840,7 @@ class MarketMLService : Service() {
             if (resultJsonStr == null) {
                 prefs.edit()
                     .putString("evaluation_running_date", "")
+                    .putLong("evaluation_started_at_ms", 0L)
                     .putString("last_evaluation_message", "Evaluation timed out. Try again.")
                     .commit()
                 Log.w(TAG, "EVAL_TIMEOUT: evening_evaluator exceeded ${EVENING_EVAL_TIMEOUT_MS}ms")
@@ -868,6 +873,7 @@ class MarketMLService : Service() {
             prefs.edit()
                 .putString("evaluation_done_date", today)
                 .putString("evaluation_running_date", "")
+                .putLong("evaluation_started_at_ms", 0L)
                 .putInt("last_evaluation_outcome_count", saveResult.persistedCount)
                 .putInt("last_evaluation_produced_count", saveResult.producedCount)
                 .putString("last_evaluation_message", evaluationMessage)
@@ -880,6 +886,7 @@ class MarketMLService : Service() {
         } catch (e: Exception) {
             prefs.edit()
                 .putString("evaluation_running_date", "")
+                .putLong("evaluation_started_at_ms", 0L)
                 .putString("last_evaluation_message", "Evaluation failed: ${e.message}")
                 .commit()
             Log.w(TAG, "EVAL_FAIL: ${e.message}")

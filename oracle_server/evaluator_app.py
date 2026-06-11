@@ -9,6 +9,14 @@ from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 import google.generativeai as genai
 
+try:
+    from dotenv import load_dotenv
+except Exception:
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
 app = FastAPI(title="Market Radar Oracle")
 
 # Configure Gemini
