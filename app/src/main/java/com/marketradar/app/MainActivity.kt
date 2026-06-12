@@ -516,6 +516,7 @@ class MainActivity : AppCompatActivity() {
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
+                    getMLEvaluationLaneSummary: function(limit) { return AndroidBridge.getMLEvaluationLaneSummary(limit || 1000); },
 
                     // File export methods
                     saveExportFile: function(fileName, mimeType, base64Data) { return AndroidBridge.saveExportFile(fileName, mimeType, base64Data); },
