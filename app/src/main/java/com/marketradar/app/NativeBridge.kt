@@ -1487,6 +1487,23 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun getMLEvaluationLaneSummary(limit: Int): String {
+        return try {
+            SupabaseClient.fetchEvaluationLaneSummary(todayIstDate(), limit).toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getMLEvaluationLaneSummary failed", e)
+            JSONObject()
+                .put("session_date", todayIstDate())
+                .put("rowsFetched", 0)
+                .put("rowsToday", 0)
+                .put("attributedRows", 0)
+                .put("lanes", JSONObject())
+                .put("error", e.message ?: e.javaClass.simpleName)
+                .toString()
+        }
+    }
+
+    @JavascriptInterface
     fun getMLBrainSnapshots(limit: Int): String {
         return try {
             SupabaseClient.fetchRecentBrainSnapshots(limit).toString()

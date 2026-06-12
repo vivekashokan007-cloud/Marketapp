@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.18 / b249`
+Current Android release target: `v2.4.19 / b250`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 

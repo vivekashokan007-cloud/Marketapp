@@ -441,10 +441,30 @@ object SupabaseClient {
             return legacy
         }
 
+        fun stripAttribution(rows: JSONArray): JSONArray {
+            val legacy = JSONArray()
+            for (i in 0 until rows.length()) {
+                val src = rows.optJSONObject(i) ?: continue
+                val row = JSONObject(src.toString())
+                row.remove("session_date")
+                row.remove("lane")
+                row.remove("index_key")
+                row.remove("trade_mode")
+                row.remove("strategy_type")
+                legacy.put(row)
+            }
+            return legacy
+        }
+
+        val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRows))
+        val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRows))
+
         val evaluationSaved = postArrayToTable("ml_evaluation_outcomes", evaluationRows) ||
-            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRows))
+            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRows)) ||
+            postArrayToTable("ml_evaluation_outcomes", evaluationRowsLegacy)
         val recommendationSaved = postArrayToTable("ml_recommendation_outcomes", recommendationRows) ||
-            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRows))
+            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRows)) ||
+            postArrayToTable("ml_recommendation_outcomes", recommendationRowsLegacy)
 
         val evaluationPersisted = if (evaluationSaved) evaluationRows.length() else 0
         val recommendationPersisted = if (recommendationSaved) recommendationRows.length() else 0
@@ -473,6 +493,70 @@ object SupabaseClient {
         val evaluationRows = select("ml_evaluation_outcomes", null, "created_at.desc", limit)
         if (evaluationRows.length() > 0) return evaluationRows
         return select("ml_decisions", null, "created_at.desc", limit)
+    }
+
+    fun fetchEvaluationLaneSummary(sessionDate: String, limit: Int = 1000): JSONObject {
+        val rows = fetchRecentEvaluationOutcomes(limit)
+        val todayRows = filterRowsByIstSessionDate(rows, sessionDate)
+        val lanes = linkedMapOf(
+            "NF_intraday" to intArrayOf(0, 0, 0),
+            "NF_swing" to intArrayOf(0, 0, 0),
+            "BNF_intraday" to intArrayOf(0, 0, 0),
+            "BNF_swing" to intArrayOf(0, 0, 0)
+        )
+
+        fun normalizeWon(value: Any?): Int? = when (value) {
+            is Boolean -> if (value) 1 else 0
+            is Number -> {
+                val n = value.toInt()
+                if (n == 0 || n == 1) n else null
+            }
+            is String -> when (value.trim().lowercase(Locale.US)) {
+                "1", "true", "yes" -> 1
+                "0", "false", "no" -> 0
+                else -> null
+            }
+            else -> null
+        }
+
+        var attributedRows = 0
+        for (i in 0 until todayRows.length()) {
+            val row = todayRows.optJSONObject(i) ?: continue
+            val lane = row.optString("lane", "").trim()
+            val bucket = lanes[lane] ?: continue
+            bucket[0] += 1 // rows
+            attributedRows += 1
+            val won = normalizeWon(
+                when {
+                    !row.isNull("canonical_won") -> row.opt("canonical_won")
+                    !row.isNull("outcome_h2") -> row.opt("outcome_h2")
+                    !row.isNull("won") -> row.opt("won")
+                    else -> null
+                }
+            )
+            if (won == 0 || won == 1) {
+                bucket[1] += 1 // labeled
+                if (won == 1) bucket[2] += 1 // wins
+            }
+        }
+
+        val lanesJson = JSONObject()
+        for ((key, counts) in lanes) {
+            lanesJson.put(
+                key,
+                JSONObject()
+                    .put("rows", counts[0])
+                    .put("labeled", counts[1])
+                    .put("wins", counts[2])
+            )
+        }
+
+        return JSONObject()
+            .put("session_date", sessionDate)
+            .put("rowsFetched", rows.length())
+            .put("rowsToday", todayRows.length())
+            .put("attributedRows", attributedRows)
+            .put("lanes", lanesJson)
     }
 
     fun fetchRecentBrainSnapshots(limit: Int = 200): JSONArray {
