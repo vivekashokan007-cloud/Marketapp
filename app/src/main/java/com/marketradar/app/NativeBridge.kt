@@ -585,7 +585,7 @@ class NativeBridge(private val context: Context) {
             status.put("running", serviceRunning)
             status.put("sessionActive", activeToday)
             status.put("lastPoll", if (activeToday) prefs.getString("last_poll_time", "Never") else "Never")
-            status.put("polls", if (activeToday) prefs.getInt("poll_count", 0) else 0)
+            status.put("polls", coverage.actual.coerceAtMost(coverage.expectedFullDay))
             status.put("tokenReady", !(prefs.getString("auth_token", "") ?: "").isBlank())
             status.put("marketDay", marketClock.marketDay)
             status.put("marketOpen", marketClock.marketOpen)
@@ -973,11 +973,12 @@ class NativeBridge(private val context: Context) {
     )
 
     private fun currentPollCoverage(clock: MarketOpenScheduler.MarketClockStatus): PollCoverage {
-        val actual = if (hasTodaySession()) prefs.getInt("poll_count", 0) else 0
+        val rawActual = if (hasTodaySession()) prefs.getInt("poll_count", 0) else 0
         val expectedFullDay = 76
         if (!clock.marketDay) {
-            return PollCoverage(0, expectedFullDay, actual, 0, clock.reason)
+            return PollCoverage(0, expectedFullDay, rawActual.coerceAtMost(expectedFullDay), 0, clock.reason)
         }
+        val actual = rawActual.coerceAtMost(expectedFullDay)
 
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)

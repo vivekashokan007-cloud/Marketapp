@@ -5195,9 +5195,11 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.17"
-TRACE_SCHEMA_VERSION = "1.0"
+BRAIN_VERSION = "2.4.18"
+TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
+TRACE_ATTEMPT_SAMPLE_CAP = 12
+REJECTED_CANDIDATE_SAMPLE_CAP = 20
 
 
 # TASK 5.1 — Fresh trace skeleton for each analyze() call
@@ -8288,6 +8290,29 @@ def _snapshot_teaching_band(index_key, chain, spot, vix, expiry):
 def _compact_candidate_trace(trace_root):
     if not isinstance(trace_root, dict):
         return {'meta': {}, 'by_index': {}, 'rejected_count': 0, 'accepted_count': 0}
+
+    def _bump(counter, key):
+        if key is None:
+            key = 'unknown'
+        key = str(key)
+        counter[key] = int(counter.get(key, 0)) + 1
+
+    def _sample_attempt(a):
+        return {
+            'stype': a.get('stype'),
+            'result': a.get('result'),
+            'stage': a.get('stage'),
+            'reason': a.get('reason'),
+            'width': a.get('width'),
+            'sell': a.get('sell'),
+            'buy': a.get('buy'),
+            'sell_call': a.get('sell_call'),
+            'sell_put': a.get('sell_put'),
+            'iv_richness': a.get('iv_richness'),
+            'credit_width_ratio': a.get('credit_width_ratio'),
+            'premium_edge': a.get('premium_edge'),
+        }
+
     out = {
         'meta': dict(trace_root.get('meta') or {}),
         'by_index': {},
@@ -8301,34 +8326,107 @@ def _compact_candidate_trace(trace_root):
             continue
         attempts = row.get('attempts') or []
         compact_attempts = []
+        attempt_stats = {
+            'total': 0,
+            'accepted': 0,
+            'rejected': 0,
+            'by_result': {},
+            'by_stage': {},
+            'by_reason': {},
+            'by_strategy': {},
+        }
         for a in attempts:
             if not isinstance(a, dict):
                 continue
-            compact_attempts.append({
-                'stype': a.get('stype'),
-                'result': a.get('result'),
-                'stage': a.get('stage'),
-                'reason': a.get('reason'),
-                'width': a.get('width'),
-                'sell': a.get('sell'),
-                'buy': a.get('buy'),
-                'sell_call': a.get('sell_call'),
-                'sell_put': a.get('sell_put'),
-                'iv_richness': a.get('iv_richness'),
-                'credit_width_ratio': a.get('credit_width_ratio'),
-                'premium_edge': a.get('premium_edge'),
-            })
-            if a.get('result') == 'rejected':
+            attempt_stats['total'] += 1
+            result = a.get('result') or 'unknown'
+            _bump(attempt_stats['by_result'], result)
+            _bump(attempt_stats['by_stage'], a.get('stage'))
+            _bump(attempt_stats['by_reason'], a.get('reason'))
+            _bump(attempt_stats['by_strategy'], a.get('stype'))
+            if len(compact_attempts) < TRACE_ATTEMPT_SAMPLE_CAP:
+                compact_attempts.append(_sample_attempt(a))
+            if result == 'rejected':
+                attempt_stats['rejected'] += 1
                 out['rejected_count'] += 1
-            elif a.get('result') == 'accepted':
+            elif result == 'accepted':
+                attempt_stats['accepted'] += 1
                 out['accepted_count'] += 1
         out['by_index'][index_key] = {
             'config': dict(row.get('config') or {}),
             'summary': dict(row.get('summary') or {}),
             'varsity': dict(row.get('varsity') or {}),
+            'attempt_stats': attempt_stats,
+            'attempt_sample_cap': TRACE_ATTEMPT_SAMPLE_CAP,
+            'attempts_truncated': len(attempts) > TRACE_ATTEMPT_SAMPLE_CAP,
             'attempts': compact_attempts,
         }
     return out
+
+
+def _compact_rejected_candidates(rejected_candidates):
+    if not isinstance(rejected_candidates, list):
+        return [], {
+            'total': 0,
+            'sample_cap': REJECTED_CANDIDATE_SAMPLE_CAP,
+            'truncated': False,
+            'by_stage': {},
+            'by_reason': {},
+            'by_strategy': {},
+            'by_lane': {},
+        }
+
+    def _bump(counter, key):
+        if key is None:
+            key = 'unknown'
+        key = str(key)
+        counter[key] = int(counter.get(key, 0)) + 1
+
+    def _sample_row(row):
+        return {
+            'index': row.get('index'),
+            'lane': row.get('lane'),
+            'strategy_type': row.get('strategy_type'),
+            'expiry': row.get('expiry'),
+            'width': row.get('width'),
+            'is_credit': row.get('is_credit'),
+            'netPremium': row.get('netPremium'),
+            'maxProfit': row.get('maxProfit'),
+            'maxLoss': row.get('maxLoss'),
+            'tDTE': row.get('tDTE'),
+            'ivRichness': row.get('ivRichness'),
+            'creditWidthRatio': row.get('creditWidthRatio'),
+            'sigmaOTM': row.get('sigmaOTM'),
+            'rejection_stage': row.get('rejection_stage'),
+            'rejection_reason': row.get('rejection_reason'),
+            'sellStrike': row.get('sellStrike'),
+            'sellType': row.get('sellType'),
+            'buyStrike': row.get('buyStrike'),
+            'buyType': row.get('buyType'),
+        }
+
+    stats = {
+        'total': 0,
+        'sample_cap': REJECTED_CANDIDATE_SAMPLE_CAP,
+        'truncated': False,
+        'by_stage': {},
+        'by_reason': {},
+        'by_strategy': {},
+        'by_lane': {},
+    }
+    sample = []
+    for row in rejected_candidates:
+        if not isinstance(row, dict):
+            continue
+        stats['total'] += 1
+        _bump(stats['by_stage'], row.get('rejection_stage'))
+        _bump(stats['by_reason'], row.get('rejection_reason'))
+        _bump(stats['by_strategy'], row.get('strategy_type'))
+        _bump(stats['by_lane'], row.get('lane'))
+        if len(sample) < REJECTED_CANDIDATE_SAMPLE_CAP:
+            sample.append(_sample_row(row))
+    stats['truncated'] = stats['total'] > len(sample)
+    return sample, stats
 
 
 def take_poll_snapshot(result, ctx, polls):
@@ -8424,12 +8522,7 @@ def take_poll_snapshot(result, ctx, polls):
             if not isinstance(c, dict):
                 continue
             clean_generated.append(_candidate_view(c))
-    clean_rejected = []
-    if isinstance(rejected_candidates, list):
-        for c in rejected_candidates:
-            if not isinstance(c, dict):
-                continue
-            clean_rejected.append(c)
+    clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
 
     def _candidate_leg_ledger(cand):
         if not isinstance(cand, dict):
@@ -8511,6 +8604,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
+    snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
     snapshot_context['snapshot_watchlist'] = clean_cands
     snapshot_context['snapshot_evaluation_legs'] = evaluation_ledger
     snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
@@ -8707,9 +8801,23 @@ def _eval_single_candidate(chain_rows, snap, cand):
     else:
         sim_pnl = (later_net_credit - entry_premium) * lot_size
 
+    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    lane = cand.get('lane')
+    trade_mode = cand.get('trade_mode') or cand.get('mode')
+    if not trade_mode and isinstance(lane, str):
+        if lane.endswith('_intraday'):
+            trade_mode = 'intraday'
+        elif lane.endswith('_swing'):
+            trade_mode = 'swing'
+    strategy_type = cand.get('type') or cand.get('strategy_type') or ''
     return {
         'snapshot_id': snap.get('id'),
+        'session_date': snap.get('session_date'),
         'candidate_id': cand.get('id'),
+        'lane': lane or _candidate_lane(index_key, trade_mode or 'intraday'),
+        'index_key': index_key,
+        'trade_mode': trade_mode or 'unknown',
+        'strategy_type': strategy_type,
         'sim_pnl_h2': sim_pnl,
         'canonical_won': 1 if sim_pnl > 0 else 0,
         'outcome_h2': 1 if sim_pnl > 0 else 0,

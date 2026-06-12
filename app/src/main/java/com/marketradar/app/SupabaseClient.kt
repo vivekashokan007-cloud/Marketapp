@@ -160,7 +160,12 @@ object SupabaseClient {
             val src = body.optJSONObject(i) ?: continue
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
+            row.put("session_date", src.opt("session_date"))
             row.put("candidate_id", src.opt("candidate_id"))
+            row.put("lane", src.opt("lane"))
+            row.put("index_key", src.opt("index_key"))
+            row.put("trade_mode", src.opt("trade_mode"))
+            row.put("strategy_type", src.opt("strategy_type"))
             row.put("role", src.optString("role", "secondary"))
             row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
             if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))

@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.17 / b248`
+Current Android release target: `v2.4.18 / b249`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -34,7 +34,7 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.17`.
+- `BRAIN_VERSION` is `2.4.18`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.
@@ -163,6 +163,10 @@ No agent should treat the PWA repo as a second live brain.
   - verify post-close automatic evaluation on real market-day closes
   - verify stale `RUNNING` latch cleanup after interruptions
   - do not trust manual evaluation on older builds before `b247`
+- Latest app/runtime reporting repair shipped as `v2.4.18 / b249`:
+  - poll-slot status now clamps visible poll count to the expected session cap
+  - future `ml_evaluation_outcomes` rows now carry lane/index/mode/strategy metadata
+  - PWA lane matrix reconstruction now uses candidate-id matching against saved snapshot candidates instead of relying only on sparse primary-row reconstruction
 
 ## Antigravity Responsibility Boundary
 
