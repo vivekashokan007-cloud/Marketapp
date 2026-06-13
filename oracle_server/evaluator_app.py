@@ -2,6 +2,7 @@ import os
 import time
 import json
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -77,6 +78,18 @@ def persist_elephant_assessment(poll_timestamp: str, lane: str, assessments: dic
 
 
 QUALITATIVE_SCHEMA_VERSION = "qualitative_prompt_v2"
+
+
+def _self_deploy_hash() -> str:
+    """SHA-256 of this source file — proves which code is running."""
+    try:
+        with open(os.path.abspath(__file__), "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
+
+
+_DEPLOY_HASH = _self_deploy_hash()
 
 
 def build_elephant_prompt(body: dict, candidates: list) -> str:
@@ -294,7 +307,14 @@ def process_elephant_background(body: dict) -> None:
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "ts": time.time()}
+    return {
+        "status": "ok",
+        "ts": time.time(),
+        "deploy_hash": _DEPLOY_HASH,
+        "prompt_version": QUALITATIVE_SCHEMA_VERSION,
+        "llm_provider": os.getenv("LLM_PROVIDER", "gemini"),
+        "llm_model": os.getenv("LLM_MODEL", "gemini-2.5-flash"),
+    }
 
 @app.post("/elephant")
 async def elephant_evaluate(request: Request, background_tasks: BackgroundTasks):
