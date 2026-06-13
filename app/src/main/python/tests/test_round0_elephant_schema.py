@@ -106,13 +106,13 @@ class Round0ElephantSchemaTests(unittest.TestCase):
 
     def test_normalize_elephant_verdict_accepts_expected_enums(self):
         raw = {
-            "distribution_signal": "broad",
-            "coherence_read": "coherent",
+            "distribution_signal": "genuine",
+            "coherence_read": "aligned",
             "anomaly_flag": True,
             "anomaly_reason": "volatility spike against spot drift",
-            "brief": "Market shape is broad but internally coherent.",
+            "brief": "Market shape is genuine and internally aligned.",
             "candidate_notes": [
-                {"candidate_id": "cand-1", "stance": "support", "reason": "structure fits move"},
+                {"candidate_id": "cand-1", "stance": "neutral", "reason": "structure fits move"},
                 {"candidate_id": "cand-2", "stance": "caution", "reason": "premium edge thin"},
             ],
         }
@@ -120,11 +120,11 @@ class Round0ElephantSchemaTests(unittest.TestCase):
         normalized = self.oracle.normalize_elephant_verdict(raw)
 
         self.assertEqual(normalized["schema_version"], self.oracle.QUALITATIVE_SCHEMA_VERSION)
-        self.assertEqual(normalized["distribution_signal"], "broad")
-        self.assertEqual(normalized["coherence_read"], "coherent")
+        self.assertEqual(normalized["distribution_signal"], "genuine")
+        self.assertEqual(normalized["coherence_read"], "aligned")
         self.assertTrue(normalized["anomaly_flag"])
         self.assertEqual(len(normalized["candidate_notes"]), 2)
-        self.assertEqual(normalized["candidate_notes"][0]["stance"], "support")
+        self.assertEqual(normalized["candidate_notes"][0]["stance"], "neutral")
 
     def test_normalize_elephant_verdict_fails_closed(self):
         raw = {

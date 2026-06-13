@@ -4032,6 +4032,34 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
                 'running': confidence,
             })
 
+    coherence = signal_coherence(polls, ctx)
+    if coherence and coherence.get('impact') == 'caution':
+        coh_strength = int(coherence.get('strength') or 0)
+        coh_penalty = min(10, 2 * max(0, coh_strength))
+        confidence -= coh_penalty
+        if ctx.get('_trace') is not None:
+            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
+                'step': 'coherence_caution_penalty', 'delta': -coh_penalty,
+                'inputs': {
+                    'label': coherence.get('label', ''),
+                    'impact': coherence.get('impact', ''),
+                    'strength': coh_strength,
+                },
+                'running': confidence,
+            })
+    elif coherence and coherence.get('impact') in ('bullish', 'bearish'):
+        # Directive §4: coherence can only subtract from confidence.
+        if ctx.get('_trace') is not None:
+            _trace_append(ctx['_trace']['verdict'], 'confidence_adjustments', {
+                'step': 'coherence_positive_noop', 'delta': 0,
+                'inputs': {
+                    'label': coherence.get('label', ''),
+                    'impact': coherence.get('impact', ''),
+                    'strength': int(coherence.get('strength') or 0),
+                },
+                'running': confidence,
+            })
+
     # Personal calibration boost/penalty
     vixs = get_vix_vals(polls)
     vix = vixs[-1] if vixs else 20
@@ -5195,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.21"
+BRAIN_VERSION = "2.4.22"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6179,7 +6207,7 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
     return {
         'schema_version': 1,
         'observe_only': True,
-        'quality_tag': 'qualitative_prompt_v1',
+        'quality_tag': 'qualitative_prompt_v2',
         'poll_timestamp': poll_ts,
         'session_date': ctx.get('today_ist'),
         'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),

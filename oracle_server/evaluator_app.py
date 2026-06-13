@@ -76,7 +76,7 @@ def persist_elephant_assessment(poll_timestamp: str, lane: str, assessments: dic
     return False
 
 
-QUALITATIVE_SCHEMA_VERSION = "qualitative_prompt_v1"
+QUALITATIVE_SCHEMA_VERSION = "qualitative_prompt_v2"
 
 
 def build_elephant_prompt(body: dict, candidates: list) -> str:
@@ -128,15 +128,15 @@ Review this lane payload:
 
 Return only valid JSON with exactly this schema:
 {{
-  "distribution_signal": "broad|narrow|mixed|unclear",
-  "coherence_read": "coherent|mixed|incoherent|unclear",
+  "distribution_signal": "genuine|hedging|ambiguous|unclear",
+  "coherence_read": "aligned|conflicted|unclear",
   "anomaly_flag": true,
   "anomaly_reason": "short reason or empty string",
   "brief": "one or two concise sentences",
   "candidate_notes": [
     {{
       "candidate_id": "string",
-      "stance": "support|caution|ignore",
+      "stance": "neutral|caution|ignore",
       "reason": "short reason"
     }}
   ]
@@ -160,12 +160,14 @@ def normalize_elephant_verdict(raw: dict) -> dict:
         text = str(value or "").strip().lower()
         return text if text in allowed else fallback
 
+    # Candidate notes are display/logging only. They must never approve,
+    # rank, or add confidence to a candidate.
     notes = []
     for note in raw.get("candidate_notes", []) or []:
         if not isinstance(note, dict):
             continue
         candidate_id = str(note.get("candidate_id", "")).strip()
-        stance = pick_enum(note.get("stance"), {"support", "caution", "ignore"}, "ignore")
+        stance = pick_enum(note.get("stance"), {"neutral", "caution", "ignore"}, "ignore")
         reason = str(note.get("reason", "")).strip()[:240]
         if candidate_id:
             notes.append({
@@ -176,8 +178,8 @@ def normalize_elephant_verdict(raw: dict) -> dict:
 
     return {
         "schema_version": QUALITATIVE_SCHEMA_VERSION,
-        "distribution_signal": pick_enum(raw.get("distribution_signal"), {"broad", "narrow", "mixed", "unclear"}, "unclear"),
-        "coherence_read": pick_enum(raw.get("coherence_read"), {"coherent", "mixed", "incoherent", "unclear"}, "unclear"),
+        "distribution_signal": pick_enum(raw.get("distribution_signal"), {"genuine", "hedging", "ambiguous", "unclear"}, "unclear"),
+        "coherence_read": pick_enum(raw.get("coherence_read"), {"aligned", "conflicted", "unclear"}, "unclear"),
         "anomaly_flag": bool(raw.get("anomaly_flag", False)),
         "anomaly_reason": str(raw.get("anomaly_reason", "")).strip()[:240],
         "brief": str(raw.get("brief", "")).strip()[:480],

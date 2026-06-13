@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.21 / b252`
+Current Android release target: `v2.4.22 / b253`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -34,7 +34,7 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.21`.
+- `BRAIN_VERSION` is `2.4.22`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.
@@ -73,6 +73,16 @@ No agent should treat the PWA repo as a second live brain.
 
 ## Recent Runtime Repairs
 
+- `v2.4.22 / b253`
+  - Reconciliation batch for `DIRECTIVE_OPENCLAW_RECONCILIATION_b252_20260611`.
+  - Round 0 schema upgraded to `qualitative_prompt_v2`.
+  - Elephant qualitative enums now use gradeable values:
+    - `distribution_signal = genuine|hedging|ambiguous|unclear`
+    - `coherence_read = aligned|conflicted|unclear`
+  - `candidate_notes.stance` reduced to subtract-only/display-only:
+    - `neutral|caution|ignore`
+  - Deterministic verdict confidence now applies a subtract-only `signal_coherence()` penalty on caution and explicit no-op on positive coherence.
+  - Added [RECONCILIATION_SCOPE_AUDIT_b252_20260613.md](/root/.openclaw/Marketapp/RECONCILIATION_SCOPE_AUDIT_b252_20260613.md) to document authorization drift across `b248–b252`.
 - `v2.4.21 / b252`
   - implemented Claude Round 0 as a safe observe-only change:
     - Oracle `/elephant` prompt now asks for qualitative distribution/coherence/anomaly reads instead of arithmetic approval output
