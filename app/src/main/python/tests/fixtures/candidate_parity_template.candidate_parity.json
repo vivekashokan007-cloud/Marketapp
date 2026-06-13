@@ -1,0 +1,13 @@
+{
+  "scenario_name": "replace_with_real_chain_snapshot_name",
+  "fixture_kind": "candidate_parity",
+  "inputs": {
+    "poll_json": "[]",
+    "closed_trades_json": "[]",
+    "baseline_json": "{}",
+    "open_trades_json": "[]",
+    "candidates_json": "[]",
+    "strike_oi_json": "{}",
+    "ctx_json": "{\"tradeMode\":\"intraday\",\"bnfChain\":{},\"nfChain\":{}}"
+  }
+}

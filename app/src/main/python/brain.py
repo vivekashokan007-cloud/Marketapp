@@ -5195,7 +5195,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.20"
+BRAIN_VERSION = "2.4.21"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6119,6 +6119,7 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
     generated = result.get('generated_candidates') or []
     watchlist = result.get('watchlist') or []
     signal_independence = _compute_signal_independence(result, ctx)
+    coherence_signal = signal_coherence(polls, ctx)
     poll_ts = _derive_poll_timestamp(ctx.get('today_ist'), latest_poll)
 
     candidates = []
@@ -6178,12 +6179,13 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
     return {
         'schema_version': 1,
         'observe_only': True,
-        'quality_tag': 'placeholder_prompt_era',
+        'quality_tag': 'qualitative_prompt_v1',
         'poll_timestamp': poll_ts,
         'session_date': ctx.get('today_ist'),
         'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
         'decision_source': result.get('decision_source') or result.get('decisionSource'),
         'signal_independence': signal_independence,
+        'coherence_signal': coherence_signal,
         'market_context': {
             'vix': latest_poll.get('vix') or latest_poll.get('VIX') or ctx.get('vix'),
             'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF') or ctx.get('bnfSpot'),

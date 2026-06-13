@@ -1,6 +1,6 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.20 / b251`
+Current Android release target: `v2.4.21 / b252`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
 
@@ -34,7 +34,7 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.18`.
+- `BRAIN_VERSION` is `2.4.21`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.
@@ -73,6 +73,36 @@ No agent should treat the PWA repo as a second live brain.
 
 ## Recent Runtime Repairs
 
+- `v2.4.21 / b252`
+  - implemented Claude Round 0 as a safe observe-only change:
+    - Oracle `/elephant` prompt now asks for qualitative distribution/coherence/anomaly reads instead of arithmetic approval output
+    - Oracle persists a normalized qualitative flags block alongside the raw Gemini response
+    - `brain.py` fact-pack now exports `coherence_signal`
+    - `MarketWatchService.kt` forwards that signal in the lane handoff payload
+  - added the first proper Claude framework scaffolding in repo:
+    - Round 0 schema test
+    - candidate parity contract test
+    - parity fixture capture script
+    - aggregate `run_claude_framework_checks.py`
+    - rich-fixture template + README
+  - current local framework truth:
+    - required Claude checks pass
+    - older fixture A/B/C baseline tests are stale because they do not include real `bnfChain` / `nfChain` context and therefore cannot assert candidate parity
+  - Monday market-hours requirement:
+    - capture one real chain-rich candidate window
+    - generate a `.candidate_parity.json` baseline
+    - freeze exact top-1 and top-6 before Round 1 / Round 2 behavior work
+- `v2.4.20 / b251`
+  - fixed the actual zero-matrix blocker in the APK:
+    - `NativeBridge.getMLEvaluationLaneSummary()` existed in Kotlin
+    - but `MainActivity.injectNativeBridge()` had not exported it into the WebView bridge
+  - after exporting that method, the phone finally rendered the backfilled
+    `ml_evaluation_outcomes` correctly:
+    - `NF_intraday = 11 rows / 11 labeled / 4 wins`
+    - `BNF_intraday = 6 rows / 6 labeled / 0 wins`
+  - remaining defect is minor:
+    - header poll cap is correct (`76/76`)
+    - footer can still show raw uncapped poll count (`77`)
 - `v2.4.14 / b245`
   - restored calibration read for `entry_snapshot.sigma_from_atm`
   - removed dead app-side `elephant_assessments` writer so that table remains

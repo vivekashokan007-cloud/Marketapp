@@ -76,25 +76,113 @@ def persist_elephant_assessment(poll_timestamp: str, lane: str, assessments: dic
     return False
 
 
-def build_elephant_prompt(candidates) -> str:
+QUALITATIVE_SCHEMA_VERSION = "qualitative_prompt_v1"
+
+
+def build_elephant_prompt(body: dict, candidates: list) -> str:
+    market_context = body.get("market_context", {}) or {}
+    verdict_context = body.get("verdict_context", {}) or {}
+    signal_independence = body.get("signal_independence", {}) or {}
+    coherence_signal = body.get("coherence_signal", {}) or {}
+    candidate_counts = body.get("candidate_counts", {}) or {}
+
+    compact_candidates = []
+    for candidate in candidates[:8]:
+        if not isinstance(candidate, dict):
+            continue
+        compact_candidates.append({
+            "candidate_id": candidate.get("candidate_id"),
+            "rank": candidate.get("rank"),
+            "lane": candidate.get("lane"),
+            "index": candidate.get("index"),
+            "strategy_type": candidate.get("strategy_type"),
+            "trade_mode": candidate.get("trade_mode"),
+            "watchlist_rank": candidate.get("watchlist_rank"),
+            "economics": candidate.get("economics", {}),
+            "structure": candidate.get("structure", {}),
+            "execution": candidate.get("execution", {}),
+            "ml_overlay": candidate.get("ml_overlay", {}),
+        })
+
+    prompt_payload = {
+        "lane": body.get("lane"),
+        "poll_timestamp": body.get("poll_timestamp"),
+        "session_date": body.get("session_date"),
+        "trade_mode": body.get("trade_mode"),
+        "decision_source": body.get("decision_source"),
+        "market_context": market_context,
+        "verdict_context": verdict_context,
+        "signal_independence": signal_independence,
+        "coherence_signal": coherence_signal,
+        "candidate_counts": candidate_counts,
+        "candidates": compact_candidates,
+    }
+
     return f"""
-        You are a quantitative options trading evaluator.
-        Analyze these candidate strategies and provide a JSON response.
+You are an observe-only qualitative reviewer for a deterministic options trading brain.
+Do not do arithmetic optimization, re-ranking, or approval logic. Do not invent prices.
+Your job is to describe qualitative market shape and flag unusual conditions.
 
-        Candidates: {json.dumps(candidates)}
+Review this lane payload:
+{json.dumps(prompt_payload, ensure_ascii=True)}
 
-        Return exactly in this JSON schema:
-        {{
-            "judgments": [
-                {{
-                    "sellStrike": 12345,
-                    "confidence": 0.85,
-                    "reasoning": "Clear edge found...",
-                    "approved": true
-                }}
-            ]
-        }}
-        """
+Return only valid JSON with exactly this schema:
+{{
+  "distribution_signal": "broad|narrow|mixed|unclear",
+  "coherence_read": "coherent|mixed|incoherent|unclear",
+  "anomaly_flag": true,
+  "anomaly_reason": "short reason or empty string",
+  "brief": "one or two concise sentences",
+  "candidate_notes": [
+    {{
+      "candidate_id": "string",
+      "stance": "support|caution|ignore",
+      "reason": "short reason"
+    }}
+  ]
+}}
+""".strip()
+
+
+def normalize_elephant_verdict(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        return {
+            "schema_version": QUALITATIVE_SCHEMA_VERSION,
+            "distribution_signal": "unclear",
+            "coherence_read": "unclear",
+            "anomaly_flag": False,
+            "anomaly_reason": "",
+            "brief": "",
+            "candidate_notes": [],
+        }
+
+    def pick_enum(value: str, allowed: set[str], fallback: str) -> str:
+        text = str(value or "").strip().lower()
+        return text if text in allowed else fallback
+
+    notes = []
+    for note in raw.get("candidate_notes", []) or []:
+        if not isinstance(note, dict):
+            continue
+        candidate_id = str(note.get("candidate_id", "")).strip()
+        stance = pick_enum(note.get("stance"), {"support", "caution", "ignore"}, "ignore")
+        reason = str(note.get("reason", "")).strip()[:240]
+        if candidate_id:
+            notes.append({
+                "candidate_id": candidate_id,
+                "stance": stance,
+                "reason": reason,
+            })
+
+    return {
+        "schema_version": QUALITATIVE_SCHEMA_VERSION,
+        "distribution_signal": pick_enum(raw.get("distribution_signal"), {"broad", "narrow", "mixed", "unclear"}, "unclear"),
+        "coherence_read": pick_enum(raw.get("coherence_read"), {"coherent", "mixed", "incoherent", "unclear"}, "unclear"),
+        "anomaly_flag": bool(raw.get("anomaly_flag", False)),
+        "anomaly_reason": str(raw.get("anomaly_reason", "")).strip()[:240],
+        "brief": str(raw.get("brief", "")).strip()[:480],
+        "candidate_notes": notes[:8],
+    }
 
 
 async def process_elephant_async(body: dict) -> None:
@@ -112,7 +200,7 @@ async def process_elephant_async(body: dict) -> None:
     if not trimmed_candidates:
         response_payload = {"status": "ok", "verdict": "NO_CANDIDATES"}
     else:
-        prompt = build_elephant_prompt(trimmed_candidates)
+        prompt = build_elephant_prompt(body, trimmed_candidates)
 
         async def call_gemini():
             response = await asyncio.to_thread(
@@ -129,7 +217,11 @@ async def process_elephant_async(body: dict) -> None:
             response = await asyncio.wait_for(call_gemini(), timeout=12.0)
             try:
                 result_json = json.loads(response.text)
-                response_payload = {"status": "ok", "verdict": result_json}
+                response_payload = {
+                    "status": "ok",
+                    "verdict": result_json,
+                    "normalized_flags": normalize_elephant_verdict(result_json),
+                }
             except json.JSONDecodeError:
                 response_payload = {"status": "WAIT", "reason": "model_returned_invalid_json"}
         except asyncio.TimeoutError:
@@ -145,6 +237,7 @@ async def process_elephant_async(body: dict) -> None:
         "status": response_payload.get("status", "WAIT"),
         "observe_only": observe_only,
         "quality_tag": quality_tag,
+        "normalized_flags": response_payload.get("normalized_flags"),
         "persisted_at": now_utc_iso(),
     }
     persisted = persist_elephant_assessment(poll_timestamp, lane, assessments)
