@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.22"
+BRAIN_VERSION = "2.4.23"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -5947,7 +5947,8 @@ def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw
                 pairs.append({'sell': sell_k, 'buy': buy_k, 'sellType': 'CE', 'buyType': 'CE'})
             buy_k += step
 
-    return pairs[:10]
+    # Stage 1 ranking correction: do not cap before sigma/probability gates and ranking.
+    return pairs
 
 # ─── BUILD SINGLE 2-LEG CANDIDATE ───
 

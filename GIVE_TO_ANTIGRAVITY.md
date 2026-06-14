@@ -1,8 +1,78 @@
 # Market Radar handoff for Antigravity
 
-Current Android release target: `v2.4.22 / b253`
+Current Android release target: `v2.4.23 / b254`
 Package: `com.marketradar.app`
 Remote PWA: `https://vivekashokan007-cloud.github.io/MarketVivi/`
+
+## Most Recent Change - Ranking Stage 1
+
+- Implemented only Stage 1 of `DIRECTIVE_RANKING_CORRECTION_20260614.md`.
+- Removed the pre-ranking `pairs[:10]` cap in `brain.py` `_get_strike_pairs(...)`.
+- Wall/in-band strike pairs can now reach the existing gates and existing ranker.
+- Explicitly unchanged:
+  - `rank_candidates(...)`
+  - EV / true-probability math
+  - gate thresholds and gate ordering
+  - ML weighting and confidence logic
+- Local audit:
+  - `RANKING_STAGE1_SELF_AUDIT_20260614.md`
+- Focused regression:
+  - `app/src/main/python/tests/test_stage1_strike_pair_truncation.py`
+
+## New Pending Work (post-Monday, not yet implemented)
+
+- **Paper-trade realized P&L realism directive accepted for later implementation**
+  - source of record: `DIRECTIVE_PAPER_PNL_REALISM_20260614_v2.md`
+  - v2 supersedes the earlier directive because it correctly places
+    `brain.py compute_position_live(...)` in scope as the sole live P&L producer
+  - current defect is real:
+    - `closeTrade()` in `MarketVivi/app.js` still writes realized paper outcomes from
+      `trade.current_pnl ?? 0`
+    - this affects:
+      - `canonical_won`
+      - `outcome_h2`
+      - `outcome_pct_of_max`
+      - `actual_pnl` write to `trades_v2`
+      - `actual_pnl` write to ML outcomes
+  - P2 recon finding already established:
+    - `current_pnl` originates from Python `brain.py compute_position_live(...)`
+    - Kotlin `MarketWatchService.kt` writes it into local `open_trades`
+    - no slippage/cost is currently applied in that live mark path
+  - intended fix direction:
+    - keep live mark-to-market in `brain.py` frictionless
+    - apply slippage + transaction costs exactly once at realized close
+    - make close-time record match the same slippage/cost helper used for display
+    - never silently zero-fill missing `current_pnl`
+    - surface unpriceable-state explicitly instead of fabricating a phantom `0`
+    - enforce IC/IB intraday-only more explicitly
+    - quarantine pre-fix rows from paper-edge assessment
+
+- **Confidence vs economics follow-up**
+  - observed real-world concern:
+    - very high confidence on a 4-leg trade with very low absolute rupee reward
+  - current likely issue is not arithmetic but modeling:
+    - confidence is not tightly capped by absolute `maxProfit`
+    - later task should add economics-aware confidence capping / downgrade logic
+
+- **Candidate ranking correction remaining work**
+  - source: `DIRECTIVE_RANKING_CORRECTION_20260614.md`
+  - local audit note:
+    - [RANKING_AUDIT_20260614.txt](/root/.openclaw/RANKING_AUDIT_20260614.txt)
+  - Stage 1 is now implemented in `v2.4.23 / b254`:
+    - `_get_strike_pairs()` no longer truncates candidates before gates/ranking
+  - remaining confirmed behavior:
+    - `rank_candidates()` is effectively EV-dominant after safety/tier gates because
+      later tuple fields only matter on exact earlier-field ties
+  - accepted sequencing:
+    - full weighted-score rebuild is gated behind Monday live review, real fixtures,
+      and corrected P&L calibration
+    - EV / true-probability math must remain unchanged for now
+
+- **Do not start the above before Monday live verification**
+  - Monday remains reserved for:
+    - brain branching / edge-case live checks
+    - `ml_generated_candidates` live proof on a candidate-producing poll
+    - post-close ML evaluation confirmation
 
 ## Current Architecture
 
@@ -34,8 +104,11 @@ No agent should treat the PWA repo as a second live brain.
 ## Current Release Notes
 
 - Capital default is `250000`.
-- `BRAIN_VERSION` is `2.4.22`.
+- `BRAIN_VERSION` is `2.4.23`.
 - EV capture constant is intentionally unchanged pending outcome-backed recalibration.
+- Ranking Stage 1 is implemented:
+  - strike pair generation no longer truncates to the first 10 pairs before gates/ranking
+  - ranker tuple, EV/probability math, and gates are unchanged
 - ML has explicit `UNSURE` fallback metadata; deterministic brain rules still own ranking.
 - Fallback candidate generation is now wired and no longer dead code.
 - Fallback candidates now carry execution metadata parity with primary candidates.
