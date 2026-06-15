@@ -113,7 +113,7 @@ object SupabaseClient {
                     val err = response.body?.string() ?: ""
                     when (response.code) {
                         404 -> {
-                            // Optional tables can be absent in some environments.
+                            Log.e(TAG, "Post missing ($table): ${response.code} ${response.message} | $err")
                         }
                         400 -> {
                             Log.e(TAG, "Post rejected ($table): ${response.code} ${response.message} | $err")
