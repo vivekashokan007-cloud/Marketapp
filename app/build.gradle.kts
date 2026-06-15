@@ -15,7 +15,7 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b260 retry: CI audit expectation aligned after ranking instrumentation.
+        // b260 retry: CI audit expectation aligned and Kotlin logging import fixed.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35

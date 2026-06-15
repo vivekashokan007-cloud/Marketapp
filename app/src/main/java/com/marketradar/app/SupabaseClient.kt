@@ -1,6 +1,7 @@
 package com.marketradar.app
 
 import android.util.Log
+import com.marketradar.app.util.LogBuffer
 import okhttp3.OkHttpClient
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
