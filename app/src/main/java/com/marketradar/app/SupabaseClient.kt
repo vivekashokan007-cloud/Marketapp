@@ -22,6 +22,15 @@ object SupabaseClient {
         .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
+    private data class PostResult(
+        val success: Boolean,
+        val table: String? = null,
+        val code: Int? = null,
+        val message: String? = null,
+        val errorBody: String? = null,
+        val exceptionMessage: String? = null
+    )
+
     private fun getBaseRequest(path: String): Request.Builder {
         return Request.Builder()
             .url("$URL/rest/v1/$path")
@@ -97,11 +106,12 @@ object SupabaseClient {
         return out
     }
 
-    private fun postToFirstWorkingTable(
+    private fun postToFirstWorkingTableDetailed(
         tableNames: List<String>,
         body: String,
         preferHeader: String = "resolution=merge-duplicates"
-    ): Boolean {
+    ): PostResult {
+        var lastResult = PostResult(success = false)
         for (table in tableNames) {
             val request = getBaseRequest(table)
                 .header("Prefer", preferHeader)
@@ -109,8 +119,22 @@ object SupabaseClient {
                 .build()
             try {
                 client.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) return true
+                    if (response.isSuccessful) {
+                        return PostResult(
+                            success = true,
+                            table = table,
+                            code = response.code,
+                            message = response.message
+                        )
+                    }
                     val err = response.body?.string() ?: ""
+                    lastResult = PostResult(
+                        success = false,
+                        table = table,
+                        code = response.code,
+                        message = response.message,
+                        errorBody = err
+                    )
                     when (response.code) {
                         404 -> {
                             Log.e(TAG, "Post missing ($table): ${response.code} ${response.message} | $err")
@@ -124,10 +148,23 @@ object SupabaseClient {
                     }
                 }
             } catch (e: Exception) {
+                lastResult = PostResult(
+                    success = false,
+                    table = table,
+                    exceptionMessage = e.message
+                )
                 Log.e(TAG, "Post exception ($table): ${e.message}")
             }
         }
-        return false
+        return lastResult
+    }
+
+    private fun postToFirstWorkingTable(
+        tableNames: List<String>,
+        body: String,
+        preferHeader: String = "resolution=merge-duplicates"
+    ): Boolean {
+        return postToFirstWorkingTableDetailed(tableNames, body, preferHeader).success
     }
 
     data class EvaluationSaveResult(
@@ -343,7 +380,33 @@ object SupabaseClient {
      */
     fun saveGeneratedCandidates(rows: JSONArray): Boolean {
         if (rows.length() == 0) return true
-        return postToFirstWorkingTable(listOf("ml_generated_candidates"), rows.toString())
+        val body = rows.toString()
+        val result = postToFirstWorkingTableDetailed(listOf("ml_generated_candidates"), body)
+        if (!result.success) {
+            val details = buildString {
+                append("ML_GENERATED_CANDIDATES_HTTP: table=")
+                append(result.table ?: "ml_generated_candidates")
+                append(" code=")
+                append(result.code ?: -1)
+                append(" message=")
+                append(result.message ?: "")
+                if (!result.errorBody.isNullOrBlank()) {
+                    append(" body=")
+                    append(result.errorBody.take(800))
+                }
+                if (!result.exceptionMessage.isNullOrBlank()) {
+                    append(" exception=")
+                    append(result.exceptionMessage)
+                }
+                append(" payloadBytes=")
+                append(body.toByteArray().size)
+                append(" rows=")
+                append(rows.length())
+            }
+            LogBuffer.add('E', TAG, details)
+            Log.e(TAG, details)
+        }
+        return result.success
     }
 
     fun fetchBrainSnapshots(date: String): JSONArray {
