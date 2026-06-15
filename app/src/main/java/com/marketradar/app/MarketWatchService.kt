@@ -2806,6 +2806,13 @@ class MarketWatchService : Service() {
 
         if (rows.length() == 0) return
         val saved = SupabaseClient.saveGeneratedCandidates(rows)
+        if (!saved) {
+            val sampleRow = rows.optJSONObject(0)?.toString() ?: "{}"
+            Log.w(
+                TAG,
+                "ML_GENERATED_CANDIDATES_FAIL_DETAIL: pollTs=$pollTs rows=${rows.length()} sample=${sampleRow.take(1200)}"
+            )
+        }
         LogBuffer.add(
             if (saved) 'I' else 'W',
             TAG,

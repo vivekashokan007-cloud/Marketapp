@@ -110,9 +110,17 @@ object SupabaseClient {
             try {
                 client.newCall(request).execute().use { response ->
                     if (response.isSuccessful) return true
-                    if (response.code !in listOf(404, 400)) {
-                        val err = response.body?.string() ?: ""
-                        Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
+                    val err = response.body?.string() ?: ""
+                    when (response.code) {
+                        404 -> {
+                            // Optional tables can be absent in some environments.
+                        }
+                        400 -> {
+                            Log.e(TAG, "Post rejected ($table): ${response.code} ${response.message} | $err")
+                        }
+                        else -> {
+                            Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
+                        }
                     }
                 }
             } catch (e: Exception) {
