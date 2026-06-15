@@ -2743,10 +2743,56 @@ class MarketWatchService : Service() {
             }
         }
 
+        val stableKeys = listOf(
+            "snapshot_poll_ts",
+            "session_date",
+            "recommendation_id",
+            "quality_tag",
+            "decision_source",
+            "candidate_id",
+            "lane",
+            "index_key",
+            "strategy_type",
+            "trade_mode",
+            "rank",
+            "watchlist_rank",
+            "was_surfaced",
+            "net_premium",
+            "max_profit",
+            "max_loss",
+            "risk_reward",
+            "premium_edge",
+            "ev_per_1k",
+            "est_cost",
+            "capital_blocked",
+            "width",
+            "expiry",
+            "sigma_otm",
+            "iv_richness",
+            "credit_width_ratio",
+            "is_credit",
+            "execution_ready",
+            "execution_gate",
+            "entry_action",
+            "direction_safe",
+            "brain_score",
+            "p_ml",
+            "ml_action",
+            "ml_edge",
+            "ml_regime",
+            "ml_unsure",
+            "ml_ood_flag",
+            "signal_independence_score",
+            "generated_count",
+            "watchlist_count"
+        )
+
         val rows = JSONArray()
         for (i in 0 until selected.length()) {
             val candidate = selected.optJSONObject(i) ?: continue
-            val row = JSONObject()
+            val row = JSONObject().apply {
+                stableKeys.forEach { put(it, JSONObject.NULL) }
+            }
             row.putIfValue("snapshot_poll_ts", pollTs)
             row.putIfValue("session_date", sessionDate)
             row.putIfValue("recommendation_id", recommendationId)
