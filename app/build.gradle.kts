@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b260 retry: CI audit expectation aligned and Kotlin logging import fixed.
+        // b261: teacher_v1 honest-labeling shadow rollout.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 260
-        versionName = "2.4.29"
+        versionCode = 261
+        versionName = "2.4.30"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

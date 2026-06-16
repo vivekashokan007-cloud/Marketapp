@@ -837,7 +837,8 @@ class MarketMLService : Service() {
                     "evening_evaluator",
                     today,
                     snapshotsJsonArray.toString(),
-                    chainSlicesJsonArray.toString()
+                    chainSlicesJsonArray.toString(),
+                    TeacherTruthConfig.toJson().toString()
                 ).toString()
             }
             if (resultJsonStr == null) {
@@ -860,7 +861,7 @@ class MarketMLService : Service() {
                     persistedCount = 0,
                     primaryPersistedCount = 0,
                     evaluationPersistedCount = 0,
-                    message = "No evaluable H2 labels were produced from today's saved recommendations."
+                    message = "No evaluable shadow teacher labels were produced from today's saved recommendations."
                 )
             }
             if (evaluatedOutcomes.length() > 0) {
@@ -871,7 +872,7 @@ class MarketMLService : Service() {
             } else if (evaluatedOutcomes.length() > 0) {
                 "Today's evaluation produced ${saveResult.producedCount} outcomes, but Supabase persistence failed."
             } else {
-                "Today's evaluation done: 0 evaluable H2 outcomes saved from the day's recommendations."
+                "Today's evaluation done: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
             }
             prefs.edit()
                 .putString("evaluation_done_date", today)

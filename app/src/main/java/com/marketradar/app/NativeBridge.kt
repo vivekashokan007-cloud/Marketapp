@@ -1405,6 +1405,16 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun getTeacherTruthConfig(): String {
+        return try {
+            TeacherTruthConfig.toJson().toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getTeacherTruthConfig failed", e)
+            "{}"
+        }
+    }
+
+    @JavascriptInterface
     fun getBnfChain(): String {
         return try {
             val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")

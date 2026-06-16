@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.29"
+BRAIN_VERSION = "2.4.30"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8802,35 +8802,327 @@ def get_price(chain_rows, cand, side, suffix=''):
     return None if chosen is None else chosen.get('ltp', None)
 
 
-def _eval_single_candidate(chain_rows, snap, cand):
-    """Evaluate P&L for one candidate using H2 chain data.
-    Returns outcome dict, or None if no H2 data exists (non-evaluable)."""
+def _teacher_default_config():
+    return {
+        'label_version': 'teacher_v1',
+        'config_version': '2026-06-15',
+        'tp_capture_pct': 0.50,
+        'sl_loss_multiple': 1.00,
+        'stt_options': 0.0015,
+        'brokerage_per_order': 20.0,
+        'exchange_per_leg': 15.0,
+        'gst_rate': 0.18,
+        'fixed_buffer': 3.0,
+        'slippage': {
+            'NF_2LEG': 1.0,
+            'NF_4LEG': 2.0,
+            'BNF_2LEG': 2.0,
+            'BNF_4LEG': 4.0,
+        },
+        'vix_buckets': {
+            'very_low_max': 14.0,
+            'low_max': 16.0,
+            'normal_max': 19.0,
+            'high_max': 24.0,
+        },
+    }
+
+
+def _teacher_merge_config(config_obj):
+    base = _teacher_default_config()
+    if not isinstance(config_obj, dict):
+        return base
+    for key, value in config_obj.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merged = dict(base[key])
+            merged.update(value)
+            base[key] = merged
+        else:
+            base[key] = value
+    return base
+
+
+def _normalize_option_type(value):
+    return str(value or '').strip().upper()
+
+
+def _float_or_none(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _strike_matches(left, right):
+    l_val = _float_or_none(left)
+    r_val = _float_or_none(right)
+    if l_val is None or r_val is None:
+        return str(left) == str(right)
+    return abs(l_val - r_val) < 0.01
+
+
+def _resolve_entry_vix(snap):
+    direct = _float_or_none(snap.get('vix'))
+    if direct is not None:
+        return direct
+    for field in ('context_json', 'poll_summary_json', 'verdict_json', 'market_forces_json'):
+        raw = snap.get(field)
+        parsed = {}
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = {}
+        elif isinstance(raw, dict):
+            parsed = raw
+        if not isinstance(parsed, dict):
+            continue
+        for key in ('vix', 'current_vix'):
+            val = _float_or_none(parsed.get(key))
+            if val is not None:
+                return val
+        poll = parsed.get('poll') if isinstance(parsed.get('poll'), dict) else {}
+        val = _float_or_none(poll.get('vix'))
+        if val is not None:
+            return val
+    return None
+
+
+def _teacher_regime_bucket(entry_vix, config):
+    if entry_vix is None:
+        return 'unknown'
+    buckets = config.get('vix_buckets', {})
+    if entry_vix <= float(buckets.get('very_low_max', 14.0)):
+        return 'VIX_VERY_LOW'
+    if entry_vix <= float(buckets.get('low_max', 16.0)):
+        return 'VIX_LOW'
+    if entry_vix <= float(buckets.get('normal_max', 19.0)):
+        return 'VIX_NORMAL'
+    if entry_vix <= float(buckets.get('high_max', 24.0)):
+        return 'VIX_HIGH'
+    return 'VIX_VERY_HIGH'
+
+
+def _teacher_round_trip_cost(index_key, leg_count, lot_size, sell_premium_value, config):
+    slippage = config.get('slippage', {})
+    slip_key = f"{index_key}_{leg_count}LEG"
+    slip_per_unit = _float_or_none(slippage.get(slip_key)) or 0.0
+    stt_rate = float(config.get('stt_options', 0.0015) or 0.0015)
+    brokerage = float(config.get('brokerage_per_order', 20.0) or 20.0)
+    exchange = float(config.get('exchange_per_leg', 15.0) or 15.0)
+    gst = float(config.get('gst_rate', 0.18) or 0.18)
+    fixed_buffer = float(config.get('fixed_buffer', 3.0) or 3.0)
+    sell_premium_value = max(0.0, float(sell_premium_value or 0.0))
+    cost = (
+        sell_premium_value * stt_rate * 2.0 +
+        brokerage * leg_count * 2.0 +
+        exchange * leg_count * 2.0 * (1.0 + gst) +
+        slip_per_unit * lot_size * leg_count * 2.0 +
+        fixed_buffer
+    )
+    return round(cost, 2)
+
+
+def _build_candidate_path(chain_rows, snap, cand):
+    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    expiry = str(cand.get('expiry') or '').strip()
+    entry_ts = _parse_iso_ts(snap.get('poll_ts', ''))
+    leg_specs = [
+        ('sell', cand.get('sellStrike'), cand.get('sellType')),
+        ('buy', cand.get('buyStrike'), cand.get('buyType')),
+    ]
+    if cand.get('sellStrike2') is not None:
+        leg_specs.extend([
+            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
+            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
+        ])
+
+    grouped = {}
+    for row_data in chain_rows:
+        if row_data.get('index_key') != index_key:
+            continue
+        row_expiry = str(row_data.get('expiry') or '').strip()
+        if expiry and row_expiry and row_expiry != expiry:
+            continue
+        row_ts_raw = row_data.get('poll_ts', '')
+        row_ts = _parse_iso_ts(row_ts_raw)
+        if row_ts is None:
+            continue
+        if entry_ts is not None and row_ts < entry_ts:
+            continue
+        strike = row_data.get('strike')
+        opt_type = _normalize_option_type(row_data.get('option_type'))
+        ltp = _float_or_none(row_data.get('ltp'))
+        if ltp is None:
+            continue
+        bucket = grouped.setdefault(row_ts_raw, {'ts': row_ts, 'prices': {}})
+        bucket['prices'][(str(strike), opt_type)] = ltp
+
+    points = []
+    for ts_raw, bucket in grouped.items():
+        prices = bucket['prices']
+        point = {'poll_ts': ts_raw, 'ts': bucket['ts']}
+        complete = True
+        for label, strike, opt_type in leg_specs:
+            if strike is None or not opt_type:
+                complete = False
+                break
+            wanted_type = _normalize_option_type(opt_type)
+            price_val = None
+            for (row_strike, row_type), row_ltp in prices.items():
+                if row_type != wanted_type:
+                    continue
+                if _strike_matches(row_strike, strike):
+                    price_val = row_ltp
+                    break
+            if price_val is None:
+                complete = False
+                break
+            point[label] = price_val
+        if complete:
+            points.append(point)
+    points.sort(key=lambda item: item['ts'])
+    return points
+
+
+def _gross_spread_pnl(cand, point):
+    stype = cand.get('type', '')
+    is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+    is_4_leg = cand.get('sellStrike2') is not None
+    entry_premium = _float_or_none(cand.get('netPremium')) or 0.0
+    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+
+    if is_4_leg:
+        later_net_credit = (
+            (point['sell'] - point['buy']) +
+            (point['sell2'] - point['buy2'])
+        )
+        sell_premium_value = (point['sell'] + point['sell2']) * lot_size
+    else:
+        later_net_credit = point['sell'] - point['buy']
+        sell_premium_value = point['sell'] * lot_size
+
+    if is_credit:
+        gross_pnl = (entry_premium - later_net_credit) * lot_size
+    else:
+        gross_pnl = (later_net_credit - entry_premium) * lot_size
+    return round(gross_pnl, 2), round(sell_premium_value, 2)
+
+
+def _managed_teacher_outcome(chain_rows, snap, cand, config):
+    max_profit = _float_or_none(cand.get('maxProfit'))
+    if max_profit is None or max_profit <= 0:
+        return None
+    max_loss = _float_or_none(cand.get('maxLoss'))
+    leg_count = 4 if cand.get('sellStrike2') is not None else 2
+    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    tp_threshold = round(max_profit * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
+    risk_at_entry = round(max_profit * float(config.get('sl_loss_multiple', 1.00) or 1.00), 2)
+    if max_loss is not None and max_loss > 0:
+        risk_at_entry = round(min(risk_at_entry, max_loss), 2)
+    if risk_at_entry <= 0:
+        return None
+
+    path_points = _build_candidate_path(chain_rows, snap, cand)
+    if not path_points:
+        return None
+
+    exit_reason = 'EOD'
+    exit_point = path_points[-1]
+    exit_step = len(path_points)
+    managed_gross_pnl = None
+    friction_cost = None
+    managed_pnl = None
+
+    for idx, point in enumerate(path_points, start=1):
+        gross_pnl, sell_premium_value = _gross_spread_pnl(cand, point)
+        round_trip_cost = _teacher_round_trip_cost(index_key, leg_count, lot_size, sell_premium_value, config)
+        net_pnl = round(gross_pnl - round_trip_cost, 2)
+        if net_pnl >= tp_threshold:
+            exit_reason = 'TP'
+            exit_point = point
+            exit_step = idx
+            managed_gross_pnl = gross_pnl
+            friction_cost = round_trip_cost
+            managed_pnl = net_pnl
+            break
+        if net_pnl <= -risk_at_entry:
+            exit_reason = 'SL'
+            exit_point = point
+            exit_step = idx
+            managed_gross_pnl = gross_pnl
+            friction_cost = round_trip_cost
+            managed_pnl = max(net_pnl, -risk_at_entry)
+            break
+        managed_gross_pnl = gross_pnl
+        friction_cost = round_trip_cost
+        managed_pnl = net_pnl
+
+    entry_vix = _resolve_entry_vix(snap)
+    regime_bucket = _teacher_regime_bucket(entry_vix, config)
+    managed_pnl = round(managed_pnl if managed_pnl is not None else 0.0, 2)
+    r_multiple = round(managed_pnl / risk_at_entry, 4) if risk_at_entry > 0 else None
+    captured_pct = round(managed_pnl / max_profit, 4) if max_profit > 0 else None
+    success = exit_reason == 'TP'
+    avg_win_r = max(tp_threshold / risk_at_entry, 0.0) if risk_at_entry > 0 else 0.0
+    avg_loss_r = 1.0
+    break_even = round((avg_loss_r / (avg_loss_r + avg_win_r)) * 100.0, 2) if avg_win_r > 0 else 100.0
+
+    return {
+        'managed_pnl': managed_pnl,
+        'managed_gross_pnl': round(managed_gross_pnl or 0.0, 2),
+        'friction_cost': round(friction_cost or 0.0, 2),
+        'exit_reason': exit_reason,
+        'exit_step': exit_step,
+        'exit_ts': exit_point.get('poll_ts'),
+        'r_multiple': r_multiple,
+        'captured_pct': captured_pct,
+        'is_success': 1 if success else 0,
+        'risk_at_entry': round(risk_at_entry, 2),
+        'regime_bucket': regime_bucket,
+        'label_version': config.get('label_version', 'teacher_v1'),
+        'teacher_config_version': config.get('config_version', '2026-06-15'),
+        'tp_threshold': round(tp_threshold, 2),
+        'sl_threshold': round(risk_at_entry, 2),
+        'break_even_win_rate_pct': break_even,
+    }
+
+
+def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
+    """Evaluate one candidate with both legacy H2 labels and teacher_v1 shadow labels.
+    Returns outcome dict, or None if the candidate has no evaluable price path."""
     stype = cand.get('type', '')
     is_4_leg = cand.get('sellStrike2') is not None
 
     sell_ltp_h2 = get_price(chain_rows, cand, 'sell')
     buy_ltp_h2 = get_price(chain_rows, cand, 'buy')
+    sim_pnl = None
 
-    if sell_ltp_h2 is None or buy_ltp_h2 is None:
-        return None
+    if sell_ltp_h2 is not None and buy_ltp_h2 is not None:
+        legacy_complete = True
+        if is_4_leg:
+            sell2_ltp_h2 = get_price(chain_rows, cand, 'sell', suffix='2')
+            buy2_ltp_h2 = get_price(chain_rows, cand, 'buy', suffix='2')
+            if sell2_ltp_h2 is None or buy2_ltp_h2 is None:
+                legacy_complete = False
+            else:
+                later_net_credit = (sell_ltp_h2 - buy_ltp_h2) + (sell2_ltp_h2 - buy2_ltp_h2)
+        else:
+            later_net_credit = sell_ltp_h2 - buy_ltp_h2
 
-    if is_4_leg:
-        sell2_ltp_h2 = get_price(chain_rows, cand, 'sell', suffix='2')
-        buy2_ltp_h2 = get_price(chain_rows, cand, 'buy', suffix='2')
-        if sell2_ltp_h2 is None or buy2_ltp_h2 is None:
-            return None
-        later_net_credit = (sell_ltp_h2 - buy_ltp_h2) + (sell2_ltp_h2 - buy2_ltp_h2)
-    else:
-        later_net_credit = sell_ltp_h2 - buy_ltp_h2
-
-    entry_premium = cand.get('netPremium', 0)
-    lot_size = cand.get('lotSize') or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
-
-    is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
-    if is_credit:
-        sim_pnl = (entry_premium - later_net_credit) * lot_size
-    else:
-        sim_pnl = (later_net_credit - entry_premium) * lot_size
+        if legacy_complete:
+            entry_premium = cand.get('netPremium', 0)
+            lot_size = cand.get('lotSize') or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+            is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+            if is_credit:
+                sim_pnl = (entry_premium - later_net_credit) * lot_size
+            else:
+                sim_pnl = (later_net_credit - entry_premium) * lot_size
 
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
     lane = cand.get('lane')
@@ -8841,7 +9133,7 @@ def _eval_single_candidate(chain_rows, snap, cand):
         elif lane.endswith('_swing'):
             trade_mode = 'swing'
     strategy_type = cand.get('type') or cand.get('strategy_type') or ''
-    return {
+    outcome = {
         'snapshot_id': snap.get('id'),
         'session_date': snap.get('session_date'),
         'candidate_id': cand.get('id'),
@@ -8850,13 +9142,18 @@ def _eval_single_candidate(chain_rows, snap, cand):
         'trade_mode': trade_mode or 'unknown',
         'strategy_type': strategy_type,
         'sim_pnl_h2': sim_pnl,
-        'canonical_won': 1 if sim_pnl > 0 else 0,
-        'outcome_h2': 1 if sim_pnl > 0 else 0,
-        'won': 1 if sim_pnl > 0 else 0,
+        'canonical_won': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
+        'outcome_h2': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
+        'won': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
     }
+    teacher = _managed_teacher_outcome(chain_rows, snap, cand, teacher_config or _teacher_default_config())
+    if teacher is None:
+        return None
+    outcome.update(teacher)
+    return outcome
 
 
-def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_str):
+def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_str, teacher_config_json_str=None):
     """Evaluates P&L for both 2-leg and 4-leg strategies.
     Data is passed as JSON strings from Kotlin. No Supabase calls inside Python.
 
@@ -8867,6 +9164,12 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
 
     snapshots = json.loads(snapshots_json_str)
     chain_slices = json.loads(chain_slices_json_str) if chain_slices_json_str else []
+    teacher_config = _teacher_default_config()
+    if teacher_config_json_str:
+        try:
+            teacher_config = _teacher_merge_config(json.loads(teacher_config_json_str))
+        except Exception:
+            teacher_config = _teacher_default_config()
 
     chain_rows = list(chain_slices)
 
@@ -8883,7 +9186,7 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
             primary = {}
 
         if primary and primary.get('id'):
-            outcome = _eval_single_candidate(chain_rows, snap, primary)
+            outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config)
             if outcome is not None:
                 outcome['role'] = 'primary'
                 outcomes.append(outcome)
@@ -8916,7 +9219,7 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
             if cand_id in seen_ids:
                 continue
             seen_ids.add(cand_id)
-            outcome = _eval_single_candidate(chain_rows, snap, cand)
+            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
             if outcome is not None:
                 outcome['role'] = 'secondary'
                 outcomes.append(outcome)

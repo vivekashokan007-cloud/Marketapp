@@ -40,6 +40,25 @@ object SupabaseClient {
             .addHeader("Content-Type", "application/json")
     }
 
+    private val shadowTeacherKeys = listOf(
+        "managed_pnl",
+        "managed_gross_pnl",
+        "friction_cost",
+        "exit_reason",
+        "exit_step",
+        "exit_ts",
+        "r_multiple",
+        "captured_pct",
+        "is_success",
+        "risk_at_entry",
+        "regime_bucket",
+        "label_version",
+        "teacher_config_version",
+        "tp_threshold",
+        "sl_threshold",
+        "break_even_win_rate_pct"
+    )
+
     private fun fetchSync(request: Request): String? {
         return try {
             client.newCall(request).execute().use { response ->
@@ -216,6 +235,9 @@ object SupabaseClient {
             row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
             if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
             if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
+            shadowTeacherKeys.forEach { key ->
+                if (!src.isNull(key)) row.put(key, src.opt(key))
+            }
             row.put("created_at", nowIso)
             rows.put(row)
         }
@@ -233,9 +255,16 @@ object SupabaseClient {
             row.put("session_date", sessionDate)
             row.put("candidate_id", src.opt("candidate_id"))
             row.put("role", "primary")
+            row.put("lane", src.opt("lane"))
+            row.put("index_key", src.opt("index_key"))
+            row.put("trade_mode", src.opt("trade_mode"))
+            row.put("strategy_type", src.opt("strategy_type"))
             row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
             if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
             if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
+            shadowTeacherKeys.forEach { key ->
+                if (!src.isNull(key)) row.put(key, src.opt(key))
+            }
             row.put("created_at", nowIso)
             rows.put(row)
         }
@@ -432,7 +461,7 @@ object SupabaseClient {
     }
 
     fun fetchEvaluationSnapshots(date: String): JSONArray {
-        val select = "id,poll_ts,primary_candidate_json,top_candidates_json,is_labelable,session_date"
+        val select = "id,poll_ts,primary_candidate_json,context_json,top_candidates_json,is_labelable,session_date"
         val exact = fetchArrayFromTables(
             listOf(
                 "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
@@ -502,6 +531,17 @@ object SupabaseClient {
         val evaluationRows = buildEvaluationRows(body)
         val recommendationRows = buildRecommendationRows(sessionDate, body)
 
+        fun stripShadowTeacher(rows: JSONArray): JSONArray {
+            val legacy = JSONArray()
+            for (i in 0 until rows.length()) {
+                val src = rows.optJSONObject(i) ?: continue
+                val row = JSONObject(src.toString())
+                shadowTeacherKeys.forEach { row.remove(it) }
+                legacy.put(row)
+            }
+            return legacy
+        }
+
         fun stripCanonical(rows: JSONArray): JSONArray {
             val legacy = JSONArray()
             for (i in 0 until rows.length()) {
@@ -528,14 +568,18 @@ object SupabaseClient {
             return legacy
         }
 
-        val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRows))
-        val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRows))
+        val evaluationRowsNoShadow = stripShadowTeacher(evaluationRows)
+        val recommendationRowsNoShadow = stripShadowTeacher(recommendationRows)
+        val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
+        val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
 
         val evaluationSaved = postArrayToTable("ml_evaluation_outcomes", evaluationRows) ||
-            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRows)) ||
+            postArrayToTable("ml_evaluation_outcomes", evaluationRowsNoShadow) ||
+            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRowsNoShadow)) ||
             postArrayToTable("ml_evaluation_outcomes", evaluationRowsLegacy)
         val recommendationSaved = postArrayToTable("ml_recommendation_outcomes", recommendationRows) ||
-            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRows)) ||
+            postArrayToTable("ml_recommendation_outcomes", recommendationRowsNoShadow) ||
+            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRowsNoShadow)) ||
             postArrayToTable("ml_recommendation_outcomes", recommendationRowsLegacy)
 
         val evaluationPersisted = if (evaluationSaved) evaluationRows.length() else 0
@@ -576,6 +620,19 @@ object SupabaseClient {
             "BNF_intraday" to intArrayOf(0, 0, 0),
             "BNF_swing" to intArrayOf(0, 0, 0)
         )
+        val primaryLegacyLanes = linkedMapOf(
+            "NF_intraday" to intArrayOf(0, 0, 0),
+            "NF_swing" to intArrayOf(0, 0, 0),
+            "BNF_intraday" to intArrayOf(0, 0, 0),
+            "BNF_swing" to intArrayOf(0, 0, 0)
+        )
+        val teacherLaneAggregates = linkedMapOf(
+            "NF_intraday" to mutableListOf<JSONObject>(),
+            "NF_swing" to mutableListOf<JSONObject>(),
+            "BNF_intraday" to mutableListOf<JSONObject>(),
+            "BNF_swing" to mutableListOf<JSONObject>()
+        )
+        val teacherBucketAggregates = linkedMapOf<String, MutableList<JSONObject>>()
 
         fun normalizeWon(value: Any?): Int? = when (value) {
             is Boolean -> if (value) 1 else 0
@@ -591,13 +648,83 @@ object SupabaseClient {
             else -> null
         }
 
+        fun normalizeBool(value: Any?): Boolean? = when (value) {
+            is Boolean -> value
+            is Number -> when (value.toInt()) {
+                1 -> true
+                0 -> false
+                else -> null
+            }
+            is String -> when (value.trim().lowercase(Locale.US)) {
+                "1", "true", "yes" -> true
+                "0", "false", "no" -> false
+                else -> null
+            }
+            else -> null
+        }
+
+        fun normalizeDouble(value: Any?): Double? = when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+
+        fun buildTeacherSummary(items: List<JSONObject>): JSONObject {
+            var rowCount = 0
+            var successCount = 0
+            var sumR = 0.0
+            var sumCaptured = 0.0
+            var capturedCount = 0
+            val winRs = mutableListOf<Double>()
+            val lossRs = mutableListOf<Double>()
+            for (row in items) {
+                val r = normalizeDouble(row.opt("r_multiple")) ?: continue
+                rowCount += 1
+                sumR += r
+                if (r > 0) winRs += r
+                if (r < 0) lossRs += kotlin.math.abs(r)
+                val success = normalizeBool(row.opt("is_success"))
+                if (success == true) successCount += 1
+                val captured = normalizeDouble(row.opt("captured_pct"))
+                if (captured != null) {
+                    sumCaptured += captured
+                    capturedCount += 1
+                }
+            }
+            val expectancyR = if (rowCount > 0) sumR / rowCount else 0.0
+            val successRatePct = if (rowCount > 0) (successCount * 100.0) / rowCount else 0.0
+            val avgWinR = if (winRs.isNotEmpty()) winRs.average() else 0.0
+            val avgLossR = if (lossRs.isNotEmpty()) lossRs.average() else 0.0
+            val breakEvenWinRatePct = if (avgWinR > 0.0 && avgLossR > 0.0) {
+                (avgLossR / (avgLossR + avgWinR)) * 100.0
+            } else {
+                0.0
+            }
+            val avgCapturedPct = if (capturedCount > 0) (sumCaptured / capturedCount) * 100.0 else 0.0
+            val worthTrading = rowCount >= 30 && expectancyR > 0.0 && successRatePct > breakEvenWinRatePct
+            return JSONObject()
+                .put("rows", rowCount)
+                .put("successes", successCount)
+                .put("successRatePct", String.format(Locale.US, "%.2f", successRatePct).toDouble())
+                .put("expectancyR", String.format(Locale.US, "%.4f", expectancyR).toDouble())
+                .put("avgCapturedPct", String.format(Locale.US, "%.2f", avgCapturedPct).toDouble())
+                .put("breakEvenWinRatePct", String.format(Locale.US, "%.2f", breakEvenWinRatePct).toDouble())
+                .put("worthTrading", worthTrading)
+        }
+
         var attributedRows = 0
+        var teacherRows = 0
+        var primaryLegacyRows = 0
+        var primaryLegacyLabeled = 0
+        var primaryLegacyWins = 0
         for (i in 0 until todayRows.length()) {
             val row = todayRows.optJSONObject(i) ?: continue
             val lane = row.optString("lane", "").trim()
             val bucket = lanes[lane] ?: continue
             bucket[0] += 1 // rows
             attributedRows += 1
+            val role = row.optString("role", "").trim().lowercase(Locale.US)
+            val isPrimaryLike = role != "secondary"
             val won = normalizeWon(
                 when {
                     !row.isNull("canonical_won") -> row.opt("canonical_won")
@@ -609,6 +736,33 @@ object SupabaseClient {
             if (won == 0 || won == 1) {
                 bucket[1] += 1 // labeled
                 if (won == 1) bucket[2] += 1 // wins
+            }
+            if (isPrimaryLike) {
+                val legacyBucket = primaryLegacyLanes[lane]
+                if (legacyBucket != null) {
+                    legacyBucket[0] += 1
+                    primaryLegacyRows += 1
+                    if (won == 0 || won == 1) {
+                        legacyBucket[1] += 1
+                        primaryLegacyLabeled += 1
+                        if (won == 1) {
+                            legacyBucket[2] += 1
+                            primaryLegacyWins += 1
+                        }
+                    }
+                }
+            }
+
+            val labelVersion = row.optString("label_version", "").trim()
+            val rMultiple = normalizeDouble(row.opt("r_multiple"))
+            val isPrimary = role == "primary"
+            if (labelVersion == TeacherTruthConfig.LABEL_VERSION && rMultiple != null && isPrimary) {
+                teacherRows += 1
+                teacherLaneAggregates[lane]?.add(row)
+                val strategyType = row.optString("strategy_type", "unknown").ifBlank { "unknown" }
+                val regimeBucket = row.optString("regime_bucket", "unknown").ifBlank { "unknown" }
+                val bucketKey = "$lane|$strategyType|$regimeBucket"
+                teacherBucketAggregates.getOrPut(bucketKey) { mutableListOf() }.add(row)
             }
         }
 
@@ -623,12 +777,112 @@ object SupabaseClient {
             )
         }
 
+        val primaryLegacyJson = JSONObject()
+        for ((key, counts) in primaryLegacyLanes) {
+            val winRatePct = if (counts[1] > 0) {
+                String.format(Locale.US, "%.2f", (counts[2] * 100.0) / counts[1]).toDouble()
+            } else {
+                0.0
+            }
+            primaryLegacyJson.put(
+                key,
+                JSONObject()
+                    .put("rows", counts[0])
+                    .put("labeled", counts[1])
+                    .put("wins", counts[2])
+                    .put("winRatePct", winRatePct)
+            )
+        }
+
+        val teacherLanesJson = JSONObject()
+        for ((key, items) in teacherLaneAggregates) {
+            teacherLanesJson.put(key, buildTeacherSummary(items))
+        }
+
+        val teacherBucketsJson = JSONObject()
+        var tradeableBucketCount = 0
+        for ((key, items) in teacherBucketAggregates) {
+            val bucketSummary = buildTeacherSummary(items)
+            if (bucketSummary.optBoolean("worthTrading", false)) tradeableBucketCount += 1
+            teacherBucketsJson.put(key, bucketSummary)
+        }
+
+        val teacherSummary = buildTeacherSummary(
+            teacherLaneAggregates.values.flatten()
+        )
+            .put("labelVersion", TeacherTruthConfig.LABEL_VERSION)
+            .put("bucketCount", teacherBucketAggregates.size)
+            .put("tradeableBucketCount", tradeableBucketCount)
+            .put("scope", "primary_only_shadow")
+
+        val comparisonLanesJson = JSONObject()
+        for ((key, legacy) in primaryLegacyLanes) {
+            val teacherLane = teacherLanesJson.optJSONObject(key) ?: JSONObject()
+            val legacyWinRatePct = if (legacy[1] > 0) {
+                String.format(Locale.US, "%.2f", (legacy[2] * 100.0) / legacy[1]).toDouble()
+            } else {
+                0.0
+            }
+            val teacherSuccessRatePct = teacherLane.optDouble("successRatePct", 0.0)
+            comparisonLanesJson.put(
+                key,
+                JSONObject()
+                    .put("legacyRows", legacy[0])
+                    .put("legacyLabeled", legacy[1])
+                    .put("legacyWins", legacy[2])
+                    .put("legacyWinRatePct", legacyWinRatePct)
+                    .put("teacherRows", teacherLane.optInt("rows", 0))
+                    .put("teacherSuccesses", teacherLane.optInt("successes", 0))
+                    .put("teacherSuccessRatePct", teacherSuccessRatePct)
+                    .put("teacherExpectancyR", teacherLane.optDouble("expectancyR", 0.0))
+                    .put("teacherBreakEvenWinRatePct", teacherLane.optDouble("breakEvenWinRatePct", 0.0))
+                    .put("teacherWorthTrading", teacherLane.optBoolean("worthTrading", false))
+                    .put(
+                        "winRateDeltaPts",
+                        String.format(Locale.US, "%.2f", teacherSuccessRatePct - legacyWinRatePct).toDouble()
+                    )
+            )
+        }
+
+        val primaryLegacyWinRatePct = if (primaryLegacyLabeled > 0) {
+            String.format(Locale.US, "%.2f", (primaryLegacyWins * 100.0) / primaryLegacyLabeled).toDouble()
+        } else {
+            0.0
+        }
+        val comparisonSummaryJson = JSONObject()
+            .put("legacyPrimaryRows", primaryLegacyRows)
+            .put("legacyPrimaryLabeled", primaryLegacyLabeled)
+            .put("legacyPrimaryWins", primaryLegacyWins)
+            .put("legacyWinRatePct", primaryLegacyWinRatePct)
+            .put("teacherPrimaryRows", teacherSummary.optInt("rows", 0))
+            .put("teacherSuccesses", teacherSummary.optInt("successes", 0))
+            .put("teacherSuccessRatePct", teacherSummary.optDouble("successRatePct", 0.0))
+            .put("teacherExpectancyR", teacherSummary.optDouble("expectancyR", 0.0))
+            .put("teacherBreakEvenWinRatePct", teacherSummary.optDouble("breakEvenWinRatePct", 0.0))
+            .put("teacherWorthTrading", teacherSummary.optBoolean("worthTrading", false))
+            .put(
+                "winRateDeltaPts",
+                String.format(
+                    Locale.US,
+                    "%.2f",
+                    teacherSummary.optDouble("successRatePct", 0.0) - primaryLegacyWinRatePct
+                ).toDouble()
+            )
+            .put("scope", "primary_only_old_vs_teacher_shadow")
+
         return JSONObject()
             .put("session_date", sessionDate)
             .put("rowsFetched", rows.length())
             .put("rowsToday", todayRows.length())
             .put("attributedRows", attributedRows)
+            .put("primary_legacy_lanes", primaryLegacyJson)
+            .put("teacherRows", teacherRows)
             .put("lanes", lanesJson)
+            .put("teacher_lanes", teacherLanesJson)
+            .put("teacher_summary", teacherSummary)
+            .put("teacher_buckets", teacherBucketsJson)
+            .put("comparison_lanes", comparisonLanesJson)
+            .put("comparison_summary", comparisonSummaryJson)
     }
 
     fun fetchRecentBrainSnapshots(limit: Int = 200): JSONArray {
