@@ -2722,7 +2722,39 @@ class MarketWatchService : Service() {
 
     private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject) {
         val candidates = factPack.optJSONArray("candidates") ?: return
-        if (candidates.length() == 0) return
+        if (candidates.length() == 0) {
+            val snapshotContext = snapObj.optJSONObject("context_json")
+            val rejectedStats = snapshotContext?.optJSONObject("snapshot_rejected_candidate_stats")
+            val trace = snapshotContext?.optJSONObject("candidate_generation_trace")
+            val rejectedCount = rejectedStats?.optInt("total", 0) ?: 0
+            val traceAccepted = trace?.optInt("accepted_count", 0) ?: 0
+            val traceRejected = trace?.optInt("rejected_count", 0) ?: 0
+            val byStage = rejectedStats?.optJSONObject("by_stage")
+            val topStage = byStage?.keys()?.asSequence()?.map { key ->
+                "$key:${byStage.optInt(key, 0)}"
+            }?.take(3)?.joinToString(",") ?: ""
+            val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
+            val diag = buildString {
+                append("ML_GENERATED_CANDIDATES_SKIP: generated=0")
+                append(" rejected=")
+                append(rejectedCount)
+                append(" traceAccepted=")
+                append(traceAccepted)
+                append(" traceRejected=")
+                append(traceRejected)
+                if (topStage.isNotBlank()) {
+                    append(" byStage=")
+                    append(topStage)
+                }
+                if (pollTs.isNotBlank()) {
+                    append(" pollTs=")
+                    append(pollTs)
+                }
+            }
+            LogBuffer.add('W', TAG, diag)
+            Log.w(TAG, diag)
+            return
+        }
 
         val selected = boundedGeneratedCandidates(candidates, GENERATED_CANDIDATE_PERSIST_CAP)
         if (selected.length() == 0) return
