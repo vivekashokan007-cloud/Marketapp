@@ -2722,9 +2722,16 @@ class MarketWatchService : Service() {
 
     private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject) {
         val candidates = factPack.optJSONArray("candidates") ?: return
+        val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
+        val generationSkip = factPack.optJSONObject("generation_skip_reason")
+        val generationSkipSummary = generationSkip?.optString("detail")
+            ?: factPack.optString("generation_skip_reason", "")
         if (candidates.length() == 0) {
             val snapshotContext = snapObj.optJSONObject("context_json")
+            val rejectedRows = factPack.optJSONArray("rejected_candidates")
+                ?: snapshotContext?.optJSONArray("snapshot_rejected_candidates")
             val rejectedStats = snapshotContext?.optJSONObject("snapshot_rejected_candidate_stats")
+                ?: factPack.optJSONObject("rejected_candidate_stats")
             val trace = snapshotContext?.optJSONObject("candidate_generation_trace")
             val rejectedCount = rejectedStats?.optInt("total", 0) ?: 0
             val traceAccepted = trace?.optInt("accepted_count", 0) ?: 0
@@ -2746,6 +2753,10 @@ class MarketWatchService : Service() {
                     append(" byStage=")
                     append(topStage)
                 }
+                if (!generationSkipSummary.isNullOrBlank()) {
+                    append(" skip=")
+                    append(generationSkipSummary)
+                }
                 if (pollTs.isNotBlank()) {
                     append(" pollTs=")
                     append(pollTs)
@@ -2753,6 +2764,29 @@ class MarketWatchService : Service() {
             }
             LogBuffer.add('W', TAG, diag)
             Log.w(TAG, diag)
+            if (rejectedRows == null || rejectedRows.length() == 0) return
+
+            val syntheticRows = buildRejectedCandidateRows(
+                rejectedRows = rejectedRows,
+                factPack = factPack,
+                snapObj = snapObj,
+                candidateCounts = candidateCounts,
+                generationSkipSummary = generationSkipSummary
+            )
+            if (syntheticRows.length() == 0) return
+            val savedRejected = SupabaseClient.saveGeneratedCandidates(syntheticRows)
+            if (!savedRejected) {
+                val sampleRow = syntheticRows.optJSONObject(0)?.toString() ?: "{}"
+                Log.w(
+                    TAG,
+                    "ML_GENERATED_CANDIDATES_FAIL_DETAIL: rejectedOnly=true pollTs=$pollTs rows=${syntheticRows.length()} sample=${sampleRow.take(1200)}"
+                )
+            }
+            LogBuffer.add(
+                if (savedRejected) 'I' else 'W',
+                TAG,
+                "ML_GENERATED_CANDIDATES: saved=$savedRejected rows=${syntheticRows.length()} pollTs=$pollTs rejectedOnly=true"
+            )
             return
         }
 
@@ -2765,7 +2799,6 @@ class MarketWatchService : Service() {
         val qualityTag = factPack.optString("quality_tag", "qualitative_prompt_v2")
         val decisionSource = factPack.optString("decision_source", "")
         val signalIndependence = factPack.optJSONObject("signal_independence") ?: JSONObject()
-        val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
 
         fun JSONObject.putIfValue(key: String, value: Any?) {
             if (value == null || value == JSONObject.NULL) return
@@ -2896,6 +2929,135 @@ class MarketWatchService : Service() {
             TAG,
             "ML_GENERATED_CANDIDATES: saved=$saved rows=${rows.length()} pollTs=$pollTs"
         )
+    }
+
+    private fun buildRejectedCandidateRows(
+        rejectedRows: JSONArray,
+        factPack: JSONObject,
+        snapObj: JSONObject,
+        candidateCounts: JSONObject,
+        generationSkipSummary: String
+    ): JSONArray {
+        val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
+        val sessionDate = factPack.optString("session_date", snapObj.optString("session_date", "")).trim()
+        val recommendationId = snapObj.opt("recommendation_id")
+        val qualityTag = factPack.optString("quality_tag", "qualitative_prompt_v2")
+        val decisionSource = factPack.optString("decision_source", "")
+        val stableKeys = listOf(
+            "snapshot_poll_ts",
+            "session_date",
+            "recommendation_id",
+            "quality_tag",
+            "decision_source",
+            "candidate_id",
+            "lane",
+            "index_key",
+            "strategy_type",
+            "trade_mode",
+            "rank",
+            "watchlist_rank",
+            "was_surfaced",
+            "net_premium",
+            "max_profit",
+            "max_loss",
+            "risk_reward",
+            "premium_edge",
+            "ev_per_1k",
+            "est_cost",
+            "capital_blocked",
+            "width",
+            "expiry",
+            "sigma_otm",
+            "iv_richness",
+            "credit_width_ratio",
+            "is_credit",
+            "execution_ready",
+            "execution_gate",
+            "entry_action",
+            "direction_safe",
+            "brain_score",
+            "p_ml",
+            "ml_action",
+            "ml_edge",
+            "ml_regime",
+            "ml_unsure",
+            "ml_ood_flag",
+            "signal_independence_score",
+            "generated_count",
+            "watchlist_count"
+        )
+
+        fun JSONObject.putIfValue(key: String, value: Any?) {
+            if (value == null || value == JSONObject.NULL) return
+            when (value) {
+                is String -> if (value.isNotBlank()) put(key, value)
+                else -> put(key, value)
+            }
+        }
+
+        fun syntheticRejectedId(candidate: JSONObject, ordinal: Int): String {
+            val raw = listOf(
+                pollTs,
+                candidate.optString("index"),
+                candidate.optString("lane"),
+                candidate.optString("strategy_type"),
+                candidate.optString("expiry"),
+                candidate.opt("sellStrike"),
+                candidate.optString("sellType"),
+                candidate.opt("buyStrike"),
+                candidate.optString("buyType"),
+                candidate.optString("rejection_stage"),
+                candidate.optString("rejection_reason"),
+                ordinal.toString()
+            ).joinToString("|")
+            return "rej_${Integer.toUnsignedString(raw.hashCode(), 16)}"
+        }
+
+        val bounded = boundedGeneratedCandidates(rejectedRows, GENERATED_CANDIDATE_PERSIST_CAP)
+        val rows = JSONArray()
+        for (i in 0 until bounded.length()) {
+            val candidate = bounded.optJSONObject(i) ?: continue
+            val row = JSONObject().apply {
+                stableKeys.forEach { put(it, JSONObject.NULL) }
+            }
+            val rejectionStage = candidate.optString("rejection_stage").trim()
+            val rejectionReason = candidate.optString("rejection_reason").trim()
+            row.putIfValue("snapshot_poll_ts", pollTs)
+            row.putIfValue("session_date", sessionDate)
+            row.putIfValue("recommendation_id", recommendationId)
+            row.putIfValue("quality_tag", qualityTag)
+            row.putIfValue("decision_source", if (decisionSource.isBlank()) "REJECTED_CANDIDATE" else decisionSource)
+            row.putIfValue("candidate_id", syntheticRejectedId(candidate, i))
+            row.putIfValue("lane", candidate.optString("lane"))
+            row.putIfValue("index_key", candidate.optString("index"))
+            row.putIfValue("strategy_type", candidate.optString("strategy_type"))
+            row.putIfValue("trade_mode", candidate.optString("lane").substringAfter('_', ""))
+            row.put("was_surfaced", false)
+            row.putIfValue("net_premium", candidate.opt("netPremium"))
+            row.putIfValue("max_profit", candidate.opt("maxProfit"))
+            row.putIfValue("max_loss", candidate.opt("maxLoss"))
+            row.putIfValue("width", candidate.opt("width"))
+            row.putIfValue("expiry", candidate.optString("expiry"))
+            row.putIfValue("sigma_otm", candidate.opt("sigmaOTM"))
+            row.putIfValue("iv_richness", candidate.opt("ivRichness"))
+            row.putIfValue("credit_width_ratio", candidate.opt("creditWidthRatio"))
+            row.putIfValue("is_credit", candidate.opt("is_credit"))
+            row.putIfValue("execution_ready", false)
+            row.putIfValue("execution_gate", if (rejectionStage.isBlank()) "rejected" else "rejected:$rejectionStage")
+            row.putIfValue(
+                "entry_action",
+                when {
+                    rejectionReason.isNotBlank() -> rejectionReason
+                    generationSkipSummary.isNotBlank() -> generationSkipSummary
+                    else -> "REJECTED"
+                }
+            )
+            row.putIfValue("ml_action", "REJECTED")
+            row.putIfValue("generated_count", candidateCounts.opt("generated"))
+            row.putIfValue("watchlist_count", candidateCounts.opt("watchlist"))
+            rows.put(row)
+        }
+        return rows
     }
 
     private fun boundedGeneratedCandidates(candidates: JSONArray, cap: Int): JSONArray {

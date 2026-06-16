@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.31"
+BRAIN_VERSION = "2.4.32"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6146,7 +6146,10 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
     latest_poll = polls[-1] if polls else {}
     verdict = result.get('verdict') or {}
     generated = result.get('generated_candidates') or []
+    rejected_candidates = result.get('rejected_candidates') or []
     watchlist = result.get('watchlist') or []
+    generation_skip_reasons = result.get('generation_skip_reasons') or []
+    rejected_sample, rejected_stats = _compact_rejected_candidates(rejected_candidates)
     signal_independence = _compute_signal_independence(result, ctx)
     coherence_signal = signal_coherence(polls, ctx)
     poll_ts = _derive_poll_timestamp(ctx.get('today_ist'), latest_poll)
@@ -6242,7 +6245,12 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
         'candidate_counts': {
             'generated': len(generated) if isinstance(generated, list) else 0,
             'watchlist': len(watchlist) if isinstance(watchlist, list) else 0,
+            'rejected': len(rejected_candidates) if isinstance(rejected_candidates, list) else 0,
         },
+        'generation_skip_reason': generation_skip_reasons[0] if generation_skip_reasons else None,
+        'generation_skip_reasons': generation_skip_reasons,
+        'rejected_candidate_stats': rejected_stats,
+        'rejected_candidates': rejected_sample,
         'candidates': candidates,
     }
 
@@ -7712,27 +7720,46 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         iv_pctl = ctx.get('ivPercentile', 50)
         all_cands = []
         all_rejected = []
+        generation_skip_reasons = []
+
+        def _record_generation_skip(index_key, chain_key, reason_code, detail):
+            generation_skip_reasons.append({
+                'index': index_key,
+                'chain_key': chain_key,
+                'reason_code': reason_code,
+                'detail': detail,
+            })
+
         for chain_key, idx_key in [('bnfChain', 'BNF'), ('nfChain', 'NF')]:
             chain_data = ctx.get(chain_key)
             # BR125: Explicit logging when chain missing — catches Kotlin wiring silent failures
             if not chain_data:
                 print(f"analyze: {chain_key} missing from ctx — skipping {idx_key} candidates")
+                _record_generation_skip(idx_key, chain_key, 'missing_chain', f'{chain_key} missing from ctx')
                 continue
             if not chain_data.get('strikes'):
                 print(f"analyze: {chain_key} has no strikes — skipping {idx_key}")
+                _record_generation_skip(idx_key, chain_key, 'missing_strikes', f'{chain_key} has no strikes')
                 continue
             if not chain_data.get('atm'):
                 print(f"analyze: {chain_key} missing atm — skipping {idx_key}")
+                _record_generation_skip(idx_key, chain_key, 'missing_atm', f'{chain_key} missing atm')
                 continue
             
             spot = _latest_spot_value(idx_key)
-            if spot > 0:
-                expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
-                expiry = ctx.get(expiry_key, '')
-                cands, rejected = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
-                all_cands.extend(cands)
-                all_rejected.extend(rejected)
+            if spot <= 0:
+                print(f"analyze: {idx_key} spot resolved to {spot} — skipping candidate generation")
+                _record_generation_skip(idx_key, chain_key, 'spot_zero', f'{idx_key} spot resolved to {spot}')
+                continue
+
+            expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
+            expiry = ctx.get(expiry_key, '')
+            cands, rejected = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
+            all_cands.extend(cands)
+            all_rejected.extend(rejected)
         result['rejected_candidates'] = all_rejected
+        result['generation_skip_reasons'] = generation_skip_reasons
+        result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
         if not all_cands:
             no_trade_reason = (
                 "All candidates rejected by the gate waterfall. "
@@ -8637,6 +8664,8 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
     snapshot_context['snapshot_watchlist'] = clean_cands
+    snapshot_context['snapshot_generation_skip_reason'] = result.get('generation_skip_reason')
+    snapshot_context['snapshot_generation_skip_reasons'] = result.get('generation_skip_reasons') or []
     snapshot_context['snapshot_evaluation_legs'] = evaluation_ledger
     snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
     snapshot_context['top_5_nf'] = clean_top_5_nf
