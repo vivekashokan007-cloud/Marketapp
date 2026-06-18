@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.34"
+BRAIN_VERSION = "2.4.35"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6407,10 +6407,21 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         sigma_otm = abs(pair['sell'] - spot) / ds
         min_sigma, max_sigma = _credit_sigma_limits(ctx)
         if sigma_otm < min_sigma:
-            record_rejection('sigma_otm_too_close', 'is_credit directional and sigma_otm < 0.5', sigma_otm=round(sigma_otm, 2))
+            record_rejection('sigma_otm_too_close', 'is_credit directional and sigma_otm < 0.5',
+                             sigma_otm=round(sigma_otm, 2),
+                             net_prem=round(net_prem, 4),
+                             max_profit=round(max_profit, 2),
+                             max_loss=round(max_loss, 2),
+                             credit_ratio=round(net_prem / width, 4) if width else None)
             return None
         if _sigma_above_max(sigma_otm, max_sigma):
-            record_rejection('sigma_otm_too_far', 'is_credit directional and sigma_otm > max_sigma', sigma_otm=round(sigma_otm, 2), max_sigma=max_sigma)
+            record_rejection('sigma_otm_too_far', 'is_credit directional and sigma_otm > max_sigma',
+                             sigma_otm=round(sigma_otm, 2),
+                             max_sigma=max_sigma,
+                             net_prem=round(net_prem, 4),
+                             max_profit=round(max_profit, 2),
+                             max_loss=round(max_loss, 2),
+                             credit_ratio=round(net_prem / width, 4) if width else None)
             return None
         sigma_otm = round(sigma_otm, 2)
 
