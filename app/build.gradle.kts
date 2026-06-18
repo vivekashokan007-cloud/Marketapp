@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b263: rejected-row persistence and structured generation-skip reasons.
+        // b268: teacher stop-loss realism preserves gap-through losses.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 267
-        versionName = "2.4.36"
+        versionCode = 268
+        versionName = "2.4.37"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.36"
+BRAIN_VERSION = "2.4.37"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9097,7 +9097,10 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
             exit_step = idx
             managed_gross_pnl = gross_pnl
             friction_cost = round_trip_cost
-            managed_pnl = max(net_pnl, -risk_at_entry)
+            # Preserve gap-through-stop losses instead of clipping to the
+            # configured stop threshold. The teacher should reflect the actual
+            # realized path, not the intended stop.
+            managed_pnl = net_pnl
             break
         managed_gross_pnl = gross_pnl
         friction_cost = round_trip_cost

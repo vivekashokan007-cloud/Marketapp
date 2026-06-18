@@ -67,7 +67,7 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
         self.assertIsNone(outcome['sim_pnl_h2'])
         self.assertIsNone(outcome['canonical_won'])
 
-    def test_teacher_sl_caps_risk_at_minus_one_r(self):
+    def test_teacher_sl_preserves_gap_through_loss_below_minus_one_r(self):
         rows = [
             self._row('2026-06-15T10:05:00+05:30', 57000, 'PE', 90.0),
             self._row('2026-06-15T10:05:00+05:30', 56800, 'PE', 3.0),
@@ -78,8 +78,8 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
         self.assertIsNotNone(outcome)
         self.assertEqual(outcome['exit_reason'], 'SL')
         self.assertEqual(outcome['is_success'], 0)
-        self.assertAlmostEqual(outcome['managed_pnl'], -1200.0, places=2)
-        self.assertAlmostEqual(outcome['r_multiple'], -1.0, places=4)
+        self.assertLess(outcome['managed_pnl'], -1200.0)
+        self.assertLess(outcome['r_multiple'], -1.0)
         self.assertAlmostEqual(outcome['sl_threshold'], 1200.0, places=2)
 
     def test_teacher_can_label_without_legacy_h2_window(self):
