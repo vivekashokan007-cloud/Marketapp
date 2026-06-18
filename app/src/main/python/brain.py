@@ -5172,7 +5172,7 @@ _CONST = {
     'IV_HIGH': 20, 'IV_VERY_HIGH': 24, 'IV_LOW': 15,
     'MIN_PROB': 0.50, 'MIN_CREDIT_RATIO': 0.10,
     'IV_RICH_MIN': 1.15, 'MIN_CREDIT_DTE': 1,
-    'MIN_SIGMA_OTM': 0.5, 'MAX_SIGMA_OTM': 0.8,
+    'MIN_SIGMA_OTM': 0.5, 'MAX_SIGMA_OTM': 1.15,
     'IC_WALL_MAX_SIGMA': 1.5,
     'MIN_WIDTH_BNF': 400, 'MIN_WIDTH_NF': 150,
     'CREDIT_TYPES': ['BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'],
@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.35"
+BRAIN_VERSION = "2.4.36"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
