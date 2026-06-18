@@ -826,11 +826,15 @@ class MarketMLService : Service() {
                 Log.i(TAG, "EVAL_SKIP: no brain snapshots for $today")
                 return@withContext
             }
-            val chainSlicesJsonArray = SupabaseClient.fetchEvaluationChainSlices(today)
+            val chainFeed = SupabaseClient.fetchEvaluationChainCandles(today)
+            val chainSlicesJsonArray = chainFeed.rows
             Log.i(
                 TAG,
-                "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} date=$today snapshotBytes=${snapshotsJsonArray.toString().length} chainBytes=${chainSlicesJsonArray.toString().length}"
+                "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} source=${chainFeed.source} date=$today snapshotBytes=${snapshotsJsonArray.toString().length} chainBytes=${chainSlicesJsonArray.toString().length}"
             )
+            if (chainSlicesJsonArray.length() == 0) {
+                Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $today source=${chainFeed.source}")
+            }
 
             val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
                 brain.callAttr(
@@ -852,6 +856,35 @@ class MarketMLService : Service() {
             }
 
             val evaluatedOutcomes = org.json.JSONArray(resultJsonStr)
+            if (evaluatedOutcomes.length() > 0) {
+                val exitCounts = linkedMapOf<String, Int>()
+                var pathMin = Int.MAX_VALUE
+                var pathMax = 0
+                var pathSum = 0
+                var pathSeen = 0
+                val samples = mutableListOf<String>()
+                for (i in 0 until evaluatedOutcomes.length()) {
+                    val row = evaluatedOutcomes.optJSONObject(i) ?: continue
+                    val exitReason = row.optString("exit_reason", "UNKNOWN")
+                    exitCounts[exitReason] = (exitCounts[exitReason] ?: 0) + 1
+                    val pathPoints = row.optInt("path_points_count", 0)
+                    if (pathPoints > 0) {
+                        pathSeen += 1
+                        pathSum += pathPoints
+                        pathMin = minOf(pathMin, pathPoints)
+                        pathMax = maxOf(pathMax, pathPoints)
+                    }
+                    if (samples.size < 6) {
+                        samples += "${row.optString("candidate_id", "unknown")}:$pathPoints:$exitReason"
+                    }
+                }
+                val avgPath = if (pathSeen > 0) pathSum.toDouble() / pathSeen.toDouble() else 0.0
+                val minPath = if (pathSeen > 0) pathMin else 0
+                Log.i(
+                    TAG,
+                    "EVAL_PATH_STATS: rows=${evaluatedOutcomes.length()} source=${chainFeed.source} pathSeen=$pathSeen min=$minPath max=$pathMax avg=${"%.2f".format(avgPath)} exitReasons=$exitCounts samples=$samples"
+                )
+            }
             val saveResult = if (evaluatedOutcomes.length() > 0) {
                 SupabaseClient.saveEvaluationOutcomes(today, evaluatedOutcomes)
             } else {

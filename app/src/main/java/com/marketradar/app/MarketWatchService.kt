@@ -2090,10 +2090,15 @@ class MarketWatchService : Service() {
                     val mlPersistKey = mlPersistKeyForPoll(poll)
                     if (markMlPollPersistAttempt(mlPersistKey)) {
                         val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
-                        for (sliceRow in chainSliceRows) {
-                            serviceScope.launch(Dispatchers.IO) {
-                                SupabaseClient.saveChainSlice(sliceRow)
-                            }
+                        val chainRowsJson = JSONArray()
+                        chainSliceRows.forEach { chainRowsJson.put(it) }
+                        serviceScope.launch(Dispatchers.IO) {
+                            val saved = SupabaseClient.saveChainRows(chainRowsJson)
+                            LogBuffer.add(
+                                if (saved) 'I' else 'E',
+                                TAG,
+                                "ML_CHAIN_SAVE: rows=${chainSliceRows.size} saved=$saved"
+                            )
                         }
 
                         // Take poll snapshot and save to ml_brain_snapshots
@@ -2438,93 +2443,14 @@ class MarketWatchService : Service() {
         val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
         val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
         val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
-        val captureFullH2Chain = isH2PersistenceWindow(now)
-
-        if (captureFullH2Chain) {
-            appendFullChainSlice(rows, bnfChain, "BNF", sessionDate, pollTs)
-            appendFullChainSlice(rows, nfChain, "NF", sessionDate, pollTs)
-            LogBuffer.add('I', TAG, "ML_CHAIN_SLICE_H2_FULL: rows=${rows.size} pollTs=$pollTs")
-            return rows
-        }
-
-        // Collect per-index strike sets so we resolve against the correct chain
-        val bnfStrikes = mutableSetOf<Triple<Int, String, String>>()
-        val nfStrikes = mutableSetOf<Triple<Int, String, String>>()
-
-        val candidateSource = brainResult.optJSONArray("generated_candidates")
-            ?: brainResult.optJSONArray("watchlist")
-        val limit = candidateSource?.length() ?: 0
-
-        for (i in 0 until limit) {
-            val cand = candidateSource!!.optJSONObject(i) ?: continue
-            val index = cand.optString("index", "BNF")
-            val expiry = cand.optString("expiry", "")
-            val target = if (index == "NF") nfStrikes else bnfStrikes
-
-            if (cand.has("sellStrike")) target.add(Triple(cand.optInt("sellStrike"), cand.optString("sellType", "CE"), expiry))
-            if (cand.has("buyStrike")) target.add(Triple(cand.optInt("buyStrike"), cand.optString("buyType", "PE"), expiry))
-            if (cand.has("sellStrike2")) target.add(Triple(cand.optInt("sellStrike2"), cand.optString("sellType2", "PE"), expiry))
-            if (cand.has("buyStrike2")) target.add(Triple(cand.optInt("buyStrike2"), cand.optString("buyType2", "PE"), expiry))
-        }
-
-        // ATM enrichment for both indices
-        val bnfProfile = brainResult.optJSONObject("bnfProfile")
-        val bnfAtm = bnfProfile?.optDouble("atm", 0.0)?.toInt() ?: 0
-        if (bnfAtm > 0) {
-            bnfStrikes.add(Triple(bnfAtm, "CE", ""))
-            bnfStrikes.add(Triple(bnfAtm, "PE", ""))
-        }
-        val nfProfile = brainResult.optJSONObject("nfProfile")
-        val nfAtm = nfProfile?.optDouble("atm", 0.0)?.toInt() ?: 0
-        if (nfAtm > 0) {
-            nfStrikes.add(Triple(nfAtm, "CE", ""))
-            nfStrikes.add(Triple(nfAtm, "PE", ""))
-        }
-
-        // Resolve BNF strikes against bnfChain
-        for ((strike, optionType, expiry) in bnfStrikes) {
-            val legData = resolveStrikeFromSlice(bnfChain, strike, optionType, "BNF")
-            if (legData != null) {
-                rows.add(JSONObject().apply {
-                    put("poll_ts", pollTs)
-                    put("session_date", sessionDate)
-                    put("index_key", "BNF")
-                    put("expiry", expiry)
-                    put("strike", strike)
-                    put("option_type", optionType)
-                    put("ltp", legData.optDouble("ltp", 0.0))
-                    put("bid", legData.optDouble("bid", 0.0))
-                    put("ask", legData.optDouble("ask", 0.0))
-                })
-            }
-        }
-
-        // Resolve NF strikes against nfChain
-        for ((strike, optionType, expiry) in nfStrikes) {
-            val legData = resolveStrikeFromSlice(nfChain, strike, optionType, "NF")
-            if (legData != null) {
-                rows.add(JSONObject().apply {
-                    put("poll_ts", pollTs)
-                    put("session_date", sessionDate)
-                    put("index_key", "NF")
-                    put("expiry", expiry)
-                    put("strike", strike)
-                    put("option_type", optionType)
-                    put("ltp", legData.optDouble("ltp", 0.0))
-                    put("bid", legData.optDouble("bid", 0.0))
-                    put("ask", legData.optDouble("ask", 0.0))
-                })
-            }
-        }
-
+        appendFullChainSlice(rows, bnfChain, "BNF", sessionDate, pollTs)
+        appendFullChainSlice(rows, nfChain, "NF", sessionDate, pollTs)
+        LogBuffer.add(
+            'I',
+            TAG,
+            "ML_CHAIN_FULL: rows=${rows.size} pollTs=$pollTs generated=${brainResult.optJSONArray("generated_candidates")?.length() ?: 0} watchlist=${brainResult.optJSONArray("watchlist")?.length() ?: 0}"
+        )
         return rows
-    }
-
-    private fun isH2PersistenceWindow(nowMs: Long = System.currentTimeMillis()): Boolean {
-        val ist = TimeZone.getTimeZone("Asia/Kolkata")
-        val cal = Calendar.getInstance(ist).apply { timeInMillis = nowMs }
-        val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        return minutes in 915..930
     }
 
     private fun appendFullChainSlice(

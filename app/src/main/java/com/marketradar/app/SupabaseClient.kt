@@ -17,6 +17,7 @@ object SupabaseClient {
     private const val TAG = "SupabaseClient"
     private const val URL = BuildConfig.SUPABASE_URL
     private const val ANON_KEY = BuildConfig.SUPABASE_ANON_KEY
+    private const val CHAIN_PAGE_SIZE = 2000
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -196,6 +197,11 @@ object SupabaseClient {
         val message: String
     )
 
+    data class ChainFeedResult(
+        val source: String,
+        val rows: JSONArray
+    )
+
     private fun postArrayToTable(table: String, body: JSONArray): Boolean {
         if (body.length() == 0) return true
         val request = getBaseRequest(table)
@@ -215,6 +221,83 @@ object SupabaseClient {
         } catch (e: Exception) {
             Log.e(TAG, "Post exception ($table): ${e.message}")
             false
+        }
+    }
+
+    private fun fetchArray(path: String): JSONArray? {
+        val request = getBaseRequest(path).get().build()
+        val json = fetchSync(request) ?: return null
+        return try {
+            JSONArray(json)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun fetchPagedArray(
+        basePath: String,
+        pageSize: Int = CHAIN_PAGE_SIZE,
+        maxPages: Int = 30
+    ): JSONArray {
+        val out = JSONArray()
+        var offset = 0
+        repeat(maxPages) {
+            val separator = if (basePath.contains("?")) "&" else "?"
+            val page = fetchArray("$basePath${separator}limit=$pageSize&offset=$offset") ?: return out
+            if (page.length() == 0) return out
+            for (i in 0 until page.length()) {
+                page.optJSONObject(i)?.let(out::put)
+            }
+            if (page.length() < pageSize) return out
+            offset += pageSize
+        }
+        return out
+    }
+
+    private fun normalizedChainRow(src: JSONObject): JSONObject? {
+        val indexKey = src.optString("index_key")
+            .ifBlank { src.optString("index") }
+            .ifBlank { src.optString("symbol") }
+            .trim()
+        if (indexKey.isBlank()) return null
+
+        val pollTs = src.optString("poll_ts")
+            .ifBlank { src.optString("created_at") }
+            .ifBlank { src.optString("timestamp") }
+            .trim()
+        if (pollTs.isBlank()) return null
+
+        val expiry = src.optString("expiry")
+            .ifBlank { src.optString("expiry_date") }
+            .trim()
+
+        val optionType = src.optString("option_type")
+            .ifBlank { src.optString("type") }
+            .ifBlank { src.optString("opt_type") }
+            .trim()
+        if (optionType.isBlank()) return null
+
+        val strikeValue = when {
+            src.has("strike") && !src.isNull("strike") -> src.opt("strike")
+            src.has("strike_price") && !src.isNull("strike_price") -> src.opt("strike_price")
+            else -> null
+        } ?: return null
+
+        val ltpValue = when {
+            src.has("ltp") && !src.isNull("ltp") -> src.optDouble("ltp", Double.NaN)
+            src.has("last_price") && !src.isNull("last_price") -> src.optDouble("last_price", Double.NaN)
+            else -> Double.NaN
+        }
+        if (ltpValue.isNaN()) return null
+
+        return JSONObject().apply {
+            put("index_key", indexKey)
+            put("strike", strikeValue)
+            put("option_type", optionType)
+            put("expiry", expiry)
+            put("poll_ts", pollTs)
+            put("ltp", ltpValue)
+            if (src.has("session_date") && !src.isNull("session_date")) put("session_date", src.opt("session_date"))
         }
     }
 
@@ -500,30 +583,61 @@ object SupabaseClient {
     }
 
     fun fetchEvaluationChainSlices(date: String): JSONArray {
-        val select = "index_key,strike,option_type,expiry,poll_ts,ltp,session_date"
-        val exact = fetchArrayFromTables(
-            listOf(
-                "ml_option_chain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
-                "chain_slices?session_date=eq.$date&select=$select&order=poll_ts.desc",
-                "chain_snapshots?date=eq.$date&select=$select&order=created_at.desc"
-            )
-        )
-        if (exact.length() > 0) return exact
-
-        val recent = fetchArrayFromTables(
-            listOf(
-                "ml_option_chain_snapshots?select=$select&order=poll_ts.desc&limit=3000",
-                "chain_slices?select=$select&order=poll_ts.desc&limit=3000",
-                "chain_snapshots?select=$select&order=created_at.desc&limit=3000"
-            )
-        )
-        return filterRowsByIstSessionDate(recent, date)
+        return fetchEvaluationChainCandles(date).rows
     }
 
     fun saveChainSlice(body: JSONObject): Boolean {
         return postToFirstWorkingTable(
             listOf("ml_option_chain_snapshots", "chain_slices", "chain_snapshots"),
             body.toString()
+        )
+    }
+
+    fun fetchEvaluationChainCandles(date: String): ChainFeedResult {
+        val exactPreferred = fetchPagedArray(
+            "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.asc"
+        )
+        if (exactPreferred.length() > 0) {
+            return ChainFeedResult("ml_option_chain_snapshots.exact", normalizeChainRows(exactPreferred))
+        }
+
+        val exactFallback = fetchPagedArray(
+            "chain_slices?session_date=eq.$date&order=poll_ts.asc"
+        )
+        if (exactFallback.length() > 0) {
+            return ChainFeedResult("chain_slices.exact", normalizeChainRows(exactFallback))
+        }
+
+        val recentPreferred = filterRowsByIstSessionDate(
+            fetchPagedArray("ml_option_chain_snapshots?order=poll_ts.asc"),
+            date
+        )
+        if (recentPreferred.length() > 0) {
+            return ChainFeedResult("ml_option_chain_snapshots.filtered_recent", normalizeChainRows(recentPreferred))
+        }
+
+        val recentFallback = filterRowsByIstSessionDate(
+            fetchPagedArray("chain_slices?order=poll_ts.asc"),
+            date
+        )
+        return ChainFeedResult("chain_slices.filtered_recent", normalizeChainRows(recentFallback))
+    }
+
+    private fun normalizeChainRows(rows: JSONArray): JSONArray {
+        val normalized = JSONArray()
+        for (i in 0 until rows.length()) {
+            val src = rows.optJSONObject(i) ?: continue
+            normalizedChainRow(src)?.let(normalized::put)
+        }
+        return normalized
+    }
+
+    fun saveChainRows(rows: JSONArray): Boolean {
+        if (rows.length() == 0) return true
+        val payload = rows.toString()
+        return postToFirstWorkingTable(
+            listOf("ml_option_chain_snapshots", "chain_slices"),
+            payload
         )
     }
 

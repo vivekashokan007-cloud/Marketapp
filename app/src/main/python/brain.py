@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.33"
+BRAIN_VERSION = "2.4.34"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9109,6 +9109,7 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         'exit_reason': exit_reason,
         'exit_step': exit_step,
         'exit_ts': exit_point.get('poll_ts'),
+        'path_points_count': len(path_points),
         'r_multiple': r_multiple,
         'captured_pct': captured_pct,
         'is_success': 1 if success else 0,
