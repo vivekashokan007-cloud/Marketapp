@@ -581,7 +581,6 @@ class NativeBridge(private val context: Context) {
                                 doneDate != today
                             )
                     )
-            )
             val evaluationBlockedReason = when {
                 retryEvaluation -> ""
                 serviceRunning -> "WAIT_FOR_POST_CLOSE_HANDOFF"
