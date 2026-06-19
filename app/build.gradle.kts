@@ -16,6 +16,7 @@ android {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
         // b269: resumable batched day-end evaluation with crash recovery.
+        // 2026-06-19: retrigger signed release after NativeBridge CI syntax repair.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
