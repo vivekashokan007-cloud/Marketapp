@@ -562,24 +562,34 @@ class NativeBridge(private val context: Context) {
             val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
             clearStaleEvaluationRunningIfNeeded(today)
             val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+            val evaluationPhase = prefs.getString("evaluation_phase", "") ?: ""
+            val evaluationCompleted = prefs.getInt("evaluation_completed_snapshots", 0)
+            val evaluationTotal = prefs.getInt("evaluation_total_snapshots", 0)
             val retryEvaluation = shouldRetryDayEvaluation(today)
             val serviceRunning = isServiceRunning()
             val marketClock = MarketOpenScheduler.currentStatus()
             val coverage = currentPollCoverage(marketClock)
             val evaluationReady = !serviceRunning &&
                 !marketClock.marketOpen &&
-                activeToday &&
                 coverage.actual > 0 &&
-                (coverage.missed == 0 || retryEvaluation) &&
                 runningDate != today &&
-                !(doneDate == today && !retryEvaluation)
+                (
+                    retryEvaluation ||
+                        (
+                            activeToday &&
+                                coverage.missed == 0 &&
+                                doneDate != today
+                            )
+                    )
+            )
             val evaluationBlockedReason = when {
+                retryEvaluation -> ""
                 serviceRunning -> "WAIT_FOR_POST_CLOSE_HANDOFF"
                 marketClock.marketOpen -> "MARKET_OPEN"
                 !activeToday || coverage.actual <= 0 -> "NO_SESSION"
-                coverage.missed > 0 && !retryEvaluation -> "SESSION_PARTIAL"
+                coverage.missed > 0 -> "SESSION_PARTIAL"
                 runningDate == today -> "RUNNING"
-                doneDate == today && !retryEvaluation -> "DONE"
+                doneDate == today -> "DONE"
                 else -> ""
             }
             status.put("running", serviceRunning)
@@ -601,18 +611,17 @@ class NativeBridge(private val context: Context) {
             status.put("evaluationDoneToday", doneDate == today && !retryEvaluation)
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", runningDate == today)
+            status.put("evaluationPhase", evaluationPhase)
+            status.put("evaluationProgressCurrent", evaluationCompleted)
+            status.put("evaluationProgressTotal", evaluationTotal)
             status.put("evaluationRetryRecommended", retryEvaluation)
+            status.put("evaluationRetryable", retryEvaluation)
+            status.put("evaluationLastError", prefs.getString("evaluation_last_error", "") ?: "")
+            status.put("evaluationUpdatedAtMs", prefs.getLong("evaluation_job_updated_at_ms", 0L))
             status.put("lastEvaluationOutcomeCount", prefs.getInt("last_evaluation_outcome_count", 0))
             status.put("lastEvaluationProducedCount", prefs.getInt("last_evaluation_produced_count", 0))
             val lastEvaluationMessage = prefs.getString("last_evaluation_message", "") ?: ""
-            status.put(
-                "lastEvaluationMessage",
-                if (retryEvaluation) {
-                    "Earlier evaluation missed today's brain snapshots. Tap Evaluate Today to rerun with the repaired fetch path."
-                } else {
-                    lastEvaluationMessage
-                }
-            )
+            status.put("lastEvaluationMessage", lastEvaluationMessage)
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"
@@ -735,18 +744,23 @@ class NativeBridge(private val context: Context) {
                 }.toString()
             }
             if (prefs.getString("evaluation_running_date", "") == today) {
+                val phase = prefs.getString("evaluation_phase", "") ?: "RUNNING"
+                val completed = prefs.getInt("evaluation_completed_snapshots", 0)
+                val total = prefs.getInt("evaluation_total_snapshots", 0)
                 return JSONObject().apply {
                     put("ok", true)
                     put("status", "running")
-                    put("message", "Today's evaluation is already running.")
+                    put("message", "Today's evaluation is already running (${phase.lowercase(Locale.US)} $completed/$total).")
                 }.toString()
             }
             prefs.edit()
                 .putString("evaluation_done_date", "")
                 .putString("evaluation_running_date", today)
+                .putString("evaluation_phase", "QUEUED")
+                .putLong("evaluation_job_updated_at_ms", System.currentTimeMillis())
                 .putString(
                     "last_evaluation_message",
-                    if (retryEvaluation) "Evaluation requeued after stale no-snapshot result..." else "Evaluation queued..."
+                    if (retryEvaluation) "Evaluation recovery queued. It will resume from the last completed batch if local progress exists." else "Evaluation queued..."
                 )
                 .commit()
             val intent = android.content.Intent(context, MarketMLService::class.java).apply {
@@ -756,7 +770,7 @@ class NativeBridge(private val context: Context) {
             JSONObject().apply {
                 put("ok", true)
                 put("status", if (retryEvaluation) "restarted" else "started")
-                put("message", if (retryEvaluation) "Day evaluation restarted for today's recovered snapshots." else "Day evaluation started.")
+                put("message", if (retryEvaluation) "Day evaluation recovery started." else "Day evaluation started.")
             }.toString()
         } catch (e: Exception) {
             prefs.edit()
@@ -937,14 +951,24 @@ class NativeBridge(private val context: Context) {
     private fun clearStaleEvaluationRunningIfNeeded(today: String): Boolean {
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate != today) return false
+        val phase = prefs.getString("evaluation_phase", "") ?: ""
         val startedAtMs = prefs.getLong("evaluation_started_at_ms", 0L)
-        val ageMs = if (startedAtMs > 0L) System.currentTimeMillis() - startedAtMs else Long.MAX_VALUE
-        val staleAfterMs = 2 * 60 * 1000L
+        val updatedAtMs = prefs.getLong("evaluation_job_updated_at_ms", startedAtMs)
+        val heartbeatMs = maxOf(startedAtMs, updatedAtMs)
+        val ageMs = if (heartbeatMs > 0L) System.currentTimeMillis() - heartbeatMs else Long.MAX_VALUE
+        val staleAfterMs = MarketMLService.EVAL_STALE_AFTER_MS
         if (ageMs in 0 until staleAfterMs) return false
+        val completed = prefs.getInt("evaluation_completed_snapshots", 0)
+        val total = prefs.getInt("evaluation_total_snapshots", 0)
         prefs.edit()
             .putString("evaluation_running_date", "")
             .putLong("evaluation_started_at_ms", 0L)
-            .putString("last_evaluation_message", "Previous evaluation was interrupted. Tap Evaluate Today to retry.")
+            .putString("evaluation_phase", "STALLED")
+            .putLong("evaluation_job_updated_at_ms", System.currentTimeMillis())
+            .putString(
+                "last_evaluation_message",
+                "Evaluation stalled during ${if (phase.isBlank()) "processing" else phase.lowercase(Locale.US)} at $completed/$total snapshots. Retry will resume from the last completed batch."
+            )
             .commit()
         Log.i(TAG, "Cleared stale evaluation_running_date for $today after ${ageMs}ms")
         return true
@@ -952,6 +976,10 @@ class NativeBridge(private val context: Context) {
 
     private fun shouldRetryDayEvaluation(today: String): Boolean {
         clearStaleEvaluationRunningIfNeeded(today)
+        val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
+        if (phase == "FAILED" || phase == "FAILED_SAVE" || phase == "STALLED") {
+            return true
+        }
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
         if (doneDate != today) return false
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""

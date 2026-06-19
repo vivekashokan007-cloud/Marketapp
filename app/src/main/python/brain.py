@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.37"
+BRAIN_VERSION = "2.4.38"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9197,6 +9197,194 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
     return outcome
 
 
+_EVAL_JOB_CACHE = {}
+
+
+def _safe_json_field(raw_value, default):
+    if isinstance(raw_value, str):
+        if not raw_value:
+            return default
+        try:
+            return json.loads(raw_value)
+        except Exception:
+            return default
+    if raw_value is None:
+        return default
+    return raw_value
+
+
+def _load_json_file(path, default):
+    if not path:
+        return default
+    with open(path, 'r', encoding='utf-8') as handle:
+        raw = handle.read().strip()
+    if not raw:
+        return default
+    return json.loads(raw)
+
+
+def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
+    outcomes = []
+    errors = []
+
+    primary_json = snap.get('primary_candidate_json', '{}')
+    primary = _safe_json_field(primary_json, {})
+    if primary_json and isinstance(primary_json, str) and not isinstance(primary, dict):
+        primary = {}
+        errors.append({
+            'scope': 'primary_candidate_json',
+            'snapshot_id': snap.get('id'),
+            'error': 'primary_candidate_json_not_object',
+        })
+    elif not isinstance(primary, dict):
+        primary = {}
+
+    if primary and primary.get('id'):
+        try:
+            outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config)
+            if outcome is not None:
+                outcome['role'] = 'primary'
+                outcomes.append(outcome)
+        except Exception as exc:
+            errors.append({
+                'scope': 'primary',
+                'snapshot_id': snap.get('id'),
+                'candidate_id': primary.get('id'),
+                'error': str(exc),
+            })
+
+    context_json = snap.get('context_json', '{}')
+    snap_ctx = _safe_json_field(context_json, {})
+    if context_json and isinstance(context_json, str) and not isinstance(snap_ctx, dict):
+        snap_ctx = {}
+        errors.append({
+            'scope': 'context_json',
+            'snapshot_id': snap.get('id'),
+            'error': 'context_json_not_object',
+        })
+    elif not isinstance(snap_ctx, dict):
+        snap_ctx = {}
+
+    generated = snap_ctx.get('snapshot_generated_candidates')
+    if not isinstance(generated, list) or not generated:
+        cands_json = snap.get('top_candidates_json', '[]')
+        generated = _safe_json_field(cands_json, [])
+        if cands_json and isinstance(cands_json, str) and not isinstance(generated, list):
+            generated = []
+            errors.append({
+                'scope': 'top_candidates_json',
+                'snapshot_id': snap.get('id'),
+                'error': 'top_candidates_json_not_list',
+            })
+        elif not isinstance(generated, list):
+            generated = []
+
+    seen_ids = set()
+    if primary and primary.get('id'):
+        seen_ids.add(primary.get('id'))
+
+    for cand in generated:
+        if not isinstance(cand, dict):
+            errors.append({
+                'scope': 'generated_candidate',
+                'snapshot_id': snap.get('id'),
+                'error': 'generated_candidate_not_object',
+            })
+            continue
+        cand_id = cand.get('id')
+        if cand_id in seen_ids:
+            continue
+        seen_ids.add(cand_id)
+        try:
+            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+            if outcome is not None:
+                outcome['role'] = 'secondary'
+                outcomes.append(outcome)
+        except Exception as exc:
+            errors.append({
+                'scope': 'secondary',
+                'snapshot_id': snap.get('id'),
+                'candidate_id': cand_id,
+                'error': str(exc),
+            })
+
+    return {'outcomes': outcomes, 'errors': errors}
+
+
+def evaluation_job_prepare(run_id, snapshots_path, chain_slices_path, teacher_config_json_str=None):
+    teacher_config = _teacher_default_config()
+    if teacher_config_json_str:
+        try:
+            teacher_config = _teacher_merge_config(json.loads(teacher_config_json_str))
+        except Exception:
+            teacher_config = _teacher_default_config()
+
+    snapshots = _load_json_file(snapshots_path, [])
+    chain_slices = _load_json_file(chain_slices_path, [])
+    if not isinstance(snapshots, list):
+        snapshots = []
+    if not isinstance(chain_slices, list):
+        chain_slices = []
+
+    _EVAL_JOB_CACHE[str(run_id)] = {
+        'snapshots': snapshots,
+        'chain_rows': list(chain_slices),
+        'teacher_config': teacher_config,
+    }
+    return json.dumps({
+        'ok': True,
+        'snapshot_count': len(snapshots),
+        'chain_row_count': len(chain_slices),
+    })
+
+
+def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
+    job = _EVAL_JOB_CACHE.get(str(run_id))
+    if not job:
+        return json.dumps({'ok': False, 'error': 'RUN_NOT_PREPARED'})
+
+    snapshots = job.get('snapshots') or []
+    chain_rows = job.get('chain_rows') or []
+    teacher_config = job.get('teacher_config') or _teacher_default_config()
+    start = max(int(start_idx or 0), 0)
+    size = max(int(batch_size or 1), 1)
+    end = min(start + size, len(snapshots))
+
+    outcomes = []
+    errors = []
+    processed = 0
+    for idx in range(start, end):
+        snap = snapshots[idx]
+        try:
+            result = _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
+            outcomes.extend(result.get('outcomes') or [])
+            errors.extend(result.get('errors') or [])
+        except Exception as exc:
+            errors.append({
+                'scope': 'snapshot',
+                'snapshot_id': snap.get('id') if isinstance(snap, dict) else None,
+                'error': str(exc),
+            })
+        processed += 1
+
+    return json.dumps({
+        'ok': True,
+        'start': start,
+        'end': end,
+        'processed': processed,
+        'snapshot_count': len(snapshots),
+        'produced_count': len(outcomes),
+        'error_count': len(errors),
+        'errors': errors[:20],
+        'outcomes': outcomes,
+    })
+
+
+def evaluation_job_finalize(run_id):
+    _EVAL_JOB_CACHE.pop(str(run_id), None)
+    return json.dumps({'ok': True})
+
+
 def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_str, teacher_config_json_str=None):
     """Evaluates P&L for both 2-leg and 4-leg strategies.
     Data is passed as JSON strings from Kotlin. No Supabase calls inside Python.
@@ -9220,53 +9408,8 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
     outcomes = []
 
     for snap in snapshots:
-        # PRIMARY: surfaced recommendation (the ML truth target)
-        primary_json = snap.get('primary_candidate_json', '{}')
-        if isinstance(primary_json, str) and primary_json:
-            primary = json.loads(primary_json)
-        elif isinstance(primary_json, dict):
-            primary = primary_json
-        else:
-            primary = {}
-
-        if primary and primary.get('id'):
-            outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config)
-            if outcome is not None:
-                outcome['role'] = 'primary'
-                outcomes.append(outcome)
-
-        # SECONDARY: all generated candidates captured for offline evaluation
-        context_json = snap.get('context_json', '{}')
-        if isinstance(context_json, str) and context_json:
-            snap_ctx = json.loads(context_json)
-        elif isinstance(context_json, dict):
-            snap_ctx = context_json
-        else:
-            snap_ctx = {}
-
-        generated = snap_ctx.get('snapshot_generated_candidates')
-        if not isinstance(generated, list) or not generated:
-            cands_json = snap.get('top_candidates_json', '[]')
-            if isinstance(cands_json, str) and cands_json:
-                generated = json.loads(cands_json)
-            elif isinstance(cands_json, list):
-                generated = cands_json
-            else:
-                generated = []
-
-        seen_ids = set()
-        if primary and primary.get('id'):
-            seen_ids.add(primary.get('id'))
-
-        for cand in generated:
-            cand_id = cand.get('id')
-            if cand_id in seen_ids:
-                continue
-            seen_ids.add(cand_id)
-            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
-            if outcome is not None:
-                outcome['role'] = 'secondary'
-                outcomes.append(outcome)
+        result = _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
+        outcomes.extend(result.get('outcomes') or [])
 
     return json.dumps(outcomes)
 

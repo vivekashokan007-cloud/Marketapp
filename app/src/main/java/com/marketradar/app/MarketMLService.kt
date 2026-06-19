@@ -106,10 +106,13 @@ class MarketMLService : Service() {
 
     companion object {
         private const val TAG = "MarketMLService"
-        private const val EVENING_EVAL_TIMEOUT_MS = 45_000L
+        private const val EVENING_EVAL_TIMEOUT_MS = 45 * 60 * 1000L
+        private const val EVAL_BATCH_SIZE = 12
+        private const val EVAL_BATCH_TIMEOUT_MS = 120_000L
         private const val MONTHLY_RETRAIN_GATE_ROWS = 500
         private const val RETRAIN_DISABLED_REASON = "Retrain paused until canonical won-label unification is completed."
         internal val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        internal const val EVAL_STALE_AFTER_MS = 15 * 60 * 1000L
         private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
         private const val EVAL_REMINDER_END_MIN = 18 * 60 + 30
 
@@ -131,6 +134,18 @@ class MarketMLService : Service() {
 
         fun temporalModelPath(ctx: Context): String =
             File(ctx.filesDir, "temporal_model.json").absolutePath
+
+        private fun evaluationDir(ctx: Context): File =
+            File(ctx.filesDir, "day_evaluation").apply { mkdirs() }
+
+        fun evaluationSnapshotsPath(ctx: Context, sessionDate: String): String =
+            File(evaluationDir(ctx), "snapshots_$sessionDate.json").absolutePath
+
+        fun evaluationChainPath(ctx: Context, sessionDate: String): String =
+            File(evaluationDir(ctx), "chain_$sessionDate.json").absolutePath
+
+        fun evaluationOutcomesPath(ctx: Context, sessionDate: String): String =
+            File(evaluationDir(ctx), "outcomes_$sessionDate.json").absolutePath
 
         // ── Schedule nightly 11 PM alarm ─────────────────────────────────
         fun scheduleNightlyTraining(context: Context) {
@@ -387,22 +402,86 @@ class MarketMLService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        try {
-            val today = todayIstDate()
-            val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
-            if (runningDate == today) {
-                prefs.edit()
-                    .putString("evaluation_running_date", "")
-                    .putLong("evaluation_started_at_ms", 0L)
-                    .putString("last_evaluation_message", "Evaluation interrupted. Tap Evaluate Today to retry.")
-                    .commit()
-                Log.w(TAG, "EVAL_INTERRUPT: cleared stale running flag in onDestroy for $today")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "onDestroy evaluation cleanup failed: ${e.message}")
-        }
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun updateEvaluationJobState(
+        sessionDate: String,
+        phase: String,
+        message: String,
+        totalSnapshots: Int? = null,
+        completedSnapshots: Int? = null,
+        producedCount: Int? = null,
+        persistedCount: Int? = null,
+        running: Boolean,
+        lastError: String? = null
+    ) {
+        val now = System.currentTimeMillis()
+        val editor = prefs.edit()
+            .putString("evaluation_job_date", sessionDate)
+            .putString("evaluation_phase", phase)
+            .putString("last_evaluation_message", message)
+            .putLong("evaluation_job_updated_at_ms", now)
+            .putString("evaluation_running_date", if (running) sessionDate else "")
+            .putLong("evaluation_started_at_ms", if (running) {
+                val existing = prefs.getLong("evaluation_started_at_ms", 0L)
+                if (existing > 0L) existing else now
+            } else 0L)
+
+        if (totalSnapshots != null) editor.putInt("evaluation_total_snapshots", totalSnapshots)
+        if (completedSnapshots != null) editor.putInt("evaluation_completed_snapshots", completedSnapshots)
+        if (producedCount != null) editor.putInt("last_evaluation_produced_count", producedCount)
+        if (persistedCount != null) editor.putInt("last_evaluation_outcome_count", persistedCount)
+        if (lastError.isNullOrBlank()) editor.remove("evaluation_last_error") else editor.putString("evaluation_last_error", lastError)
+        editor.commit()
+    }
+
+    private fun readJsonArrayFile(file: File): org.json.JSONArray {
+        if (!file.exists()) return org.json.JSONArray()
+        val raw = file.readText().trim()
+        if (raw.isBlank()) return org.json.JSONArray()
+        return try {
+            org.json.JSONArray(raw)
+        } catch (_: Exception) {
+            org.json.JSONArray()
+        }
+    }
+
+    private fun writeJsonArrayFile(file: File, body: org.json.JSONArray) {
+        file.parentFile?.mkdirs()
+        file.writeText(body.toString())
+    }
+
+    private fun appendJsonArrayFile(file: File, rows: org.json.JSONArray): Int {
+        val merged = readJsonArrayFile(file)
+        for (i in 0 until rows.length()) {
+            rows.optJSONObject(i)?.let(merged::put)
+        }
+        writeJsonArrayFile(file, merged)
+        return merged.length()
+    }
+
+    private suspend fun ensureEvaluationInputFiles(sessionDate: String): Pair<File, File> = withContext(Dispatchers.IO) {
+        val snapshotsFile = File(evaluationSnapshotsPath(this@MarketMLService, sessionDate))
+        val chainFile = File(evaluationChainPath(this@MarketMLService, sessionDate))
+        if (snapshotsFile.exists() && chainFile.exists() && snapshotsFile.length() > 0L && chainFile.length() > 0L) {
+            return@withContext Pair(snapshotsFile, chainFile)
+        }
+
+        val snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(sessionDate)
+        val chainFeed = SupabaseClient.fetchEvaluationChainCandles(sessionDate)
+        val chainSlicesJsonArray = chainFeed.rows
+        writeJsonArrayFile(snapshotsFile, snapshotsJsonArray)
+        writeJsonArrayFile(chainFile, chainSlicesJsonArray)
+        Log.i(
+            TAG,
+            "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} source=${chainFeed.source} date=$sessionDate snapshotBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()}"
+        )
+        if (chainSlicesJsonArray.length() == 0) {
+            Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $sessionDate source=${chainFeed.source}")
+        }
+        return@withContext Pair(snapshotsFile, chainFile)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -792,70 +871,165 @@ class MarketMLService : Service() {
         val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
             .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
             .format(java.util.Date())
+        val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, today))
+        var evalPhase = "PREPARING"
+        var runId = "eval-$today-${System.currentTimeMillis()}"
+        var totalSnapshots = 0
+        var completedSnapshots = 0
+        var producedCount = 0
+        var brain: PyObject? = null
         try {
             if (prefs.getString("evaluation_done_date", null) == today) {
-                prefs.edit()
-                    .putString("evaluation_running_date", "")
-                    .putLong("evaluation_started_at_ms", 0L)
-                    .putString("last_evaluation_message", "Today's evaluation already done.")
-                    .commit()
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = "DONE",
+                    message = "Today's evaluation already done.",
+                    producedCount = prefs.getInt("last_evaluation_produced_count", 0),
+                    persistedCount = prefs.getInt("last_evaluation_outcome_count", 0),
+                    running = false
+                )
                 Log.i(TAG, "EVAL_SKIP: already done for $today")
                 return@withContext
             }
 
-            prefs.edit()
-                .putString("evaluation_running_date", today)
-                .putLong("evaluation_started_at_ms", System.currentTimeMillis())
-                .putString("last_evaluation_message", "Evaluation running...")
-                .commit()
+            updateEvaluationJobState(
+                sessionDate = today,
+                phase = evalPhase,
+                message = "Preparing full-session teacher evaluation...",
+                totalSnapshots = 0,
+                completedSnapshots = 0,
+                producedCount = 0,
+                persistedCount = 0,
+                running = true
+            )
 
             val py = Python.getInstance()
-            val brain = py.getModule("brain")
+            brain = py.getModule("brain")
+            val (snapshotsFile, chainFile) = ensureEvaluationInputFiles(today)
+            val prepareStr = withTimeoutOrNull(EVAL_BATCH_TIMEOUT_MS) {
+                brain.callAttr(
+                    "evaluation_job_prepare",
+                    runId,
+                    snapshotsFile.absolutePath,
+                    chainFile.absolutePath,
+                    TeacherTruthConfig.toJson().toString()
+                ).toString()
+            } ?: throw IllegalStateException("Evaluation preparation timed out.")
 
-            val snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(today)
-            if (snapshotsJsonArray.length() == 0) {
-                prefs.edit()
-                    .putString("evaluation_done_date", today)
-                    .putString("evaluation_running_date", "")
-                    .putLong("evaluation_started_at_ms", 0L)
-                    .putInt("last_evaluation_outcome_count", 0)
-                    .putInt("last_evaluation_produced_count", 0)
-                    .putString("last_evaluation_message", "Today's evaluation done: no brain snapshots found.")
-                    .commit()
+            val prepareJson = org.json.JSONObject(prepareStr)
+            if (!prepareJson.optBoolean("ok", false)) {
+                throw IllegalStateException(prepareJson.optString("error", "Evaluation preparation failed."))
+            }
+            totalSnapshots = prepareJson.optInt("snapshot_count", 0)
+            producedCount = 0
+
+            if (totalSnapshots == 0) {
+                writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                prefs.edit().putString("evaluation_done_date", today).commit()
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = "DONE",
+                    message = "Today's evaluation done: no brain snapshots found.",
+                    totalSnapshots = 0,
+                    completedSnapshots = 0,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    running = false
+                )
                 cancelDayEvaluationReminder(this@MarketMLService)
                 Log.i(TAG, "EVAL_SKIP: no brain snapshots for $today")
                 return@withContext
             }
-            val chainFeed = SupabaseClient.fetchEvaluationChainCandles(today)
-            val chainSlicesJsonArray = chainFeed.rows
-            Log.i(
-                TAG,
-                "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} source=${chainFeed.source} date=$today snapshotBytes=${snapshotsJsonArray.toString().length} chainBytes=${chainSlicesJsonArray.toString().length}"
+
+            val canResume = (prefs.getString("evaluation_job_date", "") == today) &&
+                (prefs.getInt("evaluation_total_snapshots", 0) == totalSnapshots) &&
+                outputsFile.exists()
+            if (!canResume) {
+                writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                completedSnapshots = 0
+                producedCount = 0
+            } else {
+                completedSnapshots = prefs.getInt("evaluation_completed_snapshots", 0).coerceIn(0, totalSnapshots)
+                producedCount = readJsonArrayFile(outputsFile).length()
+                if (completedSnapshots > 0 && producedCount == 0) {
+                    completedSnapshots = 0
+                }
+            }
+
+            updateEvaluationJobState(
+                sessionDate = today,
+                phase = evalPhase,
+                message = if (completedSnapshots > 0) {
+                    "Resuming teacher evaluation from snapshot $completedSnapshots of $totalSnapshots."
+                } else {
+                    "Prepared full-session inputs for $totalSnapshots snapshots."
+                },
+                totalSnapshots = totalSnapshots,
+                completedSnapshots = completedSnapshots,
+                producedCount = producedCount,
+                persistedCount = 0,
+                running = true
             )
-            if (chainSlicesJsonArray.length() == 0) {
-                Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $today source=${chainFeed.source}")
+
+            while (completedSnapshots < totalSnapshots) {
+                evalPhase = "RUNNING"
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = evalPhase,
+                    message = "Evaluating snapshots ${completedSnapshots + 1}-${minOf(completedSnapshots + EVAL_BATCH_SIZE, totalSnapshots)} of $totalSnapshots...",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = completedSnapshots,
+                    producedCount = producedCount,
+                    persistedCount = 0,
+                    running = true
+                )
+
+                val batchStr = withTimeoutOrNull(EVAL_BATCH_TIMEOUT_MS) {
+                    brain.callAttr(
+                        "evaluation_job_run_batch",
+                        runId,
+                        completedSnapshots,
+                        EVAL_BATCH_SIZE
+                    ).toString()
+                } ?: throw IllegalStateException("Evaluation batch timed out at snapshot $completedSnapshots of $totalSnapshots.")
+
+                val batchJson = org.json.JSONObject(batchStr)
+                if (!batchJson.optBoolean("ok", false)) {
+                    throw IllegalStateException(batchJson.optString("error", "Evaluation batch failed."))
+                }
+
+                val batchOutcomes = batchJson.optJSONArray("outcomes") ?: org.json.JSONArray()
+                producedCount = appendJsonArrayFile(outputsFile, batchOutcomes)
+                completedSnapshots = batchJson.optInt("end", completedSnapshots).coerceIn(completedSnapshots, totalSnapshots)
+
+                val batchErrorCount = batchJson.optInt("error_count", 0)
+                val batchErrors = batchJson.optJSONArray("errors") ?: org.json.JSONArray()
+                val batchErrorHint = if (batchErrorCount > 0 && batchErrors.length() > 0) {
+                    batchErrors.optJSONObject(0)?.optString("error", "") ?: ""
+                } else {
+                    ""
+                }
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = evalPhase,
+                    message = buildString {
+                        append("Evaluated $completedSnapshots/$totalSnapshots snapshots. Produced $producedCount outcomes.")
+                        if (batchErrorCount > 0) {
+                            append(" Skipped $batchErrorCount malformed rows in the last batch")
+                            if (batchErrorHint.isNotBlank()) append(" ($batchErrorHint)")
+                            append(".")
+                        }
+                    },
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = completedSnapshots,
+                    producedCount = producedCount,
+                    persistedCount = 0,
+                    running = true,
+                    lastError = if (batchErrorCount > 0) batchErrorHint else null
+                )
             }
 
-            val resultJsonStr = withTimeoutOrNull(EVENING_EVAL_TIMEOUT_MS) {
-                brain.callAttr(
-                    "evening_evaluator",
-                    today,
-                    snapshotsJsonArray.toString(),
-                    chainSlicesJsonArray.toString(),
-                    TeacherTruthConfig.toJson().toString()
-                ).toString()
-            }
-            if (resultJsonStr == null) {
-                prefs.edit()
-                    .putString("evaluation_running_date", "")
-                    .putLong("evaluation_started_at_ms", 0L)
-                    .putString("last_evaluation_message", "Evaluation timed out. Try again.")
-                    .commit()
-                Log.w(TAG, "EVAL_TIMEOUT: evening_evaluator exceeded ${EVENING_EVAL_TIMEOUT_MS}ms")
-                return@withContext
-            }
-
-            val evaluatedOutcomes = org.json.JSONArray(resultJsonStr)
+            val evaluatedOutcomes = readJsonArrayFile(outputsFile)
             if (evaluatedOutcomes.length() > 0) {
                 val exitCounts = linkedMapOf<String, Int>()
                 var pathMin = Int.MAX_VALUE
@@ -882,9 +1056,22 @@ class MarketMLService : Service() {
                 val minPath = if (pathSeen > 0) pathMin else 0
                 Log.i(
                     TAG,
-                    "EVAL_PATH_STATS: rows=${evaluatedOutcomes.length()} source=${chainFeed.source} pathSeen=$pathSeen min=$minPath max=$pathMax avg=${"%.2f".format(avgPath)} exitReasons=$exitCounts samples=$samples"
+                    "EVAL_PATH_STATS: rows=${evaluatedOutcomes.length()} pathSeen=$pathSeen min=$minPath max=$pathMax avg=${"%.2f".format(avgPath)} exitReasons=$exitCounts samples=$samples"
                 )
             }
+
+            evalPhase = "SAVING"
+            updateEvaluationJobState(
+                sessionDate = today,
+                phase = evalPhase,
+                message = "Saving $producedCount evaluated outcomes to Supabase...",
+                totalSnapshots = totalSnapshots,
+                completedSnapshots = completedSnapshots,
+                producedCount = producedCount,
+                persistedCount = 0,
+                running = true
+            )
+
             val saveResult = if (evaluatedOutcomes.length() > 0) {
                 SupabaseClient.saveEvaluationOutcomes(today, evaluatedOutcomes)
             } else {
@@ -897,36 +1084,77 @@ class MarketMLService : Service() {
                     message = "No evaluable shadow teacher labels were produced from today's saved recommendations."
                 )
             }
+            if (!saveResult.success) {
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = "FAILED_SAVE",
+                    message = "Evaluation finished locally with ${saveResult.producedCount} outcomes, but Supabase persistence failed. Retry will reuse the saved local output.",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = completedSnapshots,
+                    producedCount = saveResult.producedCount,
+                    persistedCount = saveResult.persistedCount,
+                    running = false,
+                    lastError = saveResult.message
+                )
+                Log.w(TAG, "EVAL_SAVE_FAIL: ${saveResult.message}")
+                return@withContext
+            }
+
             if (evaluatedOutcomes.length() > 0) {
+                evalPhase = "AGGREGATING"
+                updateEvaluationJobState(
+                    sessionDate = today,
+                    phase = evalPhase,
+                    message = "Aggregating lane summaries and teacher comparison...",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = completedSnapshots,
+                    producedCount = saveResult.producedCount,
+                    persistedCount = saveResult.persistedCount,
+                    running = true
+                )
+                val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
                 runAggregationPipeline(today, snapshotsJsonArray, evaluatedOutcomes)
             }
-            val evaluationMessage = if (evaluatedOutcomes.length() > 0 && saveResult.success) {
+
+            val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
                 "Today's evaluation done: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
-            } else if (evaluatedOutcomes.length() > 0) {
-                "Today's evaluation produced ${saveResult.producedCount} outcomes, but Supabase persistence failed."
             } else {
                 "Today's evaluation done: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
             }
-            prefs.edit()
-                .putString("evaluation_done_date", today)
-                .putString("evaluation_running_date", "")
-                .putLong("evaluation_started_at_ms", 0L)
-                .putInt("last_evaluation_outcome_count", saveResult.persistedCount)
-                .putInt("last_evaluation_produced_count", saveResult.producedCount)
-                .putString("last_evaluation_message", evaluationMessage)
-                .commit()
+            prefs.edit().putString("evaluation_done_date", today).commit()
+            updateEvaluationJobState(
+                sessionDate = today,
+                phase = "DONE",
+                message = evaluationMessage,
+                totalSnapshots = totalSnapshots,
+                completedSnapshots = completedSnapshots,
+                producedCount = saveResult.producedCount,
+                persistedCount = saveResult.persistedCount,
+                running = false
+            )
             cancelDayEvaluationReminder(this@MarketMLService)
             Log.i(
                 TAG,
                 "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $today — reminder cancelled"
             )
         } catch (e: Exception) {
-            prefs.edit()
-                .putString("evaluation_running_date", "")
-                .putLong("evaluation_started_at_ms", 0L)
-                .putString("last_evaluation_message", "Evaluation failed: ${e.message}")
-                .commit()
-            Log.w(TAG, "EVAL_FAIL: ${e.message}")
+            updateEvaluationJobState(
+                sessionDate = today,
+                phase = if (evalPhase == "SAVING") "FAILED_SAVE" else if (evalPhase == "RUNNING") "FAILED" else "FAILED",
+                message = "Evaluation failed during ${evalPhase.lowercase(java.util.Locale.US)} at $completedSnapshots/$totalSnapshots snapshots. Retry will resume from the last completed batch.",
+                totalSnapshots = totalSnapshots,
+                completedSnapshots = completedSnapshots,
+                producedCount = producedCount,
+                persistedCount = prefs.getInt("last_evaluation_outcome_count", 0),
+                running = false,
+                lastError = e.message ?: "unknown"
+            )
+            Log.e(TAG, "EVAL_FAIL: ${e.message}", e)
+        } finally {
+            try {
+                brain?.callAttr("evaluation_job_finalize", runId)
+            } catch (_: Exception) {
+            }
         }
     }
 
