@@ -16,6 +16,7 @@ android {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
         // b270: memory-safe filtered day-end evaluation preparation.
+        // 2026-06-19: retrigger after SupabaseClient session-date helper CI repair.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35

@@ -93,6 +93,14 @@ object SupabaseClient {
 
     private fun filterRowsByIstSessionDate(rows: JSONArray, date: String): JSONArray {
         val out = JSONArray()
+        for (i in 0 until rows.length()) {
+            val obj = rows.optJSONObject(i) ?: continue
+            if (rowBelongsToIstSessionDate(obj, date)) out.put(obj)
+        }
+        return out
+    }
+
+    private fun rowBelongsToIstSessionDate(obj: JSONObject, date: String): Boolean {
         val istTsFormats = listOf(
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX", Locale.US),
@@ -102,30 +110,22 @@ object SupabaseClient {
             timeZone = TimeZone.getTimeZone("Asia/Kolkata")
         }
 
-        fun rowMatches(obj: JSONObject): Boolean {
-            val sessionDate = obj.optString("session_date", "").trim()
-            if (sessionDate == date) return true
+        val sessionDate = obj.optString("session_date", "").trim()
+        if (sessionDate == date) return true
 
-            val pollTs = obj.optString("poll_ts", "").trim()
-            if (pollTs.startsWith(date)) return true
-            if (pollTs.isNotBlank()) {
-                for (fmt in istTsFormats) {
-                    try {
-                        if (istDateFmt.format(fmt.parse(pollTs) ?: continue) == date) return true
-                    } catch (_: Exception) {
-                    }
+        val pollTs = obj.optString("poll_ts", "").trim()
+        if (pollTs.startsWith(date)) return true
+        if (pollTs.isNotBlank()) {
+            for (fmt in istTsFormats) {
+                try {
+                    if (istDateFmt.format(fmt.parse(pollTs) ?: continue) == date) return true
+                } catch (_: Exception) {
                 }
             }
-
-            val legacyDate = obj.optString("date", "").trim()
-            return legacyDate == date
         }
 
-        for (i in 0 until rows.length()) {
-            val obj = rows.optJSONObject(i) ?: continue
-            if (rowMatches(obj)) out.put(obj)
-        }
-        return out
+        val legacyDate = obj.optString("date", "").trim()
+        return legacyDate == date
     }
 
     private fun postToFirstWorkingTableDetailed(
