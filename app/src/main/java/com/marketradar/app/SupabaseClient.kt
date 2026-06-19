@@ -8,6 +8,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
@@ -200,6 +201,26 @@ object SupabaseClient {
     data class ChainFeedResult(
         val source: String,
         val rows: JSONArray
+    )
+
+    data class ChainStreamResult(
+        val source: String,
+        val rowCount: Int,
+        val pageCount: Int,
+        val capped: Boolean = false
+    )
+
+    private data class ChainSource(
+        val path: String,
+        val source: String,
+        val filterDate: String?
+    )
+
+    data class EvaluationLegKey(
+        val indexKey: String,
+        val expiry: String,
+        val strike: Double,
+        val optionType: String
     )
 
     private fun postArrayToTable(table: String, body: JSONArray): Boolean {
@@ -621,6 +642,155 @@ object SupabaseClient {
             date
         )
         return ChainFeedResult("chain_slices.filtered_recent", normalizeChainRows(recentFallback))
+    }
+
+    fun writeEvaluationChainCandlesForLegs(
+        date: String,
+        legKeys: List<EvaluationLegKey>,
+        outputFile: File,
+        onPage: ((source: String, pages: Int, rows: Int) -> Unit)? = null
+    ): ChainStreamResult {
+        outputFile.parentFile?.mkdirs()
+        outputFile.delete()
+        if (legKeys.isEmpty()) {
+            outputFile.writeText("[]")
+            return ChainStreamResult("no_candidate_legs", 0, 0)
+        }
+
+        val maxPages = 200
+        val sources = listOf(
+            ChainSource(
+                "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.asc",
+                "ml_option_chain_snapshots.exact.filtered_stream",
+                null
+            ),
+            ChainSource(
+                "chain_slices?session_date=eq.$date&order=poll_ts.asc",
+                "chain_slices.exact.filtered_stream",
+                null
+            ),
+            ChainSource(
+                "ml_option_chain_snapshots?order=poll_ts.asc",
+                "ml_option_chain_snapshots.filtered_recent.filtered_stream",
+                date
+            ),
+            ChainSource(
+                "chain_slices?order=poll_ts.asc",
+                "chain_slices.filtered_recent.filtered_stream",
+                date
+            )
+        )
+
+        val tmpFile = File(outputFile.parentFile, "${outputFile.name}.tmp")
+        var lastResult = ChainStreamResult("no_chain_source", 0, 0)
+        for (candidateSource in sources) {
+            tmpFile.delete()
+            val result = writePagedFilteredChain(
+                basePath = candidateSource.path,
+                source = candidateSource.source,
+                legKeys = legKeys,
+                outputFile = tmpFile,
+                onPage = onPage,
+                istSessionDate = candidateSource.filterDate,
+                maxPages = maxPages
+            )
+            lastResult = result
+            if (result.capped || result.rowCount > 0) {
+                replaceFile(tmpFile, outputFile)
+                return result
+            }
+            tmpFile.delete()
+        }
+
+        outputFile.writeText("[]")
+        return lastResult
+    }
+
+    private fun replaceFile(source: File, target: File) {
+        target.delete()
+        if (!source.renameTo(target)) {
+            source.copyTo(target, overwrite = true)
+            source.delete()
+        }
+    }
+
+    private fun writePagedFilteredChain(
+        basePath: String,
+        source: String,
+        legKeys: List<EvaluationLegKey>,
+        outputFile: File,
+        onPage: ((source: String, pages: Int, rows: Int) -> Unit)? = null,
+        istSessionDate: String? = null,
+        pageSize: Int = CHAIN_PAGE_SIZE,
+        maxPages: Int = 200
+    ): ChainStreamResult {
+        outputFile.parentFile?.mkdirs()
+        var offset = 0
+        var pages = 0
+        var rows = 0
+        var reachedEnd = false
+        var first = true
+
+        outputFile.bufferedWriter().use { writer ->
+            writer.write("[")
+            while (pages < maxPages) {
+                val separator = if (basePath.contains("?")) "&" else "?"
+                val page = fetchArray("$basePath${separator}limit=$pageSize&offset=$offset") ?: break
+                if (page.length() == 0) {
+                    reachedEnd = true
+                    break
+                }
+                pages += 1
+                for (i in 0 until page.length()) {
+                    val raw = page.optJSONObject(i) ?: continue
+                    if (istSessionDate != null && !rowBelongsToIstSessionDate(raw, istSessionDate)) continue
+                    val normalized = normalizedChainRow(raw) ?: continue
+                    if (!matchesEvaluationLeg(normalized, legKeys)) continue
+                    if (!first) writer.write(",")
+                    writer.write(normalized.toString())
+                    first = false
+                    rows += 1
+                }
+                writer.flush()
+                onPage?.invoke(source, pages, rows)
+                if (page.length() < pageSize) {
+                    reachedEnd = true
+                    break
+                }
+                offset += pageSize
+            }
+            writer.write("]")
+        }
+
+        return ChainStreamResult(
+            source = source,
+            rowCount = rows,
+            pageCount = pages,
+            capped = !reachedEnd && pages >= maxPages
+        )
+    }
+
+    private fun matchesEvaluationLeg(row: JSONObject, legKeys: List<EvaluationLegKey>): Boolean {
+        val indexKey = row.optString("index_key").trim()
+        val expiry = row.optString("expiry").trim()
+        val optionType = normalizeOptionType(row.optString("option_type"))
+        val strike = row.optDouble("strike", Double.NaN)
+        if (indexKey.isBlank() || optionType.isBlank() || strike.isNaN()) return false
+
+        return legKeys.any { key ->
+            key.indexKey.equals(indexKey, ignoreCase = true) &&
+                (key.expiry.isBlank() || expiry.isBlank() || key.expiry == expiry) &&
+                normalizeOptionType(key.optionType) == optionType &&
+                kotlin.math.abs(key.strike - strike) < 0.01
+        }
+    }
+
+    private fun normalizeOptionType(value: String): String {
+        return when (value.trim().uppercase(Locale.US)) {
+            "CALL", "C" -> "CE"
+            "PUT", "P" -> "PE"
+            else -> value.trim().uppercase(Locale.US)
+        }
     }
 
     private fun normalizeChainRows(rows: JSONArray): JSONArray {

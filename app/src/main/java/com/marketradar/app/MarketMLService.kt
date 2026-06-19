@@ -142,7 +142,10 @@ class MarketMLService : Service() {
             File(evaluationDir(ctx), "snapshots_$sessionDate.json").absolutePath
 
         fun evaluationChainPath(ctx: Context, sessionDate: String): String =
-            File(evaluationDir(ctx), "chain_$sessionDate.json").absolutePath
+            File(evaluationDir(ctx), "chain_filtered_v2_$sessionDate.json").absolutePath
+
+        fun evaluationPrepareCompletePath(ctx: Context, sessionDate: String): String =
+            File(evaluationDir(ctx), "chain_filtered_v2_$sessionDate.complete").absolutePath
 
         fun evaluationOutcomesPath(ctx: Context, sessionDate: String): String =
             File(evaluationDir(ctx), "outcomes_$sessionDate.json").absolutePath
@@ -462,23 +465,175 @@ class MarketMLService : Service() {
         return merged.length()
     }
 
+    private fun parseJsonObject(value: Any?): org.json.JSONObject? {
+        return when (value) {
+            is org.json.JSONObject -> value
+            is String -> {
+                val trimmed = value.trim()
+                if (trimmed.startsWith("{")) {
+                    try {
+                        org.json.JSONObject(trimmed)
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun parseJsonArray(value: Any?): org.json.JSONArray? {
+        return when (value) {
+            is org.json.JSONArray -> value
+            is String -> {
+                val trimmed = value.trim()
+                if (trimmed.startsWith("[")) {
+                    try {
+                        org.json.JSONArray(trimmed)
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun optStringAny(obj: org.json.JSONObject, vararg names: String): String {
+        for (name in names) {
+            val value = obj.opt(name) ?: continue
+            val text = value.toString().trim()
+            if (text.isNotBlank() && text != "null") return text
+        }
+        return ""
+    }
+
+    private fun optDoubleAny(obj: org.json.JSONObject, vararg names: String): Double {
+        for (name in names) {
+            val value = obj.opt(name) ?: continue
+            val parsed = when (value) {
+                is Number -> value.toDouble()
+                is String -> value.trim().toDoubleOrNull()
+                else -> null
+            }
+            if (parsed != null && !parsed.isNaN()) return parsed
+        }
+        return Double.NaN
+    }
+
+    private fun extractEvaluationLegKeys(snapshots: org.json.JSONArray): List<SupabaseClient.EvaluationLegKey> {
+        val keys = linkedSetOf<SupabaseClient.EvaluationLegKey>()
+
+        fun addLeg(
+            cand: org.json.JSONObject,
+            strikeNames: Array<String>,
+            typeNames: Array<String>,
+            indexKey: String,
+            expiry: String
+        ) {
+            val strike = optDoubleAny(cand, *strikeNames)
+            val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
+            if (strike.isNaN() || optionType.isBlank()) return
+            keys += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
+        }
+
+        fun addCandidate(raw: Any?) {
+            val cand = parseJsonObject(raw) ?: return
+            val indexKey = optStringAny(cand, "index", "index_key", "underlying").ifBlank { "BNF" }
+            val expiry = optStringAny(cand, "expiry", "expiry_date")
+            addLeg(cand, arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"), indexKey, expiry)
+            addLeg(cand, arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"), indexKey, expiry)
+            addLeg(cand, arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"), indexKey, expiry)
+            addLeg(cand, arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"), indexKey, expiry)
+        }
+
+        for (i in 0 until snapshots.length()) {
+            val snap = snapshots.optJSONObject(i) ?: continue
+            addCandidate(snap.opt("primary_candidate_json"))
+
+            val context = parseJsonObject(snap.opt("context_json"))
+            val generated = parseJsonArray(context?.opt("snapshot_generated_candidates"))
+                ?: parseJsonArray(snap.opt("top_candidates_json"))
+
+            if (generated != null) {
+                for (j in 0 until generated.length()) {
+                    addCandidate(generated.opt(j))
+                }
+            }
+        }
+
+        return keys.toList()
+    }
+
     private suspend fun ensureEvaluationInputFiles(sessionDate: String): Pair<File, File> = withContext(Dispatchers.IO) {
         val snapshotsFile = File(evaluationSnapshotsPath(this@MarketMLService, sessionDate))
         val chainFile = File(evaluationChainPath(this@MarketMLService, sessionDate))
-        if (snapshotsFile.exists() && chainFile.exists() && snapshotsFile.length() > 0L && chainFile.length() > 0L) {
+        val completeFile = File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate))
+        if (
+            snapshotsFile.exists() &&
+            chainFile.exists() &&
+            completeFile.exists() &&
+            snapshotsFile.length() > 0L &&
+            chainFile.length() > 0L
+        ) {
             return@withContext Pair(snapshotsFile, chainFile)
         }
 
+        completeFile.delete()
+        chainFile.delete()
+        File("${chainFile.absolutePath}.tmp").delete()
         val snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(sessionDate)
-        val chainFeed = SupabaseClient.fetchEvaluationChainCandles(sessionDate)
-        val chainSlicesJsonArray = chainFeed.rows
+        val legKeys = extractEvaluationLegKeys(snapshotsJsonArray)
+        if (snapshotsJsonArray.length() > 0 && legKeys.isEmpty()) {
+            throw IllegalStateException("EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotsJsonArray.length()} snapshots.")
+        }
+        updateEvaluationJobState(
+            sessionDate = sessionDate,
+            phase = "PREPARING",
+            message = "Preparing teacher evaluation for ${snapshotsJsonArray.length()} snapshots and ${legKeys.size} candidate legs...",
+            totalSnapshots = snapshotsJsonArray.length(),
+            completedSnapshots = 0,
+            running = true
+        )
         writeJsonArrayFile(snapshotsFile, snapshotsJsonArray)
-        writeJsonArrayFile(chainFile, chainSlicesJsonArray)
+        val chainFeed = SupabaseClient.writeEvaluationChainCandlesForLegs(sessionDate, legKeys, chainFile) { source, pages, rows ->
+            updateEvaluationJobState(
+                sessionDate = sessionDate,
+                phase = "PREPARING",
+                message = "Fetching relevant chain paths from $source: page $pages, rows $rows...",
+                totalSnapshots = snapshotsJsonArray.length(),
+                completedSnapshots = 0,
+                running = true
+            )
+        }
+        if (chainFeed.capped) {
+            chainFile.delete()
+            throw IllegalStateException("EVAL_CHAIN_TRUNCATED: ${chainFeed.source} hit page cap after ${chainFeed.pageCount} pages and ${chainFeed.rowCount} filtered rows.")
+        }
+        if (snapshotsJsonArray.length() > 0 && chainFeed.rowCount == 0) {
+            chainFile.delete()
+            throw IllegalStateException("EVAL_NO_CHAINROWS: no matching chain rows found for ${legKeys.size} candidate legs from ${chainFeed.source}.")
+        }
+        completeFile.writeText(
+            org.json.JSONObject().apply {
+                put("session_date", sessionDate)
+                put("snapshot_count", snapshotsJsonArray.length())
+                put("leg_key_count", legKeys.size)
+                put("chain_row_count", chainFeed.rowCount)
+                put("source", chainFeed.source)
+                put("page_count", chainFeed.pageCount)
+                put("completed_at", java.time.Instant.now().toString())
+            }.toString()
+        )
         Log.i(
             TAG,
-            "EVAL_INPUTS: snapshots=${snapshotsJsonArray.length()} chainSlices=${chainSlicesJsonArray.length()} source=${chainFeed.source} date=$sessionDate snapshotBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()}"
+            "EVAL_INPUTS_FILTERED_STREAM: snapshots=${snapshotsJsonArray.length()} legKeys=${legKeys.size} chainSlices=${chainFeed.rowCount} pages=${chainFeed.pageCount} source=${chainFeed.source} date=$sessionDate snapshotBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()}"
         )
-        if (chainSlicesJsonArray.length() == 0) {
+        if (chainFeed.rowCount == 0) {
             Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $sessionDate source=${chainFeed.source}")
         }
         return@withContext Pair(snapshotsFile, chainFile)

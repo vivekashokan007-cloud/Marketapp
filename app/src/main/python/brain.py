@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.38"
+BRAIN_VERSION = "2.4.39"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9217,10 +9217,14 @@ def _load_json_file(path, default):
     if not path:
         return default
     with open(path, 'r', encoding='utf-8') as handle:
-        raw = handle.read().strip()
-    if not raw:
-        return default
-    return json.loads(raw)
+        while True:
+            first = handle.read(1)
+            if not first:
+                return default
+            if not first.isspace():
+                handle.seek(0)
+                break
+        return json.load(handle)
 
 
 def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):

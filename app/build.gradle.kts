@@ -15,13 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b269: resumable batched day-end evaluation with crash recovery.
-        // 2026-06-19: retrigger signed release after NativeBridge CI syntax repair.
+        // b270: memory-safe filtered day-end evaluation preparation.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 269
-        versionName = "2.4.38"
+        versionCode = 270
+        versionName = "2.4.39"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
