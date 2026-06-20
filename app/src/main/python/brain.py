@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.39"
+BRAIN_VERSION = "2.4.40"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9332,7 +9332,7 @@ def evaluation_job_prepare(run_id, snapshots_path, chain_slices_path, teacher_co
 
     _EVAL_JOB_CACHE[str(run_id)] = {
         'snapshots': snapshots,
-        'chain_rows': list(chain_slices),
+        'chain_rows': chain_slices,
         'teacher_config': teacher_config,
     }
     return json.dumps({

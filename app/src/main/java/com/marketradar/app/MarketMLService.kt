@@ -383,8 +383,9 @@ class MarketMLService : Service() {
                 }
             }
             "ACTION_DAY_EVALUATION" -> {
+                val sessionDate = intent.getStringExtra("session_date")
                 scope.launch {
-                    runDayEvaluation()
+                    runDayEvaluation(sessionDate)
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf(startId)
                 }
@@ -454,6 +455,21 @@ class MarketMLService : Service() {
     private fun writeJsonArrayFile(file: File, body: org.json.JSONArray) {
         file.parentFile?.mkdirs()
         file.writeText(body.toString())
+    }
+
+    private fun writeJsonArrayFileStreamed(file: File, body: org.json.JSONArray) {
+        file.parentFile?.mkdirs()
+        file.bufferedWriter().use { writer ->
+            writer.write("[")
+            var first = true
+            for (i in 0 until body.length()) {
+                val row = body.optJSONObject(i) ?: continue
+                if (!first) writer.write(",")
+                writer.write(row.toString())
+                first = false
+            }
+            writer.write("]")
+        }
     }
 
     private fun appendJsonArrayFile(file: File, rows: org.json.JSONArray): Int {
@@ -599,7 +615,20 @@ class MarketMLService : Service() {
             completedSnapshots = 0,
             running = true
         )
-        writeJsonArrayFile(snapshotsFile, snapshotsJsonArray)
+        Log.i(TAG, "EVAL_SNAPSHOTS_WRITE_START: snapshots=${snapshotsJsonArray.length()} date=$sessionDate")
+        updateEvaluationJobState(
+            sessionDate = sessionDate,
+            phase = "PREPARING",
+            message = "Writing ${snapshotsJsonArray.length()} snapshot rows to disk before teacher evaluation...",
+            totalSnapshots = snapshotsJsonArray.length(),
+            completedSnapshots = 0,
+            running = true
+        )
+        writeJsonArrayFileStreamed(snapshotsFile, snapshotsJsonArray)
+        Log.i(
+            TAG,
+            "EVAL_SNAPSHOTS_WRITE_DONE: snapshots=${snapshotsJsonArray.length()} bytes=${snapshotsFile.length()} date=$sessionDate"
+        )
         val chainFeed = SupabaseClient.writeEvaluationChainCandlesForLegs(sessionDate, legKeys, chainFile) { source, pages, rows ->
             updateEvaluationJobState(
                 sessionDate = sessionDate,
@@ -1022,35 +1051,33 @@ class MarketMLService : Service() {
     }
 
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
-    private suspend fun runDayEvaluation() = withContext(Dispatchers.IO) {
-        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
-            .apply { timeZone = java.util.TimeZone.getTimeZone("Asia/Kolkata") }
-            .format(java.util.Date())
-        val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, today))
+    private suspend fun runDayEvaluation(sessionDateOverride: String? = null) = withContext(Dispatchers.IO) {
+        val sessionDate = sessionDateOverride?.takeIf { it.isNotBlank() } ?: todayIstDate()
+        val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
         var evalPhase = "PREPARING"
-        var runId = "eval-$today-${System.currentTimeMillis()}"
+        var runId = "eval-$sessionDate-${System.currentTimeMillis()}"
         var totalSnapshots = 0
         var completedSnapshots = 0
         var producedCount = 0
         var brain: PyObject? = null
         try {
-            if (prefs.getString("evaluation_done_date", null) == today) {
+            if (prefs.getString("evaluation_done_date", null) == sessionDate) {
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = "DONE",
-                    message = "Today's evaluation already done.",
+                    message = if (sessionDate == todayIstDate()) "Today's evaluation already done." else "Evaluation already done for $sessionDate.",
                     producedCount = prefs.getInt("last_evaluation_produced_count", 0),
                     persistedCount = prefs.getInt("last_evaluation_outcome_count", 0),
                     running = false
                 )
-                Log.i(TAG, "EVAL_SKIP: already done for $today")
+                Log.i(TAG, "EVAL_SKIP: already done for $sessionDate")
                 return@withContext
             }
 
             updateEvaluationJobState(
-                sessionDate = today,
+                sessionDate = sessionDate,
                 phase = evalPhase,
-                message = "Preparing full-session teacher evaluation...",
+                message = "Preparing full-session teacher evaluation for $sessionDate...",
                 totalSnapshots = 0,
                 completedSnapshots = 0,
                 producedCount = 0,
@@ -1060,7 +1087,7 @@ class MarketMLService : Service() {
 
             val py = Python.getInstance()
             brain = py.getModule("brain")
-            val (snapshotsFile, chainFile) = ensureEvaluationInputFiles(today)
+            val (snapshotsFile, chainFile) = ensureEvaluationInputFiles(sessionDate)
             val prepareStr = withTimeoutOrNull(EVAL_BATCH_TIMEOUT_MS) {
                 brain.callAttr(
                     "evaluation_job_prepare",
@@ -1080,11 +1107,11 @@ class MarketMLService : Service() {
 
             if (totalSnapshots == 0) {
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
-                prefs.edit().putString("evaluation_done_date", today).commit()
+                prefs.edit().putString("evaluation_done_date", sessionDate).commit()
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = "DONE",
-                    message = "Today's evaluation done: no brain snapshots found.",
+                    message = "Evaluation done for $sessionDate: no brain snapshots found.",
                     totalSnapshots = 0,
                     completedSnapshots = 0,
                     producedCount = 0,
@@ -1092,11 +1119,11 @@ class MarketMLService : Service() {
                     running = false
                 )
                 cancelDayEvaluationReminder(this@MarketMLService)
-                Log.i(TAG, "EVAL_SKIP: no brain snapshots for $today")
+                Log.i(TAG, "EVAL_SKIP: no brain snapshots for $sessionDate")
                 return@withContext
             }
 
-            val canResume = (prefs.getString("evaluation_job_date", "") == today) &&
+            val canResume = (prefs.getString("evaluation_job_date", "") == sessionDate) &&
                 (prefs.getInt("evaluation_total_snapshots", 0) == totalSnapshots) &&
                 outputsFile.exists()
             if (!canResume) {
@@ -1112,12 +1139,12 @@ class MarketMLService : Service() {
             }
 
             updateEvaluationJobState(
-                sessionDate = today,
+                sessionDate = sessionDate,
                 phase = evalPhase,
                 message = if (completedSnapshots > 0) {
-                    "Resuming teacher evaluation from snapshot $completedSnapshots of $totalSnapshots."
+                    "Resuming teacher evaluation for $sessionDate from snapshot $completedSnapshots of $totalSnapshots."
                 } else {
-                    "Prepared full-session inputs for $totalSnapshots snapshots."
+                    "Prepared full-session inputs for $sessionDate with $totalSnapshots snapshots."
                 },
                 totalSnapshots = totalSnapshots,
                 completedSnapshots = completedSnapshots,
@@ -1129,9 +1156,9 @@ class MarketMLService : Service() {
             while (completedSnapshots < totalSnapshots) {
                 evalPhase = "RUNNING"
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = evalPhase,
-                    message = "Evaluating snapshots ${completedSnapshots + 1}-${minOf(completedSnapshots + EVAL_BATCH_SIZE, totalSnapshots)} of $totalSnapshots...",
+                    message = "Evaluating $sessionDate snapshots ${completedSnapshots + 1}-${minOf(completedSnapshots + EVAL_BATCH_SIZE, totalSnapshots)} of $totalSnapshots...",
                     totalSnapshots = totalSnapshots,
                     completedSnapshots = completedSnapshots,
                     producedCount = producedCount,
@@ -1165,10 +1192,10 @@ class MarketMLService : Service() {
                     ""
                 }
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = evalPhase,
                     message = buildString {
-                        append("Evaluated $completedSnapshots/$totalSnapshots snapshots. Produced $producedCount outcomes.")
+                        append("Evaluated $sessionDate snapshots $completedSnapshots/$totalSnapshots. Produced $producedCount outcomes.")
                         if (batchErrorCount > 0) {
                             append(" Skipped $batchErrorCount malformed rows in the last batch")
                             if (batchErrorHint.isNotBlank()) append(" ($batchErrorHint)")
@@ -1217,9 +1244,9 @@ class MarketMLService : Service() {
 
             evalPhase = "SAVING"
             updateEvaluationJobState(
-                sessionDate = today,
+                sessionDate = sessionDate,
                 phase = evalPhase,
-                message = "Saving $producedCount evaluated outcomes to Supabase...",
+                message = "Saving $producedCount evaluated outcomes for $sessionDate to Supabase...",
                 totalSnapshots = totalSnapshots,
                 completedSnapshots = completedSnapshots,
                 producedCount = producedCount,
@@ -1228,7 +1255,7 @@ class MarketMLService : Service() {
             )
 
             val saveResult = if (evaluatedOutcomes.length() > 0) {
-                SupabaseClient.saveEvaluationOutcomes(today, evaluatedOutcomes)
+                SupabaseClient.saveEvaluationOutcomes(sessionDate, evaluatedOutcomes)
             } else {
                 SupabaseClient.EvaluationSaveResult(
                     success = true,
@@ -1241,9 +1268,9 @@ class MarketMLService : Service() {
             }
             if (!saveResult.success) {
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = "FAILED_SAVE",
-                    message = "Evaluation finished locally with ${saveResult.producedCount} outcomes, but Supabase persistence failed. Retry will reuse the saved local output.",
+                    message = "Evaluation for $sessionDate finished locally with ${saveResult.producedCount} outcomes, but Supabase persistence failed. Retry will reuse the saved local output.",
                     totalSnapshots = totalSnapshots,
                     completedSnapshots = completedSnapshots,
                     producedCount = saveResult.producedCount,
@@ -1258,9 +1285,9 @@ class MarketMLService : Service() {
             if (evaluatedOutcomes.length() > 0) {
                 evalPhase = "AGGREGATING"
                 updateEvaluationJobState(
-                    sessionDate = today,
+                    sessionDate = sessionDate,
                     phase = evalPhase,
-                    message = "Aggregating lane summaries and teacher comparison...",
+                    message = "Aggregating lane summaries and teacher comparison for $sessionDate...",
                     totalSnapshots = totalSnapshots,
                     completedSnapshots = completedSnapshots,
                     producedCount = saveResult.producedCount,
@@ -1268,17 +1295,17 @@ class MarketMLService : Service() {
                     running = true
                 )
                 val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
-                runAggregationPipeline(today, snapshotsJsonArray, evaluatedOutcomes)
+                runAggregationPipeline(sessionDate, snapshotsJsonArray, evaluatedOutcomes)
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
-                "Today's evaluation done: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
+                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
             } else {
-                "Today's evaluation done: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
+                "Evaluation done for $sessionDate: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
             }
-            prefs.edit().putString("evaluation_done_date", today).commit()
+            prefs.edit().putString("evaluation_done_date", sessionDate).commit()
             updateEvaluationJobState(
-                sessionDate = today,
+                sessionDate = sessionDate,
                 phase = "DONE",
                 message = evaluationMessage,
                 totalSnapshots = totalSnapshots,
@@ -1290,11 +1317,11 @@ class MarketMLService : Service() {
             cancelDayEvaluationReminder(this@MarketMLService)
             Log.i(
                 TAG,
-                "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $today — reminder cancelled"
+                "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $sessionDate — reminder cancelled"
             )
         } catch (e: Exception) {
             updateEvaluationJobState(
-                sessionDate = today,
+                sessionDate = sessionDate,
                 phase = if (evalPhase == "SAVING") "FAILED_SAVE" else if (evalPhase == "RUNNING") "FAILED" else "FAILED",
                 message = "Evaluation failed during ${evalPhase.lowercase(java.util.Locale.US)} at $completedSnapshots/$totalSnapshots snapshots. Retry will resume from the last completed batch.",
                 totalSnapshots = totalSnapshots,
