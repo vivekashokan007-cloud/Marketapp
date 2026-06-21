@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.43"
+BRAIN_VERSION = "2.4.44"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9248,6 +9248,11 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
             outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config)
             if outcome is not None:
                 outcome['role'] = 'primary'
+                outcome['rank_in_snapshot'] = 1
+                outcome['varsity_tier'] = primary.get('varsityTier')
+                outcome['premium_edge'] = primary.get('premiumEdge')
+                outcome['credit_width_ratio'] = primary.get('creditWidthRatio')
+                outcome['sigma_otm'] = primary.get('sigmaOTM')
                 outcomes.append(outcome)
         except Exception as exc:
             errors.append({
@@ -9287,7 +9292,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
     if primary and primary.get('id'):
         seen_ids.add(primary.get('id'))
 
-    for cand in generated:
+    for rank_idx, cand in enumerate(generated, start=1):
         if not isinstance(cand, dict):
             errors.append({
                 'scope': 'generated_candidate',
@@ -9303,6 +9308,11 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
             outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
             if outcome is not None:
                 outcome['role'] = 'secondary'
+                outcome['rank_in_snapshot'] = rank_idx
+                outcome['varsity_tier'] = cand.get('varsityTier')
+                outcome['premium_edge'] = cand.get('premiumEdge')
+                outcome['credit_width_ratio'] = cand.get('creditWidthRatio')
+                outcome['sigma_otm'] = cand.get('sigmaOTM')
                 outcomes.append(outcome)
         except Exception as exc:
             errors.append({
@@ -9416,6 +9426,302 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
         outcomes.extend(result.get('outcomes') or [])
 
     return json.dumps(outcomes)
+
+
+def _count_key(counter, key):
+    key = str(key or '').strip() or 'UNKNOWN'
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _summary_from_outcomes(rows):
+    count = 0
+    success = 0
+    positive = 0
+    sum_r = 0.0
+    sum_pnl = 0.0
+    pnl_count = 0
+    for row in rows:
+        r_val = _safe_float(row.get('r_multiple'))
+        if r_val is None:
+            continue
+        count += 1
+        sum_r += r_val
+        if r_val > 0:
+            positive += 1
+        pnl = _safe_float(row.get('managed_pnl'))
+        if pnl is not None:
+            pnl_count += 1
+            sum_pnl += pnl
+            if pnl > 0 and r_val <= 0:
+                positive += 0
+        success_val = row.get('is_success')
+        if success_val is True or success_val == 1 or str(success_val).lower() in ('1', 'true', 'yes'):
+            success += 1
+    return {
+        'rows': count,
+        'successes': success,
+        'success_rate_pct': round((success * 100.0 / count), 2) if count else 0.0,
+        'positive_r_rows': positive,
+        'positive_r_pct': round((positive * 100.0 / count), 2) if count else 0.0,
+        'avg_r': round((sum_r / count), 4) if count else 0.0,
+        'avg_managed_pnl': round((sum_pnl / pnl_count), 2) if pnl_count else 0.0,
+    }
+
+
+def _top_counter_items(counter, limit=12):
+    return [
+        {'key': key, 'count': count}
+        for key, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def session_teacher_research_report(session_date_str, snapshots_json_str, outcomes_json_str):
+    """Build the Friday-style explanation artifact for one completed session.
+
+    This is measurement only. It compares the chosen primary against the full
+    generated candidate menu already saved in each snapshot and the teacher
+    outcomes already produced by the evaluator.
+    """
+    try:
+        snapshots = json.loads(snapshots_json_str) if snapshots_json_str else []
+        outcomes = json.loads(outcomes_json_str) if outcomes_json_str else []
+    except Exception as exc:
+        return json.dumps({'ok': False, 'error': str(exc), 'session_date': session_date_str})
+    if not isinstance(snapshots, list):
+        snapshots = []
+    if not isinstance(outcomes, list):
+        outcomes = []
+
+    action_counts = {}
+    strategy_counts = {}
+    primary_type_counts = {}
+    generated_type_counts = {}
+    generated_first_type_counts = {}
+    rank_pair_counts = {}
+    vix_values = []
+    bnf_values = []
+    nf_values = []
+    significant_moves = 0
+    flat_gap_count = 0
+    generated_meta = {}
+    snapshots_with = {
+        'with_primary': 0,
+        'with_generated': 0,
+        'with_bear_call': 0,
+        'with_bull_put': 0,
+        'with_both_bear_call_bull_put': 0,
+        'bear_call_before_bull_put': 0,
+        'bull_put_before_bear_call': 0,
+    }
+
+    for snap in snapshots:
+        if not isinstance(snap, dict):
+            continue
+        _count_key(action_counts, snap.get('action'))
+        _count_key(strategy_counts, snap.get('strategy'))
+        sid = snap.get('id')
+        ctx = _safe_json_field(snap.get('context_json', '{}'), {})
+        if not isinstance(ctx, dict):
+            ctx = {}
+        primary = _safe_json_field(snap.get('primary_candidate_json', '{}'), {})
+        if isinstance(primary, dict) and primary.get('id'):
+            snapshots_with['with_primary'] += 1
+            _count_key(primary_type_counts, primary.get('type'))
+        vix = _safe_float(ctx.get('vix'))
+        if vix is not None:
+            vix_values.append(vix)
+        bnf = _safe_float(ctx.get('bnfSpot'))
+        nf = _safe_float(ctx.get('nfSpot'))
+        if bnf is not None:
+            bnf_values.append(bnf)
+        if nf is not None:
+            nf_values.append(nf)
+        if ctx.get('significant_move') is True:
+            significant_moves += 1
+        gap = ctx.get('gap') if isinstance(ctx.get('gap'), dict) else {}
+        if str(gap.get('type') or '').upper() == 'FLAT':
+            flat_gap_count += 1
+
+        generated = ctx.get('snapshot_generated_candidates')
+        if not isinstance(generated, list) or not generated:
+            generated = _safe_json_field(snap.get('top_candidates_json', '[]'), [])
+        if not isinstance(generated, list):
+            generated = []
+        if generated:
+            snapshots_with['with_generated'] += 1
+
+        first_pos = {}
+        for rank_idx, cand in enumerate(generated, start=1):
+            if not isinstance(cand, dict):
+                continue
+            cand_id = cand.get('id')
+            stype = cand.get('type') or cand.get('strategy_type') or 'UNKNOWN'
+            _count_key(generated_type_counts, stype)
+            if rank_idx == 1:
+                _count_key(generated_first_type_counts, stype)
+            if stype not in first_pos:
+                first_pos[stype] = rank_idx
+            if sid is not None and cand_id:
+                generated_meta[(sid, cand_id)] = {
+                    'rank': rank_idx,
+                    'type': stype,
+                    'width': cand.get('width'),
+                    'premium_edge': cand.get('premiumEdge'),
+                    'credit_width_ratio': cand.get('creditWidthRatio'),
+                    'sigma_otm': cand.get('sigmaOTM'),
+                }
+        has_bc = 'BEAR_CALL' in first_pos
+        has_bp = 'BULL_PUT' in first_pos
+        if has_bc:
+            snapshots_with['with_bear_call'] += 1
+        if has_bp:
+            snapshots_with['with_bull_put'] += 1
+        if has_bc and has_bp:
+            snapshots_with['with_both_bear_call_bull_put'] += 1
+            pair_key = f"{first_pos['BEAR_CALL']}|{first_pos['BULL_PUT']}"
+            _count_key(rank_pair_counts, pair_key)
+            if first_pos['BEAR_CALL'] < first_pos['BULL_PUT']:
+                snapshots_with['bear_call_before_bull_put'] += 1
+            elif first_pos['BULL_PUT'] < first_pos['BEAR_CALL']:
+                snapshots_with['bull_put_before_bear_call'] += 1
+
+    enriched_outcomes = []
+    by_snapshot = {}
+    by_strategy = {}
+    by_rank = {}
+    primary_rows = []
+    secondary_rows = []
+    for row in outcomes:
+        if not isinstance(row, dict):
+            continue
+        sid = row.get('snapshot_id')
+        cid = row.get('candidate_id')
+        meta = generated_meta.get((sid, cid), {})
+        enriched = dict(row)
+        if meta:
+            enriched.setdefault('rank_in_snapshot', meta.get('rank'))
+            enriched.setdefault('strategy_type', meta.get('type'))
+            enriched.setdefault('width', meta.get('width'))
+            enriched.setdefault('premium_edge', meta.get('premium_edge'))
+            enriched.setdefault('credit_width_ratio', meta.get('credit_width_ratio'))
+            enriched.setdefault('sigma_otm', meta.get('sigma_otm'))
+        enriched_outcomes.append(enriched)
+        by_snapshot.setdefault(sid, []).append(enriched)
+        by_strategy.setdefault(enriched.get('strategy_type') or 'UNKNOWN', []).append(enriched)
+        rank = enriched.get('rank_in_snapshot')
+        if rank is not None:
+            by_rank.setdefault(str(rank), []).append(enriched)
+        role = str(enriched.get('role') or '').lower()
+        if role == 'primary':
+            primary_rows.append(enriched)
+        else:
+            secondary_rows.append(enriched)
+
+    best_type_counts = {}
+    best_rank_counts = {}
+    snapshot_compared = 0
+    primary_best = 0
+    better_available = 0
+    positive_alternative = 0
+    all_non_positive = 0
+    improvement_sum = 0.0
+    improvement_count = 0
+    for sid, rows in by_snapshot.items():
+        primary = next((r for r in rows if str(r.get('role') or '').lower() == 'primary'), None)
+        scored = [r for r in rows if _safe_float(r.get('r_multiple')) is not None]
+        if not primary or not scored:
+            continue
+        primary_r = _safe_float(primary.get('r_multiple'))
+        if primary_r is None:
+            continue
+        best = max(scored, key=lambda r: _safe_float(r.get('r_multiple')) or -999999.0)
+        best_r = _safe_float(best.get('r_multiple'))
+        if best_r is None:
+            continue
+        snapshot_compared += 1
+        _count_key(best_type_counts, best.get('strategy_type') or best.get('type'))
+        rank = best.get('rank_in_snapshot')
+        if rank is not None:
+            _count_key(best_rank_counts, str(rank))
+        if best.get('candidate_id') == primary.get('candidate_id'):
+            primary_best += 1
+        if best_r > primary_r:
+            better_available += 1
+        if any((_safe_float(r.get('r_multiple')) or 0.0) > 0 for r in rows if r is not primary):
+            positive_alternative += 1
+        if all((_safe_float(r.get('r_multiple')) or 0.0) <= 0 for r in rows):
+            all_non_positive += 1
+        improvement_sum += (best_r - primary_r)
+        improvement_count += 1
+
+    def series_summary(values):
+        if not values:
+            return {}
+        return {
+            'first': round(values[0], 2),
+            'last': round(values[-1], 2),
+            'min': round(min(values), 2),
+            'max': round(max(values), 2),
+            'avg': round(sum(values) / len(values), 2),
+            'change': round(values[-1] - values[0], 2),
+        }
+
+    strategy_summaries = {}
+    for key, rows in by_strategy.items():
+        strategy_summaries[key] = _summary_from_outcomes(rows)
+    rank_summaries = {}
+    for key, rows in by_rank.items():
+        rank_summaries[key] = _summary_from_outcomes(rows)
+
+    return json.dumps({
+        'ok': True,
+        'schema_version': 1,
+        'session_date': session_date_str,
+        'scope': 'daily_primary_vs_generated_teacher_research',
+        'snapshot_count': len(snapshots),
+        'outcome_count': len(enriched_outcomes),
+        'market': {
+            'vix': series_summary(vix_values),
+            'bnf': series_summary(bnf_values),
+            'nf': series_summary(nf_values),
+            'significant_move_snapshots': significant_moves,
+            'flat_gap_snapshots': flat_gap_count,
+        },
+        'brain_behavior': {
+            'action_counts': action_counts,
+            'strategy_counts': strategy_counts,
+            'primary_type_counts': primary_type_counts,
+            'generated_type_counts': generated_type_counts,
+            'generated_first_type_counts': generated_first_type_counts,
+            'snapshots': snapshots_with,
+            'bear_call_bull_put_first_position_pairs': _top_counter_items(rank_pair_counts, 8),
+        },
+        'teacher_outcomes': {
+            'primary': _summary_from_outcomes(primary_rows),
+            'secondary': _summary_from_outcomes(secondary_rows),
+            'by_strategy': strategy_summaries,
+            'by_rank': rank_summaries,
+        },
+        'primary_vs_best': {
+            'snapshots_compared': snapshot_compared,
+            'primary_was_best': primary_best,
+            'better_candidate_available': better_available,
+            'positive_alternative_available': positive_alternative,
+            'all_candidates_non_positive': all_non_positive,
+            'avg_best_minus_primary_r': round(improvement_sum / improvement_count, 4) if improvement_count else 0.0,
+            'best_type_counts': best_type_counts,
+            'best_rank_counts': best_rank_counts,
+        },
+    })
 
 
 # ═══════════════════════════════════════════════════════════════

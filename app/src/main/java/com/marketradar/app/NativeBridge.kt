@@ -1581,6 +1581,40 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun getMLTeacherResearchReport(): String {
+        val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
+        val cachedDate = prefs.getString("teacher_research_report_date", "") ?: ""
+        val cached = prefs.getString("teacher_research_report", "") ?: ""
+        if (cachedDate == targetDate && cached.trim().startsWith("{")) {
+            return cached
+        }
+        return try {
+            val file = java.io.File(MarketMLService.evaluationResearchReportPath(context, targetDate))
+            if (!file.exists()) {
+                return JSONObject()
+                    .put("ok", false)
+                    .put("session_date", targetDate)
+                    .put("error", "REPORT_NOT_AVAILABLE")
+                    .toString()
+            }
+            val raw = file.readText().trim()
+            val obj = JSONObject(raw)
+            prefs.edit()
+                .putString("teacher_research_report_date", targetDate)
+                .putString("teacher_research_report", obj.toString())
+                .commit()
+            obj.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getMLTeacherResearchReport failed", e)
+            JSONObject()
+                .put("ok", false)
+                .put("session_date", targetDate)
+                .put("error", e.message ?: e.javaClass.simpleName)
+                .toString()
+        }
+    }
+
+    @JavascriptInterface
     fun getMLBrainSnapshots(limit: Int): String {
         val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
         return try {

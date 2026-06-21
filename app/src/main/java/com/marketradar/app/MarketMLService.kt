@@ -150,6 +150,9 @@ class MarketMLService : Service() {
         fun evaluationOutcomesPath(ctx: Context, sessionDate: String): String =
             File(evaluationDir(ctx), "outcomes_$sessionDate.json").absolutePath
 
+        fun evaluationResearchReportPath(ctx: Context, sessionDate: String): String =
+            File(evaluationDir(ctx), "teacher_research_$sessionDate.json").absolutePath
+
         // ── Schedule nightly 11 PM alarm ─────────────────────────────────
         fun scheduleNightlyTraining(context: Context) {
             cancelNightlyTraining(context)
@@ -1296,6 +1299,7 @@ class MarketMLService : Service() {
                 )
                 val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
                 runAggregationPipeline(sessionDate, snapshotsJsonArray, evaluatedOutcomes)
+                buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
@@ -1399,6 +1403,42 @@ class MarketMLService : Service() {
             maybeAggregateMonth(sessionDate)
         } catch (e: Exception) {
             Log.w(TAG, "AGGREGATION_FAIL: ${e.message}")
+        }
+    }
+
+    private fun buildTeacherResearchReport(
+        brain: PyObject?,
+        sessionDate: String,
+        snapshotsJsonArray: org.json.JSONArray,
+        evaluatedOutcomes: org.json.JSONArray
+    ) {
+        if (brain == null) return
+        try {
+            val reportRaw = brain.callAttr(
+                "session_teacher_research_report",
+                sessionDate,
+                snapshotsJsonArray.toString(),
+                evaluatedOutcomes.toString()
+            ).toString()
+            val report = org.json.JSONObject(reportRaw)
+            if (!report.optBoolean("ok", false)) {
+                Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: ${report.optString("error", "unknown")}")
+                return
+            }
+            val outFile = File(evaluationResearchReportPath(this@MarketMLService, sessionDate))
+            outFile.parentFile?.mkdirs()
+            outFile.writeText(report.toString())
+            prefs.edit()
+                .putString("teacher_research_report_date", sessionDate)
+                .putString("teacher_research_report", report.toString())
+                .commit()
+            val pvb = report.optJSONObject("primary_vs_best") ?: org.json.JSONObject()
+            Log.i(
+                TAG,
+                "TEACHER_RESEARCH_REPORT: session=$sessionDate compared=${pvb.optInt("snapshots_compared", 0)} better=${pvb.optInt("better_candidate_available", 0)} upliftR=${pvb.optDouble("avg_best_minus_primary_r", 0.0)}"
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: ${e.message}")
         }
     }
 
