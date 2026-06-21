@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b273: fix teacher lane-summary reads after honest Friday rerun persisted.
+        // b274: hide misleading live diagnostics on historical teacher session screens.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 273
-        versionName = "2.4.42"
+        versionCode = 274
+        versionName = "2.4.43"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
