@@ -897,9 +897,25 @@ object SupabaseClient {
         return select("ml_decisions", null, "created_at.desc", limit)
     }
 
+    private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
+        val filter = "session_date=eq.$sessionDate"
+        val rows = select("ml_recommendation_outcomes", filter, "created_at.desc", limit)
+        if (rows.length() > 0) return rows
+        return JSONArray()
+    }
+
     fun fetchEvaluationLaneSummary(sessionDate: String, limit: Int = 1000): JSONObject {
-        val rows = fetchRecentEvaluationOutcomes(limit)
-        val todayRows = filterRowsByIstSessionDate(rows, sessionDate)
+        val attributedRecommendationRows = fetchAttributedRecommendationOutcomes(sessionDate, limit)
+        val rows = if (attributedRecommendationRows.length() > 0) {
+            attributedRecommendationRows
+        } else {
+            fetchRecentEvaluationOutcomes(limit)
+        }
+        val todayRows = if (attributedRecommendationRows.length() > 0) {
+            attributedRecommendationRows
+        } else {
+            filterRowsByIstSessionDate(rows, sessionDate)
+        }
         val lanes = linkedMapOf(
             "NF_intraday" to intArrayOf(0, 0, 0),
             "NF_swing" to intArrayOf(0, 0, 0),
