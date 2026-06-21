@@ -1013,6 +1013,16 @@ class NativeBridge(private val context: Context) {
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate == targetDate) return false
         val lastMessage = (prefs.getString("last_evaluation_message", "") ?: "").lowercase(Locale.US)
+        val produced = prefs.getInt("last_evaluation_produced_count", 0)
+        if (
+            produced <= 0 &&
+            (
+                lastMessage.contains("0 evaluable shadow teacher outcomes") ||
+                    lastMessage.contains("no evaluable shadow teacher labels")
+            )
+        ) {
+            return true
+        }
         if (!lastMessage.contains("no brain snapshots found")) return false
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         val pollCount = prefs.getInt("poll_count", 0)

@@ -142,10 +142,10 @@ class MarketMLService : Service() {
             File(evaluationDir(ctx), "snapshots_$sessionDate.json").absolutePath
 
         fun evaluationChainPath(ctx: Context, sessionDate: String): String =
-            File(evaluationDir(ctx), "chain_filtered_v2_$sessionDate.json").absolutePath
+            File(evaluationDir(ctx), "chain_filtered_v3_$sessionDate.json").absolutePath
 
         fun evaluationPrepareCompletePath(ctx: Context, sessionDate: String): String =
-            File(evaluationDir(ctx), "chain_filtered_v2_$sessionDate.complete").absolutePath
+            File(evaluationDir(ctx), "chain_filtered_v3_$sessionDate.complete").absolutePath
 
         fun evaluationOutcomesPath(ctx: Context, sessionDate: String): String =
             File(evaluationDir(ctx), "outcomes_$sessionDate.json").absolutePath

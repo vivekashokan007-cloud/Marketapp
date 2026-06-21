@@ -18,7 +18,9 @@ object SupabaseClient {
     private const val TAG = "SupabaseClient"
     private const val URL = BuildConfig.SUPABASE_URL
     private const val ANON_KEY = BuildConfig.SUPABASE_ANON_KEY
-    private const val CHAIN_PAGE_SIZE = 2000
+    // Supabase REST caps page payloads at 1000 rows in this project, so using
+    // a larger requested limit causes offset-based pagination gaps.
+    private const val CHAIN_PAGE_SIZE = 1000
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -270,7 +272,7 @@ object SupabaseClient {
                 page.optJSONObject(i)?.let(out::put)
             }
             if (page.length() < pageSize) return out
-            offset += pageSize
+            offset += page.length()
         }
         return out
     }
@@ -757,7 +759,7 @@ object SupabaseClient {
                     reachedEnd = true
                     break
                 }
-                offset += pageSize
+                offset += page.length()
             }
             writer.write("]")
         }
