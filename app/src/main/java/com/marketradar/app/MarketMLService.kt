@@ -1299,7 +1299,9 @@ class MarketMLService : Service() {
                 )
                 val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
                 runAggregationPipeline(sessionDate, snapshotsJsonArray, evaluatedOutcomes)
-                buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
+                scope.launch {
+                    buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
+                }
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0) {

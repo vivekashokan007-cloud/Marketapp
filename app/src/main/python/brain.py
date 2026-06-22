@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.44"
+BRAIN_VERSION = "2.4.45"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9516,6 +9516,8 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     snapshots_with = {
         'with_primary': 0,
         'with_generated': 0,
+        'with_rejected': 0,
+        'with_context': 0,
         'with_bear_call': 0,
         'with_bull_put': 0,
         'with_both_bear_call_bull_put': 0,
@@ -9529,7 +9531,10 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         _count_key(action_counts, snap.get('action'))
         _count_key(strategy_counts, snap.get('strategy'))
         sid = snap.get('id')
-        ctx = _safe_json_field(snap.get('context_json', '{}'), {})
+        raw_context_json = snap.get('context_json', '{}')
+        if isinstance(raw_context_json, str) and raw_context_json.strip():
+            snapshots_with['with_context'] += 1
+        ctx = _safe_json_field(raw_context_json, {})
         if not isinstance(ctx, dict):
             ctx = {}
         primary = _safe_json_field(snap.get('primary_candidate_json', '{}'), {})
@@ -9558,6 +9563,9 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             generated = []
         if generated:
             snapshots_with['with_generated'] += 1
+        rejected = ctx.get('snapshot_rejected_candidates')
+        if isinstance(rejected, list) and rejected:
+            snapshots_with['with_rejected'] += 1
 
         first_pos = {}
         for rank_idx, cand in enumerate(generated, start=1):
@@ -9682,6 +9690,94 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     for key, rows in by_rank.items():
         rank_summaries[key] = _summary_from_outcomes(rows)
 
+    primary_snapshot_ids = sorted({row.get('snapshot_id') for row in primary_rows if row.get('snapshot_id') is not None})
+    primary_snapshot_lookup = {}
+    for snap in snapshots:
+        if not isinstance(snap, dict):
+            continue
+        sid = snap.get('id')
+        if sid is not None and sid not in primary_snapshot_lookup:
+            primary_snapshot_lookup[sid] = snap
+
+    primary_context_ready = 0
+    primary_generated_ready = 0
+    primary_rejected_ready = 0
+    primary_primary_json_ready = 0
+    primary_context_missing_ids = []
+    primary_generated_missing_ids = []
+    primary_rejected_missing_ids = []
+    primary_primary_json_missing_ids = []
+    for sid in primary_snapshot_ids:
+        snap = primary_snapshot_lookup.get(sid)
+        if not snap:
+            primary_context_missing_ids.append(sid)
+            primary_generated_missing_ids.append(sid)
+            primary_rejected_missing_ids.append(sid)
+            primary_primary_json_missing_ids.append(sid)
+            continue
+
+        raw_context_json = snap.get('context_json', '{}')
+        ctx = _safe_json_field(raw_context_json, {})
+        if isinstance(raw_context_json, str) and raw_context_json.strip() and isinstance(ctx, dict):
+            primary_context_ready += 1
+        else:
+            primary_context_missing_ids.append(sid)
+
+        primary = _safe_json_field(snap.get('primary_candidate_json', '{}'), {})
+        if isinstance(primary, dict) and primary.get('id'):
+            primary_primary_json_ready += 1
+        else:
+            primary_primary_json_missing_ids.append(sid)
+
+        generated = ctx.get('snapshot_generated_candidates')
+        if not isinstance(generated, list) or not generated:
+            generated = _safe_json_field(snap.get('top_candidates_json', '[]'), [])
+        if isinstance(generated, list) and generated:
+            primary_generated_ready += 1
+        else:
+            primary_generated_missing_ids.append(sid)
+
+        rejected = ctx.get('snapshot_rejected_candidates')
+        if isinstance(rejected, list) and rejected:
+            primary_rejected_ready += 1
+        else:
+            primary_rejected_missing_ids.append(sid)
+
+    class_a_blocked_reasons = []
+    if not primary_snapshot_ids:
+        class_a_blocked_reasons.append('no_primary_teacher_rows_were_available')
+    if primary_context_ready != len(primary_snapshot_ids):
+        class_a_blocked_reasons.append(f"context_json_missing_or_empty_on_{len(primary_snapshot_ids) - primary_context_ready}_primary_snapshots")
+    if primary_primary_json_ready != len(primary_snapshot_ids):
+        class_a_blocked_reasons.append(f"primary_candidate_json_missing_on_{len(primary_snapshot_ids) - primary_primary_json_ready}_primary_snapshots")
+    if primary_generated_ready != len(primary_snapshot_ids):
+        class_a_blocked_reasons.append(f"generated_menu_missing_on_{len(primary_snapshot_ids) - primary_generated_ready}_primary_snapshots")
+    if primary_rejected_ready != len(primary_snapshot_ids):
+        class_a_blocked_reasons.append(f"rejected_menu_missing_on_{len(primary_snapshot_ids) - primary_rejected_ready}_primary_snapshots")
+    if snapshot_compared != len(primary_snapshot_ids):
+        class_a_blocked_reasons.append(f"primary_vs_best_comparison_only_covered_{snapshot_compared}_of_{len(primary_snapshot_ids)}_primary_snapshots")
+
+    class_a_gate = {
+        'status': 'PASS' if not class_a_blocked_reasons else 'FAIL',
+        'scope': 'saved_live_session_parity_gate',
+        'session_date': session_date_str,
+        'primary_snapshot_count': len(primary_snapshot_ids),
+        'comparison_ready_count': snapshot_compared,
+        'context_ready_count': primary_context_ready,
+        'primary_candidate_ready_count': primary_primary_json_ready,
+        'generated_menu_ready_count': primary_generated_ready,
+        'rejected_menu_ready_count': primary_rejected_ready,
+        'snapshot_count': len(snapshots),
+        'outcome_count': len(enriched_outcomes),
+        'primary_outcome_count': len(primary_rows),
+        'secondary_outcome_count': len(secondary_rows),
+        'with_context_snapshots': snapshots_with['with_context'],
+        'with_generated_snapshots': snapshots_with['with_generated'],
+        'with_rejected_snapshots': snapshots_with['with_rejected'],
+        'blocked_reasons': class_a_blocked_reasons,
+        'ready_for_tomorrow_comparison': not class_a_blocked_reasons,
+    }
+
     return json.dumps({
         'ok': True,
         'schema_version': 1,
@@ -9689,6 +9785,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'scope': 'daily_primary_vs_generated_teacher_research',
         'snapshot_count': len(snapshots),
         'outcome_count': len(enriched_outcomes),
+        'class_a_gate': class_a_gate,
         'market': {
             'vix': series_summary(vix_values),
             'bnf': series_summary(bnf_values),
