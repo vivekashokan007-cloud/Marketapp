@@ -935,6 +935,12 @@ object SupabaseClient {
             "BNF_swing" to mutableListOf<JSONObject>()
         )
         val teacherBucketAggregates = linkedMapOf<String, MutableList<JSONObject>>()
+        val recommendationMixLanes = linkedMapOf(
+            "NF_intraday" to intArrayOf(0, 0, 0),
+            "NF_swing" to intArrayOf(0, 0, 0),
+            "BNF_intraday" to intArrayOf(0, 0, 0),
+            "BNF_swing" to intArrayOf(0, 0, 0)
+        )
 
         fun normalizeWon(value: Any?): Int? = when (value) {
             is Boolean -> if (value) 1 else 0
@@ -1026,6 +1032,14 @@ object SupabaseClient {
             bucket[0] += 1 // rows
             attributedRows += 1
             val role = row.optString("role", "").trim().lowercase(Locale.US)
+            val mixBucket = recommendationMixLanes[lane]
+            if (mixBucket != null) {
+                mixBucket[0] += 1
+                when (role) {
+                    "primary" -> mixBucket[1] += 1
+                    "secondary" -> mixBucket[2] += 1
+                }
+            }
             val isPrimaryLike = role != "secondary"
             val won = normalizeWon(
                 when {
@@ -1172,12 +1186,24 @@ object SupabaseClient {
             )
             .put("scope", "primary_only_old_vs_teacher_shadow")
 
+        val recommendationMixJson = JSONObject()
+        for ((key, counts) in recommendationMixLanes) {
+            recommendationMixJson.put(
+                key,
+                JSONObject()
+                    .put("rows", counts[0])
+                    .put("primaryRows", counts[1])
+                    .put("secondaryRows", counts[2])
+            )
+        }
+
         return JSONObject()
             .put("session_date", sessionDate)
             .put("rowsFetched", rows.length())
             .put("rowsToday", todayRows.length())
             .put("attributedRows", attributedRows)
             .put("primary_legacy_lanes", primaryLegacyJson)
+            .put("recommendation_mix_lanes", recommendationMixJson)
             .put("teacherRows", teacherRows)
             .put("lanes", lanesJson)
             .put("teacher_lanes", teacherLanesJson)
