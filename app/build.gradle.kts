@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b279: fallback chosen-vs-candidate summary to evaluation rows when recommendation rows are primary-only.
+        // b280: count-verify evaluation persistence so completed days do not stay RETRYABLE.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 279
-        versionName = "2.4.48"
+        versionCode = 280
+        versionName = "2.4.49"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

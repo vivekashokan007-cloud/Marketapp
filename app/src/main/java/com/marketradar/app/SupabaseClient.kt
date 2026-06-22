@@ -283,6 +283,21 @@ object SupabaseClient {
         return true
     }
 
+    private fun countRows(table: String, filter: String? = null, limit: Int = 5000): Int {
+        val queryParams = mutableListOf<String>()
+        if (filter != null) queryParams.add(filter)
+        queryParams.add("select=id")
+        queryParams.add("limit=$limit")
+        val url = "$table?${queryParams.joinToString("&")}"
+        val request = getBaseRequest(url).get().build()
+        val json = fetchSync(request) ?: return 0
+        return try {
+            JSONArray(json).length()
+        } catch (_: Exception) {
+            0
+        }
+    }
+
     private fun fetchArray(path: String): JSONArray? {
         val request = getBaseRequest(path).get().build()
         val json = fetchSync(request) ?: return null
@@ -895,23 +910,25 @@ object SupabaseClient {
         val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
         val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
 
-        val evaluationSaved = postArrayToTableChunked("ml_evaluation_outcomes", evaluationRows) ||
+        val evaluationWriteAttempted = postArrayToTableChunked("ml_evaluation_outcomes", evaluationRows) ||
             postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsNoShadow) ||
             postArrayToTableChunked("ml_evaluation_outcomes", stripCanonical(evaluationRowsNoShadow)) ||
             postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsLegacy)
-        val recommendationSaved = postArrayToTableChunked("ml_recommendation_outcomes", recommendationRows) ||
+        val recommendationWriteAttempted = postArrayToTableChunked("ml_recommendation_outcomes", recommendationRows) ||
             postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsNoShadow) ||
             postArrayToTableChunked("ml_recommendation_outcomes", stripCanonical(recommendationRowsNoShadow)) ||
             postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsLegacy)
 
-        val evaluationPersisted = if (evaluationSaved) evaluationRows.length() else 0
-        val recommendationPersisted = if (recommendationSaved) recommendationRows.length() else 0
-        val success = evaluationSaved || recommendationSaved
+        val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")
+        val recommendationPersisted = countRows("ml_recommendation_outcomes", "session_date=eq.$sessionDate")
+        val evaluationSaved = evaluationPersisted >= evaluationRows.length()
+        val recommendationSaved = recommendationPersisted > 0 && recommendationWriteAttempted
+        val success = evaluationSaved
         val message = when {
             evaluationSaved && recommendationSaved ->
                 "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately."
             evaluationSaved ->
-                "Persisted $evaluationPersisted evaluation rows to Supabase."
+                "Persisted $evaluationPersisted evaluation rows to Supabase; recommendation rows were not fully verified."
             recommendationSaved ->
                 "Persisted $recommendationPersisted recommendation rows to Supabase; evaluation rows were not saved."
             else -> "Supabase persistence failed for evaluation outcomes."
