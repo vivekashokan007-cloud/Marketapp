@@ -247,6 +247,42 @@ object SupabaseClient {
         }
     }
 
+    private fun splitJSONArray(body: JSONArray, chunkSize: Int): List<JSONArray> {
+        if (body.length() == 0) return emptyList()
+        val safeChunkSize = if (chunkSize > 0) chunkSize else 100
+        val chunks = mutableListOf<JSONArray>()
+        var index = 0
+        while (index < body.length()) {
+            val chunk = JSONArray()
+            val end = minOf(body.length(), index + safeChunkSize)
+            for (i in index until end) {
+                body.optJSONObject(i)?.let(chunk::put)
+            }
+            if (chunk.length() > 0) chunks.add(chunk)
+            index = end
+        }
+        return chunks
+    }
+
+    private fun postArrayToTableChunked(
+        table: String,
+        body: JSONArray,
+        chunkSize: Int = 250
+    ): Boolean {
+        if (body.length() == 0) return true
+        val chunks = splitJSONArray(body, chunkSize)
+        if (chunks.isEmpty()) return true
+        var chunkIndex = 0
+        for (chunk in chunks) {
+            chunkIndex += 1
+            if (!postArrayToTable(table, chunk)) {
+                Log.e(TAG, "Chunked post failed ($table) chunk=$chunkIndex/${chunks.size} rows=${chunk.length()}")
+                return false
+            }
+        }
+        return true
+    }
+
     private fun fetchArray(path: String): JSONArray? {
         val request = getBaseRequest(path).get().build()
         val json = fetchSync(request) ?: return null
@@ -859,14 +895,14 @@ object SupabaseClient {
         val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
         val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
 
-        val evaluationSaved = postArrayToTable("ml_evaluation_outcomes", evaluationRows) ||
-            postArrayToTable("ml_evaluation_outcomes", evaluationRowsNoShadow) ||
-            postArrayToTable("ml_evaluation_outcomes", stripCanonical(evaluationRowsNoShadow)) ||
-            postArrayToTable("ml_evaluation_outcomes", evaluationRowsLegacy)
-        val recommendationSaved = postArrayToTable("ml_recommendation_outcomes", recommendationRows) ||
-            postArrayToTable("ml_recommendation_outcomes", recommendationRowsNoShadow) ||
-            postArrayToTable("ml_recommendation_outcomes", stripCanonical(recommendationRowsNoShadow)) ||
-            postArrayToTable("ml_recommendation_outcomes", recommendationRowsLegacy)
+        val evaluationSaved = postArrayToTableChunked("ml_evaluation_outcomes", evaluationRows) ||
+            postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsNoShadow) ||
+            postArrayToTableChunked("ml_evaluation_outcomes", stripCanonical(evaluationRowsNoShadow)) ||
+            postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsLegacy)
+        val recommendationSaved = postArrayToTableChunked("ml_recommendation_outcomes", recommendationRows) ||
+            postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsNoShadow) ||
+            postArrayToTableChunked("ml_recommendation_outcomes", stripCanonical(recommendationRowsNoShadow)) ||
+            postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsLegacy)
 
         val evaluationPersisted = if (evaluationSaved) evaluationRows.length() else 0
         val recommendationPersisted = if (recommendationSaved) recommendationRows.length() else 0
