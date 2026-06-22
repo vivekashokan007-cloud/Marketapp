@@ -283,17 +283,39 @@ object SupabaseClient {
         return true
     }
 
-    private fun countRows(table: String, filter: String? = null, limit: Int = 5000): Int {
+    private fun countRows(table: String, filter: String? = null): Int {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)
         queryParams.add("select=id")
-        queryParams.add("limit=$limit")
         val url = "$table?${queryParams.joinToString("&")}"
-        val request = getBaseRequest(url).get().build()
-        val json = fetchSync(request) ?: return 0
         return try {
-            JSONArray(json).length()
-        } catch (_: Exception) {
+            val request = getBaseRequest(url)
+                .addHeader("Prefer", "count=exact")
+                .addHeader("Range-Unit", "items")
+                .addHeader("Range", "0-0")
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    val errorBody = response.body?.string() ?: ""
+                    Log.e(TAG, "Count request failed: ${response.code} ${response.message} | URL: ${request.url} | Body: $errorBody")
+                    return@use 0
+                }
+                val contentRange = response.header("Content-Range")
+                val exactCount = contentRange
+                    ?.substringAfter("/", "")
+                    ?.trim()
+                    ?.takeIf { it != "*" }
+                    ?.toIntOrNull()
+                if (exactCount != null) {
+                    return@use exactCount
+                }
+                Log.w(TAG, "Count request missing exact Content-Range for $table filter=$filter; falling back to body count")
+                val json = response.body?.string() ?: "[]"
+                JSONArray(json).length()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Count rows failed for $table filter=$filter: ${e.message}")
             0
         }
     }
