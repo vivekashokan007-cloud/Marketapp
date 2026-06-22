@@ -391,12 +391,12 @@ object SupabaseClient {
         val rows = JSONArray()
         for (i in 0 until body.length()) {
             val src = body.optJSONObject(i) ?: continue
-            if (!src.optString("role", "secondary").equals("primary", ignoreCase = true)) continue
+            val role = src.optString("role", "secondary").ifBlank { "secondary" }.lowercase(Locale.US)
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
             row.put("session_date", sessionDate)
             row.put("candidate_id", src.opt("candidate_id"))
-            row.put("role", "primary")
+            row.put("role", role)
             row.put("lane", src.opt("lane"))
             row.put("index_key", src.opt("index_key"))
             row.put("trade_mode", src.opt("trade_mode"))
@@ -909,11 +909,11 @@ object SupabaseClient {
         val success = evaluationSaved || recommendationSaved
         val message = when {
             evaluationSaved && recommendationSaved ->
-                "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted primary recommendation rows persisted separately."
+                "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately."
             evaluationSaved ->
                 "Persisted $evaluationPersisted evaluation rows to Supabase."
             recommendationSaved ->
-                "Persisted $recommendationPersisted primary recommendation rows to Supabase; evaluation rows were not saved."
+                "Persisted $recommendationPersisted recommendation rows to Supabase; evaluation rows were not saved."
             else -> "Supabase persistence failed for evaluation outcomes."
         }
 
