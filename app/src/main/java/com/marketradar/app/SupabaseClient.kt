@@ -936,7 +936,19 @@ object SupabaseClient {
     private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
         val filter = "session_date=eq.$sessionDate"
         val rows = select("ml_recommendation_outcomes", filter, "created_at.desc", limit)
-        if (rows.length() > 0) return rows
+        if (rows.length() > 0) {
+            var hasNonPrimary = false
+            for (i in 0 until rows.length()) {
+                val role = rows.optJSONObject(i)?.optString("role", "primary") ?: "primary"
+                if (!role.equals("primary", ignoreCase = true)) {
+                    hasNonPrimary = true
+                    break
+                }
+            }
+            if (hasNonPrimary) return rows
+        }
+        val evalRows = select("ml_evaluation_outcomes", filter, "created_at.desc", limit)
+        if (evalRows.length() > 0) return evalRows
         return JSONArray()
     }
 
