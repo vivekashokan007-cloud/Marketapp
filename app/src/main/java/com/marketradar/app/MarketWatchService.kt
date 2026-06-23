@@ -2513,12 +2513,11 @@ class MarketWatchService : Service() {
                 prefs.edit().putString("notification_agent_state", agentState.toString()).commit()
             }
 
-            val legacyNotifications = payload.optJSONArray("legacy_notifications")
             dispatchUnifiedBrainNotification(brainNotification)
             LogBuffer.add(
                 'I',
                 TAG,
-                "BRAIN_NOTIFICATION_MODE: unified_live=true legacy_count=${legacyNotifications?.length() ?: 0} notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+                "BRAIN_NOTIFICATION_MODE: unified_live=true notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
             )
         } catch (e: Exception) {
             Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")
