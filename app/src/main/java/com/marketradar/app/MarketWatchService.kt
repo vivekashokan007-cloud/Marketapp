@@ -76,8 +76,6 @@ class MarketWatchService : Service() {
         private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
-        private const val UNIFIED_BRAIN_NOTIFICATION_SHADOW = true
-        private const val UNIFIED_BRAIN_NOTIFICATION_CUTOVER = false
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
@@ -2516,53 +2514,14 @@ class MarketWatchService : Service() {
             }
 
             val legacyNotifications = payload.optJSONArray("legacy_notifications")
-            val legacyCount = legacyNotifications?.length() ?: 0
-            if (UNIFIED_BRAIN_NOTIFICATION_CUTOVER) {
-                dispatchUnifiedBrainNotification(brainNotification)
-                LogBuffer.add('I', TAG, "BRAIN_NOTIFICATION_MODE: cutover=true legacy_shadow=$legacyCount")
-            } else {
-                if (UNIFIED_BRAIN_NOTIFICATION_SHADOW) {
-                    dispatchLegacyShadowNotifications(legacyNotifications)
-                    LogBuffer.add(
-                        'I',
-                        TAG,
-                        "BRAIN_NOTIFICATION_MODE: cutover=false shadow=true legacy=$legacyCount notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
-                    )
-                } else {
-                    LogBuffer.add('I', TAG, "BRAIN_NOTIFICATION_MODE: cutover=false shadow=false legacy=$legacyCount")
-                }
-            }
+            dispatchUnifiedBrainNotification(brainNotification)
+            LogBuffer.add(
+                'I',
+                TAG,
+                "BRAIN_NOTIFICATION_MODE: unified_live=true legacy_count=${legacyNotifications?.length() ?: 0} notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+            )
         } catch (e: Exception) {
             Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")
-        }
-    }
-
-    private fun dispatchLegacyShadowNotifications(alerts: JSONArray?) {
-        if (alerts == null) return
-        for (i in 0 until alerts.length()) {
-            val alert = alerts.optJSONObject(i) ?: continue
-            val notifType = notificationTypeFrom(
-                soundClass = alert.optString("sound_class", ""),
-                urgency = alert.optString("urgency", "INFO")
-            )
-            val channel = alert.optString("channel", "")
-            if (channel.isNotBlank()) {
-                NotificationHelper.send(
-                    this,
-                    alert.optString("title"),
-                    alert.optString("message"),
-                    notifType,
-                    channel
-                )
-            } else {
-                NotificationHelper.send(
-                    this,
-                    alert.optString("title"),
-                    alert.optString("message"),
-                    notifType
-                )
-            }
-            Log.d(TAG, "BRAIN_NOTIFICATION_SHADOW_SEND: ${alert.optString("title")}")
         }
     }
 

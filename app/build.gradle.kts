@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b283: unified brain notification contract in shadow mode before cutover.
+        // b284: unified brain notification contract promoted to full live cutover.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 283
-        versionName = "2.4.52"
+        versionCode = 284
+        versionName = "2.4.53"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
