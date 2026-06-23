@@ -42,6 +42,7 @@ class NativeBridge(private val context: Context) {
         private const val PREF_LAST_EVALUATOR_JOB = "last_evaluator_job"
         private const val PREF_TRADE_MODE = "trade_mode"
         private const val PREF_TRADE_MODE_EXPLICIT = "trade_mode_explicit"
+        private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
         private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
     }
@@ -554,6 +555,20 @@ class NativeBridge(private val context: Context) {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "null"
         return prefs.getString("brain_result", "null") ?: "null"
+    }
+
+    @JavascriptInterface
+    fun getNotificationTransportMode(): String {
+        return prefs.getString(PREF_NOTIFICATION_TRANSPORT_MODE, "live") ?: "live"
+    }
+
+    @JavascriptInterface
+    fun setNotificationTransportMode(mode: String): Boolean {
+        val normalized = when (mode.trim().lowercase(Locale.US)) {
+            "shadow" -> "shadow"
+            else -> "live"
+        }
+        return prefs.edit().putString(PREF_NOTIFICATION_TRANSPORT_MODE, normalized).commit()
     }
 
     @JavascriptInterface

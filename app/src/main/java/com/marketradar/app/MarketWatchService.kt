@@ -76,6 +76,9 @@ class MarketWatchService : Service() {
         private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
+        private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
+        private const val PREF_LAST_BRAIN_NOTIFICATION = "last_brain_notification"
+        private const val PREF_LAST_BRAIN_NOTIFICATION_META = "last_brain_notification_meta"
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
@@ -1762,6 +1765,10 @@ class MarketWatchService : Service() {
             val baselineJson = prefs.getString("morning_baseline",  "{}") ?: "{}"
             val openTradesJson   = prefs.getString("open_trades",   "[]") ?: "[]"
             val closedTradesJson = prefs.getString("closed_trades", "[]") ?: "[]"
+            // Persist the exact trade state used by this poll so historical replay
+            // can reconstruct the same calibration and risk context later.
+            ctxObj.put("snapshot_open_trades_json", openTradesJson)
+            ctxObj.put("snapshot_closed_trades_json", closedTradesJson)
             
             // CHAIN MERGING (Phase C: Format raw chains for Python)
             fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double,
@@ -2069,6 +2076,7 @@ class MarketWatchService : Service() {
                 return output.toString()
             }
             val strikeOiJson = buildStrikeOiJson(bnfChain, nfChain, openTradesJson, poll.optString("t", ""))
+            ctxObj.put("snapshot_strike_oi_json", strikeOiJson)
 
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
             val result = runBlocking {
@@ -2088,6 +2096,8 @@ class MarketWatchService : Service() {
             if (result != null) {
                 val resultObj = JSONObject(result)
                 brainSuccess = true
+
+                processUnifiedBrainNotifications(brain, resultObj, ctxObj)
 
                 // ML Arch V2: Chain slice extraction + brain snapshot
                 try {
@@ -2168,8 +2178,6 @@ class MarketWatchService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
                 }
-
-                processUnifiedBrainNotifications(brain, resultObj, ctxObj)
                 
                 // A1: Persist brain results back into ctxObj for next poll cycle
                 try {
@@ -2513,19 +2521,41 @@ class MarketWatchService : Service() {
                 prefs.edit().putString("notification_agent_state", agentState.toString()).commit()
             }
 
-            dispatchUnifiedBrainNotification(brainNotification)
+            val transportMode = prefs.getString(PREF_NOTIFICATION_TRANSPORT_MODE, "live") ?: "live"
+            val dispatched = dispatchUnifiedBrainNotification(brainNotification, transportMode)
+            val transportMeta = JSONObject().apply {
+                put("mode", transportMode)
+                put("dispatched", dispatched)
+                put("notify_user", brainNotification?.optBoolean("notify_user", false) ?: false)
+                put("decision_type", brainNotification?.optString("decision_type", "WAIT") ?: "WAIT")
+                put("reason_code", brainNotification?.optString("reason_code", "") ?: "")
+                put("updated_at_ms", System.currentTimeMillis())
+            }
+            resultObj.put("brain_notification_meta", transportMeta)
+            prefs.edit()
+                .putString(PREF_LAST_BRAIN_NOTIFICATION, brainNotification?.toString() ?: "null")
+                .putString(PREF_LAST_BRAIN_NOTIFICATION_META, transportMeta.toString())
+                .commit()
             LogBuffer.add(
                 'I',
                 TAG,
-                "BRAIN_NOTIFICATION_MODE: unified_live=true notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+                "BRAIN_NOTIFICATION_MODE: mode=$transportMode dispatched=$dispatched notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
             )
         } catch (e: Exception) {
             Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")
         }
     }
 
-    private fun dispatchUnifiedBrainNotification(contract: JSONObject?) {
-        if (contract == null || !contract.optBoolean("notify_user", false)) return
+    private fun dispatchUnifiedBrainNotification(contract: JSONObject?, transportMode: String): Boolean {
+        if (contract == null || !contract.optBoolean("notify_user", false)) return false
+        if (transportMode != "live") {
+            LogBuffer.add(
+                'I',
+                TAG,
+                "BRAIN_NOTIFICATION_SHADOW: type=${contract.optString("decision_type")} key=${contract.optString("alert_key")}"
+            )
+            return false
+        }
         val notifType = notificationTypeFrom(
             soundClass = contract.optString("sound_class", ""),
             urgency = contract.optString("decision_type", "INFO")
@@ -2548,6 +2578,7 @@ class MarketWatchService : Service() {
             )
         }
         Log.d(TAG, "BRAIN_NOTIFICATION_SEND: ${contract.optString("title")}")
+        return true
     }
 
     private fun notificationTypeFrom(soundClass: String, urgency: String): String {

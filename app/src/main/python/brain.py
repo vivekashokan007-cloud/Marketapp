@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.55"
+BRAIN_VERSION = "2.4.56"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8674,6 +8674,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
+    snapshot_context['snapshot_brain_notification'] = result.get('brain_notification') if isinstance(result.get('brain_notification'), dict) else {}
     snapshot_context['snapshot_watchlist'] = clean_cands
     snapshot_context['snapshot_generation_skip_reason'] = result.get('generation_skip_reason')
     snapshot_context['snapshot_generation_skip_reasons'] = result.get('generation_skip_reasons') or []
