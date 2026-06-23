@@ -353,16 +353,26 @@ class MarketMLService : Service() {
         when (intent?.action) {
             "ACTION_CHECK_RETRAIN" -> {
                 scope.launch {
-                    checkRetrainReadiness()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    try {
+                        checkRetrainReadiness()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "RETRAIN_ACTION_FAIL: ${t.message}", t)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
                 }
             }
             "ACTION_CONFIRM_TRAIN", "ACTION_TRAIN_NIGHTLY" -> {
                 scope.launch {
-                    runNightlyTraining()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    try {
+                        runNightlyTraining()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "TRAIN_ACTION_FAIL: ${t.message}", t)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
                 }
             }
             "ACTION_ONLINE_UPDATE" -> {
@@ -373,24 +383,39 @@ class MarketMLService : Service() {
                     return START_NOT_STICKY
                 }
                 scope.launch {
-                    runOnlineUpdate(tradeJson)
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    try {
+                        runOnlineUpdate(tradeJson)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "ONLINE_UPDATE_ACTION_FAIL: ${t.message}", t)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
                 }
             }
             "ACTION_TRAIN_TEMPORAL" -> {
                 scope.launch {
-                    runTemporalTraining()
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    try {
+                        runTemporalTraining()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "TEMPORAL_TRAIN_ACTION_FAIL: ${t.message}", t)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
                 }
             }
             "ACTION_DAY_EVALUATION" -> {
                 val sessionDate = intent.getStringExtra("session_date")
                 scope.launch {
-                    runDayEvaluation(sessionDate)
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    try {
+                        runDayEvaluation(sessionDate)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
                 }
             }
             "ACTION_EXPORT_BACKTEST" -> {

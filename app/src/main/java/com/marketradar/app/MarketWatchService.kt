@@ -782,7 +782,12 @@ class MarketWatchService : Service() {
                     async(Dispatchers.IO) { fetchSync(nfUrl, token) }
                 ).map { it.await() }
             }
-            val nf50Breadth = parallel[0]!!
+            val nf50Breadth = parallel[0] ?: JSONObject()
+            val hasNf50Breadth = parallel[0] != null
+            if (!hasNf50Breadth) {
+                Log.w(TAG, "POLL_WARN: NF50 breadth fetch failed; continuing with empty breadth context")
+                LogBuffer.add('W', TAG, "POLL_WARN: NF50 breadth missing; using empty context")
+            }
             val quotesJson = parallel[1]
             val bnfChainJson = parallel[2]
             val bnfStocksJson = parallel[3]
@@ -793,7 +798,7 @@ class MarketWatchService : Service() {
                 return
             }
 
-            Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null} nfChain=${nfChainJson != null} nf50=${nf50Breadth != null}")
+            Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null} nfChain=${nfChainJson != null} nf50=$hasNf50Breadth")
             LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
 
             if (bnfStocksJson != null) {
