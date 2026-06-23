@@ -881,6 +881,46 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun getLastCrashReport(): String {
+        return try {
+            (LogBuffer.lastCrashReport() ?: JSONObject()).toString()
+        } catch (e: Exception) {
+            JSONObject().put("error", e.message ?: e.javaClass.simpleName).toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun clearLastCrashReport(): Boolean {
+        LogBuffer.clearCrashReport()
+        return true
+    }
+
+    @JavascriptInterface
+    fun reportJsCrash(payloadJson: String?): Boolean {
+        return try {
+            val payload = if (payloadJson.isNullOrBlank()) JSONObject() else JSONObject(payloadJson)
+            val message = buildString {
+                append(payload.optString("type", "JS_ERROR"))
+                val msg = payload.optString("message", "")
+                if (msg.isNotBlank()) append(": $msg")
+                val source = payload.optString("source", "")
+                if (source.isNotBlank()) append(" @ $source")
+                val line = payload.optInt("line", -1)
+                if (line >= 0) append(":$line")
+                val col = payload.optInt("column", -1)
+                if (col >= 0) append(":$col")
+                val stack = payload.optString("stack", "")
+                if (stack.isNotBlank()) append("\n$stack")
+            }
+            LogBuffer.recordCrash("WebViewJS", message, extra = payload)
+            true
+        } catch (e: Exception) {
+            LogBuffer.add('E', TAG, "reportJsCrash failed: ${e.message}")
+            false
+        }
+    }
+
+    @JavascriptInterface
     fun clearLogBuffer(): Boolean {
         LogBuffer.clear()
         LogBuffer.add('I', "NativeBridge", "Log buffer cleared by user")

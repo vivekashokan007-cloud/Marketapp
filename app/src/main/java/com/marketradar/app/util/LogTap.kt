@@ -7,8 +7,11 @@ object LogTap {
         // Crash handler
         val prior = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
-            LogBuffer.add('F', "UncaughtException",
-                "thread=${t.name} ${e::class.java.simpleName}: ${e.message}\n${e.stackTraceToString()}")
+            LogBuffer.recordCrash(
+                "UncaughtException",
+                "thread=${t.name} ${e::class.java.simpleName}: ${e.message}",
+                e
+            )
             prior?.uncaughtException(t, e)
         }
     }

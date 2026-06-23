@@ -25,6 +25,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
 import com.chaquo.python.PyObject
+import com.marketradar.app.util.LogBuffer
 import kotlinx.coroutines.*
 import java.io.File
 import java.util.Calendar
@@ -412,6 +413,11 @@ class MarketMLService : Service() {
                         runDayEvaluation(sessionDate)
                     } catch (t: Throwable) {
                         Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
+                        LogBuffer.recordCrash(
+                            TAG,
+                            "DAY_EVAL_ACTION_FAIL: ${t.message}",
+                            t
+                        )
                     } finally {
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf(startId)
@@ -1324,9 +1330,7 @@ class MarketMLService : Service() {
                 )
                 val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
                 runAggregationPipeline(sessionDate, snapshotsJsonArray, evaluatedOutcomes)
-                scope.launch {
-                    buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
-                }
+                buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
@@ -1351,6 +1355,12 @@ class MarketMLService : Service() {
                 "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $sessionDate — reminder cancelled"
             )
         } catch (e: Exception) {
+            val crashExtra = org.json.JSONObject()
+                .put("session_date", sessionDate)
+                .put("eval_phase", evalPhase)
+                .put("completed_snapshots", completedSnapshots)
+                .put("total_snapshots", totalSnapshots)
+                .put("produced_count", producedCount)
             updateEvaluationJobState(
                 sessionDate = sessionDate,
                 phase = if (evalPhase == "SAVING") "FAILED_SAVE" else if (evalPhase == "RUNNING") "FAILED" else "FAILED",
@@ -1363,6 +1373,7 @@ class MarketMLService : Service() {
                 lastError = e.message ?: "unknown"
             )
             Log.e(TAG, "EVAL_FAIL: ${e.message}", e)
+            LogBuffer.recordCrash(TAG, "EVAL_FAIL[$evalPhase]: ${e.message}", e, crashExtra)
         } finally {
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)

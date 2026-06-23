@@ -16,6 +16,7 @@ class MarketRadarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         try {
+            LogBuffer.init(this)
             val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
             val now = System.currentTimeMillis()
             val lastProcessStart = prefs.getLong("last_process_start_ms", 0L)
@@ -33,6 +34,9 @@ class MarketRadarApp : Application() {
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(this))
             }
+
+            // Always install fatal crash capture regardless of log capture mode.
+            LogTap.install(this)
 
             // ─── Log viewer probe ───
             val probeOk = try {
@@ -61,7 +65,6 @@ class MarketRadarApp : Application() {
                     "PROBE FAILED — falling back to LOGTAP, " +
                     "API=${android.os.Build.VERSION.SDK_INT}, " +
                     "model=${android.os.Build.MODEL}")
-                LogTap.install(this)
                 LogTap.installPythonStreams()
             }
             // Schedule day evaluation reminder at 4:30 PM IST (trading days)
