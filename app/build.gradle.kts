@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b281: use Supabase exact count headers so >1000-row evaluations can complete.
+        // b282: harden service actions and poll fetch handling before signed release.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 281
-        versionName = "2.4.50"
+        versionCode = 282
+        versionName = "2.4.51"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
