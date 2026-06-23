@@ -5223,7 +5223,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.51"
+BRAIN_VERSION = "2.4.52"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9837,6 +9837,7 @@ class NotificationAgent:
                 'verdict_history': [],
                 'best_candidate_id': None,
                 'best_candidate_history': [],
+                'position_alert_keys': [],
             }
         self.last_state = {
             'action': state.get('action', 'WAIT'),
@@ -9848,6 +9849,7 @@ class NotificationAgent:
         }
         self.verdict_history = list(state.get('verdict_history', []) or [])
         self.best_candidate_history = list(state.get('best_candidate_history', []) or [])
+        self.position_alert_keys = set(state.get('position_alert_keys', []) or [])
 
     def _best_executable_candidate(self, result):
         watchlist = result.get('watchlist') or []
@@ -9869,16 +9871,137 @@ class NotificationAgent:
             return cand
         return None
 
-    def process_poll(self, result, ctx):
-        current_time = ctx.get('now_ms', 0)
-        verdict = result.get('verdict', {})
+    def _priority_rank(self, priority):
+        order = {
+            'urgent': 4,
+            'important': 3,
+            'entry': 2,
+            'routine': 1,
+        }
+        return order.get(str(priority or '').lower(), 0)
+
+    def _position_alert_decision_type(self, alert):
+        key = str((alert or {}).get('key') or '')
+        if key.startswith('POS_TARGET_') or key.startswith('POS_BOOK_'):
+            return 'POSITION_EXIT'
+        return 'POSITION_RISK'
+
+    def _position_alert_notification_kind(self, alert):
+        return 'EXIT' if self._position_alert_decision_type(alert) == 'POSITION_EXIT' else 'RISK'
+
+    def _contract_base(self, result, ctx, best, verdict):
         action = verdict.get('action', 'WAIT')
         strategy = verdict.get('strategy')
-        confidence = verdict.get('confidence', 0)
+        confidence = _safe_num(verdict.get('confidence'), 0)
+        lane = None
+        candidate_id = None
+        if isinstance(best, dict):
+            lane = best.get('lane')
+            candidate_id = best.get('id')
+        if not lane:
+            lane = verdict.get('dominant_lane')
+        return {
+            'schema': 1,
+            'decision_type': 'WAIT' if action == 'WAIT' else 'TRADE',
+            'notify_user': False,
+            'notification_kind': 'NONE',
+            'candidate_id': candidate_id,
+            'lane': lane,
+            'strategy_type': strategy,
+            'confidence': round(confidence, 2),
+            'teacher_r_score': None,
+            'title': '',
+            'body': '',
+            'reason_code': 'NO_ACTIONABLE_CHANGE',
+            'reason_text': 'No actionable trading notification for this poll.',
+            'source_mode': 'deterministic_brain',
+            'poll_id': ctx.get('poll_id') or ctx.get('pollCount'),
+            'session_date': ctx.get('session_date') or ctx.get('sessionDate'),
+            'sound_class': 'routine',
+            'alert_key': None,
+        }
+
+    def _build_contract(self, base, **updates):
+        contract = dict(base or {})
+        contract.update(updates)
+        return contract
+
+    def _legacy_alert_to_contract(self, alert, base, decision_type, notification_kind, reason_code, reason_text):
+        return self._build_contract(
+            base,
+            decision_type=decision_type,
+            notify_user=True,
+            notification_kind=notification_kind,
+            title=alert.get('title', ''),
+            body=alert.get('message', ''),
+            reason_code=reason_code,
+            reason_text=reason_text,
+            sound_class=alert.get('sound_class') or self._compute_sound_class(
+                alert.get('urgency'), base.get('confidence', 0)
+            ),
+            alert_key=alert.get('dedupe_bucket'),
+        )
+
+    def _position_alert_to_contract(self, alert, base):
+        return self._build_contract(
+            base,
+            decision_type=self._position_alert_decision_type(alert),
+            notify_user=True,
+            notification_kind=self._position_alert_notification_kind(alert),
+            title=alert.get('title', ''),
+            body=alert.get('body', ''),
+            reason_code=alert.get('key') or 'POSITION_ALERT',
+            reason_text='Open position crossed a risk/exit threshold.',
+            sound_class=alert.get('priority', 'urgent'),
+            alert_key=alert.get('key'),
+            candidate_id=(str(alert.get('key') or '').split('_', 2)[-1] if alert.get('key') else None),
+        )
+
+    def _legacy_payload_from_position_alert(self, alert):
+        return {
+            'type': 'NOTIFICATION',
+            'urgency': str(alert.get('priority', 'urgent')).upper(),
+            'title': alert.get('title', ''),
+            'message': alert.get('body', ''),
+            'timestamp': self.last_state.get('timestamp', 0),
+            'sound_class': alert.get('priority', 'urgent'),
+            'channel': 'positions',
+            'dedupe_bucket': alert.get('key'),
+        }
+
+    def snapshot_state(self):
+        full = dict(self.last_state)
+        full['verdict_history'] = list(self.verdict_history)
+        full['best_candidate_history'] = list(self.best_candidate_history)
+        full['position_alert_keys'] = sorted(self.position_alert_keys)
+        return full
+
+    def process_contract(self, result, ctx):
+        current_time = ctx.get('now_ms', 0)
+        verdict = result.get('verdict', {}) or {}
+        action = verdict.get('action', 'WAIT')
+        strategy = verdict.get('strategy')
+        confidence = _safe_num(verdict.get('confidence'), 0)
         best = self._best_executable_candidate(result)
         best_id = best.get('id') if isinstance(best, dict) else None
         best_type = best.get('type') if isinstance(best, dict) else None
         best_index = best.get('index') if isinstance(best, dict) else None
+        base = self._contract_base(result, ctx, best, verdict)
+
+        position_alerts = []
+        for alert in (result.get('alerts') or []):
+            if isinstance(alert, dict) and alert.get('category') == 'POSITION':
+                position_alerts.append(alert)
+        position_alerts.sort(key=lambda item: self._priority_rank(item.get('priority')), reverse=True)
+        current_position_keys = {
+            str(alert.get('key') or '').strip()
+            for alert in position_alerts
+            if str(alert.get('key') or '').strip()
+        }
+        unseen_position_alerts = [
+            alert for alert in position_alerts
+            if str(alert.get('key') or '').strip() not in self.position_alert_keys
+        ]
 
         self.verdict_history.append(action)
         if len(self.verdict_history) > 6:
@@ -9887,50 +10010,131 @@ class NotificationAgent:
         if len(self.best_candidate_history) > 6:
             self.best_candidate_history.pop(0)
 
-        if current_time < self.last_state['cooldown_until']:
-            return None
+        legacy_notifications = [
+            self._legacy_payload_from_position_alert(alert)
+            for alert in unseen_position_alerts
+        ]
 
-        if self._is_market_choppy():
+        agent_alert = None
+        contract = None
+
+        if current_time < self.last_state['cooldown_until']:
+            contract = self._build_contract(
+                base,
+                reason_code='COOLDOWN_ACTIVE',
+                reason_text='Notification cooldown is active.',
+            )
+        elif self._is_market_choppy():
             self.last_state['cooldown_until'] = current_time + (45 * 60 * 1000)
             self.last_state['timestamp'] = current_time
-            return self._build_alert(
+            agent_alert = self._build_alert(
                 urgency="WARNING",
                 title="Market Whipsawing",
                 message="Detected 3 direction flips in 30 minutes. Muting setup alerts for 45 mins.",
                 sound_class='warning'
             )
-
-        if action == self.last_state['action'] and strategy == self.last_state['strategy'] and best_id == self.last_state.get('best_candidate_id'):
+            contract = self._legacy_alert_to_contract(
+                agent_alert,
+                base,
+                decision_type='WARNING',
+                notification_kind='UPDATE',
+                reason_code='MARKET_WHIPSAW',
+                reason_text='Market whipsaw detected; setup alerts muted temporarily.',
+            )
+        elif action == self.last_state['action'] and strategy == self.last_state['strategy'] and best_id == self.last_state.get('best_candidate_id'):
             if abs(confidence - self.last_state['confidence']) >= 15:
                 msg = f"{best_index or ''} {best_type or strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
                 self._update_state(action, strategy, confidence, current_time, best_id)
-                return self._build_alert("UPDATE", "Conviction Update", msg,
-                                          sound_class='update')
+                agent_alert = self._build_alert("UPDATE", "Conviction Update", msg,
+                                                sound_class='update')
+                contract = self._legacy_alert_to_contract(
+                    agent_alert,
+                    base,
+                    decision_type='POSITION_UPDATE',
+                    notification_kind='UPDATE',
+                    reason_code='CONVICTION_SHIFT',
+                    reason_text='Conviction changed materially for the same setup.',
+                )
             else:
-                return None
-
-        if self.last_state['action'] != 'WAIT' and (action == 'WAIT' or best_id is None):
+                contract = self._build_contract(
+                    base,
+                    decision_type='WAIT' if action == 'WAIT' else 'TRADE',
+                    reason_code='UNCHANGED_SETUP',
+                    reason_text='Same setup and conviction; no new notification.',
+                )
+        elif self.last_state['action'] != 'WAIT' and (action == 'WAIT' or best_id is None):
             if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT'] and \
                len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [None, None]:
                 msg = f"Previous {self.last_state['strategy']} thesis invalidated by contrary price action."
                 self._update_state('WAIT', None, 0, current_time, None)
-                return self._build_alert("INFO", "Setup Invalidated", msg,
-                                          sound_class='routine')
-            return None
-
-        if action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False) and best_id:
+                agent_alert = self._build_alert("INFO", "Setup Invalidated", msg,
+                                                sound_class='routine')
+                contract = self._legacy_alert_to_contract(
+                    agent_alert,
+                    base,
+                    decision_type='INVALIDATED',
+                    notification_kind='UPDATE',
+                    reason_code='SETUP_INVALIDATED',
+                    reason_text='Prior setup became invalid after repeated WAIT confirmation.',
+                )
+            else:
+                contract = self._build_contract(
+                    base,
+                    decision_type='WAIT',
+                    reason_code='WAIT_TRANSITION',
+                    reason_text='Verdict transitioned to WAIT without stable invalidation yet.',
+                )
+        elif action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False) and best_id:
             stable_action = len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]
             stable_best = len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [best_id, best_id]
             if stable_action and stable_best:
                 msg = f"Entry Window OPEN. Best setup: {best_index or ''} {best_type or strategy} with {confidence}% conviction."
                 self._update_state(action, strategy, confidence, current_time, best_id)
-                return self._build_alert(
+                agent_alert = self._build_alert(
                     "HIGH", "New Setup Ready", msg,
                     sound_class=self._compute_sound_class('HIGH', confidence)
                 )
-            return None
+                contract = self._legacy_alert_to_contract(
+                    agent_alert,
+                    base,
+                    decision_type='TRADE',
+                    notification_kind='ENTRY',
+                    reason_code='SETUP_READY',
+                    reason_text='Stable actionable setup confirmed across consecutive polls.',
+                )
+            else:
+                contract = self._build_contract(
+                    base,
+                    decision_type='TRADE',
+                    reason_code='SETUP_NOT_STABLE',
+                    reason_text='Actionable setup exists but has not met stability confirmation yet.',
+                )
+        else:
+            contract = self._build_contract(
+                base,
+                decision_type='WAIT' if action == 'WAIT' else 'TRADE',
+                reason_code='NO_ACTIONABLE_STATE_CHANGE',
+                reason_text='No actionable trading notification for this poll.',
+            )
 
-        return None
+        self.position_alert_keys = current_position_keys
+
+        if agent_alert:
+            legacy_notifications.append(agent_alert)
+
+        if unseen_position_alerts:
+            contract = self._position_alert_to_contract(unseen_position_alerts[0], base)
+
+        return {
+            'brain_notification': contract,
+            'legacy_notifications': legacy_notifications,
+            'agent_state': self.snapshot_state(),
+        }
+
+    def process_poll(self, result, ctx):
+        payload = self.process_contract(result, ctx)
+        legacy = payload.get('legacy_notifications') or []
+        return legacy[0] if legacy else None
 
     def _is_market_choppy(self):
         # Tracks action-level flips only (e.g., 'SELL PREMIUM' ↔ 'BUY PREMIUM').
@@ -9998,12 +10202,53 @@ def notification_agent_process(result, ctx):
 def notification_agent_state_json():
     """Returns the agent's full state including verdict_history for persistence."""
     try:
-        full = dict(_NOTIFICATION_AGENT.last_state)
-        full['verdict_history'] = list(_NOTIFICATION_AGENT.verdict_history)
-        full['best_candidate_history'] = list(_NOTIFICATION_AGENT.best_candidate_history)
-        return json.dumps(full)
+        return json.dumps(_NOTIFICATION_AGENT.snapshot_state())
     except Exception:
         return 'null'
+
+
+def brain_notification_process(result, ctx):
+    """Unified trading-notification contract plus shadow-compatible legacy stream."""
+    try:
+        result = _bridge_json_obj(result) or {}
+        ctx = _bridge_json_obj(ctx) or {}
+        payload = _NOTIFICATION_AGENT.process_contract(result, ctx)
+        return json.dumps(payload)
+    except Exception as e:
+        fallback = {
+            'brain_notification': {
+                'schema': 1,
+                'decision_type': 'WAIT',
+                'notify_user': False,
+                'notification_kind': 'NONE',
+                'candidate_id': None,
+                'lane': None,
+                'strategy_type': None,
+                'confidence': 0,
+                'teacher_r_score': None,
+                'title': '',
+                'body': '',
+                'reason_code': 'PROCESS_ERROR',
+                'reason_text': str(e),
+                'source_mode': 'deterministic_brain',
+                'poll_id': None,
+                'session_date': None,
+                'sound_class': 'urgent',
+                'alert_key': None,
+            },
+            'legacy_notifications': [
+                {
+                    'type': 'NOTIFICATION',
+                    'urgency': 'ERROR',
+                    'title': 'Agent Error',
+                    'message': str(e),
+                    'timestamp': 0,
+                    'sound_class': 'urgent',
+                }
+            ],
+            'agent_state': {},
+        }
+        return json.dumps(fallback)
 
 
 def reset_notification_agent(state_json='null'):

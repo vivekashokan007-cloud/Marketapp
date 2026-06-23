@@ -45,7 +45,6 @@ class MarketWatchService : Service() {
         .build()
     
     private var token401Counter = 0
-    private var lastPositionAlertKeys = mutableSetOf<String>()
 
     private var pollingJob: Job? = null
     private val serviceStartInProgress = AtomicBoolean(false)
@@ -77,6 +76,8 @@ class MarketWatchService : Service() {
         private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
+        private const val UNIFIED_BRAIN_NOTIFICATION_SHADOW = true
+        private const val UNIFIED_BRAIN_NOTIFICATION_CUTOVER = false
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
@@ -2170,50 +2171,7 @@ class MarketWatchService : Service() {
                     Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
                 }
 
-                // Notification Agent: gate setup commentary (position-risk handled separately below)
-                try {
-                    val agentResult = runBlocking {
-                        withTimeoutOrNull(PY_AGENT_TIMEOUT_MS) {
-                            brain.callAttr(
-                                "notification_agent_process",
-                                result,
-                                ctxObj.toString()
-                            ).toString()
-                        }
-                    }
-                    if (agentResult == null) {
-                        Log.w(TAG, "AGENT_TIMEOUT: notification_agent_process exceeded ${PY_AGENT_TIMEOUT_MS}ms")
-                    } else {
-                    if (agentResult != "null" && agentResult.isNotBlank()) {
-                        val agentAlert = JSONObject(agentResult)
-                        val urgency = agentAlert.optString("urgency", "INFO")
-                        val soundClass = agentAlert.optString("sound_class", "")
-                        // Prefer explicit sound_class from brain.py; Kotlin only routes presentation.
-                        val notifType = when {
-                            soundClass.isNotBlank() -> soundClass
-                            urgency == "HIGH" -> "entry"
-                            urgency == "WARNING" -> "warning"
-                            urgency == "UPDATE" -> "update"
-                            urgency == "ERROR" -> "urgent"
-                            urgency == "INFO" -> "routine"
-                            else -> "routine"
-                        }
-                        NotificationHelper.send(this,
-                            agentAlert.optString("title"),
-                            agentAlert.optString("message"),
-                            notifType
-                        )
-                        Log.d(TAG, "AGENT_NOTIFICATION: ${agentAlert.optString("title")}")
-                    }
-                    // Persist full agent state (including verdict_history) for restart survival
-                    val agentStatePython = brain.callAttr("notification_agent_state_json").toString()
-                    if (agentStatePython != "null" && agentStatePython.isNotBlank()) {
-                        prefs.edit().putString("notification_agent_state", agentStatePython).commit()
-                    }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "AGENT_NOTIFICATION_FAIL: ${e.message}")
-                }
+                processUnifiedBrainNotifications(brain, resultObj, ctxObj)
                 
                 // A1: Persist brain results back into ctxObj for next poll cycle
                 try {
@@ -2396,8 +2354,6 @@ class MarketWatchService : Service() {
                 }
                 Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
                 
-                sendPositionRiskAlerts(resultObj)
-                
                 // Phase E: Persist routine alert timestamp if routine alert was fired
                 val alerts = resultObj.optJSONArray("alerts")
                 if (alerts != null) {
@@ -2526,29 +2482,126 @@ class MarketWatchService : Service() {
         return null
     }
 
-    private fun sendPositionRiskAlerts(result: JSONObject) {
-        val alerts = result.optJSONArray("alerts") ?: return
-        val currentPositionKeys = mutableSetOf<String>()
-
-        for (i in 0 until alerts.length()) {
-            val alert = alerts.getJSONObject(i)
-            if (alert.optString("category") != "POSITION") continue
-            val key = alert.optString("key").ifBlank {
-                "${alert.optString("title")}|${alert.optString("body")}|${alert.optString("priority", "urgent")}"
+    private fun processUnifiedBrainNotifications(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject) {
+        try {
+            val rawPayload = runBlocking {
+                withTimeoutOrNull(PY_AGENT_TIMEOUT_MS) {
+                    brain.callAttr(
+                        "brain_notification_process",
+                        resultObj.toString(),
+                        ctxObj.toString()
+                    ).toString()
+                }
             }
-            currentPositionKeys.add(key)
-            if (lastPositionAlertKeys.contains(key)) continue
-            // Critical position-risk alerts bypass notification agent entirely
-            NotificationHelper.send(this,
-                alert.optString("title"),
-                alert.optString("body"),
-                alert.optString("priority", "urgent"),
-                "positions"
+            if (rawPayload == null) {
+                Log.w(TAG, "BRAIN_NOTIFICATION_TIMEOUT: brain_notification_process exceeded ${PY_AGENT_TIMEOUT_MS}ms")
+                return
+            }
+            if (rawPayload == "null" || rawPayload.isBlank()) return
+
+            val payload = JSONObject(rawPayload)
+            val brainNotification = payload.optJSONObject("brain_notification")
+            if (brainNotification != null) {
+                resultObj.put("brain_notification", brainNotification)
+                LogBuffer.add(
+                    'I',
+                    TAG,
+                    "BRAIN_NOTIFICATION_CONTRACT: type=${brainNotification.optString("decision_type")} notify=${brainNotification.optBoolean("notify_user", false)} reason=${brainNotification.optString("reason_code")} key=${brainNotification.optString("alert_key")}"
+                )
+            }
+
+            val agentState = payload.optJSONObject("agent_state")
+            if (agentState != null) {
+                prefs.edit().putString("notification_agent_state", agentState.toString()).commit()
+            }
+
+            val legacyNotifications = payload.optJSONArray("legacy_notifications")
+            val legacyCount = legacyNotifications?.length() ?: 0
+            if (UNIFIED_BRAIN_NOTIFICATION_CUTOVER) {
+                dispatchUnifiedBrainNotification(brainNotification)
+                LogBuffer.add('I', TAG, "BRAIN_NOTIFICATION_MODE: cutover=true legacy_shadow=$legacyCount")
+            } else {
+                if (UNIFIED_BRAIN_NOTIFICATION_SHADOW) {
+                    dispatchLegacyShadowNotifications(legacyNotifications)
+                    LogBuffer.add(
+                        'I',
+                        TAG,
+                        "BRAIN_NOTIFICATION_MODE: cutover=false shadow=true legacy=$legacyCount notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+                    )
+                } else {
+                    LogBuffer.add('I', TAG, "BRAIN_NOTIFICATION_MODE: cutover=false shadow=false legacy=$legacyCount")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")
+        }
+    }
+
+    private fun dispatchLegacyShadowNotifications(alerts: JSONArray?) {
+        if (alerts == null) return
+        for (i in 0 until alerts.length()) {
+            val alert = alerts.optJSONObject(i) ?: continue
+            val notifType = notificationTypeFrom(
+                soundClass = alert.optString("sound_class", ""),
+                urgency = alert.optString("urgency", "INFO")
+            )
+            val channel = alert.optString("channel", "")
+            if (channel.isNotBlank()) {
+                NotificationHelper.send(
+                    this,
+                    alert.optString("title"),
+                    alert.optString("message"),
+                    notifType,
+                    channel
+                )
+            } else {
+                NotificationHelper.send(
+                    this,
+                    alert.optString("title"),
+                    alert.optString("message"),
+                    notifType
+                )
+            }
+            Log.d(TAG, "BRAIN_NOTIFICATION_SHADOW_SEND: ${alert.optString("title")}")
+        }
+    }
+
+    private fun dispatchUnifiedBrainNotification(contract: JSONObject?) {
+        if (contract == null || !contract.optBoolean("notify_user", false)) return
+        val notifType = notificationTypeFrom(
+            soundClass = contract.optString("sound_class", ""),
+            urgency = contract.optString("decision_type", "INFO")
+        )
+        val channel = if (contract.optString("decision_type").startsWith("POSITION")) "positions" else null
+        if (channel != null) {
+            NotificationHelper.send(
+                this,
+                contract.optString("title"),
+                contract.optString("body"),
+                notifType,
+                channel
+            )
+        } else {
+            NotificationHelper.send(
+                this,
+                contract.optString("title"),
+                contract.optString("body"),
+                notifType
             )
         }
+        Log.d(TAG, "BRAIN_NOTIFICATION_SEND: ${contract.optString("title")}")
+    }
 
-        lastPositionAlertKeys.clear()
-        lastPositionAlertKeys.addAll(currentPositionKeys)
+    private fun notificationTypeFrom(soundClass: String, urgency: String): String {
+        return when {
+            soundClass.isNotBlank() -> soundClass
+            urgency == "HIGH" || urgency == "TRADE" -> "entry"
+            urgency == "WARNING" -> "warning"
+            urgency == "UPDATE" || urgency == "POSITION_UPDATE" -> "update"
+            urgency == "ERROR" || urgency.startsWith("POSITION") -> "urgent"
+            urgency == "INFO" -> "routine"
+            else -> "routine"
+        }
     }
 
     private fun currentIstMonthKey(): String = todayIstDate().take(7)

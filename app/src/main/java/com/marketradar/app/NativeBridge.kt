@@ -138,7 +138,12 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun sendNotification(title: String, body: String, type: String) {
-        NotificationHelper.send(context, title, body, type)
+        if (!type.startsWith("ops_")) {
+            Log.w(TAG, "sendNotification blocked for non-operational type=$type title=$title")
+            LogBuffer.add('W', TAG, "JS_NOTIFICATION_BLOCKED: type=$type title=$title")
+            return
+        }
+        NotificationHelper.send(context, title, body, type.removePrefix("ops_"))
     }
 
     // --- NEW: Data Push (JS -> Kotlin) ---
