@@ -21,6 +21,7 @@ object SupabaseClient {
     // Supabase REST caps page payloads at 1000 rows in this project, so using
     // a larger requested limit causes offset-based pagination gaps.
     private const val CHAIN_PAGE_SIZE = 1000
+    private const val EVALUATION_SNAPSHOT_PAGE_SIZE = 12
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -350,6 +351,18 @@ object SupabaseClient {
         return out
     }
 
+    private fun fetchPagedArrayFromTables(
+        paths: List<String>,
+        pageSize: Int,
+        maxPages: Int
+    ): JSONArray {
+        for (path in paths) {
+            val rows = fetchPagedArray(path, pageSize = pageSize, maxPages = maxPages)
+            if (rows.length() > 0) return rows
+        }
+        return JSONArray()
+    }
+
     private fun normalizedChainRow(src: JSONObject): JSONObject? {
         val indexKey = src.optString("index_key")
             .ifBlank { src.optString("index") }
@@ -671,19 +684,23 @@ object SupabaseClient {
 
     fun fetchEvaluationSnapshots(date: String): JSONArray {
         val select = "id,poll_ts,primary_candidate_json,context_json,top_candidates_json,is_labelable,session_date"
-        val exact = fetchArrayFromTables(
+        val exact = fetchPagedArrayFromTables(
             listOf(
                 "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
                 "ml_poll_sequences?session_date=eq.$date&select=$select&order=poll_ts.desc"
-            )
+            ),
+            pageSize = EVALUATION_SNAPSHOT_PAGE_SIZE,
+            maxPages = 80
         )
         if (exact.length() > 0) return exact
 
-        val recent = fetchArrayFromTables(
+        val recent = fetchPagedArrayFromTables(
             listOf(
-                "ml_brain_snapshots?select=$select&order=poll_ts.desc&limit=500",
-                "ml_poll_sequences?select=$select&order=poll_ts.desc&limit=500"
-            )
+                "ml_brain_snapshots?select=$select&order=poll_ts.desc",
+                "ml_poll_sequences?select=$select&order=poll_ts.desc"
+            ),
+            pageSize = EVALUATION_SNAPSHOT_PAGE_SIZE,
+            maxPages = 80
         )
         return filterRowsByIstSessionDate(recent, date)
     }
