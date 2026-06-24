@@ -723,10 +723,23 @@ class MarketWatchService : Service() {
 
         val today = todayIstDate()
         val doneToday = prefs.getString("evaluation_done_date", "") == today
-        val runningToday = prefs.getString("evaluation_running_date", "") == today
+        var runningToday = prefs.getString("evaluation_running_date", "") == today
         val handoffTs = prefs.getLong(DAY_EVAL_HANDOFF_TS_KEY, 0L)
         val handoffDate = prefs.getString(DAY_EVAL_HANDOFF_DATE_KEY, "") ?: ""
         val alreadyHandedOff = prefs.getBoolean("hasDayEvalRun", false)
+        val runningStartedMs = prefs.getLong("evaluation_job_updated_at_ms", 0L)
+        val runningExpired = runningToday && (
+            runningStartedMs <= 0L ||
+            (nowMs - runningStartedMs) > MarketMLService.EVAL_STALE_AFTER_MS
+        )
+        if (runningExpired) {
+            prefs.edit()
+                .remove("evaluation_running_date")
+                .remove("evaluation_job_updated_at_ms")
+                .commit()
+            runningToday = false
+            Log.w(TAG, "DAY_EVAL_RUNNING_STATE_RESET: startedMs=$runningStartedMs staleMs=${if (runningStartedMs > 0L) nowMs - runningStartedMs else -1L}")
+        }
         val handoffExpired = handoffTs > 0L && (nowMs - handoffTs) > DAY_EVAL_HANDOFF_STALE_MS
         val shouldRetryHandoff = alreadyHandedOff && !runningToday && (handoffExpired || handoffDate != today)
         if (shouldRetryHandoff) {

@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b289: page evaluation snapshot fetches to avoid Supabase timeout.
+        // b290: recover stale day evaluation running state and force post-crash retry.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 289
-        versionName = "2.4.58"
+        versionCode = 290
+        versionName = "2.4.59"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

@@ -1423,13 +1423,20 @@ class MarketMLService : Service() {
     private fun clearPostCloseHandoffState(reason: String) {
         val hadLatch = prefs.getBoolean("hasDayEvalRun", false)
         val hadTs = prefs.contains("day_eval_handoff_ts")
-        if (!hadLatch && !hadTs) return
+        val hadRunning = prefs.getString("evaluation_running_date", "") == todayIstDate()
+        if (!hadLatch && !hadTs && !hadRunning) return
         val result = prefs.edit()
             .putBoolean("hasDayEvalRun", false)
             .remove("day_eval_handoff_ts")
             .remove("day_eval_handoff_date")
+            .remove("evaluation_running_date")
+            .remove("evaluation_job_updated_at_ms")
+            .putLong("evaluation_job_updated_at_ms", 0L)
             .commit()
-        Log.i(TAG, "DAY_EVAL_HANDOFF_STATE_CLEARED: reason=$reason hadLatch=$hadLatch hadTs=$hadTs commit=$result")
+        Log.i(
+            TAG,
+            "DAY_EVAL_HANDOFF_STATE_CLEARED: reason=$reason hadLatch=$hadLatch hadTs=$hadTs hadRunning=$hadRunning commit=$result"
+        )
     }
 
     // ── Batch 6: daily/weekly/monthly aggregation loop ───────────────────────
