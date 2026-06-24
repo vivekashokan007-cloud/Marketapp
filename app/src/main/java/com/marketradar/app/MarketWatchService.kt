@@ -2120,7 +2120,7 @@ class MarketWatchService : Service() {
                             withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
                                 brain.callAttr(
                                     "take_poll_snapshot",
-                                    result,
+                                    resultObj.toString(),
                                     ctxObj.toString(),
                                     pollsJson
                                 ).toString()
@@ -2156,8 +2156,18 @@ class MarketWatchService : Service() {
                                     catch (_: Exception) { /* leave as-is — don't drop the row */ }
                                 }
                             }
+                            val snapshotSessionDate = snapObj.optString(
+                                "session_date",
+                                ctxObj.optString("today_ist", todayIstDate())
+                            ).ifBlank { todayIstDate() }
+                            EvaluationLocalCache.appendBrainSnapshot(this@MarketWatchService, snapshotSessionDate, snapObj)
                             serviceScope.launch(Dispatchers.IO) {
                                 val snapshotSaved = SupabaseClient.saveBrainSnapshot(snapObj)
+                                LogBuffer.add(
+                                    if (snapshotSaved) 'I' else 'E',
+                                    TAG,
+                                    "ML_BRAIN_SNAPSHOT_SAVE: saved=$snapshotSaved date=$snapshotSessionDate pollTs=${snapObj.optString("poll_ts")}"
+                                )
                                 if (snapshotSaved) {
                                     try {
                                         val factPack = resultObj.optJSONObject("elephant_fact_pack")

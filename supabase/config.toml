@@ -1,0 +1,16 @@
+project_id = "fdynxkfxohbnlvayouje"
+
+[functions.evaluator-jobs-create]
+verify_jwt = false
+
+[functions.evaluator-jobs-run]
+verify_jwt = false
+
+[functions.evaluator-jobs-status]
+verify_jwt = false
+
+[functions.evaluator-jobs-proposals]
+verify_jwt = false
+
+[functions.evaluator-proposals-review]
+verify_jwt = false

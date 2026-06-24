@@ -630,13 +630,31 @@ class MarketMLService : Service() {
             snapshotsFile.length() > 0L &&
             chainFile.length() > 0L
         ) {
-            return@withContext Pair(snapshotsFile, chainFile)
+            val preparedCount = try {
+                org.json.JSONObject(completeFile.readText()).optInt("snapshot_count", -1)
+            } catch (_: Exception) {
+                -1
+            }
+            if (preparedCount > 0) {
+                return@withContext Pair(snapshotsFile, chainFile)
+            }
+            Log.w(TAG, "EVAL_INPUT_CACHE_INVALID: prepared snapshot_count=$preparedCount date=$sessionDate")
+            snapshotsFile.delete()
+            completeFile.delete()
         }
 
         completeFile.delete()
         chainFile.delete()
         File("${chainFile.absolutePath}.tmp").delete()
-        val snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(sessionDate)
+        var snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(sessionDate)
+        if (snapshotsJsonArray.length() == 0) {
+            val localSnapshots = EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
+            if (localSnapshots.length() > 0) {
+                Log.w(TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
+                LogBuffer.add('W', TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
+                snapshotsJsonArray = localSnapshots
+            }
+        }
         val legKeys = extractEvaluationLegKeys(snapshotsJsonArray)
         if (snapshotsJsonArray.length() > 0 && legKeys.isEmpty()) {
             throw IllegalStateException("EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotsJsonArray.length()} snapshots.")
@@ -1140,6 +1158,13 @@ class MarketMLService : Service() {
             producedCount = 0
 
             if (totalSnapshots == 0) {
+                val pollCount = prefs.getInt("poll_count", 0)
+                val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+                if (lastPollDate == sessionDate && pollCount > 0) {
+                    throw IllegalStateException(
+                        "EVAL_NO_SNAPSHOTS_AFTER_POLLING: $sessionDate has $pollCount polls but no evaluation snapshots were prepared."
+                    )
+                }
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
                 prefs.edit().putString("evaluation_done_date", sessionDate).commit()
                 updateEvaluationJobState(

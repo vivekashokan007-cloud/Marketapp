@@ -555,7 +555,8 @@ object SupabaseClient {
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
         val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")
-        if (postToFirstWorkingTable(tables, body.toString())) return true
+        val fullResult = postToFirstWorkingTableDetailed(tables, body.toString())
+        if (fullResult.success) return true
 
         // Older schemas may not yet have the expanded context columns. Keep
         // capture alive with the original minimum payload rather than dropping
@@ -578,7 +579,36 @@ object SupabaseClient {
         ).forEach { key ->
             if (body.has(key)) minimal.put(key, body.get(key))
         }
-        return postToFirstWorkingTable(tables, minimal.toString())
+        val minimalResult = postToFirstWorkingTableDetailed(tables, minimal.toString())
+        if (!minimalResult.success) {
+            val details = buildString {
+                append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: fullTable=")
+                append(fullResult.table ?: "unknown")
+                append(" fullCode=")
+                append(fullResult.code ?: -1)
+                append(" fullMessage=")
+                append(fullResult.message ?: fullResult.exceptionMessage ?: "")
+                if (!fullResult.errorBody.isNullOrBlank()) {
+                    append(" fullBody=")
+                    append(fullResult.errorBody.take(800))
+                }
+                append(" minimalTable=")
+                append(minimalResult.table ?: "unknown")
+                append(" minimalCode=")
+                append(minimalResult.code ?: -1)
+                append(" minimalMessage=")
+                append(minimalResult.message ?: minimalResult.exceptionMessage ?: "")
+                if (!minimalResult.errorBody.isNullOrBlank()) {
+                    append(" minimalBody=")
+                    append(minimalResult.errorBody.take(800))
+                }
+                append(" payloadBytes=")
+                append(body.toString().toByteArray().size)
+            }
+            LogBuffer.add('E', TAG, details)
+            Log.e(TAG, details)
+        }
+        return minimalResult.success
     }
 
     /**

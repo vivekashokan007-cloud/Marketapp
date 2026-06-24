@@ -2,12 +2,14 @@
 """
 historical_replay_harness.py
 
-Stage 0.2 correctness gate for Market Radar.
+Stage 0.2 correctness gate plus Stage 1.1/1.2 local harness for Market Radar.
 
 This script replays one saved live day against the shipped brain.py and checks
 that the replayed candidate menu matches the stored snapshot candidates.
 It also compares the compact rejected-candidate sample/stats captured in the
-snapshot context.
+snapshot context. It can also walk stored sessions and persist raw teacher
+outcomes into a local SQLite database, then aggregate those outcomes into local
+strategy-weight buckets.
 
 The harness is intentionally read-only. It does not train or mutate state.
 """
@@ -17,10 +19,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +45,7 @@ SUPABASE_SERVICE_KEY = (
     or ""
 )
 PAGE_SIZE = 1000
+SNAPSHOT_PAGE_SIZE = 20
 POST_ANALYZE_CTX_KEYS = {
     "alerts",
     "elephant_fact_pack",
@@ -289,26 +294,35 @@ def _fetch_snapshots(session_date: str) -> list[dict[str, Any]]:
     )
     table_names = ["ml_brain_snapshots", "ml_poll_sequences"]
     for table in table_names:
-        rows = _supabase_get(
-            table,
-            {
-                "session_date": f"eq.{session_date}",
-                "select": select,
-                "order": "poll_ts.asc",
-            },
-        )
+        try:
+            rows = _supabase_get(
+                table,
+                {
+                    "session_date": f"eq.{session_date}",
+                    "select": select,
+                    "order": "poll_ts.asc",
+                    "limit": SNAPSHOT_PAGE_SIZE,
+                },
+            )
+        except RuntimeError as exc:
+            print(f"[fetch] {table} exact failed: {exc}")
+            continue
         if rows:
             return [row for row in rows if isinstance(row, dict)]
 
     for table in table_names:
-        rows = _supabase_get(
-            table,
-            {
-                "select": select,
-                "order": "poll_ts.asc",
-                "limit": 500,
-            },
-        )
+        try:
+            rows = _supabase_get(
+                table,
+                {
+                    "select": select,
+                    "order": "poll_ts.asc",
+                    "limit": SNAPSHOT_PAGE_SIZE,
+                },
+            )
+        except RuntimeError as exc:
+            print(f"[fetch] {table} fallback failed: {exc}")
+            continue
         filtered = []
         for row in rows:
             if not isinstance(row, dict):
@@ -324,6 +338,44 @@ def _fetch_snapshots(session_date: str) -> list[dict[str, Any]]:
             return filtered
 
     return []
+
+
+def _fetch_snapshots_for_range(date_from: str, date_to: str) -> list[dict[str, Any]]:
+    select = ",".join(
+        [
+            "id",
+            "poll_ts",
+            "session_date",
+            "context_json",
+            "top_candidates_json",
+            "primary_candidate_json",
+            "poll_summary_json",
+            "market_forces_json",
+            "verdict_json",
+            "is_labelable",
+        ]
+    )
+    rows = _supabase_get(
+        "ml_brain_snapshots",
+        {
+            "session_date": [f"gte.{date_from}", f"lte.{date_to}"],
+            "select": select,
+            "order": "session_date.asc,poll_ts.asc",
+        },
+    )
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _fetch_chain_rows_for_date(session_date: str) -> list[dict[str, Any]]:
+    rows = _supabase_get(
+        "ml_option_chain_snapshots",
+        {
+            "session_date": f"eq.{session_date}",
+            "select": "*",
+            "order": "poll_ts.asc",
+        },
+    )
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _strip_snapshot_artifacts(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -398,6 +450,245 @@ def _load_live_rejected(ctx: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]
     if not isinstance(stats, dict):
         stats = {}
     return rejected, stats
+
+
+def _parse_iso_date(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _derive_dte_bucket(session_date: str, expiry: Any) -> str:
+    session_dt = _parse_iso_date(session_date)
+    expiry_dt = _parse_iso_date(expiry)
+    if not session_dt or not expiry_dt:
+        return "unknown"
+    dte = max((expiry_dt.date() - session_dt.date()).days, 0)
+    if dte <= 0:
+        return "DTE_0"
+    if dte == 1:
+        return "DTE_1"
+    if dte <= 3:
+        return "DTE_2_3"
+    if dte <= 7:
+        return "DTE_4_7"
+    return "DTE_8_PLUS"
+
+
+def _derive_vix_bucket(snapshot: dict[str, Any]) -> str:
+    ctx = _json_load(snapshot.get("context_json"), {})
+    if not isinstance(ctx, dict):
+        return "unknown"
+    try:
+        vix = float(ctx.get("vix"))
+    except Exception:
+        return "unknown"
+    if vix < 12:
+        return "VIX_LT_12"
+    if vix < 14:
+        return "VIX_12_14"
+    if vix < 16:
+        return "VIX_14_16"
+    if vix < 18:
+        return "VIX_16_18"
+    return "VIX_18_PLUS"
+
+
+def _sqlite_connect(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historical_outcomes (
+            session_date TEXT NOT NULL,
+            snapshot_id TEXT,
+            poll_ts TEXT,
+            candidate_id TEXT,
+            role TEXT,
+            rank_in_snapshot INTEGER,
+            lane TEXT,
+            index_key TEXT,
+            trade_mode TEXT,
+            strategy_type TEXT,
+            label_version TEXT,
+            teacher_config_version TEXT,
+            canonical_won INTEGER,
+            outcome_h2 INTEGER,
+            won INTEGER,
+            sim_pnl_h2 REAL,
+            managed_pnl REAL,
+            managed_gross_pnl REAL,
+            friction_cost REAL,
+            exit_reason TEXT,
+            exit_step INTEGER,
+            exit_ts TEXT,
+            path_points_count INTEGER,
+            r_multiple REAL,
+            captured_pct REAL,
+            is_success INTEGER,
+            risk_at_entry REAL,
+            regime_bucket TEXT,
+            tp_threshold REAL,
+            sl_threshold REAL,
+            break_even_win_rate_pct REAL,
+            vix_bucket TEXT,
+            dte_bucket TEXT,
+            varsity_tier TEXT,
+            premium_edge REAL,
+            credit_width_ratio REAL,
+            sigma_otm REAL,
+            PRIMARY KEY (session_date, snapshot_id, candidate_id, role)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historical_walk_errors (
+            session_date TEXT NOT NULL,
+            snapshot_id TEXT,
+            scope TEXT,
+            candidate_id TEXT,
+            error TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historical_walk_runs (
+            run_started_at TEXT NOT NULL,
+            date_from TEXT NOT NULL,
+            date_to TEXT NOT NULL,
+            snapshot_count INTEGER NOT NULL,
+            outcome_count INTEGER NOT NULL,
+            error_count INTEGER NOT NULL
+        )
+        """
+    )
+    return conn
+
+
+def _outcome_poll_ts(snap: dict[str, Any]) -> str | None:
+    ctx = _json_load(snap.get("context_json"), {})
+    if isinstance(ctx, dict):
+        latest = ctx.get("snapshot_latest_poll")
+        if isinstance(latest, dict):
+            return latest.get("t") or latest.get("poll_ts") or snap.get("poll_ts")
+    return snap.get("poll_ts")
+
+
+def _snapshot_candidate_meta(snapshot: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    meta: dict[str, dict[str, Any]] = {}
+    primary = _json_load(snapshot.get("primary_candidate_json"), {})
+    if isinstance(primary, dict) and primary.get("id"):
+        meta[str(primary.get("id"))] = primary
+    ctx = _json_load(snapshot.get("context_json"), {})
+    generated = []
+    if isinstance(ctx, dict):
+        generated = ctx.get("snapshot_generated_candidates")
+    if not isinstance(generated, list) or not generated:
+        generated = _json_load(snapshot.get("top_candidates_json"), [])
+    if isinstance(generated, list):
+        for cand in generated:
+            if isinstance(cand, dict) and cand.get("id"):
+                meta[str(cand.get("id"))] = cand
+    return meta
+
+
+def _persist_walk_batch(
+    conn: sqlite3.Connection,
+    session_date: str,
+    snapshot: dict[str, Any],
+    outcomes: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> None:
+    poll_ts = _outcome_poll_ts(snapshot)
+    vix_bucket = _derive_vix_bucket(snapshot)
+    candidate_meta = _snapshot_candidate_meta(snapshot)
+    outcome_rows = []
+    for row in outcomes:
+        cand_meta = candidate_meta.get(str(row.get("candidate_id") or ""), {})
+        dte_bucket = _derive_dte_bucket(session_date, cand_meta.get("expiry"))
+        outcome_rows.append(
+            (
+                session_date,
+                str(row.get("snapshot_id") or ""),
+                poll_ts,
+                row.get("candidate_id"),
+                row.get("role"),
+                row.get("rank_in_snapshot"),
+                row.get("lane"),
+                row.get("index_key"),
+                row.get("trade_mode"),
+                row.get("strategy_type"),
+                row.get("label_version"),
+                row.get("teacher_config_version"),
+                row.get("canonical_won"),
+                row.get("outcome_h2"),
+                row.get("won"),
+                row.get("sim_pnl_h2"),
+                row.get("managed_pnl"),
+                row.get("managed_gross_pnl"),
+                row.get("friction_cost"),
+                row.get("exit_reason"),
+                row.get("exit_step"),
+                row.get("exit_ts"),
+                row.get("path_points_count"),
+                row.get("r_multiple"),
+                row.get("captured_pct"),
+                row.get("is_success"),
+                row.get("risk_at_entry"),
+                row.get("regime_bucket"),
+                row.get("tp_threshold"),
+                row.get("sl_threshold"),
+                row.get("break_even_win_rate_pct"),
+                vix_bucket,
+                dte_bucket,
+                row.get("varsity_tier"),
+                row.get("premium_edge"),
+                row.get("credit_width_ratio"),
+                row.get("sigma_otm"),
+            )
+        )
+    if outcome_rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO historical_outcomes (
+                session_date, snapshot_id, poll_ts, candidate_id, role, rank_in_snapshot,
+                lane, index_key, trade_mode, strategy_type, label_version, teacher_config_version,
+                canonical_won, outcome_h2, won, sim_pnl_h2, managed_pnl, managed_gross_pnl,
+                friction_cost, exit_reason, exit_step, exit_ts, path_points_count, r_multiple,
+                captured_pct, is_success, risk_at_entry, regime_bucket, tp_threshold, sl_threshold,
+                break_even_win_rate_pct, vix_bucket, dte_bucket, varsity_tier, premium_edge, credit_width_ratio, sigma_otm
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            outcome_rows,
+        )
+
+    error_rows = []
+    for row in errors:
+        error_rows.append(
+            (
+                session_date,
+                str(row.get("snapshot_id") or snapshot.get("id") or ""),
+                row.get("scope"),
+                row.get("candidate_id"),
+                row.get("error") or "unknown_error",
+            )
+        )
+    if error_rows:
+        conn.executemany(
+            """
+            INSERT INTO historical_walk_errors (
+                session_date, snapshot_id, scope, candidate_id, error
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            error_rows,
+        )
 
 
 def verify_day(session_date: str) -> int:
@@ -567,20 +858,121 @@ def verify_day(session_date: str) -> int:
 
 
 def walk_range(date_from: str, date_to: str, out_db: str = "historical_outcomes.sqlite") -> int:
-    raise NotImplementedError("Stage 1 walk is not wired yet; run --verify-day first.")
+    snapshots = _fetch_snapshots_for_range(date_from, date_to)
+    if not snapshots:
+        print(f"[walk] no snapshots found for {date_from}..{date_to}")
+        return 2
+
+    teacher_config = brain._teacher_default_config()
+    snapshots_by_date: dict[str, list[dict[str, Any]]] = {}
+    for snap in snapshots:
+        session_date = str(snap.get("session_date") or "").strip()
+        if not session_date:
+            continue
+        snapshots_by_date.setdefault(session_date, []).append(snap)
+
+    db_path = str((REPO_ROOT / out_db).resolve()) if not os.path.isabs(out_db) else out_db
+    conn = _sqlite_connect(db_path)
+    total_snapshots = 0
+    total_outcomes = 0
+    total_errors = 0
+
+    try:
+        for session_date in sorted(snapshots_by_date.keys()):
+            day_snaps = snapshots_by_date[session_date]
+            chain_rows = _fetch_chain_rows_for_date(session_date)
+            print(
+                f"[walk] session={session_date} snapshots={len(day_snaps)} chain_rows={len(chain_rows)}"
+            )
+            day_outcomes = 0
+            day_errors = 0
+            for idx, snap in enumerate(day_snaps, start=1):
+                result = brain._evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
+                outcomes = result.get("outcomes") or []
+                errors = result.get("errors") or []
+                _persist_walk_batch(conn, session_date, snap, outcomes, errors)
+                total_snapshots += 1
+                total_outcomes += len(outcomes)
+                total_errors += len(errors)
+                day_outcomes += len(outcomes)
+                day_errors += len(errors)
+                if idx % 25 == 0 or idx == len(day_snaps):
+                    print(
+                        f"[walk]   {idx}/{len(day_snaps)} snapshots processed outcomes={day_outcomes} errors={day_errors}"
+                    )
+            conn.commit()
+
+        conn.execute(
+            """
+            INSERT INTO historical_walk_runs (
+                run_started_at, date_from, date_to, snapshot_count, outcome_count, error_count
+            ) VALUES (datetime('now'), ?, ?, ?, ?, ?)
+            """,
+            (date_from, date_to, total_snapshots, total_outcomes, total_errors),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(
+        f"[walk] complete db={db_path} snapshots={total_snapshots} outcomes={total_outcomes} errors={total_errors}"
+    )
+    return 0
 
 
 def aggregate(out_db: str = "historical_outcomes.sqlite") -> int:
-    raise NotImplementedError("Stage 1 aggregation is not wired yet; run --verify-day first.")
+    db_path = str((REPO_ROOT / out_db).resolve()) if not os.path.isabs(out_db) else out_db
+    conn = _sqlite_connect(db_path)
+    try:
+        conn.execute("DROP TABLE IF EXISTS strategy_weights_local")
+        conn.execute(
+            """
+            CREATE TABLE strategy_weights_local AS
+            SELECT
+                strategy_type,
+                regime_bucket,
+                vix_bucket,
+                dte_bucket,
+                COUNT(*) AS n,
+                ROUND(AVG(COALESCE(r_multiple, 0.0)), 4) AS avg_r,
+                ROUND(AVG(CASE WHEN is_success = 1 THEN 1.0 ELSE 0.0 END) * 100.0, 2) AS success_rate_pct,
+                CASE WHEN COUNT(*) < 30 THEN 1 ELSE 0 END AS low_confidence
+            FROM historical_outcomes
+            WHERE role IN ('primary', 'secondary')
+            GROUP BY strategy_type, regime_bucket, vix_bucket, dte_bucket
+            ORDER BY n DESC, avg_r DESC
+            """
+        )
+        top_rows = conn.execute(
+            """
+            SELECT strategy_type, regime_bucket, vix_bucket, dte_bucket, n, avg_r, success_rate_pct, low_confidence
+            FROM strategy_weights_local
+            ORDER BY n DESC, avg_r DESC
+            LIMIT 15
+            """
+        ).fetchall()
+        total_rows = conn.execute("SELECT COUNT(*) FROM strategy_weights_local").fetchone()[0]
+    finally:
+        conn.commit()
+        conn.close()
+
+    print(f"[aggregate] db={db_path} buckets={total_rows}")
+    for row in top_rows:
+        print(
+            "[aggregate] "
+            f"strategy={row[0]} regime={row[1]} vix={row[2]} dte={row[3]} "
+            f"n={row[4]} avg_r={row[5]} sr={row[6]} low_confidence={row[7]}"
+        )
+    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Market Radar historical replay harness.")
     parser.add_argument("--verify-day", metavar="YYYY-MM-DD", help="Replay a saved live day and compare parity.")
-    parser.add_argument("--walk", action="store_true", help="Placeholder for Stage 1 day-range walk.")
+    parser.add_argument("--walk", action="store_true", help="Run the Stage 1.1 historical teacher walk into local SQLite.")
     parser.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD")
-    parser.add_argument("--aggregate", action="store_true", help="Placeholder for Stage 1 aggregation.")
+    parser.add_argument("--aggregate", action="store_true", help="Aggregate walked outcomes into local strategy-weight buckets.")
     args = parser.parse_args()
 
     if args.verify_day:
