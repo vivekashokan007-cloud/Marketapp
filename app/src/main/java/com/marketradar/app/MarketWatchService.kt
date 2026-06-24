@@ -98,6 +98,9 @@ class MarketWatchService : Service() {
         private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
         private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
         private const val GENERATED_CANDIDATE_PERSIST_CAP = 50
+        private const val DAY_EVAL_HANDOFF_TS_KEY = "day_eval_handoff_ts"
+        private const val DAY_EVAL_HANDOFF_DATE_KEY = "day_eval_handoff_date"
+        private const val DAY_EVAL_HANDOFF_STALE_MS = 4 * 60 * 60 * 1000L
         
         private const val KOTAK_KEY_PREF = "kotak_instrument_key"
         private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
@@ -721,19 +724,50 @@ class MarketWatchService : Service() {
         val today = todayIstDate()
         val doneToday = prefs.getString("evaluation_done_date", "") == today
         val runningToday = prefs.getString("evaluation_running_date", "") == today
+        val handoffTs = prefs.getLong(DAY_EVAL_HANDOFF_TS_KEY, 0L)
+        val handoffDate = prefs.getString(DAY_EVAL_HANDOFF_DATE_KEY, "") ?: ""
         val alreadyHandedOff = prefs.getBoolean("hasDayEvalRun", false)
+        val handoffExpired = handoffTs > 0L && (nowMs - handoffTs) > DAY_EVAL_HANDOFF_STALE_MS
+        val shouldRetryHandoff = alreadyHandedOff && !runningToday && (handoffExpired || handoffDate != today)
+        if (shouldRetryHandoff) {
+            prefs.edit()
+                .putBoolean("hasDayEvalRun", false)
+                .remove(DAY_EVAL_HANDOFF_TS_KEY)
+                .remove(DAY_EVAL_HANDOFF_DATE_KEY)
+                .commit()
+            Log.w(TAG, "DAY_EVAL_HANDOFF_RESET: expired=$handoffExpired handoffDate=$handoffDate handoffTs=$handoffTs")
+        }
+        val currentHandedOff = if (alreadyHandedOff) !shouldRetryHandoff else false
 
-        if (!alreadyHandedOff && !doneToday && !runningToday) {
+        if (!currentHandedOff && !doneToday && !runningToday) {
             try {
                 val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
                     action = "ACTION_DAY_EVALUATION"
+                    putExtra("session_date", today)
                 }
                 startForegroundService(mlService)
-                prefs.edit().putBoolean("hasDayEvalRun", true).apply()
-                Log.i(TAG, "DAY_EVAL_HANDOFF: launched post-close evaluation")
+                prefs.edit()
+                    .putBoolean("hasDayEvalRun", true)
+                    .putLong(DAY_EVAL_HANDOFF_TS_KEY, nowMs)
+                    .putString(DAY_EVAL_HANDOFF_DATE_KEY, today)
+                    .commit()
+                Log.i(TAG, "DAY_EVAL_HANDOFF: launched post-close evaluation for $today")
+                LogBuffer.add('I', TAG, "DAY_EVAL_HANDOFF: session=$today handoffTs=$nowMs")
             } catch (e: Exception) {
                 Log.e(TAG, "DAY_EVAL_HANDOFF_FAIL: ${e.message}")
+                prefs.edit()
+                    .putBoolean("hasDayEvalRun", false)
+                    .remove(DAY_EVAL_HANDOFF_TS_KEY)
+                    .remove(DAY_EVAL_HANDOFF_DATE_KEY)
+                    .commit()
+                LogBuffer.add('E', TAG, "DAY_EVAL_HANDOFF_FAIL: ${e.message}")
             }
+        } else {
+            val remainingMs = if (alreadyHandedOff && handoffTs > 0L) maxOf(0L, DAY_EVAL_HANDOFF_STALE_MS - (nowMs - handoffTs)) else 0L
+            Log.i(
+                TAG,
+                "DAY_EVAL_HANDOFF_SKIP: hasDayEvalRun=$alreadyHandedOff doneToday=$doneToday runningToday=$runningToday handoffDate=$handoffDate remainingMs=$remainingMs"
+            )
         }
 
         MarketOpenScheduler.scheduleNextMarketOpen(this)

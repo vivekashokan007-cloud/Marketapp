@@ -288,12 +288,11 @@ object SupabaseClient {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)
         queryParams.add("select=id")
+        queryParams.add("limit=0")
         val url = "$table?${queryParams.joinToString("&")}"
         return try {
             val request = getBaseRequest(url)
                 .addHeader("Prefer", "count=exact")
-                .addHeader("Range-Unit", "items")
-                .addHeader("Range", "0-0")
                 .get()
                 .build()
             client.newCall(request).execute().use { response ->

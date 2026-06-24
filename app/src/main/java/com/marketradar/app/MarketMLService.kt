@@ -326,7 +326,15 @@ class MarketMLService : Service() {
     private val prefs by lazy { getSharedPreferences("market_radar", Context.MODE_PRIVATE) }
     private val istTz: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
 
+    override fun onCreate() {
+        super.onCreate()
+        Log.i(TAG, "MarketMLService created: pid=${android.os.Process.myPid()}")
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
         // B3: Must promote to foreground within 5s on Android 8+
         val channel = android.app.NotificationChannel(
             "ml_training", "ML Engine Updates",
@@ -337,11 +345,12 @@ class MarketMLService : Service() {
         
         val notification = NotificationCompat.Builder(this, "ml_training")
             .setContentTitle("ML Engine")
-            .setContentText(when (intent?.action) {
+            .setContentText(when (action) {
                 "ACTION_CHECK_RETRAIN" -> "Checking retrain readiness"
                 "ACTION_CONFIRM_TRAIN", "ACTION_TRAIN_NIGHTLY" -> "Training ML model"
                 "ACTION_ONLINE_UPDATE" -> "Updating from closed trade"
                 "ACTION_TRAIN_TEMPORAL" -> "Training temporal model"
+                "ACTION_DAY_EVALUATION" -> "Running day evaluation"
                 else -> "Working"
             })
             .setSmallIcon(android.R.drawable.ic_menu_manage)
@@ -350,8 +359,9 @@ class MarketMLService : Service() {
             .build()
         
         startForeground(2002, notification)
+        Log.i(TAG, "onStartCommand: action=$action sessionDate=${intent?.getStringExtra("session_date")}")
         
-        when (intent?.action) {
+        when (action) {
             "ACTION_CHECK_RETRAIN" -> {
                 scope.launch {
                     try {
@@ -407,9 +417,10 @@ class MarketMLService : Service() {
                 }
             }
             "ACTION_DAY_EVALUATION" -> {
-                val sessionDate = intent.getStringExtra("session_date")
+                val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
                 scope.launch {
                     try {
+                        Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate")
                         runDayEvaluation(sessionDate)
                     } catch (t: Throwable) {
                         Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
@@ -419,6 +430,7 @@ class MarketMLService : Service() {
                             t
                         )
                     } finally {
+                        clearPostCloseHandoffState(reason = "day_evaluation_action")
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf(startId)
                     }
@@ -437,9 +449,8 @@ class MarketMLService : Service() {
         return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
-
     override fun onDestroy() {
+        clearPostCloseHandoffState(reason = "service_destroy")
         scope.cancel()
         super.onDestroy()
     }
@@ -1112,6 +1123,7 @@ class MarketMLService : Service() {
         var completedSnapshots = 0
         var producedCount = 0
         var brain: PyObject? = null
+        Log.i(TAG, "EVAL_START: sessionDate=$sessionDate runId=$runId")
         try {
             if (prefs.getString("evaluation_done_date", null) == sessionDate) {
                 updateEvaluationJobState(
@@ -1404,7 +1416,20 @@ class MarketMLService : Service() {
                 brain?.callAttr("evaluation_job_finalize", runId)
             } catch (_: Exception) {
             }
+            clearPostCloseHandoffState(reason = "day_evaluation_complete")
         }
+    }
+
+    private fun clearPostCloseHandoffState(reason: String) {
+        val hadLatch = prefs.getBoolean("hasDayEvalRun", false)
+        val hadTs = prefs.contains("day_eval_handoff_ts")
+        if (!hadLatch && !hadTs) return
+        val result = prefs.edit()
+            .putBoolean("hasDayEvalRun", false)
+            .remove("day_eval_handoff_ts")
+            .remove("day_eval_handoff_date")
+            .commit()
+        Log.i(TAG, "DAY_EVAL_HANDOFF_STATE_CLEARED: reason=$reason hadLatch=$hadLatch hadTs=$hadTs commit=$result")
     }
 
     // ── Batch 6: daily/weekly/monthly aggregation loop ───────────────────────
