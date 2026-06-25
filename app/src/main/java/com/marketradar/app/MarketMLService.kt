@@ -21,6 +21,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import android.util.JsonReader
+import android.util.JsonToken
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.chaquo.python.Python
@@ -562,6 +564,155 @@ class MarketMLService : Service() {
             }
             else -> null
         }
+    }
+
+    private fun streamJsonArrayFile(file: File, onRow: (org.json.JSONObject) -> Unit) {
+        if (!file.exists() || file.length() <= 0L) return
+        file.bufferedReader().use { buffered ->
+            JsonReader(buffered).use { reader ->
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    onRow(readJsonObject(reader))
+                }
+                reader.endArray()
+            }
+        }
+    }
+
+    private fun readJsonObject(reader: JsonReader): org.json.JSONObject {
+        val obj = org.json.JSONObject()
+        reader.beginObject()
+        while (reader.hasNext()) {
+            obj.put(reader.nextName(), readJsonValue(reader))
+        }
+        reader.endObject()
+        return obj
+    }
+
+    private fun readJsonArray(reader: JsonReader): org.json.JSONArray {
+        val arr = org.json.JSONArray()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            arr.put(readJsonValue(reader))
+        }
+        reader.endArray()
+        return arr
+    }
+
+    private fun readJsonValue(reader: JsonReader): Any? {
+        return when (reader.peek()) {
+            JsonToken.BEGIN_OBJECT -> readJsonObject(reader)
+            JsonToken.BEGIN_ARRAY -> readJsonArray(reader)
+            JsonToken.STRING -> reader.nextString()
+            JsonToken.BOOLEAN -> reader.nextBoolean()
+            JsonToken.NULL -> {
+                reader.nextNull()
+                org.json.JSONObject.NULL
+            }
+            JsonToken.NUMBER -> {
+                val raw = reader.nextString()
+                raw.toLongOrNull() ?: raw.toDoubleOrNull() ?: raw
+            }
+            else -> {
+                reader.skipValue()
+                org.json.JSONObject.NULL
+            }
+        }
+    }
+
+    private fun buildSnapshotLabelableMap(file: File): Map<Int, Boolean> {
+        val map = mutableMapOf<Int, Boolean>()
+        streamJsonArrayFile(file) { row ->
+            val sid = row.optInt("id", -1)
+            if (sid > 0) {
+                map[sid] = row.optBoolean("is_labelable", false)
+            }
+        }
+        return map
+    }
+
+    private fun compactTeacherResearchCandidate(raw: Any?): org.json.JSONObject? {
+        val cand = parseJsonObject(raw) ?: return null
+        val compact = org.json.JSONObject()
+        val keys = arrayOf(
+            "id",
+            "type",
+            "strategy_type",
+            "width",
+            "premiumEdge",
+            "creditWidthRatio",
+            "sigmaOTM"
+        )
+        for (key in keys) {
+            val value = cand.opt(key)
+            if (value != null && value != org.json.JSONObject.NULL) {
+                compact.put(key, value)
+            }
+        }
+        return if (compact.length() > 0) compact else null
+    }
+
+    private fun compactTeacherResearchCandidates(raw: Any?): org.json.JSONArray {
+        val source = parseJsonArray(raw) ?: return org.json.JSONArray()
+        val compact = org.json.JSONArray()
+        for (i in 0 until source.length()) {
+            compactTeacherResearchCandidate(source.opt(i))?.let(compact::put)
+        }
+        return compact
+    }
+
+    private fun compactTeacherResearchSnapshot(snapshot: org.json.JSONObject): org.json.JSONObject {
+        val compact = org.json.JSONObject()
+        compact.put("id", snapshot.opt("id"))
+        compact.put("action", snapshot.opt("action"))
+        compact.put("strategy", snapshot.opt("strategy"))
+
+        compactTeacherResearchCandidate(snapshot.opt("primary_candidate_json"))?.let {
+            compact.put("primary_candidate_json", it.toString())
+        }
+
+        val context = parseJsonObject(snapshot.opt("context_json")) ?: org.json.JSONObject()
+        val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
+            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
+            ?: org.json.JSONArray()
+        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates"))
+
+        val compactContext = org.json.JSONObject()
+        val scalarKeys = arrayOf("vix", "bnfSpot", "nfSpot", "significant_move")
+        for (key in scalarKeys) {
+            val value = context.opt(key)
+            if (value != null && value != org.json.JSONObject.NULL) {
+                compactContext.put(key, value)
+            }
+        }
+
+        parseJsonObject(context.opt("gap"))?.let { gap ->
+            val gapType = gap.opt("type")
+            if (gapType != null && gapType != org.json.JSONObject.NULL) {
+                compactContext.put("gap", org.json.JSONObject().put("type", gapType))
+            }
+        }
+
+        val compactGenerated = compactTeacherResearchCandidates(generated)
+        compactContext.put("snapshot_generated_candidates", compactGenerated)
+        if (rejected != null && rejected.length() > 0) {
+            compactContext.put(
+                "snapshot_rejected_candidates",
+                org.json.JSONArray().put(org.json.JSONObject().put("present", true))
+            )
+        }
+
+        compact.put("context_json", compactContext.toString())
+        compact.put("top_candidates_json", compactGenerated.toString())
+        return compact
+    }
+
+    private fun buildTeacherResearchSnapshotPayload(file: File): org.json.JSONArray {
+        val compact = org.json.JSONArray()
+        streamJsonArrayFile(file) { row ->
+            compact.put(compactTeacherResearchSnapshot(row))
+        }
+        return compact
     }
 
     private fun optStringAny(obj: org.json.JSONObject, vararg names: String): String {
@@ -1409,9 +1560,8 @@ class MarketMLService : Service() {
                     persistedCount = saveResult.persistedCount,
                     running = true
                 )
-                val snapshotsJsonArray = readJsonArrayFile(snapshotsFile)
-                runAggregationPipeline(sessionDate, snapshotsJsonArray, evaluatedOutcomes)
-                buildTeacherResearchReport(brain, sessionDate, snapshotsJsonArray, evaluatedOutcomes)
+                runAggregationPipeline(sessionDate, snapshotsFile, evaluatedOutcomes)
+                buildTeacherResearchReport(brain, sessionDate, snapshotsFile, evaluatedOutcomes)
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
@@ -1486,17 +1636,11 @@ class MarketMLService : Service() {
     // ── Batch 6: daily/weekly/monthly aggregation loop ───────────────────────
     private suspend fun runAggregationPipeline(
         sessionDate: String,
-        snapshotsJsonArray: org.json.JSONArray,
+        snapshotsFile: File,
         evaluatedOutcomes: org.json.JSONArray
     ) = withContext(Dispatchers.IO) {
         try {
-            val snapshotIdToLabelable = mutableMapOf<Int, Boolean>()
-            for (i in 0 until snapshotsJsonArray.length()) {
-                val s = snapshotsJsonArray.optJSONObject(i) ?: continue
-                val sid = s.optInt("id", -1)
-                if (sid <= 0) continue
-                snapshotIdToLabelable[sid] = s.optBoolean("is_labelable", false)
-            }
+            val snapshotIdToLabelable = buildSnapshotLabelableMap(snapshotsFile)
 
             var labeledRows = 0
             var wins = 0
@@ -1548,15 +1692,16 @@ class MarketMLService : Service() {
     private fun buildTeacherResearchReport(
         brain: PyObject?,
         sessionDate: String,
-        snapshotsJsonArray: org.json.JSONArray,
+        snapshotsFile: File,
         evaluatedOutcomes: org.json.JSONArray
     ) {
         if (brain == null) return
         try {
+            val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
             val reportRaw = brain.callAttr(
                 "session_teacher_research_report",
                 sessionDate,
-                snapshotsJsonArray.toString(),
+                compactSnapshots.toString(),
                 evaluatedOutcomes.toString()
             ).toString()
             val report = org.json.JSONObject(reportRaw)
