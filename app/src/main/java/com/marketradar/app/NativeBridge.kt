@@ -250,6 +250,10 @@ class NativeBridge(private val context: Context) {
         if (skipReason != null && skipReason != JSONObject.NULL) {
             compactContext.put("snapshot_generation_skip_reason", skipReason)
         }
+        val skipReasons = parseJsonArray(context.opt("snapshot_generation_skip_reasons"))
+        if (skipReasons != null && skipReasons.length() > 0) {
+            compactContext.put("snapshot_generation_skip_reasons", skipReasons)
+        }
 
         compact.put("context_json", compactContext.toString())
         compact.put("top_candidates_json", compactGenerated.toString())

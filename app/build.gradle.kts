@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b296: preserve fuller candidate evidence in teacher research and report rebuild paths.
+        // b297: align live and rebuild teacher-report payloads, including labelable and skip metadata.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 296
-        versionName = "2.4.65"
+        versionCode = 297
+        versionName = "2.4.66"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

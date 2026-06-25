@@ -687,6 +687,7 @@ class MarketMLService : Service() {
         compact.put("id", snapshot.opt("id"))
         compact.put("action", snapshot.opt("action"))
         compact.put("strategy", snapshot.opt("strategy"))
+        compact.put("is_labelable", snapshot.opt("is_labelable"))
 
         compactTeacherResearchCandidate(snapshot.opt("primary_candidate_json"))?.let {
             compact.put("primary_candidate_json", it.toString())
@@ -727,6 +728,10 @@ class MarketMLService : Service() {
         val skipReason = context.opt("snapshot_generation_skip_reason")
         if (skipReason != null && skipReason != org.json.JSONObject.NULL) {
             compactContext.put("snapshot_generation_skip_reason", skipReason)
+        }
+        val skipReasons = parseJsonArray(context.opt("snapshot_generation_skip_reasons"))
+        if (skipReasons != null && skipReasons.length() > 0) {
+            compactContext.put("snapshot_generation_skip_reasons", skipReasons)
         }
 
         compact.put("context_json", compactContext.toString())
