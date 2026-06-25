@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b292: avoid aggregation/report OOM by streaming snapshot reuse after evaluation.
+        // b293: restore post-evaluation artifacts via native report rebuild and local snapshot fallback.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 292
-        versionName = "2.4.61"
+        versionCode = 293
+        versionName = "2.4.62"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

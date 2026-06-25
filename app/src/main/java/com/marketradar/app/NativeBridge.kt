@@ -10,9 +10,12 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.util.Base64
+import android.util.JsonReader
+import android.util.JsonToken
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.widget.Toast
+import com.chaquo.python.Python
 import java.io.File
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -70,6 +73,225 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun defaultTradeMode(): String = "intraday"
+
+    private fun readJsonArrayFile(file: File): JSONArray {
+        if (!file.exists()) return JSONArray()
+        val raw = try {
+            file.readText().trim()
+        } catch (_: Exception) {
+            ""
+        }
+        if (raw.isBlank()) return JSONArray()
+        return try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            JSONArray()
+        }
+    }
+
+    private fun parseJsonObject(value: Any?): JSONObject? {
+        return when (value) {
+            is JSONObject -> value
+            is String -> {
+                val trimmed = value.trim()
+                if (!trimmed.startsWith("{")) null else try {
+                    JSONObject(trimmed)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun parseJsonArray(value: Any?): JSONArray? {
+        return when (value) {
+            is JSONArray -> value
+            is String -> {
+                val trimmed = value.trim()
+                if (!trimmed.startsWith("[")) null else try {
+                    JSONArray(trimmed)
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            else -> null
+        }
+    }
+
+    private fun streamJsonArrayFile(file: File, onRow: (JSONObject) -> Unit) {
+        if (!file.exists() || file.length() <= 0L) return
+        file.bufferedReader().use { buffered ->
+            JsonReader(buffered).use { reader ->
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    onRow(readJsonObject(reader))
+                }
+                reader.endArray()
+            }
+        }
+    }
+
+    private fun readJsonObject(reader: JsonReader): JSONObject {
+        val obj = JSONObject()
+        reader.beginObject()
+        while (reader.hasNext()) {
+            obj.put(reader.nextName(), readJsonValue(reader))
+        }
+        reader.endObject()
+        return obj
+    }
+
+    private fun readJsonArray(reader: JsonReader): JSONArray {
+        val arr = JSONArray()
+        reader.beginArray()
+        while (reader.hasNext()) {
+            arr.put(readJsonValue(reader))
+        }
+        reader.endArray()
+        return arr
+    }
+
+    private fun readJsonValue(reader: JsonReader): Any? {
+        return when (reader.peek()) {
+            JsonToken.BEGIN_OBJECT -> readJsonObject(reader)
+            JsonToken.BEGIN_ARRAY -> readJsonArray(reader)
+            JsonToken.STRING -> reader.nextString()
+            JsonToken.BOOLEAN -> reader.nextBoolean()
+            JsonToken.NULL -> {
+                reader.nextNull()
+                JSONObject.NULL
+            }
+            JsonToken.NUMBER -> {
+                val raw = reader.nextString()
+                raw.toLongOrNull() ?: raw.toDoubleOrNull() ?: raw
+            }
+            else -> {
+                reader.skipValue()
+                JSONObject.NULL
+            }
+        }
+    }
+
+    private fun compactTeacherResearchCandidate(raw: Any?): JSONObject? {
+        val cand = parseJsonObject(raw) ?: return null
+        val compact = JSONObject()
+        val keys = arrayOf("id", "type", "strategy_type", "width", "premiumEdge", "creditWidthRatio", "sigmaOTM")
+        for (key in keys) {
+            val value = cand.opt(key)
+            if (value != null && value != JSONObject.NULL) {
+                compact.put(key, value)
+            }
+        }
+        return if (compact.length() > 0) compact else null
+    }
+
+    private fun compactTeacherResearchCandidates(raw: Any?): JSONArray {
+        val source = parseJsonArray(raw) ?: return JSONArray()
+        val compact = JSONArray()
+        for (i in 0 until source.length()) {
+            compactTeacherResearchCandidate(source.opt(i))?.let(compact::put)
+        }
+        return compact
+    }
+
+    private fun compactTeacherResearchSnapshot(snapshot: JSONObject): JSONObject {
+        val compact = JSONObject()
+        compact.put("id", snapshot.opt("id"))
+        compact.put("action", snapshot.opt("action"))
+        compact.put("strategy", snapshot.opt("strategy"))
+        compact.put("is_labelable", snapshot.opt("is_labelable"))
+
+        compactTeacherResearchCandidate(snapshot.opt("primary_candidate_json"))?.let {
+            compact.put("primary_candidate_json", it.toString())
+        }
+
+        val context = parseJsonObject(snapshot.opt("context_json")) ?: JSONObject()
+        val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
+            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
+            ?: JSONArray()
+        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates"))
+
+        val compactContext = JSONObject()
+        val scalarKeys = arrayOf("vix", "bnfSpot", "nfSpot", "significant_move")
+        for (key in scalarKeys) {
+            val value = context.opt(key)
+            if (value != null && value != JSONObject.NULL) {
+                compactContext.put(key, value)
+            }
+        }
+        parseJsonObject(context.opt("gap"))?.let { gap ->
+            val gapType = gap.opt("type")
+            if (gapType != null && gapType != JSONObject.NULL) {
+                compactContext.put("gap", JSONObject().put("type", gapType))
+            }
+        }
+
+        val compactGenerated = compactTeacherResearchCandidates(generated)
+        compactContext.put("snapshot_generated_candidates", compactGenerated)
+        if (rejected != null && rejected.length() > 0) {
+            compactContext.put(
+                "snapshot_rejected_candidates",
+                JSONArray().put(JSONObject().put("present", true))
+            )
+        }
+
+        compact.put("context_json", compactContext.toString())
+        compact.put("top_candidates_json", compactGenerated.toString())
+        return compact
+    }
+
+    private fun buildTeacherResearchSnapshotPayload(file: File): JSONArray {
+        val compact = JSONArray()
+        streamJsonArrayFile(file) { row ->
+            compact.put(compactTeacherResearchSnapshot(row))
+        }
+        return compact
+    }
+
+    private fun loadLocalSavedSnapshots(date: String, limit: Int = 200): JSONArray {
+        val file = File(MarketMLService.evaluationSnapshotsPath(context, date))
+        if (!file.exists() || file.length() <= 0L) return JSONArray()
+        val rows = JSONArray()
+        streamJsonArrayFile(file) { row ->
+            if (rows.length() < limit) rows.put(row)
+        }
+        return rows
+    }
+
+    private fun rebuildTeacherResearchReportIfPossible(targetDate: String): JSONObject? {
+        return try {
+            val snapshotsFile = File(MarketMLService.evaluationSnapshotsPath(context, targetDate))
+            val outcomesFile = File(MarketMLService.evaluationOutcomesPath(context, targetDate))
+            if (!snapshotsFile.exists() || !outcomesFile.exists()) return null
+            val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
+            val outcomes = readJsonArrayFile(outcomesFile)
+            if (compactSnapshots.length() == 0 || outcomes.length() == 0) return null
+
+            val py = Python.getInstance()
+            val brain = py.getModule("brain")
+            val reportRaw = brain.callAttr(
+                "session_teacher_research_report",
+                targetDate,
+                compactSnapshots.toString(),
+                outcomes.toString()
+            ).toString()
+            val report = JSONObject(reportRaw)
+            if (!report.optBoolean("ok", false)) return null
+
+            val outFile = File(MarketMLService.evaluationResearchReportPath(context, targetDate))
+            outFile.parentFile?.mkdirs()
+            outFile.writeText(report.toString())
+            prefs.edit()
+                .putString("teacher_research_report_date", targetDate)
+                .putString("teacher_research_report", report.toString())
+                .commit()
+            report
+        } catch (e: Exception) {
+            Log.e(TAG, "rebuildTeacherResearchReportIfPossible failed", e)
+            null
+        }
+    }
 
     private fun isTradeModeExplicit(): Boolean = prefs.getBoolean(PREF_TRADE_MODE_EXPLICIT, false)
 
@@ -1646,11 +1868,20 @@ class NativeBridge(private val context: Context) {
         val cachedDate = prefs.getString("teacher_research_report_date", "") ?: ""
         val cached = prefs.getString("teacher_research_report", "") ?: ""
         if (cachedDate == targetDate && cached.trim().startsWith("{")) {
-            return cached
+            try {
+                val cachedObj = JSONObject(cached)
+                if (cachedObj.optBoolean("ok", false)) {
+                    return cached
+                }
+            } catch (_: Exception) {
+            }
         }
         return try {
             val file = java.io.File(MarketMLService.evaluationResearchReportPath(context, targetDate))
             if (!file.exists()) {
+                rebuildTeacherResearchReportIfPossible(targetDate)?.let { rebuilt ->
+                    return rebuilt.toString()
+                }
                 return JSONObject()
                     .put("ok", false)
                     .put("session_date", targetDate)
@@ -1678,10 +1909,15 @@ class NativeBridge(private val context: Context) {
     fun getMLBrainSnapshots(limit: Int): String {
         val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
         return try {
-            SupabaseClient.fetchBrainSnapshots(targetDate).toString()
+            val remote = SupabaseClient.fetchBrainSnapshots(targetDate)
+            if (remote.length() > 0) {
+                remote.toString()
+            } else {
+                loadLocalSavedSnapshots(targetDate, limit.coerceAtLeast(1)).toString()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "getMLBrainSnapshots failed", e)
-            "[]"
+            loadLocalSavedSnapshots(targetDate, limit.coerceAtLeast(1)).toString()
         }
     }
 
