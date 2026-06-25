@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b294: treat no-candidate post-close sessions as clean empty evaluations instead of retry failures.
+        // b295: show clean empty-session ML semantics for valid zero-candidate evaluation days.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 294
-        versionName = "2.4.63"
+        versionCode = 295
+        versionName = "2.4.64"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
