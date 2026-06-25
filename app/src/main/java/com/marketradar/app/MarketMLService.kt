@@ -638,15 +638,36 @@ class MarketMLService : Service() {
             "id",
             "type",
             "strategy_type",
+            "index",
+            "lane",
+            "expiry",
             "width",
             "premiumEdge",
             "creditWidthRatio",
-            "sigmaOTM"
+            "sigmaOTM",
+            "sellStrike",
+            "buyStrike",
+            "sellType",
+            "buyType",
+            "sellStrike2",
+            "buyStrike2",
+            "sellType2",
+            "buyType2",
+            "netPremium",
+            "maxLoss",
+            "entryAction",
+            "reason_code",
+            "reject_reason"
         )
         for (key in keys) {
             val value = cand.opt(key)
             if (value != null && value != org.json.JSONObject.NULL) {
                 compact.put(key, value)
+            }
+        }
+        parseJsonArray(cand.opt("legs"))?.let { legs ->
+            if (legs.length() > 0) {
+                compact.put("legs", legs)
             }
         }
         return if (compact.length() > 0) compact else null
@@ -675,7 +696,8 @@ class MarketMLService : Service() {
         val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: org.json.JSONArray()
-        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates"))
+        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
+            ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
 
         val compactContext = org.json.JSONObject()
         val scalarKeys = arrayOf("vix", "bnfSpot", "nfSpot", "significant_move")
@@ -694,12 +716,17 @@ class MarketMLService : Service() {
         }
 
         val compactGenerated = compactTeacherResearchCandidates(generated)
+        val compactRejected = compactTeacherResearchCandidates(rejected)
         compactContext.put("snapshot_generated_candidates", compactGenerated)
-        if (rejected != null && rejected.length() > 0) {
-            compactContext.put(
-                "snapshot_rejected_candidates",
-                org.json.JSONArray().put(org.json.JSONObject().put("present", true))
-            )
+        if (compactRejected.length() > 0) {
+            compactContext.put("snapshot_rejected_candidates", compactRejected)
+        }
+        parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let { stats ->
+            compactContext.put("snapshot_rejected_candidate_stats", stats)
+        }
+        val skipReason = context.opt("snapshot_generation_skip_reason")
+        if (skipReason != null && skipReason != org.json.JSONObject.NULL) {
+            compactContext.put("snapshot_generation_skip_reason", skipReason)
         }
 
         compact.put("context_json", compactContext.toString())

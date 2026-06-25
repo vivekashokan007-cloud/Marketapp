@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b295: show clean empty-session ML semantics for valid zero-candidate evaluation days.
+        // b296: preserve fuller candidate evidence in teacher research and report rebuild paths.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 295
-        versionName = "2.4.64"
+        versionCode = 296
+        versionName = "2.4.65"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
