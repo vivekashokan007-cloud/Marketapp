@@ -213,6 +213,14 @@ object SupabaseClient {
         val capped: Boolean = false
     )
 
+    data class SnapshotStreamResult(
+        val source: String,
+        val count: Int,
+        val pageCount: Int,
+        val complete: Boolean,
+        val completePath: String
+    )
+
     private data class ChainSource(
         val path: String,
         val source: String,
@@ -681,27 +689,83 @@ object SupabaseClient {
         return filterRowsByIstSessionDate(recent, date)
     }
 
-    fun fetchEvaluationSnapshots(date: String): JSONArray {
+    fun fetchEvaluationSnapshots(
+        date: String,
+        outputFile: File,
+        onRow: ((JSONObject) -> Unit)? = null,
+        maxPages: Int = 80
+    ): SnapshotStreamResult {
         val select = "id,poll_ts,primary_candidate_json,context_json,top_candidates_json,is_labelable,session_date"
-        val exact = fetchPagedArrayFromTables(
-            listOf(
-                "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc",
-                "ml_poll_sequences?session_date=eq.$date&select=$select&order=poll_ts.desc"
-            ),
-            pageSize = EVALUATION_SNAPSHOT_PAGE_SIZE,
-            maxPages = 80
+        val sources = listOf(
+            "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc" to false,
+            "ml_poll_sequences?session_date=eq.$date&select=$select&order=poll_ts.desc" to false,
+            "ml_brain_snapshots?select=$select&order=poll_ts.desc" to true,
+            "ml_poll_sequences?select=$select&order=poll_ts.desc" to true
         )
-        if (exact.length() > 0) return exact
 
-        val recent = fetchPagedArrayFromTables(
-            listOf(
-                "ml_brain_snapshots?select=$select&order=poll_ts.desc",
-                "ml_poll_sequences?select=$select&order=poll_ts.desc"
-            ),
-            pageSize = EVALUATION_SNAPSHOT_PAGE_SIZE,
-            maxPages = 80
-        )
-        return filterRowsByIstSessionDate(recent, date)
+        for ((basePath, requiresDateFallbackFilter) in sources) {
+            val writerFile = outputFile
+            writerFile.parentFile?.mkdirs()
+            var total = 0
+            var pages = 0
+            var offset = 0
+            var reachedEnd = false
+            var complete = false
+
+            try {
+                writerFile.writeText("")
+            } catch (_: Exception) {
+            }
+
+            writerFile.bufferedWriter().use { writer ->
+                writer.write("[")
+                var first = true
+
+                while (pages < maxPages) {
+                    val separator = if (basePath.contains("?")) "&" else "?"
+                    val page = fetchArray("$basePath${separator}limit=$EVALUATION_SNAPSHOT_PAGE_SIZE&offset=$offset") ?: break
+                    if (page.length() == 0) {
+                        reachedEnd = true
+                        complete = true
+                        break
+                    }
+
+                    pages += 1
+                    for (i in 0 until page.length()) {
+                        val row = page.optJSONObject(i) ?: continue
+                        if (requiresDateFallbackFilter && !rowBelongsToIstSessionDate(row, date)) continue
+
+                        if (!first) writer.write(",")
+                        writer.write(row.toString())
+                        writer.flush()
+                        first = false
+                        total += 1
+
+                        try {
+                            onRow?.invoke(row)
+                        } catch (_: Exception) {
+                        }
+                    }
+
+                    if (page.length() < EVALUATION_SNAPSHOT_PAGE_SIZE) {
+                        reachedEnd = true
+                        complete = true
+                        break
+                    }
+
+                    offset += page.length()
+                }
+
+                writer.write("]")
+            }
+
+            if (reachedEnd && total > 0) {
+                val finalPath = writerFile.absolutePath
+                return SnapshotStreamResult(basePath, total, pages, complete, finalPath)
+            }
+        }
+
+        return SnapshotStreamResult("none", 0, 0, false, "")
     }
 
     fun fetchChainSlices(date: String): JSONArray {

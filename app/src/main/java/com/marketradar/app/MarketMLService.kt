@@ -589,27 +589,22 @@ class MarketMLService : Service() {
     private fun extractEvaluationLegKeys(snapshots: org.json.JSONArray): List<SupabaseClient.EvaluationLegKey> {
         val keys = linkedSetOf<SupabaseClient.EvaluationLegKey>()
 
-        fun addLeg(
-            cand: org.json.JSONObject,
-            strikeNames: Array<String>,
-            typeNames: Array<String>,
-            indexKey: String,
-            expiry: String
-        ) {
-            val strike = optDoubleAny(cand, *strikeNames)
-            val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
-            if (strike.isNaN() || optionType.isBlank()) return
-            keys += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
-        }
-
         fun addCandidate(raw: Any?) {
             val cand = parseJsonObject(raw) ?: return
             val indexKey = optStringAny(cand, "index", "index_key", "underlying").ifBlank { "BNF" }
             val expiry = optStringAny(cand, "expiry", "expiry_date")
-            addLeg(cand, arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"), indexKey, expiry)
-            addLeg(cand, arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"), indexKey, expiry)
-            addLeg(cand, arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"), indexKey, expiry)
-            addLeg(cand, arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"), indexKey, expiry)
+
+            fun addLeg(strikeNames: Array<String>, typeNames: Array<String>) {
+                val strike = optDoubleAny(cand, *strikeNames)
+                val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
+                if (strike.isNaN() || optionType.isBlank()) return
+                keys += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
+            }
+
+            addLeg(arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"))
+            addLeg(arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"))
+            addLeg(arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"))
+            addLeg(arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"))
         }
 
         for (i in 0 until snapshots.length()) {
@@ -628,6 +623,40 @@ class MarketMLService : Service() {
         }
 
         return keys.toList()
+    }
+
+    private fun collectEvaluationLegKeysFromSnapshot(
+        snapshot: org.json.JSONObject,
+        out: MutableCollection<SupabaseClient.EvaluationLegKey>
+    ) {
+        fun addCandidate(raw: Any?) {
+            val cand = parseJsonObject(raw) ?: return
+            val indexKey = optStringAny(cand, "index", "index_key", "underlying").ifBlank { "BNF" }
+            val expiry = optStringAny(cand, "expiry", "expiry_date")
+
+            fun addLeg(strikeNames: Array<String>, typeNames: Array<String>) {
+                val strike = optDoubleAny(cand, *strikeNames)
+                val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
+                if (strike.isNaN() || optionType.isBlank()) return
+                out += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
+            }
+
+            addLeg(arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"))
+            addLeg(arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"))
+            addLeg(arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"))
+            addLeg(arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"))
+        }
+
+        addCandidate(snapshot.opt("primary_candidate_json"))
+
+        val context = parseJsonObject(snapshot.opt("context_json"))
+        val generated = parseJsonArray(context?.opt("snapshot_generated_candidates"))
+            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
+        if (generated != null) {
+            for (j in 0 until generated.length()) {
+                addCandidate(generated.opt(j))
+            }
+        }
     }
 
     private suspend fun ensureEvaluationInputFiles(sessionDate: String): Pair<File, File> = withContext(Dispatchers.IO) {
@@ -657,47 +686,62 @@ class MarketMLService : Service() {
         completeFile.delete()
         chainFile.delete()
         File("${chainFile.absolutePath}.tmp").delete()
-        var snapshotsJsonArray = SupabaseClient.fetchEvaluationSnapshots(sessionDate)
-        if (snapshotsJsonArray.length() == 0) {
+        val snapshotLegKeys = linkedSetOf<SupabaseClient.EvaluationLegKey>()
+        val snapshotResult = SupabaseClient.fetchEvaluationSnapshots(
+            sessionDate,
+            snapshotsFile,
+            onRow = { snap ->
+                collectEvaluationLegKeysFromSnapshot(snap, snapshotLegKeys)
+            },
+            maxPages = 80
+        )
+
+        var snapshotsJsonArray = org.json.JSONArray()
+        if (snapshotResult.count == 0) {
             val localSnapshots = EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
             if (localSnapshots.length() > 0) {
                 Log.w(TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
                 LogBuffer.add('W', TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
                 snapshotsJsonArray = localSnapshots
+                snapshotLegKeys.addAll(extractEvaluationLegKeys(snapshotsJsonArray))
             }
         }
-        val legKeys = extractEvaluationLegKeys(snapshotsJsonArray)
-        if (snapshotsJsonArray.length() > 0 && legKeys.isEmpty()) {
-            throw IllegalStateException("EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotsJsonArray.length()} snapshots.")
+
+        val snapshotCount = if (snapshotResult.count > 0) snapshotResult.count else snapshotsJsonArray.length()
+        val legKeys = snapshotLegKeys.toList()
+        if (snapshotCount > 0 && legKeys.isEmpty()) {
+            throw IllegalStateException("EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotCount} snapshots.")
         }
         updateEvaluationJobState(
             sessionDate = sessionDate,
             phase = "PREPARING",
-            message = "Preparing teacher evaluation for ${snapshotsJsonArray.length()} snapshots and ${legKeys.size} candidate legs...",
-            totalSnapshots = snapshotsJsonArray.length(),
+            message = "Preparing teacher evaluation for ${snapshotCount} snapshots and ${legKeys.size} candidate legs...",
+            totalSnapshots = snapshotCount,
             completedSnapshots = 0,
             running = true
         )
-        Log.i(TAG, "EVAL_SNAPSHOTS_WRITE_START: snapshots=${snapshotsJsonArray.length()} date=$sessionDate")
+        Log.i(TAG, "EVAL_SNAPSHOTS_WRITE_START: snapshots=$snapshotCount date=$sessionDate")
         updateEvaluationJobState(
             sessionDate = sessionDate,
             phase = "PREPARING",
-            message = "Writing ${snapshotsJsonArray.length()} snapshot rows to disk before teacher evaluation...",
-            totalSnapshots = snapshotsJsonArray.length(),
+            message = "Writing ${snapshotCount} snapshot rows to disk before teacher evaluation...",
+            totalSnapshots = snapshotCount,
             completedSnapshots = 0,
             running = true
         )
-        writeJsonArrayFileStreamed(snapshotsFile, snapshotsJsonArray)
+        if (!snapshotsFile.exists() || snapshotsFile.length() == 0L) {
+            writeJsonArrayFileStreamed(snapshotsFile, snapshotsJsonArray)
+        }
         Log.i(
             TAG,
-            "EVAL_SNAPSHOTS_WRITE_DONE: snapshots=${snapshotsJsonArray.length()} bytes=${snapshotsFile.length()} date=$sessionDate"
+            "EVAL_SNAPSHOTS_WRITE_DONE: snapshots=${snapshotCount} bytes=${snapshotsFile.length()} date=$sessionDate"
         )
         val chainFeed = SupabaseClient.writeEvaluationChainCandlesForLegs(sessionDate, legKeys, chainFile) { source, pages, rows ->
             updateEvaluationJobState(
                 sessionDate = sessionDate,
                 phase = "PREPARING",
                 message = "Fetching relevant chain paths from $source: page $pages, rows $rows...",
-                totalSnapshots = snapshotsJsonArray.length(),
+                totalSnapshots = snapshotCount,
                 completedSnapshots = 0,
                 running = true
             )
@@ -706,14 +750,14 @@ class MarketMLService : Service() {
             chainFile.delete()
             throw IllegalStateException("EVAL_CHAIN_TRUNCATED: ${chainFeed.source} hit page cap after ${chainFeed.pageCount} pages and ${chainFeed.rowCount} filtered rows.")
         }
-        if (snapshotsJsonArray.length() > 0 && chainFeed.rowCount == 0) {
+        if (snapshotCount > 0 && chainFeed.rowCount == 0) {
             chainFile.delete()
             throw IllegalStateException("EVAL_NO_CHAINROWS: no matching chain rows found for ${legKeys.size} candidate legs from ${chainFeed.source}.")
         }
         completeFile.writeText(
             org.json.JSONObject().apply {
                 put("session_date", sessionDate)
-                put("snapshot_count", snapshotsJsonArray.length())
+                put("snapshot_count", snapshotCount)
                 put("leg_key_count", legKeys.size)
                 put("chain_row_count", chainFeed.rowCount)
                 put("source", chainFeed.source)
@@ -723,7 +767,7 @@ class MarketMLService : Service() {
         )
         Log.i(
             TAG,
-            "EVAL_INPUTS_FILTERED_STREAM: snapshots=${snapshotsJsonArray.length()} legKeys=${legKeys.size} chainSlices=${chainFeed.rowCount} pages=${chainFeed.pageCount} source=${chainFeed.source} date=$sessionDate snapshotBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()}"
+            "EVAL_INPUTS_FILTERED_STREAM: snapshots=${snapshotCount} legKeys=${legKeys.size} chainSlices=${chainFeed.rowCount} pages=${chainFeed.pageCount} source=${chainFeed.source} date=$sessionDate snapshotBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()}"
         )
         if (chainFeed.rowCount == 0) {
             Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $sessionDate source=${chainFeed.source}")
