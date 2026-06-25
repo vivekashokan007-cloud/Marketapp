@@ -810,27 +810,49 @@ class MarketMLService : Service() {
         }
     }
 
-    private suspend fun ensureEvaluationInputFiles(sessionDate: String): Pair<File, File> = withContext(Dispatchers.IO) {
+    private data class EvaluationInputPreparation(
+        val snapshotsFile: File,
+        val chainFile: File,
+        val snapshotCount: Int,
+        val legKeyCount: Int,
+        val emptyReason: String? = null
+    )
+
+    private suspend fun ensureEvaluationInputFiles(sessionDate: String): EvaluationInputPreparation = withContext(Dispatchers.IO) {
         val snapshotsFile = File(evaluationSnapshotsPath(this@MarketMLService, sessionDate))
         val chainFile = File(evaluationChainPath(this@MarketMLService, sessionDate))
         val completeFile = File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate))
-        if (
-            snapshotsFile.exists() &&
-            chainFile.exists() &&
-            completeFile.exists() &&
-            snapshotsFile.length() > 0L &&
-            chainFile.length() > 0L
-        ) {
-            val preparedCount = try {
-                org.json.JSONObject(completeFile.readText()).optInt("snapshot_count", -1)
+        if (snapshotsFile.exists() && completeFile.exists() && snapshotsFile.length() > 0L) {
+            val completeMeta = try {
+                org.json.JSONObject(completeFile.readText())
             } catch (_: Exception) {
-                -1
+                null
             }
+            val preparedCount = completeMeta?.optInt("snapshot_count", -1) ?: -1
+            val cachedLegKeyCount = completeMeta?.optInt("leg_key_count", -1) ?: -1
+            val cachedEmptyReason = completeMeta?.optString("empty_reason", "")?.ifBlank { null }
             if (preparedCount > 0) {
-                return@withContext Pair(snapshotsFile, chainFile)
+                val cacheReady = if (cachedLegKeyCount == 0) {
+                    cachedEmptyReason != null && chainFile.exists()
+                } else {
+                    chainFile.exists() && chainFile.length() > 0L
+                }
+                if (cacheReady) {
+                    return@withContext EvaluationInputPreparation(
+                        snapshotsFile = snapshotsFile,
+                        chainFile = chainFile,
+                        snapshotCount = preparedCount,
+                        legKeyCount = maxOf(cachedLegKeyCount, 0),
+                        emptyReason = cachedEmptyReason
+                    )
+                }
             }
-            Log.w(TAG, "EVAL_INPUT_CACHE_INVALID: prepared snapshot_count=$preparedCount date=$sessionDate")
+            Log.w(
+                TAG,
+                "EVAL_INPUT_CACHE_INVALID: prepared snapshot_count=$preparedCount legKeys=$cachedLegKeyCount date=$sessionDate"
+            )
             snapshotsFile.delete()
+            chainFile.delete()
             completeFile.delete()
         }
 
@@ -860,8 +882,10 @@ class MarketMLService : Service() {
 
         val snapshotCount = if (snapshotResult.count > 0) snapshotResult.count else snapshotsJsonArray.length()
         val legKeys = snapshotLegKeys.toList()
-        if (snapshotCount > 0 && legKeys.isEmpty()) {
-            throw IllegalStateException("EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotCount} snapshots.")
+        val emptyReason = if (snapshotCount > 0 && legKeys.isEmpty()) {
+            "EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotCount} snapshots."
+        } else {
+            null
         }
         updateEvaluationJobState(
             sessionDate = sessionDate,
@@ -887,6 +911,29 @@ class MarketMLService : Service() {
             TAG,
             "EVAL_SNAPSHOTS_WRITE_DONE: snapshots=${snapshotCount} bytes=${snapshotsFile.length()} date=$sessionDate"
         )
+        if (emptyReason != null) {
+            writeJsonArrayFile(chainFile, org.json.JSONArray())
+            completeFile.writeText(
+                org.json.JSONObject().apply {
+                    put("session_date", sessionDate)
+                    put("snapshot_count", snapshotCount)
+                    put("leg_key_count", 0)
+                    put("chain_row_count", 0)
+                    put("source", "none")
+                    put("page_count", 0)
+                    put("empty_reason", emptyReason)
+                    put("completed_at", java.time.Instant.now().toString())
+                }.toString()
+            )
+            Log.i(TAG, "EVAL_EMPTY_PREP: date=$sessionDate snapshots=$snapshotCount reason=$emptyReason")
+            return@withContext EvaluationInputPreparation(
+                snapshotsFile = snapshotsFile,
+                chainFile = chainFile,
+                snapshotCount = snapshotCount,
+                legKeyCount = 0,
+                emptyReason = emptyReason
+            )
+        }
         val chainFeed = SupabaseClient.writeEvaluationChainCandlesForLegs(sessionDate, legKeys, chainFile) { source, pages, rows ->
             updateEvaluationJobState(
                 sessionDate = sessionDate,
@@ -923,7 +970,12 @@ class MarketMLService : Service() {
         if (chainFeed.rowCount == 0) {
             Log.w(TAG, "EVAL_CHAIN_FALLBACK: no chain rows found for $sessionDate source=${chainFeed.source}")
         }
-        return@withContext Pair(snapshotsFile, chainFile)
+        return@withContext EvaluationInputPreparation(
+            snapshotsFile = snapshotsFile,
+            chainFile = chainFile,
+            snapshotCount = snapshotCount,
+            legKeyCount = legKeys.size
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1346,7 +1398,27 @@ class MarketMLService : Service() {
 
             val py = Python.getInstance()
             brain = py.getModule("brain")
-            val (snapshotsFile, chainFile) = ensureEvaluationInputFiles(sessionDate)
+            val preparedInputs = ensureEvaluationInputFiles(sessionDate)
+            val snapshotsFile = preparedInputs.snapshotsFile
+            val chainFile = preparedInputs.chainFile
+            if (preparedInputs.emptyReason != null) {
+                writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                prefs.edit().putString("evaluation_done_date", sessionDate).commit()
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = "DONE",
+                    message = "Evaluation done for $sessionDate: no evaluable candidate legs were captured for this session.",
+                    totalSnapshots = preparedInputs.snapshotCount,
+                    completedSnapshots = preparedInputs.snapshotCount,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    running = false,
+                    lastError = null
+                )
+                cancelDayEvaluationReminder(this@MarketMLService)
+                Log.i(TAG, "EVAL_SKIP: empty evaluable session for $sessionDate reason=${preparedInputs.emptyReason}")
+                return@withContext
+            }
             val prepareStr = withTimeoutOrNull(EVAL_BATCH_TIMEOUT_MS) {
                 brain.callAttr(
                     "evaluation_job_prepare",
