@@ -46,6 +46,7 @@ class NativeBridge(private val context: Context) {
         private const val PREF_TRADE_MODE = "trade_mode"
         private const val PREF_TRADE_MODE_EXPLICIT = "trade_mode_explicit"
         private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
+        private const val PREF_STAGE2A_MODE = "stage2a_guard_mode"
         private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
     }
@@ -810,6 +811,26 @@ class NativeBridge(private val context: Context) {
             else -> "live"
         }
         return prefs.edit().putString(PREF_NOTIFICATION_TRANSPORT_MODE, normalized).commit()
+    }
+
+    @JavascriptInterface
+    fun getStage2AGuardMode(): String {
+        val stored = prefs.getString(PREF_STAGE2A_MODE, "shadow") ?: "shadow"
+        return when (stored.trim().lowercase(Locale.US)) {
+            "off" -> "off"
+            "live" -> "live"
+            else -> "shadow"
+        }
+    }
+
+    @JavascriptInterface
+    fun setStage2AGuardMode(mode: String): Boolean {
+        val normalized = when (mode.trim().lowercase(Locale.US)) {
+            "off" -> "off"
+            "live" -> "live"
+            else -> "shadow"
+        }
+        return prefs.edit().putString(PREF_STAGE2A_MODE, normalized).commit()
     }
 
     @JavascriptInterface

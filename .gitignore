@@ -25,3 +25,6 @@ app/release/
 *.apks
 *.jks
 *.keystore
+
+# Local research databases
+historical_outcomes*.sqlite

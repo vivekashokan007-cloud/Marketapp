@@ -370,14 +370,14 @@ class MainActivity : AppCompatActivity() {
         val currentVersionCode = BuildConfig.VERSION_CODE
         val lastMLCopyVersion = mlPrefs.getInt("ml_copy_version", -1)
         if (lastMLCopyVersion != currentVersionCode) {
-            listOf("ml_model.json", "temporal_model.json", "backtest_trades.csv").forEach { filename ->
+            listOf("ml_model.json", "temporal_model.json", "backtest_trades.csv", "teacher_table_stage2a.json").forEach { filename ->
                 try {
                     val dest = File(filesDir, filename)
                     
                     // MA7: backtest_trades.csv is static baseline data, always overwrite.
                     // ml_model.json and temporal_model.json are TRAINED state — preserve if they exist.
                     val shouldCopy = when (filename) {
-                        "backtest_trades.csv" -> true  // always refresh baseline CSV
+                        "backtest_trades.csv", "teacher_table_stage2a.json" -> true  // always refresh measured baselines
                         else -> !dest.exists() || dest.length() == 0L  // only copy models if missing
                     }
                     

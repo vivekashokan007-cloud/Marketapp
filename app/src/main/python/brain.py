@@ -8,6 +8,9 @@ _TEMPORAL_ENGINE = None
 _TEMPORAL_CHECKED = False
 _TEMPORAL_MODEL_PATH = '/data/data/com.marketradar.app/files/temporal_model.json'
 _TEMPORAL_MIN_VAL_ACC = 0.60
+_STAGE2A_TABLE_CACHE = {'path': None, 'table': None, 'error': None}
+_STAGE2A_DEFAULT_MODE = 'shadow'
+_STAGE2A_MIN_PRIOR_BUCKET_N = 5
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -76,6 +79,181 @@ def _ml_score(candidate_dict):
         }
     except Exception:
         return {}
+
+
+def _stage2a_normalize_mode(raw_mode):
+    mode = str(raw_mode or _STAGE2A_DEFAULT_MODE).strip().lower()
+    if mode in ('live', 'shadow', 'off'):
+        return mode
+    return _STAGE2A_DEFAULT_MODE
+
+
+def _stage2a_vix_bucket(vix_value):
+    vix = _float_or_none(vix_value)
+    if vix is None:
+        return 'unknown'
+    if vix < 12:
+        return 'VIX_LT_12'
+    if vix < 14:
+        return 'VIX_12_14'
+    if vix < 16:
+        return 'VIX_14_16'
+    if vix < 18:
+        return 'VIX_16_18'
+    return 'VIX_18_PLUS'
+
+
+def _stage2a_dte_bucket(candidate, ctx=None):
+    ctx = ctx or {}
+    t_dte = _float_or_none(candidate.get('tDTE'))
+    if t_dte is None:
+        expiry_text = str(candidate.get('expiry') or '').strip()
+        session_date = str(ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate') or '').strip()
+        try:
+            expiry_dt = datetime.strptime(expiry_text, "%Y-%m-%d").date() if expiry_text else None
+            session_dt = datetime.strptime(session_date, "%Y-%m-%d").date() if session_date else None
+            if expiry_dt and session_dt:
+                t_dte = max((expiry_dt - session_dt).days, 0)
+        except Exception:
+            t_dte = None
+    if t_dte is None:
+        return 'unknown'
+    dte = int(max(round(t_dte), 0))
+    if dte <= 0:
+        return 'DTE_0'
+    if dte == 1:
+        return 'DTE_1'
+    if dte <= 3:
+        return 'DTE_2_3'
+    if dte <= 7:
+        return 'DTE_4_7'
+    return 'DTE_8_PLUS'
+
+
+def _stage2a_load_teacher_table(path):
+    global _STAGE2A_TABLE_CACHE
+    if not path:
+        return None, 'teacher_table_path_missing'
+    if (
+        _STAGE2A_TABLE_CACHE.get('path') == path
+        and _STAGE2A_TABLE_CACHE.get('table') is not None
+    ):
+        return _STAGE2A_TABLE_CACHE.get('table'), _STAGE2A_TABLE_CACHE.get('error')
+    table = None
+    err = None
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            payload = json.load(fh)
+        rows = payload.get('rows') if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError('teacher_table_rows_missing')
+        by_key = {}
+        min_prior = int(payload.get('min_prior_bucket_n') or _STAGE2A_MIN_PRIOR_BUCKET_N)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            key = (
+                str(row.get('strategy_type') or ''),
+                str(row.get('regime_bucket') or ''),
+                str(row.get('vix_bucket') or ''),
+                str(row.get('dte_bucket') or ''),
+            )
+            by_key[key] = {
+                'n': int(row.get('n') or 0),
+                'avg_r': _float_or_none(row.get('avg_r')),
+                'success_rate_pct': _float_or_none(row.get('success_rate_pct')),
+                'low_confidence': bool(row.get('low_confidence')),
+            }
+        table = {
+            'schema': payload.get('schema'),
+            'source': payload.get('source'),
+            'source_scope': payload.get('source_scope'),
+            'generated_at_utc': payload.get('generated_at_utc'),
+            'min_prior_bucket_n': min_prior,
+            'row_count': len(rows),
+            'by_key': by_key,
+        }
+    except Exception as exc:
+        err = str(exc)
+        table = None
+    _STAGE2A_TABLE_CACHE = {'path': path, 'table': table, 'error': err}
+    return table, err
+
+
+def _stage2a_annotate_candidates(candidates, ctx):
+    mode = _stage2a_normalize_mode(ctx.get('stage2a_mode'))
+    requested_min_prior = int(ctx.get('stage2a_min_prior_bucket_n') or _STAGE2A_MIN_PRIOR_BUCKET_N)
+    table_path = str(ctx.get('stage2a_teacher_table_path') or '').strip()
+    table, table_error = _stage2a_load_teacher_table(table_path) if mode != 'off' else (None, None)
+    table_min_prior = int((table or {}).get('min_prior_bucket_n') or requested_min_prior)
+    min_prior = max(requested_min_prior, table_min_prior)
+    entry_vix = _resolve_entry_vix({'context_json': json.dumps(ctx)})
+    teacher_config = _teacher_default_config()
+    regime_bucket = _teacher_regime_bucket(entry_vix, teacher_config)
+    summary = {
+        'mode': mode,
+        'table_ready': bool(table),
+        'table_error': table_error,
+        'table_path': table_path,
+        'table_rows': int((table or {}).get('row_count') or 0),
+        'min_prior_bucket_n': min_prior,
+        'entry_vix': entry_vix,
+        'regime_bucket': regime_bucket,
+        'candidate_count': 0,
+        'covered_count': 0,
+        'positive_count': 0,
+        'thin_count': 0,
+        'unseen_count': 0,
+        'shadow_changes_top': False,
+        'live_changes_top': False,
+        'hard_wait_triggered': False,
+        'hard_wait_reason': None,
+        'deterministic_top_candidate_id': None,
+        'shadow_top_candidate_id': None,
+        'live_top_candidate_id': None,
+    }
+    if not isinstance(candidates, list):
+        return summary
+
+    summary['candidate_count'] = len(candidates)
+    table_map = (table or {}).get('by_key') or {}
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        strategy_type = str(cand.get('type') or '')
+        vix_bucket = _stage2a_vix_bucket(entry_vix)
+        dte_bucket = _stage2a_dte_bucket(cand, ctx)
+        bucket_key = f"{strategy_type}|{regime_bucket}|{vix_bucket}|{dte_bucket}"
+        bucket = table_map.get((strategy_type, regime_bucket, vix_bucket, dte_bucket))
+        teacher_n = int(bucket.get('n') or 0) if bucket else 0
+        teacher_r = _float_or_none(bucket.get('avg_r')) if bucket else None
+        coverage = 'off'
+        if mode != 'off':
+            if bucket is None:
+                coverage = 'unseen'
+                summary['unseen_count'] += 1
+            elif teacher_n < min_prior:
+                coverage = 'thin'
+                summary['thin_count'] += 1
+            elif teacher_r is not None and teacher_r > 0:
+                coverage = 'covered_positive'
+                summary['covered_count'] += 1
+                summary['positive_count'] += 1
+            else:
+                coverage = 'covered_negative'
+                summary['covered_count'] += 1
+        cand['teacher_bucket_key'] = bucket_key
+        cand['teacher_regime_bucket'] = regime_bucket
+        cand['teacher_vix_bucket'] = vix_bucket
+        cand['teacher_dte_bucket'] = dte_bucket
+        cand['teacher_bucket_n'] = teacher_n
+        cand['teacher_r_score'] = round(teacher_r, 4) if teacher_r is not None else None
+        cand['teacher_success_rate_pct'] = _float_or_none(bucket.get('success_rate_pct')) if bucket else None
+        cand['teacher_low_confidence'] = bool(bucket.get('low_confidence')) if bucket else None
+        cand['teacher_coverage'] = coverage
+        cand['teacher_recommendable'] = coverage == 'covered_positive'
+        cand['teacher_ranking_eligible'] = coverage in ('covered_positive', 'covered_negative')
+    return summary
 
 def ml_score_bridge(cand_json):
     """Bridge for Kotlin to call _ml_score with JSON string."""
@@ -5223,7 +5401,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.59"
+BRAIN_VERSION = "2.4.67"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7257,16 +7435,25 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 
 # ─── RANK CANDIDATES ───
 
-def rank_candidates(candidates, calibration=None, brain_verdict=None):
+def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=None):
     """Varsity waterfall ranking. Premium edge outranks raw win-rate once safety gates pass."""
     cal = calibration or {}
     strat_cal = cal.get('strategy', {})
+    stage2a = stage2a or {}
+    teacher_live = bool(stage2a.get('ranking_active'))
 
     def sort_key(c):
         # 0: Direction safety — F1-against always last
         safe = 0 if c.get('directionSafe', True) else 1
         # 1: Varsity tier
         tier = 0 if c.get('varsityTier') == 'PRIMARY' else 1
+        teacher_rank_active = 1
+        teacher_score = 0.0
+        teacher_n = 0
+        if teacher_live and c.get('teacher_ranking_eligible'):
+            teacher_rank_active = 0
+            teacher_score = _safe_num(c.get('teacher_r_score'), 0.0)
+            teacher_n = int(c.get('teacher_bucket_n') or 0)
         # 2: Brain verdict alignment
         bv = 0
         if brain_verdict and brain_verdict.get('action') and (brain_verdict.get('confidence', 0) >= 30):
@@ -7302,7 +7489,11 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None):
         elif c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
             p_ml = 0.0
 
-        return (safe, tier, -premium_edge, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml)
+        return (
+            safe, tier,
+            teacher_rank_active, -teacher_score, -teacher_n,
+            -premium_edge, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
+        )
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
     ranked.sort(key=sort_key)
@@ -7341,6 +7532,52 @@ def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):
             if idx_added >= per_index_diverse:
                 break
     return watchlist
+
+
+def _stage2a_stamp_candidate_ranks(ranked, field_name):
+    if not isinstance(ranked, list):
+        return
+    for idx, cand in enumerate(ranked, start=1):
+        if isinstance(cand, dict):
+            cand[field_name] = idx
+
+
+def _stage2a_apply_live_wait_guard(result, watchlist, stage2a_summary):
+    if not isinstance(stage2a_summary, dict) or stage2a_summary.get('mode') != 'live':
+        return result
+    if not stage2a_summary.get('table_ready'):
+        stage2a_summary['hard_wait_triggered'] = True
+        stage2a_summary['hard_wait_reason'] = 'teacher_table_unavailable'
+    elif int(stage2a_summary.get('positive_count') or 0) <= 0:
+        stage2a_summary['hard_wait_triggered'] = True
+        stage2a_summary['hard_wait_reason'] = 'no_positive_teacher_bucket'
+    else:
+        return result
+
+    verdict = dict((result or {}).get('verdict') or {})
+    conflicts = list(verdict.get('conflicts') or [])
+    conflicts.append('Stage 2A teacher guard forced WAIT: no candidate cleared positive covered expectancy')
+    verdict.update({
+        'action': 'WAIT',
+        'strategy': None,
+        'direction': 'NEUTRAL',
+        'confidence': 0,
+        'urgency': 'WAIT — teacher expectancy guard',
+        'reasoning': 'Teacher ranking did not find any candidate with covered positive expectancy. Hard WAIT preserved.',
+        'conflicts': conflicts,
+        'decision_source': 'TEACHER_ONLY',
+        'decisionSource': 'TEACHER_ONLY',
+    })
+    result['verdict'] = verdict
+    result['decisionSource'] = 'TEACHER_ONLY'
+    result['decision_source'] = 'TEACHER_ONLY'
+    result['decisionReason'] = 'Stage 2A teacher guard forced WAIT because no candidate had positive covered expectancy.'
+    result['decision_reason'] = result['decisionReason']
+    result['stage2a_wait_guard'] = {
+        'triggered': True,
+        'reason': stage2a_summary.get('hard_wait_reason'),
+    }
+    return result
 
 def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     """Make final brain verdict match the executable candidate lane shown to user.
@@ -7798,13 +8035,48 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             result['watchlist'] = []
         if all_cands:
             brain_verdict = result.get('verdict')
-            ranked = rank_candidates(all_cands, _calibration, brain_verdict)
+            stage2a_summary = _stage2a_annotate_candidates(all_cands, ctx)
+            stage2a_shadow_active = stage2a_summary.get('mode') in ('shadow', 'live') and stage2a_summary.get('table_ready')
+            stage2a_live_active = stage2a_summary.get('mode') == 'live' and stage2a_summary.get('table_ready')
+
+            def _recompute_rankings(verdict_obj):
+                det = rank_candidates(all_cands, _calibration, verdict_obj)
+                _stage2a_stamp_candidate_ranks(det, 'deterministic_rank')
+                shadow = rank_candidates(
+                    all_cands,
+                    _calibration,
+                    verdict_obj,
+                    stage2a={'ranking_active': stage2a_shadow_active}
+                )
+                _stage2a_stamp_candidate_ranks(shadow, 'teacher_shadow_rank')
+                live = rank_candidates(
+                    all_cands,
+                    _calibration,
+                    verdict_obj,
+                    stage2a={'ranking_active': stage2a_live_active}
+                )
+                _stage2a_stamp_candidate_ranks(live, 'stage2a_live_rank')
+                stage2a_summary['deterministic_top_candidate_id'] = det[0].get('id') if det else None
+                stage2a_summary['shadow_top_candidate_id'] = shadow[0].get('id') if shadow else None
+                stage2a_summary['live_top_candidate_id'] = live[0].get('id') if live else None
+                stage2a_summary['shadow_changes_top'] = (
+                    stage2a_summary.get('shadow_top_candidate_id') is not None
+                    and stage2a_summary.get('shadow_top_candidate_id') != stage2a_summary.get('deterministic_top_candidate_id')
+                )
+                stage2a_summary['live_changes_top'] = stage2a_live_active and (
+                    stage2a_summary.get('live_top_candidate_id') is not None
+                    and stage2a_summary.get('live_top_candidate_id') != stage2a_summary.get('deterministic_top_candidate_id')
+                )
+                return live
+
+            ranked = _recompute_rankings(brain_verdict)
+            result['stage2a'] = stage2a_summary
             pre_watchlist = _build_watchlist_from_ranked(ranked)
             aligned_verdict = _align_verdict_to_watchlist(brain_verdict, pre_watchlist, ctx)
             if aligned_verdict is not brain_verdict:
                 result['verdict'] = aligned_verdict
                 brain_verdict = aligned_verdict
-                ranked = rank_candidates(all_cands, _calibration, brain_verdict)
+                ranked = _recompute_rankings(brain_verdict)
 
             # ── SPLICE 4: Enrich ML with live context, BEFORE watchlist build ──
             engine = _ml_load_if_needed()
@@ -7868,7 +8140,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                             c['mlTemporalValAcc'] = round(float(getattr(temporal, 'val_acc', 0.0)), 4) if temporal_active else None
                         except Exception:
                             pass
-                    ranked = rank_candidates(ranked, _calibration, brain_verdict)
+                    ranked = _recompute_rankings(brain_verdict)
                 except Exception:
                     pass
 
@@ -7878,7 +8150,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             final_verdict = _align_verdict_to_watchlist(result.get('verdict'), watchlist, ctx)
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict
-                ranked = rank_candidates(all_cands, _calibration, final_verdict)
+                ranked = _recompute_rankings(final_verdict)
                 watchlist = _build_watchlist_from_ranked(ranked)
 
             for c in ranked:
@@ -7897,7 +8169,19 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             final_verdict = _align_verdict_to_watchlist(result.get('verdict'), result["watchlist"], ctx)
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict
+            result = _stage2a_apply_live_wait_guard(result, result.get("watchlist"), stage2a_summary)
             top = (result.get("watchlist") or [{}])[0] if result.get("watchlist") else {}
+            if stage2a_summary.get('mode') == 'live':
+                if stage2a_summary.get('hard_wait_triggered'):
+                    top['decisionSource'] = 'TEACHER_ONLY'
+                    top['decision_source'] = 'TEACHER_ONLY'
+                    top['decisionReason'] = 'Stage 2A teacher guard forced WAIT because no candidate had positive covered expectancy.'
+                    top['decision_reason'] = top['decisionReason']
+                else:
+                    top['decisionSource'] = 'TEACHER_ONLY'
+                    top['decision_source'] = 'TEACHER_ONLY'
+                    top['decisionReason'] = 'Teacher expectancy ranking applied in guarded Stage 2A mode'
+                    top['decision_reason'] = top['decisionReason']
             result['decisionSource'] = top.get('decisionSource', 'DEFAULT_BRAIN_MATH')
             result['decision_source'] = result['decisionSource']
             result['decisionReason'] = top.get('decisionReason', 'top decision ranked by deterministic brain rules')
@@ -8322,6 +8606,15 @@ def _candidate_view(c):
         'creditWidthRatio': c.get('creditWidthRatio'),
         'sigmaOTM': c.get('sigmaOTM'),
         'premiumEdge': c.get('premiumEdge'),
+        'deterministic_rank': c.get('deterministic_rank'),
+        'teacher_shadow_rank': c.get('teacher_shadow_rank'),
+        'stage2a_live_rank': c.get('stage2a_live_rank'),
+        'teacher_bucket_key': c.get('teacher_bucket_key'),
+        'teacher_bucket_n': c.get('teacher_bucket_n'),
+        'teacher_r_score': c.get('teacher_r_score'),
+        'teacher_success_rate_pct': c.get('teacher_success_rate_pct'),
+        'teacher_coverage': c.get('teacher_coverage'),
+        'teacher_recommendable': c.get('teacher_recommendable'),
     }
 
 
@@ -8498,6 +8791,39 @@ def _compact_rejected_candidates(rejected_candidates):
     return sample, stats
 
 
+def _full_rejected_candidate_view(row):
+    if not isinstance(row, dict):
+        return None
+    return {
+        'candidate_schema_version': row.get('candidate_schema_version'),
+        'leg_schema_version': row.get('leg_schema_version'),
+        'index': row.get('index'),
+        'lane': row.get('lane'),
+        'strategy_type': row.get('strategy_type'),
+        'expiry': row.get('expiry'),
+        'width': row.get('width'),
+        'is_credit': row.get('is_credit'),
+        'netPremium': row.get('netPremium'),
+        'maxProfit': row.get('maxProfit'),
+        'maxLoss': row.get('maxLoss'),
+        'tDTE': row.get('tDTE'),
+        'ivRichness': row.get('ivRichness'),
+        'creditWidthRatio': row.get('creditWidthRatio'),
+        'sigmaOTM': row.get('sigmaOTM'),
+        'rejection_stage': row.get('rejection_stage'),
+        'rejection_reason': row.get('rejection_reason'),
+        'sellStrike': row.get('sellStrike'),
+        'sellType': row.get('sellType'),
+        'buyStrike': row.get('buyStrike'),
+        'buyType': row.get('buyType'),
+        'sellStrike2': row.get('sellStrike2'),
+        'sellType2': row.get('sellType2'),
+        'buyStrike2': row.get('buyStrike2'),
+        'buyType2': row.get('buyType2'),
+        'legs': row.get('legs') or [],
+    }
+
+
 def take_poll_snapshot(result, ctx, polls):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -8574,6 +8900,15 @@ def take_poll_snapshot(result, ctx, polls):
             'lotSize': top_cand.get('lotSize'),
             'expiry': top_cand.get('expiry'),
             'width': top_cand.get('width'),
+            'deterministic_rank': top_cand.get('deterministic_rank'),
+            'teacher_shadow_rank': top_cand.get('teacher_shadow_rank'),
+            'stage2a_live_rank': top_cand.get('stage2a_live_rank'),
+            'teacher_bucket_key': top_cand.get('teacher_bucket_key'),
+            'teacher_bucket_n': top_cand.get('teacher_bucket_n'),
+            'teacher_r_score': top_cand.get('teacher_r_score'),
+            'teacher_success_rate_pct': top_cand.get('teacher_success_rate_pct'),
+            'teacher_coverage': top_cand.get('teacher_coverage'),
+            'teacher_recommendable': top_cand.get('teacher_recommendable'),
         }
 
     # Clean top-5 candidates for secondary research only
@@ -8592,6 +8927,12 @@ def take_poll_snapshot(result, ctx, polls):
                 continue
             clean_generated.append(_candidate_view(c))
     clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
+    clean_rejected_full = []
+    if isinstance(rejected_candidates, list):
+        for c in rejected_candidates:
+            clean = _full_rejected_candidate_view(c)
+            if clean is not None:
+                clean_rejected_full.append(clean)
 
     def _candidate_leg_ledger(cand):
         if not isinstance(cand, dict):
@@ -8673,6 +9014,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
+    snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
     snapshot_context['snapshot_brain_notification'] = result.get('brain_notification') if isinstance(result.get('brain_notification'), dict) else {}
     snapshot_context['snapshot_watchlist'] = clean_cands
@@ -8709,6 +9051,7 @@ def take_poll_snapshot(result, ctx, polls):
         'regime': result.get('regime'),
         'rangeSigma': result.get('rangeSigma'),
     }
+    snapshot_context['snapshot_stage2a'] = result.get('stage2a') if isinstance(result.get('stage2a'), dict) else {}
 
     return {
         'poll_ts': datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -9514,6 +9857,24 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     significant_moves = 0
     flat_gap_count = 0
     generated_meta = {}
+    stage2a_mode_counts = {}
+    stage2a_table_error_counts = {}
+    stage2a_chosen_coverage_counts = {}
+    stage2a_snapshot_count = 0
+    stage2a_table_ready_count = 0
+    stage2a_shadow_compared = 0
+    stage2a_shadow_top_changed = 0
+    stage2a_live_compared = 0
+    stage2a_live_top_changed = 0
+    stage2a_hard_wait_count = 0
+    stage2a_covered_snapshot_count = 0
+    stage2a_positive_snapshot_count = 0
+    stage2a_thin_snapshot_count = 0
+    stage2a_unseen_snapshot_count = 0
+    stage2a_chosen_teacher_r_sum = 0.0
+    stage2a_chosen_teacher_r_count = 0
+    stage2a_chosen_teacher_n_sum = 0
+    stage2a_chosen_teacher_n_count = 0
     snapshots_with = {
         'with_primary': 0,
         'with_generated': 0,
@@ -9542,6 +9903,20 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         if isinstance(primary, dict) and primary.get('id'):
             snapshots_with['with_primary'] += 1
             _count_key(primary_type_counts, primary.get('type'))
+            chosen_coverage = str(primary.get('teacher_coverage') or '').strip().lower()
+            if chosen_coverage:
+                _count_key(stage2a_chosen_coverage_counts, chosen_coverage)
+            chosen_teacher_r = _safe_float(primary.get('teacher_r_score'))
+            if chosen_teacher_r is not None:
+                stage2a_chosen_teacher_r_sum += chosen_teacher_r
+                stage2a_chosen_teacher_r_count += 1
+            chosen_teacher_n = primary.get('teacher_bucket_n')
+            try:
+                chosen_teacher_n = int(chosen_teacher_n)
+                stage2a_chosen_teacher_n_sum += chosen_teacher_n
+                stage2a_chosen_teacher_n_count += 1
+            except Exception:
+                pass
         vix = _safe_float(ctx.get('vix'))
         if vix is not None:
             vix_values.append(vix)
@@ -9567,6 +9942,35 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         rejected = ctx.get('snapshot_rejected_candidates')
         if isinstance(rejected, list) and rejected:
             snapshots_with['with_rejected'] += 1
+
+        stage2a = ctx.get('snapshot_stage2a')
+        if isinstance(stage2a, dict) and stage2a:
+            stage2a_snapshot_count += 1
+            mode = str(stage2a.get('mode') or 'unknown').strip().lower() or 'unknown'
+            _count_key(stage2a_mode_counts, mode)
+            if stage2a.get('table_ready') is True:
+                stage2a_table_ready_count += 1
+            table_error = str(stage2a.get('table_error') or '').strip()
+            if table_error:
+                _count_key(stage2a_table_error_counts, table_error)
+            if int(stage2a.get('covered_count') or 0) > 0:
+                stage2a_covered_snapshot_count += 1
+            if int(stage2a.get('positive_count') or 0) > 0:
+                stage2a_positive_snapshot_count += 1
+            if int(stage2a.get('thin_count') or 0) > 0:
+                stage2a_thin_snapshot_count += 1
+            if int(stage2a.get('unseen_count') or 0) > 0:
+                stage2a_unseen_snapshot_count += 1
+            if stage2a.get('shadow_top_candidate_id') is not None and stage2a.get('deterministic_top_candidate_id') is not None:
+                stage2a_shadow_compared += 1
+                if stage2a.get('shadow_changes_top') is True:
+                    stage2a_shadow_top_changed += 1
+            if stage2a.get('live_top_candidate_id') is not None and stage2a.get('deterministic_top_candidate_id') is not None:
+                stage2a_live_compared += 1
+                if stage2a.get('live_changes_top') is True:
+                    stage2a_live_top_changed += 1
+            if stage2a.get('hard_wait_triggered') is True:
+                stage2a_hard_wait_count += 1
 
         first_pos = {}
         for rank_idx, cand in enumerate(generated, start=1):
@@ -9744,8 +10148,9 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         else:
             primary_rejected_missing_ids.append(sid)
 
+    no_class_a_session = not primary_snapshot_ids and snapshots_with['with_primary'] == 0 and snapshots_with['with_generated'] == 0
     class_a_blocked_reasons = []
-    if not primary_snapshot_ids:
+    if not primary_snapshot_ids and not no_class_a_session:
         class_a_blocked_reasons.append('no_primary_teacher_rows_were_available')
     if primary_context_ready != len(primary_snapshot_ids):
         class_a_blocked_reasons.append(f"context_json_missing_or_empty_on_{len(primary_snapshot_ids) - primary_context_ready}_primary_snapshots")
@@ -9758,8 +10163,9 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     if snapshot_compared != len(primary_snapshot_ids):
         class_a_blocked_reasons.append(f"primary_vs_best_comparison_only_covered_{snapshot_compared}_of_{len(primary_snapshot_ids)}_primary_snapshots")
 
+    class_a_status = 'N/A' if no_class_a_session else ('PASS' if not class_a_blocked_reasons else 'FAIL')
     class_a_gate = {
-        'status': 'PASS' if not class_a_blocked_reasons else 'FAIL',
+        'status': class_a_status,
         'scope': 'saved_live_session_parity_gate',
         'session_date': session_date_str,
         'primary_snapshot_count': len(primary_snapshot_ids),
@@ -9775,8 +10181,52 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'with_context_snapshots': snapshots_with['with_context'],
         'with_generated_snapshots': snapshots_with['with_generated'],
         'with_rejected_snapshots': snapshots_with['with_rejected'],
+        'no_class_a_session': no_class_a_session,
+        'na_reason': 'no_evaluable_candidate_legs_captured' if no_class_a_session else None,
         'blocked_reasons': class_a_blocked_reasons,
-        'ready_for_tomorrow_comparison': not class_a_blocked_reasons,
+        'ready_for_tomorrow_comparison': class_a_status == 'PASS',
+    }
+
+    stage2a_blockers = []
+    if stage2a_snapshot_count <= 0:
+        stage2a_blockers.append('no_stage2a_snapshot_context')
+    if stage2a_snapshot_count > 0 and stage2a_table_ready_count <= 0:
+        stage2a_blockers.append('teacher_table_not_ready_in_saved_snapshots')
+    if stage2a_snapshot_count > 0 and stage2a_shadow_compared <= 0:
+        stage2a_blockers.append('no_shadow_vs_deterministic_comparison')
+    if stage2a_snapshot_count > 0 and stage2a_covered_snapshot_count <= 0:
+        stage2a_blockers.append('no_covered_teacher_buckets_seen')
+    if stage2a_snapshot_count > 0 and not any(str(k).lower() == 'shadow' for k in stage2a_mode_counts.keys()):
+        stage2a_blockers.append('shadow_mode_not_observed')
+    if stage2a_snapshot_count <= 0:
+        stage2a_audit_status = 'NO_EVIDENCE'
+    elif stage2a_blockers:
+        stage2a_audit_status = 'COLLECT_MORE_SHADOW'
+    else:
+        stage2a_audit_status = 'READY_FOR_MANUAL_REVIEW'
+
+    stage2a_shadow = {
+        'audit_status': stage2a_audit_status,
+        'blocked_reasons': stage2a_blockers,
+        'snapshot_count': stage2a_snapshot_count,
+        'mode_counts': stage2a_mode_counts,
+        'table_ready_count': stage2a_table_ready_count,
+        'table_error_counts': stage2a_table_error_counts,
+        'shadow_compared': stage2a_shadow_compared,
+        'shadow_top_changed': stage2a_shadow_top_changed,
+        'live_compared': stage2a_live_compared,
+        'live_top_changed': stage2a_live_top_changed,
+        'hard_wait_count': stage2a_hard_wait_count,
+        'covered_snapshot_count': stage2a_covered_snapshot_count,
+        'positive_snapshot_count': stage2a_positive_snapshot_count,
+        'thin_snapshot_count': stage2a_thin_snapshot_count,
+        'unseen_snapshot_count': stage2a_unseen_snapshot_count,
+        'chosen_coverage_counts': stage2a_chosen_coverage_counts,
+        'chosen_avg_teacher_r': round(stage2a_chosen_teacher_r_sum / stage2a_chosen_teacher_r_count, 4) if stage2a_chosen_teacher_r_count else None,
+        'chosen_avg_teacher_bucket_n': round(stage2a_chosen_teacher_n_sum / stage2a_chosen_teacher_n_count, 2) if stage2a_chosen_teacher_n_count else None,
+        'shadow_change_rate_pct': round((stage2a_shadow_top_changed * 100.0) / stage2a_shadow_compared, 2) if stage2a_shadow_compared else None,
+        'live_change_rate_pct': round((stage2a_live_top_changed * 100.0) / stage2a_live_compared, 2) if stage2a_live_compared else None,
+        'scope': 'stage2a_shadow_vs_deterministic',
     }
 
     return json.dumps({
@@ -9809,6 +10259,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'by_strategy': strategy_summaries,
             'by_rank': rank_summaries,
         },
+        'stage2a_shadow': stage2a_shadow,
         'primary_vs_best': {
             'snapshots_compared': snapshot_compared,
             'primary_was_best': primary_best,
@@ -9911,6 +10362,8 @@ class NotificationAgent:
         strategy = verdict.get('strategy')
         confidence = _safe_num(verdict.get('confidence'), 0)
         teacher_r_score = None
+        teacher_bucket_n = None
+        teacher_coverage = None
         if isinstance(best, dict):
             teacher_r_score = _safe_num(
                 best.get('teacher_r_score')
@@ -9918,6 +10371,8 @@ class NotificationAgent:
                 else best.get('r_multiple'),
                 None,
             )
+            teacher_bucket_n = best.get('teacher_bucket_n')
+            teacher_coverage = best.get('teacher_coverage')
         lane = None
         candidate_id = None
         if isinstance(best, dict):
@@ -9935,6 +10390,8 @@ class NotificationAgent:
             'strategy_type': strategy,
             'confidence': round(confidence, 2),
             'teacher_r_score': teacher_r_score,
+            'teacher_bucket_n': teacher_bucket_n,
+            'teacher_coverage': teacher_coverage,
             'title': '',
             'body': '',
             'reason_code': 'NO_ACTIONABLE_CHANGE',

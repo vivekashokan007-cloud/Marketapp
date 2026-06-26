@@ -24,7 +24,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +46,13 @@ SUPABASE_SERVICE_KEY = (
 )
 PAGE_SIZE = 1000
 SNAPSHOT_PAGE_SIZE = 20
+HTTP_TIMEOUT_SECS = int(os.environ.get("HARNESS_HTTP_TIMEOUT_SECS") or "120")
+SNAPSHOT_FETCH_PAGE_SIZE = int(os.environ.get("HARNESS_SNAPSHOT_PAGE_SIZE") or "100")
+CHAIN_FETCH_PAGE_SIZE = int(os.environ.get("HARNESS_CHAIN_PAGE_SIZE") or "500")
+STAGE1_R_MARGIN = float(os.environ.get("HARNESS_STAGE1_R_MARGIN") or "0.10")
+STAGE1_POSITIVE_R_FLOOR = float(os.environ.get("HARNESS_STAGE1_POSITIVE_R_FLOOR") or "0.10")
+STAGE1_EXIT_LOSS_FLOOR = float(os.environ.get("HARNESS_STAGE1_EXIT_LOSS_FLOOR") or "-0.10")
+STAGE1_MIN_PRIOR_BUCKET_N = int(os.environ.get("HARNESS_STAGE1_MIN_PRIOR_BUCKET_N") or "5")
 POST_ANALYZE_CTX_KEYS = {
     "alerts",
     "elephant_fact_pack",
@@ -126,6 +133,15 @@ def _normalize_number(value: Any) -> Any:
         except Exception:
             return value
     return value
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
 
 
 def _candidate_signature(cand: Any) -> dict[str, Any]:
@@ -231,7 +247,7 @@ def _supabase_get(table: str, params: dict[str, Any] | None = None) -> list[Any]
         url = f"{SUPABASE_URL}/rest/v1/{path}?{urllib.parse.urlencode(query, doseq=True)}"
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECS) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -361,19 +377,126 @@ def _fetch_snapshots_for_range(date_from: str, date_to: str) -> list[dict[str, A
             "session_date": [f"gte.{date_from}", f"lte.{date_to}"],
             "select": select,
             "order": "session_date.asc,poll_ts.asc",
+            "limit": SNAPSHOT_FETCH_PAGE_SIZE,
         },
     )
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _fetch_chain_rows_for_date(session_date: str) -> list[dict[str, Any]]:
+def _iter_session_dates(date_from: str, date_to: str) -> list[str]:
+    start = datetime.strptime(date_from, "%Y-%m-%d").date()
+    end = datetime.strptime(date_to, "%Y-%m-%d").date()
+    if end < start:
+        start, end = end, start
+    out: list[str] = []
+    cur = start
+    while cur <= end:
+        out.append(cur.isoformat())
+        cur += timedelta(days=1)
+    return out
+
+
+def _fetch_snapshots_for_session_date(session_date: str) -> list[dict[str, Any]]:
+    select = ",".join(
+        [
+            "id",
+            "poll_ts",
+            "session_date",
+            "context_json",
+            "top_candidates_json",
+            "primary_candidate_json",
+            "poll_summary_json",
+            "market_forces_json",
+            "verdict_json",
+            "is_labelable",
+        ]
+    )
     rows = _supabase_get(
-        "ml_option_chain_snapshots",
+        "ml_brain_snapshots",
         {
             "session_date": f"eq.{session_date}",
-            "select": "*",
+            "select": select,
             "order": "poll_ts.asc",
+            "limit": SNAPSHOT_FETCH_PAGE_SIZE,
         },
+    )
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _normalize_option_type(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"CALL", "C"}:
+        return "CE"
+    if text in {"PUT", "P"}:
+        return "PE"
+    return text
+
+
+def _collect_leg_keys_from_candidate(raw: Any, out: set[tuple[str, str, str, float]]) -> None:
+    cand = _json_load(raw, {})
+    if not isinstance(cand, dict):
+        return
+    index_key = str(cand.get("index") or cand.get("index_key") or cand.get("underlying") or "").strip()
+    expiry = str(cand.get("expiry") or cand.get("expiry_date") or "").strip()
+    if not index_key:
+        return
+    leg_specs = [
+        ("sellStrike", "sellType"),
+        ("buyStrike", "buyType"),
+        ("sellStrike2", "sellType2"),
+        ("buyStrike2", "buyType2"),
+    ]
+    for strike_key, type_key in leg_specs:
+        strike = _normalize_number(cand.get(strike_key))
+        option_type = _normalize_option_type(cand.get(type_key))
+        if strike is None or not option_type:
+            continue
+        try:
+            strike_value = float(strike)
+        except Exception:
+            continue
+        out.add((index_key, expiry, option_type, strike_value))
+
+
+def _collect_snapshot_leg_keys(snapshot: dict[str, Any]) -> set[tuple[str, str, str, float]]:
+    keys: set[tuple[str, str, str, float]] = set()
+    _collect_leg_keys_from_candidate(snapshot.get("primary_candidate_json"), keys)
+    ctx = _json_load(snapshot.get("context_json"), {})
+    if not isinstance(ctx, dict):
+        ctx = {}
+    generated = _load_live_generated(ctx)
+    for cand in generated:
+        _collect_leg_keys_from_candidate(cand, keys)
+    return keys
+
+
+def _fetch_chain_rows_for_date(session_date: str, snapshots: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    leg_keys: set[tuple[str, str, str, float]] = set()
+    if snapshots:
+        for snapshot in snapshots:
+            leg_keys.update(_collect_snapshot_leg_keys(snapshot))
+    params: dict[str, Any] = {
+        "session_date": f"eq.{session_date}",
+        "select": "*",
+        "order": "poll_ts.asc",
+        "limit": CHAIN_FETCH_PAGE_SIZE,
+    }
+    if leg_keys:
+        indexes = sorted({row[0] for row in leg_keys if row[0]})
+        expiries = sorted({row[1] for row in leg_keys if row[1]})
+        option_types = sorted({_normalize_option_type(row[2]) for row in leg_keys if row[2]})
+        strikes = sorted({int(row[3]) if abs(row[3] - round(row[3])) < 0.0001 else row[3] for row in leg_keys})
+        if indexes:
+            params["index_key"] = f"in.({','.join(indexes)})"
+        if expiries:
+            params["expiry"] = f"in.({','.join(expiries)})"
+        if option_types:
+            params["option_type"] = f"in.({','.join(option_types)})"
+        if strikes:
+            params["strike"] = f"in.({','.join(str(v) for v in strikes)})"
+    rows = _supabase_get(
+        "ml_option_chain_snapshots",
+        params,
     )
     return [row for row in rows if isinstance(row, dict)]
 
@@ -443,13 +566,118 @@ def _load_live_generated(ctx: dict[str, Any]) -> list[Any]:
 
 
 def _load_live_rejected(ctx: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
-    rejected = ctx.get("snapshot_rejected_candidates")
+    rejected = ctx.get("snapshot_rejected_candidates_full")
+    if not isinstance(rejected, list) or not rejected:
+        rejected = ctx.get("snapshot_rejected_candidates")
     stats = ctx.get("snapshot_rejected_candidate_stats")
     if not isinstance(rejected, list):
         rejected = []
     if not isinstance(stats, dict):
         stats = {}
     return rejected, stats
+
+
+def _normalize_rejected_candidate(cand: Any, index: int) -> dict[str, Any] | None:
+    if not isinstance(cand, dict):
+        return None
+    strategy_type = cand.get("type") or cand.get("strategy_type")
+    index_key = cand.get("index") or cand.get("index_key")
+    expiry = cand.get("expiry")
+    if not strategy_type or not index_key or not expiry:
+        return None
+    sell_strike = cand.get("sellStrike")
+    sell_type = cand.get("sellType")
+    buy_strike = cand.get("buyStrike")
+    buy_type = cand.get("buyType")
+    if sell_strike is None or not sell_type or buy_strike is None or not buy_type:
+        return None
+    sell_strike2 = cand.get("sellStrike2")
+    sell_type2 = cand.get("sellType2")
+    buy_strike2 = cand.get("buyStrike2")
+    buy_type2 = cand.get("buyType2")
+    legs = cand.get("legs") if isinstance(cand.get("legs"), list) else []
+    lane = cand.get("lane")
+    trade_mode = "intraday" if isinstance(lane, str) and lane.endswith("_intraday") else "swing" if isinstance(lane, str) and lane.endswith("_swing") else "unknown"
+    return {
+        "id": f"rejected_{index}_{strategy_type}_{index_key}_{sell_strike}_{buy_strike}",
+        "type": strategy_type,
+        "strategy_type": strategy_type,
+        "index": index_key,
+        "lane": lane,
+        "expiry": expiry,
+        "sellStrike": sell_strike,
+        "sellType": sell_type,
+        "buyStrike": buy_strike,
+        "buyType": buy_type,
+        "sellStrike2": sell_strike2,
+        "sellType2": sell_type2,
+        "buyStrike2": buy_strike2,
+        "buyType2": buy_type2,
+        "legs": legs,
+        "legCount": len(legs) if legs else (4 if sell_strike2 is not None else 2),
+        "netPremium": cand.get("netPremium"),
+        "maxProfit": cand.get("maxProfit"),
+        "maxLoss": cand.get("maxLoss"),
+        "width": cand.get("width"),
+        "trade_mode": trade_mode,
+        "lotSize": 30 if index_key == "BNF" else 65,
+        "varsityTier": "REJECTED_COUNTERFACTUAL",
+        "premiumEdge": None,
+        "creditWidthRatio": cand.get("creditWidthRatio"),
+        "sigmaOTM": cand.get("sigmaOTM"),
+        "rejection_stage": cand.get("rejection_stage"),
+        "rejection_reason": cand.get("rejection_reason"),
+        "counterfactual": True,
+        "counterfactual_confidence_tier": "lower",
+    }
+
+
+def _snapshot_class(snapshot: dict[str, Any]) -> str:
+    ctx = _json_load(snapshot.get("context_json"), {})
+    if not isinstance(ctx, dict):
+        return "class_b"
+    generated = _load_live_generated(ctx)
+    if generated:
+        return "class_a"
+    return "class_b"
+
+
+def _snapshot_inventory_row(snapshot: dict[str, Any]) -> dict[str, Any]:
+    ctx = _json_load(snapshot.get("context_json"), {})
+    generated = _load_live_generated(ctx) if isinstance(ctx, dict) else []
+    rejected, rejected_stats = _load_live_rejected(ctx) if isinstance(ctx, dict) else ([], {})
+    primary = _json_load(snapshot.get("primary_candidate_json"), {})
+    skip_reason = ctx.get("snapshot_generation_skip_reason") if isinstance(ctx, dict) else {}
+    if not isinstance(skip_reason, dict):
+        skip_reason = {}
+    verdict = _snapshot_verdict_state(snapshot)
+    return {
+        "session_date": str(snapshot.get("session_date") or "").strip(),
+        "snapshot_id": str(snapshot.get("id") or ""),
+        "poll_ts": _outcome_poll_ts(snapshot) or "",
+        "snapshot_class": _snapshot_class(snapshot),
+        "has_context": 1 if isinstance(ctx, dict) and bool(ctx) else 0,
+        "has_primary": 1 if isinstance(primary, dict) and bool(primary.get("id")) else 0,
+        "has_generated": 1 if bool(generated) else 0,
+        "generated_count": len(generated),
+        "has_rejected": 1 if bool(rejected) else 0,
+        "rejected_count": len(rejected),
+        "rejected_stats_total": int(rejected_stats.get("total") or 0) if isinstance(rejected_stats, dict) else 0,
+        "is_labelable": 1 if snapshot.get("is_labelable") is True else 0,
+        "skip_reason_code": str(skip_reason.get("reason_code") or ""),
+        "skip_reason_detail": str(skip_reason.get("detail") or ""),
+        "thesis_action": verdict["thesis_action"],
+        "thesis_strategy": verdict["thesis_strategy"],
+        "execution_action": verdict["execution_action"],
+        "execution_strategy": verdict["execution_strategy"],
+        "execution_candidate_id": verdict["execution_candidate_id"],
+        "execution_candidate_index": verdict["execution_candidate_index"],
+        "execution_aligned": verdict["execution_aligned"],
+        "dominant_lane": verdict["dominant_lane"],
+        "dominant_count": verdict["dominant_count"],
+        "has_pre_alignment_fields": verdict["has_pre_alignment_fields"],
+        "thesis_equals_execution": verdict["thesis_equals_execution"],
+    }
 
 
 def _parse_iso_date(value: Any) -> datetime | None:
@@ -500,6 +728,57 @@ def _derive_vix_bucket(snapshot: dict[str, Any]) -> str:
     return "VIX_18_PLUS"
 
 
+def _ensure_sqlite_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if len(row) > 1
+    }
+    for name, col_type in columns.items():
+        if name in existing:
+            continue
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+
+
+def _snapshot_verdict_state(snapshot: dict[str, Any]) -> dict[str, Any]:
+    verdict = _json_load(snapshot.get("verdict_json"), {})
+    if not isinstance(verdict, dict):
+        verdict = {}
+    execution_action = str(verdict.get("action") or "").strip() or None
+    execution_strategy = str(verdict.get("strategy") or "").strip() or None
+    pre_alignment_action = str(verdict.get("pre_alignment_action") or "").strip() or None
+    pre_alignment_strategy = str(verdict.get("pre_alignment_strategy") or "").strip() or None
+    has_pre_alignment_fields = 1 if (pre_alignment_action or pre_alignment_strategy) else 0
+    thesis_action = pre_alignment_action or execution_action
+    thesis_strategy = pre_alignment_strategy or execution_strategy
+    thesis_equals_execution = 1 if (
+        thesis_action == execution_action and thesis_strategy == execution_strategy
+    ) else 0
+    execution_aligned = verdict.get("execution_aligned")
+    try:
+        execution_aligned = int(bool(execution_aligned)) if execution_aligned is not None else 0
+    except Exception:
+        execution_aligned = 0
+    dominant_count = verdict.get("dominant_count")
+    try:
+        dominant_count = int(dominant_count) if dominant_count is not None else None
+    except Exception:
+        dominant_count = None
+    return {
+        "thesis_action": thesis_action,
+        "thesis_strategy": thesis_strategy,
+        "execution_action": execution_action,
+        "execution_strategy": execution_strategy,
+        "execution_candidate_id": str(verdict.get("execution_candidate_id") or "").strip() or None,
+        "execution_candidate_index": str(verdict.get("execution_candidate_index") or "").strip() or None,
+        "execution_aligned": execution_aligned,
+        "dominant_lane": str(verdict.get("dominant_lane") or "").strip() or None,
+        "dominant_count": dominant_count,
+        "has_pre_alignment_fields": has_pre_alignment_fields,
+        "thesis_equals_execution": thesis_equals_execution,
+    }
+
+
 def _sqlite_connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute(
@@ -536,13 +815,55 @@ def _sqlite_connect(path: str) -> sqlite3.Connection:
             tp_threshold REAL,
             sl_threshold REAL,
             break_even_win_rate_pct REAL,
+            snapshot_class TEXT,
             vix_bucket TEXT,
             dte_bucket TEXT,
             varsity_tier TEXT,
             premium_edge REAL,
             credit_width_ratio REAL,
+            candidate_source TEXT,
+            rejection_stage TEXT,
+            rejection_reason TEXT,
+            thesis_action TEXT,
+            thesis_strategy TEXT,
+            execution_action TEXT,
+            execution_strategy TEXT,
+            thesis_equals_execution INTEGER,
+            execution_aligned INTEGER,
             sigma_otm REAL,
             PRIMARY KEY (session_date, snapshot_id, candidate_id, role)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS historical_snapshot_inventory (
+            session_date TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            poll_ts TEXT,
+            snapshot_class TEXT NOT NULL,
+            has_context INTEGER NOT NULL,
+            has_primary INTEGER NOT NULL,
+            has_generated INTEGER NOT NULL,
+            generated_count INTEGER NOT NULL,
+            has_rejected INTEGER NOT NULL,
+            rejected_count INTEGER NOT NULL,
+            rejected_stats_total INTEGER NOT NULL,
+            is_labelable INTEGER NOT NULL,
+            skip_reason_code TEXT,
+            skip_reason_detail TEXT,
+            thesis_action TEXT,
+            thesis_strategy TEXT,
+            execution_action TEXT,
+            execution_strategy TEXT,
+            execution_candidate_id TEXT,
+            execution_candidate_index TEXT,
+            execution_aligned INTEGER,
+            dominant_lane TEXT,
+            dominant_count INTEGER,
+            has_pre_alignment_fields INTEGER,
+            thesis_equals_execution INTEGER,
+            PRIMARY KEY (session_date, snapshot_id)
         )
         """
     )
@@ -568,6 +889,59 @@ def _sqlite_connect(path: str) -> sqlite3.Connection:
             error_count INTEGER NOT NULL
         )
         """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stage1_failure_modes (
+            session_date TEXT NOT NULL,
+            snapshot_id TEXT NOT NULL,
+            poll_ts TEXT,
+            mode TEXT NOT NULL,
+            best_candidate_id TEXT,
+            best_candidate_source TEXT,
+            best_candidate_strategy TEXT,
+            best_candidate_rank INTEGER,
+            best_candidate_r REAL,
+            chosen_candidate_id TEXT,
+            chosen_strategy TEXT,
+            chosen_r REAL,
+            rejection_reason TEXT,
+            notes TEXT,
+            PRIMARY KEY (session_date, snapshot_id)
+        )
+        """
+    )
+    _ensure_sqlite_columns(
+        conn,
+        "historical_outcomes",
+        {
+            "candidate_source": "TEXT",
+            "rejection_stage": "TEXT",
+            "rejection_reason": "TEXT",
+            "thesis_action": "TEXT",
+            "thesis_strategy": "TEXT",
+            "execution_action": "TEXT",
+            "execution_strategy": "TEXT",
+            "thesis_equals_execution": "INTEGER",
+            "execution_aligned": "INTEGER",
+        },
+    )
+    _ensure_sqlite_columns(
+        conn,
+        "historical_snapshot_inventory",
+        {
+            "thesis_action": "TEXT",
+            "thesis_strategy": "TEXT",
+            "execution_action": "TEXT",
+            "execution_strategy": "TEXT",
+            "execution_candidate_id": "TEXT",
+            "execution_candidate_index": "TEXT",
+            "execution_aligned": "INTEGER",
+            "dominant_lane": "TEXT",
+            "dominant_count": "INTEGER",
+            "has_pre_alignment_fields": "INTEGER",
+            "thesis_equals_execution": "INTEGER",
+        },
     )
     return conn
 
@@ -603,16 +977,19 @@ def _persist_walk_batch(
     conn: sqlite3.Connection,
     session_date: str,
     snapshot: dict[str, Any],
+    snapshot_class: str,
     outcomes: list[dict[str, Any]],
     errors: list[dict[str, Any]],
 ) -> None:
     poll_ts = _outcome_poll_ts(snapshot)
     vix_bucket = _derive_vix_bucket(snapshot)
     candidate_meta = _snapshot_candidate_meta(snapshot)
+    verdict_state = _snapshot_verdict_state(snapshot)
     outcome_rows = []
     for row in outcomes:
         cand_meta = candidate_meta.get(str(row.get("candidate_id") or ""), {})
         dte_bucket = _derive_dte_bucket(session_date, cand_meta.get("expiry"))
+        candidate_source = row.get("candidate_source") or ("primary" if row.get("role") == "primary" else "generated")
         outcome_rows.append(
             (
                 session_date,
@@ -646,11 +1023,21 @@ def _persist_walk_batch(
                 row.get("tp_threshold"),
                 row.get("sl_threshold"),
                 row.get("break_even_win_rate_pct"),
+                snapshot_class,
                 vix_bucket,
                 dte_bucket,
                 row.get("varsity_tier"),
                 row.get("premium_edge"),
                 row.get("credit_width_ratio"),
+                candidate_source,
+                row.get("rejection_stage"),
+                row.get("rejection_reason"),
+                verdict_state.get("thesis_action"),
+                verdict_state.get("thesis_strategy"),
+                verdict_state.get("execution_action"),
+                verdict_state.get("execution_strategy"),
+                verdict_state.get("thesis_equals_execution"),
+                verdict_state.get("execution_aligned"),
                 row.get("sigma_otm"),
             )
         )
@@ -663,8 +1050,10 @@ def _persist_walk_batch(
                 canonical_won, outcome_h2, won, sim_pnl_h2, managed_pnl, managed_gross_pnl,
                 friction_cost, exit_reason, exit_step, exit_ts, path_points_count, r_multiple,
                 captured_pct, is_success, risk_at_entry, regime_bucket, tp_threshold, sl_threshold,
-                break_even_win_rate_pct, vix_bucket, dte_bucket, varsity_tier, premium_edge, credit_width_ratio, sigma_otm
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                break_even_win_rate_pct, snapshot_class, vix_bucket, dte_bucket, varsity_tier, premium_edge, credit_width_ratio,
+                candidate_source, rejection_stage, rejection_reason, thesis_action, thesis_strategy, execution_action, execution_strategy, thesis_equals_execution,
+                execution_aligned, sigma_otm
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             outcome_rows,
         )
@@ -689,6 +1078,232 @@ def _persist_walk_batch(
             """,
             error_rows,
         )
+
+
+def _classify_failure_modes(
+    conn: sqlite3.Connection,
+    session_date: str,
+    snapshot: dict[str, Any],
+    chain_rows: list[dict[str, Any]],
+    teacher_config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    ctx = _json_load(snapshot.get("context_json"), {})
+    rejected_rows, _ = _load_live_rejected(ctx) if isinstance(ctx, dict) else ([], {})
+    counterfactual_rows: list[dict[str, Any]] = []
+    classifier_errors: list[dict[str, Any]] = []
+    for idx, raw in enumerate(rejected_rows, start=1):
+        cand = _normalize_rejected_candidate(raw, idx)
+        if not cand:
+            continue
+        try:
+            outcome = brain._eval_single_candidate(chain_rows, snapshot, cand, teacher_config)
+            if outcome is None:
+                continue
+            outcome["role"] = "rejected_counterfactual"
+            outcome["rank_in_snapshot"] = None
+            outcome["varsity_tier"] = cand.get("varsityTier")
+            outcome["premium_edge"] = cand.get("premiumEdge")
+            outcome["credit_width_ratio"] = cand.get("creditWidthRatio")
+            outcome["sigma_otm"] = cand.get("sigmaOTM")
+            outcome["candidate_source"] = "rejected_counterfactual"
+            outcome["rejection_stage"] = cand.get("rejection_stage")
+            outcome["rejection_reason"] = cand.get("rejection_reason")
+            counterfactual_rows.append(outcome)
+        except Exception as exc:
+            classifier_errors.append(
+                {
+                    "scope": "rejected_counterfactual",
+                    "snapshot_id": snapshot.get("id"),
+                    "candidate_id": cand.get("id"),
+                    "error": str(exc),
+                }
+            )
+
+    all_rows = conn.execute(
+        """
+        SELECT candidate_id, role, candidate_source, strategy_type, rank_in_snapshot,
+               r_multiple, premium_edge
+        FROM historical_outcomes
+        WHERE session_date = ? AND snapshot_id = ?
+        """,
+        (session_date, str(snapshot.get("id") or "")),
+    ).fetchall()
+    candidates = [
+        {
+            "candidate_id": row[0],
+            "role": row[1],
+            "candidate_source": row[2],
+            "strategy_type": row[3],
+            "rank_in_snapshot": row[4],
+            "r_multiple": row[5],
+            "premium_edge": row[6],
+        }
+        for row in all_rows
+    ]
+    candidates.extend(
+        {
+            "candidate_id": row.get("candidate_id"),
+            "role": row.get("role"),
+            "candidate_source": row.get("candidate_source"),
+            "strategy_type": row.get("strategy_type"),
+            "rank_in_snapshot": row.get("rank_in_snapshot"),
+            "r_multiple": row.get("r_multiple"),
+            "premium_edge": row.get("premium_edge"),
+            "rejection_reason": row.get("rejection_reason"),
+            "rejection_stage": row.get("rejection_stage"),
+        }
+        for row in counterfactual_rows
+    )
+    chosen = next((row for row in candidates if row.get("role") == "primary"), None)
+    best = None
+    positive_exists = False
+    for row in candidates:
+        r_mult = _safe_float(row.get("r_multiple"))
+        if r_mult is None:
+            continue
+        row["r_multiple"] = r_mult
+        if r_mult >= STAGE1_POSITIVE_R_FLOOR:
+            positive_exists = True
+        best_r = _safe_float(best.get("r_multiple")) if best else None
+        if best is None or r_mult > (best_r if best_r is not None else -999999.0):
+            best = row
+
+    mode = "NO_VIABLE"
+    notes = f"no candidate cleared positive floor {STAGE1_POSITIVE_R_FLOOR:.2f}R"
+    gate_reason = None
+    chosen_r = _safe_float(chosen.get("r_multiple")) if chosen else None
+    chosen_edge = _safe_float(chosen.get("premium_edge")) if chosen else None
+    best_r = _safe_float(best.get("r_multiple")) if best else None
+    best_margin = (best_r - chosen_r) if best_r is not None and chosen_r is not None else None
+
+    # Exit policy must be classified before hindsight-best comparison, otherwise
+    # every bad chosen exit can be absorbed by a later winner in the menu.
+    if chosen and chosen_r is not None and chosen_r <= STAGE1_EXIT_LOSS_FLOOR and chosen_edge is not None and chosen_edge > 0:
+        mode = "EXIT_DESTROYED"
+        notes = (
+            "chosen candidate had positive entry economics but negative managed exit "
+            f"(exit_floor={STAGE1_EXIT_LOSS_FLOOR:.2f}R)"
+        )
+    elif positive_exists and best is not None and best_margin is not None and best_margin >= STAGE1_R_MARGIN:
+        if best.get("candidate_source") == "rejected_counterfactual":
+            mode = "GATE_BLOCKED"
+            gate_reason = best.get("rejection_reason")
+            notes = (
+                "best realized-R candidate was rejected by gate "
+                f"(hindsight comparison, margin={best_margin:.2f}R)"
+            )
+        elif chosen and best.get("candidate_id") != chosen.get("candidate_id"):
+            mode = "RANK_WRONG_HINDSIGHT"
+            notes = (
+                "best realized-R generated candidate was not chosen primary; "
+                f"not entry-time proof (margin={best_margin:.2f}R)"
+            )
+        else:
+            mode = "NO_VIABLE"
+            notes = "chosen was already the best realized candidate after margin filter"
+    elif best is not None and best_margin is not None and best_r is not None:
+        notes = (
+            f"best realized candidate did not clear positive floor/margin "
+            f"(best_r={best_r:.2f}R, margin={best_margin:.2f}R)"
+        )
+    return (
+        [
+            {
+                "session_date": session_date,
+                "snapshot_id": str(snapshot.get("id") or ""),
+                "poll_ts": _outcome_poll_ts(snapshot),
+                "mode": mode,
+                "best_candidate_id": best.get("candidate_id") if best else None,
+                "best_candidate_source": best.get("candidate_source") if best else None,
+                "best_candidate_strategy": best.get("strategy_type") if best else None,
+                "best_candidate_rank": best.get("rank_in_snapshot") if best else None,
+                "best_candidate_r": best.get("r_multiple") if best else None,
+                "chosen_candidate_id": chosen.get("candidate_id") if chosen else None,
+                "chosen_strategy": chosen.get("strategy_type") if chosen else None,
+                "chosen_r": chosen.get("r_multiple") if chosen else None,
+                "rejection_reason": gate_reason,
+                "notes": notes,
+            }
+        ],
+        counterfactual_rows,
+        classifier_errors,
+    )
+
+
+def _persist_snapshot_inventory(conn: sqlite3.Connection, snapshot: dict[str, Any]) -> None:
+    inv = _snapshot_inventory_row(snapshot)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO historical_snapshot_inventory (
+            session_date, snapshot_id, poll_ts, snapshot_class, has_context, has_primary,
+            has_generated, generated_count, has_rejected, rejected_count, rejected_stats_total,
+            is_labelable, skip_reason_code, skip_reason_detail, thesis_action, thesis_strategy,
+            execution_action, execution_strategy, execution_candidate_id, execution_candidate_index,
+            execution_aligned, dominant_lane, dominant_count, has_pre_alignment_fields, thesis_equals_execution
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            inv["session_date"],
+            inv["snapshot_id"],
+            inv["poll_ts"],
+            inv["snapshot_class"],
+            inv["has_context"],
+            inv["has_primary"],
+            inv["has_generated"],
+            inv["generated_count"],
+            inv["has_rejected"],
+            inv["rejected_count"],
+            inv["rejected_stats_total"],
+            inv["is_labelable"],
+            inv["skip_reason_code"],
+            inv["skip_reason_detail"],
+            inv["thesis_action"],
+            inv["thesis_strategy"],
+            inv["execution_action"],
+            inv["execution_strategy"],
+            inv["execution_candidate_id"],
+            inv["execution_candidate_index"],
+            inv["execution_aligned"],
+            inv["dominant_lane"],
+            inv["dominant_count"],
+            inv["has_pre_alignment_fields"],
+            inv["thesis_equals_execution"],
+        ),
+    )
+
+
+def _persist_failure_modes(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    payload = [
+        (
+            row.get("session_date"),
+            row.get("snapshot_id"),
+            row.get("poll_ts"),
+            row.get("mode"),
+            row.get("best_candidate_id"),
+            row.get("best_candidate_source"),
+            row.get("best_candidate_strategy"),
+            row.get("best_candidate_rank"),
+            row.get("best_candidate_r"),
+            row.get("chosen_candidate_id"),
+            row.get("chosen_strategy"),
+            row.get("chosen_r"),
+            row.get("rejection_reason"),
+            row.get("notes"),
+        )
+        for row in rows
+    ]
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO stage1_failure_modes (
+            session_date, snapshot_id, poll_ts, mode, best_candidate_id, best_candidate_source,
+            best_candidate_strategy, best_candidate_rank, best_candidate_r, chosen_candidate_id,
+            chosen_strategy, chosen_r, rejection_reason, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        payload,
+    )
 
 
 def verify_day(session_date: str) -> int:
@@ -857,49 +1472,85 @@ def verify_day(session_date: str) -> int:
     return 0
 
 
-def walk_range(date_from: str, date_to: str, out_db: str = "historical_outcomes.sqlite") -> int:
-    snapshots = _fetch_snapshots_for_range(date_from, date_to)
-    if not snapshots:
-        print(f"[walk] no snapshots found for {date_from}..{date_to}")
-        return 2
-
+def walk_range(date_from: str, date_to: str, out_db: str = "historical_outcomes.sqlite", walk_mode: str = "class_a") -> int:
     teacher_config = brain._teacher_default_config()
     snapshots_by_date: dict[str, list[dict[str, Any]]] = {}
-    for snap in snapshots:
-        session_date = str(snap.get("session_date") or "").strip()
-        if not session_date:
-            continue
-        snapshots_by_date.setdefault(session_date, []).append(snap)
+    for session_date in _iter_session_dates(date_from, date_to):
+        day_snaps = _fetch_snapshots_for_session_date(session_date)
+        if day_snaps:
+            snapshots_by_date[session_date] = day_snaps
+    if not snapshots_by_date:
+        print(f"[walk] no snapshots found for {date_from}..{date_to}")
+        return 2
 
     db_path = str((REPO_ROOT / out_db).resolve()) if not os.path.isabs(out_db) else out_db
     conn = _sqlite_connect(db_path)
     total_snapshots = 0
     total_outcomes = 0
     total_errors = 0
+    total_class_a = 0
+    total_class_b = 0
+    total_skipped = 0
 
     try:
         for session_date in sorted(snapshots_by_date.keys()):
             day_snaps = snapshots_by_date[session_date]
-            chain_rows = _fetch_chain_rows_for_date(session_date)
+            day_leg_keys = set()
+            for snap in day_snaps:
+                day_leg_keys.update(_collect_snapshot_leg_keys(snap))
+            chain_rows = _fetch_chain_rows_for_date(session_date, day_snaps)
             print(
-                f"[walk] session={session_date} snapshots={len(day_snaps)} chain_rows={len(chain_rows)}"
+                f"[walk] session={session_date} snapshots={len(day_snaps)} leg_keys={len(day_leg_keys)} chain_rows={len(chain_rows)}"
             )
             day_outcomes = 0
             day_errors = 0
+            day_class_a = 0
+            day_class_b = 0
+            day_skipped = 0
             for idx, snap in enumerate(day_snaps, start=1):
+                _persist_snapshot_inventory(conn, snap)
+                snap_class = _snapshot_class(snap)
+                if snap_class == "class_a":
+                    day_class_a += 1
+                    total_class_a += 1
+                else:
+                    day_class_b += 1
+                    total_class_b += 1
+                if walk_mode == "class_a" and snap_class != "class_a":
+                    total_snapshots += 1
+                    total_skipped += 1
+                    day_skipped += 1
+                    continue
                 result = brain._evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
                 outcomes = result.get("outcomes") or []
                 errors = result.get("errors") or []
-                _persist_walk_batch(conn, session_date, snap, outcomes, errors)
+                _persist_walk_batch(conn, session_date, snap, snap_class, outcomes, errors)
+                failure_rows, counterfactual_rows, classifier_errors = _classify_failure_modes(
+                    conn,
+                    session_date,
+                    snap,
+                    chain_rows,
+                    teacher_config,
+                )
+                if counterfactual_rows:
+                    _persist_walk_batch(conn, session_date, snap, snap_class, counterfactual_rows, [])
+                _persist_failure_modes(conn, failure_rows)
+                if classifier_errors:
+                    _persist_walk_batch(conn, session_date, snap, snap_class, [], classifier_errors)
                 total_snapshots += 1
-                total_outcomes += len(outcomes)
-                total_errors += len(errors)
-                day_outcomes += len(outcomes)
-                day_errors += len(errors)
+                total_outcomes += len(outcomes) + len(counterfactual_rows)
+                total_errors += len(errors) + len(classifier_errors)
+                day_outcomes += len(outcomes) + len(counterfactual_rows)
+                day_errors += len(errors) + len(classifier_errors)
                 if idx % 25 == 0 or idx == len(day_snaps):
                     print(
-                        f"[walk]   {idx}/{len(day_snaps)} snapshots processed outcomes={day_outcomes} errors={day_errors}"
+                        f"[walk]   {idx}/{len(day_snaps)} snapshots processed outcomes={day_outcomes} errors={day_errors} "
+                        f"class_a={day_class_a} class_b={day_class_b} skipped={day_skipped}"
                     )
+            print(
+                f"[walk] session={session_date} summary class_a={day_class_a} class_b={day_class_b} "
+                f"walk_mode={walk_mode} skipped={day_skipped} outcomes={day_outcomes} errors={day_errors}"
+            )
             conn.commit()
 
         conn.execute(
@@ -915,7 +1566,8 @@ def walk_range(date_from: str, date_to: str, out_db: str = "historical_outcomes.
         conn.close()
 
     print(
-        f"[walk] complete db={db_path} snapshots={total_snapshots} outcomes={total_outcomes} errors={total_errors}"
+        f"[walk] complete db={db_path} walk_mode={walk_mode} snapshots={total_snapshots} outcomes={total_outcomes} "
+        f"errors={total_errors} class_a={total_class_a} class_b={total_class_b} skipped={total_skipped}"
     )
     return 0
 
@@ -924,6 +1576,514 @@ def aggregate(out_db: str = "historical_outcomes.sqlite") -> int:
     db_path = str((REPO_ROOT / out_db).resolve()) if not os.path.isabs(out_db) else out_db
     conn = _sqlite_connect(db_path)
     try:
+        conn.execute("DROP TABLE IF EXISTS stage1_snapshot_metrics")
+        conn.execute(
+            f"""
+            CREATE TABLE stage1_snapshot_metrics AS
+            WITH snapshot_base AS (
+                SELECT
+                    i.session_date,
+                    i.snapshot_id,
+                    i.snapshot_class,
+                    i.is_labelable,
+                    i.thesis_action,
+                    i.thesis_strategy,
+                    i.execution_action,
+                    i.execution_strategy,
+                    i.execution_candidate_id,
+                    i.execution_candidate_index,
+                    i.execution_aligned,
+                    i.thesis_equals_execution,
+                    i.dominant_lane,
+                    i.dominant_count
+                FROM historical_snapshot_inventory i
+                WHERE i.snapshot_class = 'class_a'
+            ),
+            chosen AS (
+                SELECT
+                    session_date,
+                    snapshot_id,
+                    candidate_id AS chosen_candidate_id,
+                    strategy_type AS chosen_strategy_type,
+                    r_multiple AS chosen_r,
+                    is_success AS chosen_success
+                FROM historical_outcomes
+                WHERE role = 'primary'
+            ),
+            best_any AS (
+                SELECT
+                    session_date,
+                    snapshot_id,
+                    candidate_id AS best_any_candidate_id,
+                    strategy_type AS best_any_strategy_type,
+                    r_multiple AS best_any_r,
+                    is_success AS best_any_success
+                FROM (
+                    SELECT
+                        session_date,
+                        snapshot_id,
+                        candidate_id,
+                        strategy_type,
+                        r_multiple,
+                        is_success,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY session_date, snapshot_id
+                            ORDER BY COALESCE(r_multiple, -999999.0) DESC, candidate_id
+                        ) AS rn
+                    FROM historical_outcomes
+                    WHERE candidate_source IN ('primary', 'generated')
+                )
+                WHERE rn = 1
+            ),
+            best_exec_family AS (
+                SELECT
+                    ranked.session_date,
+                    ranked.snapshot_id,
+                    ranked.candidate_id AS best_exec_family_candidate_id,
+                    ranked.strategy_type AS best_exec_family_strategy_type,
+                    ranked.r_multiple AS best_exec_family_r,
+                    ranked.is_success AS best_exec_family_success
+                FROM (
+                    SELECT
+                        o.session_date,
+                        o.snapshot_id,
+                        o.candidate_id,
+                        o.strategy_type,
+                        o.r_multiple,
+                        o.is_success,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY o.session_date, o.snapshot_id
+                            ORDER BY COALESCE(o.r_multiple, -999999.0) DESC, o.candidate_id
+                        ) AS rn
+                    FROM historical_outcomes o
+                    JOIN historical_snapshot_inventory i
+                      ON i.session_date = o.session_date
+                     AND i.snapshot_id = o.snapshot_id
+                    WHERE o.candidate_source IN ('primary', 'generated')
+                      AND o.strategy_type = i.execution_strategy
+                ) ranked
+                WHERE ranked.rn = 1
+            ),
+            best_thesis_family AS (
+                SELECT
+                    ranked.session_date,
+                    ranked.snapshot_id,
+                    ranked.candidate_id AS best_thesis_family_candidate_id,
+                    ranked.strategy_type AS best_thesis_family_strategy_type,
+                    ranked.r_multiple AS best_thesis_family_r,
+                    ranked.is_success AS best_thesis_family_success
+                FROM (
+                    SELECT
+                        o.session_date,
+                        o.snapshot_id,
+                        o.candidate_id,
+                        o.strategy_type,
+                        o.r_multiple,
+                        o.is_success,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY o.session_date, o.snapshot_id
+                            ORDER BY COALESCE(o.r_multiple, -999999.0) DESC, o.candidate_id
+                        ) AS rn
+                    FROM historical_outcomes o
+                    JOIN historical_snapshot_inventory i
+                      ON i.session_date = o.session_date
+                     AND i.snapshot_id = o.snapshot_id
+                    WHERE o.candidate_source IN ('primary', 'generated')
+                      AND o.strategy_type = i.thesis_strategy
+                ) ranked
+                WHERE ranked.rn = 1
+            )
+            SELECT
+                sb.session_date,
+                sb.snapshot_id,
+                sb.snapshot_class,
+                sb.is_labelable,
+                sb.thesis_action,
+                sb.thesis_strategy,
+                sb.execution_action,
+                sb.execution_strategy,
+                sb.execution_candidate_id,
+                sb.execution_candidate_index,
+                sb.execution_aligned,
+                sb.thesis_equals_execution,
+                sb.dominant_lane,
+                sb.dominant_count,
+                c.chosen_candidate_id,
+                c.chosen_strategy_type,
+                c.chosen_r,
+                c.chosen_success,
+                ba.best_any_candidate_id,
+                ba.best_any_strategy_type,
+                ba.best_any_r,
+                ba.best_any_success,
+                bef.best_exec_family_candidate_id,
+                bef.best_exec_family_strategy_type,
+                bef.best_exec_family_r,
+                bef.best_exec_family_success,
+                btf.best_thesis_family_candidate_id,
+                btf.best_thesis_family_strategy_type,
+                btf.best_thesis_family_r,
+                btf.best_thesis_family_success,
+                CASE
+                    WHEN ba.best_any_r IS NOT NULL
+                     AND c.chosen_r IS NOT NULL
+                     AND ba.best_any_r >= {STAGE1_POSITIVE_R_FLOOR}
+                     AND ba.best_any_r - c.chosen_r >= {STAGE1_R_MARGIN}
+                    THEN 1
+                    ELSE 0
+                END AS better_candidate_available,
+                CASE
+                    WHEN bef.best_exec_family_r IS NOT NULL
+                     AND c.chosen_r IS NOT NULL
+                     AND bef.best_exec_family_r >= {STAGE1_POSITIVE_R_FLOOR}
+                     AND bef.best_exec_family_r - c.chosen_r >= {STAGE1_R_MARGIN}
+                    THEN 1
+                    ELSE 0
+                END AS ranking_miss_within_execution_family,
+                CASE
+                    WHEN btf.best_thesis_family_r IS NOT NULL
+                     AND ba.best_any_r IS NOT NULL
+                     AND ba.best_any_r >= {STAGE1_POSITIVE_R_FLOOR}
+                     AND ba.best_any_r - btf.best_thesis_family_r >= {STAGE1_R_MARGIN}
+                    THEN 1
+                    ELSE 0
+                END AS thesis_family_miss
+            FROM snapshot_base sb
+            LEFT JOIN chosen c
+              ON c.session_date = sb.session_date
+             AND c.snapshot_id = sb.snapshot_id
+            LEFT JOIN best_any ba
+              ON ba.session_date = sb.session_date
+             AND ba.snapshot_id = sb.snapshot_id
+            LEFT JOIN best_exec_family bef
+              ON bef.session_date = sb.session_date
+             AND bef.snapshot_id = sb.snapshot_id
+            LEFT JOIN best_thesis_family btf
+              ON btf.session_date = sb.session_date
+             AND btf.snapshot_id = sb.snapshot_id
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_candidate_prior_scores")
+        conn.execute(
+            """
+            CREATE TABLE stage1_candidate_prior_scores AS
+            SELECT
+                o.session_date,
+                o.snapshot_id,
+                o.candidate_id,
+                o.role,
+                o.candidate_source,
+                o.strategy_type,
+                o.regime_bucket,
+                o.vix_bucket,
+                o.dte_bucket,
+                o.r_multiple,
+                o.is_success,
+                COUNT(p.candidate_id) AS prior_bucket_n,
+                ROUND(AVG(p.r_multiple), 4) AS prior_bucket_avg_r
+            FROM historical_outcomes o
+            LEFT JOIN historical_outcomes p
+              ON p.snapshot_class = 'class_a'
+             AND p.candidate_source IN ('primary', 'generated')
+             AND p.session_date < o.session_date
+             AND p.strategy_type = o.strategy_type
+             AND p.regime_bucket = o.regime_bucket
+             AND p.vix_bucket = o.vix_bucket
+             AND p.dte_bucket = o.dte_bucket
+            WHERE o.snapshot_class = 'class_a'
+              AND o.candidate_source IN ('primary', 'generated')
+            GROUP BY
+                o.session_date,
+                o.snapshot_id,
+                o.candidate_id,
+                o.role,
+                o.candidate_source,
+                o.strategy_type,
+                o.regime_bucket,
+                o.vix_bucket,
+                o.dte_bucket,
+                o.r_multiple,
+                o.is_success
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_entry_actionable_metrics")
+        conn.execute(
+            f"""
+            CREATE TABLE stage1_entry_actionable_metrics AS
+            WITH chosen AS (
+                SELECT
+                    session_date,
+                    snapshot_id,
+                    candidate_id AS chosen_candidate_id,
+                    r_multiple AS chosen_r,
+                    prior_bucket_n AS chosen_prior_bucket_n,
+                    prior_bucket_avg_r AS chosen_entry_score
+                FROM stage1_candidate_prior_scores
+                WHERE role = 'primary'
+            ),
+            ranked AS (
+                SELECT
+                    s.session_date,
+                    s.snapshot_id,
+                    s.candidate_id,
+                    s.strategy_type,
+                    s.r_multiple,
+                    s.prior_bucket_n,
+                    s.prior_bucket_avg_r,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY s.session_date, s.snapshot_id
+                        ORDER BY s.prior_bucket_avg_r DESC, s.prior_bucket_n DESC, s.candidate_id
+                    ) AS rn
+                FROM stage1_candidate_prior_scores s
+                WHERE s.prior_bucket_n >= {STAGE1_MIN_PRIOR_BUCKET_N}
+                  AND s.prior_bucket_avg_r IS NOT NULL
+            ),
+            best_entry AS (
+                SELECT
+                    session_date,
+                    snapshot_id,
+                    candidate_id AS best_entry_candidate_id,
+                    strategy_type AS best_entry_strategy,
+                    r_multiple AS best_entry_r,
+                    prior_bucket_n AS best_entry_prior_bucket_n,
+                    prior_bucket_avg_r AS best_entry_score
+                FROM ranked
+                WHERE rn = 1
+            )
+            SELECT
+                m.session_date,
+                m.snapshot_id,
+                m.chosen_candidate_id,
+                m.chosen_strategy_type,
+                m.chosen_r,
+                c.chosen_prior_bucket_n,
+                c.chosen_entry_score,
+                b.best_entry_candidate_id,
+                b.best_entry_strategy,
+                b.best_entry_r,
+                b.best_entry_prior_bucket_n,
+                b.best_entry_score,
+                CASE
+                    WHEN b.best_entry_score IS NOT NULL AND c.chosen_entry_score IS NOT NULL
+                    THEN ROUND(b.best_entry_score - c.chosen_entry_score, 4)
+                    ELSE NULL
+                END AS entry_score_margin,
+                CASE
+                    WHEN b.best_entry_r IS NOT NULL AND m.chosen_r IS NOT NULL
+                    THEN ROUND(b.best_entry_r - m.chosen_r, 4)
+                    ELSE NULL
+                END AS realized_r_margin,
+                CASE
+                    WHEN b.best_entry_candidate_id IS NOT NULL
+                     AND m.chosen_candidate_id IS NOT NULL
+                     AND b.best_entry_candidate_id != m.chosen_candidate_id
+                     AND b.best_entry_score IS NOT NULL
+                     AND c.chosen_entry_score IS NOT NULL
+                     AND b.best_entry_score - c.chosen_entry_score >= {STAGE1_R_MARGIN}
+                     AND b.best_entry_r IS NOT NULL
+                     AND b.best_entry_r >= {STAGE1_POSITIVE_R_FLOOR}
+                     AND m.chosen_r IS NOT NULL
+                     AND b.best_entry_r - m.chosen_r >= {STAGE1_R_MARGIN}
+                    THEN 1
+                    ELSE 0
+                END AS rank_wrong_entry_actionable,
+                CASE
+                    WHEN c.chosen_entry_score IS NOT NULL
+                     AND c.chosen_entry_score >= {STAGE1_POSITIVE_R_FLOOR}
+                     AND m.chosen_r IS NOT NULL
+                     AND m.chosen_r <= {STAGE1_EXIT_LOSS_FLOOR}
+                    THEN 1
+                    ELSE 0
+                END AS exit_destroyed_prior_bucket,
+                CASE
+                    WHEN c.chosen_entry_score IS NULL THEN 1
+                    WHEN c.chosen_prior_bucket_n < {STAGE1_MIN_PRIOR_BUCKET_N} THEN 1
+                    ELSE 0
+                END AS low_prior_confidence
+            FROM stage1_snapshot_metrics m
+            LEFT JOIN chosen c
+              ON c.session_date = m.session_date
+             AND c.snapshot_id = m.snapshot_id
+            LEFT JOIN best_entry b
+              ON b.session_date = m.session_date
+             AND b.snapshot_id = m.snapshot_id
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_corrected_failure_modes")
+        conn.execute(
+            """
+            CREATE TABLE stage1_corrected_failure_modes AS
+            SELECT
+                f.session_date,
+                f.snapshot_id,
+                f.poll_ts,
+                CASE
+                    WHEN COALESCE(e.exit_destroyed_prior_bucket, 0) = 1 THEN 'EXIT_DESTROYED'
+                    WHEN COALESCE(e.rank_wrong_entry_actionable, 0) = 1 THEN 'RANK_WRONG_ENTRY_ACTIONABLE'
+                    WHEN f.mode = 'GATE_BLOCKED' THEN 'GATE_BLOCKED'
+                    WHEN f.mode = 'RANK_WRONG_HINDSIGHT' THEN 'RANK_WRONG_HINDSIGHT'
+                    ELSE 'NO_VIABLE'
+                END AS mode,
+                f.mode AS source_mode,
+                f.best_candidate_id,
+                f.best_candidate_source,
+                f.best_candidate_strategy,
+                f.best_candidate_rank,
+                f.best_candidate_r,
+                f.chosen_candidate_id,
+                f.chosen_strategy,
+                f.chosen_r,
+                e.chosen_entry_score,
+                e.chosen_prior_bucket_n,
+                e.best_entry_candidate_id,
+                e.best_entry_strategy,
+                e.best_entry_score,
+                e.best_entry_prior_bucket_n,
+                e.best_entry_r,
+                e.entry_score_margin,
+                e.realized_r_margin,
+                e.rank_wrong_entry_actionable,
+                e.exit_destroyed_prior_bucket,
+                e.low_prior_confidence,
+                f.rejection_reason,
+                CASE
+                    WHEN COALESCE(e.exit_destroyed_prior_bucket, 0) = 1
+                        THEN 'chosen had positive prior bucket expectancy but realized below exit floor'
+                    WHEN COALESCE(e.rank_wrong_entry_actionable, 0) = 1
+                        THEN 'prior bucket expectancy ranked an alternative higher and realized R confirmed it'
+                    ELSE f.notes
+                END AS notes
+            FROM stage1_failure_modes f
+            LEFT JOIN stage1_entry_actionable_metrics e
+              ON e.session_date = f.session_date
+             AND e.snapshot_id = f.snapshot_id
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_corrected_failure_mode_breakdown")
+        conn.execute(
+            """
+            CREATE TABLE stage1_corrected_failure_mode_breakdown AS
+            SELECT
+                mode,
+                COUNT(*) AS count,
+                ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM stage1_corrected_failure_modes), 0), 2) AS pct,
+                ROUND(AVG(COALESCE(entry_score_margin, 0.0)), 4) AS avg_entry_score_margin,
+                ROUND(AVG(COALESCE(realized_r_margin, 0.0)), 4) AS avg_realized_r_margin,
+                CASE WHEN COUNT(*) < 30 THEN 1 ELSE 0 END AS low_confidence
+            FROM stage1_corrected_failure_modes
+            GROUP BY mode
+            ORDER BY count DESC, mode
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_corrected_failure_mode_by_session")
+        conn.execute(
+            """
+            CREATE TABLE stage1_corrected_failure_mode_by_session AS
+            SELECT
+                session_date,
+                mode,
+                COUNT(*) AS count,
+                ROUND(AVG(COALESCE(entry_score_margin, 0.0)), 4) AS avg_entry_score_margin,
+                ROUND(AVG(COALESCE(realized_r_margin, 0.0)), 4) AS avg_realized_r_margin
+            FROM stage1_corrected_failure_modes
+            GROUP BY session_date, mode
+            ORDER BY session_date, count DESC, mode
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_metric_summary")
+        conn.execute(
+            """
+            CREATE TABLE stage1_metric_summary AS
+            SELECT
+                execution_strategy,
+                thesis_strategy,
+                COUNT(*) AS snapshots,
+                ROUND(AVG(COALESCE(chosen_r, 0.0)), 4) AS chosen_avg_r,
+                ROUND(AVG(COALESCE(best_any_r, 0.0)), 4) AS best_any_avg_r,
+                ROUND(AVG(COALESCE(best_exec_family_r, 0.0)), 4) AS best_exec_family_avg_r,
+                ROUND(AVG(COALESCE(best_thesis_family_r, 0.0)), 4) AS best_thesis_family_avg_r,
+                SUM(CASE WHEN better_candidate_available = 1 THEN 1 ELSE 0 END) AS better_candidate_count,
+                SUM(CASE WHEN ranking_miss_within_execution_family = 1 THEN 1 ELSE 0 END) AS ranking_miss_count,
+                SUM(CASE WHEN thesis_family_miss = 1 THEN 1 ELSE 0 END) AS thesis_family_miss_count,
+                SUM(CASE WHEN thesis_equals_execution = 1 THEN 1 ELSE 0 END) AS thesis_execution_agree_count
+            FROM stage1_snapshot_metrics
+            GROUP BY execution_strategy, thesis_strategy
+            ORDER BY snapshots DESC, chosen_avg_r DESC
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_session_summary")
+        conn.execute(
+            """
+            CREATE TABLE stage1_session_summary AS
+            SELECT
+                session_date,
+                COUNT(*) AS snapshots,
+                SUM(CASE WHEN is_labelable = 1 THEN 1 ELSE 0 END) AS labelable_snapshots,
+                ROUND(AVG(COALESCE(chosen_r, 0.0)), 4) AS chosen_avg_r,
+                ROUND(AVG(COALESCE(best_any_r, 0.0)), 4) AS best_any_avg_r,
+                ROUND(AVG(COALESCE(best_exec_family_r, 0.0)), 4) AS best_exec_family_avg_r,
+                ROUND(AVG(COALESCE(best_thesis_family_r, 0.0)), 4) AS best_thesis_family_avg_r,
+                SUM(CASE WHEN better_candidate_available = 1 THEN 1 ELSE 0 END) AS better_candidate_count,
+                SUM(CASE WHEN ranking_miss_within_execution_family = 1 THEN 1 ELSE 0 END) AS ranking_miss_count,
+                SUM(CASE WHEN thesis_family_miss = 1 THEN 1 ELSE 0 END) AS thesis_family_miss_count,
+                SUM(CASE WHEN thesis_equals_execution = 1 THEN 1 ELSE 0 END) AS thesis_execution_agree_count,
+                ROUND(AVG(CASE WHEN chosen_success = 1 THEN 1.0 ELSE 0.0 END) * 100.0, 2) AS chosen_success_rate_pct
+            FROM stage1_snapshot_metrics
+            GROUP BY session_date
+            ORDER BY session_date
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_failure_mode_breakdown")
+        conn.execute(
+            """
+            CREATE TABLE stage1_failure_mode_breakdown AS
+            SELECT
+                mode,
+                COUNT(*) AS count,
+                ROUND(COUNT(*) * 100.0 / NULLIF((SELECT COUNT(*) FROM stage1_failure_modes), 0), 2) AS pct,
+                ROUND(AVG(CASE
+                    WHEN mode IN ('GATE_BLOCKED', 'RANK_WRONG', 'RANK_WRONG_HINDSIGHT') THEN COALESCE(best_candidate_r, 0.0)
+                    ELSE NULL
+                END), 4) AS avg_r_of_best_missed,
+                CASE WHEN COUNT(*) < 30 THEN 1 ELSE 0 END AS low_confidence
+            FROM stage1_failure_modes
+            GROUP BY mode
+            ORDER BY count DESC, mode
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_failure_mode_by_session")
+        conn.execute(
+            """
+            CREATE TABLE stage1_failure_mode_by_session AS
+            SELECT
+                session_date,
+                mode,
+                COUNT(*) AS count,
+                ROUND(AVG(CASE
+                    WHEN mode IN ('GATE_BLOCKED', 'RANK_WRONG', 'RANK_WRONG_HINDSIGHT') THEN COALESCE(best_candidate_r, 0.0)
+                    ELSE NULL
+                END), 4) AS avg_best_missed_r
+            FROM stage1_failure_modes
+            GROUP BY session_date, mode
+            ORDER BY session_date, count DESC, mode
+            """
+        )
+        conn.execute("DROP TABLE IF EXISTS stage1_rejection_reason_summary")
+        conn.execute(
+            """
+            CREATE TABLE stage1_rejection_reason_summary AS
+            SELECT
+                COALESCE(rejection_reason, 'unknown') AS rejection_reason,
+                COUNT(*) AS rejected_count,
+                ROUND(AVG(CASE WHEN COALESCE(r_multiple, 0.0) > 0 THEN 1.0 ELSE 0.0 END) * 100.0, 2) AS pct_with_positive_r,
+                ROUND(AVG(COALESCE(r_multiple, 0.0)), 4) AS avg_r_if_taken,
+                CASE WHEN COUNT(*) < 30 THEN 1 ELSE 0 END AS low_confidence
+            FROM historical_outcomes
+            WHERE candidate_source = 'rejected_counterfactual'
+            GROUP BY COALESCE(rejection_reason, 'unknown')
+            ORDER BY rejected_count DESC, avg_r_if_taken DESC
+            """
+        )
         conn.execute("DROP TABLE IF EXISTS strategy_weights_local")
         conn.execute(
             """
@@ -939,6 +2099,7 @@ def aggregate(out_db: str = "historical_outcomes.sqlite") -> int:
                 CASE WHEN COUNT(*) < 30 THEN 1 ELSE 0 END AS low_confidence
             FROM historical_outcomes
             WHERE role IN ('primary', 'secondary')
+              AND snapshot_class = 'class_a'
             GROUP BY strategy_type, regime_bucket, vix_bucket, dte_bucket
             ORDER BY n DESC, avg_r DESC
             """
@@ -952,11 +2113,138 @@ def aggregate(out_db: str = "historical_outcomes.sqlite") -> int:
             """
         ).fetchall()
         total_rows = conn.execute("SELECT COUNT(*) FROM strategy_weights_local").fetchone()[0]
+        stage1_rows = conn.execute("SELECT COUNT(*) FROM stage1_snapshot_metrics").fetchone()[0]
+        failure_rows = conn.execute(
+            """
+            SELECT mode, count, pct, avg_r_of_best_missed, low_confidence
+            FROM stage1_failure_mode_breakdown
+            ORDER BY count DESC, mode
+            """
+        ).fetchall()
+        corrected_failure_rows = conn.execute(
+            """
+            SELECT mode, count, pct, avg_entry_score_margin, avg_realized_r_margin, low_confidence
+            FROM stage1_corrected_failure_mode_breakdown
+            ORDER BY count DESC, mode
+            """
+        ).fetchall()
+        rejection_reason_rows = conn.execute(
+            """
+            SELECT rejection_reason, rejected_count, pct_with_positive_r, avg_r_if_taken, low_confidence
+            FROM stage1_rejection_reason_summary
+            ORDER BY rejected_count DESC, avg_r_if_taken DESC
+            LIMIT 15
+            """
+        ).fetchall()
+        inventory_rows = conn.execute(
+            """
+            SELECT snapshot_class, COUNT(*)
+            FROM historical_snapshot_inventory
+            GROUP BY snapshot_class
+            ORDER BY snapshot_class
+            """
+        ).fetchall()
+        distinct_sessions = conn.execute(
+            """
+            SELECT COUNT(DISTINCT session_date)
+            FROM historical_outcomes
+            WHERE snapshot_class = 'class_a'
+            """
+        ).fetchone()[0]
+        stage1_summary_rows = conn.execute(
+            """
+            SELECT execution_strategy, thesis_strategy, snapshots, chosen_avg_r, best_any_avg_r,
+                   best_exec_family_avg_r, best_thesis_family_avg_r, better_candidate_count,
+                   ranking_miss_count, thesis_family_miss_count, thesis_execution_agree_count
+            FROM stage1_metric_summary
+            ORDER BY snapshots DESC, chosen_avg_r DESC
+            LIMIT 12
+            """
+        ).fetchall()
+        stage1_session_rows = conn.execute(
+            """
+            SELECT session_date, snapshots, labelable_snapshots, chosen_avg_r, best_any_avg_r,
+                   best_exec_family_avg_r, best_thesis_family_avg_r, better_candidate_count,
+                   ranking_miss_count, thesis_family_miss_count, thesis_execution_agree_count,
+                   chosen_success_rate_pct
+            FROM stage1_session_summary
+            ORDER BY session_date
+            LIMIT 20
+            """
+        ).fetchall()
+        failure_session_rows = conn.execute(
+            """
+            SELECT session_date, mode, count, avg_best_missed_r
+            FROM stage1_failure_mode_by_session
+            ORDER BY session_date, count DESC, mode
+            LIMIT 40
+            """
+        ).fetchall()
+        corrected_failure_session_rows = conn.execute(
+            """
+            SELECT session_date, mode, count, avg_entry_score_margin, avg_realized_r_margin
+            FROM stage1_corrected_failure_mode_by_session
+            ORDER BY session_date, count DESC, mode
+            LIMIT 50
+            """
+        ).fetchall()
     finally:
         conn.commit()
         conn.close()
 
-    print(f"[aggregate] db={db_path} buckets={total_rows}")
+    print(
+        f"[aggregate] db={db_path} buckets={total_rows} class_a_sessions={distinct_sessions} "
+        f"stage1_snapshots={stage1_rows}"
+    )
+    if inventory_rows:
+        print(
+            "[aggregate] inventory "
+            + " ".join(f"{row[0]}={row[1]}" for row in inventory_rows)
+        )
+    for row in failure_rows:
+        print(
+            "[aggregate] failure "
+            f"mode={row[0]} count={row[1]} pct={row[2]} avg_best_missed_r={row[3]} low_confidence={row[4]}"
+        )
+    for row in corrected_failure_rows:
+        print(
+            "[aggregate] corrected_failure "
+            f"mode={row[0]} count={row[1]} pct={row[2]} avg_entry_score_margin={row[3]} "
+            f"avg_realized_r_margin={row[4]} low_confidence={row[5]}"
+        )
+    for row in rejection_reason_rows:
+        print(
+            "[aggregate] reject_reason "
+            f"reason={row[0]} count={row[1]} pct_positive_r={row[2]} avg_r_if_taken={row[3]} low_confidence={row[4]}"
+        )
+    for row in stage1_summary_rows:
+        print(
+            "[aggregate] stage1 "
+            f"exec={row[0] or '--'} thesis={row[1] or '--'} snaps={row[2]} "
+            f"chosen_r={row[3]} best_any_r={row[4]} best_exec_family_r={row[5]} "
+            f"best_thesis_family_r={row[6]} better_any={row[7]} "
+            f"rank_miss={row[8]} thesis_miss={row[9]} agree={row[10]}"
+        )
+    for row in stage1_session_rows:
+        print(
+            "[aggregate] session "
+            f"date={row[0]} snaps={row[1]} labelable={row[2]} "
+            f"chosen_r={row[3]} best_any_r={row[4]} best_exec_family_r={row[5]} "
+            f"best_thesis_family_r={row[6]} better_any={row[7]} "
+            f"rank_miss={row[8]} thesis_miss={row[9]} agree={row[10]} "
+            f"chosen_wr={row[11]}"
+        )
+    for row in failure_session_rows:
+        print(
+            "[aggregate] failure_session "
+            f"date={row[0]} mode={row[1]} count={row[2]} avg_best_missed_r={row[3]}"
+        )
+    for row in corrected_failure_session_rows:
+        print(
+            "[aggregate] corrected_failure_session "
+            f"date={row[0]} mode={row[1]} count={row[2]} avg_entry_score_margin={row[3]} "
+            f"avg_realized_r_margin={row[4]}"
+        )
     for row in top_rows:
         print(
             "[aggregate] "
@@ -972,6 +2260,12 @@ def main() -> int:
     parser.add_argument("--walk", action="store_true", help="Run the Stage 1.1 historical teacher walk into local SQLite.")
     parser.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD")
     parser.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD")
+    parser.add_argument(
+        "--walk-mode",
+        choices=("class_a", "all"),
+        default="class_a",
+        help="class_a = walk only saved-menu snapshots; all = walk every fetched snapshot",
+    )
     parser.add_argument("--aggregate", action="store_true", help="Aggregate walked outcomes into local strategy-weight buckets.")
     args = parser.parse_args()
 
@@ -980,7 +2274,7 @@ def main() -> int:
     if args.walk:
         if not (args.date_from and args.date_to):
             parser.error("--walk requires --from and --to")
-        return walk_range(args.date_from, args.date_to)
+        return walk_range(args.date_from, args.date_to, walk_mode=args.walk_mode)
     if args.aggregate:
         return aggregate()
 
