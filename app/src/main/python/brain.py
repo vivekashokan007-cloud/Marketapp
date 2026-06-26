@@ -187,7 +187,12 @@ def _stage2a_annotate_candidates(candidates, ctx):
     table, table_error = _stage2a_load_teacher_table(table_path) if mode != 'off' else (None, None)
     table_min_prior = int((table or {}).get('min_prior_bucket_n') or requested_min_prior)
     min_prior = max(requested_min_prior, table_min_prior)
-    entry_vix = _resolve_entry_vix({'context_json': json.dumps(ctx)})
+    entry_vix = _float_or_none(
+        ctx.get('vix')
+        or ctx.get('indiaVix')
+        or ctx.get('entry_vix')
+        or ctx.get('snapshot_vix')
+    )
     teacher_config = _teacher_default_config()
     regime_bucket = _teacher_regime_bucket(entry_vix, teacher_config)
     summary = {
@@ -5401,7 +5406,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.67"
+BRAIN_VERSION = "2.4.68"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
