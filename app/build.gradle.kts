@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b299: fix Stage 2A context serialization during brain validation.
+        // b300: ship verified Stage 2A teacher table in shadow mode; verdict unchanged.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 299
-        versionName = "2.4.68"
+        versionCode = 300
+        versionName = "2.4.69"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

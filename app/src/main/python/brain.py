@@ -5406,7 +5406,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.68"
+BRAIN_VERSION = "2.4.69"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8829,6 +8829,42 @@ def _full_rejected_candidate_view(row):
     }
 
 
+def _audit_snapshot_replayability(snapshot_context, ctx):
+    """Log exact-replay capture regressions without changing live behavior."""
+    warns = []
+    try:
+        snapshot_context = snapshot_context if isinstance(snapshot_context, dict) else {}
+        ctx = ctx if isinstance(ctx, dict) else {}
+        for idx_key in ('nfChain', 'bnfChain'):
+            chain = ctx.get(idx_key) or {}
+            strikes = chain.get('strikes') or {}
+            if not strikes:
+                warns.append(f"{idx_key}.strikes empty")
+                continue
+            if not chain.get('atm'):
+                warns.append(f"{idx_key}.atm missing")
+            if chain.get('atmIv') in (None, 0):
+                warns.append(f"{idx_key}.atmIv missing/zero")
+            sample = next(iter(strikes.values()), {}) or {}
+            for side in ('CE', 'PE'):
+                leg = sample.get(side) or {}
+                for f in ('bid', 'ask', 'ltp', 'iv', 'oi'):
+                    if f not in leg:
+                        warns.append(f"{idx_key} leg missing '{f}'")
+                        break
+        if not snapshot_context.get('snapshot_generated_candidates') and not snapshot_context.get('snapshot_generation_skip_reasons'):
+            warns.append("generated_candidates empty without skip_reason")
+        if 'snapshot_rejected_candidates_full' not in snapshot_context:
+            warns.append("rejected_candidates_full absent")
+    except Exception as exc:
+        warns.append(f"replay_audit_exception={exc}")
+    if warns:
+        try:
+            print(f"REPLAY_CAPTURE_WARN poll={snapshot_context.get('snapshot_latest_poll',{}).get('t')} issues={warns}")
+        except Exception:
+            pass
+
+
 def take_poll_snapshot(result, ctx, polls):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -9058,6 +9094,8 @@ def take_poll_snapshot(result, ctx, polls):
     }
     snapshot_context['snapshot_stage2a'] = result.get('stage2a') if isinstance(result.get('stage2a'), dict) else {}
 
+    _audit_snapshot_replayability(snapshot_context, ctx)
+
     return {
         'poll_ts': datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z"),
         'session_date': ctx.get('today_ist'),
@@ -9197,17 +9235,16 @@ def _teacher_default_config():
         'config_version': '2026-06-15',
         'tp_capture_pct': 0.50,
         'sl_loss_multiple': 1.00,
-        'stt_options': 0.0015,
         'brokerage_per_order': 20.0,
-        'exchange_per_leg': 15.0,
         'gst_rate': 0.18,
-        'fixed_buffer': 3.0,
-        'slippage': {
-            'NF_2LEG': 1.0,
-            'NF_4LEG': 2.0,
-            'BNF_2LEG': 2.0,
-            'BNF_4LEG': 4.0,
-        },
+        'stamp_duty_buy_rate': 0.00003,
+        'sebi_rate': 0.000001,
+        'ipft_rate': 0.000000001,
+        'exchange_options_rate_pre_2026_03_01': 0.0003503,
+        'exchange_options_rate_from_2026_03_01': 0.0003553,
+        'stt_options_rate_pre_2026_04_01': 0.0010,
+        'stt_options_rate_from_2026_04_01': 0.0015,
+        'bid_ask_slippage_fallback_points': 0.25,
         'vix_buckets': {
             'very_low_max': 14.0,
             'low_max': 16.0,
@@ -9296,24 +9333,242 @@ def _teacher_regime_bucket(entry_vix, config):
     return 'VIX_VERY_HIGH'
 
 
-def _teacher_round_trip_cost(index_key, leg_count, lot_size, sell_premium_value, config):
-    slippage = config.get('slippage', {})
-    slip_key = f"{index_key}_{leg_count}LEG"
-    slip_per_unit = _float_or_none(slippage.get(slip_key)) or 0.0
-    stt_rate = float(config.get('stt_options', 0.0015) or 0.0015)
-    brokerage = float(config.get('brokerage_per_order', 20.0) or 20.0)
-    exchange = float(config.get('exchange_per_leg', 15.0) or 15.0)
-    gst = float(config.get('gst_rate', 0.18) or 0.18)
-    fixed_buffer = float(config.get('fixed_buffer', 3.0) or 3.0)
-    sell_premium_value = max(0.0, float(sell_premium_value or 0.0))
-    cost = (
-        sell_premium_value * stt_rate * 2.0 +
-        brokerage * leg_count * 2.0 +
-        exchange * leg_count * 2.0 * (1.0 + gst) +
-        slip_per_unit * lot_size * leg_count * 2.0 +
-        fixed_buffer
+def _teacher_option_charge_rates(trade_dt, config):
+    stt_cutover = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    exchange_cutover = datetime(2026, 3, 1, tzinfo=timezone.utc)
+    if trade_dt is None:
+        trade_dt = stt_cutover
+    stt_rate = (
+        float(config.get('stt_options_rate_from_2026_04_01', 0.0015) or 0.0015)
+        if trade_dt >= stt_cutover
+        else float(config.get('stt_options_rate_pre_2026_04_01', 0.0010) or 0.0010)
     )
-    return round(cost, 2)
+    exchange_rate = (
+        float(config.get('exchange_options_rate_from_2026_03_01', 0.0003553) or 0.0003553)
+        if trade_dt >= exchange_cutover
+        else float(config.get('exchange_options_rate_pre_2026_03_01', 0.0003503) or 0.0003503)
+    )
+    return {
+        'stt_rate': stt_rate,
+        'exchange_rate': exchange_rate,
+        'gst_rate': float(config.get('gst_rate', 0.18) or 0.18),
+        'stamp_duty_buy_rate': float(config.get('stamp_duty_buy_rate', 0.00003) or 0.00003),
+        'sebi_rate': float(config.get('sebi_rate', 0.000001) or 0.000001),
+        'ipft_rate': float(config.get('ipft_rate', 0.000000001) or 0.000000001),
+        'brokerage_per_order': float(config.get('brokerage_per_order', 20.0) or 20.0),
+        'slippage_fallback_points': float(config.get('bid_ask_slippage_fallback_points', 0.25) or 0.25),
+    }
+
+
+def _entry_snapshot_point(snap, cand):
+    ctx = {}
+    raw = snap.get('context_json')
+    if isinstance(raw, str) and raw:
+        try:
+            ctx = json.loads(raw)
+        except Exception:
+            ctx = {}
+    elif isinstance(raw, dict):
+        ctx = raw
+    if not isinstance(ctx, dict):
+        return {}
+    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    chain_key = 'nfChain' if str(index_key).upper() == 'NF' else 'bnfChain'
+    chain = ctx.get(chain_key) if isinstance(ctx.get(chain_key), dict) else {}
+    strikes = chain.get('strikes') if isinstance(chain.get('strikes'), dict) else {}
+    leg_specs = [
+        ('sell', cand.get('sellStrike'), cand.get('sellType')),
+        ('buy', cand.get('buyStrike'), cand.get('buyType')),
+    ]
+    if cand.get('sellStrike2') is not None:
+        leg_specs.extend([
+            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
+            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
+        ])
+    point = {}
+    for label, strike, option_type in leg_specs:
+        leg_payload = None
+        for strike_key, strike_payload in strikes.items():
+            if not isinstance(strike_payload, dict):
+                continue
+            if not _strike_matches(strike_key, strike):
+                continue
+            maybe = strike_payload.get(_normalize_option_type(option_type))
+            if isinstance(maybe, dict):
+                leg_payload = maybe
+                break
+        if not isinstance(leg_payload, dict):
+            return {}
+        point[label] = _float_or_none(leg_payload.get('ltp'))
+        point[f'{label}_bid'] = _float_or_none(leg_payload.get('bid'))
+        point[f'{label}_ask'] = _float_or_none(leg_payload.get('ask'))
+    return point
+
+
+def _teacher_candidate_leg_specs(cand):
+    leg_specs = [
+        ('sell', cand.get('sellStrike'), cand.get('sellType')),
+        ('buy', cand.get('buyStrike'), cand.get('buyType')),
+    ]
+    if cand.get('sellStrike2') is not None:
+        leg_specs.extend([
+            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
+            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
+        ])
+    return leg_specs
+
+
+def _teacher_candidate_is_credit(cand):
+    return str(cand.get('type') or '') in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+
+
+def _teacher_execution_basis(snap, cand, point, entry_point=None):
+    is_credit = _teacher_candidate_is_credit(cand)
+    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    entry_point = entry_point if isinstance(entry_point, dict) else _entry_snapshot_point(snap, cand)
+    leg_specs = _teacher_candidate_leg_specs(cand)
+    short_entry_points = 0.0
+    long_entry_points = 0.0
+    short_close_points = 0.0
+    long_close_points = 0.0
+    short_mark_points = 0.0
+    legs = []
+    for label, _, _ in leg_specs:
+        is_short = label.startswith('sell')
+        entry_px = (
+            _float_or_none(entry_point.get(f'{label}_bid'))
+            if is_short
+            else _float_or_none(entry_point.get(f'{label}_ask'))
+        )
+        if entry_px is None:
+            entry_px = _float_or_none(entry_point.get(label))
+        close_px = (
+            _float_or_none(point.get(f'{label}_ask'))
+            if is_short
+            else _float_or_none(point.get(f'{label}_bid'))
+        )
+        if close_px is None:
+            close_px = _float_or_none(point.get(label))
+        if entry_px is None or close_px is None:
+            return None
+        entry_px = max(entry_px, 0.0)
+        close_px = max(close_px, 0.0)
+        mark_px = max(_float_or_none(point.get(label)) or close_px, 0.0)
+        if is_short:
+            short_entry_points += entry_px
+            short_close_points += close_px
+            short_mark_points += mark_px
+        else:
+            long_entry_points += entry_px
+            long_close_points += close_px
+        legs.append({
+            'label': label,
+            'entry_px': round(entry_px, 4),
+            'close_px': round(close_px, 4),
+            'mark_px': round(mark_px, 4),
+            'side': 'short' if is_short else 'long',
+        })
+    if is_credit:
+        entry_basis_points = short_entry_points - long_entry_points
+        exit_value_points = short_close_points - long_close_points
+        gross_pnl = (entry_basis_points - exit_value_points) * lot_size
+        entry_label = 'credit_received'
+        exit_label = 'cost_to_close'
+        gross_formula = '(credit_received - cost_to_close) * lot'
+    else:
+        entry_basis_points = long_entry_points - short_entry_points
+        exit_value_points = long_close_points - short_close_points
+        gross_pnl = (exit_value_points - entry_basis_points) * lot_size
+        entry_label = 'debit_paid'
+        exit_label = 'value_to_close'
+        gross_formula = '(value_to_close - debit_paid) * lot'
+    return {
+        'is_credit': is_credit,
+        'lot_size': lot_size,
+        'entry_basis_points': round(entry_basis_points, 4),
+        'entry_basis_currency': round(entry_basis_points * lot_size, 2),
+        'exit_value_points': round(exit_value_points, 4),
+        'exit_value_currency': round(exit_value_points * lot_size, 2),
+        'gross_pnl': round(gross_pnl, 2),
+        'entry_label': entry_label,
+        'exit_label': exit_label,
+        'gross_formula': gross_formula,
+        'short_mark_value': round(short_mark_points * lot_size, 2),
+        'legs': legs,
+    }
+
+
+def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
+    rates = _teacher_option_charge_rates(trade_dt, config)
+    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    entry_point = _entry_snapshot_point(snap, cand)
+    leg_specs = _teacher_candidate_leg_specs(cand)
+    leg_count = len(leg_specs)
+    entry_turnover = 0.0
+    close_turnover = 0.0
+    short_sell_premium = 0.0
+    buy_side_premium = 0.0
+    slippage = 0.0
+    missing_spread_labels = []
+    for label, _, _ in leg_specs:
+        is_short = label.startswith('sell')
+        bid = _float_or_none(point.get(f'{label}_bid'))
+        ask = _float_or_none(point.get(f'{label}_ask'))
+        spread_points = None
+        if bid is not None and ask is not None and ask >= bid:
+            spread_points = ask - bid
+        else:
+            spread_points = rates['slippage_fallback_points']
+            missing_spread_labels.append(label)
+        slippage += (spread_points / 2.0) * lot_size
+        if is_short:
+            entry_px = _float_or_none(entry_point.get(f'{label}_bid')) or _float_or_none(entry_point.get(label))
+        else:
+            entry_px = _float_or_none(entry_point.get(f'{label}_ask')) or _float_or_none(entry_point.get(label))
+        entry_px = max(entry_px or 0.0, 0.0)
+        entry_turnover += entry_px * lot_size
+        if is_short:
+            short_sell_premium += entry_px * lot_size
+            ask_px = _float_or_none(point.get(f'{label}_ask')) or _float_or_none(point.get(label)) or 0.0
+            close_turnover += max(ask_px, 0.0) * lot_size
+            buy_side_premium += max(ask_px, 0.0) * lot_size
+        else:
+            bid_px = _float_or_none(point.get(f'{label}_bid')) or _float_or_none(point.get(label)) or 0.0
+            close_turnover += max(bid_px, 0.0) * lot_size
+            buy_side_premium += entry_px * lot_size
+    slippage *= 2.0
+    brokerage = rates['brokerage_per_order'] * leg_count * 2.0
+    exchange = (entry_turnover + close_turnover) * rates['exchange_rate']
+    ipft = (entry_turnover + close_turnover) * rates['ipft_rate']
+    gst = (brokerage + exchange + ipft) * rates['gst_rate']
+    stt = short_sell_premium * rates['stt_rate']
+    stamp = buy_side_premium * rates['stamp_duty_buy_rate']
+    sebi = (entry_turnover + close_turnover) * rates['sebi_rate']
+    total = brokerage + exchange + gst + stt + stamp + sebi + ipft + slippage
+    return {
+        'total': round(total, 2),
+        'brokerage': round(brokerage, 2),
+        'exchange': round(exchange, 2),
+        'gst': round(gst, 2),
+        'stt': round(stt, 2),
+        'stamp': round(stamp, 2),
+        'sebi': round(sebi, 2),
+        'ipft': round(ipft, 2),
+        'slippage': round(slippage, 2),
+        'entry_turnover': round(entry_turnover, 2),
+        'close_turnover': round(close_turnover, 2),
+        'buy_side_premium': round(buy_side_premium, 2),
+        'short_sell_premium': round(short_sell_premium, 2),
+        'missing_spread_labels': missing_spread_labels,
+        'rates': {
+            'stt_rate': rates['stt_rate'],
+            'exchange_rate': rates['exchange_rate'],
+            'gst_rate': rates['gst_rate'],
+            'stamp_duty_buy_rate': rates['stamp_duty_buy_rate'],
+            'sebi_rate': rates['sebi_rate'],
+            'ipft_rate': rates['ipft_rate'],
+        },
+    }
 
 
 def _build_candidate_path(chain_rows, snap, cand):
@@ -9341,20 +9596,32 @@ def _build_candidate_path(chain_rows, snap, cand):
         row_ts = _parse_iso_ts(row_ts_raw)
         if row_ts is None:
             continue
-        if entry_ts is not None and row_ts < entry_ts:
+        if entry_ts is not None and row_ts <= entry_ts:
             continue
         strike = row_data.get('strike')
         opt_type = _normalize_option_type(row_data.get('option_type'))
         ltp = _float_or_none(row_data.get('ltp'))
         if ltp is None:
             continue
-        bucket = grouped.setdefault(row_ts_raw, {'ts': row_ts, 'prices': {}})
+        bucket = grouped.setdefault(row_ts_raw, {'ts': row_ts, 'prices': {}, 'quotes': {}, 'underlying_spot': None})
+        if bucket.get('underlying_spot') is None:
+            bucket['underlying_spot'] = (
+                row_data.get('underlying_spot')
+                or row_data.get('spot')
+                or row_data.get('underlying')
+            )
         bucket['prices'][(str(strike), opt_type)] = ltp
+        bucket['quotes'][(str(strike), opt_type)] = {
+            'bid': _float_or_none(row_data.get('bid')),
+            'ask': _float_or_none(row_data.get('ask')),
+            'ltp': ltp,
+        }
 
     points = []
     for ts_raw, bucket in grouped.items():
         prices = bucket['prices']
-        point = {'poll_ts': ts_raw, 'ts': bucket['ts']}
+        quotes = bucket['quotes']
+        point = {'poll_ts': ts_raw, 'ts': bucket['ts'], 'underlying_spot': bucket.get('underlying_spot')}
         complete = True
         for label, strike, opt_type in leg_specs:
             if strike is None or not opt_type:
@@ -9367,39 +9634,44 @@ def _build_candidate_path(chain_rows, snap, cand):
                     continue
                 if _strike_matches(row_strike, strike):
                     price_val = row_ltp
+                    quote = quotes.get((row_strike, row_type)) or {}
                     break
             if price_val is None:
                 complete = False
                 break
             point[label] = price_val
+            point[f'{label}_bid'] = quote.get('bid')
+            point[f'{label}_ask'] = quote.get('ask')
         if complete:
             points.append(point)
     points.sort(key=lambda item: item['ts'])
     return points
 
 
-def _gross_spread_pnl(cand, point):
+def _credit_structure_breached(cand, point):
+    spot = _float_or_none(point.get('underlying_spot'))
+    if spot is None:
+        return False
     stype = cand.get('type', '')
-    is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
-    is_4_leg = cand.get('sellStrike2') is not None
-    entry_premium = _float_or_none(cand.get('netPremium')) or 0.0
-    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    call_short = _float_or_none(cand.get('sellStrike'))
+    put_short = _float_or_none(cand.get('sellStrike2'))
+    if stype == 'BEAR_CALL':
+        return call_short is not None and spot >= call_short
+    if stype == 'BULL_PUT':
+        put_short = _float_or_none(cand.get('sellStrike'))
+        return put_short is not None and spot <= put_short
+    if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        call_breach = call_short is not None and spot >= call_short
+        put_breach = put_short is not None and spot <= put_short
+        return bool(call_breach or put_breach)
+    return False
 
-    if is_4_leg:
-        later_net_credit = (
-            (point['sell'] - point['buy']) +
-            (point['sell2'] - point['buy2'])
-        )
-        sell_premium_value = (point['sell'] + point['sell2']) * lot_size
-    else:
-        later_net_credit = point['sell'] - point['buy']
-        sell_premium_value = point['sell'] * lot_size
 
-    if is_credit:
-        gross_pnl = (entry_premium - later_net_credit) * lot_size
-    else:
-        gross_pnl = (later_net_credit - entry_premium) * lot_size
-    return round(gross_pnl, 2), round(sell_premium_value, 2)
+def _gross_spread_pnl(snap, cand, point, entry_point=None):
+    basis = _teacher_execution_basis(snap, cand, point, entry_point=entry_point)
+    if not isinstance(basis, dict):
+        return None, None
+    return round(basis['gross_pnl'], 2), round(basis['short_mark_value'], 2)
 
 
 def _managed_teacher_outcome(chain_rows, snap, cand, config):
@@ -9407,18 +9679,26 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     if max_profit is None or max_profit <= 0:
         return None
     max_loss = _float_or_none(cand.get('maxLoss'))
-    leg_count = 4 if cand.get('sellStrike2') is not None else 2
-    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
-    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
-    tp_threshold = round(max_profit * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
-    risk_at_entry = round(max_profit * float(config.get('sl_loss_multiple', 1.00) or 1.00), 2)
-    if max_loss is not None and max_loss > 0:
-        risk_at_entry = round(min(risk_at_entry, max_loss), 2)
-    if risk_at_entry <= 0:
-        return None
-
+    is_credit = _teacher_candidate_is_credit(cand)
     path_points = _build_candidate_path(chain_rows, snap, cand)
     if not path_points:
+        return None
+
+    entry_point = _entry_snapshot_point(snap, cand)
+    first_basis = _teacher_execution_basis(snap, cand, path_points[0], entry_point=entry_point)
+    if not isinstance(first_basis, dict):
+        return None
+    tp_threshold = round(max_profit * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
+    if is_credit:
+        if max_loss is not None and max_loss > 0:
+            risk_at_entry = round(max_loss, 2)
+        else:
+            risk_at_entry = round(max_profit * float(config.get('sl_loss_multiple', 1.00) or 1.00), 2)
+    else:
+        risk_at_entry = round(first_basis.get('entry_basis_currency') or 0.0, 2)
+        if risk_at_entry <= 0 and max_loss is not None and max_loss > 0:
+            risk_at_entry = round(max_loss, 2)
+    if risk_at_entry <= 0:
         return None
 
     exit_reason = 'EOD'
@@ -9428,9 +9708,13 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     friction_cost = None
     managed_pnl = None
 
+    trade_dt = _parse_iso_ts(snap.get('poll_ts', ''))
     for idx, point in enumerate(path_points, start=1):
-        gross_pnl, sell_premium_value = _gross_spread_pnl(cand, point)
-        round_trip_cost = _teacher_round_trip_cost(index_key, leg_count, lot_size, sell_premium_value, config)
+        gross_pnl, sell_premium_value = _gross_spread_pnl(snap, cand, point, entry_point=entry_point)
+        if gross_pnl is None:
+            continue
+        cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, config)
+        round_trip_cost = cost_breakdown['total']
         net_pnl = round(gross_pnl - round_trip_cost, 2)
         if net_pnl >= tp_threshold:
             exit_reason = 'TP'
@@ -9440,7 +9724,10 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
             friction_cost = round_trip_cost
             managed_pnl = net_pnl
             break
-        if net_pnl <= -risk_at_entry:
+        stop_allowed = True
+        if is_credit:
+            stop_allowed = _credit_structure_breached(cand, point)
+        if stop_allowed and net_pnl <= -risk_at_entry:
             exit_reason = 'SL'
             exit_point = point
             exit_step = idx
