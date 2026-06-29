@@ -107,6 +107,11 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
 
 class MarketMLService : Service() {
 
+    private data class TeacherResearchBuildResult(
+        val success: Boolean,
+        val error: String? = null
+    )
+
     companion object {
         private const val TAG = "MarketMLService"
         private const val EVENING_EVAL_TIMEOUT_MS = 45 * 60 * 1000L
@@ -419,13 +424,17 @@ class MarketMLService : Service() {
                 }
             }
             "ACTION_DAY_EVALUATION" -> {
-                val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
-                scope.launch {
-                    try {
-                        Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate")
-                        runDayEvaluation(sessionDate)
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
+            val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
+            scope.launch {
+                try {
+                    Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate")
+                    prefs.edit()
+                        .putString("teacher_research_report_status", "PENDING")
+                        .remove("teacher_research_report_error")
+                        .commit()
+                    runDayEvaluation(sessionDate)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
                         LogBuffer.recordCrash(
                             TAG,
                             "DAY_EVAL_ACTION_FAIL: ${t.message}",
@@ -1652,6 +1661,7 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
+            var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
             if (evaluatedOutcomes.length() > 0) {
                 evalPhase = "AGGREGATING"
                 updateEvaluationJobState(
@@ -1665,10 +1675,12 @@ class MarketMLService : Service() {
                     running = true
                 )
                 runAggregationPipeline(sessionDate, snapshotsFile, evaluatedOutcomes)
-                buildTeacherResearchReport(brain, sessionDate, snapshotsFile, evaluatedOutcomes)
+                teacherResearchResult = buildTeacherResearchReport(brain, sessionDate, snapshotsFile, evaluatedOutcomes)
             }
 
-            val evaluationMessage = if (evaluatedOutcomes.length() > 0) {
+            val evaluationMessage = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence."
+            } else if (evaluatedOutcomes.length() > 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
             } else {
                 "Evaluation done for $sessionDate: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
@@ -1676,19 +1688,31 @@ class MarketMLService : Service() {
             prefs.edit().putString("evaluation_done_date", sessionDate).commit()
             updateEvaluationJobState(
                 sessionDate = sessionDate,
-                phase = "DONE",
+                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH" else "DONE",
                 message = evaluationMessage,
                 totalSnapshots = totalSnapshots,
                 completedSnapshots = completedSnapshots,
                 producedCount = saveResult.producedCount,
                 persistedCount = saveResult.persistedCount,
-                running = false
+                running = false,
+                lastError = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                    teacherResearchResult.error ?: "teacher_research_report_missing"
+                } else {
+                    null
+                }
             )
             cancelDayEvaluationReminder(this@MarketMLService)
-            Log.i(
-                TAG,
-                "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $sessionDate — reminder cancelled"
-            )
+            if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                Log.w(
+                    TAG,
+                    "EVAL_COMPLETE_WITH_WARNINGS: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} teacherResearchError=${teacherResearchResult.error} for $sessionDate — reminder cancelled"
+                )
+            } else {
+                Log.i(
+                    TAG,
+                    "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $sessionDate — reminder cancelled"
+                )
+            }
         } catch (e: Exception) {
             val crashExtra = org.json.JSONObject()
                 .put("session_date", sessionDate)
@@ -1798,8 +1822,15 @@ class MarketMLService : Service() {
         sessionDate: String,
         snapshotsFile: File,
         evaluatedOutcomes: org.json.JSONArray
-    ) {
-        if (brain == null) return
+    ): TeacherResearchBuildResult {
+        if (brain == null) {
+            val error = "python_brain_module_unavailable"
+            prefs.edit()
+                .putString("teacher_research_report_status", "FAILED")
+                .putString("teacher_research_report_error", error)
+                .commit()
+            return TeacherResearchBuildResult(success = false, error = error)
+        }
         try {
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
             val reportRaw = brain.callAttr(
@@ -1810,8 +1841,13 @@ class MarketMLService : Service() {
             ).toString()
             val report = org.json.JSONObject(reportRaw)
             if (!report.optBoolean("ok", false)) {
-                Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: ${report.optString("error", "unknown")}")
-                return
+                val error = report.optString("error", "unknown")
+                prefs.edit()
+                    .putString("teacher_research_report_status", "FAILED")
+                    .putString("teacher_research_report_error", error)
+                    .commit()
+                Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: $error")
+                return TeacherResearchBuildResult(success = false, error = error)
             }
             val outFile = File(evaluationResearchReportPath(this@MarketMLService, sessionDate))
             outFile.parentFile?.mkdirs()
@@ -1819,14 +1855,23 @@ class MarketMLService : Service() {
             prefs.edit()
                 .putString("teacher_research_report_date", sessionDate)
                 .putString("teacher_research_report", report.toString())
+                .putString("teacher_research_report_status", "READY")
+                .remove("teacher_research_report_error")
                 .commit()
             val pvb = report.optJSONObject("primary_vs_best") ?: org.json.JSONObject()
             Log.i(
                 TAG,
                 "TEACHER_RESEARCH_REPORT: session=$sessionDate compared=${pvb.optInt("snapshots_compared", 0)} better=${pvb.optInt("better_candidate_available", 0)} upliftR=${pvb.optDouble("avg_best_minus_primary_r", 0.0)}"
             )
+            return TeacherResearchBuildResult(success = true)
         } catch (e: Exception) {
-            Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: ${e.message}")
+            val error = e.message ?: e.javaClass.simpleName
+            prefs.edit()
+                .putString("teacher_research_report_status", "FAILED")
+                .putString("teacher_research_report_error", error)
+                .commit()
+            Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: $error")
+            return TeacherResearchBuildResult(success = false, error = error)
         }
     }
 

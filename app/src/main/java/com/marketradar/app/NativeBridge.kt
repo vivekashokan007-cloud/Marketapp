@@ -305,10 +305,52 @@ class NativeBridge(private val context: Context) {
             prefs.edit()
                 .putString("teacher_research_report_date", targetDate)
                 .putString("teacher_research_report", report.toString())
+                .putString("teacher_research_report_status", "READY")
+                .remove("teacher_research_report_error")
                 .commit()
             report
         } catch (e: Exception) {
             Log.e(TAG, "rebuildTeacherResearchReportIfPossible failed", e)
+            null
+        }
+    }
+
+    private fun rebuildTeacherResearchReportFromRemoteIfPossible(targetDate: String): JSONObject? {
+        return try {
+            val snapshots = SupabaseClient.fetchBrainSnapshots(targetDate)
+            val outcomes = SupabaseClient.fetchEvaluationOutcomesForDate(targetDate)
+            if (snapshots.length() <= 0 || outcomes.length() <= 0) return null
+
+            val compactSnapshots = JSONArray()
+            for (i in 0 until snapshots.length()) {
+                val row = snapshots.optJSONObject(i) ?: continue
+                compactSnapshots.put(compactTeacherResearchSnapshot(row))
+            }
+            if (compactSnapshots.length() <= 0) return null
+
+            val py = Python.getInstance()
+            val brain = py.getModule("brain")
+            val reportRaw = brain.callAttr(
+                "session_teacher_research_report",
+                targetDate,
+                compactSnapshots.toString(),
+                outcomes.toString()
+            ).toString()
+            val report = JSONObject(reportRaw)
+            if (!report.optBoolean("ok", false)) return null
+
+            val outFile = File(MarketMLService.evaluationResearchReportPath(context, targetDate))
+            outFile.parentFile?.mkdirs()
+            outFile.writeText(report.toString())
+            prefs.edit()
+                .putString("teacher_research_report_date", targetDate)
+                .putString("teacher_research_report", report.toString())
+                .putString("teacher_research_report_status", "READY")
+                .remove("teacher_research_report_error")
+                .commit()
+            report
+        } catch (e: Exception) {
+            Log.e(TAG, "rebuildTeacherResearchReportFromRemoteIfPossible failed", e)
             null
         }
     }
@@ -890,8 +932,8 @@ class NativeBridge(private val context: Context) {
             status.put("evaluationTargetIsToday", targetIsToday)
             status.put("evaluationReady", evaluationReady)
             status.put("evaluationBlockedReason", evaluationBlockedReason)
-            status.put("evaluationDoneToday", doneDate == today && !retryEvaluation)
-            status.put("evaluationDoneForTarget", !targetDate.isNullOrBlank() && doneDate == targetDate && !retryEvaluation)
+            status.put("evaluationDoneToday", doneDate == today)
+            status.put("evaluationDoneForTarget", !targetDate.isNullOrBlank() && doneDate == targetDate)
             status.put("evaluationDoneDate", doneDate)
             status.put("evaluationRunning", !targetDate.isNullOrBlank() && runningDate == targetDate)
             status.put("evaluationPhase", evaluationPhase)
@@ -900,6 +942,8 @@ class NativeBridge(private val context: Context) {
             status.put("evaluationRetryRecommended", retryEvaluation)
             status.put("evaluationRetryable", retryEvaluation)
             status.put("evaluationLastError", prefs.getString("evaluation_last_error", "") ?: "")
+            status.put("teacherResearchStatus", prefs.getString("teacher_research_report_status", "") ?: "")
+            status.put("teacherResearchError", prefs.getString("teacher_research_report_error", "") ?: "")
             status.put("evaluationUpdatedAtMs", prefs.getLong("evaluation_job_updated_at_ms", 0L))
             status.put("lastEvaluationOutcomeCount", prefs.getInt("last_evaluation_outcome_count", 0))
             status.put("lastEvaluationProducedCount", prefs.getInt("last_evaluation_produced_count", 0))
@@ -1050,6 +1094,8 @@ class NativeBridge(private val context: Context) {
                 .putString("evaluation_phase", "QUEUED")
                 .putString("evaluation_job_date", targetDate)
                 .putLong("evaluation_job_updated_at_ms", System.currentTimeMillis())
+                .putString("teacher_research_report_status", "PENDING")
+                .remove("teacher_research_report_error")
                 .putString(
                     "last_evaluation_message",
                     if (retryEvaluation) {
@@ -1327,13 +1373,15 @@ class NativeBridge(private val context: Context) {
     private fun shouldRetryDayEvaluation(targetDate: String): Boolean {
         clearStaleEvaluationRunningIfNeeded()
         val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
-        if (phase == "FAILED" || phase == "FAILED_SAVE" || phase == "STALLED") {
+        if (phase == "FAILED" || phase == "FAILED_SAVE" || phase == "FAILED_RESEARCH" || phase == "STALLED") {
             return true
         }
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
         if (doneDate != targetDate) return false
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate == targetDate) return false
+        val teacherResearchStatus = (prefs.getString("teacher_research_report_status", "") ?: "").uppercase(Locale.US)
+        if (teacherResearchStatus == "FAILED") return true
         val lastMessage = (prefs.getString("last_evaluation_message", "") ?: "").lowercase(Locale.US)
         val produced = prefs.getInt("last_evaluation_produced_count", 0)
         if (
@@ -1922,6 +1970,9 @@ class NativeBridge(private val context: Context) {
                 rebuildTeacherResearchReportIfPossible(targetDate)?.let { rebuilt ->
                     return rebuilt.toString()
                 }
+                rebuildTeacherResearchReportFromRemoteIfPossible(targetDate)?.let { rebuilt ->
+                    return rebuilt.toString()
+                }
                 return JSONObject()
                     .put("ok", false)
                     .put("session_date", targetDate)
@@ -1933,6 +1984,8 @@ class NativeBridge(private val context: Context) {
             prefs.edit()
                 .putString("teacher_research_report_date", targetDate)
                 .putString("teacher_research_report", obj.toString())
+                .putString("teacher_research_report_status", "READY")
+                .remove("teacher_research_report_error")
                 .commit()
             obj.toString()
         } catch (e: Exception) {

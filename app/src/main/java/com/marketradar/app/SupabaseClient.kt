@@ -1082,6 +1082,15 @@ object SupabaseClient {
         return select("ml_decisions", null, "created_at.desc", limit)
     }
 
+    fun fetchEvaluationOutcomesForDate(sessionDate: String, limit: Int = 5000): JSONArray {
+        val filter = "session_date=eq.$sessionDate"
+        val evaluationRows = select("ml_evaluation_outcomes", filter, "created_at.desc", limit)
+        if (evaluationRows.length() > 0) return evaluationRows
+        val legacyRows = select("ml_decisions", filter, "created_at.desc", limit)
+        if (legacyRows.length() > 0) return legacyRows
+        return JSONArray()
+    }
+
     private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
         val filter = "session_date=eq.$sessionDate"
         val rows = select("ml_recommendation_outcomes", filter, "created_at.desc", limit)
