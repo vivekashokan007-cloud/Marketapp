@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b302: surface Upstox margin quotes and corrected paper charge display.
+        // b303: keep margin quote evidence in JSON snapshot, not top-level trades_v2 columns.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 302
-        versionName = "2.4.71"
+        versionCode = 303
+        versionName = "2.4.72"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
