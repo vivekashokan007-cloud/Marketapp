@@ -865,6 +865,17 @@ def position_vix_headwind(trade, polls, baseline, regime, strike_oi):
 
 def position_book_signal(trade, polls, baseline, regime, strike_oi):
     """Combine P&L + CI + brain factors → book / hold / exit."""
+    quality = trade.get('valuation_quality')
+    ci_meta = trade.get('controlIndexMeta') or {}
+    completeness = ci_meta.get('signal_completeness_pct')
+    if quality and quality != 'full':
+        return {"icon": "🧪", "label": "Incomplete live mark",
+                "detail": f"Position P&L uses partial option quotes ({trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)} legs). Treat book/exit confidence as degraded.",
+                "impact": "caution", "strength": 3}
+    if completeness is not None and completeness < 60:
+        return {"icon": "🧪", "label": "Control index incomplete",
+                "detail": f"Only {completeness}% of control-index signal weight has real entry metadata.",
+                "impact": "caution", "strength": 3}
     pnl = trade.get('current_pnl', 0)
     max_p = trade.get('max_profit', 1)
     ci = trade.get('controlIndex')
@@ -2893,6 +2904,21 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             t_forces = trade.get('forces') or {}
             t_aligned = t_forces.get('aligned')
             trade_label = f"{t_index} {t_type} {t_sell_strike}"
+            quality = trade.get('valuation_quality')
+            ci_meta = trade.get('controlIndexMeta') or {}
+            completeness = ci_meta.get('signal_completeness_pct')
+            degraded_live_mark = bool(quality and quality != 'full')
+            low_ci_completeness = completeness is not None and completeness < 60
+            if degraded_live_mark or low_ci_completeness:
+                reason = f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}" if degraded_live_mark else f"CI signals {completeness}%"
+                alerts.append({
+                    'key': f"POS_DATA_QUALITY_{t_id}",
+                    'category': 'POSITION',
+                    'priority': 'important',
+                    'title': '🧪 Position Data Incomplete',
+                    'body': f"{trade_label}: {reason}. Suppressing strong P&L/control alerts until data improves.",
+                })
+                continue
 
             if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
                 pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
@@ -3214,6 +3240,8 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             return default
 
     idx = trade.get('index_key', 'BNF')
+    # NSE index F&O lot sizes effective for 2026 contracts: BNF=30, NF=65.
+    # If a trade does not carry explicit lot_size, expose that fallback as assumed.
     base_lot = 30 if idx == 'BNF' else 65 if idx == 'NF' else 0
 
     # `lots` is trade quantity in lots, not lot size. App trades usually store
@@ -3226,6 +3254,10 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         0
     )
     lots_count = max(_num(trade.get('lots'), 1), 1)
+    lot_size_assumed = explicit_lot_size <= 0
+    lot_size_source = 'trade' if _num(trade.get('lot_size') or trade.get('lotSize'), 0) > 0 else (
+        'entry_snapshot' if explicit_lot_size > 0 else 'contract_default'
+    )
     lot_size = explicit_lot_size if explicit_lot_size > 0 else base_lot * lots_count
 
     if lot_size <= 0:
@@ -3277,11 +3309,43 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         except Exception:
             return False
 
+    required_legs = []
+    if stype in ('BEAR_CALL', 'BULL_CALL'):
+        required_legs = [(sell_s, 0), (buy_s, 0)]
+    elif stype in ('BULL_PUT', 'BEAR_PUT'):
+        required_legs = [(sell_s, 1), (buy_s, 1)]
+    elif stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        required_legs = [(sell_s, 0), (buy_s, 0), (sell_s2, 1), (buy_s2, 1)]
+
+    quote_audit = {
+        'legs_required': len(required_legs),
+        'legs_quoted': 0,
+        'legs_intrinsic_fallback': 0,
+        'fallback_legs': [],
+    }
+
+    def _raw_quote(strike, leg):
+        try:
+            raw = (cache.get(int(strike)) or (0, 0))[leg]
+            return raw if raw and raw > 0 else 0.0
+        except Exception:
+            return 0.0
+
     def _get(strike, leg):  # leg: 0=CE, 1=PE
-        raw = (cache.get(int(strike)) or (0, 0))[leg]
-        # Some first-poll payloads report 0 LTP for deep OTM legs. Treat this as
-        # a valid mark and fall back to intrinsic so P&L is still computable.
-        return raw if raw > 0 else _intrinsic(strike, leg)
+        raw = _raw_quote(strike, leg)
+        if raw > 0:
+            return raw
+        quote_audit['legs_intrinsic_fallback'] += 1
+        quote_audit['fallback_legs'].append({
+            'strike': strike,
+            'type': 'CE' if leg == 0 else 'PE',
+            'intrinsic': round(_intrinsic(strike, leg), 2),
+        })
+        return _intrinsic(strike, leg)
+
+    for _strike, _leg in required_legs:
+        if _raw_quote(_strike, _leg) > 0:
+            quote_audit['legs_quoted'] += 1
 
     current_net = 0.0
     if stype == 'BEAR_CALL':
@@ -3296,17 +3360,14 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     elif stype == 'BEAR_PUT':
         current_net = _get(buy_s, 1) - _get(sell_s, 1)
 
-    required_legs = []
-    if stype in ('BEAR_CALL', 'BULL_CALL'):
-        required_legs = [(sell_s, 0), (buy_s, 0)]
-    elif stype in ('BULL_PUT', 'BEAR_PUT'):
-        required_legs = [(sell_s, 1), (buy_s, 1)]
-    elif stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
-        required_legs = [(sell_s, 0), (buy_s, 0), (sell_s2, 1), (buy_s2, 1)]
-
     has_any_chain_leg = any(_quote_present(s) for s, _ in required_legs)
     if not has_any_chain_leg and spot <= 0:
         return None  # neither chain nor spot fallback available
+
+    if quote_audit['legs_required'] > quote_audit['legs_quoted']:
+        quote_audit['valuation_quality'] = 'degraded'
+    else:
+        quote_audit['valuation_quality'] = 'full'
 
     if is_credit:
         pnl = (entry_premium - current_net) * lot_size
@@ -3364,6 +3425,13 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         if len(journey) > 100:
             journey = journey[-100:]
 
+    if quote_audit['valuation_quality'] != 'full':
+        print(
+            f"POSITION_VALUATION_DEGRADED: trade={trade.get('id')} "
+            f"quoted={quote_audit['legs_quoted']}/{quote_audit['legs_required']} "
+            f"fallback={quote_audit['legs_intrinsic_fallback']} lot_assumed={lot_size_assumed}"
+        )
+
     return {
         'trade_id': trade.get('id'),
         'current_pnl': round(pnl),
@@ -3373,25 +3441,73 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         'peak_erosion': erosion,
         'vix_change': vix_change,
         'lot_size_resolved': lot_size,
+        'lot_size_assumed': lot_size_assumed,
+        'lot_size_source': lot_size_source,
+        'legs_required': quote_audit['legs_required'],
+        'legs_quoted': quote_audit['legs_quoted'],
+        'legs_intrinsic_fallback': quote_audit['legs_intrinsic_fallback'],
+        'fallback_legs': quote_audit['fallback_legs'],
+        'valuation_quality': quote_audit['valuation_quality'],
         'journey': journey,
         'journey_point_added': journey_point,
         'current_net_premium': round(current_net, 2),
     }
 
-def compute_control_index(trade, chain, spot, breadth):
-    """Decision #17. Returns int (-100 to +100)."""
-    if not trade or not chain: return 0
+def compute_control_index(trade, chain, spot, breadth, return_detail=False):
+    """Decision #17. Missing entry metadata is UNKNOWN, not false-stable."""
+    if not trade or not chain:
+        empty = {
+            'score': 0,
+            'signals_available': 0,
+            'signal_completeness_pct': 0,
+            'available_weight': 0,
+            'expected_weight': 0,
+            'unknown_signals': ['trade_or_chain_missing'],
+            'breach_override': False,
+        }
+        return empty if return_detail else 0
+
+    def _num_or_none(value):
+        try:
+            if value is None or value == '':
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    entry_snapshot = trade.get('entry_snapshot') or {}
+    if not isinstance(entry_snapshot, dict):
+        entry_snapshot = {}
 
     stype = trade.get('strategy_type', '')
     is_bear = 'BEAR' in stype
     is_bull = 'BULL' in stype
     is_ic = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
     score = 0
+    expected_weight = 0
+    available_weight = 0
+    signals_available = 0
+    unknown_signals = []
+    components = {}
 
-    # Signal 1: Max Pain Migration (35%)
-    entry_mp = trade.get('entry_max_pain') or chain.get('maxPain')
-    curr_mp = chain.get('maxPain')
-    if entry_mp and curr_mp:
+    def _mark_unknown(name, weight, reason):
+        nonlocal expected_weight
+        expected_weight += weight
+        unknown_signals.append(name)
+        components[name] = {'available': False, 'weight': weight, 'reason': reason}
+
+    def _mark_score(name, weight, contribution, detail):
+        nonlocal expected_weight, available_weight, signals_available, score
+        expected_weight += weight
+        available_weight += weight
+        signals_available += 1
+        score += contribution
+        components[name] = {'available': True, 'weight': weight, 'score': contribution, **detail}
+
+    # Signal 1: Max Pain Migration (35%). Do not self-fallback entry to current.
+    entry_mp = _num_or_none(trade.get('entry_max_pain') or entry_snapshot.get('entry_max_pain') or entry_snapshot.get('max_pain'))
+    curr_mp = _num_or_none(chain.get('maxPain'))
+    if entry_mp is not None and curr_mp is not None:
         mp_move = curr_mp - entry_mp
         mp_score = 0
         if is_bear and mp_move < 0: mp_score = 1
@@ -3399,33 +3515,44 @@ def compute_control_index(trade, chain, spot, breadth):
         elif is_bull and mp_move > 0: mp_score = 1
         elif is_bull and mp_move < 0: mp_score = -1
         elif is_ic: mp_score = 1 if abs(mp_move) < 200 else -1
-        score += mp_score * 35
+        _mark_score('max_pain', 35, mp_score * 35, {'entry': entry_mp, 'current': curr_mp, 'move': mp_move})
+    else:
+        _mark_unknown('max_pain', 35, 'entry_max_pain_missing' if entry_mp is None else 'current_max_pain_missing')
 
-    # Signal 2: Sell Strike OI change (30%)
+    # Signal 2: Sell Strike OI change (30%; split 15/15 for IC).
     strikes = chain.get('strikes', {})
     s_strike = trade.get('sell_strike')
     s_type = trade.get('sell_type') or ('CE' if is_bear else 'PE' if is_bull else None)
-    
     sell_data = strikes.get(str(s_strike), {}).get(s_type) if s_strike and s_type else None
-    entry_oi = trade.get('entry_sell_oi')
-    if sell_data and entry_oi:
-        oi_change = sell_data.get('oi', 0) - entry_oi
-        if is_ic:
-            score += (15 if oi_change > 0 else -15 if oi_change < 0 else 0)
-            s_strike2 = trade.get('sell_strike2')
-            s_type2 = trade.get('sell_type2')
-            sell_data2 = strikes.get(str(s_strike2), {}).get(s_type2) if s_strike2 and s_type2 else None
-            entry_oi2 = trade.get('entry_sell_oi2')
-            if sell_data2 and entry_oi2:
-                oi_change2 = sell_data2.get('oi', 0) - entry_oi2
-                score += (15 if oi_change2 > 0 else -15 if oi_change2 < 0 else 0)
-        else:
-            score += (30 if oi_change > 0 else -30 if oi_change < 0 else 0)
+    entry_oi = _num_or_none(trade.get('entry_sell_oi') or entry_snapshot.get('sell_oi') or entry_snapshot.get('entry_sell_oi'))
+    if sell_data and entry_oi is not None:
+        oi_change = _num_or_none(sell_data.get('oi')) or 0
+        oi_change -= entry_oi
+        weight = 15 if is_ic else 30
+        contribution = (weight if oi_change > 0 else -weight if oi_change < 0 else 0)
+        _mark_score('sell_oi', weight, contribution, {'entry': entry_oi, 'change': oi_change})
+    else:
+        _mark_unknown('sell_oi', 15 if is_ic else 30, 'entry_sell_oi_missing' if entry_oi is None else 'current_sell_oi_missing')
 
-    # Signal 3: PCR Shift (25%)
-    entry_pcr = trade.get('entry_pcr')
-    curr_pcr = chain.get('nearAtmPCR') or chain.get('pcr')
-    if entry_pcr and curr_pcr:
+    if is_ic:
+        s_strike2 = trade.get('sell_strike2')
+        s_type2 = trade.get('sell_type2')
+        sell_data2 = strikes.get(str(s_strike2), {}).get(s_type2) if s_strike2 and s_type2 else None
+        entry_oi2 = _num_or_none(
+            trade.get('entry_sell_oi2')
+            or entry_snapshot.get('entry_sell_oi2')
+            or entry_snapshot.get('sell_oi2')
+        )
+        if sell_data2 and entry_oi2 is not None:
+            oi_change2 = (_num_or_none(sell_data2.get('oi')) or 0) - entry_oi2
+            _mark_score('sell_oi2', 15, (15 if oi_change2 > 0 else -15 if oi_change2 < 0 else 0), {'entry': entry_oi2, 'change': oi_change2})
+        else:
+            _mark_unknown('sell_oi2', 15, 'entry_sell_oi2_missing' if entry_oi2 is None else 'current_sell_oi2_missing')
+
+    # Signal 3: PCR Shift (25%).
+    entry_pcr = _num_or_none(trade.get('entry_pcr') or entry_snapshot.get('entry_pcr') or entry_snapshot.get('near_atm_pcr'))
+    curr_pcr = _num_or_none(chain.get('nearAtmPCR') or chain.get('pcr'))
+    if entry_pcr is not None and curr_pcr is not None:
         pcr_change = curr_pcr - entry_pcr
         pcr_score = 0
         if is_ic:
@@ -3435,21 +3562,26 @@ def compute_control_index(trade, chain, spot, breadth):
         elif is_bear and pcr_change > 0.05: pcr_score = -1
         elif is_bull and pcr_change > 0.05: pcr_score = 1
         elif is_bull and pcr_change < -0.05: pcr_score = -1
-        score += pcr_score * 25
+        _mark_score('pcr', 25, pcr_score * 25, {'entry': entry_pcr, 'current': curr_pcr, 'change': pcr_change})
+    else:
+        _mark_unknown('pcr', 25, 'entry_pcr_missing' if entry_pcr is None else 'current_pcr_missing')
 
-    # Signal 4: Heavyweight Divergence (10%)
-    if breadth and trade.get('index_key') == 'BNF':
-        wp = breadth.get('weightedPct', 0)
-        hw_score = 0
-        if is_bear and wp < -0.5: hw_score = 1
-        elif is_bear and wp > 0.5: hw_score = -1
-        elif is_bull and wp > 0.5: hw_score = 1
-        elif is_bull and wp < -0.5: hw_score = -1
-        score += hw_score * 10
+    # Signal 4: Heavyweight Divergence (10%) for BNF only.
+    if trade.get('index_key') == 'BNF':
+        if breadth:
+            wp = _num_or_none(breadth.get('weightedPct')) or 0
+            hw_score = 0
+            if is_bear and wp < -0.5: hw_score = 1
+            elif is_bear and wp > 0.5: hw_score = -1
+            elif is_bull and wp > 0.5: hw_score = 1
+            elif is_bull and wp < -0.5: hw_score = -1
+            _mark_score('breadth', 10, hw_score * 10, {'weighted_pct': wp})
+        else:
+            _mark_unknown('breadth', 10, 'breadth_missing')
 
-    # Signal 5: Strike Breach Override
+    # Signal 5: Strike Breach Override.
+    breach = False
     if spot and s_strike:
-        breach = False
         if is_bear and spot > s_strike: breach = True
         elif is_bull and spot < s_strike: breach = True
         elif is_ic:
@@ -3460,10 +3592,21 @@ def compute_control_index(trade, chain, spot, breadth):
                     if spot > s_strike + tol or spot < s_strike2 - tol: breach = True
                 else:
                     if spot > s_strike or spot < s_strike2: breach = True
-        if breach:
-            score = min(score, -50)
+    if breach:
+        score = min(score, -50)
 
-    return int(max(-100, min(100, score)))
+    final_score = int(max(-100, min(100, score)))
+    detail = {
+        'score': final_score,
+        'signals_available': signals_available,
+        'signal_completeness_pct': round((available_weight / expected_weight) * 100) if expected_weight else 0,
+        'available_weight': available_weight,
+        'expected_weight': expected_weight,
+        'unknown_signals': unknown_signals,
+        'components': components,
+        'breach_override': breach,
+    }
+    return detail if return_detail else final_score
 
 def compute_wall_drift(trade, chain):
     """Decision #18. Per-trade wall drift tracker."""
@@ -4695,6 +4838,27 @@ def position_verdict(trade, insights, regime, ctx):
     ci = trade.get('controlIndex')
     pnl_pct = pnl / max_p if max_p > 0 else 0
     loss_pct = abs(pnl) / max_l if max_l > 0 and pnl < 0 else 0
+    valuation_quality = trade.get('valuation_quality')
+    ci_meta = trade.get('controlIndexMeta') or {}
+    ci_completeness = ci_meta.get('signal_completeness_pct')
+    position_data_degraded = bool(valuation_quality and valuation_quality != 'full')
+    control_data_degraded = ci_completeness is not None and ci_completeness < 60
+
+    def _guard_position_verdict(verdict):
+        if not verdict or verdict.get('action') not in ('BOOK', 'EXIT'):
+            return verdict
+        if not position_data_degraded and not control_data_degraded:
+            return verdict
+        warning_bits = []
+        if position_data_degraded:
+            warning_bits.append(f"mark {valuation_quality} ({trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)} quoted)")
+        if control_data_degraded:
+            warning_bits.append(f"CI signals {ci_completeness}%")
+        guarded = dict(verdict)
+        guarded['data_quality_warning'] = "Incomplete live data: " + "; ".join(warning_bits)
+        guarded['reason'] = f"{guarded['data_quality_warning']}. {guarded.get('reason', '')}"
+        return guarded
+
     stype = trade.get('strategy_type', '')
     is_4leg = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
     is_ib = stype == 'IRON_BUTTERFLY'
@@ -5002,7 +5166,7 @@ def position_verdict(trade, insights, regime, ctx):
                 _pos_trace['danger_final'] = danger
                 _pos_trace['final'] = dict(_final_verdict)
                 _pos_trace['structural_exits']['be_cushion_early_book'] = True
-            return _final_verdict
+            return _guard_position_verdict(_final_verdict)
     elif sell_strike and spot and is_credit and not is_ib:
         # Fallback: use sell_strike if no breakeven stored (old trades)
         # TASK 5.4 — R3-4 Skip Label (D14-D17 group was eligible based on inputs but be_upper/lower missing)
@@ -5158,7 +5322,7 @@ def position_verdict(trade, insights, regime, ctx):
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
             _pos_trace['structural_exits']['danger_threshold_hit'] = True
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     # ═══ b114: THESIS_BROKEN — entry bias contradicts current effective bias ═══
     entry_bias = trade.get('entry_bias', '')
@@ -5182,7 +5346,7 @@ def position_verdict(trade, insights, regime, ctx):
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
             _pos_trace['structural_exits']['thesis_broken'] = True
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
     if thesis_broken and pnl >= 0:
         # TASK 5.4 (decision_path)
         if ctx.get('_trace') is not None and _pos_trace is not None:
@@ -5194,7 +5358,7 @@ def position_verdict(trade, insights, regime, ctx):
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
             _pos_trace['structural_exits']['thesis_broken'] = True
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     # ═══ EXIT — structural threats (independent of danger score) ═══
     if is_4leg and dte <= 1:
@@ -5214,7 +5378,7 @@ def position_verdict(trade, insights, regime, ctx):
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
             _pos_trace['structural_exits']['four_leg_expiry'] = True
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     # ═══ BOOK — profitable + reasons to take money ═══
     if pnl_pct >= 0.5:
@@ -5234,7 +5398,7 @@ def position_verdict(trade, insights, regime, ctx):
         if ctx.get('_trace') is not None and _pos_trace is not None:
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     if pnl_pct >= 0.3 and (against_trend or danger >= 25):
         # TASK 5.4 (decision_path)
@@ -5246,7 +5410,7 @@ def position_verdict(trade, insights, regime, ctx):
         if ctx.get('_trace') is not None and _pos_trace is not None:
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     # ═══ HOLD — positive conditions ═══
     if pnl > 0 and danger < 20:
@@ -5265,7 +5429,7 @@ def position_verdict(trade, insights, regime, ctx):
         if ctx.get('_trace') is not None and _pos_trace is not None:
             _pos_trace['danger_final'] = danger
             _pos_trace['final'] = dict(_final_verdict)
-        return _final_verdict
+        return _guard_position_verdict(_final_verdict)
 
     # ═══ DEFAULT ═══
     if pnl >= 0:
@@ -5284,7 +5448,7 @@ def position_verdict(trade, insights, regime, ctx):
     if ctx.get('_trace') is not None and _pos_trace is not None:
         _pos_trace['danger_final'] = danger
         _pos_trace['final'] = dict(_final_verdict)
-    return _final_verdict
+    return _guard_position_verdict(_final_verdict)
 
 # ═══════════════════════════════════════════
 # MAIN ENTRY POINT
@@ -5406,7 +5570,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.73"
+BRAIN_VERSION = "2.4.74"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7827,8 +7991,16 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             # Update trade object for downstream insights
             t['current_pnl'] = pl_data['current_pnl']
             t['current_spot'] = pl_data['current_spot']
+            t['valuation_quality'] = pl_data.get('valuation_quality')
+            t['positionDataDegraded'] = pl_data.get('valuation_quality') != 'full'
+            t['lot_size_assumed'] = pl_data.get('lot_size_assumed')
+            t['legs_required'] = pl_data.get('legs_required')
+            t['legs_quoted'] = pl_data.get('legs_quoted')
+            t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
         
-        t['controlIndex'] = compute_control_index(t, chain, spot, bnf_breadth)
+        ci_detail = compute_control_index(t, chain, spot, bnf_breadth, return_detail=True)
+        t['controlIndex'] = ci_detail.get('score', 0)
+        t['controlIndexMeta'] = ci_detail
         t['wallDrift'] = compute_wall_drift(t, chain)
 
         ins = []
@@ -7850,6 +8022,12 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "verdict": pv,
             "insights": ins,
             "controlIndex": t.get("controlIndex", 0),
+            "controlIndexMeta": t.get("controlIndexMeta"),
+            "valuation_quality": t.get("valuation_quality"),
+            "legs_required": t.get("legs_required"),
+            "legs_quoted": t.get("legs_quoted"),
+            "legs_intrinsic_fallback": t.get("legs_intrinsic_fallback"),
+            "lot_size_assumed": t.get("lot_size_assumed"),
             "wallDrift": t.get("wallDrift")
         }
 

@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b304: clarify pre-poll position monitor state after new paper trades.
+        // b305: expose live position valuation/control-index data quality.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 304
-        versionName = "2.4.73"
+        versionCode = 305
+        versionName = "2.4.74"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
