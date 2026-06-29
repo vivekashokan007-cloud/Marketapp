@@ -1849,19 +1849,62 @@ class MarketMLService : Service() {
                 Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: $error")
                 return TeacherResearchBuildResult(success = false, error = error)
             }
-            val outFile = File(evaluationResearchReportPath(this@MarketMLService, sessionDate))
+            val outputPath = evaluationResearchReportPath(this@MarketMLService, sessionDate)
+            val outFile = File(outputPath)
             outFile.parentFile?.mkdirs()
             outFile.writeText(report.toString())
+            val readbackPath = evaluationResearchReportPath(this@MarketMLService, sessionDate)
+            val readbackFile = File(readbackPath)
+            if (!readbackFile.exists()) {
+                val error = "teacher_research_report_missing_after_write"
+                prefs.edit()
+                    .putString("teacher_research_report_status", "FAILED")
+                    .putString("teacher_research_report_error", error)
+                    .commit()
+                Log.w(
+                    TAG,
+                    "TEACHER_RESEARCH_REPORT_FAIL: $error session=$sessionDate writePath=$outputPath readPath=$readbackPath"
+                )
+                return TeacherResearchBuildResult(success = false, error = error)
+            }
+            val verifiedReport = try {
+                val raw = readbackFile.readText().trim()
+                val parsed = org.json.JSONObject(raw)
+                if (!parsed.optBoolean("ok", false)) {
+                    val error = parsed.optString("error", "teacher_research_report_not_ok_after_write")
+                    prefs.edit()
+                        .putString("teacher_research_report_status", "FAILED")
+                        .putString("teacher_research_report_error", error)
+                        .commit()
+                    Log.w(
+                        TAG,
+                        "TEACHER_RESEARCH_REPORT_FAIL: $error session=$sessionDate writePath=$outputPath readPath=$readbackPath"
+                    )
+                    return TeacherResearchBuildResult(success = false, error = error)
+                }
+                parsed
+            } catch (e: Exception) {
+                val error = "teacher_research_report_readback_${e.javaClass.simpleName}"
+                prefs.edit()
+                    .putString("teacher_research_report_status", "FAILED")
+                    .putString("teacher_research_report_error", error)
+                    .commit()
+                Log.w(
+                    TAG,
+                    "TEACHER_RESEARCH_REPORT_FAIL: $error session=$sessionDate writePath=$outputPath readPath=$readbackPath detail=${e.message}"
+                )
+                return TeacherResearchBuildResult(success = false, error = error)
+            }
             prefs.edit()
                 .putString("teacher_research_report_date", sessionDate)
-                .putString("teacher_research_report", report.toString())
+                .putString("teacher_research_report", verifiedReport.toString())
                 .putString("teacher_research_report_status", "READY")
                 .remove("teacher_research_report_error")
                 .commit()
-            val pvb = report.optJSONObject("primary_vs_best") ?: org.json.JSONObject()
+            val pvb = verifiedReport.optJSONObject("primary_vs_best") ?: org.json.JSONObject()
             Log.i(
                 TAG,
-                "TEACHER_RESEARCH_REPORT: session=$sessionDate compared=${pvb.optInt("snapshots_compared", 0)} better=${pvb.optInt("better_candidate_available", 0)} upliftR=${pvb.optDouble("avg_best_minus_primary_r", 0.0)}"
+                "TEACHER_RESEARCH_REPORT: session=$sessionDate compared=${pvb.optInt("snapshots_compared", 0)} better=${pvb.optInt("better_candidate_available", 0)} upliftR=${pvb.optDouble("avg_best_minus_primary_r", 0.0)} writePath=$outputPath readPath=$readbackPath"
             )
             return TeacherResearchBuildResult(success = true)
         } catch (e: Exception) {

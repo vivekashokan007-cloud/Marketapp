@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b307: retry evaluation when teacher research artifact is unavailable.
+        // b308: verify teacher research artifact after write before marking evaluation done.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 307
-        versionName = "2.4.76"
+        versionCode = 308
+        versionName = "2.4.77"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
