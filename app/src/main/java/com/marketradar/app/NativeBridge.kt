@@ -890,6 +890,7 @@ class NativeBridge(private val context: Context) {
             val evaluationPhase = prefs.getString("evaluation_phase", "") ?: ""
             val evaluationCompleted = prefs.getInt("evaluation_completed_snapshots", 0)
             val evaluationTotal = prefs.getInt("evaluation_total_snapshots", 0)
+            targetDate?.let { repairStaleResearchStateIfNeeded(it) }
             val retryEvaluation = targetDate?.let { shouldRetryDayEvaluation(it) } == true
             val serviceRunning = isServiceRunning()
             val marketClock = MarketOpenScheduler.currentStatus()
@@ -1356,6 +1357,41 @@ class NativeBridge(private val context: Context) {
             .commit()
         Log.i(TAG, "Cleared stale evaluation_running_date for $runningDate after ${ageMs}ms")
         return true
+    }
+
+    /**
+     * Detects a session saved as DONE whose teacher research artifact is missing
+     * or unreadable, then persists FAILED_RESEARCH so retry unlocks on the same render.
+     */
+    private fun repairStaleResearchStateIfNeeded(targetDate: String) {
+        val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
+        if (phase != "DONE") return
+
+        val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+        if (doneDate != targetDate) return
+
+        val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+        if (runningDate == targetDate) return
+
+        val reportFile = File(MarketMLService.evaluationResearchReportPath(context, targetDate))
+        val hasValidReport = reportFile.exists() && try {
+            val obj = JSONObject(reportFile.readText().trim())
+            obj.optBoolean("ok", false)
+        } catch (_: Exception) {
+            false
+        }
+        if (hasValidReport) return
+
+        prefs.edit()
+            .putString("evaluation_phase", "FAILED_RESEARCH")
+            .putString("teacher_research_report_status", "FAILED")
+            .putString("teacher_research_report_error", "REPORT_NOT_AVAILABLE_REPAIRED")
+            .commit()
+
+        Log.i(
+            TAG,
+            "repairStaleResearchStateIfNeeded: repaired stale DONE→FAILED_RESEARCH for $targetDate (teacher report missing)"
+        )
     }
 
     private fun latestEligibleEvaluationDate(today: String = todayIstDate()): String? {
