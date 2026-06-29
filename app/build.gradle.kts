@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b303: keep margin quote evidence in JSON snapshot, not top-level trades_v2 columns.
+        // b304: clarify pre-poll position monitor state after new paper trades.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 303
-        versionName = "2.4.72"
+        versionCode = 304
+        versionName = "2.4.73"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
