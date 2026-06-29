@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b300: ship verified Stage 2A teacher table in shadow mode; verdict unchanged.
+        // b301: add read-only Upstox margin quote annotations for top surfaced candidate.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 300
-        versionName = "2.4.69"
+        versionCode = 301
+        versionName = "2.4.70"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

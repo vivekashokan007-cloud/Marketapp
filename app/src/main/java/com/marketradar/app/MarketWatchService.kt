@@ -52,6 +52,8 @@ class MarketWatchService : Service() {
     private val pollSaveLock = Any()
     private val mlPersistLock = Any()
     private var pollLoopIteration = 0L
+    private var marginQuoteCachePollKey = ""
+    private val marginQuoteCache = mutableMapOf<String, MarginQuote>()
 
     private data class BreadthStock(
         val symbol: String,
@@ -59,6 +61,32 @@ class MarketWatchService : Service() {
         val responseKey: String,
         val weight: Double
     )
+
+    private data class MarginQuote(
+        val status: String,
+        val requestUrl: String,
+        val requiredMargin: Double? = null,
+        val finalMargin: Double? = null,
+        val spanMargin: Double? = null,
+        val exposureMargin: Double? = null,
+        val netBuyPremium: Double? = null,
+        val marginCount: Int = 0,
+        val quotedAt: String? = null,
+        val error: String? = null
+    ) {
+        fun toJson(): JSONObject = JSONObject().apply {
+            put("status", status)
+            put("request_url", requestUrl)
+            if (requiredMargin != null) put("required_margin", requiredMargin)
+            if (finalMargin != null) put("final_margin", finalMargin)
+            if (spanMargin != null) put("span_margin", spanMargin)
+            if (exposureMargin != null) put("exposure_margin", exposureMargin)
+            if (netBuyPremium != null) put("net_buy_premium", netBuyPremium)
+            put("margin_count", marginCount)
+            if (!quotedAt.isNullOrBlank()) put("quoted_at", quotedAt)
+            if (!error.isNullOrBlank()) put("error", error)
+        }
+    }
 
     companion object {
         const val CHANNEL_ID = "market_radar_service"
@@ -97,6 +125,7 @@ class MarketWatchService : Service() {
         private const val SERVICE_SELF_HEAL_REQ_CODE = 74052
         private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
         private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
+        private const val UPSTOX_MARGIN_URL = "https://api.upstox.com/v2/charges/margin"
         private const val GENERATED_CANDIDATE_PERSIST_CAP = 50
         private const val DAY_EVAL_HANDOFF_TS_KEY = "day_eval_handoff_ts"
         private const val DAY_EVAL_HANDOFF_DATE_KEY = "day_eval_handoff_date"
@@ -2151,6 +2180,8 @@ class MarketWatchService : Service() {
             
             if (result != null) {
                 val resultObj = JSONObject(result)
+                val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
+                enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
                 brainSuccess = true
 
                 processUnifiedBrainNotifications(brain, resultObj, ctxObj)
@@ -3183,6 +3214,233 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun resetMarginQuoteCacheIfNeeded(pollKey: String) {
+        if (pollKey == marginQuoteCachePollKey) return
+        marginQuoteCachePollKey = pollKey
+        marginQuoteCache.clear()
+    }
+
+    private fun selectTopCandidateForMargin(resultObj: JSONObject): JSONObject? {
+        val arrays = listOf(
+            resultObj.optJSONArray("watchlist"),
+            resultObj.optJSONArray("generated_candidates"),
+            resultObj.optJSONArray("candidates")
+        )
+        for (arr in arrays) {
+            if (arr == null) continue
+            for (i in 0 until arr.length()) {
+                val candidate = arr.optJSONObject(i) ?: continue
+                if (candidate.optBoolean("capitalBlocked", false)) continue
+                if (candidate.has("executionReady") && !candidate.optBoolean("executionReady", true)) continue
+                if (candidate.optBoolean("blocked", false)) continue
+                if (candidate.optString("entryAction", "").equals("BLOCKED", ignoreCase = true)) continue
+                if (candidate.has("directionSafe") && !candidate.optBoolean("directionSafe", true)) continue
+                if (candidate.optString("id", "").isBlank()) continue
+                if (candidate.optString("type", "").isBlank()) continue
+                return candidate
+            }
+        }
+        return null
+    }
+
+    private fun buildMarginPayload(candidate: JSONObject): Pair<String, JSONArray>? {
+        val lotSize = candidate.optInt("lotSize", 0)
+        if (lotSize <= 0) return null
+        val legs = candidate.optJSONArray("legs") ?: return null
+        if (legs.length() == 0) return null
+
+        data class PendingLeg(var action: String, var quantity: Int)
+        val deduped = LinkedHashMap<String, PendingLeg>()
+
+        for (i in 0 until legs.length()) {
+            val leg = legs.optJSONObject(i) ?: continue
+            val instrumentKey = leg.optString("instrument_key", "").trim()
+            val action = leg.optString("action", "").trim().uppercase(Locale.US)
+            if (instrumentKey.isBlank() || action !in setOf("BUY", "SELL")) {
+                return null
+            }
+            val existing = deduped[instrumentKey]
+            if (existing == null) {
+                deduped[instrumentKey] = PendingLeg(action, lotSize)
+            } else if (existing.action == action) {
+                existing.quantity += lotSize
+            } else {
+                return null
+            }
+        }
+
+        if (deduped.isEmpty() || deduped.size > 20) return null
+
+        val instruments = JSONArray()
+        val cacheKeyParts = mutableListOf<String>()
+        for ((instrumentKey, leg) in deduped) {
+            instruments.put(
+                JSONObject()
+                    .put("instrument_key", instrumentKey)
+                    .put("quantity", leg.quantity)
+                    .put("transaction_type", leg.action)
+                    .put("product", "D")
+            )
+            cacheKeyParts += "${instrumentKey}:${leg.action}:${leg.quantity}:D"
+        }
+        return cacheKeyParts.joinToString("|") to instruments
+    }
+
+    private fun fetchMarginQuote(token: String, instruments: JSONArray): MarginQuote {
+        val quotedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US).format(Date())
+        val body = JSONObject().put("instruments", instruments).toString()
+        val request = Request.Builder()
+            .url(UPSTOX_MARGIN_URL)
+            .addHeader("Authorization", "Bearer $token")
+            .addHeader("Accept", "application/json")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                val raw = response.body?.string().orEmpty()
+                val parsed = if (raw.isBlank()) JSONObject() else JSONObject(raw)
+                if (!response.isSuccessful) {
+                    val err = parsed.optString("message").ifBlank {
+                        parsed.optString("errors").ifBlank { "http_${response.code}" }
+                    }
+                    return MarginQuote(
+                        status = "ERROR",
+                        requestUrl = UPSTOX_MARGIN_URL,
+                        quotedAt = quotedAt,
+                        error = err
+                    )
+                }
+                val data = parsed.optJSONObject("data") ?: JSONObject()
+                val margins = data.optJSONArray("margins") ?: JSONArray()
+                var span = 0.0
+                var exposure = 0.0
+                var netBuyPremium = 0.0
+                for (i in 0 until margins.length()) {
+                    val row = margins.optJSONObject(i) ?: continue
+                    span += row.optDouble("span_margin", 0.0)
+                    exposure += row.optDouble("exposure_margin", 0.0)
+                    netBuyPremium += row.optDouble("net_buy_premium", 0.0)
+                }
+                MarginQuote(
+                    status = parsed.optString("status", "success").ifBlank { "success" },
+                    requestUrl = UPSTOX_MARGIN_URL,
+                    requiredMargin = data.optDouble("required_margin", Double.NaN).takeIf { it.isFinite() },
+                    finalMargin = data.optDouble("final_margin", Double.NaN).takeIf { it.isFinite() },
+                    spanMargin = span,
+                    exposureMargin = exposure,
+                    netBuyPremium = netBuyPremium,
+                    marginCount = margins.length(),
+                    quotedAt = quotedAt
+                )
+            }
+        } catch (e: Exception) {
+            MarginQuote(
+                status = "ERROR",
+                requestUrl = UPSTOX_MARGIN_URL,
+                quotedAt = quotedAt,
+                error = e.message ?: e.javaClass.simpleName
+            )
+        }
+    }
+
+    private fun annotateMarginQuote(candidate: JSONObject, quote: MarginQuote) {
+        candidate.put("marginQuoteStatus", quote.status)
+        candidate.put("marginQuoteSource", "UPSTOX_MARGIN_API")
+        candidate.put("marginRequestUrl", quote.requestUrl)
+        quote.quotedAt?.let { candidate.put("marginQuotedAt", it) }
+        quote.error?.let { candidate.put("marginQuoteError", it) }
+        if (quote.requiredMargin != null) candidate.put("upstoxRequiredMargin", quote.requiredMargin)
+        if (quote.finalMargin != null) {
+            candidate.put("upstoxFinalMargin", quote.finalMargin)
+            candidate.put("realMargin", quote.finalMargin)
+        }
+        if (quote.spanMargin != null) candidate.put("upstoxSpanMargin", quote.spanMargin)
+        if (quote.exposureMargin != null) candidate.put("upstoxExposureMargin", quote.exposureMargin)
+        if (quote.netBuyPremium != null) candidate.put("upstoxNetBuyPremium", quote.netBuyPremium)
+        candidate.put("marginQuote", quote.toJson())
+    }
+
+    private fun annotateMatchingCandidates(resultObj: JSONObject, candidateId: String, quote: MarginQuote) {
+        val arrays = listOf("watchlist", "generated_candidates", "candidates")
+        for (name in arrays) {
+            val arr = resultObj.optJSONArray(name) ?: continue
+            for (i in 0 until arr.length()) {
+                val candidate = arr.optJSONObject(i) ?: continue
+                if (candidate.optString("id", "") == candidateId) {
+                    annotateMarginQuote(candidate, quote)
+                }
+            }
+        }
+    }
+
+    private fun enrichTopCandidateMargin(resultObj: JSONObject, ctxObj: JSONObject, authToken: String, pollKey: String) {
+        resetMarginQuoteCacheIfNeeded(pollKey)
+        if (authToken.isBlank()) {
+            LogBuffer.add('W', TAG, "MARGIN_SKIP: token missing for read-only quote")
+            return
+        }
+
+        val candidate = selectTopCandidateForMargin(resultObj)
+        if (candidate == null) {
+            LogBuffer.add('I', TAG, "MARGIN_SKIP: no actionable candidate surfaced")
+            return
+        }
+        val candidateId = candidate.optString("id", "")
+        val payload = buildMarginPayload(candidate)
+        if (payload == null) {
+            LogBuffer.add('W', TAG, "MARGIN_SKIP: candidate=$candidateId missing leg instrument keys or lot size")
+            candidate.put("marginQuoteStatus", "SKIPPED")
+            candidate.put("marginQuoteError", "candidate_missing_margin_inputs")
+            return
+        }
+
+        val (cacheKey, instruments) = payload
+        val quote = marginQuoteCache.getOrPut(cacheKey) {
+            fetchMarginQuote(authToken, instruments)
+        }
+        annotateMarginQuote(candidate, quote)
+        annotateMatchingCandidates(resultObj, candidateId, quote)
+
+        val marginJson = quote.toJson().apply {
+            put("candidate_id", candidateId)
+            put("candidate_type", candidate.optString("type"))
+            put("candidate_index", candidate.optString("index"))
+            put("brain_max_loss", candidate.optDouble("maxLoss", Double.NaN).takeIf { it.isFinite() })
+            put("lot_size", candidate.optInt("lotSize", 0))
+            put("instrument_count", instruments.length())
+            put("request_payload", JSONObject().put("instruments", instruments))
+        }
+        val marginByCandidate = ctxObj.optJSONObject("marginByCandidate") ?: JSONObject()
+        marginByCandidate.put(candidateId, marginJson)
+        ctxObj.put("marginByCandidate", marginByCandidate)
+        ctxObj.put("topCandidateMargin", marginJson)
+        resultObj.put("top_candidate_margin", marginJson)
+
+        val brainMaxLoss = candidate.optDouble("maxLoss", Double.NaN)
+        LogBuffer.add(
+            if (quote.status == "ERROR") 'W' else 'I',
+            TAG,
+            buildString {
+                append("[margin] candidate=").append(candidateId)
+                append(" structure=").append(candidate.optString("type"))
+                append('\n')
+                append("  brain_max_loss=").append(if (brainMaxLoss.isFinite()) String.format(Locale.US, "%.2f", brainMaxLoss) else "NA")
+                append('\n')
+                append("  upstox_required_margin=").append(quote.requiredMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
+                append('\n')
+                append("  upstox_final_margin=").append(quote.finalMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
+                append('\n')
+                append("  span=").append(quote.spanMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
+                append(" exposure=").append(quote.exposureMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
+                append(" net_buy_premium=").append(quote.netBuyPremium?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
+                if (!quote.error.isNullOrBlank()) {
+                    append('\n').append("  error=").append(quote.error)
+                }
+            }
+        )
     }
 
     private fun resolveNearestExpiryLive(instrumentKey: String, token: String, fallback: String): String {

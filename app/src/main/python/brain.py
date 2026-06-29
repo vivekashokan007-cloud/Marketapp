@@ -5406,7 +5406,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.69"
+BRAIN_VERSION = "2.4.70"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8620,6 +8620,18 @@ def _candidate_view(c):
         'teacher_success_rate_pct': c.get('teacher_success_rate_pct'),
         'teacher_coverage': c.get('teacher_coverage'),
         'teacher_recommendable': c.get('teacher_recommendable'),
+        'realMargin': c.get('realMargin'),
+        'upstoxRequiredMargin': c.get('upstoxRequiredMargin'),
+        'upstoxFinalMargin': c.get('upstoxFinalMargin'),
+        'upstoxSpanMargin': c.get('upstoxSpanMargin'),
+        'upstoxExposureMargin': c.get('upstoxExposureMargin'),
+        'upstoxNetBuyPremium': c.get('upstoxNetBuyPremium'),
+        'marginQuoteStatus': c.get('marginQuoteStatus'),
+        'marginQuoteSource': c.get('marginQuoteSource'),
+        'marginQuotedAt': c.get('marginQuotedAt'),
+        'marginRequestUrl': c.get('marginRequestUrl'),
+        'marginQuoteError': c.get('marginQuoteError'),
+        'marginQuote': c.get('marginQuote'),
     }
 
 
