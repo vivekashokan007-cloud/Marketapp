@@ -1973,6 +1973,10 @@ class NativeBridge(private val context: Context) {
                 rebuildTeacherResearchReportFromRemoteIfPossible(targetDate)?.let { rebuilt ->
                     return rebuilt.toString()
                 }
+                prefs.edit()
+                    .putString("teacher_research_report_status", "FAILED")
+                    .putString("teacher_research_report_error", "REPORT_NOT_AVAILABLE")
+                    .commit()
                 return JSONObject()
                     .put("ok", false)
                     .put("session_date", targetDate)
