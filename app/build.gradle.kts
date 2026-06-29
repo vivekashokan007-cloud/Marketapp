@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b301: add read-only Upstox margin quote annotations for top surfaced candidate.
+        // b302: surface Upstox margin quotes and corrected paper charge display.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 301
-        versionName = "2.4.70"
+        versionCode = 302
+        versionName = "2.4.71"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
