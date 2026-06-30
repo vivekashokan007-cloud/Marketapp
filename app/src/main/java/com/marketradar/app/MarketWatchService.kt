@@ -724,7 +724,7 @@ class MarketWatchService : Service() {
                             dispatchPollIfDue("loop", currentToken)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
-                            LogBuffer.add('E', "MarketWatchService", "Poll #${nextPollNumberForToday()} FAILED: ${e.message}")
+                            LogBuffer.add('E', "MarketWatchService", "Poll #$pollCount FAILED: ${e.message}")
                         } finally {
                             releaseWakeLock()
                         }
