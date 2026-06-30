@@ -1,8 +1,8 @@
-# 🛡️ Market Radar v2.3.17 — Candlestick Pattern Detection
+# 🛡️ Market Radar — Native Android Runtime
 
 Market Radar is a high-performance options trading companion with a native Android runtime, Kotlin bridge, and canonical Python brain (`brain.py`).
 
-## 🚀 Version 2.2 Features
+## Runtime highlights
 - **Native Background Polling**: Stable 5-min tick cycle with `PARTIAL_WAKE_LOCK`.
 - **Canonical Python Brain**: 6,400+ lines of Python analysis running locally via Chaquopy.
 - **Institutional Positioning**: Automatic 2:00 PM and 3:15 PM positioning snapshots.
@@ -16,7 +16,7 @@ To build the production APK, you must provide the following environment variable
 - `SUPABASE_ANON_KEY`: Your Supabase Anonymous API Key.
 
 ### Security Note
-Since v2.3.7, **Cleartext Traffic is disabled**. All API calls (Upstox, Supabase) MUST use HTTPS.
+Cleartext traffic is disabled. All API calls (Upstox, Supabase, GitHub, hosted PWA) MUST use HTTPS.
 
 ## 📦 APK Installation
 1. Ensure `SUPABASE_ANON_KEY` is set in your environment.

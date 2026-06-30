@@ -40,6 +40,10 @@ import java.io.IOException
 import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private const val PREFS_NAME = "market_radar"
+        private const val PREF_LAST_WEB_URL = "last_web_url"
+    }
 
     private lateinit var webView: WebView
     private lateinit var swipeRefresh: SwipeRefreshLayout
@@ -153,6 +157,7 @@ class MainActivity : AppCompatActivity() {
                     super.onPageFinished(view, url)
                     swipeRefresh.isRefreshing = false
                     hideSplashAfterDelay()
+                    persistCurrentWebUrl(url)
                     injectNativeBridge()
 
                     // Check if web app version changed since last load
@@ -366,7 +371,7 @@ class MainActivity : AppCompatActivity() {
 
         // b105: Copy ML model files from assets to internal storage on install/update
         // Python reads from filesDir — assets are read-only and not directly accessible
-        val mlPrefs = getSharedPreferences("market_radar", MODE_PRIVATE)
+        val mlPrefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val currentVersionCode = BuildConfig.VERSION_CODE
         val lastMLCopyVersion = mlPrefs.getInt("ml_copy_version", -1)
         if (lastMLCopyVersion != currentVersionCode) {
@@ -403,7 +408,7 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState)
         } else {
-            webView.loadUrl(APP_URL)
+            webView.loadUrl(restoredWebUrl())
         }
 
         handleIntent(intent)
@@ -444,7 +449,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkVersionUpdate(currentVersion: String) {
-        val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val lastVersion = prefs.getString("last_version", null)
         if (lastVersion == null) {
             // First install — store silently
@@ -460,6 +465,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun hideSplashAfterDelay() {
         loadingOverlay.visibility = View.GONE
+    }
+
+    private fun persistCurrentWebUrl(url: String?) {
+        val safeUrl = url?.trim().orEmpty()
+        if (safeUrl.startsWith(APP_URL)) {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                .edit()
+                .putString(PREF_LAST_WEB_URL, safeUrl)
+                .apply()
+        }
+    }
+
+    private fun restoredWebUrl(): String {
+        val savedUrl = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getString(PREF_LAST_WEB_URL, APP_URL)
+            ?.trim()
+            .orEmpty()
+        return if (savedUrl.startsWith(APP_URL)) savedUrl else APP_URL
     }
 
     private fun dp(value: Int) = TypedValue.applyDimension(
@@ -550,16 +573,10 @@ class MainActivity : AppCompatActivity() {
         webView.saveState(outState)
     }
 
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        if (level >= TRIM_MEMORY_MODERATE) {
-            webView.clearCache(false)
-        }
-    }
-
     override fun onPause() {
         super.onPause()
         // Do NOT call webView.onPause() — we want JS to keep running in background
+        persistCurrentWebUrl(webView.url)
     }
 
     override fun onResume() {
@@ -662,6 +679,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         unregisterReceiver(pollReceiver)
+        if (::webView.isInitialized) {
+            persistCurrentWebUrl(webView.url)
+        }
         webView.destroy()
         super.onDestroy()
     }
