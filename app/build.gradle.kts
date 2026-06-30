@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b310: keep trade-mode switch accessible when current mode has no candidates.
+        // b311: local cache hardening + HTTPS-only manifest + doc cleanup batch.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 310
-        versionName = "2.4.79"
+        versionCode = 311
+        versionName = "2.4.80"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

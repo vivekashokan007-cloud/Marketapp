@@ -1,15 +1,16 @@
-# 📱 Market Radar v2.2 — Native Kotlin & Python Build
-## NO Node.js, NO Capacitor. Just Android Studio + Chaquopy.
+# 📱 Market Radar — Native Kotlin & Python Build
+## Android Studio + Chaquopy native runtime.
 
-### 🛡️ v2.2 Stabilization Milestone (April 2026)
-This build includes 7 critical stability fixes:
-1. **SwipeRefreshLayout Leak Fix**: Removed redundant UI initializations.
-2. **Foreground ML Receiver**: Properly registered `MLAlarmReceiver` for background training.
-3. **Supabase Security**: Moved all credentials to `BuildConfig` via environment variables.
-4. **HTTPS Enforcement**: Removed `usesCleartextTraffic` to allow only secure API calls.
-5. **Silent Catch Blocks**: All empty `catch` blocks now have debug logging.
-6. **Python Call Timeouts**: Synchronous `brain.py` and training calls now have 10s-30s timeouts.
-7. **Institutional Snapshots**: Automatic 2:00 PM and 3:15 PM positioning captures.
+### Current branch notes
+Use this document for the native build flow only. For the exact shipped version values, use:
+1. `app/build.gradle.kts` for Android `versionName` / `versionCode`
+2. `app/src/main/python/brain.py` for `BRAIN_VERSION`
+3. `MarketVivi-git/index.html` for the visible web label
+
+Current runtime expectations:
+1. Supabase credentials are injected through Gradle / environment into `BuildConfig`.
+2. Cleartext traffic is disabled; all endpoints must remain HTTPS.
+3. ML evaluation uses canonical persisted outcomes plus derived teacher-report views.
 
 ---
 
