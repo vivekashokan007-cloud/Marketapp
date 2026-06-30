@@ -425,14 +425,15 @@ class MarketMLService : Service() {
             }
             "ACTION_DAY_EVALUATION" -> {
             val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
+            val forceAnyway = intent.getBooleanExtra("force_anyway", false)
             scope.launch {
                 try {
-                    Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate")
+                    Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate force=$forceAnyway")
                     prefs.edit()
                         .putString("teacher_research_report_status", "PENDING")
                         .remove("teacher_research_report_error")
                         .commit()
-                    runDayEvaluation(sessionDate)
+                    runDayEvaluation(sessionDate, forceAnyway)
                 } catch (t: Throwable) {
                     Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
                         LogBuffer.recordCrash(
@@ -495,6 +496,37 @@ class MarketMLService : Service() {
         if (persistedCount != null) editor.putInt("last_evaluation_outcome_count", persistedCount)
         if (lastError.isNullOrBlank()) editor.remove("evaluation_last_error") else editor.putString("evaluation_last_error", lastError)
         editor.commit()
+    }
+
+    private fun currentCoverageIntegrity(sessionDate: String): String {
+        val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
+        if (integrityDate != sessionDate) return ""
+        return prefs.getString("coverage_integrity", "") ?: ""
+    }
+
+    private fun currentCoverageIntegrityIssue(sessionDate: String): String {
+        val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
+        if (integrityDate != sessionDate) return ""
+        return prefs.getString("coverage_integrity_issue", "") ?: ""
+    }
+
+    private fun markIncompleteSession(sessionDate: String, reason: String, totalSnapshots: Int) {
+        prefs.edit()
+            .remove("evaluation_done_date")
+            .putString("teacher_research_report_status", "NOT_APPLICABLE")
+            .putString("teacher_research_report_error", reason)
+            .commit()
+        updateEvaluationJobState(
+            sessionDate = sessionDate,
+            phase = "INCOMPLETE_SESSION",
+            message = "Evaluation blocked for $sessionDate because session integrity is broken ($reason). Normal teacher evaluation is disabled for this session.",
+            totalSnapshots = totalSnapshots,
+            completedSnapshots = 0,
+            producedCount = 0,
+            persistedCount = 0,
+            running = false,
+            lastError = reason
+        )
     }
 
     private fun readJsonArrayFile(file: File): org.json.JSONArray {
@@ -1402,7 +1434,7 @@ class MarketMLService : Service() {
     }
 
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
-    private suspend fun runDayEvaluation(sessionDateOverride: String? = null) = withContext(Dispatchers.IO) {
+    private suspend fun runDayEvaluation(sessionDateOverride: String? = null, forceAnyway: Boolean = false) = withContext(Dispatchers.IO) {
         val sessionDate = sessionDateOverride?.takeIf { it.isNotBlank() } ?: todayIstDate()
         val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
         var evalPhase = "PREPARING"
@@ -1442,6 +1474,15 @@ class MarketMLService : Service() {
             val preparedInputs = ensureEvaluationInputFiles(sessionDate)
             val snapshotsFile = preparedInputs.snapshotsFile
             val chainFile = preparedInputs.chainFile
+            val coverageIntegrity = currentCoverageIntegrity(sessionDate).uppercase(Locale.US)
+            val coverageIntegrityIssue = currentCoverageIntegrityIssue(sessionDate).ifBlank { "UNKNOWN_INTEGRITY_ISSUE" }
+            if (coverageIntegrity == "INTEGRITY_BROKEN" && !forceAnyway) {
+                writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                markIncompleteSession(sessionDate, coverageIntegrityIssue, preparedInputs.snapshotCount)
+                cancelDayEvaluationReminder(this@MarketMLService)
+                Log.w(TAG, "EVAL_BLOCKED_INCOMPLETE_SESSION: date=$sessionDate issue=$coverageIntegrityIssue snapshots=${preparedInputs.snapshotCount}")
+                return@withContext
+            }
             if (preparedInputs.emptyReason != null) {
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
                 prefs.edit().putString("evaluation_done_date", sessionDate).commit()
@@ -1480,6 +1521,13 @@ class MarketMLService : Service() {
             if (totalSnapshots == 0) {
                 val pollCount = prefs.getInt("poll_count", 0)
                 val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+                if (coverageIntegrity == "INTEGRITY_BROKEN" && !forceAnyway) {
+                    writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                    markIncompleteSession(sessionDate, coverageIntegrityIssue, 0)
+                    cancelDayEvaluationReminder(this@MarketMLService)
+                    Log.w(TAG, "EVAL_BLOCKED_NO_SNAPSHOTS_INCOMPLETE_SESSION: date=$sessionDate issue=$coverageIntegrityIssue")
+                    return@withContext
+                }
                 if (lastPollDate == sessionDate && pollCount > 0) {
                     throw IllegalStateException(
                         "EVAL_NO_SNAPSHOTS_AFTER_POLLING: $sessionDate has $pollCount polls but no evaluation snapshots were prepared."

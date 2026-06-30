@@ -890,27 +890,32 @@ class NativeBridge(private val context: Context) {
             val evaluationPhase = prefs.getString("evaluation_phase", "") ?: ""
             val evaluationCompleted = prefs.getInt("evaluation_completed_snapshots", 0)
             val evaluationTotal = prefs.getInt("evaluation_total_snapshots", 0)
+            val marketClock = MarketOpenScheduler.currentStatus()
+            val coverage = currentPollCoverage(marketClock)
+            targetDate?.let { repairIncompleteSessionStateIfNeeded(it, coverage) }
             targetDate?.let { repairStaleResearchStateIfNeeded(it) }
             val retryEvaluation = targetDate?.let { shouldRetryDayEvaluation(it) } == true
             val serviceRunning = isServiceRunning()
-            val marketClock = MarketOpenScheduler.currentStatus()
-            val coverage = currentPollCoverage(marketClock)
+            val coverageIntegrity = currentCoverageIntegrity(targetDate ?: today, coverage)
+            val coverageIntegrityIssue = currentCoverageIntegrityIssue(targetDate ?: today)
+            val integrityBroken = coverageIntegrity == "INTEGRITY_BROKEN"
+            val forceEvaluationAllowed = !serviceRunning && !marketClock.marketOpen && !targetDate.isNullOrBlank() && integrityBroken
             val targetIsToday = targetDate == today
             val historicalReady = !targetDate.isNullOrBlank() && !targetIsToday
-            val targetSessionComplete = historicalReady || (activeToday && coverage.missed == 0)
+            val targetSessionRunnable = historicalReady || (activeToday && coverage.actual > 0 && !integrityBroken)
             val evaluationReady = !serviceRunning &&
                 !marketClock.marketOpen &&
                 !targetDate.isNullOrBlank() &&
-                (historicalReady || coverage.actual > 0) &&
+                targetSessionRunnable &&
                 runningDate != targetDate &&
-                (retryEvaluation || (targetSessionComplete && doneDate != targetDate))
+                (retryEvaluation || (targetSessionRunnable && doneDate != targetDate))
             val evaluationBlockedReason = when {
                 retryEvaluation -> ""
                 serviceRunning -> "WAIT_FOR_POST_CLOSE_HANDOFF"
                 marketClock.marketOpen -> "MARKET_OPEN"
                 targetDate.isNullOrBlank() -> "NO_SESSION"
                 targetIsToday && (!activeToday || coverage.actual <= 0) -> "NO_SESSION"
-                targetIsToday && coverage.missed > 0 -> "SESSION_PARTIAL"
+                integrityBroken -> "INCOMPLETE_SESSION"
                 runningDate == targetDate -> "RUNNING"
                 doneDate == targetDate -> "DONE"
                 else -> ""
@@ -929,6 +934,9 @@ class NativeBridge(private val context: Context) {
             status.put("actualPollsToday", coverage.actual)
             status.put("missedPollsToday", coverage.missed)
             status.put("pollCoverageState", coverage.state)
+            status.put("coverageIntegrity", coverageIntegrity)
+            status.put("coverageIntegrityIssue", coverageIntegrityIssue)
+            status.put("evaluationPromotionEligible", coverageIntegrity == "CLEAN")
             status.put("evaluationTargetDate", targetDate ?: "")
             status.put("evaluationTargetIsToday", targetIsToday)
             status.put("evaluationReady", evaluationReady)
@@ -942,6 +950,7 @@ class NativeBridge(private val context: Context) {
             status.put("evaluationProgressTotal", evaluationTotal)
             status.put("evaluationRetryRecommended", retryEvaluation)
             status.put("evaluationRetryable", retryEvaluation)
+            status.put("evaluationForceAllowed", forceEvaluationAllowed)
             status.put("evaluationLastError", prefs.getString("evaluation_last_error", "") ?: "")
             status.put("teacherResearchStatus", prefs.getString("teacher_research_report_status", "") ?: "")
             status.put("teacherResearchError", prefs.getString("teacher_research_report_error", "") ?: "")
@@ -1027,6 +1036,15 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun triggerDayEvaluation(): String {
+        return triggerDayEvaluationInternal(forceAnyway = false)
+    }
+
+    @JavascriptInterface
+    fun triggerDayEvaluationForce(): String {
+        return triggerDayEvaluationInternal(forceAnyway = true)
+    }
+
+    private fun triggerDayEvaluationInternal(forceAnyway: Boolean): String {
         return try {
             val today = todayIstDate()
             clearStaleEvaluationRunningIfNeeded()
@@ -1039,6 +1057,8 @@ class NativeBridge(private val context: Context) {
             val retryEvaluation = shouldRetryDayEvaluation(targetDate)
             val marketClock = MarketOpenScheduler.currentStatus()
             val coverage = currentPollCoverage(marketClock)
+            val coverageIntegrity = currentCoverageIntegrity(targetDate, coverage)
+            val coverageIntegrityIssue = currentCoverageIntegrityIssue(targetDate)
             val serviceRunning = isServiceRunning()
             if (serviceRunning) {
                 return JSONObject().apply {
@@ -1061,11 +1081,11 @@ class NativeBridge(private val context: Context) {
                     put("message", "No completed market session was found for today yet.")
                 }.toString()
             }
-            if (targetDate == today && coverage.missed > 0 && !retryEvaluation) {
+            if (coverageIntegrity == "INTEGRITY_BROKEN" && !retryEvaluation && !forceAnyway) {
                 return JSONObject().apply {
                     put("ok", false)
                     put("status", "blocked")
-                    put("message", "Day evaluation is blocked because today's session is still partial (${coverage.actual}/${coverage.expectedFullDay} polls). Wait for the automatic post-close run or retry only after a completed session.")
+                    put("message", "Day evaluation is blocked because this session integrity is broken (${coverageIntegrityIssue.ifBlank { "UNKNOWN" }}). Normal teacher evaluation is disabled for incomplete sessions.")
                 }.toString()
             }
             if (prefs.getString("evaluation_done_date", "") == targetDate && !retryEvaluation) {
@@ -1099,7 +1119,9 @@ class NativeBridge(private val context: Context) {
                 .remove("teacher_research_report_error")
                 .putString(
                     "last_evaluation_message",
-                    if (retryEvaluation) {
+                    if (forceAnyway) {
+                        "Forced evaluation queued for $targetDate. Results from incomplete sessions are advisory only and excluded from promotion gates."
+                    } else if (retryEvaluation) {
                         "Evaluation recovery queued for $targetDate. It will resume from the last completed batch if local progress exists."
                     } else {
                         "Evaluation queued for $targetDate..."
@@ -1109,13 +1131,14 @@ class NativeBridge(private val context: Context) {
             val intent = android.content.Intent(context, MarketMLService::class.java).apply {
                 action = "ACTION_DAY_EVALUATION"
                 putExtra("session_date", targetDate)
+                putExtra("force_anyway", forceAnyway)
             }
             context.startForegroundService(intent)
             JSONObject().apply {
                 put("ok", true)
                 put("target_date", targetDate)
-                put("status", if (retryEvaluation) "restarted" else "started")
-                put("message", if (retryEvaluation) "Day evaluation recovery started for $targetDate." else "Day evaluation started for $targetDate.")
+                put("status", if (forceAnyway) "forced" else if (retryEvaluation) "restarted" else "started")
+                put("message", if (forceAnyway) "Forced day evaluation started for $targetDate." else if (retryEvaluation) "Day evaluation recovery started for $targetDate." else "Day evaluation started for $targetDate.")
             }.toString()
         } catch (e: Exception) {
             prefs.edit()
@@ -1394,6 +1417,31 @@ class NativeBridge(private val context: Context) {
         )
     }
 
+    private fun repairIncompleteSessionStateIfNeeded(targetDate: String, coverage: PollCoverage) {
+        val integrity = currentCoverageIntegrity(targetDate, coverage)
+        if (integrity != "INTEGRITY_BROKEN") return
+        val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
+        if (phase == "INCOMPLETE_SESSION") return
+        val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+        val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
+        if (runningDate == targetDate) return
+        if (doneDate != targetDate && phase !in setOf("DONE", "FAILED_RESEARCH", "FAILED", "FAILED_SAVE", "STALLED", "")) return
+        val issue = currentCoverageIntegrityIssue(targetDate).ifBlank { "INTEGRITY_BROKEN" }
+        prefs.edit()
+            .remove("evaluation_done_date")
+            .putString("evaluation_job_date", targetDate)
+            .putString("evaluation_phase", "INCOMPLETE_SESSION")
+            .putString("teacher_research_report_status", "NOT_APPLICABLE")
+            .putString("teacher_research_report_error", issue)
+            .putString("evaluation_last_error", issue)
+            .putString(
+                "last_evaluation_message",
+                "Evaluation blocked for $targetDate because session integrity is broken ($issue). Normal teacher evaluation is disabled for this session."
+            )
+            .putLong("evaluation_job_updated_at_ms", System.currentTimeMillis())
+            .commit()
+    }
+
     private fun latestEligibleEvaluationDate(today: String = todayIstDate()): String? {
         if (hasTodaySession()) return today
         val candidates = listOf(
@@ -1443,6 +1491,79 @@ class NativeBridge(private val context: Context) {
         val missed: Int,
         val state: String
     )
+
+    private fun currentCoverageIntegrity(targetDate: String, coverage: PollCoverage): String {
+        val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
+        if (integrityDate == targetDate) {
+            val stored = prefs.getString("coverage_integrity", "") ?: ""
+            if (stored.isNotBlank()) return stored
+        }
+        val derivedIssue = deriveCoverageIntegrityIssue(targetDate)
+        if (derivedIssue.isNotBlank()) {
+            return when (derivedIssue) {
+                "MISSED_SLOTS" -> "PARTIAL_COVERAGE"
+                "NONE" -> "CLEAN"
+                else -> "INTEGRITY_BROKEN"
+            }
+        }
+        return when {
+            coverage.actual <= 0 -> "NONE"
+            coverage.missed > 0 -> "PARTIAL_COVERAGE"
+            else -> "CLEAN"
+        }
+    }
+
+    private fun currentCoverageIntegrityIssue(targetDate: String): String {
+        val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
+        if (integrityDate == targetDate) {
+            return prefs.getString("coverage_integrity_issue", "") ?: ""
+        }
+        return deriveCoverageIntegrityIssue(targetDate)
+    }
+
+    private fun deriveCoverageIntegrityIssue(targetDate: String): String {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != targetDate) return ""
+        val pollCount = prefs.getInt("poll_count", 0)
+        val finalSlotCount = countSlotOccurrencesForDate(targetDate, 76)
+        val snapshotRows = countLocalSnapshotRows(targetDate)
+        return when {
+            snapshotRows > 76 -> "SNAPSHOT_OVERRUN"
+            pollCount > 76 -> "POLL_OVERRUN"
+            finalSlotCount > 1 -> "FINAL_SLOT_DUPLICATE"
+            finalSlotCount == 0 -> "FINAL_SLOT_MISSING"
+            pollCount in 1..75 -> "MISSED_SLOTS"
+            pollCount > 0 -> "NONE"
+            else -> ""
+        }
+    }
+
+    private fun countSlotOccurrencesForDate(targetDate: String, slotOrdinal: Int): Int {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != targetDate) return 0
+        return try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            var count = 0
+            for (i in 0 until history.length()) {
+                val row = history.optJSONObject(i) ?: continue
+                if (slotOrdinalFromPollTime(row.optString("t", "")) == slotOrdinal) count++
+            }
+            count
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun countLocalSnapshotRows(sessionDate: String): Int {
+        val safeDate = sessionDate.filter { it.isDigit() || it == '-' }.ifBlank { "unknown" }
+        val file = File(context.filesDir, "evaluation_local_cache/brain_snapshots_${safeDate}.jsonl")
+        if (!file.exists()) return 0
+        return try {
+            file.useLines { lines -> lines.count { it.trim().isNotBlank() } }
+        } catch (_: Exception) {
+            0
+        }
+    }
 
     private fun currentPollCoverage(clock: MarketOpenScheduler.MarketClockStatus): PollCoverage {
         val rawActual = if (hasTodaySession()) prefs.getInt("poll_count", 0) else 0
