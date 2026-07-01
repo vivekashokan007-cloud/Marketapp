@@ -181,14 +181,15 @@ object EvaluationLocalCache {
         }
     }
 
+    @Synchronized
     fun readBrainSnapshots(context: Context, sessionDate: String): JSONArray {
         val out = JSONArray()
         val seen = linkedSetOf<String>()
-        pruneExpiredCacheFiles(context)
-        val file = brainSnapshotFile(context, sessionDate)
-        if (!file.exists()) return out
 
         try {
+            pruneExpiredCacheFiles(context)
+            val file = brainSnapshotFile(context, sessionDate)
+            if (!file.exists()) return out
             val state = loadSnapshotState(file)
             if (state.needsRewrite) {
                 rewriteCanonicalFile(file, state.rows)

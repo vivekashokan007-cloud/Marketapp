@@ -2255,7 +2255,13 @@ class NativeBridge(private val context: Context) {
         var targetDate = "unknown"
         return try {
             targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
-            loadLocalSavedSnapshots(targetDate, limit.coerceIn(1, 200)).toString()
+            val rows = EvaluationLocalCache.readBrainSnapshots(context, targetDate)
+            val capped = JSONArray()
+            val maxRows = limit.coerceIn(1, 200)
+            for (i in 0 until minOf(rows.length(), maxRows)) {
+                rows.optJSONObject(i)?.let(capped::put)
+            }
+            capped.toString()
         } catch (e: Throwable) {
             logTeacherResearchThrowable("getMLBrainSnapshots", e)
             "[]"

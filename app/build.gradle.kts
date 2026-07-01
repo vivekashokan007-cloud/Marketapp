@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b325: Keep teacher research rebuild local-only so UI refresh cannot trigger remote OOM.
+        // b326: Read ML snapshots from synchronized capped local cache, not in-progress eval JSON.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 325
-        versionName = "2.4.94"
+        versionCode = 326
+        versionName = "2.4.95"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
