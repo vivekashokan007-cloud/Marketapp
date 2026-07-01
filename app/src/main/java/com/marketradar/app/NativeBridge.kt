@@ -279,6 +279,12 @@ class NativeBridge(private val context: Context) {
         return rows
     }
 
+    private fun logTeacherResearchThrowable(scope: String, t: Throwable) {
+        val runtime = Runtime.getRuntime()
+        val memory = "mem used=${(runtime.totalMemory() - runtime.freeMemory()) / 1048576}MB max=${runtime.maxMemory() / 1048576}MB"
+        Log.e(TAG, "$scope failed throwable=${t.javaClass.name} message=${t.message ?: ""} $memory", t)
+    }
+
     private fun rebuildTeacherResearchReportIfPossible(targetDate: String): JSONObject? {
         return try {
             val snapshotsFile = File(MarketMLService.evaluationSnapshotsPath(context, targetDate))
@@ -309,8 +315,8 @@ class NativeBridge(private val context: Context) {
                 .remove("teacher_research_report_error")
                 .commit()
             report
-        } catch (e: Exception) {
-            Log.e(TAG, "rebuildTeacherResearchReportIfPossible failed", e)
+        } catch (e: Throwable) {
+            logTeacherResearchThrowable("rebuildTeacherResearchReportIfPossible", e)
             null
         }
     }
@@ -349,8 +355,8 @@ class NativeBridge(private val context: Context) {
                 .remove("teacher_research_report_error")
                 .commit()
             report
-        } catch (e: Exception) {
-            Log.e(TAG, "rebuildTeacherResearchReportFromRemoteIfPossible failed", e)
+        } catch (e: Throwable) {
+            logTeacherResearchThrowable("rebuildTeacherResearchReportFromRemoteIfPossible", e)
             null
         }
     }
@@ -2135,19 +2141,20 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getMLTeacherResearchReport(): String {
-        val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
-        val cachedDate = prefs.getString("teacher_research_report_date", "") ?: ""
-        val cached = prefs.getString("teacher_research_report", "") ?: ""
-        if (cachedDate == targetDate && cached.trim().startsWith("{")) {
-            try {
-                val cachedObj = JSONObject(cached)
-                if (cachedObj.optBoolean("ok", false)) {
-                    return cached
-                }
-            } catch (_: Exception) {
-            }
-        }
+        var targetDate = "unknown"
         return try {
+            targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
+            val cachedDate = prefs.getString("teacher_research_report_date", "") ?: ""
+            val cached = prefs.getString("teacher_research_report", "") ?: ""
+            if (cachedDate == targetDate && cached.trim().startsWith("{")) {
+                try {
+                    val cachedObj = JSONObject(cached)
+                    if (cachedObj.optBoolean("ok", false)) {
+                        return cached
+                    }
+                } catch (_: Throwable) {
+                }
+            }
             val file = java.io.File(MarketMLService.evaluationResearchReportPath(context, targetDate))
             if (!file.exists()) {
                 rebuildTeacherResearchReportIfPossible(targetDate)?.let { rebuilt ->
@@ -2175,13 +2182,18 @@ class NativeBridge(private val context: Context) {
                 .remove("teacher_research_report_error")
                 .commit()
             obj.toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "getMLTeacherResearchReport failed", e)
-            JSONObject()
-                .put("ok", false)
-                .put("session_date", targetDate)
-                .put("error", e.message ?: e.javaClass.simpleName)
-                .toString()
+        } catch (e: Throwable) {
+            logTeacherResearchThrowable("getMLTeacherResearchReport", e)
+            try {
+                val error = "${e.javaClass.simpleName}: ${e.message ?: e.javaClass.name}"
+                JSONObject()
+                    .put("ok", false)
+                    .put("session_date", targetDate)
+                    .put("error", error)
+                    .toString()
+            } catch (_: Throwable) {
+                "{\"ok\":false,\"session_date\":\"unknown\",\"error\":\"getMLTeacherResearchReport failed\"}"
+            }
         }
     }
 
