@@ -2253,17 +2253,13 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getMLBrainSnapshots(limit: Int): String {
-        val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
+        var targetDate = "unknown"
         return try {
-            val remote = SupabaseClient.fetchBrainSnapshots(targetDate)
-            if (remote.length() > 0) {
-                remote.toString()
-            } else {
-                loadLocalSavedSnapshots(targetDate, limit.coerceAtLeast(1)).toString()
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "getMLBrainSnapshots failed", e)
-            loadLocalSavedSnapshots(targetDate, limit.coerceAtLeast(1)).toString()
+            targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
+            loadLocalSavedSnapshots(targetDate, limit.coerceIn(1, 200)).toString()
+        } catch (e: Throwable) {
+            logTeacherResearchThrowable("getMLBrainSnapshots", e)
+            "[]"
         }
     }
 

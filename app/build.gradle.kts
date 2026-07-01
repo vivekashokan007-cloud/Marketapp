@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b323: Keep teacher research bridge O(1) and move rebuild off the bridge thread.
+        // b324: Keep brain snapshot bridge local-only so tab rendering cannot trigger remote OOM.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 323
-        versionName = "2.4.92"
+        versionCode = 324
+        versionName = "2.4.93"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
