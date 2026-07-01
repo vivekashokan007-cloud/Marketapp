@@ -316,13 +316,12 @@ class NativeBridge(private val context: Context) {
             .apply()
         teacherResearchScope.launch {
             try {
-                Log.i(TAG, "teacher research rebuild scheduled date=$targetDate")
+                Log.i(TAG, "teacher research local rebuild scheduled date=$targetDate")
                 val report = rebuildTeacherResearchReportIfPossible(targetDate)
-                    ?: rebuildTeacherResearchReportFromRemoteIfPossible(targetDate)
                 if (report == null) {
                     prefs.edit()
                         .putString("teacher_research_report_status", "FAILED")
-                        .putString("teacher_research_report_error", "REPORT_NOT_AVAILABLE")
+                        .putString("teacher_research_report_error", "LOCAL_REPORT_NOT_AVAILABLE")
                         .apply()
                 }
             } catch (t: Throwable) {
