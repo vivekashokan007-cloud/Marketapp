@@ -15,9 +15,11 @@ object EvaluationLocalCache {
     private const val DIR_NAME = "evaluation_local_cache"
     private const val RETENTION_DAYS = 45L
     private const val MAX_ROWS_PER_SESSION = 90
+    private const val MAX_BYTES_PER_SESSION = 5L * 1024L * 1024L
 
     private data class SnapshotFileState(
         val rows: LinkedHashMap<String, String>,
+        var totalBytes: Long,
         var needsRewrite: Boolean
     )
 
@@ -63,11 +65,29 @@ object EvaluationLocalCache {
         }
     }
 
-    private fun trimToRecentLimit(rows: LinkedHashMap<String, String>): Boolean {
+    private fun rowBytes(json: String): Long {
+        return json.toByteArray(Charsets.UTF_8).size.toLong() + 1L
+    }
+
+    private fun trimToRecentLimit(rows: LinkedHashMap<String, String>, totalBytesRef: LongArray): Boolean {
         var trimmed = false
         while (rows.size > MAX_ROWS_PER_SESSION) {
-            val oldestKey = rows.entries.firstOrNull()?.key ?: break
-            rows.remove(oldestKey)
+            val oldest = rows.entries.firstOrNull() ?: break
+            rows.remove(oldest.key)
+            totalBytesRef[0] -= rowBytes(oldest.value)
+            if (totalBytesRef[0] < 0L) totalBytesRef[0] = 0L
+            trimmed = true
+        }
+        return trimmed
+    }
+
+    private fun trimToByteLimit(rows: LinkedHashMap<String, String>, totalBytesRef: LongArray): Boolean {
+        var trimmed = false
+        while (rows.isNotEmpty() && totalBytesRef[0] > MAX_BYTES_PER_SESSION) {
+            val oldest = rows.entries.firstOrNull() ?: break
+            rows.remove(oldest.key)
+            totalBytesRef[0] -= rowBytes(oldest.value)
+            if (totalBytesRef[0] < 0L) totalBytesRef[0] = 0L
             trimmed = true
         }
         return trimmed
@@ -88,6 +108,7 @@ object EvaluationLocalCache {
         snapshotStateByPath[file.absolutePath]?.let { return it }
 
         val rows = linkedMapOf<String, String>()
+        val totalBytesRef = longArrayOf(0L)
         var needsRewrite = false
         if (file.exists()) {
             file.forEachLine { line ->
@@ -103,13 +124,18 @@ object EvaluationLocalCache {
                 val key = snapshotKey(row)
                 if (rows.putIfAbsent(key, row.toString()) != null) {
                     needsRewrite = true
+                } else {
+                    totalBytesRef[0] += rowBytes(row.toString())
                 }
             }
         }
-        if (trimToRecentLimit(rows)) {
+        if (trimToRecentLimit(rows, totalBytesRef)) {
             needsRewrite = true
         }
-        val state = SnapshotFileState(rows, needsRewrite)
+        if (trimToByteLimit(rows, totalBytesRef)) {
+            needsRewrite = true
+        }
+        val state = SnapshotFileState(rows, totalBytesRef[0], needsRewrite)
         snapshotStateByPath[file.absolutePath] = state
         return state
     }
@@ -125,18 +151,27 @@ object EvaluationLocalCache {
                 LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_SKIP_DUP: date=$sessionDate key=$key")
                 return true
             }
-            state.rows[key] = snapshot.toString()
-            val trimmed = trimToRecentLimit(state.rows)
-            if (state.needsRewrite || trimmed) {
+            val json = snapshot.toString()
+            state.rows[key] = json
+            state.totalBytes += rowBytes(json)
+            val byteCounterRef = longArrayOf(state.totalBytes)
+            val trimmedByRows = trimToRecentLimit(state.rows, byteCounterRef)
+            val trimmedByBytes = trimToByteLimit(state.rows, byteCounterRef)
+            state.totalBytes = byteCounterRef[0]
+            if (state.needsRewrite || trimmedByRows || trimmedByBytes) {
                 rewriteCanonicalFile(file, state.rows)
                 state.needsRewrite = false
-                if (trimmed) {
-                    LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${state.rows.size}")
+                if (trimmedByRows || trimmedByBytes) {
+                    LogBuffer.add(
+                        'I',
+                        TAG,
+                        "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${state.rows.size} bytes=${state.totalBytes} rowCap=$MAX_ROWS_PER_SESSION byteCap=$MAX_BYTES_PER_SESSION"
+                    )
                 } else {
                     LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT_ONCE: file=${file.name} rows=${state.rows.size}")
                 }
             } else {
-                file.appendText(snapshot.toString() + "\n")
+                file.appendText(json + "\n")
             }
             LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
             true
