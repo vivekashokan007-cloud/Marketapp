@@ -439,7 +439,17 @@ class MarketWatchService : Service() {
         
         // Only fetch if data is missing or older than 30 minutes
         val isStale = (now - lastSync) > 30 * 60 * 1000L
-        val hasBaseline = prefs.contains("morning_baseline")
+        val baselineRaw = prefs.getString("morning_baseline", null)
+        val hasBaseline = try {
+            if (baselineRaw.isNullOrBlank()) {
+                false
+            } else {
+                val baseline = JSONObject(baselineRaw)
+                baseline.optString("date", "") == today
+            }
+        } catch (_: Exception) {
+            false
+        }
         
         if (!isStale && hasBaseline && lastPollDate == today) {
             Log.d(TAG, "Bootstrap skipped: data is fresh")

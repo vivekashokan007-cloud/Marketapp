@@ -362,6 +362,13 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun startMarketService() {
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) {
+            Log.w(TAG, "startMarketService skipped: no baseline locked for today")
+            LogBuffer.add('W', TAG, "startMarketService skipped: no baseline locked for today")
+            prefs.edit().putBoolean("service_running", false).commit()
+            return
+        }
         val now = System.currentTimeMillis()
         val running = prefs.getBoolean("service_running", false)
         val lastStartReq = prefs.getLong("last_start_req_ms", 0L)
@@ -384,6 +391,12 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun requestImmediatePoll() {
+        clearStaleSessionStateIfNeeded()
+        if (!hasTodayBaseline()) {
+            Log.w(TAG, "requestImmediatePoll skipped: no baseline locked for today")
+            LogBuffer.add('W', TAG, "requestImmediatePoll skipped: no baseline locked for today")
+            return
+        }
         val intent = Intent(context, MarketWatchService::class.java).apply {
             action = MarketWatchService.ACTION_FORCE_POLL
         }
@@ -1627,6 +1640,12 @@ class NativeBridge(private val context: Context) {
         val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         val baselineIsToday = hasTodayBaseline()
+        val hasStaleMorningState = !baselineIsToday && (
+            prefs.contains("morning_baseline") ||
+            prefs.contains("morning_input") ||
+            prefs.contains("expiry_bnf") ||
+            prefs.contains("expiry_nf")
+        )
 
         val hasStalePollState =
             lastPollDate != today && (
@@ -1639,7 +1658,7 @@ class NativeBridge(private val context: Context) {
             prefs.getString("candidates", "[]") != "[]" ||
             prefs.getBoolean("service_running", false)
         )
-        if (!hasStalePollState && !hasStaleDerivedState) return
+        if (!hasStalePollState && !hasStaleDerivedState && !hasStaleMorningState) return
 
         val editor = prefs.edit()
         if (hasStalePollState) {
@@ -1657,6 +1676,13 @@ class NativeBridge(private val context: Context) {
                 .remove("brain_result")
                 .remove("candidates")
                 .putBoolean("service_running", false)
+        }
+        if (hasStaleMorningState) {
+            editor
+                .remove("morning_baseline")
+                .remove("morning_input")
+                .remove("expiry_bnf")
+                .remove("expiry_nf")
         }
         editor.commit()
         Log.i("NativeBridge", "DAILY_RESET_BRIDGE: cleared stale session state for $today")
