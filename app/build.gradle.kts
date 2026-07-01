@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b322: Instrument teacher research bridge Throwable boundary for crash diagnosis.
+        // b323: Keep teacher research bridge O(1) and move rebuild off the bridge thread.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 322
-        versionName = "2.4.91"
+        versionCode = 323
+        versionName = "2.4.92"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

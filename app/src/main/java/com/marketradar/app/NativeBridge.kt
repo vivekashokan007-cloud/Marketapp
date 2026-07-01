@@ -24,6 +24,10 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
@@ -32,6 +36,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import com.marketradar.app.util.LogBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 class NativeBridge(private val context: Context) {
     companion object {
@@ -49,6 +54,9 @@ class NativeBridge(private val context: Context) {
         private const val PREF_STAGE2A_MODE = "stage2a_guard_mode"
         private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
+        private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        private val teacherResearchRebuildInFlight = AtomicBoolean(false)
+        @Volatile private var teacherResearchLastRebuildKey = ""
     }
     private var lastScoredCandCount = -1
     private var lastScoredFirstCandId = ""
@@ -283,6 +291,50 @@ class NativeBridge(private val context: Context) {
         val runtime = Runtime.getRuntime()
         val memory = "mem used=${(runtime.totalMemory() - runtime.freeMemory()) / 1048576}MB max=${runtime.maxMemory() / 1048576}MB"
         Log.e(TAG, "$scope failed throwable=${t.javaClass.name} message=${t.message ?: ""} $memory", t)
+    }
+
+    private fun teacherResearchRebuildKey(targetDate: String): String {
+        val snapshotsFile = File(MarketMLService.evaluationSnapshotsPath(context, targetDate))
+        val outcomesFile = File(MarketMLService.evaluationOutcomesPath(context, targetDate))
+        return listOf(
+            targetDate,
+            snapshotsFile.length().toString(),
+            snapshotsFile.lastModified().toString(),
+            outcomesFile.length().toString(),
+            outcomesFile.lastModified().toString()
+        ).joinToString(":")
+    }
+
+    private fun scheduleTeacherResearchRebuild(targetDate: String) {
+        val rebuildKey = teacherResearchRebuildKey(targetDate)
+        if (teacherResearchLastRebuildKey == rebuildKey) return
+        if (!teacherResearchRebuildInFlight.compareAndSet(false, true)) return
+        teacherResearchLastRebuildKey = rebuildKey
+        prefs.edit()
+            .putString("teacher_research_report_status", "REBUILDING")
+            .remove("teacher_research_report_error")
+            .apply()
+        teacherResearchScope.launch {
+            try {
+                Log.i(TAG, "teacher research rebuild scheduled date=$targetDate")
+                val report = rebuildTeacherResearchReportIfPossible(targetDate)
+                    ?: rebuildTeacherResearchReportFromRemoteIfPossible(targetDate)
+                if (report == null) {
+                    prefs.edit()
+                        .putString("teacher_research_report_status", "FAILED")
+                        .putString("teacher_research_report_error", "REPORT_NOT_AVAILABLE")
+                        .apply()
+                }
+            } catch (t: Throwable) {
+                logTeacherResearchThrowable("scheduleTeacherResearchRebuild", t)
+                prefs.edit()
+                    .putString("teacher_research_report_status", "FAILED")
+                    .putString("teacher_research_report_error", t.javaClass.simpleName)
+                    .apply()
+            } finally {
+                teacherResearchRebuildInFlight.set(false)
+            }
+        }
     }
 
     private fun rebuildTeacherResearchReportIfPossible(targetDate: String): JSONObject? {
@@ -2148,29 +2200,31 @@ class NativeBridge(private val context: Context) {
             val cached = prefs.getString("teacher_research_report", "") ?: ""
             if (cachedDate == targetDate && cached.trim().startsWith("{")) {
                 try {
-                    val cachedObj = JSONObject(cached)
-                    if (cachedObj.optBoolean("ok", false)) {
-                        return cached
-                    }
+                    JSONObject(cached)
+                    return cached
                 } catch (_: Throwable) {
                 }
             }
             val file = java.io.File(MarketMLService.evaluationResearchReportPath(context, targetDate))
             if (!file.exists()) {
-                rebuildTeacherResearchReportIfPossible(targetDate)?.let { rebuilt ->
-                    return rebuilt.toString()
+                scheduleTeacherResearchRebuild(targetDate)
+                val reportStatus = (prefs.getString("teacher_research_report_status", "") ?: "").uppercase(Locale.US)
+                val status = when {
+                    teacherResearchRebuildInFlight.get() -> "rebuilding"
+                    reportStatus == "FAILED" -> "failed"
+                    reportStatus == "REBUILDING" -> "rebuilding"
+                    else -> "pending"
                 }
-                rebuildTeacherResearchReportFromRemoteIfPossible(targetDate)?.let { rebuilt ->
-                    return rebuilt.toString()
+                val error = if (status == "failed") {
+                    prefs.getString("teacher_research_report_error", "REPORT_NOT_AVAILABLE") ?: "REPORT_NOT_AVAILABLE"
+                } else {
+                    "REPORT_REBUILDING"
                 }
-                prefs.edit()
-                    .putString("teacher_research_report_status", "FAILED")
-                    .putString("teacher_research_report_error", "REPORT_NOT_AVAILABLE")
-                    .commit()
                 return JSONObject()
                     .put("ok", false)
                     .put("session_date", targetDate)
-                    .put("error", "REPORT_NOT_AVAILABLE")
+                    .put("status", status)
+                    .put("error", error)
                     .toString()
             }
             val raw = file.readText().trim()
