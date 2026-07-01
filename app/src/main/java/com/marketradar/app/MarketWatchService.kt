@@ -97,6 +97,11 @@ class MarketWatchService : Service() {
         private const val POLL_ALARM_REQ_CODE = 74051
         private const val LAST_POLL_DISPATCH_SLOT_KEY = "last_poll_dispatch_slot"
         private const val LAST_SUCCESSFUL_POLL_SLOT_KEY = "last_successful_poll_slot"
+        private const val LAST_ASSIGNED_POLL_NUMBER_KEY = "last_assigned_poll_number"
+        private const val LAST_ASSIGNED_POLL_DATE_KEY = "last_assigned_poll_date"
+        private const val COVERAGE_INTEGRITY_DATE_KEY = "coverage_integrity_date"
+        private const val COVERAGE_INTEGRITY_KEY = "coverage_integrity"
+        private const val COVERAGE_INTEGRITY_ISSUE_KEY = "coverage_integrity_issue"
         private const val LEASE_OWNER_PID_KEY = "lease_owner_pid"
         private const val LEASE_STARTED_MS_KEY = "lease_started_ms"
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
@@ -157,6 +162,17 @@ class MarketWatchService : Service() {
             "NSE_EQ|INE075A01022"
         )
     }
+
+    private data class SessionIntegritySummary(
+        val sessionDate: String,
+        val pollCount: Int,
+        val expectedFullDay: Int,
+        val finalSlotOccurrences: Int,
+        val snapshotRows: Int,
+        val snapshotOverrun: Boolean,
+        val coverageIntegrity: String,
+        val integrityIssue: String
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -423,7 +439,17 @@ class MarketWatchService : Service() {
         
         // Only fetch if data is missing or older than 30 minutes
         val isStale = (now - lastSync) > 30 * 60 * 1000L
-        val hasBaseline = prefs.contains("morning_baseline")
+        val baselineRaw = prefs.getString("morning_baseline", null)
+        val hasBaseline = try {
+            if (baselineRaw.isNullOrBlank()) {
+                false
+            } else {
+                val baseline = JSONObject(baselineRaw)
+                baseline.optString("date", "") == today
+            }
+        } catch (_: Exception) {
+            false
+        }
         
         if (!isStale && hasBaseline && lastPollDate == today) {
             Log.d(TAG, "Bootstrap skipped: data is fresh")
@@ -457,6 +483,9 @@ class MarketWatchService : Service() {
                     prefs.edit().apply {
                         putString("poll_history", history.toString())
                         putInt("poll_count", history.length())
+                        putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
+                        putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, history.length())
+                        putString(COVERAGE_INTEGRITY_DATE_KEY, today)
                         putString("last_poll_date", today)
                         if (latest != null) {
                             putString("latest_poll", latest.toString())
@@ -477,6 +506,11 @@ class MarketWatchService : Service() {
                         remove("last_poll_time")
                         remove(LAST_POLL_DISPATCH_SLOT_KEY)
                         remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
+                        remove(LAST_ASSIGNED_POLL_DATE_KEY)
+                        remove(LAST_ASSIGNED_POLL_NUMBER_KEY)
+                        remove(COVERAGE_INTEGRITY_DATE_KEY)
+                        remove(COVERAGE_INTEGRITY_KEY)
+                        remove(COVERAGE_INTEGRITY_ISSUE_KEY)
                         putString("last_poll_date", today)
                     }.apply()
                     Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
@@ -700,7 +734,7 @@ class MarketWatchService : Service() {
                             dispatchPollIfDue("loop", currentToken)
                         } catch (e: Exception) {
                             Log.e(TAG, "Poll failed: ${e.message}")
-                            LogBuffer.add('E', "MarketWatchService", "Poll #${nextPollNumberForToday()} FAILED: ${e.message}")
+                            LogBuffer.add('E', "MarketWatchService", "POLL_LOOP_FAILURE: ${e.message}")
                         } finally {
                             releaseWakeLock()
                         }
@@ -751,6 +785,24 @@ class MarketWatchService : Service() {
         if (!status.marketDay || status.marketOpen || minutes <= MARKET_CLOSE_MINUTE) return false
 
         val today = todayIstDate()
+        val integrity = computeSessionIntegrity(today)
+        persistSessionIntegritySummary(integrity)
+        Log.i(
+            TAG,
+            "SESSION_INTEGRITY: date=${integrity.sessionDate} coverage=${integrity.coverageIntegrity} issue=${integrity.integrityIssue} pollCount=${integrity.pollCount}/${integrity.expectedFullDay} finalSlotOccurrences=${integrity.finalSlotOccurrences} snapshots=${integrity.snapshotRows} snapshotOverrun=${integrity.snapshotOverrun}"
+        )
+        LogBuffer.add(
+            'I',
+            TAG,
+            "SESSION_INTEGRITY: date=${integrity.sessionDate} coverage=${integrity.coverageIntegrity} issue=${integrity.integrityIssue} pollCount=${integrity.pollCount}/${integrity.expectedFullDay} finalSlotOccurrences=${integrity.finalSlotOccurrences} snapshots=${integrity.snapshotRows}"
+        )
+        if (integrity.coverageIntegrity == "INTEGRITY_BROKEN") {
+            markIncompleteSession(today, integrity)
+            MarketOpenScheduler.scheduleNextMarketOpen(this)
+            Log.w(TAG, "POST_CLOSE_EVAL_BLOCKED: date=$today issue=${integrity.integrityIssue}")
+            stopPolling()
+            return true
+        }
         val doneToday = prefs.getString("evaluation_done_date", "") == today
         var runningToday = prefs.getString("evaluation_running_date", "") == today
         val handoffTs = prefs.getLong(DAY_EVAL_HANDOFF_TS_KEY, 0L)
@@ -825,9 +877,10 @@ class MarketWatchService : Service() {
             return
         }
         try {
-            val pollCount = nextPollNumberForToday()
+            val slotKey = currentPollSlotKey()
+            val pollCount = reservePollNumberForToday()
             Log.d(TAG, "POLL_START: performPoll() entered")
-            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting")
+            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting${slotKey?.let { " slot=$it" } ?: ""}")
 
             val (bnfExpiry, nfExpiry) = refreshActiveExpiries(token)
 
@@ -939,8 +992,10 @@ class MarketWatchService : Service() {
             // Step 5: Build poll object and save
             Log.d(TAG, "POLL_STEP5: Saving poll object")
             val pollObj = parsePollData(quotesJson, bnfChainJson, nfChainJson, bnfStocksJson, bnfSpot)
-            savePoll(pollObj)
-            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
+            pollObj.put("poll_number", pollCount)
+            if (!slotKey.isNullOrBlank()) pollObj.put("slot_key", slotKey)
+            savePoll(pollObj, pollCount, slotKey)
+            LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete${slotKey?.let { " slot=$it" } ?: ""}, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1291,7 +1346,7 @@ class MarketWatchService : Service() {
         return poll
     }
 
-    private fun savePoll(poll: JSONObject) {
+    private fun savePoll(poll: JSONObject, assignedPollNumber: Int, slotKey: String?) {
         synchronized(pollSaveLock) {
             val ist = TimeZone.getTimeZone("Asia/Kolkata")
             val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = ist }.format(Date())
@@ -1308,12 +1363,17 @@ class MarketWatchService : Service() {
                 prefs.edit()
                     .remove(LAST_POLL_DISPATCH_SLOT_KEY)
                     .remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
+                    .remove(LAST_ASSIGNED_POLL_DATE_KEY)
+                    .remove(LAST_ASSIGNED_POLL_NUMBER_KEY)
+                    .remove(COVERAGE_INTEGRITY_DATE_KEY)
+                    .remove(COVERAGE_INTEGRITY_KEY)
+                    .remove(COVERAGE_INTEGRITY_ISSUE_KEY)
                     .apply()
             }
 
             // Append new poll
             history.put(poll)
-            pollCount++ // A5: Monotonic increment
+            pollCount = maxOf(pollCount, assignedPollNumber)
 
             // Keep last 100 for memory
             if (history.length() > 100) {
@@ -1330,10 +1390,13 @@ class MarketWatchService : Service() {
                 putString("poll_history", history.toString())
                 putString("last_poll_time", poll.getString("t"))
                 putInt("poll_count", pollCount)
+                putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
+                putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, maxOf(assignedPollNumber, pollCount))
                 putLong("last_successful_poll_ms", System.currentTimeMillis())
                 remove(LAST_POLL_GAP_WARNING_SLOT_KEY)
-                currentPollSlotKey(System.currentTimeMillis())?.let { putString(LAST_SUCCESSFUL_POLL_SLOT_KEY, it) }
+                (slotKey ?: currentPollSlotKey(System.currentTimeMillis()))?.let { putString(LAST_SUCCESSFUL_POLL_SLOT_KEY, it) }
             }.commit()
+            persistSessionIntegritySummary(computeSessionIntegrity(today))
 
             // GAP 12: Institutional Positioning
             checkInstitutionalPositioning(poll)
@@ -3884,8 +3947,119 @@ class MarketWatchService : Service() {
         }.format(Date())
     }
 
-    private fun nextPollNumberForToday(): Int {
+    private fun reservePollNumberForToday(): Int = synchronized(pollSaveLock) {
+        val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
-        return if (lastPollDate == todayIstDate()) prefs.getInt("poll_count", 0) + 1 else 1
+        val assignedDate = prefs.getString(LAST_ASSIGNED_POLL_DATE_KEY, "") ?: ""
+        val committedCount = if (lastPollDate == today) prefs.getInt("poll_count", 0) else 0
+        val assignedCount = if (assignedDate == today) prefs.getInt(LAST_ASSIGNED_POLL_NUMBER_KEY, 0) else 0
+        val next = maxOf(committedCount, assignedCount) + 1
+        prefs.edit()
+            .putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
+            .putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, next)
+            .commit()
+        next
+    }
+
+    private fun persistSessionIntegritySummary(summary: SessionIntegritySummary) {
+        prefs.edit()
+            .putString(COVERAGE_INTEGRITY_DATE_KEY, summary.sessionDate)
+            .putString(COVERAGE_INTEGRITY_KEY, summary.coverageIntegrity)
+            .putString(COVERAGE_INTEGRITY_ISSUE_KEY, summary.integrityIssue)
+            .commit()
+    }
+
+    private fun markIncompleteSession(sessionDate: String, summary: SessionIntegritySummary) {
+        val message =
+            "Evaluation blocked for $sessionDate: session integrity is broken (${summary.integrityIssue.lowercase(Locale.US)}). " +
+                "Expected ${summary.expectedFullDay} full-day slots, recorded ${summary.pollCount} polls, final-slot count ${summary.finalSlotOccurrences}, snapshot rows ${summary.snapshotRows}."
+        prefs.edit()
+            .putString("evaluation_job_date", sessionDate)
+            .putString("evaluation_phase", "INCOMPLETE_SESSION")
+            .putString("last_evaluation_message", message)
+            .putString("evaluation_running_date", "")
+            .putLong("evaluation_started_at_ms", 0L)
+            .putLong("evaluation_job_updated_at_ms", System.currentTimeMillis())
+            .putInt("evaluation_total_snapshots", summary.snapshotRows)
+            .putInt("evaluation_completed_snapshots", 0)
+            .putInt("last_evaluation_produced_count", 0)
+            .putInt("last_evaluation_outcome_count", 0)
+            .putString("evaluation_last_error", summary.integrityIssue)
+            .putString("teacher_research_report_status", "NOT_APPLICABLE")
+            .putString("teacher_research_report_error", summary.integrityIssue)
+            .remove("evaluation_done_date")
+            .commit()
+    }
+
+    private fun computeSessionIntegrity(sessionDate: String): SessionIntegritySummary {
+        val pollCount = if ((prefs.getString("last_poll_date", "") ?: "") == sessionDate) {
+            prefs.getInt("poll_count", 0)
+        } else {
+            0
+        }
+        val finalSlotOccurrences = countSlotOccurrencesFromHistory(sessionDate, POLL_FULL_DAY_SLOTS)
+        val snapshotRows = countLocalSnapshotRows(sessionDate)
+        val snapshotOverrun = snapshotRows > POLL_FULL_DAY_SLOTS
+        val integrityIssue = when {
+            snapshotOverrun -> "SNAPSHOT_OVERRUN"
+            pollCount > POLL_FULL_DAY_SLOTS -> "POLL_OVERRUN"
+            finalSlotOccurrences > 1 -> "FINAL_SLOT_DUPLICATE"
+            finalSlotOccurrences == 0 -> "FINAL_SLOT_MISSING"
+            pollCount < POLL_FULL_DAY_SLOTS -> "MISSED_SLOTS"
+            else -> "NONE"
+        }
+        val coverageIntegrity = when {
+            integrityIssue in setOf("SNAPSHOT_OVERRUN", "POLL_OVERRUN", "FINAL_SLOT_DUPLICATE", "FINAL_SLOT_MISSING") -> "INTEGRITY_BROKEN"
+            integrityIssue == "MISSED_SLOTS" -> "PARTIAL_COVERAGE"
+            else -> "CLEAN"
+        }
+        return SessionIntegritySummary(
+            sessionDate = sessionDate,
+            pollCount = pollCount,
+            expectedFullDay = POLL_FULL_DAY_SLOTS,
+            finalSlotOccurrences = finalSlotOccurrences,
+            snapshotRows = snapshotRows,
+            snapshotOverrun = snapshotOverrun,
+            coverageIntegrity = coverageIntegrity,
+            integrityIssue = integrityIssue
+        )
+    }
+
+    private fun countSlotOccurrencesFromHistory(sessionDate: String, slotOrdinal: Int): Int {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != sessionDate) return 0
+        return try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            var count = 0
+            for (i in 0 until history.length()) {
+                val row = history.optJSONObject(i) ?: continue
+                val time = row.optString("t", "")
+                if (slotOrdinalFromPollTime(time) == slotOrdinal) count++
+            }
+            count
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun slotOrdinalFromPollTime(time: String): Int? {
+        val parts = time.split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        val totalMinutes = hour * 60 + minute
+        if (totalMinutes < MARKET_OPEN_MINUTE || totalMinutes > MARKET_CLOSE_MINUTE) return null
+        return ((totalMinutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
+    }
+
+    private fun countLocalSnapshotRows(sessionDate: String): Int {
+        val safeDate = sessionDate.filter { it.isDigit() || it == '-' }.ifBlank { "unknown" }
+        val file = File(filesDir, "evaluation_local_cache/brain_snapshots_${safeDate}.jsonl")
+        if (!file.exists()) return 0
+        return try {
+            file.useLines { lines -> lines.count { it.trim().isNotBlank() } }
+        } catch (_: Exception) {
+            0
+        }
     }
 }

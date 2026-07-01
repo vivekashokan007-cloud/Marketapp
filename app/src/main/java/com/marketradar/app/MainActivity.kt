@@ -478,10 +478,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restoredWebUrl(): String {
-        val savedUrl = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getString(PREF_LAST_WEB_URL, APP_URL)
-            ?.trim()
-            .orEmpty()
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedUrl = prefs.getString(PREF_LAST_WEB_URL, null)?.trim().orEmpty()
         return if (savedUrl.startsWith(APP_URL)) savedUrl else APP_URL
     }
 
@@ -492,7 +490,6 @@ class MainActivity : AppCompatActivity() {
     private fun injectNativeBridge() {
         val js = """
             (function() {
-                if (window._nativeBridgeInjected) return;
                 window._nativeBridgeInjected = true;
                 window.NativeBridge = {
                     isNative: function() { return true; },
@@ -539,7 +536,18 @@ class MainActivity : AppCompatActivity() {
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
+                    getMLEvaluationOutcomes: function(limit) { return AndroidBridge.getMLEvaluationOutcomes(limit || 1000); },
                     getMLEvaluationLaneSummary: function(limit) { return AndroidBridge.getMLEvaluationLaneSummary(limit || 1000); },
+                    getMLTeacherResearchReport: function() { return AndroidBridge.getMLTeacherResearchReport(); },
+                    getMLBrainSnapshots: function(limit) { return AndroidBridge.getMLBrainSnapshots(limit || 200); },
+                    getTeacherTruthConfig: function() { return AndroidBridge.getTeacherTruthConfig(); },
+                    getExecutionInfraStatus: function() { return AndroidBridge.getExecutionInfraStatus(); },
+                    getOrderProxyUrl: function() { return AndroidBridge.getOrderProxyUrl(); },
+                    getNotificationTransportMode: function() { return AndroidBridge.getNotificationTransportMode(); },
+                    getStage2AGuardMode: function() { return AndroidBridge.getStage2AGuardMode(); },
+                    getCachedEvaluationJob: function() { return AndroidBridge.getCachedEvaluationJob(); },
+                    getApprovedBranchProposals: function() { return AndroidBridge.getApprovedBranchProposals(); },
+                    refreshApprovedBranchProposals: function() { return AndroidBridge.refreshApprovedBranchProposals(); },
 
                     // File export methods
                     saveExportFile: function(fileName, mimeType, base64Data) { return AndroidBridge.saveExportFile(fileName, mimeType, base64Data); },
@@ -553,6 +561,15 @@ class MainActivity : AppCompatActivity() {
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { return AndroidBridge.triggerMLRetrain(); },
                     triggerDayEvaluation: function() { return AndroidBridge.triggerDayEvaluation(); },
+                    triggerDayEvaluationForce: function() { return AndroidBridge.triggerDayEvaluationForce(); },
+                    triggerEvaluationJob: function(j) { return AndroidBridge.triggerEvaluationJob(j); },
+                    approveBranchProposal: function(rowId) { return AndroidBridge.approveBranchProposal(rowId); },
+                    rejectBranchProposal: function(rowId) { return AndroidBridge.rejectBranchProposal(rowId); },
+                    setExecutionSandboxEnabled: function(enabled) { return AndroidBridge.setExecutionSandboxEnabled(!!enabled); },
+                    setOrderProxyUrl: function(url) { return AndroidBridge.setOrderProxyUrl(url || ""); },
+                    setNotificationTransportMode: function(mode) { return AndroidBridge.setNotificationTransportMode(mode || "live"); },
+                    setStage2AGuardMode: function(mode) { return AndroidBridge.setStage2AGuardMode(mode || "shadow"); },
+                    reportJsCrash: function(payloadJson) { return AndroidBridge.reportJsCrash(payloadJson || "{}"); },
                     
                     // Diagnostic Methods (LV.1)
                     getLogBuffer: function(f) { return AndroidBridge.getLogBuffer(f); },
@@ -582,9 +599,16 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         webView.onResume() // resume if system paused it
+        webView.resumeTimers()
         
         // Sync native data with WebView on resume
         webView.post {
+            val currentUrl = webView.url?.trim().orEmpty()
+            if (currentUrl.isBlank() || currentUrl == "about:blank") {
+                webView.loadUrl(APP_URL)
+                return@post
+            }
+            injectNativeBridge()
             val syncJs = """
                 (function() {
                     if (window.syncFromNative && typeof window.syncFromNative === 'function') {

@@ -19,6 +19,8 @@ object MarketOpenScheduler {
     private const val ACTION_MARKET_OPEN = "com.marketradar.app.ACTION_MARKET_OPEN"
     private const val REQ_MARKET_OPEN = 74052
     private const val PREF_NEXT_MARKET_OPEN_MS = "next_market_open_ms"
+    private const val PREF_LAST_FORCE_POLL_MS = "last_force_poll_ms"
+    private const val FORCE_POLL_DEBOUNCE_MS = 15_000L
 
     private val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
     private val HOLIDAYS_2026 = setOf(
@@ -97,6 +99,14 @@ object MarketOpenScheduler {
             return
         }
 
+        val now = System.currentTimeMillis()
+        val lastForcePollMs = prefs.getLong(PREF_LAST_FORCE_POLL_MS, 0L)
+        val sinceLastForcePollMs = if (lastForcePollMs > 0L) now - lastForcePollMs else Long.MAX_VALUE
+        if (sinceLastForcePollMs in 0 until FORCE_POLL_DEBOUNCE_MS) {
+            LogBuffer.add('I', TAG, "AUTO_START_DEBOUNCED: reason=$reason sinceMs=$sinceLastForcePollMs")
+            return
+        }
+
         val serviceIntent = Intent(context, MarketWatchService::class.java).apply {
             // Force one immediate poll on auto-start so 9:15 open and late app-resume
             // do not sit idle waiting for the next loop slot.
@@ -108,6 +118,7 @@ object MarketOpenScheduler {
             } else {
                 context.startService(serviceIntent)
             }
+            prefs.edit().putLong(PREF_LAST_FORCE_POLL_MS, now).apply()
             LogBuffer.add('I', TAG, "AUTO_START_TRIGGERED: reason=$reason action=${MarketWatchService.ACTION_FORCE_POLL}")
         } catch (e: Exception) {
             Log.e(TAG, "AUTO_START_FAIL: ${e.message}", e)
