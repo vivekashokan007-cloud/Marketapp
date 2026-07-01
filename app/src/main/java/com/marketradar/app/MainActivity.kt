@@ -478,7 +478,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun restoredWebUrl(): String {
-        return APP_URL
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedUrl = prefs.getString(PREF_LAST_WEB_URL, null)?.trim().orEmpty()
+        return if (savedUrl.startsWith(APP_URL)) savedUrl else APP_URL
     }
 
     private fun dp(value: Int) = TypedValue.applyDimension(

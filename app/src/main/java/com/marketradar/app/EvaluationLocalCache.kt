@@ -14,6 +14,14 @@ object EvaluationLocalCache {
     private const val TAG = "EvaluationLocalCache"
     private const val DIR_NAME = "evaluation_local_cache"
     private const val RETENTION_DAYS = 45L
+    private const val MAX_ROWS_PER_SESSION = 90
+
+    private data class SnapshotFileState(
+        val rows: LinkedHashMap<String, String>,
+        var needsRewrite: Boolean
+    )
+
+    private val snapshotStateByPath = mutableMapOf<String, SnapshotFileState>()
 
     private fun cacheDir(context: Context): File {
         return File(context.applicationContext.filesDir, DIR_NAME).apply { mkdirs() }
@@ -49,38 +57,61 @@ object EvaluationLocalCache {
                 ageMs <= RETENTION_DAYS * 24L * 60L * 60L * 1000L
             }
             if (!keep && file.delete()) {
+                snapshotStateByPath.remove(file.absolutePath)
                 LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_PRUNE: removed=${file.name}")
             }
         }
     }
 
-    private fun compactFileInPlace(file: File): Set<String> {
-        if (!file.exists()) return emptySet()
-        val uniqueRows = linkedMapOf<String, String>()
-        var changed = false
-        file.forEachLine { line ->
-            val trimmed = line.trim()
-            if (trimmed.isBlank()) {
-                changed = true
-                return@forEachLine
-            }
-            val row = try { JSONObject(trimmed) } catch (_: Exception) {
-                changed = true
-                return@forEachLine
-            }
-            val key = snapshotKey(row)
-            if (uniqueRows.putIfAbsent(key, row.toString()) != null) {
-                changed = true
+    private fun trimToRecentLimit(rows: LinkedHashMap<String, String>): Boolean {
+        var trimmed = false
+        while (rows.size > MAX_ROWS_PER_SESSION) {
+            val oldestKey = rows.entries.firstOrNull()?.key ?: break
+            rows.remove(oldestKey)
+            trimmed = true
+        }
+        return trimmed
+    }
+
+    private fun rewriteCanonicalFile(file: File, rows: LinkedHashMap<String, String>) {
+        if (rows.isEmpty()) {
+            if (file.exists()) file.writeText("")
+            return
+        }
+        val content = buildString(rows.size * 256) {
+            rows.values.forEach { append(it).append('\n') }
+        }
+        file.writeText(content)
+    }
+
+    private fun loadSnapshotState(file: File): SnapshotFileState {
+        snapshotStateByPath[file.absolutePath]?.let { return it }
+
+        val rows = linkedMapOf<String, String>()
+        var needsRewrite = false
+        if (file.exists()) {
+            file.forEachLine { line ->
+                val trimmed = line.trim()
+                if (trimmed.isBlank()) {
+                    needsRewrite = true
+                    return@forEachLine
+                }
+                val row = try { JSONObject(trimmed) } catch (_: Exception) {
+                    needsRewrite = true
+                    return@forEachLine
+                }
+                val key = snapshotKey(row)
+                if (rows.putIfAbsent(key, row.toString()) != null) {
+                    needsRewrite = true
+                }
             }
         }
-        if (changed) {
-            val content = buildString {
-                uniqueRows.values.forEach { append(it).append('\n') }
-            }
-            file.writeText(content)
-            LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT: file=${file.name} rows=${uniqueRows.size}")
+        if (trimToRecentLimit(rows)) {
+            needsRewrite = true
         }
-        return uniqueRows.keys
+        val state = SnapshotFileState(rows, needsRewrite)
+        snapshotStateByPath[file.absolutePath] = state
+        return state
     }
 
     @Synchronized
@@ -88,13 +119,25 @@ object EvaluationLocalCache {
         return try {
             pruneExpiredCacheFiles(context)
             val file = brainSnapshotFile(context, sessionDate)
-            val keys = compactFileInPlace(file)
+            val state = loadSnapshotState(file)
             val key = snapshotKey(snapshot)
-            if (keys.contains(key)) {
+            if (state.rows.containsKey(key)) {
                 LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_SKIP_DUP: date=$sessionDate key=$key")
                 return true
             }
-            file.appendText(snapshot.toString() + "\n")
+            state.rows[key] = snapshot.toString()
+            val trimmed = trimToRecentLimit(state.rows)
+            if (state.needsRewrite || trimmed) {
+                rewriteCanonicalFile(file, state.rows)
+                state.needsRewrite = false
+                if (trimmed) {
+                    LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${state.rows.size}")
+                } else {
+                    LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT_ONCE: file=${file.name} rows=${state.rows.size}")
+                }
+            } else {
+                file.appendText(snapshot.toString() + "\n")
+            }
             LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
             true
         } catch (e: Exception) {
@@ -111,11 +154,14 @@ object EvaluationLocalCache {
         if (!file.exists()) return out
 
         try {
-            compactFileInPlace(file)
-            file.forEachLine { line ->
-                val trimmed = line.trim()
-                if (trimmed.isBlank()) return@forEachLine
-                val row = try { JSONObject(trimmed) } catch (_: Exception) { return@forEachLine }
+            val state = loadSnapshotState(file)
+            if (state.needsRewrite) {
+                rewriteCanonicalFile(file, state.rows)
+                state.needsRewrite = false
+                LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT_ON_READ: file=${file.name} rows=${state.rows.size}")
+            }
+            state.rows.values.forEach { json ->
+                val row = try { JSONObject(json) } catch (_: Exception) { return@forEach }
                 val key = snapshotKey(row)
                 if (key.isBlank() || seen.add(key)) out.put(row)
             }

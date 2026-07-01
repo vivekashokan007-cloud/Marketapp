@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b319: Guard boot-time NativeBridge reads to avoid intermittent WebView boot aborts.
+        // b320: Bound local snapshot cache and debounce cold-start force polls for stability.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 319
-        versionName = "2.4.88"
+        versionCode = 320
+        versionName = "2.4.89"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
