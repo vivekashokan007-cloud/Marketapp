@@ -1,6 +1,7 @@
 package com.marketradar.app
 
 import android.Manifest
+import android.content.ComponentCallbacks2
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -55,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private val UPDATE_URL = "https://api.github.com/repos/vivekashokan007-cloud/Marketapp/releases/latest"
     private val PURPLE = Color.parseColor("#7B2FC4")
     private var isManualRefresh = false
+    private var lastLoadFailedMainFrame = false
     private val client = OkHttpClient()
 
     private val pollReceiver = object : BroadcastReceiver() {
@@ -153,10 +155,19 @@ class MainActivity : AppCompatActivity() {
                     view: WebView?, request: WebResourceRequest?
                 ) = false
 
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    errorView.visibility = View.GONE
+                    lastLoadFailedMainFrame = false
+                    injectNativeBridge()
+                }
+
                 override fun onPageFinished(view: WebView?, url: String?) {
                     super.onPageFinished(view, url)
                     swipeRefresh.isRefreshing = false
                     hideSplashAfterDelay()
+                    errorView.visibility = View.GONE
+                    lastLoadFailedMainFrame = false
                     persistCurrentWebUrl(url)
                     injectNativeBridge()
 
@@ -174,6 +185,7 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     super.onReceivedError(view, request, error)
                     if (request?.isForMainFrame == true) {
+                        lastLoadFailedMainFrame = true
                         swipeRefresh.isRefreshing = false
                         loadingOverlay.visibility = View.GONE
                         errorView.visibility = View.VISIBLE
@@ -185,6 +197,7 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     super.onReceivedHttpError(view, request, errorResponse)
                     if (request?.isForMainFrame == true && (errorResponse?.statusCode ?: 0) >= 500) {
+                        lastLoadFailedMainFrame = true
                         loadingOverlay.visibility = View.GONE
                         errorView.visibility = View.VISIBLE
                     }
@@ -490,6 +503,7 @@ class MainActivity : AppCompatActivity() {
     private fun injectNativeBridge() {
         val js = """
             (function() {
+                if (window._nativeBridgeInjected) return;
                 window._nativeBridgeInjected = true;
                 window.NativeBridge = {
                     isNative: function() { return true; },
@@ -604,8 +618,9 @@ class MainActivity : AppCompatActivity() {
         // Sync native data with WebView on resume
         webView.post {
             val currentUrl = webView.url?.trim().orEmpty()
-            if (currentUrl.isBlank() || currentUrl == "about:blank") {
-                webView.loadUrl(APP_URL)
+            if ((currentUrl.isBlank() || currentUrl == "about:blank") && lastLoadFailedMainFrame) {
+                lastLoadFailedMainFrame = false
+                webView.loadUrl(restoredWebUrl())
                 return@post
             }
             injectNativeBridge()
@@ -618,6 +633,15 @@ class MainActivity : AppCompatActivity() {
                 })();
             """.trimIndent()
             webView.evaluateJavascript(syncJs, null)
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (!::webView.isInitialized) return
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
+            webView.clearCache(false)
+            LogBuffer.add('I', "MainActivity", "TRIM_MEMORY: level=$level cleared_webview_cache")
         }
     }
 
