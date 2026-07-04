@@ -617,8 +617,8 @@ class MainActivity : AppCompatActivity() {
         
         // Sync native data with WebView on resume
         webView.post {
-            val currentUrl = webView.url?.trim().orEmpty()
-            if ((currentUrl.isBlank() || currentUrl == "about:blank") && lastLoadFailedMainFrame) {
+            val neverLoaded = webView.url == null && webView.originalUrl == null
+            if (lastLoadFailedMainFrame || neverLoaded) {
                 lastLoadFailedMainFrame = false
                 webView.loadUrl(restoredWebUrl())
                 return@post
