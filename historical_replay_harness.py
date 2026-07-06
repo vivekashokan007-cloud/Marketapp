@@ -1187,7 +1187,7 @@ def build_teacher_table(
                     "teacher_r_score": None,
                     "realized_r": round(r_value, 4),
                     "outcome_source": "path_computed_context_chain",
-                    "exit_rule": "teacher_v1 managed exit: TP at 50% maxProfit on executable close basis, credit SL requires short-strike breach, debit SL at 1R, else EOD; friction/slippage included",
+                    "exit_rule": "teacher_v1 managed exit: TP at 50% net maxProfit on net executable close basis, SL at 0.6x maxLoss on net P&L with no credit breach gate, trading/252 clock, else EOD; friction/slippage included",
                     "exit_reason": outcome.get("exit_reason"),
                     "exit_ts": outcome.get("exit_ts"),
                     "path_points_count": outcome.get("path_points_count"),
@@ -1281,7 +1281,7 @@ def build_teacher_table(
         print("[teacher_build] sample scored_record: " + _json_dump(scored_records[0]))
     print(
         "[teacher_build] r_source=path_computed_context_chain "
-        "exit_rule='teacher_v1 managed exit: TP at 50% maxProfit, SL at 1R/maxLoss, else EOD; friction/slippage included'"
+        "exit_rule='teacher_v1 managed exit: TP at 50% net maxProfit, SL at 0.6x maxLoss on net P&L with no credit breach gate, trading/252 clock, else EOD; friction/slippage included'"
     )
     print(
         f"[teacher_build] wrote table={out_file} sidecar={sidecar_file} "
@@ -1391,8 +1391,8 @@ def _exit_realism_verdict(trace: dict[str, Any]) -> str:
     exit_step = max(int(outcome.get("exit_step") or 1), 1) - 1
     if exit_reason == "SL":
         if trace.get("credit_breach_at_exit"):
-            return "STRUCTURAL_BREACH_STOP"
-        return "NON_CREDIT_STOP_ON_EXECUTABLE_PNL"
+            return "EXECUTABLE_STOP_WITH_STRUCTURAL_BREACH"
+        return "EXECUTABLE_STOP_ON_PNL"
     if exit_reason == "TP":
         return _tp_realism_verdict(trace, exit_step)
     if exit_reason == "EOD":
@@ -1423,7 +1423,8 @@ def _trace_candidate_path(
     buggy_risk = _buggy_risk_at_entry(cand, config)
     is_credit = bool(entry_basis.get("is_credit"))
     if is_credit:
-        current_risk = round(max_loss, 2) if max_loss is not None and max_loss > 0 else buggy_risk
+        sl_multiple = float(config.get("sl_loss_multiple", 0.60) or 0.60)
+        current_risk = round(max_loss * sl_multiple, 2) if max_loss is not None and max_loss > 0 else buggy_risk
     else:
         current_risk = round(entry_basis.get("entry_basis_currency") or 0.0, 2)
         if current_risk <= 0 and max_loss is not None and max_loss > 0:

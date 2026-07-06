@@ -11,6 +11,8 @@ _TEMPORAL_MIN_VAL_ACC = 0.60
 _STAGE2A_TABLE_CACHE = {'path': None, 'table': None, 'error': None}
 _STAGE2A_DEFAULT_MODE = 'shadow'
 _STAGE2A_MIN_PRIOR_BUCKET_N = 5
+TEACHER_CONFIG_VERSION = 'tc_2026_07_A'
+TEACHER_TIME_BASIS_DAYS = 252.0
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -5486,12 +5488,53 @@ def _bs_theta(spot, strike, T, vol, opt_type):
     d1 = (math.log(spot / strike) + (r + 0.5 * vol * vol) * T) / (vol * math.sqrt(T))
     # Standard BS theta term for non-dividend stock (per year)
     theta_ann = -(spot * vol * math.exp(-d1*d1/2) / (2 * math.sqrt(2 * math.pi * T)))
-    return theta_ann / 365
+    return theta_ann / TEACHER_TIME_BASIS_DAYS
+
+def _option_years_from_trading_dte(dte):
+    """Use one trading-day clock for option T, theta, and VIX move projection."""
+    try:
+        days = float(dte)
+    except (TypeError, ValueError):
+        days = 0.0
+    return max(days, 0.0) / TEACHER_TIME_BASIS_DAYS
+
+def _parse_yyyy_mm_dd(value):
+    try:
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        return datetime.strptime(raw[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
+    """Mirror PWA tradingDTE: count today through expiry, excluding weekends/holidays."""
+    today = _parse_yyyy_mm_dd(today_str)
+    expiry = _parse_yyyy_mm_dd(expiry_str)
+    if today is None or expiry is None or expiry < today:
+        try:
+            return max(float(fallback_dte), 1.0)
+        except (TypeError, ValueError):
+            return 1.0
+    holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
+    count = 0
+    current = today
+    while current <= expiry:
+        if current.weekday() < 5 and current.strftime("%Y-%m-%d") not in holidays:
+            count += 1
+        current += timedelta(days=1)
+    return max(float(count), 1.0)
 
 def _daily_sigma(spot, vix):
     """Daily 1σ move from VIX"""
-    if spot <= 0 or vix <= 0: return 300
-    return spot * (vix / 100) / math.sqrt(252)
+    try:
+        spot = float(spot)
+        vix = float(vix)
+    except (TypeError, ValueError):
+        return None
+    if spot <= 0 or vix <= 0:
+        return None
+    return spot * (vix / 100) / math.sqrt(TEACHER_TIME_BASIS_DAYS)
 
 def _realized_vol_proxy(vix):
     """Bootstrap realized-vol proxy from VIX until a trailing realized series exists."""
@@ -5505,7 +5548,10 @@ def _realized_vol_proxy(vix):
 
 def _sigma_days(spot, vix, dte):
     """Multi-day σ move"""
-    return _daily_sigma(spot, vix) * math.sqrt(max(1, dte))
+    daily = _daily_sigma(spot, vix)
+    if daily is None or daily <= 0:
+        return None
+    return daily * math.sqrt(max(1, dte))
 
 # ─── CONSTANTS ───
 
@@ -5570,7 +5616,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.4.90"
+BRAIN_VERSION = "2.4.99"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6192,7 +6238,7 @@ def _compute_context_score(cand, spot, tdte, vix, ctx):
     is_bull = stype in _CONST['DIR_BULL']
     trade_mode = ctx.get('tradeMode', 'swing')
     ds = _daily_sigma(spot, vix)
-    if ds <= 0: return 0
+    if ds is None or ds <= 0: return 0
 
     # 1. VIX direction (Varsity M6 Ch8.4)
     fii_hist = ctx.get('fiiHistory', [])
@@ -6750,6 +6796,16 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     # Reject both too-close sells and economically worthless far-OTM sells.
     sigma_otm = None
     ds = _daily_sigma(spot, vix)
+    if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and (ds is None or ds <= 0):
+        record_rejection(
+            'sigma_data_missing',
+            'is_credit directional requires valid daily sigma; no 300-point fallback',
+            net_prem=round(net_prem, 4),
+            max_profit=round(max_profit, 2),
+            max_loss=round(max_loss, 2),
+            credit_ratio=round(net_prem / width, 4) if width else None
+        )
+        return None
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and ds > 0:
         sigma_otm = abs(pair['sell'] - spot) / ds
         min_sigma, max_sigma = _credit_sigma_limits(ctx)
@@ -7008,7 +7064,12 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     atm_iv = chain.get('atmIv', vix / 100)
     vol = atm_iv / 100 if atm_iv > 1 else atm_iv
     tdte = ctx.get('bnfDTE' if is_bnf else 'nfDTE', 5)
-    T = tdte / 252
+    trading_tdte = _trading_dte_from_dates(
+        ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate'),
+        expiry,
+        fallback_dte=tdte,
+    )
+    T = _option_years_from_trading_dte(trading_tdte)
     trade_mode = ctx.get('tradeMode', 'swing')
     mins_since_open = ctx.get('mins_since_open', ctx.get('minsSinceOpen', 0)) or 0
 
@@ -7048,8 +7109,9 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 
                 # Range budget filter — debit only
                 if stype in _CONST['DEBIT_TYPES']:
-                    ds = _daily_sigma(spot, vix)
-                    trade_sigma = _sigma_days(spot, vix, tdte)
+                    trade_sigma = _sigma_days(spot, vix, trading_tdte)
+                    if trade_sigma is None or trade_sigma <= 0:
+                        continue
                     if stype == 'BULL_CALL' and width > trade_sigma * 1.2: continue
                     if stype == 'BEAR_PUT' and width > trade_sigma * 1.2: continue
 
@@ -7139,7 +7201,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             # BR103: Sigma-based spacing — 5-6 candidates per width (was 17-20).
             _IC_MAX_PAIRS = 6
             ds_local = _daily_sigma(spot, vix)
-            if ds_local > 0:
+            if ds_local is not None and ds_local > 0:
                 sigma_multipliers = [0.5, 0.75, 1.0, 1.25, 1.5]
                 for sm in sigma_multipliers:
                     dist = round(ds_local * sm / step) * step
@@ -7160,12 +7222,13 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     ):
                         dist_pairs.append((cw_d, pw_d))
             else:
-                # Fallback: bounded geometric spacing
-                count = 0
-                for dist in range(width, 1200, step * 2):
-                    dist_pairs.append((dist, dist))
-                    count += 1
-                    if count >= _IC_MAX_PAIRS: break
+                _record_multi_leg_rejection(
+                    stype='IRON_CONDOR',
+                    width=width,
+                    stage='sigma_data_missing',
+                    reason='iron_condor missing daily sigma input; no geometric fallback',
+                )
+                continue
 
             seen_ic = set()
             for call_dist, put_dist in dist_pairs:
@@ -7173,7 +7236,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 buy_call = sell_call + width
                 sell_put = atm - put_dist
                 buy_put = sell_put - width
-                ds_for_gate = ds_local if ds_local > 0 else _daily_sigma(spot, vix)
+                ds_for_gate = ds_local
                 min_sigma, _ = _credit_sigma_limits(ctx)
                 max_sigma = _CONST.get('IC_WALL_MAX_SIGMA', 1.5)
                 call_sigma = _sigma_otm_value(sell_call, spot, ds_for_gate)
@@ -9422,9 +9485,13 @@ def get_price(chain_rows, cand, side, suffix=''):
 def _teacher_default_config():
     return {
         'label_version': 'teacher_v1',
-        'config_version': '2026-06-15',
+        'config_version': TEACHER_CONFIG_VERSION,
         'tp_capture_pct': 0.50,
-        'sl_loss_multiple': 1.00,
+        'sl_loss_multiple': 0.60,
+        'option_time_basis': 'trading_252',
+        'teacher_time_basis_days': TEACHER_TIME_BASIS_DAYS,
+        'tp_threshold_basis': 'net_pnl_vs_net_max_profit',
+        'sl_threshold_basis': 'net_pnl_vs_0.6_max_loss_no_breach_gate',
         'brokerage_per_order': 20.0,
         'gst_rate': 0.18,
         'stamp_duty_buy_rate': 0.00003,
@@ -9878,12 +9945,16 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     first_basis = _teacher_execution_basis(snap, cand, path_points[0], entry_point=entry_point)
     if not isinstance(first_basis, dict):
         return None
-    tp_threshold = round(max_profit * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
+    trade_dt = _parse_iso_ts(snap.get('poll_ts', ''))
+    entry_cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, path_points[0], config)
+    net_max_profit_at_entry = round(max(max_profit - float(entry_cost_breakdown.get('total') or 0.0), 0.0), 2)
+    tp_threshold = round(net_max_profit_at_entry * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
+    sl_loss_multiple = float(config.get('sl_loss_multiple', 0.60) or 0.60)
     if is_credit:
         if max_loss is not None and max_loss > 0:
-            risk_at_entry = round(max_loss, 2)
+            risk_at_entry = round(max_loss * sl_loss_multiple, 2)
         else:
-            risk_at_entry = round(max_profit * float(config.get('sl_loss_multiple', 1.00) or 1.00), 2)
+            risk_at_entry = round(max_profit * sl_loss_multiple, 2)
     else:
         risk_at_entry = round(first_basis.get('entry_basis_currency') or 0.0, 2)
         if risk_at_entry <= 0 and max_loss is not None and max_loss > 0:
@@ -9898,7 +9969,6 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     friction_cost = None
     managed_pnl = None
 
-    trade_dt = _parse_iso_ts(snap.get('poll_ts', ''))
     for idx, point in enumerate(path_points, start=1):
         gross_pnl, sell_premium_value = _gross_spread_pnl(snap, cand, point, entry_point=entry_point)
         if gross_pnl is None:
@@ -9914,10 +9984,7 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
             friction_cost = round_trip_cost
             managed_pnl = net_pnl
             break
-        stop_allowed = True
-        if is_credit:
-            stop_allowed = _credit_structure_breached(cand, point)
-        if stop_allowed and net_pnl <= -risk_at_entry:
+        if net_pnl <= -risk_at_entry:
             exit_reason = 'SL'
             exit_point = point
             exit_step = idx
@@ -9956,9 +10023,14 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         'risk_at_entry': round(risk_at_entry, 2),
         'regime_bucket': regime_bucket,
         'label_version': config.get('label_version', 'teacher_v1'),
-        'teacher_config_version': config.get('config_version', '2026-06-15'),
+        'teacher_config_version': config.get('config_version', TEACHER_CONFIG_VERSION),
         'tp_threshold': round(tp_threshold, 2),
+        'net_max_profit_at_entry': round(net_max_profit_at_entry, 2),
         'sl_threshold': round(risk_at_entry, 2),
+        'option_time_basis': config.get('option_time_basis', 'trading_252'),
+        'teacher_time_basis_days': config.get('teacher_time_basis_days', TEACHER_TIME_BASIS_DAYS),
+        'tp_threshold_basis': config.get('tp_threshold_basis', 'net_pnl_vs_net_max_profit'),
+        'sl_threshold_basis': config.get('sl_threshold_basis', 'net_pnl_vs_0.6_max_loss_no_breach_gate'),
         'break_even_win_rate_pct': break_even,
     }
 

@@ -6,7 +6,16 @@ import inspect
 
 # Add parent directory to path to import brain
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from brain import _norm_cdf, _bs_delta, _daily_sigma, _sigma_days, _CONST
+from brain import (
+    TEACHER_TIME_BASIS_DAYS,
+    _bs_theta,
+    _norm_cdf,
+    _bs_delta,
+    _daily_sigma,
+    _option_years_from_trading_dte,
+    _sigma_days,
+    _CONST,
+)
 
 EPSILON = 1e-9      # General-purpose FP tolerance
 TIGHT_EPS = 1e-11   # Strict tolerance for exact-equality boundary tests
@@ -142,20 +151,48 @@ def test_group_a10_daily_sigma():
     s2 = _daily_sigma(92000, 18)
     assert abs(s2 - 2*s1) < TIGHT_EPS
 
-    # A10_5: vix=0 returns 300
-    assert _daily_sigma(46000, 0) == 300
+    # A10_5: vix=0 rejects instead of silently defaulting
 
-    # A10_6: spot=0 returns 300
-    assert _daily_sigma(0, 18) == 300
+    assert _daily_sigma(46000, 0) is None
 
-    # A10_7: both zero returns 300
-    assert _daily_sigma(0, 0) == 300
+    # A10_6: spot=0 rejects instead of silently defaulting
+    assert _daily_sigma(0, 18) is None
 
-    # A10_8: negatives return 300
-    assert _daily_sigma(-1, 18) == 300
-    assert _daily_sigma(46000, -1) == 300
-    assert _daily_sigma(-1, -1) == 300
+    # A10_7: both zero reject
+    assert _daily_sigma(0, 0) is None
+
+    # A10_8: negatives reject
+    assert _daily_sigma(-1, 18) is None
+    assert _daily_sigma(46000, -1) is None
+    assert _daily_sigma(-1, -1) is None
+
+    # A10_9: reject-don't-default drift detector
+    brain_path = os.path.join(os.path.dirname(__file__), '..', 'brain.py')
+    with open(brain_path, encoding='utf-8') as f:
+        content = f.read()
+    pattern = re.compile(r'def _daily_sigma\(.*?\):\n(.*?)(?=\n(?:def |\Z))', re.DOTALL)
+    body = pattern.search(content).group(1)
+    assert 'return None' in body
+    assert 'return 300' not in body
+    assert 'TEACHER_TIME_BASIS_DAYS' in body
     print("Group A.10 PASS")
+
+def test_group_a10b_single_time_basis():
+    print("Testing Group A.10b (Single Time Basis)...")
+    assert TEACHER_TIME_BASIS_DAYS == 252.0
+    assert abs(_option_years_from_trading_dte(5) - (5 / TEACHER_TIME_BASIS_DAYS)) < TIGHT_EPS
+    assert abs(_daily_sigma(46000, 18) - (46000 * 0.18 / math.sqrt(TEACHER_TIME_BASIS_DAYS))) < TIGHT_EPS
+    expected_theta = _bs_theta(46000, 46000, 5 / TEACHER_TIME_BASIS_DAYS, 0.18, 'CE')
+    assert math.isfinite(expected_theta)
+
+    brain_path = os.path.join(os.path.dirname(__file__), '..', 'brain.py')
+    with open(brain_path, encoding='utf-8') as f:
+        content = f.read()
+    for fn_name in ['_bs_theta', '_option_years_from_trading_dte', '_daily_sigma']:
+        pattern = re.compile(rf'def {fn_name}\(.*?\):\n(.*?)(?=\n(?:def |\Z))', re.DOTALL)
+        body = pattern.search(content).group(1)
+        assert 'TEACHER_TIME_BASIS_DAYS' in body, f"{fn_name} drifted from shared basis"
+    print("Group A.10b PASS")
 
 def test_group_a11_sigma_days_v2():
     print("Testing Group A.11 (Sigma Days AMENDED)...")
@@ -186,9 +223,9 @@ def test_group_a11_sigma_days_v2():
     assert abs(s_neg - s1) < TIGHT_EPS
     assert math.isfinite(s_neg)
 
-    # A11_6: Inherited zero-guard
+    # A11_6: Inherited zero-guard rejects missing sigma inputs
     s = _sigma_days(46000, 0, 5)
-    assert abs(s - 300 * math.sqrt(5)) < TIGHT_EPS
+    assert s is None
 
     # A11_7 (v2): Source-level drift detector
     brain_path = os.path.join(os.path.dirname(__file__), '..', 'brain.py')
@@ -221,6 +258,7 @@ if __name__ == "__main__":
     test_group_a7_norm_cdf()
     test_group_a9_bs_delta()
     test_group_a10_daily_sigma()
+    test_group_a10b_single_time_basis()
     test_group_a11_sigma_days_v2()
     test_group_drift()
     print("\nALL 38 TESTS PASSED (8+10+8+8+4)")

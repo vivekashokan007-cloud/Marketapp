@@ -4,10 +4,11 @@ import org.json.JSONObject
 
 object TeacherTruthConfig {
     const val LABEL_VERSION = "teacher_v1"
-    const val CONFIG_VERSION = "2026-06-15"
+    const val CONFIG_VERSION = "tc_2026_07_A"
 
+    private const val TEACHER_TIME_BASIS_DAYS = 252.0
     private const val TP_CAPTURE_PCT = 0.50
-    private const val SL_LOSS_MULTIPLE = 1.00
+    private const val SL_LOSS_MULTIPLE = 0.60
     private const val BROKERAGE_PER_ORDER = 20.0
     private const val GST_RATE = 0.18
     private const val STAMP_DUTY_BUY_RATE = 0.00003
@@ -24,6 +25,10 @@ object TeacherTruthConfig {
         put("config_version", CONFIG_VERSION)
         put("tp_capture_pct", TP_CAPTURE_PCT)
         put("sl_loss_multiple", SL_LOSS_MULTIPLE)
+        put("option_time_basis", "trading_252")
+        put("teacher_time_basis_days", TEACHER_TIME_BASIS_DAYS)
+        put("tp_threshold_basis", "net_pnl_vs_net_max_profit")
+        put("sl_threshold_basis", "net_pnl_vs_0.6_max_loss_no_breach_gate")
         put("brokerage_per_order", BROKERAGE_PER_ORDER)
         put("gst_rate", GST_RATE)
         put("stamp_duty_buy_rate", STAMP_DUTY_BUY_RATE)
