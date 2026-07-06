@@ -640,7 +640,11 @@ object SupabaseClient {
     fun saveGeneratedCandidates(rows: JSONArray): Boolean {
         if (rows.length() == 0) return true
         val body = rows.toString()
-        val result = postToFirstWorkingTableDetailed(listOf("ml_generated_candidates"), body)
+        val result = postToFirstWorkingTableDetailed(
+            listOf("ml_generated_candidates?on_conflict=snapshot_poll_ts,candidate_id"),
+            body,
+            preferHeader = "resolution=merge-duplicates,return=minimal"
+        )
         if (!result.success) {
             val details = buildString {
                 append("ML_GENERATED_CANDIDATES_HTTP: table=")

@@ -50,7 +50,10 @@ class MarketWatchService : Service() {
     private val serviceStartInProgress = AtomicBoolean(false)
     private val pollInProgress = AtomicBoolean(false)
     private val pollSaveLock = Any()
+    private val pollDispatchLock = Any()
+    private val pollDispatchInFlightKeys = mutableSetOf<String>()
     private val mlPersistLock = Any()
+    private val mlPersistInFlightKeys = mutableSetOf<String>()
     private var pollLoopIteration = 0L
     private var marginQuoteCachePollKey = ""
     private val marginQuoteCache = mutableMapOf<String, MarginQuote>()
@@ -1146,6 +1149,8 @@ class MarketWatchService : Service() {
         // Straddle Logic (ATM premiums)
         var atmCE = 0.0
         var atmPE = 0.0
+        var nfAtmCE = 0.0
+        var nfAtmPE = 0.0
         var atmDist = Double.MAX_VALUE
         var atmStrike = 0.0
         
@@ -1179,6 +1184,21 @@ class MarketWatchService : Service() {
                 
                 atmCE = optionMid(callMd)
                 atmPE = optionMid(putMd)
+            }
+        }
+
+        val nfChainData = nfChain.optJSONArray("data") ?: JSONArray()
+        var nfAtmDist = Double.MAX_VALUE
+        for (i in 0 until nfChainData.length()) {
+            val item = nfChainData.optJSONObject(i) ?: continue
+            val strikePrice = item.optDouble("strike_price", 0.0)
+            val dist = Math.abs(strikePrice - nf)
+            if (dist < nfAtmDist) {
+                nfAtmDist = dist
+                val callMd = item.optJSONObject("call_options")?.optJSONObject("market_data")
+                val putMd = item.optJSONObject("put_options")?.optJSONObject("market_data")
+                nfAtmCE = optionMid(callMd)
+                nfAtmPE = optionMid(putMd)
             }
         }
 
@@ -1267,6 +1287,18 @@ class MarketWatchService : Service() {
         val futuresPremium = if (bnf > 0.0) (bnfFutLtp - bnf) / bnf * 100.0 else 0.0
         poll.put("fp", futuresPremium)
         poll.put("futuresPremBnf", futuresPremium)
+
+        val nfFutKey = getFuturesKey("NF")
+        Log.d(TAG, "FP_DEBUG: nfFutKey=$nfFutKey")
+        var nfFutLtp = findQuoteByInstrument(sData, nfFutKey)?.optDouble("last_price", 0.0) ?: 0.0
+        if (nfFutLtp > 0) {
+            Log.d(TAG, "FP_SOURCE_NF: actual ($nfFutLtp)")
+        } else {
+            nfFutLtp = nfAtmCE - nfAtmPE + nf
+            Log.d(TAG, "FP_SOURCE_NF: synthetic ($nfFutLtp)")
+        }
+        val nfFuturesPremium = if (nf > 0.0) (nfFutLtp - nf) / nf * 100.0 else 0.0
+        poll.put("futuresPremNf", nfFuturesPremium)
         
         // A5: Extract ATM IV from chain data
         fun extractAtmIv(chain: JSONObject, spot: Double): Double {
@@ -2252,7 +2284,7 @@ class MarketWatchService : Service() {
                 // ML Arch V2: Chain slice extraction + brain snapshot
                 try {
                     val mlPersistKey = mlPersistKeyForPoll(poll)
-                    if (markMlPollPersistAttempt(mlPersistKey)) {
+                    if (reserveMlPollPersist(mlPersistKey)) {
                         val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
                         val chainRowsJson = JSONArray()
                         chainSliceRows.forEach { chainRowsJson.put(it) }
@@ -2278,6 +2310,7 @@ class MarketWatchService : Service() {
                         }
                         if (snapResult == null) {
                             Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
+                            releaseMlPollPersist(mlPersistKey)
                         } else {
                             val snapObj = JSONObject(snapResult)
                             // FIX: brain.py returns JSONB payload fields as pre-serialised json.dumps()
@@ -2313,6 +2346,7 @@ class MarketWatchService : Service() {
                             EvaluationLocalCache.appendBrainSnapshot(this@MarketWatchService, snapshotSessionDate, snapObj)
                             serviceScope.launch(Dispatchers.IO) {
                                 val snapshotSaved = SupabaseClient.saveBrainSnapshot(snapObj)
+                                var generatedSaved = true
                                 LogBuffer.add(
                                     if (snapshotSaved) 'I' else 'E',
                                     TAG,
@@ -2322,11 +2356,17 @@ class MarketWatchService : Service() {
                                     try {
                                         val factPack = resultObj.optJSONObject("elephant_fact_pack")
                                         if (factPack != null) {
-                                            persistCompactGeneratedCandidates(factPack, snapObj)
+                                            generatedSaved = persistCompactGeneratedCandidates(factPack, snapObj)
                                         }
                                     } catch (e: Exception) {
+                                        generatedSaved = false
                                         Log.w(TAG, "ML_GENERATED_CANDIDATES_FAIL: ${e.message}")
                                     }
+                                }
+                                if (snapshotSaved && generatedSaved) {
+                                    markMlPollPersistSuccess(mlPersistKey)
+                                } else {
+                                    releaseMlPollPersist(mlPersistKey)
                                 }
                             }
                         }
@@ -2615,18 +2655,24 @@ class MarketWatchService : Service() {
 
     private fun mlPersistKeyForPoll(poll: JSONObject): String {
         val date = todayIstDate()
-        val pollCount = prefs.getInt("poll_count", 0)
-        val pollTime = poll.optString("t", "")
-        val bnf = poll.optDouble("bnf", 0.0)
-        val nf = poll.optDouble("nf", 0.0)
-        return "$date|$pollCount|$pollTime|$bnf|$nf"
+        val slotKey = currentPollSlotKey() ?: "closed"
+        return "$date|$slotKey"
     }
 
-    private fun markMlPollPersistAttempt(key: String): Boolean = synchronized(mlPersistLock) {
+    private fun reserveMlPollPersist(key: String): Boolean = synchronized(mlPersistLock) {
         val lastKey = prefs.getString("last_ml_persist_key", "") ?: ""
-        if (key.isBlank() || key == lastKey) return@synchronized false
-        prefs.edit().putString("last_ml_persist_key", key).commit()
+        if (key.isBlank() || key == lastKey || mlPersistInFlightKeys.contains(key)) return@synchronized false
+        mlPersistInFlightKeys.add(key)
         true
+    }
+
+    private fun markMlPollPersistSuccess(key: String) = synchronized(mlPersistLock) {
+        mlPersistInFlightKeys.remove(key)
+        if (key.isNotBlank()) prefs.edit().putString("last_ml_persist_key", key).commit()
+    }
+
+    private fun releaseMlPollPersist(key: String) = synchronized(mlPersistLock) {
+        mlPersistInFlightKeys.remove(key)
     }
 
     private fun resolveStrikeFromSlice(chainJson: JSONObject, targetStrike: Int, optionType: String, indexKey: String): JSONObject? {
@@ -2853,8 +2899,8 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject) {
-        val candidates = factPack.optJSONArray("candidates") ?: return
+    private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject): Boolean {
+        val candidates = factPack.optJSONArray("candidates") ?: return true
         val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
         val generationSkip = factPack.optJSONObject("generation_skip_reason")
         val generationSkipSummary = generationSkip?.optString("detail")
@@ -2897,7 +2943,7 @@ class MarketWatchService : Service() {
             }
             LogBuffer.add('W', TAG, diag)
             Log.w(TAG, diag)
-            if (rejectedRows == null || rejectedRows.length() == 0) return
+            if (rejectedRows == null || rejectedRows.length() == 0) return true
 
             val syntheticRows = buildRejectedCandidateRows(
                 rejectedRows = rejectedRows,
@@ -2906,7 +2952,7 @@ class MarketWatchService : Service() {
                 candidateCounts = candidateCounts,
                 generationSkipSummary = generationSkipSummary
             )
-            if (syntheticRows.length() == 0) return
+            if (syntheticRows.length() == 0) return true
             val savedRejected = SupabaseClient.saveGeneratedCandidates(syntheticRows)
             if (!savedRejected) {
                 val sampleRow = syntheticRows.optJSONObject(0)?.toString() ?: "{}"
@@ -2920,11 +2966,11 @@ class MarketWatchService : Service() {
                 TAG,
                 "ML_GENERATED_CANDIDATES: saved=$savedRejected rows=${syntheticRows.length()} pollTs=$pollTs rejectedOnly=true"
             )
-            return
+            return savedRejected
         }
 
         val selected = boundedGeneratedCandidates(candidates, GENERATED_CANDIDATE_PERSIST_CAP)
-        if (selected.length() == 0) return
+        if (selected.length() == 0) return true
 
         val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
         val sessionDate = factPack.optString("session_date", snapObj.optString("session_date", "")).trim()
@@ -3048,7 +3094,7 @@ class MarketWatchService : Service() {
             rows.put(row)
         }
 
-        if (rows.length() == 0) return
+        if (rows.length() == 0) return true
         val saved = SupabaseClient.saveGeneratedCandidates(rows)
         if (!saved) {
             val sampleRow = rows.optJSONObject(0)?.toString() ?: "{}"
@@ -3062,6 +3108,7 @@ class MarketWatchService : Service() {
             TAG,
             "ML_GENERATED_CANDIDATES: saved=$saved rows=${rows.length()} pollTs=$pollTs"
         )
+        return saved
     }
 
     private fun buildRejectedCandidateRows(
@@ -3788,7 +3835,7 @@ class MarketWatchService : Service() {
         LogBuffer.add('I', TAG, "POLL_FORCE_TRIGGER")
         acquirePartialWakeLock()
         try {
-            performPoll(token)
+            dispatchPollIfDue("force", token)
         } catch (e: Exception) {
             Log.e(TAG, "POLL_FORCE_FAIL: ${e.message}")
             LogBuffer.add('E', TAG, "POLL_FORCE_FAIL: ${e.message}")
@@ -3807,14 +3854,27 @@ class MarketWatchService : Service() {
             LogBuffer.add('D', TAG, "POLL_DISPATCH_SKIP[$trigger]: slot_already_completed=$slotKey")
             return
         }
-        if (prefs.getString(LAST_POLL_DISPATCH_SLOT_KEY, "") == slotKey) {
+        val reserved = synchronized(pollDispatchLock) {
+            if (pollDispatchInFlightKeys.contains(slotKey)) {
+                false
+            } else {
+                pollDispatchInFlightKeys.add(slotKey)
+                true
+            }
+        }
+        if (!reserved) {
             LogBuffer.add('D', TAG, "POLL_DISPATCH_DEDUP[$trigger]: slot_already_dispatched=$slotKey")
             return
         }
 
-        prefs.edit().putString(LAST_POLL_DISPATCH_SLOT_KEY, slotKey).commit()
         LogBuffer.add('I', TAG, "POLL_DISPATCH[$trigger]: slot=$slotKey")
-        performPoll(token)
+        try {
+            performPoll(token)
+        } finally {
+            synchronized(pollDispatchLock) {
+                pollDispatchInFlightKeys.remove(slotKey)
+            }
+        }
     }
 
     private fun nextPollLoopDelayMs(nowMs: Long = System.currentTimeMillis()): Long {
