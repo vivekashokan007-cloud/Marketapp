@@ -8713,8 +8713,16 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 elif gate_reason == 'CALM_NF_ONLY_WAIT':
                     wait_reason = 'BUILD 3 calm NF-lane gate: only BNF intraday survived in calm regime.'
                 verdict = dict(result.get('verdict') or {})
-                conflicts = list(verdict.get('conflicts') or [])
+                old_top = old_ranked[0] if old_ranked else None
+                conflicts = [
+                    c for c in list(verdict.get('conflicts') or [])
+                    if not str(c).startswith('Execution aligned to top candidate:')
+                ]
                 conflicts.append(f"BUILD 3 forced WAIT: {gate_reason}")
+                if isinstance(old_top, dict) and old_top.get('type'):
+                    conflicts.append(
+                        f"Pre-gate top candidate was {old_top.get('type')}/{_strategy_action(old_top.get('type'))}; BUILD 3 returned WAIT"
+                    )
                 verdict.update({
                     'action': 'WAIT',
                     'strategy': None,

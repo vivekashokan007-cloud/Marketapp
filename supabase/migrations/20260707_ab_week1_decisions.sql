@@ -60,6 +60,60 @@ create index if not exists ab_week1_decisions_session_idx
 create index if not exists ab_week1_decisions_gate_idx
   on public.ab_week1_decisions (gate_reason);
 
+alter table public.ab_week1_decisions enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'ab_week1_decisions'
+      and policyname = 'ab_week1_decisions_insert_anon'
+  ) then
+    create policy ab_week1_decisions_insert_anon
+      on public.ab_week1_decisions
+      for insert
+      to anon, authenticated
+      with check (true);
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'ab_week1_decisions'
+      and policyname = 'ab_week1_decisions_update_anon'
+  ) then
+    create policy ab_week1_decisions_update_anon
+      on public.ab_week1_decisions
+      for update
+      to anon, authenticated
+      using (true)
+      with check (true);
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'ab_week1_decisions'
+      and policyname = 'ab_week1_decisions_select_anon'
+  ) then
+    create policy ab_week1_decisions_select_anon
+      on public.ab_week1_decisions
+      for select
+      to anon, authenticated
+      using (true);
+  end if;
+end $$;
+
 create or replace function public.ab_week1_decisions_set_updated_at()
 returns trigger
 language plpgsql
