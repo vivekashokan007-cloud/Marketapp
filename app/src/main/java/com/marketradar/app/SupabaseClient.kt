@@ -672,6 +672,37 @@ object SupabaseClient {
         return result.success
     }
 
+    fun saveBuild3AbDecision(row: JSONObject): Boolean {
+        val result = postToFirstWorkingTableDetailed(
+            listOf("ab_week1_decisions?on_conflict=snapshot_poll_ts,experiment_name"),
+            row.toString(),
+            preferHeader = "resolution=merge-duplicates,return=minimal"
+        )
+        if (!result.success) {
+            val details = buildString {
+                append("BUILD3_AB_SAVE_HTTP: table=")
+                append(result.table ?: "ab_week1_decisions")
+                append(" code=")
+                append(result.code ?: -1)
+                append(" message=")
+                append(result.message ?: "")
+                if (!result.errorBody.isNullOrBlank()) {
+                    append(" body=")
+                    append(result.errorBody.take(800))
+                }
+                if (!result.exceptionMessage.isNullOrBlank()) {
+                    append(" exception=")
+                    append(result.exceptionMessage)
+                }
+                append(" payloadBytes=")
+                append(row.toString().toByteArray().size)
+            }
+            LogBuffer.add('W', TAG, details)
+            Log.w(TAG, details)
+        }
+        return result.success
+    }
+
     fun fetchBrainSnapshots(date: String): JSONArray {
         val exact = fetchArrayFromTables(
             listOf(
