@@ -37,6 +37,10 @@ object EvaluationLocalCache {
         return File(cacheDir(context), "brain_snapshots_${safeDate(sessionDate)}.jsonl")
     }
 
+    private fun build3AbFile(context: Context, sessionDate: String): File {
+        return File(cacheDir(context), "build3_ab_${safeDate(sessionDate)}.jsonl")
+    }
+
     private fun snapshotKey(row: JSONObject): String {
         return row.optString("id").ifBlank {
             "${row.optString("poll_ts")}|${row.optString("recommendation_id")}"
@@ -48,9 +52,14 @@ object EvaluationLocalCache {
     private fun pruneExpiredCacheFiles(context: Context) {
         val today = LocalDate.now(ZoneOffset.UTC)
         cacheDir(context).listFiles { file ->
-            file.isFile && file.name.startsWith("brain_snapshots_") && file.name.endsWith(".jsonl")
+            file.isFile &&
+                (file.name.startsWith("brain_snapshots_") || file.name.startsWith("build3_ab_")) &&
+                file.name.endsWith(".jsonl")
         }?.forEach { file ->
-            val sessionDate = file.name.removePrefix("brain_snapshots_").removeSuffix(".jsonl")
+            val sessionDate = file.name
+                .removePrefix("brain_snapshots_")
+                .removePrefix("build3_ab_")
+                .removeSuffix(".jsonl")
             val keep = try {
                 val ageDays = ChronoUnit.DAYS.between(LocalDate.parse(sessionDate), today)
                 ageDays in 0..RETENTION_DAYS
@@ -206,5 +215,19 @@ object EvaluationLocalCache {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_READ_FAIL: date=$sessionDate error=${e.message}")
         }
         return out
+    }
+
+    @Synchronized
+    fun appendBuild3AbDecision(context: Context, sessionDate: String, row: JSONObject): Boolean {
+        return try {
+            pruneExpiredCacheFiles(context)
+            val file = build3AbFile(context, sessionDate)
+            file.appendText(row.toString() + "\n")
+            LogBuffer.add('D', TAG, "LOCAL_BUILD3_AB_APPEND: date=$sessionDate bytes=${file.length()}")
+            true
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "LOCAL_BUILD3_AB_APPEND_FAIL: date=$sessionDate error=${e.message}")
+            false
+        }
     }
 }

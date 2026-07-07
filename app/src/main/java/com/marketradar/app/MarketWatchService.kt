@@ -2281,6 +2281,34 @@ class MarketWatchService : Service() {
 
                 processUnifiedBrainNotifications(brain, resultObj, ctxObj)
 
+                try {
+                    val build3Ab = resultObj.optJSONObject("build3_ab")
+                    if (build3Ab != null) {
+                        val sessionDate = build3Ab.optString(
+                            "session_date",
+                            ctxObj.optString("today_ist", todayIstDate())
+                        ).ifBlank { todayIstDate() }
+                        val row = JSONObject(build3Ab.toString())
+                        if (!row.has("snapshot_poll_ts") || row.optString("snapshot_poll_ts").isBlank()) {
+                            row.put("snapshot_poll_ts", currentIstIso())
+                        }
+                        row.put("session_date", sessionDate)
+                        row.put("local_saved_at", currentIstIso())
+                        EvaluationLocalCache.appendBuild3AbDecision(this@MarketWatchService, sessionDate, row)
+                        serviceScope.launch(Dispatchers.IO) {
+                            val saved = SupabaseClient.saveBuild3AbDecision(row)
+                            LogBuffer.add(
+                                if (saved) 'I' else 'W',
+                                TAG,
+                                "BUILD3_AB_SAVE: saved=$saved date=$sessionDate pollTs=${row.optString("snapshot_poll_ts")} old=${row.optString("old_pick_candidate_id")} new=${row.optString("new_pick_candidate_id")} gate=${row.optString("gate_reason")}"
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    LogBuffer.add('W', TAG, "BUILD3_AB_PERSIST_FAIL: ${e.message}")
+                    Log.w(TAG, "BUILD3_AB_PERSIST_FAIL: ${e.message}")
+                }
+
                 // ML Arch V2: Chain slice extraction + brain snapshot
                 try {
                     val mlPersistKey = mlPersistKeyForPoll(poll)
@@ -4003,6 +4031,12 @@ class MarketWatchService : Service() {
 
     private fun todayIstDate(): String {
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+        }.format(Date())
+    }
+
+    private fun currentIstIso(): String {
+        return SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).apply {
             timeZone = TimeZone.getTimeZone("Asia/Kolkata")
         }.format(Date())
     }
