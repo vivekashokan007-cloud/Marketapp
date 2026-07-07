@@ -121,6 +121,7 @@ jobs:
               ctx = dict(base, tradeMode=mode)
               out = json.loads(brain.analyze(json.dumps(polls), "[]", json.dumps(base), "[]", "[]", "{}", json.dumps(ctx)))
               generated = out.get("generated_candidates") or []
+              build3_ab = out.get("build3_ab") or {}
               counts = {}
               for candidate in generated:
                   counts[candidate.get("type")] = counts.get(candidate.get("type"), 0) + 1
@@ -131,10 +132,18 @@ jobs:
                   "iron_condor": counts.get("IRON_CONDOR", 0),
                   "effective_bias": (out.get("effective_bias") or {}).get("bias"),
                   "candidate_error": out.get("candidate_error"),
+                  "build3_gate_reason": build3_ab.get("gate_reason"),
+                  "build3_old_candidates": build3_ab.get("n_candidates_original"),
+                  "build3_after_a8": build3_ab.get("n_candidates_after_a8"),
+                  "build3_old_verdict": build3_ab.get("old_actor_verdict"),
+                  "build3_new_verdict": build3_ab.get("new_actor_verdict"),
               })
 
-          assert summary[0]["generated"] > 0, summary
-          assert summary[0]["iron_condor"] > 0, summary
+          assert summary[0]["build3_old_candidates"] > 0, summary
+          assert summary[0]["build3_old_verdict"] == "TRADE", summary
+          assert summary[0]["build3_new_verdict"] == "WAIT", summary
+          assert summary[0]["build3_gate_reason"] == "ALL_NEGATIVE_EV", summary
+          assert summary[0]["generated"] == summary[0]["build3_after_a8"], summary
           assert summary[1]["iron_condor"] == 0, summary
           print(json.dumps(summary, sort_keys=True))
           PY
