@@ -3352,6 +3352,13 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         if _raw_quote(_strike, _leg) > 0:
             quote_audit['legs_quoted'] += 1
 
+    if quote_audit['legs_required'] > 0 and quote_audit['legs_quoted'] == 0:
+        print(
+            f"POSITION_VALUATION_FAIL_CLOSED: trade={trade.get('id')} "
+            f"quoted=0/{quote_audit['legs_required']} reason=missing_required_chain_quotes"
+        )
+        return None
+
     current_net = 0.0
     if stype == 'BEAR_CALL':
         current_net = _get(sell_s, 0) - _get(buy_s, 0)
@@ -3457,6 +3464,44 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         'journey_point_added': journey_point,
         'current_net_premium': round(current_net, 2),
     }
+
+
+def _stamp_unavailable_position_valuation(trade, result, tid, spot=None, reason='missing_required_chain_quotes'):
+    """Propagate failed live valuation as explicit unavailable state.
+
+    A missing position mark must never fall through as stale P&L or zero P&L.
+    The exit tracker consumes these fields and fails closed to HOLD/DATA_UNAVAILABLE.
+    """
+    audit = {
+        'status': 'blocked',
+        'reason': 'DATA_UNAVAILABLE',
+        'detail': reason,
+        'exit_allowed': False,
+        'book_allowed': False,
+    }
+    row = {
+        'trade_id': tid,
+        'current_pnl': None,
+        'current_spot': round(spot, 2) if spot is not None else None,
+        'valuation_quality': 'unavailable',
+        'positionDataDegraded': True,
+        'legs_required': None,
+        'legs_quoted': 0,
+        'legs_intrinsic_fallback': 0,
+        'position_exit_audit': audit,
+    }
+    if isinstance(result, dict):
+        result.setdefault('position_live', {})[tid] = row
+    trade['current_pnl'] = None
+    trade['current_spot'] = row['current_spot']
+    trade['valuation_quality'] = 'unavailable'
+    trade['positionDataDegraded'] = True
+    trade['legs_required'] = None
+    trade['legs_quoted'] = 0
+    trade['legs_intrinsic_fallback'] = 0
+    trade['position_exit_audit'] = audit
+    return row
+
 
 def compute_control_index(trade, chain, spot, breadth, return_detail=False):
     """Decision #17. Missing entry metadata is UNKNOWN, not false-stable."""
@@ -4810,6 +4855,10 @@ def position_verdict(trade, insights, regime, ctx):
         dte = 5
     """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason."""
 
+    raw_pnl = trade.get('current_pnl')
+    valuation_quality = trade.get('valuation_quality')
+    legs_intrinsic_fallback = trade.get('legs_intrinsic_fallback') or 0
+
     # TASK 5.4 — init per-position trace slot
     _trace_root = ctx.get('_trace')
     _pos_trace = None
@@ -4818,7 +4867,7 @@ def position_verdict(trade, insights, regime, ctx):
         _pos_trace = {
             'inputs': {
                 'trade_id': _tid,
-                'pnl': trade.get('current_pnl', 0),
+                'pnl': raw_pnl,
                 'max_profit': trade.get('max_profit'),
                 'max_loss': trade.get('max_loss'),
                 'strategy_type': trade.get('strategy_type', ''),
@@ -4837,13 +4886,62 @@ def position_verdict(trade, insights, regime, ctx):
             'final': {},
         }
         _trace_root['positions'][_tid] = _pos_trace
-    pnl = trade.get('current_pnl', 0)
+
+    if valuation_quality == 'unavailable' or raw_pnl is None:
+        audit = {
+            'status': 'blocked',
+            'reason': 'DATA_UNAVAILABLE',
+            'detail': 'live_position_mark_unavailable',
+            'exit_allowed': False,
+            'book_allowed': False,
+        }
+        trade['position_exit_audit'] = audit
+        print(f"POSITION_VERDICT_DATA_UNAVAILABLE: trade={trade.get('id','?')} valuation_quality={valuation_quality}")
+        _final_verdict = {
+            "action": "HOLD",
+            "urgency": "DATA_UNAVAILABLE",
+            "reason": "DATA_UNAVAILABLE: live position mark is unavailable; no BOOK/EXIT decision emitted.",
+            "data_quality_warning": "Position valuation unavailable",
+            "position_exit_audit": audit,
+        }
+        if ctx.get('_trace') is not None and _pos_trace is not None:
+            _pos_trace['decision_path'].append('data_unavailable_fail_closed')
+            _pos_trace['danger_final'] = None
+            _pos_trace['final'] = dict(_final_verdict)
+        return _final_verdict
+
+    if legs_intrinsic_fallback > 0:
+        audit = {
+            'status': 'blocked',
+            'reason': 'PARTIAL_QUOTES_INTRINSIC_FALLBACK',
+            'detail': f"{legs_intrinsic_fallback} required leg(s) used intrinsic fallback",
+            'exit_allowed': False,
+            'book_allowed': False,
+        }
+        trade['position_exit_audit'] = audit
+        print(
+            f"POSITION_VERDICT_PARTIAL_QUOTES_BLOCKED: trade={trade.get('id','?')} "
+            f"fallback={legs_intrinsic_fallback}"
+        )
+        _final_verdict = {
+            "action": "HOLD",
+            "urgency": "DATA_DEGRADED",
+            "reason": "DATA_DEGRADED: live mark uses intrinsic fallback on required legs; no BOOK/EXIT decision emitted.",
+            "data_quality_warning": "Position valuation uses intrinsic fallback",
+            "position_exit_audit": audit,
+        }
+        if ctx.get('_trace') is not None and _pos_trace is not None:
+            _pos_trace['decision_path'].append('partial_quotes_fail_closed')
+            _pos_trace['danger_final'] = None
+            _pos_trace['final'] = dict(_final_verdict)
+        return _final_verdict
+
+    pnl = raw_pnl
     max_p = trade.get('max_profit', 1)
     max_l = trade.get('max_loss', 1)
     ci = trade.get('controlIndex')
     pnl_pct = pnl / max_p if max_p > 0 else 0
     loss_pct = abs(pnl) / max_l if max_l > 0 and pnl < 0 else 0
-    valuation_quality = trade.get('valuation_quality')
     ci_meta = trade.get('controlIndexMeta') or {}
     ci_completeness = ci_meta.get('signal_completeness_pct')
     position_data_degraded = bool(valuation_quality and valuation_quality != 'full')
@@ -5619,7 +5717,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.0"
+BRAIN_VERSION = "2.5.1"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8309,6 +8407,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             t['legs_required'] = pl_data.get('legs_required')
             t['legs_quoted'] = pl_data.get('legs_quoted')
             t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
+        else:
+            _stamp_unavailable_position_valuation(
+                t,
+                result,
+                tid,
+                spot=spot,
+                reason='missing_required_chain_quotes',
+            )
         
         ci_detail = compute_control_index(t, chain, spot, bnf_breadth, return_detail=True)
         t['controlIndex'] = ci_detail.get('score', 0)
@@ -9806,7 +9912,9 @@ def get_price(chain_rows, cand, side, suffix=''):
     if not strike or not opt_type:
         return None
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
-    expiry = cand.get('expiry') or ''
+    expiry = str(cand.get('expiry') or '').strip()
+    if not expiry:
+        return None
     preferred_row = None
     preferred_ts = None
     fallback_row = None
@@ -9818,8 +9926,8 @@ def get_price(chain_rows, cand, side, suffix=''):
             continue
         if row_data.get('option_type') != opt_type:
             continue
-        row_expiry = row_data.get('expiry') or ''
-        if expiry and row_expiry and row_expiry != expiry:
+        row_expiry = str(row_data.get('expiry') or '').strip()
+        if not row_expiry or row_expiry != expiry:
             continue
         ts_str = row_data.get('poll_ts', '')
         if not _is_h2_window(ts_str):
@@ -9837,7 +9945,10 @@ def get_price(chain_rows, cand, side, suffix=''):
                 fallback_ts = row_ts
                 fallback_row = row_data
     chosen = preferred_row or fallback_row
-    return None if chosen is None else chosen.get('ltp', None)
+    price = _float_or_none(chosen.get('ltp', None)) if chosen is not None else None
+    if price is None or price <= 0:
+        return None
+    return price
 
 
 def _teacher_default_config():
@@ -10037,9 +10148,135 @@ def _teacher_candidate_is_credit(cand):
     return str(cand.get('type') or '') in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
 
 
+def _candidate_lot_size(cand):
+    return _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+
+
+def _candidate_entry_premium(cand):
+    entry = _float_or_none(cand.get('netPremium'))
+    if entry is not None:
+        return entry
+    return None
+
+
+def _candidate_vertical_width(cand, sell_label='sell', buy_label='buy'):
+    sell_strike = _float_or_none(cand.get(f'{sell_label}Strike'))
+    buy_strike = _float_or_none(cand.get(f'{buy_label}Strike'))
+    if sell_strike is None or buy_strike is None:
+        return None
+    width = abs(sell_strike - buy_strike)
+    return width if width > 0 else None
+
+
+def _structure_value_bound(cand):
+    if cand.get('sellStrike2') is not None:
+        first_width = _candidate_vertical_width(cand)
+        second_width = _candidate_vertical_width(cand, 'sell2', 'buy2')
+        if first_width is not None and second_width is not None:
+            return max(first_width, second_width)
+        return None
+    return _candidate_vertical_width(cand)
+
+
+def _legacy_h2_structure_valuation(chain_rows, cand):
+    """Return a physically bounded H2 structure valuation for legacy labels.
+
+    S1 fix: debit spreads must be valued as long minus short. The old H2 path
+    used short minus long for every two-leg structure, creating impossible
+    negative values for BEAR_PUT/BULL_CALL debit spreads.
+    """
+    is_credit = _teacher_candidate_is_credit(cand)
+    leg_specs = _teacher_candidate_leg_specs(cand)
+    if not leg_specs:
+        return {
+            'sim_pnl_h2': None,
+            'price_integrity': 'FAIL',
+            'h2_price_integrity_reason': 'NO_LEGS',
+        }
+
+    long_value = 0.0
+    short_value = 0.0
+    leg_prices = []
+    for label, _, _ in leg_specs:
+        suffix = label.replace('sell', '').replace('buy', '')
+        side = 'sell' if label.startswith('sell') else 'buy'
+        price = get_price(chain_rows, cand, side, suffix=suffix)
+        if price is None:
+            return {
+                'sim_pnl_h2': None,
+                'price_integrity': 'FAIL',
+                'h2_price_integrity_reason': f'MISSING_H2_PRICE_{label.upper()}',
+            }
+        if label.startswith('sell'):
+            short_value += price
+        else:
+            long_value += price
+        leg_prices.append({'label': label, 'price': round(price, 4)})
+
+    entry_premium = _candidate_entry_premium(cand)
+    lot_size = _candidate_lot_size(cand)
+    if entry_premium is None or entry_premium <= 0 or lot_size <= 0:
+        return {
+            'sim_pnl_h2': None,
+            'price_integrity': 'FAIL',
+            'h2_price_integrity_reason': 'MISSING_ENTRY_PREMIUM_OR_INVALID_LOT',
+        }
+
+    later_value = (short_value - long_value) if is_credit else (long_value - short_value)
+    bound_width = _structure_value_bound(cand)
+    if bound_width is None:
+        return {
+            'sim_pnl_h2': None,
+            'price_integrity': 'FAIL',
+            'h2_price_integrity_reason': 'MISSING_OR_AMBIGUOUS_STRUCTURE_BOUND',
+            'h2_later_value_points': round(later_value, 4),
+            'h2_entry_basis_points': round(entry_premium, 4),
+            'h2_bound_width_points': None,
+            'h2_leg_prices': leg_prices,
+        }
+    if later_value < -0.01:
+        return {
+            'sim_pnl_h2': None,
+            'price_integrity': 'FAIL',
+            'h2_price_integrity_reason': 'STRUCTURE_VALUE_BELOW_ZERO',
+            'h2_later_value_points': round(later_value, 4),
+            'h2_entry_basis_points': round(entry_premium, 4),
+            'h2_bound_width_points': round(bound_width, 4),
+            'h2_leg_prices': leg_prices,
+        }
+    if later_value > bound_width + 0.01:
+        return {
+            'sim_pnl_h2': None,
+            'price_integrity': 'FAIL',
+            'h2_price_integrity_reason': 'STRUCTURE_VALUE_ABOVE_WIDTH',
+            'h2_later_value_points': round(later_value, 4),
+            'h2_entry_basis_points': round(entry_premium, 4),
+            'h2_bound_width_points': round(bound_width, 4),
+            'h2_leg_prices': leg_prices,
+        }
+
+    if is_credit:
+        sim_pnl = (entry_premium - later_value) * lot_size
+        formula = '(entry_credit - close_cost) * lot'
+    else:
+        sim_pnl = (later_value - entry_premium) * lot_size
+        formula = '(close_value - entry_debit) * lot'
+
+    return {
+        'sim_pnl_h2': round(sim_pnl, 2),
+        'price_integrity': 'OK',
+        'h2_price_integrity_reason': 'OK',
+        'h2_later_value_points': round(later_value, 4),
+        'h2_entry_basis_points': round(entry_premium, 4),
+        'h2_bound_width_points': round(bound_width, 4) if bound_width is not None else None,
+        'h2_formula': formula,
+        'h2_leg_prices': leg_prices,
+    }
+
+
 def _teacher_execution_basis(snap, cand, point, entry_point=None):
     is_credit = _teacher_candidate_is_credit(cand)
-    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    lot_size = _candidate_lot_size(cand)
     entry_point = entry_point if isinstance(entry_point, dict) else _entry_snapshot_point(snap, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
     short_entry_points = 0.0
@@ -10115,7 +10352,7 @@ def _teacher_execution_basis(snap, cand, point, entry_point=None):
 
 def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
     rates = _teacher_option_charge_rates(trade_dt, config)
-    lot_size = _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    lot_size = _candidate_lot_size(cand)
     entry_point = _entry_snapshot_point(snap, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
     leg_count = len(leg_specs)
@@ -10189,6 +10426,8 @@ def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
 def _build_candidate_path(chain_rows, snap, cand):
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
     expiry = str(cand.get('expiry') or '').strip()
+    if not expiry:
+        return []
     entry_ts = _parse_iso_ts(snap.get('poll_ts', ''))
     leg_specs = [
         ('sell', cand.get('sellStrike'), cand.get('sellType')),
@@ -10205,7 +10444,7 @@ def _build_candidate_path(chain_rows, snap, cand):
         if row_data.get('index_key') != index_key:
             continue
         row_expiry = str(row_data.get('expiry') or '').strip()
-        if expiry and row_expiry and row_expiry != expiry:
+        if not row_expiry or row_expiry != expiry:
             continue
         row_ts_raw = row_data.get('poll_ts', '')
         row_ts = _parse_iso_ts(row_ts_raw)
@@ -10396,33 +10635,8 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
 def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
     """Evaluate one candidate with both legacy H2 labels and teacher_v1 shadow labels.
     Returns outcome dict, or None if the candidate has no evaluable price path."""
-    stype = cand.get('type', '')
-    is_4_leg = cand.get('sellStrike2') is not None
-
-    sell_ltp_h2 = get_price(chain_rows, cand, 'sell')
-    buy_ltp_h2 = get_price(chain_rows, cand, 'buy')
-    sim_pnl = None
-
-    if sell_ltp_h2 is not None and buy_ltp_h2 is not None:
-        legacy_complete = True
-        if is_4_leg:
-            sell2_ltp_h2 = get_price(chain_rows, cand, 'sell', suffix='2')
-            buy2_ltp_h2 = get_price(chain_rows, cand, 'buy', suffix='2')
-            if sell2_ltp_h2 is None or buy2_ltp_h2 is None:
-                legacy_complete = False
-            else:
-                later_net_credit = (sell_ltp_h2 - buy_ltp_h2) + (sell2_ltp_h2 - buy2_ltp_h2)
-        else:
-            later_net_credit = sell_ltp_h2 - buy_ltp_h2
-
-        if legacy_complete:
-            entry_premium = cand.get('netPremium', 0)
-            lot_size = cand.get('lotSize') or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
-            is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
-            if is_credit:
-                sim_pnl = (entry_premium - later_net_credit) * lot_size
-            else:
-                sim_pnl = (later_net_credit - entry_premium) * lot_size
+    h2 = _legacy_h2_structure_valuation(chain_rows, cand)
+    sim_pnl = h2.get('sim_pnl_h2')
 
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
     lane = cand.get('lane')
@@ -10445,6 +10659,12 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
         'canonical_won': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
         'outcome_h2': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
         'won': (1 if sim_pnl > 0 else 0) if sim_pnl is not None else None,
+        'price_integrity': h2.get('price_integrity'),
+        'h2_price_integrity_reason': h2.get('h2_price_integrity_reason'),
+        'h2_later_value_points': h2.get('h2_later_value_points'),
+        'h2_entry_basis_points': h2.get('h2_entry_basis_points'),
+        'h2_bound_width_points': h2.get('h2_bound_width_points'),
+        'h2_formula': h2.get('h2_formula'),
     }
     teacher = _managed_teacher_outcome(chain_rows, snap, cand, teacher_config or _teacher_default_config())
     if teacher is None:

@@ -146,7 +146,7 @@ class TestPhaseD(unittest.TestCase):
         original_chain_delta = brain._chain_delta
         try:
             brain._chain_delta = lambda *args, **kwargs: 0.8
-            cand = brain._build_candidate("BULL_CALL", pair, strikes, 22200, 65, 200, 1 / 252, 1, 0.2, "2026-05-19", False, 18.0, "intraday", {})
+            cand = brain._build_candidate("BULL_CALL", pair, strikes, 22200, 65, 200, 1 / 252, 1, 0.2, "2026-05-19", False, 18.0, "intraday", {}, 22200)
         finally:
             brain._chain_delta = original_chain_delta
 
@@ -367,6 +367,73 @@ class TestPhaseD(unittest.TestCase):
         trade = {"id": "M1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 99999, "buy_strike": 88888}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
         self.assertIsNone(res)
+
+    def test_d1_23b_missing_chain_data_stamps_unavailable_and_blocks_exit(self):
+        trade = {"id": "M1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 99999, "buy_strike": 88888}
+        result = {"position_live": {}}
+        res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
+        self.assertIsNone(res)
+
+        stamped = brain._stamp_unavailable_position_valuation(
+            trade,
+            result,
+            trade["id"],
+            spot=self.spots["bnfSpot"],
+            reason="missing_required_chain_quotes",
+        )
+
+        self.assertIsNone(stamped["current_pnl"])
+        self.assertEqual(stamped["valuation_quality"], "unavailable")
+        self.assertTrue(stamped["positionDataDegraded"])
+        self.assertEqual(stamped["legs_quoted"], 0)
+        self.assertEqual(stamped["position_exit_audit"]["reason"], "DATA_UNAVAILABLE")
+        self.assertIs(result["position_live"]["M1"], stamped)
+
+        verdict = brain.position_verdict(trade, [], "MILD", {"bnfDTE": 1, "_trace": {"positions": {}}})
+        self.assertEqual(verdict["action"], "HOLD")
+        self.assertEqual(verdict["urgency"], "DATA_UNAVAILABLE")
+        self.assertEqual(verdict["position_exit_audit"]["exit_allowed"], False)
+        self.assertEqual(verdict["position_exit_audit"]["book_allowed"], False)
+
+    def test_d1_23c_position_verdict_unavailable_never_defaults_pnl_to_zero(self):
+        trade = {
+            "id": "M2",
+            "index_key": "BNF",
+            "strategy_type": "BULL_PUT",
+            "current_pnl": None,
+            "valuation_quality": "unavailable",
+            "max_profit": 1000,
+            "max_loss": 5000,
+        }
+
+        verdict = brain.position_verdict(trade, [], "MILD", {"bnfDTE": 1, "_trace": {"positions": {}}})
+
+        self.assertEqual(verdict["action"], "HOLD")
+        self.assertEqual(verdict["urgency"], "DATA_UNAVAILABLE")
+        self.assertIn("DATA_UNAVAILABLE", verdict["reason"])
+        self.assertEqual(trade["position_exit_audit"]["reason"], "DATA_UNAVAILABLE")
+
+    def test_d1_23d_partial_quote_intrinsic_fallback_blocks_book_and_exit(self):
+        trade = {
+            "id": "M3",
+            "index_key": "BNF",
+            "strategy_type": "BEAR_CALL",
+            "current_pnl": 950,
+            "valuation_quality": "partial_intrinsic",
+            "legs_required": 2,
+            "legs_quoted": 1,
+            "legs_intrinsic_fallback": 1,
+            "max_profit": 1000,
+            "max_loss": 5000,
+        }
+
+        verdict = brain.position_verdict(trade, [], "MILD", {"bnfDTE": 1, "_trace": {"positions": {}}})
+
+        self.assertEqual(verdict["action"], "HOLD")
+        self.assertEqual(verdict["urgency"], "DATA_DEGRADED")
+        self.assertEqual(verdict["position_exit_audit"]["reason"], "PARTIAL_QUOTES_INTRINSIC_FALLBACK")
+        self.assertEqual(verdict["position_exit_audit"]["exit_allowed"], False)
+        self.assertEqual(verdict["position_exit_audit"]["book_allowed"], False)
 
     def test_d1_24_entry_premium_zero(self):
         trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 0, "lot_size": 30, "is_credit": True}

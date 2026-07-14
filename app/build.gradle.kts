@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b331: BUILD 3 A8 gate, calm NF lane gate, and paired old-vs-new logger.
+        // b332: S1 price-integrity repair and live position valuation fail-closed.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 331
-        versionName = "2.5.0"
+        versionCode = 332
+        versionName = "2.5.1"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

@@ -61,7 +61,13 @@ object SupabaseClient {
         "teacher_config_version",
         "tp_threshold",
         "sl_threshold",
-        "break_even_win_rate_pct"
+        "break_even_win_rate_pct",
+        "price_integrity",
+        "h2_price_integrity_reason",
+        "h2_later_value_points",
+        "h2_entry_basis_points",
+        "h2_bound_width_points",
+        "h2_formula"
     )
 
     private fun fetchSync(request: Request): String? {
@@ -1074,17 +1080,60 @@ object SupabaseClient {
 
         val evaluationRowsNoShadow = stripShadowTeacher(evaluationRows)
         val recommendationRowsNoShadow = stripShadowTeacher(recommendationRows)
+        val evaluationRowsNoCanonical = stripCanonical(evaluationRowsNoShadow)
+        val recommendationRowsNoCanonical = stripCanonical(recommendationRowsNoShadow)
         val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
         val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
 
-        val evaluationWriteAttempted = postArrayToTableChunked("ml_evaluation_outcomes", evaluationRows) ||
-            postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsNoShadow) ||
-            postArrayToTableChunked("ml_evaluation_outcomes", stripCanonical(evaluationRowsNoShadow)) ||
-            postArrayToTableChunked("ml_evaluation_outcomes", evaluationRowsLegacy)
-        val recommendationWriteAttempted = postArrayToTableChunked("ml_recommendation_outcomes", recommendationRows) ||
-            postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsNoShadow) ||
-            postArrayToTableChunked("ml_recommendation_outcomes", stripCanonical(recommendationRowsNoShadow)) ||
-            postArrayToTableChunked("ml_recommendation_outcomes", recommendationRowsLegacy)
+        fun postOutcomeRowsWithFallback(
+            table: String,
+            fullRows: JSONArray,
+            noShadowRows: JSONArray,
+            noCanonicalRows: JSONArray,
+            legacyRows: JSONArray
+        ): Boolean {
+            if (postArrayToTableChunked(table, fullRows)) return true
+            if (postArrayToTableChunked(table, noShadowRows)) {
+                LogBuffer.add(
+                    'W',
+                    TAG,
+                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=no_shadow rows=${fullRows.length()} migration_required_before_release"
+                )
+                return true
+            }
+            if (postArrayToTableChunked(table, noCanonicalRows)) {
+                LogBuffer.add(
+                    'W',
+                    TAG,
+                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=no_shadow_no_canonical rows=${fullRows.length()} migration_required_before_release"
+                )
+                return true
+            }
+            if (postArrayToTableChunked(table, legacyRows)) {
+                LogBuffer.add(
+                    'W',
+                    TAG,
+                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=legacy rows=${fullRows.length()} migration_required_before_release"
+                )
+                return true
+            }
+            return false
+        }
+
+        val evaluationWriteAttempted = postOutcomeRowsWithFallback(
+            "ml_evaluation_outcomes",
+            evaluationRows,
+            evaluationRowsNoShadow,
+            evaluationRowsNoCanonical,
+            evaluationRowsLegacy
+        )
+        val recommendationWriteAttempted = postOutcomeRowsWithFallback(
+            "ml_recommendation_outcomes",
+            recommendationRows,
+            recommendationRowsNoShadow,
+            recommendationRowsNoCanonical,
+            recommendationRowsLegacy
+        )
 
         val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")
         val recommendationPersisted = countRows("ml_recommendation_outcomes", "session_date=eq.$sessionDate")

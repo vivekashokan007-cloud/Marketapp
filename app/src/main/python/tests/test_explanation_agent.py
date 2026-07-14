@@ -174,7 +174,7 @@ class ExplanationAuditAgentTests(unittest.TestCase):
             "capital": 250000,
         }
 
-        candidates = generate_candidates(
+        candidates, _rejected = generate_candidates(
             chain=chain,
             spot=53600,
             index_key="BNF",
