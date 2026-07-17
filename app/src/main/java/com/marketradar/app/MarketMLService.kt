@@ -501,7 +501,11 @@ class MarketMLService : Service() {
     private fun currentCoverageIntegrity(sessionDate: String): String {
         val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
         if (integrityDate != sessionDate) return ""
-        return prefs.getString("coverage_integrity", "") ?: ""
+        return when ((prefs.getString("coverage_integrity", "") ?: "").uppercase(Locale.US)) {
+            "CLEAN" -> "COMPLETE"
+            "PARTIAL_COVERAGE" -> "PARTIAL"
+            else -> prefs.getString("coverage_integrity", "") ?: ""
+        }
     }
 
     private fun currentCoverageIntegrityIssue(sessionDate: String): String {

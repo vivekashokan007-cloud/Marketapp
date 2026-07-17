@@ -1644,7 +1644,7 @@ def max_pain_gravity(polls, ctx):
 
 def fii_trend(polls, ctx):
     """5-day FII trend from premiumHistory."""
-    hist = ctx.get('fiiHistory', [])
+    hist = _fresh_history_rows(ctx, ctx.get('fiiHistory', []), max_days=7)
     if len(hist) < 3: return None
     fii_vals = []
     for h in hist:
@@ -1666,6 +1666,34 @@ def fii_trend(polls, ctx):
                 "detail": f"Mild selling pressure.", "impact": "bearish", "strength": 2}
     return None
 
+def _context_session_date(ctx):
+    session_date = str(ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate') or '').strip()
+    if not session_date:
+        return None
+    try:
+        return datetime.strptime(session_date[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+def _fresh_history_rows(ctx, rows, max_days=7, min_days=1):
+    """Filters dated market-history rows when the live session date is known."""
+    session_dt = _context_session_date(ctx)
+    if session_dt is None:
+        return list(rows or [])
+    fresh = []
+    for row in rows or []:
+        row_date = str(row.get('date') or row.get('session_date') or row.get('sessionDate') or '').strip()
+        if not row_date:
+            continue
+        try:
+            row_dt = datetime.strptime(row_date[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        age = (session_dt - row_dt).days
+        if min_days <= age <= max_days:
+            fresh.append(row)
+    return fresh
+
 def fii_short_trend(ctx):
     """Phase B: 3-day FII Short% trend classifier.
     Replaces JS getFiiShortTrend(currentShort, history).
@@ -1680,12 +1708,17 @@ def fii_short_trend(ctx):
     except:
         return None
 
-    yday_hist = ctx.get('yesterdayHistory') or []
+    yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
     vals = [current_short]
-    for h in yday_hist[:2]:
+    for h in yday_hist:
+        if len(vals) >= 3:
+            break
         val = h.get('fii_short_pct')
         if val is not None:
-            vals.append(float(val))
+            try:
+                vals.append(float(val))
+            except (ValueError, TypeError):
+                pass
     
     if len(vals) < 2:
         return None
@@ -1785,7 +1818,7 @@ def validate_yesterday_signal(ctx):
     if not gap or gap.get('type') == 'UNKNOWN':
         return None
     
-    yday_hist = ctx.get('yesterdayHistory') or []
+    yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
     if not yday_hist:
         return None
     
@@ -2374,7 +2407,7 @@ def compute_morning_bias(ctx, polls):
     signals = []
     morning = ctx.get('morning_input') or {}
     chain_data = ctx.get('chain_data') or ctx.get('bnfChain') or {}
-    yday_hist = ctx.get('yesterdayHistory') or []
+    yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
     
     if not morning:
         return {'bias': 'NEUTRAL', 'strength': '', 'net': 0,
@@ -4319,7 +4352,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
                 'inputs': {'pwF': pwF},
                 'reason': f'put wall fresh {pwF:.2f} > 0.25',
             })
-    fii_hist = ctx.get('fiiHistory', [])
+    fii_hist = _fresh_history_rows(ctx, ctx.get('fiiHistory', []), max_days=7)
     fii_sum = 0
     for h in fii_hist[:5]:
         v = h.get('fiiCash', 0)
@@ -5717,7 +5750,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.1"
+BRAIN_VERSION = "2.5.2"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6342,7 +6375,7 @@ def _compute_context_score(cand, spot, tdte, vix, ctx):
     if ds is None or ds <= 0: return 0
 
     # 1. VIX direction (Varsity M6 Ch8.4)
-    fii_hist = ctx.get('fiiHistory', [])
+    fii_hist = _fresh_history_rows(ctx, ctx.get('fiiHistory', []), max_days=7)
     yday_vix = fii_hist[0].get('vix') if fii_hist else None
     if yday_vix and is_credit:
         vc = vix - yday_vix
@@ -7144,9 +7177,12 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         return None
 
     # Sigma OTM filter — credit directional only.
-    # Reject both too-close sells and economically worthless far-OTM sells.
+    # Debit spreads do not gate on sigma here, but retrain/evaluation storage needs
+    # the same entry-time distance feature for clean p_ml rows.
     sigma_otm = None
     ds = _daily_sigma(spot, vix)
+    if (not is_credit) and stype in ('BEAR_PUT', 'BULL_CALL') and ds is not None and ds > 0:
+        sigma_otm = round(abs(pair['buy'] - spot) / ds, 2)
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and (ds is None or ds <= 0):
         record_rejection(
             'sigma_data_missing',
@@ -7829,7 +7865,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 ic['gammaRisk'] = _compute_gamma_risk(ic, spot, tdte)
                 ic['gammaTag'] = _gamma_tag(ic['gammaRisk'])
                 # IC context: only VIX direction penalty
-                fii_hist = ctx.get('fiiHistory', [])
+                fii_hist = _fresh_history_rows(ctx, ctx.get('fiiHistory', []), max_days=7)
                 yv = fii_hist[0].get('vix') if fii_hist else None
                 ic['contextScore'] = -0.15 if (yv and vix - yv < -0.5) else 0
                 candidates.append(ic)
@@ -8342,7 +8378,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result["bnfContrarian"] = get_contrarian_pcr(result["bnfProfile"])
     result["nfContrarian"] = get_contrarian_pcr(result["nfProfile"])
 
-    hist = ctx.get('yesterdayHistory', [])
+    hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory', []), max_days=7)
     result["pcrContext"] = get_institutional_pcr(
         result["bnfProfile"].get('nearAtmPCR') or result["bnfProfile"].get('pcr'),
         vix, gap, hist, baseline, bnf_chain

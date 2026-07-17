@@ -881,7 +881,7 @@ class MarketWatchService : Service() {
         }
         try {
             val slotKey = currentPollSlotKey()
-            val pollCount = reservePollNumberForToday()
+            val pollCount = slotKey?.let { slotOrdinalFromSlotKey(it) } ?: reservePollNumberForToday()
             Log.d(TAG, "POLL_START: performPoll() entered")
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting${slotKey?.let { " slot=$it" } ?: ""}")
 
@@ -3883,10 +3883,13 @@ class MarketWatchService : Service() {
             return
         }
         val reserved = synchronized(pollDispatchLock) {
-            if (pollDispatchInFlightKeys.contains(slotKey)) {
+            if (prefs.getString(LAST_POLL_DISPATCH_SLOT_KEY, "") == slotKey) {
+                false
+            } else if (pollDispatchInFlightKeys.contains(slotKey)) {
                 false
             } else {
                 pollDispatchInFlightKeys.add(slotKey)
+                prefs.edit().putString(LAST_POLL_DISPATCH_SLOT_KEY, slotKey).commit()
                 true
             }
         }
@@ -3945,6 +3948,11 @@ class MarketWatchService : Service() {
         if (minutes < MARKET_OPEN_MINUTE || minutes > MARKET_CLOSE_MINUTE) return null
         val slotOrdinal = ((minutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
         return "${todayIstDate()}|$slotOrdinal"
+    }
+
+    private fun slotOrdinalFromSlotKey(slotKey: String): Int? {
+        return slotKey.substringAfterLast("|", "").toIntOrNull()
+            ?.takeIf { it in 1..POLL_FULL_DAY_SLOTS }
     }
 
     private fun maintainSessionWakeLock() {
@@ -4087,6 +4095,11 @@ class MarketWatchService : Service() {
 
     private fun computeSessionIntegrity(sessionDate: String): SessionIntegritySummary {
         val pollCount = if ((prefs.getString("last_poll_date", "") ?: "") == sessionDate) {
+            countDistinctSlotOrdinalsFromHistory(sessionDate)
+        } else {
+            0
+        }
+        val rawPollCount = if ((prefs.getString("last_poll_date", "") ?: "") == sessionDate) {
             prefs.getInt("poll_count", 0)
         } else {
             0
@@ -4096,16 +4109,17 @@ class MarketWatchService : Service() {
         val snapshotOverrun = snapshotRows > POLL_FULL_DAY_SLOTS
         val integrityIssue = when {
             snapshotOverrun -> "SNAPSHOT_OVERRUN"
-            pollCount > POLL_FULL_DAY_SLOTS -> "POLL_OVERRUN"
             finalSlotOccurrences > 1 -> "FINAL_SLOT_DUPLICATE"
             finalSlotOccurrences == 0 -> "FINAL_SLOT_MISSING"
             pollCount < POLL_FULL_DAY_SLOTS -> "MISSED_SLOTS"
+            rawPollCount > POLL_FULL_DAY_SLOTS -> "COUNTER_DRIFT"
             else -> "NONE"
         }
         val coverageIntegrity = when {
             integrityIssue in setOf("SNAPSHOT_OVERRUN", "POLL_OVERRUN", "FINAL_SLOT_DUPLICATE", "FINAL_SLOT_MISSING") -> "INTEGRITY_BROKEN"
-            integrityIssue == "MISSED_SLOTS" -> "PARTIAL_COVERAGE"
-            else -> "CLEAN"
+            integrityIssue == "MISSED_SLOTS" -> "PARTIAL"
+            integrityIssue == "COUNTER_DRIFT" -> "COMPLETE_WITH_RETRIES"
+            else -> "COMPLETE"
         }
         return SessionIntegritySummary(
             sessionDate = sessionDate,
@@ -4131,6 +4145,24 @@ class MarketWatchService : Service() {
                 if (slotOrdinalFromPollTime(time) == slotOrdinal) count++
             }
             count
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun countDistinctSlotOrdinalsFromHistory(sessionDate: String): Int {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != sessionDate) return 0
+        return try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            val slots = mutableSetOf<Int>()
+            for (i in 0 until history.length()) {
+                val row = history.optJSONObject(i) ?: continue
+                val time = row.optString("t", "")
+                val slot = slotOrdinalFromPollTime(time) ?: continue
+                slots.add(slot)
+            }
+            slots.size
         } catch (_: Exception) {
             0
         }

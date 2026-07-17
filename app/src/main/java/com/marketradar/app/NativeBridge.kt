@@ -1006,7 +1006,7 @@ class NativeBridge(private val context: Context) {
             status.put("pollCoverageState", coverage.state)
             status.put("coverageIntegrity", coverageIntegrity)
             status.put("coverageIntegrityIssue", coverageIntegrityIssue)
-            status.put("evaluationPromotionEligible", coverageIntegrity == "CLEAN")
+            status.put("evaluationPromotionEligible", coverageIntegrity == "COMPLETE")
             status.put("evaluationTargetDate", targetDate ?: "")
             status.put("evaluationTargetIsToday", targetIsToday)
             status.put("evaluationReady", evaluationReady)
@@ -1566,20 +1566,27 @@ class NativeBridge(private val context: Context) {
         val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
         if (integrityDate == targetDate) {
             val stored = prefs.getString("coverage_integrity", "") ?: ""
-            if (stored.isNotBlank()) return stored
+            if (stored.isNotBlank()) {
+                return when (stored.uppercase(Locale.US)) {
+                    "CLEAN" -> "COMPLETE"
+                    "PARTIAL_COVERAGE" -> "PARTIAL"
+                    else -> stored
+                }
+            }
         }
         val derivedIssue = deriveCoverageIntegrityIssue(targetDate)
         if (derivedIssue.isNotBlank()) {
             return when (derivedIssue) {
-                "MISSED_SLOTS" -> "PARTIAL_COVERAGE"
-                "NONE" -> "CLEAN"
+                "MISSED_SLOTS" -> "PARTIAL"
+                "COUNTER_DRIFT" -> "COMPLETE_WITH_RETRIES"
+                "NONE" -> "COMPLETE"
                 else -> "INTEGRITY_BROKEN"
             }
         }
         return when {
             coverage.actual <= 0 -> "NONE"
-            coverage.missed > 0 -> "PARTIAL_COVERAGE"
-            else -> "CLEAN"
+            coverage.missed > 0 -> "PARTIAL"
+            else -> "COMPLETE"
         }
     }
 
@@ -1594,15 +1601,16 @@ class NativeBridge(private val context: Context) {
     private fun deriveCoverageIntegrityIssue(targetDate: String): String {
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
         if (lastPollDate != targetDate) return ""
-        val pollCount = prefs.getInt("poll_count", 0)
+        val pollCount = countDistinctSlotOrdinalsForDate(targetDate)
+        val rawPollCount = prefs.getInt("poll_count", 0)
         val finalSlotCount = countSlotOccurrencesForDate(targetDate, 76)
         val snapshotRows = countLocalSnapshotRows(targetDate)
         return when {
             snapshotRows > 76 -> "SNAPSHOT_OVERRUN"
-            pollCount > 76 -> "POLL_OVERRUN"
             finalSlotCount > 1 -> "FINAL_SLOT_DUPLICATE"
             finalSlotCount == 0 -> "FINAL_SLOT_MISSING"
             pollCount in 1..75 -> "MISSED_SLOTS"
+            rawPollCount > 76 -> "COUNTER_DRIFT"
             pollCount > 0 -> "NONE"
             else -> ""
         }
@@ -1619,6 +1627,23 @@ class NativeBridge(private val context: Context) {
                 if (slotOrdinalFromPollTime(row.optString("t", "")) == slotOrdinal) count++
             }
             count
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    private fun countDistinctSlotOrdinalsForDate(targetDate: String): Int {
+        val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
+        if (lastPollDate != targetDate) return 0
+        return try {
+            val history = JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+            val slots = mutableSetOf<Int>()
+            for (i in 0 until history.length()) {
+                val row = history.optJSONObject(i) ?: continue
+                val slot = slotOrdinalFromPollTime(row.optString("t", "")) ?: continue
+                slots.add(slot)
+            }
+            slots.size
         } catch (_: Exception) {
             0
         }

@@ -15,7 +15,10 @@ object EvaluationLocalCache {
     private const val DIR_NAME = "evaluation_local_cache"
     private const val RETENTION_DAYS = 45L
     private const val MAX_ROWS_PER_SESSION = 90
-    private const val MAX_BYTES_PER_SESSION = 5L * 1024L * 1024L
+    // Full-day brain snapshots are large because they carry chain/context evidence.
+    // Keep enough local evidence for post-close evaluation instead of trimming to a
+    // few rows and falsely marking an otherwise replayable session incomplete.
+    private const val MAX_BYTES_PER_SESSION = 64L * 1024L * 1024L
 
     private data class SnapshotFileState(
         val rows: LinkedHashMap<String, String>,

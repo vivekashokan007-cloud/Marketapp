@@ -62,6 +62,12 @@ def test_bias_fii_short_neutral_covering():
     res = compute_morning_bias(ctx, [])
     assert res['votes']['bear'] == 0
 
+def test_bias_fii_short_ignores_stale_covering_history():
+    ctx = make_ctx(morning={'fiiShortPct': '88'}, yday=[{'date': '2026-04-28', 'fii_short_pct': 90}])
+    ctx['today_ist'] = '2026-07-15'
+    res = compute_morning_bias(ctx, [])
+    assert res['votes']['bear'] == 1
+
 def test_bias_close_char_bull():
     ctx = make_ctx(chain={'closeChar': 2})
     res = compute_morning_bias(ctx, [])
@@ -91,6 +97,12 @@ def test_bias_vix_dir_bear():
     ctx = make_ctx(chain={'vix': 13.0}, yday=[{'vix': 12.5}])
     res = compute_morning_bias(ctx, [])
     assert res['votes']['bear'] == 1
+
+def test_bias_vix_dir_ignores_stale_history():
+    ctx = make_ctx(chain={'vix': 12.0}, yday=[{'date': '2026-04-28', 'vix': 12.5}])
+    ctx['today_ist'] = '2026-07-15'
+    res = compute_morning_bias(ctx, [])
+    assert res['votes']['bull'] == 0
 
 def test_bias_fut_prem_bull():
     ctx = make_ctx(chain={'futuresPremium': 0.06})
@@ -244,6 +256,22 @@ def test_fii_trend_aggressive():
     ctx = make_ctx(morning={'fiiShortPct': '85'}, yday=[{'fii_short_pct': 81}])
     assert fii_short_trend(ctx)['aggressive'] is True
 
+def test_fii_trend_ignores_stale_dated_history():
+    ctx = make_ctx(
+        morning={'fiiShortPct': '92'},
+        yday=[
+            {'date': '2026-06-29', 'fii_short_pct': None},
+            {'date': '2026-04-28', 'fii_short_pct': 81},
+        ],
+    )
+    ctx['today_ist'] = '2026-07-15'
+    assert fii_short_trend(ctx) is None
+
+def test_fii_trend_uses_fresh_dated_history():
+    ctx = make_ctx(morning={'fiiShortPct': '85'}, yday=[{'date': '2026-07-14', 'fii_short_pct': 82}])
+    ctx['today_ist'] = '2026-07-15'
+    assert fii_short_trend(ctx)['trend'] == 'BUILDING'
+
 # --- 4. validate_yesterday_signal (6 tests) ---
 
 def test_val_bull_correct():
@@ -323,18 +351,20 @@ def test_delta_summary_neutral():
 
 if __name__ == "__main__":
     test_list = [
-        # Bias (21)
+        # Bias (23)
         ("test_bias_fii_cash_bull", test_bias_fii_cash_bull),
         ("test_bias_fii_cash_bear", test_bias_fii_cash_bear),
         ("test_bias_fii_short_bull", test_bias_fii_short_bull),
         ("test_bias_fii_short_bear_new", test_bias_fii_short_bear_new),
         ("test_bias_fii_short_neutral_covering", test_bias_fii_short_neutral_covering),
+        ("test_bias_fii_short_ignores_stale_covering_history", test_bias_fii_short_ignores_stale_covering_history),
         ("test_bias_close_char_bull", test_bias_close_char_bull),
         ("test_bias_close_char_bear", test_bias_close_char_bear),
         ("test_bias_pcr_bull", test_bias_pcr_bull),
         ("test_bias_pcr_bear", test_bias_pcr_bear),
         ("test_bias_vix_dir_bull", test_bias_vix_dir_bull),
         ("test_bias_vix_dir_bear", test_bias_vix_dir_bear),
+        ("test_bias_vix_dir_ignores_stale_history", test_bias_vix_dir_ignores_stale_history),
         ("test_bias_fut_prem_bull", test_bias_fut_prem_bull),
         ("test_bias_fut_prem_bear", test_bias_fut_prem_bear),
         ("test_bias_dii_floor_bull", test_bias_dii_floor_bull),
@@ -352,13 +382,15 @@ if __name__ == "__main__":
         ("test_regime_accumulation", test_regime_accumulation),
         ("test_regime_defended", test_regime_defended),
         ("test_regime_normal", test_regime_normal),
-        # FII Trend (6)
+        # FII Trend (8)
         ("test_fii_trend_covering", test_fii_trend_covering),
         ("test_fii_trend_building", test_fii_trend_building),
         ("test_fii_trend_inflection", test_fii_trend_inflection),
         ("test_fii_trend_flat", test_fii_trend_flat),
         ("test_fii_trend_accel", test_fii_trend_accel),
         ("test_fii_trend_aggressive", test_fii_trend_aggressive),
+        ("test_fii_trend_ignores_stale_dated_history", test_fii_trend_ignores_stale_dated_history),
+        ("test_fii_trend_uses_fresh_dated_history", test_fii_trend_uses_fresh_dated_history),
         # Validation (6)
         ("test_val_bull_correct", test_val_bull_correct),
         ("test_val_bull_incorrect", test_val_bull_incorrect),
