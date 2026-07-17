@@ -155,7 +155,8 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(cand["sellLTP"], 30)
         self.assertEqual(cand["netPremium"], 80)
         self.assertEqual(cand["maxLoss"], 5200)
-        self.assertIsNotNone(cand["sigmaOTM"])
+        self.assertIsNone(cand["sigmaOTM"])
+        self.assertIsNotNone(cand["debitBreakevenSigma"])
 
     def test_d1_12e2_debit_bear_put_persists_sigma_otm(self):
         strikes = {
@@ -171,8 +172,9 @@ class TestPhaseD(unittest.TestCase):
             brain._chain_delta = original_chain_delta
 
         self.assertIsNotNone(cand)
-        self.assertIsNotNone(cand["sigmaOTM"])
-        self.assertGreater(cand["sigmaOTM"], 0)
+        self.assertIsNone(cand["sigmaOTM"])
+        self.assertIsNotNone(cand["debitBreakevenSigma"])
+        self.assertGreater(cand["debitBreakevenSigma"], 0)
 
     def test_d1_12f_verdict_aligns_to_credit_watchlist(self):
         verdict = {

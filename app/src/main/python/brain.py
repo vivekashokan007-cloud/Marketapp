@@ -5750,7 +5750,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.2"
+BRAIN_VERSION = "2.5.3"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7177,12 +7177,16 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         return None
 
     # Sigma OTM filter — credit directional only.
-    # Debit spreads do not gate on sigma here, but retrain/evaluation storage needs
-    # the same entry-time distance feature for clean p_ml rows.
     sigma_otm = None
     ds = _daily_sigma(spot, vix)
+    # Debit spreads: entry-time distance-to-breakeven in daily-sigmas, stored as a SEPARATE
+    # feature (debitBreakevenSigma) — NOT overloaded into sigmaOTM. Matches the verified
+    # debitBE_sigma_v1 backfill (breakeven = buy strike -/+ net debit) used for clean p_ml eval.
+    debit_be_sigma = None
     if (not is_credit) and stype in ('BEAR_PUT', 'BULL_CALL') and ds is not None and ds > 0:
-        sigma_otm = round(abs(pair['buy'] - spot) / ds, 2)
+        _net_debit = round(net_prem, 2)
+        _breakeven = pair['buy'] - _net_debit if stype == 'BEAR_PUT' else pair['buy'] + _net_debit
+        debit_be_sigma = abs(_breakeven - spot) / ds
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and (ds is None or ds <= 0):
         record_rejection(
             'sigma_data_missing',
@@ -7312,6 +7316,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'ev': ev, 'netTheta': net_theta, 'isCredit': is_credit,
         'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
         'sigmaOTM': sigma_otm,
+        'debitBreakevenSigma': debit_be_sigma,
         'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
         'targetProfit': round(max_profit * 0.5),
         'stopLoss': round(max_loss * 0.6 if is_credit else max_loss * 0.5),
