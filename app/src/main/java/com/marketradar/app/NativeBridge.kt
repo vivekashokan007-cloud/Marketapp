@@ -523,6 +523,7 @@ class NativeBridge(private val context: Context) {
         val last = prefs.getString("open_trades", "")
         if (json == last) return
         prefs.edit().putString("open_trades", json).commit()
+        PositionTickService.ensureRunning(context)
     }
 
     @JavascriptInterface

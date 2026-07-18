@@ -335,6 +335,7 @@ class MarketWatchService : Service() {
 
         startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
+        PositionTickService.ensureRunning(this)
         maintainSessionWakeLock()
         ensurePollAlarmScheduled()
 

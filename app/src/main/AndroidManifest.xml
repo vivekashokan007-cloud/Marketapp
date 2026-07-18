@@ -38,6 +38,11 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <service
+            android:name=".PositionTickService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <receiver
             android:name=".MarketOpenAlarmReceiver"
             android:exported="false" />

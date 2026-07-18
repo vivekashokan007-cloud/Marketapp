@@ -1628,6 +1628,29 @@ object SupabaseClient {
         }
     }
 
+    fun insertPositionTicks(rows: JSONArray): Boolean {
+        if (rows.length() == 0) return true
+        val request = getBaseRequest("position_ticks")
+            .header("Prefer", "return=minimal")
+            .post(rows.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    true
+                } else {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "Position tick insert failed: ${response.code} ${response.message} | $err")
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Position tick insert exception: ${e.message}")
+            false
+        }
+    }
+
     fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)
