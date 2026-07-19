@@ -56,22 +56,6 @@ begin
   end if;
 end $$;
 
-do $$
-begin
-  if not exists (
-    select 1
-    from pg_policies
-    where schemaname = 'public'
-      and tablename = 'position_ticks'
-      and policyname = 'position_ticks_select_anon'
-  ) then
-    create policy position_ticks_select_anon
-      on public.position_ticks
-      for select
-      to anon, authenticated
-      using (true);
-  end if;
-end $$;
-
-alter table if exists public.trades_v2
-  add column if not exists close_trace_json jsonb;
+drop policy if exists position_ticks_select_anon on public.position_ticks;
+drop policy if exists position_ticks_update_anon on public.position_ticks;
+drop policy if exists position_ticks_delete_anon on public.position_ticks;

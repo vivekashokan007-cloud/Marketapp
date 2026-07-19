@@ -396,12 +396,7 @@ class PositionTickService : Service() {
     private fun enqueueRows(rows: JSONArray) {
         val queue = loadPendingQueue()
         for (i in 0 until rows.length()) queue.put(rows.optJSONObject(i))
-        var dropped = 0
-        while (queue.length() > MAX_BUFFER_ROWS) {
-            queue.remove(0)
-            dropped += 1
-        }
-        if (dropped > 0) LogBuffer.add('W', TAG, "Dropped $dropped old position tick rows from bounded queue")
+        recordDroppedTicks(trimQueue(queue))
         prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
     }
 
@@ -414,15 +409,44 @@ class PositionTickService : Service() {
             prefs.edit().putLong(PREF_LAST_FLUSH_MS, now).apply()
             return
         }
+        val dropped = trimQueue(queue)
+        if (dropped > 0) {
+            recordDroppedTicks(dropped)
+            prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
+        }
         val ok = SupabaseClient.insertPositionTicks(queue)
         if (ok) {
             prefs.edit()
                 .putString(PREF_PENDING_QUEUE, "[]")
                 .putLong(PREF_LAST_FLUSH_MS, now)
+                .putInt(PREF_FLUSH_FAILURE_COUNT, 0)
                 .apply()
         } else {
-            prefs.edit().putLong(PREF_LAST_FLUSH_MS, now).apply()
+            val failures = prefs.getInt(PREF_FLUSH_FAILURE_COUNT, 0) + 1
+            Log.w(TAG, "Position tick flush failed; consecutive_failures=$failures pending_rows=${queue.length()}")
+            LogBuffer.add('W', TAG, "POSITION_TICK_FLUSH_FAIL: consecutive=$failures pending=${queue.length()}")
+            prefs.edit()
+                .putLong(PREF_LAST_FLUSH_MS, now)
+                .putInt(PREF_FLUSH_FAILURE_COUNT, failures)
+                .apply()
         }
+    }
+
+    private fun trimQueue(queue: JSONArray): Int {
+        var dropped = 0
+        while (queue.length() > MAX_PENDING_TICKS) {
+            queue.remove(0)
+            dropped += 1
+        }
+        return dropped
+    }
+
+    private fun recordDroppedTicks(dropped: Int) {
+        if (dropped <= 0) return
+        val total = prefs.getLong(PREF_DROPPED_TICK_COUNT, 0L) + dropped
+        prefs.edit().putLong(PREF_DROPPED_TICK_COUNT, total).apply()
+        Log.w(TAG, "Dropped $dropped old position tick rows from bounded queue; total_dropped=$total")
+        LogBuffer.add('W', TAG, "POSITION_TICK_QUEUE_DROP: dropped=$dropped total=$total")
     }
 
     private fun loadPendingQueue(): JSONArray {
@@ -518,13 +542,15 @@ class PositionTickService : Service() {
         private const val PREF_PENDING_QUEUE = "position_tick_pending_queue"
         private const val PREF_RUNNING_STATE = "position_tick_running_state"
         private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
+        private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
+        private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
         private const val NOTIFICATION_CHANNEL_ID = "position_tick_capture"
         private const val NOTIFICATION_ID = 23018
         private const val SOURCE = "P1_REST_60S"
         private const val TICK_MS = 60_000L
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
-        private const val MAX_BUFFER_ROWS = 1_500
+        private const val MAX_PENDING_TICKS = 1_500
         private const val MARKET_OPEN_MINUTES = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTES = 15 * 60 + 30
         private const val POLICY_EOD_MINUTES = 15 * 60 + 15
