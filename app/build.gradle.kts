@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b337: G2 friction fields and gross-preserving paper close release.
+        // b338: G2 native teacher-cost friction adapter and charges-only backfill.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 337
-        versionName = "2.5.6"
+        versionCode = 338
+        versionName = "2.5.7"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

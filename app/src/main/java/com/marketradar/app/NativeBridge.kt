@@ -1357,6 +1357,33 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    @JavascriptInterface
+    fun computeLiveFriction(tradeJson: String): String {
+        return try {
+            val py = Python.getInstance()
+            val brain = py.getModule("brain")
+            runBlocking {
+                withTimeoutOrNull(PY_SCORE_TIMEOUT_MS) {
+                    brain.callAttr("compute_live_friction_bridge", tradeJson.ifBlank { "{}" }).toString()
+                }
+            } ?: JSONObject()
+                .put("friction_cost", JSONObject.NULL)
+                .put("friction_reason", "PYTHON_TIMEOUT")
+                .put("friction_version", "G2_v1")
+                .put("net_pnl", JSONObject.NULL)
+                .put("net_won", JSONObject.NULL)
+                .toString()
+        } catch (e: Exception) {
+            JSONObject()
+                .put("friction_cost", JSONObject.NULL)
+                .put("friction_reason", "BRIDGE_EXCEPTION:${e.message ?: e.javaClass.simpleName}")
+                .put("friction_version", "G2_v1")
+                .put("net_pnl", JSONObject.NULL)
+                .put("net_won", JSONObject.NULL)
+                .toString()
+        }
+    }
+
     private fun missingNumericFields(obj: JSONObject, fields: List<Pair<String, String>>): List<String> {
         return fields.mapNotNull { (key, label) ->
             val value = obj.optDouble(key, Double.NaN)

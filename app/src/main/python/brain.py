@@ -10464,6 +10464,196 @@ def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
     }
 
 
+def _trade_to_teacher_candidate(trade):
+    entry_snapshot = trade.get('entry_snapshot')
+    if isinstance(entry_snapshot, str):
+        try:
+            entry_snapshot = json.loads(entry_snapshot)
+        except Exception:
+            entry_snapshot = {}
+    if not isinstance(entry_snapshot, dict):
+        entry_snapshot = {}
+    cand = {
+        'type': str(trade.get('strategy_type') or trade.get('strategyType') or '').upper(),
+        'index': str(trade.get('index_key') or trade.get('indexKey') or 'BNF').upper(),
+        'expiry': trade.get('expiry'),
+        'sellStrike': trade.get('sell_strike') if trade.get('sell_strike') is not None else trade.get('sellStrike'),
+        'sellType': trade.get('sell_type') if trade.get('sell_type') is not None else trade.get('sellType'),
+        'buyStrike': trade.get('buy_strike') if trade.get('buy_strike') is not None else trade.get('buyStrike'),
+        'buyType': trade.get('buy_type') if trade.get('buy_type') is not None else trade.get('buyType'),
+        'sellStrike2': trade.get('sell_strike2') if trade.get('sell_strike2') is not None else trade.get('sellStrike2'),
+        'sellType2': trade.get('sell_type2') if trade.get('sell_type2') is not None else trade.get('sellType2'),
+        'buyStrike2': trade.get('buy_strike2') if trade.get('buy_strike2') is not None else trade.get('buyStrike2'),
+        'buyType2': trade.get('buy_type2') if trade.get('buy_type2') is not None else trade.get('buyType2'),
+        'netPremium': trade.get('entry_premium') if trade.get('entry_premium') is not None else trade.get('entryPremium'),
+        'lotSize': (
+            trade.get('lot_size')
+            if trade.get('lot_size') is not None
+            else (trade.get('lotSize') if trade.get('lotSize') is not None else entry_snapshot.get('lot_size'))
+        ),
+    }
+    return cand
+
+
+def _trade_leg_entry_prices(trade):
+    return {
+        'sell': trade.get('sell_ltp') if trade.get('sell_ltp') is not None else trade.get('sellLTP'),
+        'buy': trade.get('buy_ltp') if trade.get('buy_ltp') is not None else trade.get('buyLTP'),
+        'sell2': trade.get('sell_ltp2') if trade.get('sell_ltp2') is not None else trade.get('sellLTP2'),
+        'buy2': trade.get('buy_ltp2') if trade.get('buy_ltp2') is not None else trade.get('buyLTP2'),
+    }
+
+
+def _teacher_snap_from_trade_entry(trade, cand):
+    index_key = cand.get('index') or 'BNF'
+    chain_key = 'nfChain' if index_key == 'NF' else 'bnfChain'
+    prices = _trade_leg_entry_prices(trade)
+    strikes = {}
+    for label, strike, option_type in _teacher_candidate_leg_specs(cand):
+        if strike is None or not option_type:
+            continue
+        px = _float_or_none(prices.get(label))
+        if px is None:
+            continue
+        strike_key = str(int(float(strike))) if _float_or_none(strike) is not None else str(strike)
+        opt_key = _normalize_option_type(option_type)
+        strikes.setdefault(strike_key, {})[opt_key] = {
+            'ltp': px,
+            'bid': px,
+            'ask': px,
+        }
+    return {
+        'poll_ts': trade.get('entry_date') or trade.get('entryDate') or trade.get('created_at') or '',
+        'context_json': json.dumps({chain_key: {'strikes': strikes}}),
+    }
+
+
+def _teacher_point_from_trade_close(trade, cand):
+    quote_map = trade.get('close_leg_quotes')
+    if not isinstance(quote_map, dict):
+        quote_map = trade.get('live_leg_quotes')
+    if not isinstance(quote_map, dict):
+        quote_map = {}
+    point = {'poll_ts': trade.get('exit_date') or trade.get('exitDate') or trade.get('close_ts') or ''}
+    missing = []
+    for label, _, _ in _teacher_candidate_leg_specs(cand):
+        raw = quote_map.get(label)
+        if not isinstance(raw, dict):
+            raw = {}
+        ltp = _float_or_none(raw.get('ltp'))
+        bid = _float_or_none(raw.get('bid'))
+        ask = _float_or_none(raw.get('ask'))
+        if ltp is None:
+            if bid is not None and ask is not None:
+                ltp = (bid + ask) / 2.0
+            elif bid is not None:
+                ltp = bid
+            elif ask is not None:
+                ltp = ask
+        if ltp is None:
+            missing.append(label)
+            continue
+        point[label] = ltp
+        point[f'{label}_bid'] = bid
+        point[f'{label}_ask'] = ask
+    return point, missing
+
+
+def compute_live_friction(trade, quotes=None, config=None, charges_only=False):
+    """Compute paper-close friction by reusing the teacher round-trip cost model.
+
+    This is an additive live/backfill adapter. It does not alter teacher labels
+    or ranking, and it does not implement a second charge formula.
+    """
+    if not isinstance(trade, dict):
+        return {
+            'friction_cost': None,
+            'friction_reason': 'BAD_TRADE_PAYLOAD',
+            'friction_version': 'G2_v1',
+        }
+    payload = dict(trade)
+    if isinstance(quotes, dict):
+        payload['close_leg_quotes'] = quotes
+    cand = _trade_to_teacher_candidate(payload)
+    lot_size = _float_or_none(cand.get('lotSize'))
+    leg_specs = _teacher_candidate_leg_specs(cand)
+    if lot_size is None or lot_size <= 0 or not leg_specs:
+        return {
+            'friction_cost': None,
+            'friction_reason': 'MISSING_LOT_SIZE_OR_LEGS',
+            'friction_version': 'G2_v1',
+        }
+    snap = _teacher_snap_from_trade_entry(payload, cand)
+    entry_point = _entry_snapshot_point(snap, cand)
+    if not entry_point:
+        return {
+            'friction_cost': None,
+            'friction_reason': 'MISSING_ENTRY_LEG_PRICES',
+            'friction_version': 'G2_v1',
+            'lot_size': lot_size,
+            'leg_count': len(leg_specs),
+        }
+    point, missing_close = _teacher_point_from_trade_close(payload, cand)
+    if missing_close:
+        return {
+            'friction_cost': None,
+            'friction_reason': 'MISSING_CLOSE_LEG_QUOTES',
+            'missing_close_labels': missing_close,
+            'friction_version': 'G2_v1',
+            'lot_size': lot_size,
+            'leg_count': len(leg_specs),
+        }
+    cfg = _teacher_default_config()
+    if isinstance(config, dict):
+        cfg.update(config)
+    if charges_only:
+        cfg['bid_ask_slippage_fallback_points'] = 0.0
+        for label, _, _ in leg_specs:
+            px = _float_or_none(point.get(label))
+            point[f'{label}_bid'] = px
+            point[f'{label}_ask'] = px
+    trade_dt = _parse_iso_ts(payload.get('entry_date') or payload.get('entryDate') or payload.get('created_at') or '')
+    breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, cfg)
+    basis = 'UNKNOWN_HISTORICAL' if charges_only else (
+        'LIVE_BID_ASK' if not breakdown.get('missing_spread_labels') else 'FALLBACK'
+    )
+    return {
+        'friction_cost': breakdown.get('total'),
+        'friction_version': 'G2_charges_only_backfill' if charges_only else 'G2_v1',
+        'friction_reason': None,
+        'slippage_basis': basis,
+        'rates_version': cfg.get('config_version', TEACHER_CONFIG_VERSION),
+        'lot_size': lot_size,
+        'leg_count': len(leg_specs),
+        'breakdown': breakdown,
+    }
+
+
+def compute_live_friction_bridge(trade_json):
+    try:
+        trade = json.loads(trade_json or '{}')
+        result = compute_live_friction(trade)
+        gross = _float_or_none(trade.get('current_pnl'))
+        if gross is None:
+            gross = _float_or_none(trade.get('actual_pnl'))
+        friction_cost = _float_or_none(result.get('friction_cost'))
+        if gross is not None and friction_cost is not None:
+            result['net_pnl'] = round(gross - friction_cost, 2)
+            result['net_won'] = result['net_pnl'] > 0
+        else:
+            result['net_pnl'] = None
+            result['net_won'] = None
+        return json.dumps(result, default=str)
+    except Exception as exc:
+        return json.dumps({
+            'friction_cost': None,
+            'friction_reason': f'BRIDGE_EXCEPTION:{exc}',
+            'friction_version': 'G2_v1',
+            'net_pnl': None,
+            'net_won': None,
+        })
+
+
 def _build_candidate_path(chain_rows, snap, cand):
     index_key = cand.get('index') or cand.get('index_key') or 'BNF'
     expiry = str(cand.get('expiry') or '').strip()

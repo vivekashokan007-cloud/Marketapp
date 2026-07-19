@@ -556,6 +556,7 @@ class MainActivity : AppCompatActivity() {
                     getMLBrainSnapshots: function(limit) { return AndroidBridge.getMLBrainSnapshots(limit || 200); },
                     getTeacherTruthConfig: function() { return AndroidBridge.getTeacherTruthConfig(); },
                     getExecutionInfraStatus: function() { return AndroidBridge.getExecutionInfraStatus(); },
+                    computeLiveFriction: function(j) { return AndroidBridge.computeLiveFriction(j || "{}"); },
                     getOrderProxyUrl: function() { return AndroidBridge.getOrderProxyUrl(); },
                     getNotificationTransportMode: function() { return AndroidBridge.getNotificationTransportMode(); },
                     getStage2AGuardMode: function() { return AndroidBridge.getStage2AGuardMode(); },
