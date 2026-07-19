@@ -1651,6 +1651,28 @@ object SupabaseClient {
         }
     }
 
+    fun insertSandboxOrder(row: JSONObject): Boolean {
+        val request = getBaseRequest("sandbox_orders")
+            .header("Prefer", "return=minimal")
+            .post(row.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    true
+                } else {
+                    val err = response.body?.string() ?: ""
+                    Log.e(TAG, "Sandbox order insert failed: ${response.code} ${response.message} | $err")
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Sandbox order insert exception: ${e.message}")
+            false
+        }
+    }
+
     fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)

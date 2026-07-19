@@ -44,6 +44,7 @@ class NativeBridge(private val context: Context) {
         private const val PY_VALIDATE_TIMEOUT_MS = 8_000L
         private const val PY_SCORE_TIMEOUT_MS = 2_500L
         private const val PREF_SANDBOX_ENABLED = "execution_sandbox_enabled"
+        private const val PREF_SANDBOX_TOKEN = "SANDBOX_TOKEN"
         private const val PREF_ORDER_PROXY_URL = "order_proxy_url"
         private const val PREF_APPROVED_BRANCH_PROPOSALS = "approved_branch_proposals"
         private const val PREF_APPROVED_BRANCH_PROPOSALS_SYNC_MS = "approved_branch_proposals_sync_ms"
@@ -1238,6 +1239,32 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun setSandboxToken(token: String): Boolean {
+        return prefs.edit().putString(PREF_SANDBOX_TOKEN, token.trim()).commit()
+    }
+
+    @JavascriptInterface
+    fun getSandboxTokenReady(): Boolean {
+        return !(prefs.getString(PREF_SANDBOX_TOKEN, "") ?: "").isBlank()
+    }
+
+    @JavascriptInterface
+    fun runSandboxOrderDebugAction(payloadJson: String): String {
+        return try {
+            val payload = if (payloadJson.isBlank()) JSONObject() else JSONObject(payloadJson)
+            val token = prefs.getString(PREF_SANDBOX_TOKEN, "") ?: ""
+            OrderExecutionService.runDebugAction(payload, token).toString()
+        } catch (e: Exception) {
+            JSONObject()
+                .put("ok", false)
+                .put("mode", OrderExecutionService.EXECUTION_MODE)
+                .put("error_code", "BRIDGE_EXCEPTION")
+                .put("error_message", e.message ?: e.javaClass.simpleName)
+                .toString()
+        }
+    }
+
+    @JavascriptInterface
     fun setOrderProxyUrl(url: String): Boolean {
         val cleaned = url.trim()
         val ok = prefs.edit().putString(PREF_ORDER_PROXY_URL, cleaned).commit()
@@ -1258,6 +1285,7 @@ class NativeBridge(private val context: Context) {
             val keyStats = extractInstrumentKeyStats(brainResult)
 
             val tokenReady = !(prefs.getString("auth_token", "") ?: "").isBlank()
+            val sandboxTokenReady = !(prefs.getString(PREF_SANDBOX_TOKEN, "") ?: "").isBlank()
             val sandboxEnabled = prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
             val proxyUrl = (prefs.getString(PREF_ORDER_PROXY_URL, "") ?: "").trim()
             val proxyConfigured = proxyUrl.startsWith("https://")
@@ -1270,8 +1298,9 @@ class NativeBridge(private val context: Context) {
             out.put("proxyConfigured", proxyConfigured)
             out.put("proxyUrl", proxyUrl)
             out.put("tokenReady", tokenReady)
+            out.put("sandboxTokenReady", sandboxTokenReady)
             out.put("paperReady", true)
-            out.put("sandboxReady", tokenReady && sandboxEnabled)
+            out.put("sandboxReady", sandboxTokenReady && sandboxEnabled)
             out.put("liveReady", tokenReady && proxyConfigured)
             out.toString()
         } catch (e: Exception) {
