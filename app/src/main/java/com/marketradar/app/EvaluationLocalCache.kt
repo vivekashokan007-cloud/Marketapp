@@ -221,6 +221,61 @@ object EvaluationLocalCache {
     }
 
     @Synchronized
+    fun readRecentBrainSnapshots(
+        context: Context,
+        sessionDate: String,
+        limit: Int,
+        maxBytes: Long
+    ): JSONArray {
+        val out = JSONArray()
+        val safeLimit = limit.coerceAtLeast(1)
+        val safeMaxBytes = maxBytes.coerceAtLeast(1024L)
+        val cappedRows = linkedMapOf<String, String>()
+        var cappedBytes = 0L
+
+        try {
+            pruneExpiredCacheFiles(context)
+            val file = brainSnapshotFile(context, sessionDate)
+            if (!file.exists()) return out
+
+            file.forEachLine { line ->
+                val trimmed = line.trim()
+                if (trimmed.isBlank()) return@forEachLine
+                val row = try { JSONObject(trimmed) } catch (_: Exception) { return@forEachLine }
+                val key = snapshotKey(row)
+                val json = row.toString()
+                val previous = cappedRows.remove(key)
+                if (previous != null) {
+                    cappedBytes -= rowBytes(previous)
+                    if (cappedBytes < 0L) cappedBytes = 0L
+                }
+                cappedRows[key] = json
+                cappedBytes += rowBytes(json)
+
+                while (cappedRows.size > safeLimit || (cappedRows.size > 1 && cappedBytes > safeMaxBytes)) {
+                    val oldest = cappedRows.entries.firstOrNull() ?: break
+                    cappedRows.remove(oldest.key)
+                    cappedBytes -= rowBytes(oldest.value)
+                    if (cappedBytes < 0L) cappedBytes = 0L
+                }
+            }
+
+            cappedRows.values.toList().asReversed().forEach { json ->
+                val row = try { JSONObject(json) } catch (_: Exception) { return@forEach }
+                out.put(row)
+            }
+            LogBuffer.add(
+                'I',
+                TAG,
+                "LOCAL_SNAPSHOT_READ_RECENT: date=$sessionDate rows=${out.length()} bytes=$cappedBytes fileBytes=${file.length()} limit=$safeLimit byteCap=$safeMaxBytes"
+            )
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_READ_RECENT_FAIL: date=$sessionDate error=${e.message}")
+        }
+        return out
+    }
+
+    @Synchronized
     fun appendBuild3AbDecision(context: Context, sessionDate: String, row: JSONObject): Boolean {
         return try {
             pruneExpiredCacheFiles(context)

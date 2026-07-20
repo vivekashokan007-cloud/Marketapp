@@ -1,0 +1,17 @@
+{
+  "friction_cost_non_null": 0,
+  "friction_version_counts": {
+    "G2_charges_only_backfill": 167
+  },
+  "gross_label_mismatch_count": 0,
+  "gross_label_mismatch_sample": [],
+  "net_pnl_non_null": 0,
+  "net_won_non_null": 0,
+  "post_label_csv": "reports/g2_post_backfill_labels_20260719.csv",
+  "post_label_csv_sha256": "8431246afddfa6517606fc111f22568c72c3fe239b1b3d1f34525138fbf4c148",
+  "reason_counts": {
+    "MISSING_CLOSE_LEG_QUOTES": 143,
+    "NULL_EXIT_PREMIUM": 24
+  },
+  "rows": 167
+}

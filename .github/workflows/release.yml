@@ -43,6 +43,9 @@ jobs:
           base64 -d keystore.base64 > keystore.jks
           rm keystore.base64
 
+      - name: Unit tests (safety guards)
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
       - name: Build Signed APK
         run: ./gradlew :app:assembleRelease --stacktrace
         env:

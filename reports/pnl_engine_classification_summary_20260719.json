@@ -1,0 +1,299 @@
+{
+  "apply_gate": {
+    "actual_divergent": 29,
+    "actual_incomplete": 55,
+    "actual_reconciled": 60,
+    "actual_unknown": 23,
+    "divergent_pass": true,
+    "divergent_tolerance": 3,
+    "expected_divergent": 29,
+    "expected_incomplete": 55,
+    "expected_reconciled": 60,
+    "expected_unknown": 23,
+    "incomplete_pass": true,
+    "pass": true,
+    "reconciled_pass": true,
+    "reconciled_tolerance": 3,
+    "unknown_pass": true,
+    "unknown_tolerance": 3
+  },
+  "class_summary": {
+    "PNL_BASIS_DIVERGENT": {
+      "avg_pnl": -251.31,
+      "brain_rows": 0,
+      "date_range": [
+        "2026-05-19",
+        "2026-07-17"
+      ],
+      "manual_rows": 29,
+      "per_strategy": {
+        "BEAR_CALL": {
+          "avg_pnl": -326.58,
+          "rows": 12,
+          "total_pnl": -3919.0,
+          "win_rate": 0.333333
+        },
+        "BEAR_PUT": {
+          "avg_pnl": 67.57,
+          "rows": 7,
+          "total_pnl": 473.0,
+          "win_rate": 0.571429
+        },
+        "BULL_PUT": {
+          "avg_pnl": 49.0,
+          "rows": 1,
+          "total_pnl": 49.0,
+          "win_rate": 1.0
+        },
+        "IRON_CONDOR": {
+          "avg_pnl": -432.33,
+          "rows": 9,
+          "total_pnl": -3891.0,
+          "win_rate": 0.444444
+        }
+      },
+      "rows": 29,
+      "total_pnl": -7288.0,
+      "win_rate": 0.448276
+    },
+    "RECONCILED": {
+      "avg_pnl": 1335.05,
+      "brain_rows": 0,
+      "date_range": [
+        "2026-03-30",
+        "2026-06-17"
+      ],
+      "manual_rows": 60,
+      "per_strategy": {
+        "BEAR_CALL": {
+          "avg_pnl": 293.15,
+          "rows": 27,
+          "total_pnl": 7915.0,
+          "win_rate": 0.481481
+        },
+        "BEAR_PUT": {
+          "avg_pnl": 289.33,
+          "rows": 3,
+          "total_pnl": 868.0,
+          "win_rate": 0.333333
+        },
+        "BULL_CALL": {
+          "avg_pnl": 12292.33,
+          "rows": 3,
+          "total_pnl": 36877.0,
+          "win_rate": 1.0
+        },
+        "BULL_PUT": {
+          "avg_pnl": 44.43,
+          "rows": 7,
+          "total_pnl": 311.0,
+          "win_rate": 0.428571
+        },
+        "IRON_BUTTERFLY": {
+          "avg_pnl": 8708.67,
+          "rows": 3,
+          "total_pnl": 26126.0,
+          "win_rate": 1.0
+        },
+        "IRON_CONDOR": {
+          "avg_pnl": 470.94,
+          "rows": 17,
+          "total_pnl": 8006.0,
+          "win_rate": 0.529412
+        }
+      },
+      "rows": 60,
+      "total_pnl": 80103.0,
+      "win_rate": 0.533333
+    },
+    "UNKNOWN": {
+      "avg_pnl": -501.7,
+      "brain_rows": 0,
+      "date_range": [
+        "2026-03-27",
+        "2026-07-17"
+      ],
+      "manual_rows": 23,
+      "per_strategy": {
+        "BEAR_CALL": {
+          "avg_pnl": -369.0,
+          "rows": 5,
+          "total_pnl": -1845.0,
+          "win_rate": 0.0
+        },
+        "BEAR_PUT": {
+          "avg_pnl": -148.75,
+          "rows": 4,
+          "total_pnl": -595.0,
+          "win_rate": 0.0
+        },
+        "BULL_PUT": {
+          "avg_pnl": -1403.8,
+          "rows": 5,
+          "total_pnl": -7019.0,
+          "win_rate": 0.0
+        },
+        "IRON_BUTTERFLY": {
+          "avg_pnl": 0.0,
+          "rows": 2,
+          "total_pnl": 0.0,
+          "win_rate": 0.0
+        },
+        "IRON_CONDOR": {
+          "avg_pnl": -297.14,
+          "rows": 7,
+          "total_pnl": -2080.0,
+          "win_rate": 0.0
+        }
+      },
+      "rows": 23,
+      "total_pnl": -11539.0,
+      "win_rate": 0.0
+    },
+    "UNTRUSTED_INCOMPLETE_STRUCTURE": {
+      "avg_pnl": 5803.49,
+      "brain_rows": 0,
+      "date_range": [
+        "2026-03-30",
+        "2026-04-16"
+      ],
+      "manual_rows": 55,
+      "per_strategy": {
+        "IRON_BUTTERFLY": {
+          "avg_pnl": 9313.83,
+          "rows": 23,
+          "total_pnl": 214218.0,
+          "win_rate": 1.0
+        },
+        "IRON_CONDOR": {
+          "avg_pnl": 3280.44,
+          "rows": 32,
+          "total_pnl": 104974.0,
+          "win_rate": 0.90625
+        }
+      },
+      "rows": 55,
+      "total_pnl": 319192.0,
+      "win_rate": 0.945455
+    }
+  },
+  "classification_rule": "REV2 god-mode audit: structural completeness first; then signed premium/PnL reconciliation using NF=65 and BNF=30; divergent rows are neutral entry-basis mismatch, not assumed broken.",
+  "credential_mode": "anon_dry_run",
+  "csv": "reports/pnl_engine_classification_20260719.csv",
+  "csv_sha256": "f84667baa8bd31aba8aa84a1e2d0f791ad7620e5402e8d9ae498f999955c5b13",
+  "debit_strategies_negative_sign": [
+    "BEAR_PUT",
+    "BULL_CALL"
+  ],
+  "lot_sizes": {
+    "BNF": 30.0,
+    "NF": 65.0
+  },
+  "mode": "dry_run",
+  "recon_tolerance_rupees": 5.0,
+  "reconciled_mid_priced_baseline_gross_ex_spread_and_charges": {
+    "avg_pnl": 1335.05,
+    "brain_rows": 0,
+    "date_range": [
+      "2026-03-30",
+      "2026-06-17"
+    ],
+    "manual_rows": 60,
+    "per_strategy": {
+      "BEAR_CALL": {
+        "avg_pnl": 293.15,
+        "rows": 27,
+        "total_pnl": 7915.0,
+        "win_rate": 0.481481
+      },
+      "BEAR_PUT": {
+        "avg_pnl": 289.33,
+        "rows": 3,
+        "total_pnl": 868.0,
+        "win_rate": 0.333333
+      },
+      "BULL_CALL": {
+        "avg_pnl": 12292.33,
+        "rows": 3,
+        "total_pnl": 36877.0,
+        "win_rate": 1.0
+      },
+      "BULL_PUT": {
+        "avg_pnl": 44.43,
+        "rows": 7,
+        "total_pnl": 311.0,
+        "win_rate": 0.428571
+      },
+      "IRON_BUTTERFLY": {
+        "avg_pnl": 8708.67,
+        "rows": 3,
+        "total_pnl": 26126.0,
+        "win_rate": 1.0
+      },
+      "IRON_CONDOR": {
+        "avg_pnl": 470.94,
+        "rows": 17,
+        "total_pnl": 8006.0,
+        "win_rate": 0.529412
+      }
+    },
+    "rows": 60,
+    "total_pnl": 80103.0,
+    "win_rate": 0.533333
+  },
+  "reconciled_plus_basis_divergent_baseline_gross_ex_charges": {
+    "avg_pnl": 818.15,
+    "brain_rows": 0,
+    "date_range": [
+      "2026-03-30",
+      "2026-07-17"
+    ],
+    "manual_rows": 89,
+    "per_strategy": {
+      "BEAR_CALL": {
+        "avg_pnl": 102.46,
+        "rows": 39,
+        "total_pnl": 3996.0,
+        "win_rate": 0.435897
+      },
+      "BEAR_PUT": {
+        "avg_pnl": 134.1,
+        "rows": 10,
+        "total_pnl": 1341.0,
+        "win_rate": 0.5
+      },
+      "BULL_CALL": {
+        "avg_pnl": 12292.33,
+        "rows": 3,
+        "total_pnl": 36877.0,
+        "win_rate": 1.0
+      },
+      "BULL_PUT": {
+        "avg_pnl": 45.0,
+        "rows": 8,
+        "total_pnl": 360.0,
+        "win_rate": 0.5
+      },
+      "IRON_BUTTERFLY": {
+        "avg_pnl": 8708.67,
+        "rows": 3,
+        "total_pnl": 26126.0,
+        "win_rate": 1.0
+      },
+      "IRON_CONDOR": {
+        "avg_pnl": 158.27,
+        "rows": 26,
+        "total_pnl": 4115.0,
+        "win_rate": 0.5
+      }
+    },
+    "rows": 89,
+    "total_pnl": 72815.0,
+    "win_rate": 0.505618
+  },
+  "rows": 167,
+  "structure_incomplete_counts": {
+    "IRON_BUTTERFLY": 23,
+    "IRON_CONDOR": 32
+  }
+}

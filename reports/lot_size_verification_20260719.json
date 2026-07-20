@@ -1,0 +1,52 @@
+{
+  "checked_at_utc": "2026-07-19",
+  "source": {
+    "name": "Upstox complete instruments master",
+    "url": "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
+    "http_last_modified": "Sat, 18 Jul 2026 23:55:35 GMT"
+  },
+  "method": "Parsed NSE_FO CE/PE option contracts where expiry is within 90 days of 2026-07-19 and name is NIFTY or BANKNIFTY.",
+  "result": {
+    "NIFTY": {
+      "near_active_option_rows": 1334,
+      "lot_size_counts": {
+        "65": 1334
+      },
+      "sample": [
+        {
+          "expiry": "2026-07-21",
+          "trading_symbol": "NIFTY 21600 CE 21 JUL 26",
+          "lot_size": 65,
+          "instrument_key": "NSE_FO|57240"
+        },
+        {
+          "expiry": "2026-07-21",
+          "trading_symbol": "NIFTY 21600 PE 21 JUL 26",
+          "lot_size": 65,
+          "instrument_key": "NSE_FO|57241"
+        }
+      ]
+    },
+    "BANKNIFTY": {
+      "near_active_option_rows": 970,
+      "lot_size_counts": {
+        "30": 970
+      },
+      "sample": [
+        {
+          "expiry": "2026-07-28",
+          "trading_symbol": "BANKNIFTY 46000 CE 28 JUL 26",
+          "lot_size": 30,
+          "instrument_key": "NSE_FO|61584"
+        },
+        {
+          "expiry": "2026-07-28",
+          "trading_symbol": "BANKNIFTY 46000 PE 28 JUL 26",
+          "lot_size": 30,
+          "instrument_key": "NSE_FO|61585"
+        }
+      ]
+    }
+  },
+  "decision": "Do not change live lot-size constants from NF=65 and BNF=30 to NF=75 and BNF=35 without renewed approval. The current primary instrument-master evidence contradicts the directive's proposed values."
+}

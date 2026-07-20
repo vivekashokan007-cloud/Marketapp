@@ -55,6 +55,8 @@ class NativeBridge(private val context: Context) {
         private const val PREF_STAGE2A_MODE = "stage2a_guard_mode"
         private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
+        private const val ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 30
+        private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 8L * 1024L * 1024L
         private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val teacherResearchRebuildInFlight = AtomicBoolean(false)
         @Volatile private var teacherResearchLastRebuildKey = ""
@@ -2337,12 +2339,18 @@ class NativeBridge(private val context: Context) {
         var targetDate = "unknown"
         return try {
             targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
-            val rows = EvaluationLocalCache.readBrainSnapshots(context, targetDate)
+            val maxRows = limit.coerceIn(1, ML_BRAIN_SNAPSHOT_JS_MAX_ROWS)
+            val rows = EvaluationLocalCache.readRecentBrainSnapshots(
+                context,
+                targetDate,
+                maxRows,
+                ML_BRAIN_SNAPSHOT_JS_MAX_BYTES
+            )
             val capped = JSONArray()
-            val maxRows = limit.coerceIn(1, 200)
             for (i in 0 until minOf(rows.length(), maxRows)) {
-                rows.optJSONObject(i)?.let(capped::put)
+                rows.optJSONObject(i)?.let { capped.put(compactTeacherResearchSnapshot(it)) }
             }
+            LogBuffer.add('I', TAG, "ML_BRAIN_SNAPSHOTS_BRIDGE: date=$targetDate rows=${capped.length()} requested=$limit maxRows=$maxRows")
             capped.toString()
         } catch (e: Throwable) {
             logTeacherResearchThrowable("getMLBrainSnapshots", e)

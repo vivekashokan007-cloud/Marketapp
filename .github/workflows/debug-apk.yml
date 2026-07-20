@@ -148,6 +148,9 @@ jobs:
           print(json.dumps(summary, sort_keys=True))
           PY
 
+      - name: Unit tests (safety guards)
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
