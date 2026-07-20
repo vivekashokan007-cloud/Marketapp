@@ -55,8 +55,8 @@ class NativeBridge(private val context: Context) {
         private const val PREF_STAGE2A_MODE = "stage2a_guard_mode"
         private const val ORACLE_BASE_URL = "https://marketradar-oracle.online"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
-        private const val ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 30
-        private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 8L * 1024L * 1024L
+        private const val ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 5
+        private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 2L * 1024L * 1024L
         private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val teacherResearchRebuildInFlight = AtomicBoolean(false)
         @Volatile private var teacherResearchLastRebuildKey = ""

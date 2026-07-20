@@ -5,6 +5,7 @@ import com.marketradar.app.util.LogBuffer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.RandomAccessFile
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
@@ -238,10 +239,10 @@ object EvaluationLocalCache {
             val file = brainSnapshotFile(context, sessionDate)
             if (!file.exists()) return out
 
-            file.forEachLine { line ->
+            readRecentLinesFromEnd(file, safeLimit, safeMaxBytes).forEach { line ->
                 val trimmed = line.trim()
-                if (trimmed.isBlank()) return@forEachLine
-                val row = try { JSONObject(trimmed) } catch (_: Exception) { return@forEachLine }
+                if (trimmed.isBlank()) return@forEach
+                val row = try { JSONObject(trimmed) } catch (_: Exception) { return@forEach }
                 val key = snapshotKey(row)
                 val json = row.toString()
                 val previous = cappedRows.remove(key)
@@ -273,6 +274,39 @@ object EvaluationLocalCache {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_READ_RECENT_FAIL: date=$sessionDate error=${e.message}")
         }
         return out
+    }
+
+    private fun readRecentLinesFromEnd(file: File, limit: Int, maxBytes: Long): List<String> {
+        val lines = ArrayList<String>()
+        if (!file.exists() || file.length() <= 0L) return lines
+
+        RandomAccessFile(file, "r").use { raf ->
+            var pointer = raf.length() - 1
+            val line = StringBuilder()
+            var collectedBytes = 0L
+
+            while (pointer >= 0 && lines.size < limit && (lines.isEmpty() || collectedBytes < maxBytes)) {
+                raf.seek(pointer)
+                val ch = raf.read().toChar()
+                if (ch == '\n') {
+                    if (line.isNotEmpty()) {
+                        val value = line.reverse().toString()
+                        lines.add(value)
+                        collectedBytes += rowBytes(value)
+                        line.clear()
+                    }
+                } else {
+                    line.append(ch)
+                }
+                pointer--
+            }
+
+            if (line.isNotEmpty() && lines.size < limit && (lines.isEmpty() || collectedBytes < maxBytes)) {
+                lines.add(line.reverse().toString())
+            }
+        }
+
+        return lines
     }
 
     @Synchronized
