@@ -333,7 +333,15 @@ class MarketWatchService : Service() {
             return START_NOT_STICKY
         }
 
-        startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
+        try {
+            startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
+        } catch (t: Throwable) {
+            Log.e(TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            LogBuffer.add('E', TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            releaseLease()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
         PositionTickService.ensureRunning(this)
         maintainSessionWakeLock()

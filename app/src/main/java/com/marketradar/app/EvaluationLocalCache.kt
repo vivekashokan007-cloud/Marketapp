@@ -111,10 +111,17 @@ object EvaluationLocalCache {
             if (file.exists()) file.writeText("")
             return
         }
-        val content = buildString(rows.size * 256) {
-            rows.values.forEach { append(it).append('\n') }
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        tmp.bufferedWriter(Charsets.UTF_8).use { writer ->
+            rows.values.forEach { row ->
+                writer.write(row)
+                writer.newLine()
+            }
         }
-        file.writeText(content)
+        if (!tmp.renameTo(file)) {
+            tmp.copyTo(file, overwrite = true)
+            tmp.delete()
+        }
     }
 
     private fun loadSnapshotState(file: File): SnapshotFileState {
@@ -188,7 +195,7 @@ object EvaluationLocalCache {
             }
             LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
             true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_APPEND_FAIL: date=$sessionDate error=${e.message}")
             false
         }

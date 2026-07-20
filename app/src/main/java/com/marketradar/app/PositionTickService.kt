@@ -37,6 +37,7 @@ class PositionTickService : Service() {
     private lateinit var prefs: SharedPreferences
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loopJob: Job? = null
+    private var foregroundReady = false
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -45,10 +46,18 @@ class PositionTickService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        startForeground(NOTIFICATION_ID, buildNotification())
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification())
+            foregroundReady = true
+        } catch (t: Throwable) {
+            Log.e(TAG, "POSITION_TICK_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            LogBuffer.add('E', TAG, "POSITION_TICK_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            stopSelf()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundReady) return START_NOT_STICKY
         if (loopJob?.isActive != true) {
             loopJob = serviceScope.launch { runLoop() }
         }
@@ -572,10 +581,15 @@ class PositionTickService : Service() {
             }
             if (open.length() == 0 || !marketSessionActiveNow()) return
             val intent = Intent(context.applicationContext, PositionTickService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.applicationContext.startForegroundService(intent)
-            } else {
-                context.applicationContext.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.applicationContext.startForegroundService(intent)
+                } else {
+                    context.applicationContext.startService(intent)
+                }
+            } catch (t: Throwable) {
+                Log.e(TAG, "POSITION_TICK_START_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+                LogBuffer.add('E', TAG, "POSITION_TICK_START_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
             }
         }
 
