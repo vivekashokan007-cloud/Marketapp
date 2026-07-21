@@ -10,6 +10,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -139,6 +142,19 @@ object SupabaseClient {
         return legacyDate == date
     }
 
+    private fun istSessionUtcWindow(date: String): UtcWindow? {
+        return try {
+            val sessionDate = LocalDate.parse(date, DateTimeFormatter.ISO_LOCAL_DATE)
+            val istZone = ZoneId.of("Asia/Kolkata")
+            UtcWindow(
+                startIso = sessionDate.atStartOfDay(istZone).toInstant().toString(),
+                endIso = sessionDate.plusDays(1).atStartOfDay(istZone).toInstant().toString()
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun postToFirstWorkingTableDetailed(
         tableNames: List<String>,
         body: String,
@@ -242,6 +258,11 @@ object SupabaseClient {
         val expiry: String,
         val strike: Double,
         val optionType: String
+    )
+
+    private data class UtcWindow(
+        val startIso: String,
+        val endIso: String
     )
 
     private fun postArrayToTable(table: String, body: JSONArray): Boolean {
@@ -845,6 +866,7 @@ object SupabaseClient {
     }
 
     fun fetchEvaluationChainCandles(date: String): ChainFeedResult {
+        val pollWindow = istSessionUtcWindow(date)
         val exactPreferred = fetchPagedArray(
             "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.asc"
         )
@@ -857,6 +879,24 @@ object SupabaseClient {
         )
         if (exactFallback.length() > 0) {
             return ChainFeedResult("chain_slices.exact", normalizeChainRows(exactFallback))
+        }
+
+        if (pollWindow != null) {
+            val windowPreferred = fetchPagedArray(
+                "ml_option_chain_snapshots?poll_ts=gte.${pollWindow.startIso}&poll_ts=lt.${pollWindow.endIso}&order=poll_ts.asc",
+                maxPages = EVALUATION_CHAIN_EXACT_MAX_PAGES
+            )
+            if (windowPreferred.length() > 0) {
+                return ChainFeedResult("ml_option_chain_snapshots.poll_window", normalizeChainRows(windowPreferred))
+            }
+
+            val windowFallback = fetchPagedArray(
+                "chain_slices?poll_ts=gte.${pollWindow.startIso}&poll_ts=lt.${pollWindow.endIso}&order=poll_ts.asc",
+                maxPages = EVALUATION_CHAIN_EXACT_MAX_PAGES
+            )
+            if (windowFallback.length() > 0) {
+                return ChainFeedResult("chain_slices.poll_window", normalizeChainRows(windowFallback))
+            }
         }
 
         val recentPreferred = reverseJsonArray(
@@ -905,7 +945,8 @@ object SupabaseClient {
             return ChainStreamResult("no_candidate_legs", 0, 0)
         }
 
-        val sources = listOf(
+        val pollWindow = istSessionUtcWindow(date)
+        val sources = mutableListOf(
             ChainSource(
                 "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.asc",
                 "ml_option_chain_snapshots.exact.filtered_stream",
@@ -917,20 +958,42 @@ object SupabaseClient {
                 "chain_slices.exact.filtered_stream",
                 null,
                 EVALUATION_CHAIN_EXACT_MAX_PAGES
-            ),
-            ChainSource(
-                "ml_option_chain_snapshots?select=*&order=poll_ts.desc",
-                "ml_option_chain_snapshots.filtered_recent.filtered_stream",
-                date,
-                EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
-                reverseOutput = true
-            ),
-            ChainSource(
-                "chain_slices?select=*&order=poll_ts.desc",
-                "chain_slices.filtered_recent.filtered_stream",
-                date,
-                EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
-                reverseOutput = true
+            )
+        )
+        if (pollWindow != null) {
+            sources.add(
+                ChainSource(
+                    "ml_option_chain_snapshots?poll_ts=gte.${pollWindow.startIso}&poll_ts=lt.${pollWindow.endIso}&order=poll_ts.asc",
+                    "ml_option_chain_snapshots.poll_window.filtered_stream",
+                    null,
+                    EVALUATION_CHAIN_EXACT_MAX_PAGES
+                )
+            )
+            sources.add(
+                ChainSource(
+                    "chain_slices?poll_ts=gte.${pollWindow.startIso}&poll_ts=lt.${pollWindow.endIso}&order=poll_ts.asc",
+                    "chain_slices.poll_window.filtered_stream",
+                    null,
+                    EVALUATION_CHAIN_EXACT_MAX_PAGES
+                )
+            )
+        }
+        sources.addAll(
+            listOf(
+                ChainSource(
+                    "ml_option_chain_snapshots?select=*&order=poll_ts.desc",
+                    "ml_option_chain_snapshots.filtered_recent.filtered_stream",
+                    date,
+                    EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
+                    reverseOutput = true
+                ),
+                ChainSource(
+                    "chain_slices?select=*&order=poll_ts.desc",
+                    "chain_slices.filtered_recent.filtered_stream",
+                    date,
+                    EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
+                    reverseOutput = true
+                )
             )
         )
 
