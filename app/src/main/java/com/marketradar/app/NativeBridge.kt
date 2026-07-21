@@ -57,6 +57,7 @@ class NativeBridge(private val context: Context) {
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 2 * 60 * 1000L
         private const val ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 5
         private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 2L * 1024L * 1024L
+        private const val ML_BRAIN_SNAPSHOT_JS_CACHE_TTL_MS = 60_000L
         private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val teacherResearchRebuildInFlight = AtomicBoolean(false)
         @Volatile private var teacherResearchLastRebuildKey = ""
@@ -74,6 +75,9 @@ class NativeBridge(private val context: Context) {
     private var exportSessionName = ""
     private var exportSessionMime = ""
     private var exportSessionBase64 = StringBuilder()
+    private var mlBrainSnapshotsBridgeCacheKey = ""
+    private var mlBrainSnapshotsBridgeCacheValue = "[]"
+    private var mlBrainSnapshotsBridgeCacheMs = 0L
 
     // Use applicationContext to guarantee same SharedPreferences instance as MarketWatchService
     private val prefs: SharedPreferences = context.applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
@@ -2334,12 +2338,27 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    @Synchronized
     @JavascriptInterface
     fun getMLBrainSnapshots(limit: Int): String {
         var targetDate = "unknown"
         return try {
             targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
             val maxRows = limit.coerceIn(1, ML_BRAIN_SNAPSHOT_JS_MAX_ROWS)
+            val file = File(MarketMLService.evaluationSnapshotsPath(context, targetDate))
+            val now = System.currentTimeMillis()
+            val cacheKey = listOf(
+                targetDate,
+                maxRows.toString(),
+                file.length().toString(),
+                file.lastModified().toString()
+            ).joinToString(":")
+            if (
+                cacheKey == mlBrainSnapshotsBridgeCacheKey &&
+                now - mlBrainSnapshotsBridgeCacheMs < ML_BRAIN_SNAPSHOT_JS_CACHE_TTL_MS
+            ) {
+                return mlBrainSnapshotsBridgeCacheValue
+            }
             val rows = EvaluationLocalCache.readRecentBrainSnapshots(
                 context,
                 targetDate,
@@ -2350,8 +2369,12 @@ class NativeBridge(private val context: Context) {
             for (i in 0 until minOf(rows.length(), maxRows)) {
                 rows.optJSONObject(i)?.let { capped.put(compactTeacherResearchSnapshot(it)) }
             }
-            LogBuffer.add('I', TAG, "ML_BRAIN_SNAPSHOTS_BRIDGE: date=$targetDate rows=${capped.length()} requested=$limit maxRows=$maxRows")
-            capped.toString()
+            val payload = capped.toString()
+            mlBrainSnapshotsBridgeCacheKey = cacheKey
+            mlBrainSnapshotsBridgeCacheValue = payload
+            mlBrainSnapshotsBridgeCacheMs = now
+            LogBuffer.add('I', TAG, "ML_BRAIN_SNAPSHOTS_BRIDGE: date=$targetDate rows=${capped.length()} requested=$limit maxRows=$maxRows payloadBytes=${payload.toByteArray(Charsets.UTF_8).size}")
+            payload
         } catch (e: Throwable) {
             logTeacherResearchThrowable("getMLBrainSnapshots", e)
             "[]"
