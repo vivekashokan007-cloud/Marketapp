@@ -3,7 +3,7 @@
     "actual_divergent": 29,
     "actual_incomplete": 55,
     "actual_reconciled": 60,
-    "actual_unknown": 23,
+    "actual_unknown": 26,
     "divergent_pass": true,
     "divergent_tolerance": 3,
     "expected_divergent": 29,
@@ -107,13 +107,13 @@
       "win_rate": 0.533333
     },
     "UNKNOWN": {
-      "avg_pnl": -501.7,
+      "avg_pnl": -443.81,
       "brain_rows": 0,
       "date_range": [
         "2026-03-27",
-        "2026-07-17"
+        "2026-07-20"
       ],
-      "manual_rows": 23,
+      "manual_rows": 26,
       "per_strategy": {
         "BEAR_CALL": {
           "avg_pnl": -369.0,
@@ -122,8 +122,8 @@
           "win_rate": 0.0
         },
         "BEAR_PUT": {
-          "avg_pnl": -148.75,
-          "rows": 4,
+          "avg_pnl": -85.0,
+          "rows": 7,
           "total_pnl": -595.0,
           "win_rate": 0.0
         },
@@ -146,7 +146,7 @@
           "win_rate": 0.0
         }
       },
-      "rows": 23,
+      "rows": 26,
       "total_pnl": -11539.0,
       "win_rate": 0.0
     },
@@ -180,7 +180,7 @@
   "classification_rule": "REV2 god-mode audit: structural completeness first; then signed premium/PnL reconciliation using NF=65 and BNF=30; divergent rows are neutral entry-basis mismatch, not assumed broken.",
   "credential_mode": "anon_dry_run",
   "csv": "reports/pnl_engine_classification_20260719.csv",
-  "csv_sha256": "f84667baa8bd31aba8aa84a1e2d0f791ad7620e5402e8d9ae498f999955c5b13",
+  "csv_sha256": "28324cbac002e15819d5dea1102c7df159ce7a1d73431896c9c9b32793b0b367",
   "debit_strategies_negative_sign": [
     "BEAR_PUT",
     "BULL_CALL"
@@ -291,7 +291,7 @@
     "total_pnl": 72815.0,
     "win_rate": 0.505618
   },
-  "rows": 167,
+  "rows": 170,
   "structure_incomplete_counts": {
     "IRON_BUTTERFLY": 23,
     "IRON_CONDOR": 32

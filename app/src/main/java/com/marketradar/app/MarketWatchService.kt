@@ -2359,7 +2359,8 @@ class MarketWatchService : Service() {
                                 "context_json",
                                 "verdict_json",
                                 "market_forces_json",
-                                "poll_summary_json"
+                                "poll_summary_json",
+                                "b1a_intraday_rv_json"
                             )
                             val jsonArrayFields = listOf("top_candidates_json")
                             for (field in jsonObjectFields) {

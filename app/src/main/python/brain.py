@@ -5750,7 +5750,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.12"
+BRAIN_VERSION = "2.5.13"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6573,7 +6573,10 @@ def _build3_rejection_from_candidate(candidate, metrics, reason='expected_win be
         'netPremium': c.get('netPremium'),
         'maxProfit': c.get('maxProfit'),
         'maxLoss': c.get('maxLoss'),
+        'prob': c.get('probProfit'),
         'probProfit': c.get('probProfit'),
+        'trueProb': c.get('trueProb'),
+        'premiumEdge': c.get('premiumEdge'),
         'tDTE': c.get('tDTE'),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
@@ -9337,6 +9340,15 @@ def _candidate_view(c):
         'netPremium': c.get('netPremium'),
         'maxProfit': c.get('maxProfit'),
         'maxLoss': c.get('maxLoss'),
+        'probProfit': c.get('probProfit'),
+        'trueProb': c.get('trueProb'),
+        'ev': c.get('ev'),
+        'riskReward': c.get('riskReward'),
+        'build3ExpectedWin': c.get('build3ExpectedWin'),
+        'build3ExpectedLoss': c.get('build3ExpectedLoss'),
+        'build3EvFloor': c.get('build3EvFloor'),
+        'build3EvFloorMult': c.get('build3EvFloorMult'),
+        'build3EvPass': c.get('build3EvPass'),
         'isCredit': c.get('isCredit'),
         'lotSize': c.get('lotSize'),
         'estCost': c.get('estCost'),
@@ -9489,6 +9501,577 @@ def _compact_candidate_trace(trace_root):
     return out
 
 
+def _compute_phase3_expected_r_shadow(candidates, rejected_candidates=None, row_cap=25):
+    """Shadow-only expected-R rows with explicit probability-source stamps.
+
+    Do not feed this into ranking/selection. Different probability sources are
+    intentionally reported as separate rows and must not be treated as one
+    blended model.
+    """
+    source_schema = 'phase3_expected_r_shadow_v1'
+
+    def _finite(value):
+        try:
+            if value is None:
+                return None
+            if isinstance(value, str) and not value.strip():
+                return None
+            n = float(value)
+            return n if math.isfinite(n) else None
+        except Exception:
+            return None
+
+    def _prob(value):
+        n = _finite(value)
+        if n is None or n < 0 or n > 1:
+            return None
+        return n
+
+    def _expected_row(cand, rank, source, probability):
+        max_profit = _finite(cand.get('maxProfit'))
+        max_loss = _finite(cand.get('maxLoss'))
+        if probability is None or max_profit is None or max_loss is None or max_loss <= 0:
+            return None
+        expected_win = probability * max_profit
+        expected_loss = (1.0 - probability) * max_loss
+        expected_net = expected_win - expected_loss
+        expected_r = expected_net / max_loss
+        return {
+            'candidate_id': cand.get('id') or cand.get('candidate_id'),
+            'deterministic_rank': rank,
+            'index': cand.get('index'),
+            'lane': cand.get('lane'),
+            'strategy_type': cand.get('type') or cand.get('strategy_type'),
+            'is_credit': cand.get('isCredit') if cand.get('isCredit') is not None else cand.get('is_credit'),
+            'width': cand.get('width'),
+            'expiry': cand.get('expiry'),
+            'probability_source': source,
+            'probability': round(probability, 4),
+            'max_profit': round(max_profit, 2),
+            'max_loss': round(max_loss, 2),
+            'expected_win': round(expected_win, 2),
+            'expected_loss': round(expected_loss, 2),
+            'expected_net': round(expected_net, 2),
+            'expected_r': round(expected_r, 4),
+            'ev_floor_mult_reference': BUILD3_EV_FLOOR_MULT,
+            'passes_1_10_reference': expected_win >= (expected_loss * BUILD3_EV_FLOOR_MULT),
+            'teacher_r_score': cand.get('teacher_r_score'),
+            'teacher_bucket_n': cand.get('teacher_bucket_n'),
+            'teacher_coverage': cand.get('teacher_coverage'),
+            'note': 'shadow_only_not_live_ranking',
+        }
+
+    accepted = [c for c in candidates or [] if isinstance(c, dict)]
+    accepted_rows = []
+    by_source = {}
+    for rank, cand in enumerate(accepted[:row_cap], start=1):
+        source_pairs = (
+            ('probProfit_gate_model_interim', _prob(cand.get('probProfit'))),
+            ('trueProb_realized_vol_proxy_interim', _prob(cand.get('trueProb'))),
+            ('p_ml_advisory_interim', _prob(cand.get('p_ml'))),
+        )
+        for source, probability in source_pairs:
+            row = _expected_row(cand, rank, source, probability)
+            if row is None:
+                continue
+            accepted_rows.append(row)
+            by_source.setdefault(source, {'rows': 0, 'positive_expected_r': 0, 'best_expected_r': None})
+            stats = by_source[source]
+            stats['rows'] += 1
+            if row['expected_r'] > 0:
+                stats['positive_expected_r'] += 1
+            if stats['best_expected_r'] is None or row['expected_r'] > stats['best_expected_r']:
+                stats['best_expected_r'] = row['expected_r']
+
+    a8_rows = []
+    for raw in rejected_candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get('rejection_stage') != 'ev_below_floor':
+            continue
+        prob = _prob(raw.get('probProfit') or raw.get('prob'))
+        row = _expected_row(raw, None, 'probProfit_a8_rejected_interim', prob)
+        if row is None:
+            continue
+        row['rejection_stage'] = raw.get('rejection_stage')
+        row['rejection_reason'] = raw.get('rejection_reason')
+        row['prob'] = raw.get('prob')
+        row['trueProb'] = raw.get('trueProb')
+        a8_rows.append(row)
+        if len(a8_rows) >= row_cap:
+            break
+
+    top_by_source = {}
+    for source in by_source:
+        rows = [row for row in accepted_rows if row.get('probability_source') == source]
+        rows.sort(key=lambda row: row.get('expected_r') if row.get('expected_r') is not None else -999.0, reverse=True)
+        top_by_source[source] = rows[:5]
+
+    return {
+        'schema_version': source_schema,
+        'status': 'OK' if accepted_rows or a8_rows else 'NO_ROWS',
+        'shadow_only': True,
+        'candidate_count': len(accepted),
+        'row_cap': row_cap,
+        'sources_are_not_like_for_like': True,
+        'formula': 'expected_r=(p*maxProfit-(1-p)*maxLoss)/maxLoss',
+        'rows': accepted_rows,
+        'a8_rejected_rows': a8_rows,
+        'summary_by_source': by_source,
+        'top_by_source': top_by_source,
+    }
+
+
+def _compute_phase4_ev_ladder_shadow(candidates, rejected_candidates=None, row_cap=25):
+    """Shadow-only EV-floor sensitivity ladder.
+
+    This evaluates what the A8 EV gate would do at alternate floor multipliers.
+    It is diagnostic only and does not alter BUILD3_EV_FLOOR_MULT or ranking.
+    """
+    schema_version = 'phase4_ev_ladder_shadow_v1'
+    multipliers = (0.80, 0.90, 1.00, 1.10, 1.20, 1.50)
+
+    def _finite(value):
+        try:
+            if value is None:
+                return None
+            if isinstance(value, str) and not value.strip():
+                return None
+            n = float(value)
+            return n if math.isfinite(n) else None
+        except Exception:
+            return None
+
+    def _prob(value):
+        n = _finite(value)
+        if n is None or n < 0 or n > 1:
+            return None
+        return n
+
+    def _metrics(row):
+        prob = _prob(row.get('probProfit') if row.get('probProfit') is not None else row.get('prob'))
+        true_prob = _prob(row.get('trueProb'))
+        max_profit = _finite(row.get('maxProfit'))
+        max_loss = _finite(row.get('maxLoss'))
+        if prob is None or max_profit is None or max_loss is None or max_loss <= 0:
+            return None
+        expected_win = prob * max_profit
+        expected_loss = (1.0 - prob) * max_loss
+        pass_by_mult = {}
+        for mult in multipliers:
+            pass_by_mult[f"{mult:.2f}"] = expected_win >= (expected_loss * mult)
+        passing = [mult for mult in multipliers if pass_by_mult[f"{mult:.2f}"]]
+        return {
+            'prob': round(prob, 4),
+            'trueProb': round(true_prob, 4) if true_prob is not None else None,
+            'prob_trueProb_delta': round(abs(prob - true_prob), 4) if true_prob is not None else None,
+            'max_profit': round(max_profit, 2),
+            'max_loss': round(max_loss, 2),
+            'expected_win': round(expected_win, 2),
+            'expected_loss': round(expected_loss, 2),
+            'expected_r': round((expected_win - expected_loss) / max_loss, 4),
+            'pass_by_multiplier': pass_by_mult,
+            'highest_passing_multiplier': round(max(passing), 2) if passing else None,
+            'passes_current_1_10': pass_by_mult[f"{BUILD3_EV_FLOOR_MULT:.2f}"],
+        }
+
+    rows = []
+    pass_counts = {f"{mult:.2f}": 0 for mult in multipliers}
+    for rank, cand in enumerate([c for c in candidates or [] if isinstance(c, dict)][:row_cap], start=1):
+        metrics = _metrics(cand)
+        if metrics is None:
+            continue
+        for key, passed in metrics['pass_by_multiplier'].items():
+            if passed:
+                pass_counts[key] += 1
+        rows.append({
+            'candidate_id': cand.get('id') or cand.get('candidate_id'),
+            'deterministic_rank': rank,
+            'index': cand.get('index'),
+            'lane': cand.get('lane'),
+            'strategy_type': cand.get('type') or cand.get('strategy_type'),
+            'is_credit': cand.get('isCredit') if cand.get('isCredit') is not None else cand.get('is_credit'),
+            'width': cand.get('width'),
+            'expiry': cand.get('expiry'),
+            **metrics,
+        })
+
+    a8_killed_rows = []
+    for raw in rejected_candidates or []:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get('rejection_stage') != 'ev_below_floor':
+            continue
+        metrics = _metrics(raw)
+        if metrics is None:
+            continue
+        a8_killed_rows.append({
+            'candidate_id': raw.get('id') or raw.get('candidate_id'),
+            'index': raw.get('index'),
+            'lane': raw.get('lane'),
+            'strategy_type': raw.get('type') or raw.get('strategy_type'),
+            'is_credit': raw.get('isCredit') if raw.get('isCredit') is not None else raw.get('is_credit'),
+            'width': raw.get('width'),
+            'expiry': raw.get('expiry'),
+            'rejection_stage': raw.get('rejection_stage'),
+            'rejection_reason': raw.get('rejection_reason'),
+            **metrics,
+        })
+        if len(a8_killed_rows) >= row_cap:
+            break
+
+    rows_sorted = sorted(
+        rows,
+        key=lambda row: row.get('highest_passing_multiplier') if row.get('highest_passing_multiplier') is not None else -1.0,
+        reverse=True,
+    )
+    return {
+        'schema_version': schema_version,
+        'status': 'OK' if rows or a8_killed_rows else 'NO_ROWS',
+        'shadow_only': True,
+        'current_live_ev_floor_mult': BUILD3_EV_FLOOR_MULT,
+        'multipliers': list(multipliers),
+        'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
+        'row_cap': row_cap,
+        'probability_source': 'probProfit_gate_model_interim',
+        'a8_disagreement_pair_logged': True,
+        'pass_counts_by_multiplier': pass_counts,
+        'rows': rows,
+        'top_by_highest_passing_multiplier': rows_sorted[:5],
+        'a8_killed_rows': a8_killed_rows,
+    }
+
+
+PHASE5_GATE_REGISTRY_VERSION = 'phase5_gate_registry_v1'
+
+PHASE5_GATE_REGISTRY_META = {
+    'strike_data_missing': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(strike_data_missing)',
+        'gate_reason': 'Required short/long strike quote rows are absent.',
+        'threshold': 'sell_data and buy_data must both exist',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: missing executable quote structure cannot be overridden by model evidence.',
+    },
+    'price_zero': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(price_zero)',
+        'gate_reason': 'Executable bid/ask price is zero or unavailable.',
+        'threshold': 'sell_price > 0 and buy_price > 0',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: a zero executable leg price makes P&L and order simulation invalid.',
+    },
+    'credit_non_positive': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=credit_non_positive',
+        'gate_reason': 'Credit strategy does not produce positive entry credit.',
+        'threshold': 'net_credit > 0',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: credit structure economics are invalid.',
+    },
+    'debit_credit_conflict_non_positive_net': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(debit_credit_conflict_non_positive_net)',
+        'gate_reason': 'Debit strategy computed non-positive net debit.',
+        'threshold': 'net_debit > 0',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: debit structure economics are invalid.',
+    },
+    'max_loss_non_positive': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=max_loss_non_positive',
+        'gate_reason': 'Calculated max loss or max profit is non-positive.',
+        'threshold': 'max_loss > 0 and max_profit > 0',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: payoff structure is invalid.',
+    },
+    'economics_invalid': {
+        'source_function': 'multi-leg construction',
+        'source_ref': 'brain.py:multi-leg stage=economics_invalid',
+        'gate_reason': 'Multi-leg payoff economics failed final validity checks.',
+        'threshold': 'max_loss > 0 and max_profit > 0',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: payoff structure is invalid.',
+    },
+    'capital_limit_exceeded': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=capital_limit_exceeded',
+        'gate_reason': 'Single candidate max loss exceeds account risk budget.',
+        'threshold': 'max_loss <= capital * 0.10',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible without an explicit capital policy change and separate risk authorization.',
+    },
+    'sigma_data_missing': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=sigma_data_missing',
+        'gate_reason': 'Required volatility sigma input is unavailable.',
+        'threshold': 'daily_sigma must be finite and positive',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: distance-to-strike and risk features cannot be trusted without sigma.',
+    },
+    'strike_missing': {
+        'source_function': 'multi-leg construction',
+        'source_ref': 'brain.py:multi-leg stage=strike_missing',
+        'gate_reason': 'Required strategy strike is absent from chain strike set.',
+        'threshold': 'all required strikes exist in chain',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: missing chain structure cannot be overridden.',
+    },
+    'leg_data_missing': {
+        'source_function': 'multi-leg construction',
+        'source_ref': 'brain.py:multi-leg stage=leg_data_missing',
+        'gate_reason': 'Required multi-leg quote data is absent.',
+        'threshold': 'all required leg quote rows exist',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: missing executable leg data makes simulation invalid.',
+    },
+    'width_too_narrow': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(width_too_narrow)',
+        'gate_reason': 'Credit directional spread width is below construction minimum.',
+        'threshold': 'width >= min_width',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible until fill/slippage and payoff integrity are separately proven for narrower widths.',
+    },
+    'credit_dte_below_floor': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(credit_dte_below_floor)',
+        'gate_reason': 'Credit directional expiry is below minimum DTE floor.',
+        'threshold': 'tDTE >= MIN_CREDIT_DTE',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible without a separate expiry-risk policy change.',
+    },
+    'sigma_otm_too_close': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=sigma_otm_too_close',
+        'gate_reason': 'Short strike is too close to spot in sigma terms.',
+        'threshold': 'sigma_otm >= configured minimum',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires clean teacher outcomes by lane/regime plus capped shadow replay showing positive expectancy after realistic exit/friction.',
+    },
+    'sigma_otm_too_far': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=sigma_otm_too_far',
+        'gate_reason': 'Short strike is too far from spot in sigma terms.',
+        'threshold': 'sigma_otm <= configured maximum',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires clean teacher outcomes by lane/regime plus proof that premium/edge survives realistic fill and exit logic.',
+    },
+    'credit_ratio_below_floor': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=credit_ratio_below_floor',
+        'gate_reason': 'Credit received is too small relative to spread width.',
+        'threshold': 'credit / width >= MIN_CREDIT_RATIO',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires shadow replay showing positive net expectancy after slippage/friction and no tail-loss concentration.',
+    },
+    'iv_not_rich': {
+        'source_function': '_build_candidate / multi-leg construction',
+        'source_ref': 'brain.py:_build_candidate and multi-leg stage=iv_not_rich',
+        'gate_reason': 'Implied volatility richness is below premium-selling floor.',
+        'threshold': 'iv_richness >= IV_RICH_MIN',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires B1 realized-vol evidence and teacher outcomes showing premium-selling edge exists in this regime.',
+    },
+    'credit_prob_below_floor': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(credit_prob_below_floor)',
+        'gate_reason': 'Credit candidate probability is below configured probability floor.',
+        'threshold': 'prob >= MIN_PROB',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires probability-source calibration, clean teacher outcomes, and out-of-sample replay by lane/regime.',
+    },
+    'debit_prob_below_floor': {
+        'source_function': '_build_candidate',
+        'source_ref': 'brain.py:_build_candidate:record_rejection(debit_prob_below_floor)',
+        'gate_reason': 'Debit candidate probability is below configured probability floor.',
+        'threshold': 'prob >= 0.40',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires debit-specific probability calibration, breakeven-sigma features, and clean managed-exit outcomes.',
+    },
+    'prob_below_floor': {
+        'source_function': 'multi-leg construction',
+        'source_ref': 'brain.py:multi-leg stage=prob_below_floor',
+        'gate_reason': 'Multi-leg candidate probability is below configured minimum floor.',
+        'threshold': 'prob >= MIN_PROB',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires probability-source calibration and clean out-of-sample teacher outcomes by structure/regime.',
+    },
+    'ev_below_floor': {
+        'source_function': '_build3_apply_a8_ev_gate',
+        'source_ref': 'brain.py:_build3_apply_a8_ev_gate->_build3_rejection_from_candidate',
+        'gate_reason': 'Expected win does not clear expected-loss multiplier floor.',
+        'threshold': f'expected_win >= expected_loss * {BUILD3_EV_FLOOR_MULT:.2f}',
+        'classification': 'EVIDENCE',
+        'softening_eligible': True,
+        'evidence_bar': 'Requires Phase 4 EV ladder, A8 prob/trueProb disagreement review, and clean teacher outcomes proving lower floor improves expectancy.',
+    },
+    'a8_bypassed_missing_inputs': {
+        'source_function': '_build3_candidate_ev',
+        'source_ref': 'brain.py:_build3_candidate_ev:missing inputs return passes=True',
+        'gate_reason': 'A8 EV gate inputs were missing and current policy allowed the candidate to pass through.',
+        'threshold': 'probProfit, maxProfit, and maxLoss must be finite for A8 EV math',
+        'classification': 'POLICY_REVIEW',
+        'softening_eligible': False,
+        'evidence_bar': 'Requires Vivek policy ruling on whether missing A8 inputs should fail open or fail closed.',
+    },
+}
+
+
+def _compute_phase5_gate_registry(rejected_candidates=None, candidates=None, row_cap=50):
+    """Shadow-only gate registry for deciding what can ever be softened.
+
+    This is an inventory and classification artifact only. It does not modify
+    rejection behavior, ranking, or live decision gates.
+    """
+    stage_counts = {}
+    reason_counts_by_stage = {}
+    strategy_counts_by_stage = {}
+    lane_counts_by_stage = {}
+    observed_total = 0
+
+    def _stage(value):
+        if value is None or value == '':
+            return 'unknown'
+        return str(value)
+
+    def _bump(counter, key):
+        key = 'unknown' if key is None or key == '' else str(key)
+        counter[key] = int(counter.get(key, 0)) + 1
+
+    for row in rejected_candidates or []:
+        if not isinstance(row, dict):
+            continue
+        observed_total += 1
+        stage = _stage(row.get('rejection_stage'))
+        _bump(stage_counts, stage)
+        reason_counts_by_stage.setdefault(stage, {})
+        strategy_counts_by_stage.setdefault(stage, {})
+        lane_counts_by_stage.setdefault(stage, {})
+        _bump(reason_counts_by_stage[stage], row.get('rejection_reason'))
+        _bump(strategy_counts_by_stage[stage], row.get('strategy_type') or row.get('type'))
+        _bump(lane_counts_by_stage[stage], row.get('lane'))
+
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        missing_a8_inputs = (
+            cand.get('build3EvPass') is True
+            and (
+                cand.get('build3ExpectedWin') is None
+                or cand.get('build3ExpectedLoss') is None
+                or cand.get('build3EvFloor') is None
+            )
+        )
+        if not missing_a8_inputs:
+            continue
+        observed_total += 1
+        stage = 'a8_bypassed_missing_inputs'
+        _bump(stage_counts, stage)
+        reason_counts_by_stage.setdefault(stage, {})
+        strategy_counts_by_stage.setdefault(stage, {})
+        lane_counts_by_stage.setdefault(stage, {})
+        _bump(reason_counts_by_stage[stage], 'A8 missing inputs passed through current fail-open policy')
+        _bump(strategy_counts_by_stage[stage], cand.get('type') or cand.get('strategy_type'))
+        _bump(lane_counts_by_stage[stage], cand.get('lane'))
+
+    rows = []
+    for stage, count in sorted(stage_counts.items(), key=lambda item: item[1], reverse=True):
+        meta = PHASE5_GATE_REGISTRY_META.get(stage)
+        known = meta is not None
+        if not known:
+            meta = {
+                'source_function': 'UNCLASSIFIED',
+                'source_ref': 'UNCLASSIFIED',
+                'gate_reason': 'Observed rejection stage is not registered in Phase 5 metadata.',
+                'threshold': 'UNKNOWN',
+                'classification': 'UNCLASSIFIED',
+                'softening_eligible': False,
+                'evidence_bar': 'Requires source-code review and explicit classification before any policy discussion.',
+            }
+        top_reasons = sorted(
+            reason_counts_by_stage.get(stage, {}).items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:5]
+        top_strategies = sorted(
+            strategy_counts_by_stage.get(stage, {}).items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:5]
+        top_lanes = sorted(
+            lane_counts_by_stage.get(stage, {}).items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:5]
+        rows.append({
+            'name': stage,
+            'observed_count': count,
+            'source_function': meta['source_function'],
+            'source_ref': meta.get('source_ref'),
+            'reason': meta['gate_reason'],
+            'threshold': meta['threshold'],
+            'class': meta['classification'],
+            'softening_eligible': bool(meta['softening_eligible']),
+            'evidence_bar': meta['evidence_bar'],
+            'needs_review': not known,
+            'top_reasons': [{'reason': k, 'count': v} for k, v in top_reasons],
+            'top_strategies': [{'strategy_type': k, 'count': v} for k, v in top_strategies],
+            'top_lanes': [{'lane': k, 'count': v} for k, v in top_lanes],
+        })
+        if len(rows) >= row_cap:
+            break
+
+    class_counts = {}
+    unknown_stages = []
+    for row in rows:
+        _bump(class_counts, row.get('class'))
+        if row.get('needs_review'):
+            unknown_stages.append(row.get('name'))
+
+    softening_candidates = [
+        row for row in rows
+        if row.get('class') == 'EVIDENCE' and row.get('softening_eligible') and row.get('observed_count', 0) > 0
+    ]
+
+    return {
+        'schema_version': PHASE5_GATE_REGISTRY_VERSION,
+        'status': 'OK' if rows else 'NO_ROWS',
+        'shadow_only': True,
+        'registry_static_version': '20260721_static_v1',
+        'live_gate_changes': False,
+        'observed_rejection_rows': observed_total,
+        'registered_gate_count': len(PHASE5_GATE_REGISTRY_META),
+        'row_cap': row_cap,
+        'rows_truncated': len(stage_counts) > len(rows),
+        'registry_complete_for_observed_stages': len(unknown_stages) == 0,
+        'unknown_stages': unknown_stages,
+        'class_counts': class_counts,
+        'softening_candidate_count': len(softening_candidates),
+        'softening_candidates': softening_candidates[:10],
+        'rows': rows,
+    }
+
+
 def _compact_rejected_candidates(rejected_candidates):
     if not isinstance(rejected_candidates, list):
         return [], {
@@ -9518,6 +10101,14 @@ def _compact_rejected_candidates(rejected_candidates):
             'netPremium': row.get('netPremium'),
             'maxProfit': row.get('maxProfit'),
             'maxLoss': row.get('maxLoss'),
+            'prob': row.get('prob'),
+            'probProfit': row.get('probProfit'),
+            'trueProb': row.get('trueProb'),
+            'premiumEdge': row.get('premiumEdge'),
+            'expected_win': row.get('expected_win'),
+            'expected_loss': row.get('expected_loss'),
+            'ev_floor': row.get('ev_floor'),
+            'ev_floor_mult': row.get('ev_floor_mult'),
             'tDTE': row.get('tDTE'),
             'ivRichness': row.get('ivRichness'),
             'creditWidthRatio': row.get('creditWidthRatio'),
@@ -9569,6 +10160,14 @@ def _full_rejected_candidate_view(row):
         'netPremium': row.get('netPremium'),
         'maxProfit': row.get('maxProfit'),
         'maxLoss': row.get('maxLoss'),
+        'prob': row.get('prob'),
+        'probProfit': row.get('probProfit'),
+        'trueProb': row.get('trueProb'),
+        'premiumEdge': row.get('premiumEdge'),
+        'expected_win': row.get('expected_win'),
+        'expected_loss': row.get('expected_loss'),
+        'ev_floor': row.get('ev_floor'),
+        'ev_floor_mult': row.get('ev_floor_mult'),
         'tDTE': row.get('tDTE'),
         'ivRichness': row.get('ivRichness'),
         'creditWidthRatio': row.get('creditWidthRatio'),
@@ -9623,6 +10222,304 @@ def _audit_snapshot_replayability(snapshot_context, ctx):
             pass
 
 
+def _compute_b1a_intraday_rv(polls):
+    """Shadow-only intraday realized-volatility summary from spot poll stream.
+
+    This is evidence capture only. It must not feed live candidate scoring or
+    selection until a later explicitly authorized phase.
+    """
+    rows = polls if isinstance(polls, list) else []
+    schema_version = 'b1a_intraday_rv_v1'
+    if len(rows) < 2:
+        return {
+            'schema_version': schema_version,
+            'source': 'spot_poll_stream',
+            'status': 'INSUFFICIENT_POLLS',
+            'poll_count': len(rows),
+            'indices': {},
+        }
+
+    def _num(value):
+        try:
+            if value is None:
+                return None
+            n = float(value)
+            if not math.isfinite(n) or n <= 0:
+                return None
+            return n
+        except Exception:
+            return None
+
+    def _series(keys):
+        out = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = None
+            for key in keys:
+                value = _num(row.get(key))
+                if value is not None:
+                    break
+            if value is not None:
+                out.append(value)
+        return out
+
+    def _realized_summary(label, prices, latest_vix):
+        returns = []
+        for i in range(1, len(prices)):
+            prev = prices[i - 1]
+            cur = prices[i]
+            if prev > 0 and cur > 0:
+                try:
+                    ret = math.log(cur / prev)
+                    if math.isfinite(ret):
+                        returns.append(ret)
+                except Exception:
+                    pass
+        if not returns:
+            return {
+                'status': 'INSUFFICIENT_RETURNS',
+                'spot_count': len(prices),
+                'return_count': 0,
+            }
+
+        rv_pct = math.sqrt(sum(r * r for r in returns)) * 100.0
+        signed_move_pct = ((prices[-1] / prices[0]) - 1.0) * 100.0 if prices[0] > 0 else None
+        max_price = max(prices)
+        min_price = min(prices)
+        range_pct = ((max_price / min_price) - 1.0) * 100.0 if min_price > 0 else None
+        abs_last_return_pct = abs(returns[-1]) * 100.0
+        abs_mean_return_pct = statistics.mean(abs(r) for r in returns) * 100.0
+
+        implied_daily_sigma_pct = None
+        rv_to_iv_daily_ratio = None
+        if latest_vix is not None and latest_vix > 0:
+            implied_daily_sigma_pct = latest_vix / math.sqrt(252.0)
+            if implied_daily_sigma_pct > 0:
+                rv_to_iv_daily_ratio = rv_pct / implied_daily_sigma_pct
+
+        return {
+            'status': 'OK',
+            'label': label,
+            'spot_count': len(prices),
+            'return_count': len(returns),
+            'start_spot': round(prices[0], 4),
+            'last_spot': round(prices[-1], 4),
+            'signed_move_pct': round(signed_move_pct, 4) if signed_move_pct is not None else None,
+            'range_pct': round(range_pct, 4) if range_pct is not None else None,
+            'rv_pct': round(rv_pct, 4),
+            'abs_last_return_pct': round(abs_last_return_pct, 4),
+            'abs_mean_return_pct': round(abs_mean_return_pct, 4),
+            'implied_daily_sigma_pct': round(implied_daily_sigma_pct, 4) if implied_daily_sigma_pct is not None else None,
+            'rv_to_iv_daily_ratio': round(rv_to_iv_daily_ratio, 4) if rv_to_iv_daily_ratio is not None else None,
+        }
+
+    latest = rows[-1] if isinstance(rows[-1], dict) else {}
+    latest_vix = _num(latest.get('vix')) or _num(latest.get('VIX'))
+    bnf_prices = _series(('bnfSpot', 'bnf', 'BNF'))
+    nf_prices = _series(('nfSpot', 'nf', 'NF'))
+    indices = {}
+    if bnf_prices:
+        indices['BNF'] = _realized_summary('BNF', bnf_prices, latest_vix)
+    if nf_prices:
+        indices['NF'] = _realized_summary('NF', nf_prices, latest_vix)
+
+    ok_count = sum(1 for item in indices.values() if item.get('status') == 'OK')
+    return {
+        'schema_version': schema_version,
+        'source': 'spot_poll_stream',
+        'status': 'OK' if ok_count > 0 else 'INSUFFICIENT_RETURNS',
+        'shadow_only': True,
+        'poll_count': len(rows),
+        'latest_time': latest.get('t') or latest.get('time'),
+        'latest_vix': round(latest_vix, 4) if latest_vix is not None else None,
+        'indices': indices,
+    }
+
+
+def _compute_b1b_historical_multi_horizon_rv(polls):
+    """Shadow-only multi-horizon RV from filtered intraday spot history.
+
+    B1b is evidence capture only. It summarizes realized movement over multiple
+    recent lookback windows and must not feed live candidate scoring/selection.
+    """
+    rows = polls if isinstance(polls, list) else []
+    schema_version = 'b1b_historical_multi_horizon_rv_v1'
+    horizons = (
+        ('15m', 3),
+        ('30m', 6),
+        ('60m', 12),
+        ('120m', 24),
+        ('full_session', None),
+    )
+    if len(rows) < 2:
+        return {
+            'schema_version': schema_version,
+            'source': 'filtered_spot_poll_history',
+            'status': 'INSUFFICIENT_POLLS',
+            'shadow_only': True,
+            'poll_count': len(rows),
+            'filters': {
+                'positive_finite_spot_only': True,
+                'non_monotonic_time_rejected': False,
+            },
+            'indices': {},
+        }
+
+    def _num(value):
+        try:
+            if value is None:
+                return None
+            n = float(value)
+            if not math.isfinite(n) or n <= 0:
+                return None
+            return n
+        except Exception:
+            return None
+
+    def _time_value(row):
+        if not isinstance(row, dict):
+            return None
+        return row.get('t') or row.get('time') or row.get('poll_time')
+
+    def _filtered_series(keys):
+        out = []
+        bad_spot_count = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = None
+            for key in keys:
+                value = _num(row.get(key))
+                if value is not None:
+                    break
+            if value is None:
+                bad_spot_count += 1
+                continue
+            out.append({'t': _time_value(row), 'spot': value})
+        return out, bad_spot_count
+
+    def _horizon_summary(label, series, latest_vix):
+        if len(series) < 2:
+            return {
+                'status': 'INSUFFICIENT_RETURNS',
+                'spot_count': len(series),
+                'bad_spot_count': 0,
+                'horizons': {},
+            }
+
+        summaries = {}
+        for horizon_label, lookback_polls in horizons:
+            subset = series[-lookback_polls:] if lookback_polls else series
+            if len(subset) < 2:
+                summaries[horizon_label] = {
+                    'status': 'INSUFFICIENT_WINDOW',
+                    'poll_lookback': lookback_polls,
+                    'spot_count': len(subset),
+                    'return_count': 0,
+                }
+                continue
+
+            returns = []
+            for i in range(1, len(subset)):
+                prev = subset[i - 1]['spot']
+                cur = subset[i]['spot']
+                try:
+                    ret = math.log(cur / prev)
+                    if math.isfinite(ret):
+                        returns.append(ret)
+                except Exception:
+                    pass
+            if not returns:
+                summaries[horizon_label] = {
+                    'status': 'INSUFFICIENT_RETURNS',
+                    'poll_lookback': lookback_polls,
+                    'spot_count': len(subset),
+                    'return_count': 0,
+                }
+                continue
+
+            start = subset[0]['spot']
+            last = subset[-1]['spot']
+            max_price = max(item['spot'] for item in subset)
+            min_price = min(item['spot'] for item in subset)
+            rv_pct = math.sqrt(sum(r * r for r in returns)) * 100.0
+            implied_daily_sigma_pct = latest_vix / math.sqrt(252.0) if latest_vix and latest_vix > 0 else None
+            rv_to_iv_daily_ratio = (
+                rv_pct / implied_daily_sigma_pct
+                if implied_daily_sigma_pct and implied_daily_sigma_pct > 0
+                else None
+            )
+            summaries[horizon_label] = {
+                'status': 'OK',
+                'poll_lookback': lookback_polls,
+                'spot_count': len(subset),
+                'return_count': len(returns),
+                'start_time': subset[0].get('t'),
+                'last_time': subset[-1].get('t'),
+                'start_spot': round(start, 4),
+                'last_spot': round(last, 4),
+                'signed_move_pct': round(((last / start) - 1.0) * 100.0, 4) if start > 0 else None,
+                'range_pct': round(((max_price / min_price) - 1.0) * 100.0, 4) if min_price > 0 else None,
+                'rv_pct': round(rv_pct, 4),
+                'abs_last_return_pct': round(abs(returns[-1]) * 100.0, 4),
+                'abs_mean_return_pct': round(statistics.mean(abs(r) for r in returns) * 100.0, 4),
+                'rv_to_iv_daily_ratio': round(rv_to_iv_daily_ratio, 4) if rv_to_iv_daily_ratio is not None else None,
+            }
+
+        ok_horizons = {
+            key: value for key, value in summaries.items()
+            if isinstance(value, dict) and value.get('status') == 'OK'
+        }
+        max_ratio = None
+        if ok_horizons:
+            ratios = [
+                value.get('rv_to_iv_daily_ratio')
+                for value in ok_horizons.values()
+                if value.get('rv_to_iv_daily_ratio') is not None
+            ]
+            if ratios:
+                max_ratio = max(ratios)
+
+        return {
+            'status': 'OK' if ok_horizons else 'INSUFFICIENT_RETURNS',
+            'label': label,
+            'spot_count': len(series),
+            'horizon_count': len(ok_horizons),
+            'max_rv_to_iv_daily_ratio': round(max_ratio, 4) if max_ratio is not None else None,
+            'horizons': summaries,
+        }
+
+    latest = rows[-1] if isinstance(rows[-1], dict) else {}
+    latest_vix = _num(latest.get('vix')) or _num(latest.get('VIX'))
+    bnf_series, bnf_bad = _filtered_series(('bnfSpot', 'bnf', 'BNF'))
+    nf_series, nf_bad = _filtered_series(('nfSpot', 'nf', 'NF'))
+    indices = {}
+    if bnf_series:
+        indices['BNF'] = _horizon_summary('BNF', bnf_series, latest_vix)
+        indices['BNF']['bad_spot_count'] = bnf_bad
+    if nf_series:
+        indices['NF'] = _horizon_summary('NF', nf_series, latest_vix)
+        indices['NF']['bad_spot_count'] = nf_bad
+
+    ok_count = sum(1 for item in indices.values() if item.get('status') == 'OK')
+    return {
+        'schema_version': schema_version,
+        'source': 'filtered_spot_poll_history',
+        'status': 'OK' if ok_count > 0 else 'INSUFFICIENT_RETURNS',
+        'shadow_only': True,
+        'poll_count': len(rows),
+        'latest_time': latest.get('t') or latest.get('time'),
+        'latest_vix': round(latest_vix, 4) if latest_vix is not None else None,
+        'filters': {
+            'positive_finite_spot_only': True,
+            'non_monotonic_time_rejected': False,
+            'horizon_polls': {label: count for label, count in horizons},
+        },
+        'indices': indices,
+    }
+
+
 def take_poll_snapshot(result, ctx, polls):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -9666,6 +10563,12 @@ def take_poll_snapshot(result, ctx, polls):
 
     bnf_oi_vel_pct = _oi_window_velocity(polls, 'bnfCOI', 'bnfPOI')
     nf_oi_vel_pct = _oi_window_velocity(polls, 'nfCOI', 'nfPOI')
+    b1a_intraday_rv = _compute_b1a_intraday_rv(polls)
+    b1a_bnf = (b1a_intraday_rv.get('indices') or {}).get('BNF') or {}
+    b1a_nf = (b1a_intraday_rv.get('indices') or {}).get('NF') or {}
+    b1b_historical_rv = _compute_b1b_historical_multi_horizon_rv(polls)
+    b1b_bnf = (b1b_historical_rv.get('indices') or {}).get('BNF') or {}
+    b1b_nf = (b1b_historical_rv.get('indices') or {}).get('NF') or {}
 
     # Generate Recommendation ID
     band = f"{(verdict.get('confidence', 0) // 10) * 10}"
@@ -9725,6 +10628,9 @@ def take_poll_snapshot(result, ctx, polls):
             if not isinstance(c, dict):
                 continue
             clean_generated.append(_candidate_view(c))
+    phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(generated_candidates, rejected_candidates)
+    phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(generated_candidates, rejected_candidates)
+    phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, generated_candidates)
     clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
     clean_rejected_full = []
     if isinstance(rejected_candidates, list):
@@ -9794,6 +10700,11 @@ def take_poll_snapshot(result, ctx, polls):
         'nf_oi_velocity_pct': nf_oi_vel_pct,
         'bnf_profile_oi_velocity_l': bnf_profile.get('oiVelocity'),
         'nf_profile_oi_velocity_l': nf_profile.get('oiVelocity'),
+        'b1a_intraday_rv': b1a_intraday_rv,
+        'b1b_historical_multi_horizon_rv': b1b_historical_rv,
+        'phase3_expected_r_shadow': phase3_expected_r_shadow,
+        'phase4_ev_ladder_shadow': phase4_ev_ladder_shadow,
+        'phase5_gate_registry': phase5_gate_registry,
     }
     poll_summary = {
         'poll_count': len(polls) if isinstance(polls, list) else 0,
@@ -9806,12 +10717,31 @@ def take_poll_snapshot(result, ctx, polls):
         'top_candidate_type': top_cand.get('type') if top_cand else None,
         'signal_independence_score': signal_independence.get('score'),
         'is_labelable': _is_labelable(result, ctx),
+        'b1a_rv_status': b1a_intraday_rv.get('status'),
+        'b1a_bnf_rv_to_iv_daily_ratio': b1a_bnf.get('rv_to_iv_daily_ratio'),
+        'b1a_nf_rv_to_iv_daily_ratio': b1a_nf.get('rv_to_iv_daily_ratio'),
+        'b1b_rv_status': b1b_historical_rv.get('status'),
+        'b1b_bnf_max_rv_to_iv_daily_ratio': b1b_bnf.get('max_rv_to_iv_daily_ratio'),
+        'b1b_nf_max_rv_to_iv_daily_ratio': b1b_nf.get('max_rv_to_iv_daily_ratio'),
+        'phase3_expected_r_status': phase3_expected_r_shadow.get('status'),
+        'phase3_expected_r_rows': len(phase3_expected_r_shadow.get('rows') or []),
+        'phase3_expected_r_a8_rows': len(phase3_expected_r_shadow.get('a8_rejected_rows') or []),
+        'phase4_ev_ladder_status': phase4_ev_ladder_shadow.get('status'),
+        'phase4_ev_ladder_rows': len(phase4_ev_ladder_shadow.get('rows') or []),
+        'phase4_ev_ladder_a8_rows': len(phase4_ev_ladder_shadow.get('a8_killed_rows') or []),
+        'phase5_gate_registry_status': phase5_gate_registry.get('status'),
+        'phase5_gate_registry_rows': len(phase5_gate_registry.get('rows') or []),
+        'phase5_gate_registry_softening_candidates': phase5_gate_registry.get('softening_candidate_count'),
+        'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
     }
 
     # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_generated_candidates'] = clean_generated
+    snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
+    snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
+    snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
@@ -9873,6 +10803,10 @@ def take_poll_snapshot(result, ctx, polls):
         'verdict_json': json.dumps(verdict),
         'market_forces_json': json.dumps(market_forces),
         'poll_summary_json': json.dumps(poll_summary),
+        'b1a_intraday_rv_json': json.dumps(b1a_intraday_rv),
+        'b1a_rv_status': b1a_intraday_rv.get('status'),
+        'b1a_bnf_rv_to_iv_daily_ratio': b1a_bnf.get('rv_to_iv_daily_ratio'),
+        'b1a_nf_rv_to_iv_daily_ratio': b1a_nf.get('rv_to_iv_daily_ratio'),
         'is_labelable': _is_labelable(result, ctx),
     }
 

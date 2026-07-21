@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b339: sandbox-only order payload layer with live-host guard.
+        // b344: close-path delivery plus Phase 3-5 shadow evidence telemetry.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 343
-        versionName = "2.5.12"
+        versionCode = 344
+        versionName = "2.5.13"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
