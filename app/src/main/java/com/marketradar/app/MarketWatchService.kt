@@ -2467,14 +2467,16 @@ class MarketWatchService : Service() {
                         val tid = t.optString("id")
                         val live = posLive.optJSONObject(tid)
                         if (live != null) {
-                            t.put("current_pnl", live.optDouble("current_pnl"))
-                            t.put("current_spot", live.optDouble("current_spot"))
-                            t.put("current_premium", live.optDouble("current_net_premium"))
-                            t.put("peak_pnl", live.optDouble("peak_pnl"))
-                            t.put("trough_pnl", live.optDouble("trough_pnl"))
-                            t.put("peak_erosion", live.optDouble("peak_erosion"))
-                            t.put("vix_change", live.optDouble("vix_change"))
-                            t.put("journey", live.optJSONArray("journey"))
+                            t.putNullableFiniteNumber("current_pnl", live.optNullableFiniteDouble("current_pnl"))
+                            t.putNullableFiniteNumber("current_spot", live.optNullableFiniteDouble("current_spot"))
+                            t.putNullableFiniteNumber("current_premium", live.optNullableFiniteDouble("current_net_premium"))
+                            t.putNullableFiniteNumber("peak_pnl", live.optNullableFiniteDouble("peak_pnl"))
+                            t.putNullableFiniteNumber("trough_pnl", live.optNullableFiniteDouble("trough_pnl"))
+                            t.putNullableFiniteNumber("peak_erosion", live.optNullableFiniteDouble("peak_erosion"))
+                            t.putNullableFiniteNumber("vix_change", live.optNullableFiniteDouble("vix_change"))
+                            if (live.has("journey")) {
+                                t.put("journey", live.optJSONArray("journey"))
+                            }
                             
                             val posData = resultObj.optJSONObject("positions")?.optJSONObject(tid)
                             if (posData != null) {
@@ -4197,5 +4199,23 @@ class MarketWatchService : Service() {
         } catch (_: Exception) {
             0
         }
+    }
+}
+
+private fun JSONObject.optNullableFiniteDouble(name: String): Double? {
+    if (!has(name) || isNull(name)) return null
+    val raw = opt(name)
+    return when (raw) {
+        is Number -> raw.toDouble()
+        is String -> raw.trim().toDoubleOrNull()
+        else -> null
+    }?.takeIf { it.isFinite() }
+}
+
+private fun JSONObject.putNullableFiniteNumber(name: String, value: Double?) {
+    if (value == null || !value.isFinite()) {
+        put(name, JSONObject.NULL)
+    } else {
+        put(name, value)
     }
 }
