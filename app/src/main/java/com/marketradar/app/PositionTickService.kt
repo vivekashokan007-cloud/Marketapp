@@ -106,7 +106,8 @@ class PositionTickService : Service() {
         val quoteFetch = fetchQuotesWithFallback(allKeys)
         val rows = JSONArray()
         trades.forEach { trade ->
-            rows.put(buildTickRow(trade, sessionDate, tickTs, quoteFetch))
+            val row = buildTickRow(trade, sessionDate, tickTs, quoteFetch) ?: return@forEach
+            rows.put(row)
         }
         enqueueRows(rows)
         flushPending(force = false)
@@ -135,14 +136,22 @@ class PositionTickService : Service() {
         sessionDate: String,
         tickTs: String,
         quoteFetch: QuoteFetch
-    ): JSONObject {
+    ): JSONObject? {
         val tradeId = trade.optStringAny("id", "")
         val strategyType = trade.optStringAny("strategy_type", "strategyType")
         val isCredit = isCreditTrade(trade, strategyType)
         val entryPremium = trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium")
         val maxLoss = trade.optDoubleAny("max_loss", "maxLoss")
         val maxProfit = trade.optDoubleAny("max_profit", "maxProfit")
-        val lotSize = trade.optDoubleAny("lot_size", "lotSize").takeIf { it != null && it > 0.0 } ?: 1.0
+        val lotMeta = resolvePositionTickLotMeta(trade)
+        if (lotMeta == null) {
+            val indexKey = trade.optStringAny("index_key", "indexKey", "index")
+            val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} index_key=${indexKey.ifBlank { "__missing__" }} valuation_quality=LOT_SIZE_MISSING"
+            Log.w(TAG, "POSITION_TICK_SKIPPED: $reason")
+            LogBuffer.add('W', TAG, "POSITION_TICK_SKIPPED: $reason")
+            return null
+        }
+        val lotSize = lotMeta.lotSize
 
         val legs = extractLegs(trade)
         val legsJson = JSONArray()
@@ -206,13 +215,13 @@ class PositionTickService : Service() {
         val midMarkValue = if (midComplete && legs.isNotEmpty()) midMark else null
         val ltpMarkValue = if (ltpComplete && legs.isNotEmpty()) ltpMark else null
         val currentPnl = if (entryPremium != null && executableMarkValue != null) {
-            if (isCredit) (entryPremium - executableMarkValue) * lotSize else (executableMarkValue - entryPremium) * lotSize
+            computePositionTickCurrentPnl(entryPremium, executableMarkValue, isCredit, lotSize)
         } else {
             null
         }
         val currentPnlR = if (currentPnl != null && maxLoss != null && maxLoss > 0.0) currentPnl / maxLoss else null
         val running = updateRunningState(tradeId, currentPnl)
-        val policy = evaluateShadowPolicy(tickTs, currentPnl, maxLoss, maxProfit, valuationQuality)
+        val policy = evaluateShadowPolicy(tickTs, currentPnl, maxLoss, maxProfit, valuationQuality, lotMeta)
 
         return JSONObject().apply {
             put("trade_id", tradeId)
@@ -245,7 +254,8 @@ class PositionTickService : Service() {
         currentPnl: Double?,
         maxLoss: Double?,
         maxProfit: Double?,
-        valuationQuality: String
+        valuationQuality: String,
+        lotMeta: PositionTickLotMeta
     ): PolicyDecision {
         val slThreshold = maxLoss?.let { -PositionPolicyV1.SL_MULT * it }
         val tpThreshold = maxProfit?.let { PositionPolicyV1.TP_MULT * it }
@@ -276,6 +286,9 @@ class PositionTickService : Service() {
                 put("eod_hh_mm", PositionPolicyV1.EOD_HH_MM)
                 put("is_eod", eod)
                 put("valuation_quality", valuationQuality)
+                putOptNumber("lot_size_resolved", lotMeta.lotSize)
+                put("lot_size_assumed", lotMeta.assumed)
+                put("lot_size_source", lotMeta.source)
             }
         )
     }
@@ -611,6 +624,20 @@ private fun JSONObject.optStringAny(vararg names: String, default: String = ""):
     return default
 }
 
+private fun JSONObject.optJSONObjectAny(vararg names: String): JSONObject? {
+    names.forEach { name ->
+        if (!has(name) || isNull(name)) return@forEach
+        when (val raw = opt(name)) {
+            is JSONObject -> return raw
+            is String -> {
+                val parsed = runCatching { JSONObject(raw) }.getOrNull()
+                if (parsed != null) return parsed
+            }
+        }
+    }
+    return null
+}
+
 private fun JSONObject.optDoubleAny(vararg names: String): Double? {
     names.forEach { name ->
         if (has(name) && !isNull(name)) {
@@ -645,4 +672,50 @@ private fun JSONObject.bestDepthPrice(side: String): Double? {
     val arr = depth.optJSONArray(side) ?: return null
     val first = arr.optJSONObject(0) ?: return null
     return first.optDoubleAny("price")
+}
+
+internal data class PositionTickLotMeta(
+    val lotSize: Double,
+    val assumed: Boolean,
+    val source: String
+)
+
+internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta? {
+    // Keep this contract pinned to brain.py:3283-3299; do not introduce a third lot-size rule.
+    val indexKey = trade.optStringAny("index_key", "indexKey", "index").uppercase(Locale.US)
+    val baseLot = when (indexKey) {
+        "BNF" -> 30.0
+        "NF" -> 65.0
+        else -> 0.0
+    }
+    val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
+    val tradeLot = trade.optDoubleAny("lot_size", "lotSize")
+    val entrySnapshotLot = entrySnapshot.optDoubleAny("lot_size", "lotSize")
+    val explicitLotSize = tradeLot ?: entrySnapshotLot ?: 0.0
+    val lotsCount = max(trade.optDoubleAny("lots") ?: 1.0, 1.0)
+    val lotSize = if (explicitLotSize > 0.0) explicitLotSize else baseLot * lotsCount
+    if (lotSize <= 0.0) return null
+    val source = when {
+        (tradeLot ?: 0.0) > 0.0 -> "trade"
+        (entrySnapshotLot ?: 0.0) > 0.0 -> "entry_snapshot"
+        else -> "contract_default"
+    }
+    return PositionTickLotMeta(
+        lotSize = lotSize,
+        assumed = explicitLotSize <= 0.0,
+        source = source
+    )
+}
+
+internal fun computePositionTickCurrentPnl(
+    entryPremium: Double,
+    executableMarkValue: Double,
+    isCredit: Boolean,
+    lotSize: Double
+): Double {
+    return if (isCredit) {
+        (entryPremium - executableMarkValue) * lotSize
+    } else {
+        (executableMarkValue - entryPremium) * lotSize
+    }
 }
