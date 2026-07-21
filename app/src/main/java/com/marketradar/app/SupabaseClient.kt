@@ -22,6 +22,8 @@ object SupabaseClient {
     // a larger requested limit causes offset-based pagination gaps.
     private const val CHAIN_PAGE_SIZE = 1000
     private const val EVALUATION_SNAPSHOT_PAGE_SIZE = 12
+    private const val EVALUATION_CHAIN_EXACT_MAX_PAGES = 200
+    private const val EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES = 30
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -230,7 +232,9 @@ object SupabaseClient {
     private data class ChainSource(
         val path: String,
         val source: String,
-        val filterDate: String?
+        val filterDate: String?,
+        val maxPages: Int,
+        val reverseOutput: Boolean = false
     )
 
     data class EvaluationLegKey(
@@ -855,19 +859,37 @@ object SupabaseClient {
             return ChainFeedResult("chain_slices.exact", normalizeChainRows(exactFallback))
         }
 
-        val recentPreferred = filterRowsByIstSessionDate(
-            fetchPagedArray("ml_option_chain_snapshots?order=poll_ts.asc"),
-            date
+        val recentPreferred = reverseJsonArray(
+            filterRowsByIstSessionDate(
+                fetchPagedArray(
+                    "ml_option_chain_snapshots?select=*&order=poll_ts.desc",
+                    maxPages = EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES
+                ),
+                date
+            )
         )
         if (recentPreferred.length() > 0) {
             return ChainFeedResult("ml_option_chain_snapshots.filtered_recent", normalizeChainRows(recentPreferred))
         }
 
-        val recentFallback = filterRowsByIstSessionDate(
-            fetchPagedArray("chain_slices?order=poll_ts.asc"),
-            date
+        val recentFallback = reverseJsonArray(
+            filterRowsByIstSessionDate(
+                fetchPagedArray(
+                    "chain_slices?select=*&order=poll_ts.desc",
+                    maxPages = EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES
+                ),
+                date
+            )
         )
         return ChainFeedResult("chain_slices.filtered_recent", normalizeChainRows(recentFallback))
+    }
+
+    private fun reverseJsonArray(rows: JSONArray): JSONArray {
+        val out = JSONArray()
+        for (i in rows.length() - 1 downTo 0) {
+            out.put(rows.opt(i))
+        }
+        return out
     }
 
     fun writeEvaluationChainCandlesForLegs(
@@ -883,27 +905,32 @@ object SupabaseClient {
             return ChainStreamResult("no_candidate_legs", 0, 0)
         }
 
-        val maxPages = 200
         val sources = listOf(
             ChainSource(
                 "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.asc",
                 "ml_option_chain_snapshots.exact.filtered_stream",
-                null
+                null,
+                EVALUATION_CHAIN_EXACT_MAX_PAGES
             ),
             ChainSource(
                 "chain_slices?session_date=eq.$date&order=poll_ts.asc",
                 "chain_slices.exact.filtered_stream",
-                null
+                null,
+                EVALUATION_CHAIN_EXACT_MAX_PAGES
             ),
             ChainSource(
-                "ml_option_chain_snapshots?order=poll_ts.asc",
+                "ml_option_chain_snapshots?select=*&order=poll_ts.desc",
                 "ml_option_chain_snapshots.filtered_recent.filtered_stream",
-                date
+                date,
+                EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
+                reverseOutput = true
             ),
             ChainSource(
-                "chain_slices?order=poll_ts.asc",
+                "chain_slices?select=*&order=poll_ts.desc",
                 "chain_slices.filtered_recent.filtered_stream",
-                date
+                date,
+                EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES,
+                reverseOutput = true
             )
         )
 
@@ -918,12 +945,17 @@ object SupabaseClient {
                 outputFile = tmpFile,
                 onPage = onPage,
                 istSessionDate = candidateSource.filterDate,
-                maxPages = maxPages
+                maxPages = candidateSource.maxPages,
+                reverseOutput = candidateSource.reverseOutput
             )
             lastResult = result
-            if (result.capped || result.rowCount > 0) {
+            if (result.rowCount > 0) {
                 replaceFile(tmpFile, outputFile)
                 return result
+            }
+            if (result.capped) {
+                Log.w(TAG, "EVAL_CHAIN_SOURCE_CAPPED_EMPTY: source=${result.source} pages=${result.pageCount}; trying next source")
+                LogBuffer.add('W', TAG, "EVAL_CHAIN_SOURCE_CAPPED_EMPTY: source=${result.source} pages=${result.pageCount}; trying next source")
             }
             tmpFile.delete()
         }
@@ -948,7 +980,8 @@ object SupabaseClient {
         onPage: ((source: String, pages: Int, rows: Int) -> Unit)? = null,
         istSessionDate: String? = null,
         pageSize: Int = CHAIN_PAGE_SIZE,
-        maxPages: Int = 200
+        maxPages: Int = EVALUATION_CHAIN_EXACT_MAX_PAGES,
+        reverseOutput: Boolean = false
     ): ChainStreamResult {
         outputFile.parentFile?.mkdirs()
         var offset = 0
@@ -956,6 +989,7 @@ object SupabaseClient {
         var rows = 0
         var reachedEnd = false
         var first = true
+        val bufferedRows = if (reverseOutput) mutableListOf<String>() else null
 
         outputFile.bufferedWriter().use { writer ->
             writer.write("[")
@@ -972,9 +1006,14 @@ object SupabaseClient {
                     if (istSessionDate != null && !rowBelongsToIstSessionDate(raw, istSessionDate)) continue
                     val normalized = normalizedChainRow(raw) ?: continue
                     if (!matchesEvaluationLeg(normalized, legKeys)) continue
-                    if (!first) writer.write(",")
-                    writer.write(normalized.toString())
-                    first = false
+                    val rowText = normalized.toString()
+                    if (bufferedRows != null) {
+                        bufferedRows.add(rowText)
+                    } else {
+                        if (!first) writer.write(",")
+                        writer.write(rowText)
+                        first = false
+                    }
                     rows += 1
                 }
                 writer.flush()
@@ -984,6 +1023,13 @@ object SupabaseClient {
                     break
                 }
                 offset += page.length()
+            }
+            if (bufferedRows != null) {
+                for (i in bufferedRows.size - 1 downTo 0) {
+                    if (!first) writer.write(",")
+                    writer.write(bufferedRows[i])
+                    first = false
+                }
             }
             writer.write("]")
         }
