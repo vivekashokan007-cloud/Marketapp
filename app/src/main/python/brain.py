@@ -1044,7 +1044,12 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
     max_l = cand.get('maxLoss', 0)
     est_cost = cand.get('estCost', 0)
     est_cost_pct = cand.get('estCostPct', 0)
-    prob = cand.get('trueProb', cand.get('probProfit', 0.5)) or 0.5
+    if cand.get('probProfit') is None:
+        cand['prob_status'] = 'DEFAULT_0_5'
+        prob = 0.5
+    else:
+        cand['prob_status'] = 'OK'
+        prob = cand.get('probProfit') or 0.5
     forces = cand.get('forces') or {}
     profile = ctx.get('bnfProfile' if idx == 'BNF' else 'nfProfile') or {}
     ctx_score = cand.get('contextScore')
@@ -6112,6 +6117,9 @@ def _chain_delta(strikes, price, opt_type, spot, T, vol):
         return v
     return _bs_delta(spot, price, T, vol, opt_type)
 
+def _chain_delta_source(strikes, price, opt_type):
+    return 'CHAIN_DELTA_IV' if _interpolate_strike_value(strikes, price, opt_type, 'delta') is not None else 'BS_FALLBACK_IV'
+
 def _chain_theta(strikes, price, opt_type, spot, T, vol):
     """
     Chain theta lookup with off-strike interpolation (Decision #13a — symmetric port).
@@ -6484,7 +6492,7 @@ def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw
 # ─── BUILD SINGLE 2-LEG CANDIDATE ───
 
 LEG_SCHEMA_VERSION = 1
-CANDIDATE_SCHEMA_VERSION = 1
+CANDIDATE_SCHEMA_VERSION = 2
 
 def _leg_market_value(leg_data):
     if not isinstance(leg_data, dict):
@@ -6583,6 +6591,9 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'maxLoss': c.get('maxLoss'),
         'prob': c.get('probProfit'),
         'probProfit': c.get('probProfit'),
+        'prob_source': c.get('prob_source') or c.get('probSource'),
+        'probSource': c.get('probSource') or c.get('prob_source'),
+        'prob_status': c.get('prob_status'),
         'trueProb': c.get('trueProb'),
         'premiumEdge': c.get('premiumEdge'),
         'tDTE': c.get('tDTE'),
@@ -6702,6 +6713,9 @@ def _build3_candidate_brief(candidate, rank=None):
         'type': candidate.get('type'),
         'isCredit': candidate.get('isCredit'),
         'probProfit': candidate.get('probProfit'),
+        'prob_source': candidate.get('prob_source') or candidate.get('probSource'),
+        'probSource': candidate.get('probSource') or candidate.get('prob_source'),
+        'prob_status': candidate.get('prob_status'),
         'maxProfit': candidate.get('maxProfit'),
         'maxLoss': candidate.get('maxLoss'),
         'premiumEdge': candidate.get('premiumEdge'),
@@ -7275,9 +7289,11 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     # Probability at breakeven
     if is_credit:
         be = pair['sell'] + net_prem if pair['sellType'] == 'CE' else pair['sell'] - net_prem
+        prob_source = _chain_delta_source(strikes, be, pair['sellType'])
         prob = 1 - abs(_chain_delta(strikes, be, pair['sellType'], spot, T, vol))
     else:
         be = pair['buy'] + net_prem if pair['buyType'] == 'CE' else pair['buy'] - net_prem
+        prob_source = _chain_delta_source(strikes, be, pair['buyType'])
         prob = abs(_chain_delta(strikes, be, pair['buyType'], spot, T, vol))
 
     # BR98: Credit requires 50% prob floor. Debit can be acceptable <50% if EV clearly positive.
@@ -7291,12 +7307,10 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
             record_rejection('debit_prob_below_floor', 'not is_credit and prob < 0.40', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4))
             return None
 
+    # D7: trueProb is retained only as a deprecated compatibility alias.
+    # Runtime probability is canonically probProfit, sourced below.
     true_prob = prob
-    if is_credit:
-        realized_vol = _realized_vol_proxy(vix)
-        if realized_vol:
-            true_prob = 1 - abs(_chain_delta(strikes, be, pair['sellType'], spot, T, realized_vol))
-    premium_edge = round(true_prob * max_profit - (1 - true_prob) * max_loss)
+    premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
     ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
     sell_theta = _chain_theta(strikes, pair['sell'], pair['sellType'], spot, T, vol) * lot_size
     buy_theta = _chain_theta(strikes, pair['buy'], pair['buyType'], spot, T, vol) * lot_size
@@ -7340,6 +7354,9 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'sellOI': sell_data.get('oi', 0), 'buyOI': buy_data.get('oi', 0),
         'netPremium': round(net_prem, 2), 'maxProfit': round(max_profit),
         'maxLoss': round(max_loss), 'probProfit': round(prob, 3),
+        'prob_source': prob_source,
+        'probSource': prob_source,
+        'prob_status': 'OK',
         'trueProb': round(true_prob, 3),
         'premiumEdge': premium_edge,
         'creditWidthRatio': round(credit_ratio, 4) if credit_ratio is not None else None,
@@ -7846,6 +7863,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     continue
 
                 ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
+                premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
                 net_theta = round(abs(
                     _chain_theta(strikes, sell_call, 'CE', spot, T, vol) +
                     _chain_theta(strikes, sell_put, 'PE', spot, T, vol) -
@@ -7880,7 +7898,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'buySymbol2': (pe_b.get('symbol') or pe_b.get('trading_symbol') or '') or None,
                     'netPremium': round(total_credit, 2),
                     'maxProfit': max_profit, 'maxLoss': max_loss,
-                    'probProfit': round(prob, 3), 'ev': ev, 'netTheta': net_theta,
+                    'probProfit': round(prob, 3),
+                    'prob_source': 'BS_FALLBACK_IV',
+                    'probSource': 'BS_FALLBACK_IV',
+                    'prob_status': 'OK',
+                    # D7 compatibility alias; probProfit is canonical.
+                    'trueProb': round(prob, 3),
+                    'premiumEdge': premium_edge,
+                    'ev': ev, 'netTheta': net_theta,
                     'isCredit': True, 'lotSize': lot_size, 'index': idx,
                     'expiry': expiry, 'tDTE': tdte,
                     'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
@@ -8030,6 +8055,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 continue
 
             ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
+            premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",
                 'type': 'IRON_BUTTERFLY', 'width': width, 'legs': [
@@ -8057,7 +8083,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'buySymbol2': (pe_b.get('symbol') or pe_b.get('trading_symbol') or '') or None,
                 'netPremium': round(total_credit, 2),
                 'maxProfit': max_profit, 'maxLoss': max_loss,
-                'probProfit': round(prob, 3), 'ev': ev, 'isCredit': True,
+                'probProfit': round(prob, 3),
+                'prob_source': 'BS_FALLBACK_IV',
+                'probSource': 'BS_FALLBACK_IV',
+                'prob_status': 'OK',
+                # D7 compatibility alias; probProfit is canonical.
+                'trueProb': round(prob, 3),
+                'premiumEdge': premium_edge,
+                'ev': ev, 'isCredit': True,
                 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
                 'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
                 'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl, regime),
@@ -9374,6 +9407,8 @@ def _candidate_view(c):
         'maxProfit': c.get('maxProfit'),
         'maxLoss': c.get('maxLoss'),
         'probProfit': c.get('probProfit'),
+        'prob_source': c.get('prob_source') or c.get('probSource'),
+        'prob_status': c.get('prob_status'),
         'trueProb': c.get('trueProb'),
         'ev': c.get('ev'),
         'riskReward': c.get('riskReward'),
@@ -9541,7 +9576,7 @@ def _compute_phase3_expected_r_shadow(candidates, rejected_candidates=None, row_
     intentionally reported as separate rows and must not be treated as one
     blended model.
     """
-    source_schema = 'phase3_expected_r_shadow_v1'
+    source_schema = 'phase3_expected_r_shadow_v2'
 
     def _finite(value):
         try:
@@ -9600,7 +9635,6 @@ def _compute_phase3_expected_r_shadow(candidates, rejected_candidates=None, row_
     for rank, cand in enumerate(accepted[:row_cap], start=1):
         source_pairs = (
             ('probProfit_gate_model_interim', _prob(cand.get('probProfit'))),
-            ('trueProb_realized_vol_proxy_interim', _prob(cand.get('trueProb'))),
             ('p_ml_advisory_interim', _prob(cand.get('p_ml'))),
         )
         for source, probability in source_pairs:
@@ -9629,7 +9663,7 @@ def _compute_phase3_expected_r_shadow(candidates, rejected_candidates=None, row_
         row['rejection_stage'] = raw.get('rejection_stage')
         row['rejection_reason'] = raw.get('rejection_reason')
         row['prob'] = raw.get('prob')
-        row['trueProb'] = raw.get('trueProb')
+        row['prob_source'] = raw.get('prob_source') or raw.get('probSource')
         a8_rows.append(row)
         if len(a8_rows) >= row_cap:
             break
@@ -9661,7 +9695,7 @@ def _compute_phase4_ev_ladder_shadow(candidates, rejected_candidates=None, row_c
     This evaluates what the A8 EV gate would do at alternate floor multipliers.
     It is diagnostic only and does not alter BUILD3_EV_FLOOR_MULT or ranking.
     """
-    schema_version = 'phase4_ev_ladder_shadow_v1'
+    schema_version = 'phase4_ev_ladder_shadow_v2'
     multipliers = (0.80, 0.90, 1.00, 1.10, 1.20, 1.50)
 
     def _finite(value):
@@ -9683,7 +9717,6 @@ def _compute_phase4_ev_ladder_shadow(candidates, rejected_candidates=None, row_c
 
     def _metrics(row):
         prob = _prob(row.get('probProfit') if row.get('probProfit') is not None else row.get('prob'))
-        true_prob = _prob(row.get('trueProb'))
         max_profit = _finite(row.get('maxProfit'))
         max_loss = _finite(row.get('maxLoss'))
         if prob is None or max_profit is None or max_loss is None or max_loss <= 0:
@@ -9696,8 +9729,7 @@ def _compute_phase4_ev_ladder_shadow(candidates, rejected_candidates=None, row_c
         passing = [mult for mult in multipliers if pass_by_mult[f"{mult:.2f}"]]
         return {
             'prob': round(prob, 4),
-            'trueProb': round(true_prob, 4) if true_prob is not None else None,
-            'prob_trueProb_delta': round(abs(prob - true_prob), 4) if true_prob is not None else None,
+            'prob_source': row.get('prob_source') or row.get('probSource'),
             'max_profit': round(max_profit, 2),
             'max_loss': round(max_loss, 2),
             'expected_win': round(expected_win, 2),
@@ -9767,7 +9799,6 @@ def _compute_phase4_ev_ladder_shadow(candidates, rejected_candidates=None, row_c
         'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
         'row_cap': row_cap,
         'probability_source': 'probProfit_gate_model_interim',
-        'a8_disagreement_pair_logged': True,
         'pass_counts_by_multiplier': pass_counts,
         'rows': rows,
         'top_by_highest_passing_multiplier': rows_sorted[:5],
@@ -9956,7 +9987,7 @@ PHASE5_GATE_REGISTRY_META = {
         'threshold': f'expected_win >= expected_loss * {BUILD3_EV_FLOOR_MULT:.2f}',
         'classification': 'EVIDENCE',
         'softening_eligible': True,
-        'evidence_bar': 'Requires Phase 4 EV ladder, A8 prob/trueProb disagreement review, and clean teacher outcomes proving lower floor improves expectancy.',
+        'evidence_bar': 'Requires Phase 4 EV ladder and clean teacher outcomes proving lower floor improves expectancy.',
     },
     'a8_bypassed_missing_inputs': {
         'source_function': '_build3_candidate_ev',
@@ -10136,6 +10167,8 @@ def _compact_rejected_candidates(rejected_candidates):
             'maxLoss': row.get('maxLoss'),
             'prob': row.get('prob'),
             'probProfit': row.get('probProfit'),
+            'prob_source': row.get('prob_source') or row.get('probSource'),
+            'prob_status': row.get('prob_status'),
             'trueProb': row.get('trueProb'),
             'premiumEdge': row.get('premiumEdge'),
             'expected_win': row.get('expected_win'),
@@ -10195,6 +10228,8 @@ def _full_rejected_candidate_view(row):
         'maxLoss': row.get('maxLoss'),
         'prob': row.get('prob'),
         'probProfit': row.get('probProfit'),
+        'prob_source': row.get('prob_source') or row.get('probSource'),
+        'prob_status': row.get('prob_status'),
         'trueProb': row.get('trueProb'),
         'premiumEdge': row.get('premiumEdge'),
         'expected_win': row.get('expected_win'),

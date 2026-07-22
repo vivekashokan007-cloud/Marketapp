@@ -155,6 +155,11 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(cand["sellLTP"], 30)
         self.assertEqual(cand["netPremium"], 80)
         self.assertEqual(cand["maxLoss"], 5200)
+        self.assertEqual(cand["probProfit"], 0.8)
+        self.assertEqual(cand["trueProb"], cand["probProfit"])
+        self.assertEqual(cand["prob_source"], "CHAIN_DELTA_IV")
+        self.assertEqual(cand["prob_status"], "OK")
+        self.assertEqual(cand["premiumEdge"], 5200)
         self.assertIsNone(cand["sigmaOTM"])
         self.assertIsNotNone(cand["debitBreakevenSigma"])
 

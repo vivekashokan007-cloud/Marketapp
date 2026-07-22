@@ -21,7 +21,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
                 "maxProfit": 3000,
                 "maxLoss": 1000,
                 "probProfit": 0.40,
-                "trueProb": 0.55,
+                "prob_source": "CHAIN_DELTA_IV",
             },
             {
                 "id": "C2",
@@ -32,7 +32,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
                 "maxProfit": 500,
                 "maxLoss": 2500,
                 "probProfit": 0.50,
-                "trueProb": 0.42,
+                "prob_source": "CHAIN_DELTA_IV",
             },
         ]
 
@@ -40,7 +40,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
         first = shadow["rows"][0]
         second = shadow["rows"][1]
 
-        self.assertEqual(shadow["schema_version"], "phase4_ev_ladder_shadow_v1")
+        self.assertEqual(shadow["schema_version"], "phase4_ev_ladder_shadow_v2")
         self.assertTrue(shadow["shadow_only"])
         self.assertEqual(shadow["current_live_ev_floor_mult"], 1.10)
         self.assertEqual(first["highest_passing_multiplier"], 1.5)
@@ -49,7 +49,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
         self.assertEqual(second["highest_passing_multiplier"], None)
         self.assertEqual(shadow["pass_counts_by_multiplier"]["1.10"], 1)
 
-    def test_a8_killed_rows_include_prob_true_prob_disagreement_pair(self):
+    def test_a8_killed_rows_include_canonical_probability_source(self):
         rejected = [
             {
                 "candidate_id": "R1",
@@ -61,7 +61,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
                 "maxLoss": 2500,
                 "probProfit": 0.50,
                 "prob": 0.50,
-                "trueProb": 0.42,
+                "prob_source": "CHAIN_DELTA_IV",
                 "rejection_stage": "ev_below_floor",
                 "rejection_reason": "expected_win below 1.10x expected_loss",
             }
@@ -71,10 +71,9 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
         row = shadow["a8_killed_rows"][0]
 
         self.assertEqual(shadow["status"], "OK")
-        self.assertTrue(shadow["a8_disagreement_pair_logged"])
         self.assertEqual(row["prob"], 0.5)
-        self.assertEqual(row["trueProb"], 0.42)
-        self.assertEqual(row["prob_trueProb_delta"], 0.08)
+        self.assertEqual(row["prob_source"], "CHAIN_DELTA_IV")
+        self.assertNotIn("prob_trueProb_delta", row)
         self.assertFalse(row["passes_current_1_10"])
 
     def test_a8_rejection_builder_preserves_shadow_evidence_fields(self):
@@ -88,7 +87,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
                 "maxProfit": 3000,
                 "maxLoss": 1000,
                 "probProfit": 0.40,
-                "trueProb": 0.55,
+                "prob_source": "CHAIN_DELTA_IV",
                 "premiumEdge": 1.23,
             },
             {
@@ -100,7 +99,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
 
         self.assertEqual(rejected["prob"], 0.40)
         self.assertEqual(rejected["probProfit"], 0.40)
-        self.assertEqual(rejected["trueProb"], 0.55)
+        self.assertEqual(rejected["prob_source"], "CHAIN_DELTA_IV")
         self.assertEqual(rejected["premiumEdge"], 1.23)
         self.assertEqual(rejected["expected_win"], 1200)
         self.assertEqual(rejected["expected_loss"], 600)
@@ -119,7 +118,7 @@ class TestPhase4EvLadderShadow(unittest.TestCase):
                     "maxProfit": 3000,
                     "maxLoss": 1000,
                     "probProfit": 0.40,
-                    "trueProb": 0.55,
+                    "prob_source": "CHAIN_DELTA_IV",
                 }
             ],
             "rejected_candidates": [],

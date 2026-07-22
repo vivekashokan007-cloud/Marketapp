@@ -81,8 +81,6 @@ class ReplayRow:
     fii_short_trend: str
     pcr_state: str
     wall_state: str
-    signed_disagreement: float | None
-    signed_disagreement_bucket: str
     anchor_type: str
     slippage_basis: str
     friction_total: float | None
@@ -230,19 +228,6 @@ def _wall_state(candidate: dict[str, Any]) -> str:
     if wall_score > 0:
         return "WALL_PRESENT"
     return "WALL_WEAK_OR_NONE"
-
-
-def _signed_disagreement(candidate: dict[str, Any]) -> tuple[float | None, str]:
-    true_prob = _safe_float(candidate.get("trueProb"))
-    prob = _safe_float(candidate.get("probProfit"))
-    if true_prob is None or prob is None:
-        return None, "DISAGREE_MISSING"
-    delta = round(true_prob - prob, 4)
-    if delta < 0:
-        return delta, "DISAGREE_NEGATIVE"
-    if delta <= 0.05:
-        return delta, "DISAGREE_ZERO_TO_0_05"
-    return delta, "DISAGREE_GT_0_05"
 
 
 def _max_loss(candidate: dict[str, Any]) -> float | None:
@@ -578,7 +563,6 @@ def _collect_for_session_date(
                     coverage["pricing_failed_rows"] += pricing_failed
 
                 outcome_positive = None if anchor_net is None else (1 if anchor_net > 0 else 0)
-                signed_disagreement, signed_bucket = _signed_disagreement(candidate)
                 coverage["candidate_rows"] += 1
                 rows.append(
                     ReplayRow(
@@ -596,8 +580,6 @@ def _collect_for_session_date(
                         fii_short_trend=_fii_short_trend(ctx),
                         pcr_state=_pcr_state(snapshot, ctx, candidate),
                         wall_state=_wall_state(candidate),
-                        signed_disagreement=signed_disagreement,
-                        signed_disagreement_bucket=signed_bucket,
                         anchor_type=anchor_type,
                         slippage_basis=slippage_basis,
                         friction_total=friction_total,
@@ -670,8 +652,8 @@ def _write_markdown_report(path: Path, prereg_sha: str, coverage_rows: list[dict
     lines.append("")
     lines.append("## First Honest Table")
     lines.append("")
-    lines.append("| session_window | index | side | strategy | premium_edge | vix | fii_short | pcr | wall | decision_days | candidate_rows | teacher_match | reco_match | simulated | pricing_failed | positive | avg_anchor_r | avg_signed_disagreement | verdict |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("| session_window | index | side | strategy | premium_edge | vix | fii_short | pcr | wall | decision_days | candidate_rows | teacher_match | reco_match | simulated | pricing_failed | positive | avg_anchor_r | verdict |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
 
     grouped: dict[tuple[str, ...], list[ReplayRow]] = defaultdict(list)
     for row in replay_rows:
@@ -682,9 +664,7 @@ def _write_markdown_report(path: Path, prereg_sha: str, coverage_rows: list[dict
         decision_days = len({row.session_date for row in items})
         positive = sum(1 for row in items if row.outcome_positive == 1)
         anchor_r_values = [row.anchor_r for row in items if row.anchor_r is not None]
-        disagreement_values = [row.signed_disagreement for row in items if row.signed_disagreement is not None]
         avg_anchor_r = round(sum(anchor_r_values) / len(anchor_r_values), 4) if anchor_r_values else None
-        avg_disagreement = round(sum(disagreement_values) / len(disagreement_values), 4) if disagreement_values else None
         verdict = "insufficient — no conclusion" if decision_days < 30 else "eligible_for_stats"
         lines.append(
             "| " + " | ".join(
@@ -706,7 +686,6 @@ def _write_markdown_report(path: Path, prereg_sha: str, coverage_rows: list[dict
                     str(sum(row.pricing_failed for row in items)),
                     str(positive),
                     "" if avg_anchor_r is None else f"{avg_anchor_r:.4f}",
-                    "" if avg_disagreement is None else f"{avg_disagreement:.4f}",
                     verdict,
                 ]
             ) + " |"
@@ -724,7 +703,7 @@ def _write_markdown_report(path: Path, prereg_sha: str, coverage_rows: list[dict
     lines.append("## Notes")
     lines.append("")
     lines.append("- Outcome anchor preference order was: teacher evaluation match -> recommendation match -> simulated trace.")
-    lines.append("- Signed disagreement is `trueProb - probProfit`; no absolute value transform was applied.")
+    lines.append("- D7 removed signed probability-disagreement columns; `probProfit` is the canonical probability field.")
     lines.append("- Cells with fewer than 30 decision-days are explicitly non-conclusive by directive.")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

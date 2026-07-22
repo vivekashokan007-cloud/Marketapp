@@ -21,7 +21,6 @@ class TestPhase3ExpectedRShadow(unittest.TestCase):
                 "maxProfit": 3000,
                 "maxLoss": 1000,
                 "probProfit": 0.40,
-                "trueProb": 0.55,
                 "p_ml": 0.62,
             }
         ]
@@ -30,7 +29,7 @@ class TestPhase3ExpectedRShadow(unittest.TestCase):
         sources = {row["probability_source"] for row in shadow["rows"]}
         by_source = {row["probability_source"]: row for row in shadow["rows"]}
 
-        self.assertEqual(shadow["schema_version"], "phase3_expected_r_shadow_v1")
+        self.assertEqual(shadow["schema_version"], "phase3_expected_r_shadow_v2")
         self.assertTrue(shadow["shadow_only"])
         self.assertTrue(shadow["sources_are_not_like_for_like"])
         self.assertEqual(shadow["status"], "OK")
@@ -38,12 +37,10 @@ class TestPhase3ExpectedRShadow(unittest.TestCase):
             sources,
             {
                 "probProfit_gate_model_interim",
-                "trueProb_realized_vol_proxy_interim",
                 "p_ml_advisory_interim",
             },
         )
         self.assertEqual(by_source["probProfit_gate_model_interim"]["expected_r"], 0.6)
-        self.assertEqual(by_source["trueProb_realized_vol_proxy_interim"]["expected_r"], 1.2)
         self.assertEqual(by_source["p_ml_advisory_interim"]["expected_r"], 1.48)
 
     def test_a8_rejected_rows_capture_prob_without_changing_status(self):
@@ -83,7 +80,6 @@ class TestPhase3ExpectedRShadow(unittest.TestCase):
                     "maxProfit": 3000,
                     "maxLoss": 1000,
                     "probProfit": 0.40,
-                    "trueProb": 0.55,
                 }
             ],
             "rejected_candidates": [],
@@ -108,7 +104,7 @@ class TestPhase3ExpectedRShadow(unittest.TestCase):
         self.assertEqual(market_forces["phase3_expected_r_shadow"]["status"], "OK")
         self.assertEqual(context["snapshot_phase3_expected_r_shadow"]["status"], "OK")
         self.assertEqual(poll_summary["phase3_expected_r_status"], "OK")
-        self.assertEqual(poll_summary["phase3_expected_r_rows"], 2)
+        self.assertEqual(poll_summary["phase3_expected_r_rows"], 1)
 
 
 if __name__ == "__main__":
