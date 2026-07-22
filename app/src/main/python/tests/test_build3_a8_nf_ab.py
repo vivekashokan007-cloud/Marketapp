@@ -37,7 +37,7 @@ def test_credit_ev_negative_rejected_under_a8():
     assert survivors == []
     assert len(rejected) == 1
     assert rejected[0]["rejection_stage"] == "ev_below_floor"
-    assert summary["a8_gate_reason"] == "ALL_NEGATIVE_EV"
+    assert summary["a8_gate_reason"] == brain.BUILD3_A8_BELOW_FLOOR_REASON
 
 
 def test_debit_ev_negative_rejected_under_a8():
@@ -67,7 +67,34 @@ def test_all_negative_candidate_set_returns_wait_reason():
         cand("bad2", prob=0.40, max_profit=1000, max_loss=1000),
     ])
     assert summary["a8_gate_verdict"] == "WAIT"
-    assert summary["a8_gate_reason"] == "ALL_NEGATIVE_EV"
+    assert summary["a8_gate_reason"] == brain.BUILD3_A8_BELOW_FLOOR_REASON
+
+
+def test_a8_ev_ratio_is_explicit_and_uses_unhaircuted_expected_values():
+    brain = load_brain()
+    ab_676 = cand("ab_676", prob=0.5345460722990175, max_profit=8800, max_loss=8206)
+    survivors, rejected, summary = brain._build3_apply_a8_ev_gate([ab_676])
+    assert survivors == [ab_676]
+    assert rejected == []
+    assert summary["a8_gate_reason"] == "NONE"
+    assert ab_676["a8_expected_win"] == 4704.11
+    assert ab_676["a8_expected_loss"] == 3820.11
+    assert ab_676["a8_ev_floor"] == 4202.12
+    assert ab_676["a8_ev_ratio"] == 1.2314
+    assert ab_676["a8_pass"] is True
+
+
+def test_ranking_missing_premium_edge_loses_to_edge_candidate():
+    brain = load_brain()
+    missing = cand("missing_edge", prob=0.70)
+    missing.pop("premiumEdge")
+    missing["ev"] = 999999
+    with_edge = cand("with_edge", prob=0.50)
+    with_edge["premiumEdge"] = -10
+    ranked = brain.rank_candidates([missing, with_edge])
+    assert [c["id"] for c in ranked] == ["with_edge", "missing_edge"]
+    assert missing["premium_edge_status"] == "MISSING"
+    assert with_edge["premium_edge_status"] == "OK"
 
 
 def test_calm_regime_with_nf_survivor_removes_bnf_intraday():

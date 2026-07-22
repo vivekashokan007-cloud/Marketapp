@@ -16,6 +16,10 @@ TEACHER_TIME_BASIS_DAYS = 252.0
 BUILD3_EXPERIMENT_NAME = 'week1_a8_nf_calm_gate'
 BUILD3_EV_FLOOR_MULT = 1.10
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
+# Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
+# Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
+DISPLAY_EV_PROFIT_HAIRCUT = 0.65
+BUILD3_A8_BELOW_FLOOR_REASON = f"ALL_BELOW_EV_RATIO_FLOOR_{str(BUILD3_EV_FLOOR_MULT).replace('.', '_')}"
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -6543,24 +6547,28 @@ def _build3_candidate_ev(candidate):
             'expected_win': None,
             'expected_loss': None,
             'ev_floor': None,
+            'ev_ratio': None,
             'passes': True,
             'missing': True,
         }
     expected_win = prob * max_profit
     expected_loss = (1 - prob) * max_loss
     ev_floor = expected_loss * BUILD3_EV_FLOOR_MULT
+    ev_ratio = expected_win / expected_loss if expected_loss > 0 else None
     return {
         'expected_win': expected_win,
         'expected_loss': expected_loss,
         'ev_floor': ev_floor,
+        'ev_ratio': ev_ratio,
         'passes': expected_win >= ev_floor,
         'missing': False,
     }
 
 
-def _build3_rejection_from_candidate(candidate, metrics, reason='expected_win below 1.10x expected_loss'):
+def _build3_rejection_from_candidate(candidate, metrics, reason=None):
     c = candidate if isinstance(candidate, dict) else {}
     legs = c.get('legs') if isinstance(c.get('legs'), list) else []
+    reason = reason or f"expected_win below {BUILD3_EV_FLOOR_MULT:.2f}x expected_loss"
     return {
         'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
         'leg_schema_version': LEG_SCHEMA_VERSION,
@@ -6593,6 +6601,12 @@ def _build3_rejection_from_candidate(candidate, metrics, reason='expected_win be
         'expected_win': None if metrics.get('expected_win') is None else round(metrics.get('expected_win'), 2),
         'expected_loss': None if metrics.get('expected_loss') is None else round(metrics.get('expected_loss'), 2),
         'ev_floor': None if metrics.get('ev_floor') is None else round(metrics.get('ev_floor'), 2),
+        'ev_ratio': None if metrics.get('ev_ratio') is None else round(metrics.get('ev_ratio'), 4),
+        'a8_expected_win': None if metrics.get('expected_win') is None else round(metrics.get('expected_win'), 2),
+        'a8_expected_loss': None if metrics.get('expected_loss') is None else round(metrics.get('expected_loss'), 2),
+        'a8_ev_floor': None if metrics.get('ev_floor') is None else round(metrics.get('ev_floor'), 2),
+        'a8_ev_ratio': None if metrics.get('ev_ratio') is None else round(metrics.get('ev_ratio'), 4),
+        'a8_pass': bool(metrics.get('passes')),
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
     }
 
@@ -6607,8 +6621,14 @@ def _build3_apply_a8_ev_gate(candidates):
         cand['build3ExpectedWin'] = None if metrics.get('expected_win') is None else round(metrics.get('expected_win'), 2)
         cand['build3ExpectedLoss'] = None if metrics.get('expected_loss') is None else round(metrics.get('expected_loss'), 2)
         cand['build3EvFloor'] = None if metrics.get('ev_floor') is None else round(metrics.get('ev_floor'), 2)
+        cand['build3EvRatio'] = None if metrics.get('ev_ratio') is None else round(metrics.get('ev_ratio'), 4)
         cand['build3EvFloorMult'] = BUILD3_EV_FLOOR_MULT
         cand['build3EvPass'] = bool(metrics.get('passes'))
+        cand['a8_expected_win'] = cand['build3ExpectedWin']
+        cand['a8_expected_loss'] = cand['build3ExpectedLoss']
+        cand['a8_ev_floor'] = cand['build3EvFloor']
+        cand['a8_ev_ratio'] = cand['build3EvRatio']
+        cand['a8_pass'] = cand['build3EvPass']
         if metrics.get('passes'):
             survivors.append(cand)
         else:
@@ -6618,7 +6638,7 @@ def _build3_apply_a8_ev_gate(candidates):
         'n_ev_below_floor': len(rejected),
         'n_candidates_after_a8': len(survivors),
         'a8_gate_verdict': 'WAIT' if candidates and not survivors and rejected else 'PASS',
-        'a8_gate_reason': 'ALL_NEGATIVE_EV' if candidates and not survivors and rejected else 'NONE',
+        'a8_gate_reason': BUILD3_A8_BELOW_FLOOR_REASON if candidates and not survivors and rejected else 'NONE',
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
     }
     return survivors, rejected, summary
@@ -6689,7 +6709,13 @@ def _build3_candidate_brief(candidate, rank=None):
         'build3ExpectedWin': candidate.get('build3ExpectedWin'),
         'build3ExpectedLoss': candidate.get('build3ExpectedLoss'),
         'build3EvFloor': candidate.get('build3EvFloor'),
+        'build3EvRatio': candidate.get('build3EvRatio'),
         'build3EvPass': candidate.get('build3EvPass'),
+        'a8_expected_win': candidate.get('a8_expected_win'),
+        'a8_expected_loss': candidate.get('a8_expected_loss'),
+        'a8_ev_floor': candidate.get('a8_ev_floor'),
+        'a8_ev_ratio': candidate.get('a8_ev_ratio'),
+        'a8_pass': candidate.get('a8_pass'),
         'deterministic_rank': candidate.get('deterministic_rank'),
     }
 
@@ -6703,7 +6729,8 @@ def _build3_rank_fingerprint(candidate):
         'teacher_rank_active': 1,
         'teacher_score': 0.0,
         'teacher_n': 0,
-        'premiumEdge': candidate.get('premiumEdge', candidate.get('ev', 0)),
+        'premiumEdge': candidate.get('premiumEdge'),
+        'premium_edge_status': 'OK' if candidate.get('premiumEdge') is not None else 'MISSING',
         'probProfit': candidate.get('probProfit'),
         'p_ml': candidate.get('p_ml') if not candidate.get('mlUnsure') else 0.0,
         'note': 'rank tuple unchanged; teacher ranking inactive for BUILD 3',
@@ -6766,6 +6793,7 @@ def _build3_make_ab_payload(
         'n_candidates_after_lane_gate': lane_summary.get('n_candidates_after_lane_gate'),
         'n_ev_negative': a8_summary.get('n_ev_below_floor'),
         'n_ev_below_floor': a8_summary.get('n_ev_below_floor'),
+        'a8_ev_floor_mult': a8_summary.get('ev_floor_mult'),
         'n_bnf_removed_by_calm_lane_gate': lane_summary.get('n_bnf_removed_by_calm_lane_gate'),
         'n_nf_survivors_after_a8': lane_summary.get('n_nf_survivors_after_a8'),
         'vix': lane_summary.get('vix'),
@@ -7269,7 +7297,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         if realized_vol:
             true_prob = 1 - abs(_chain_delta(strikes, be, pair['sellType'], spot, T, realized_vol))
     premium_edge = round(true_prob * max_profit - (1 - true_prob) * max_loss)
-    ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)
+    ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
     sell_theta = _chain_theta(strikes, pair['sell'], pair['sellType'], spot, T, vol) * lot_size
     buy_theta = _chain_theta(strikes, pair['buy'], pair['buyType'], spot, T, vol) * lot_size
     net_theta = round(-(sell_theta - buy_theta) if is_credit else (sell_theta - buy_theta))
@@ -7817,7 +7845,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     )
                     continue
 
-                ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
+                ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
                 net_theta = round(abs(
                     _chain_theta(strikes, sell_call, 'CE', spot, T, vol) +
                     _chain_theta(strikes, sell_put, 'PE', spot, T, vol) -
@@ -8001,7 +8029,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 )
                 continue
 
-            ev = round(prob * max_profit * 0.65 - (1 - prob) * max_loss)  # Gemini fix
+            ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",
                 'type': 'IRON_BUTTERFLY', 'width': width, 'legs': [
@@ -8102,7 +8130,12 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         # 7: Wall score
         wall = c.get('wallScore', 0)
         # 8: Premium edge — honest EV-like ranking signal after hard gates pass
-        premium_edge = c.get('premiumEdge', c.get('ev', 0))
+        if c.get('premiumEdge') is None:
+            c['premium_edge_status'] = 'MISSING'
+            premium_edge = float('-inf')
+        else:
+            c['premium_edge_status'] = 'OK'
+            premium_edge = c.get('premiumEdge')
         # 9: Probability
         prob = c.get('probProfit', 0)
         # 10: ML score — tiebreaker. Neutralised when OOD/UNSURE.
@@ -8858,7 +8891,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 gate_reason = a8_summary.get('a8_gate_reason')
                 if gate_reason == 'NONE':
                     gate_reason = lane_summary.get('lane_gate_reason')
-                if gate_reason == 'ALL_NEGATIVE_EV':
+                if gate_reason == BUILD3_A8_BELOW_FLOOR_REASON:
                     wait_reason = 'BUILD 3 A8 gate: all generated candidates are below the 1.10 EV floor.'
                 elif gate_reason == 'CALM_NF_ONLY_WAIT':
                     wait_reason = 'BUILD 3 calm NF-lane gate: only BNF intraday survived in calm regime.'
