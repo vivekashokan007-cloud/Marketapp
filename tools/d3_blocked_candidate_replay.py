@@ -13,6 +13,7 @@ import csv
 import json
 import os
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ REPORTS_DIR = REPO_ROOT / "reports"
 GRADLE_PROPERTIES = REPO_ROOT / "gradle.properties"
 DEFAULT_URL = "https://fdynxkfxohbnlvayouje.supabase.co"
 QUARANTINED_TRADE_IDS = {"176", "177", "178", "180", "181"}
+SUPABASE_RETRY_ATTEMPTS = 3
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -318,15 +320,30 @@ def _fetch_outcome_rows(table: str, date_from: str, date_to: str) -> list[dict[s
         "order": "session_date.asc,created_at.asc",
         "limit": 1000,
     }
-    rows = hrh._supabase_get(table, params)
+    rows = _supabase_get_with_retry(table, params)
     return [row for row in rows if isinstance(row, dict)]
+
+
+def _supabase_get_with_retry(table: str, params: dict[str, Any], *, paged: bool = False) -> list[dict[str, Any]]:
+    last_error: Exception | None = None
+    for attempt in range(1, SUPABASE_RETRY_ATTEMPTS + 1):
+        try:
+            if paged:
+                return hrh._supabase_get_page(table, params)
+            return hrh._supabase_get(table, params)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= SUPABASE_RETRY_ATTEMPTS:
+                break
+            time.sleep(2 * attempt)
+    raise RuntimeError(f"Supabase GET {table} failed after {SUPABASE_RETRY_ATTEMPTS} attempts: {last_error}") from last_error
 
 
 def _fetch_snapshot_headers(session_date: str, page_size: int = 25) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     offset = 0
     while True:
-        page = hrh._supabase_get_page(
+        page = _supabase_get_with_retry(
             "ml_brain_snapshots",
             {
                 "session_date": f"eq.{session_date}",
@@ -335,6 +352,7 @@ def _fetch_snapshot_headers(session_date: str, page_size: int = 25) -> list[dict
                 "limit": page_size,
                 "offset": offset,
             },
+            paged=True,
         )
         valid = [row for row in page if isinstance(row, dict)]
         rows.extend(valid)
@@ -345,7 +363,7 @@ def _fetch_snapshot_headers(session_date: str, page_size: int = 25) -> list[dict
 
 
 def _fetch_snapshot_detail(snapshot_id: str) -> dict[str, Any] | None:
-    page = hrh._supabase_get_page(
+    page = _supabase_get_with_retry(
         "ml_brain_snapshots",
         {
             "id": f"eq.{snapshot_id}",
@@ -353,6 +371,7 @@ def _fetch_snapshot_detail(snapshot_id: str) -> dict[str, Any] | None:
             "limit": 1,
             "offset": 0,
         },
+        paged=True,
     )
     if not page:
         return None
@@ -360,8 +379,12 @@ def _fetch_snapshot_detail(snapshot_id: str) -> dict[str, Any] | None:
     return row if isinstance(row, dict) else None
 
 
-def _fetch_snapshots_safely(session_date: str) -> list[dict[str, Any]]:
+def _fetch_snapshots_safely(session_date: str, *, offset: int = 0, limit: int = 0) -> list[dict[str, Any]]:
     headers = _fetch_snapshot_headers(session_date)
+    if offset > 0:
+        headers = headers[offset:]
+    if limit > 0:
+        headers = headers[:limit]
     rows: list[dict[str, Any]] = []
     for header in headers:
         snapshot_id = str(header.get("id") or "")
@@ -371,6 +394,11 @@ def _fetch_snapshots_safely(session_date: str) -> list[dict[str, Any]]:
         if detail is not None:
             rows.append(detail)
     return rows
+
+
+def _progress(enabled: bool, message: str) -> None:
+    if enabled:
+        print(message, file=sys.stderr, flush=True)
 
 
 def _build_outcome_maps(date_from: str, date_to: str) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[tuple[str, str], dict[str, Any]]]:
@@ -457,9 +485,21 @@ def _collect_for_session_date(
     session_date: str,
     eval_map: dict[tuple[str, str], dict[str, Any]],
     reco_map: dict[tuple[str, str], dict[str, Any]],
+    *,
+    progress_every: int = 0,
+    max_snapshots: int = 0,
+    snapshot_offset: int = 0,
 ) -> tuple[list[ReplayRow], dict[str, Any]]:
-    snapshots = _fetch_snapshots_safely(session_date)
+    progress_enabled = progress_every > 0
+    _progress(progress_enabled, f"[d3] {session_date}: fetching snapshots")
+    snapshots = _fetch_snapshots_safely(session_date, offset=snapshot_offset, limit=max_snapshots)
+    if snapshot_offset > 0:
+        _progress(progress_enabled, f"[d3] {session_date}: skipped first {snapshot_offset} snapshots")
+    if max_snapshots > 0:
+        _progress(progress_enabled, f"[d3] {session_date}: capped detail fetch to {len(snapshots)} snapshots")
+    _progress(progress_enabled, f"[d3] {session_date}: fetched {len(snapshots)} snapshots; fetching chain rows")
     chain_rows = hrh._context_chain_rows_for_snapshots(snapshots)
+    _progress(progress_enabled, f"[d3] {session_date}: fetched {len(chain_rows)} chain rows")
     rows: list[ReplayRow] = []
     coverage = {
         "session_date": session_date,
@@ -474,7 +514,7 @@ def _collect_for_session_date(
         "candidate_rows": 0,
     }
 
-    for snapshot in snapshots:
+    for snapshot_index, snapshot in enumerate(snapshots, start=1):
         ctx = _json_load(snapshot.get("context_json"), {})
         if not isinstance(ctx, dict):
             ctx = {}
@@ -489,6 +529,15 @@ def _collect_for_session_date(
             coverage["snapshots_with_generated"] += 1
         if a8_killed:
             coverage["snapshots_with_a8_killed"] += 1
+
+        if progress_every > 0 and (snapshot_index == 1 or snapshot_index % progress_every == 0):
+            _progress(
+                True,
+                "[d3] "
+                + f"{session_date}: snapshot {snapshot_index}/{len(snapshots)} "
+                + f"generated={len(generated)} a8_killed={len(a8_killed)} "
+                + f"rows_so_far={coverage['candidate_rows']}",
+            )
 
         for cohort, candidates in (("A8_SURVIVOR", generated), ("A8_KILLED", a8_killed)):
             for candidate in candidates:
@@ -562,6 +611,7 @@ def _collect_for_session_date(
                         pricing_failed=pricing_failed,
                     )
                 )
+    _progress(progress_enabled, f"[d3] {session_date}: completed {coverage['candidate_rows']} candidate rows")
     return rows, coverage
 
 
@@ -696,13 +746,43 @@ def main() -> int:
         required=True,
         help="Commit SHA that froze reports/D3_BLOCKED_CANDIDATE_REPLAY_PREREG_20260721.md",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=0,
+        help="Print progress to stderr every N snapshots; 0 disables progress output.",
+    )
+    parser.add_argument(
+        "--max-snapshots",
+        type=int,
+        default=0,
+        help="Diagnostic cap for snapshot count; 0 means full replay.",
+    )
+    parser.add_argument(
+        "--snapshot-offset",
+        type=int,
+        default=0,
+        help="Skip the first N snapshots for chunked/restartable diagnostics.",
+    )
     args = parser.parse_args()
 
+    _progress(args.progress_every > 0, f"[d3] building outcome maps for {args.date_from}..{args.date_to}")
     eval_map, reco_map = _build_outcome_maps(args.date_from, args.date_to)
+    _progress(
+        args.progress_every > 0,
+        f"[d3] outcome maps: teacher={len(eval_map)} recommendation={len(reco_map)}",
+    )
     all_rows: list[ReplayRow] = []
     coverage_rows: list[dict[str, Any]] = []
     for session_date in hrh._iter_session_dates(args.date_from, args.date_to):
-        rows, coverage = _collect_for_session_date(session_date, eval_map, reco_map)
+        rows, coverage = _collect_for_session_date(
+            session_date,
+            eval_map,
+            reco_map,
+            progress_every=args.progress_every,
+            max_snapshots=args.max_snapshots,
+            snapshot_offset=args.snapshot_offset,
+        )
         all_rows.extend(rows)
         coverage_rows.append(coverage)
 
