@@ -72,11 +72,16 @@ def test_all_negative_candidate_set_returns_wait_reason():
 
 def test_a8_ev_ratio_is_explicit_and_uses_unhaircuted_expected_values():
     brain = load_brain()
-    ab_676 = cand("ab_676", prob=0.5345460722990175, max_profit=8800, max_loss=8206)
+    raw_prob = (892 + 6442) / (11558 + 6442)
+    rounded_payload_prob = round(raw_prob, 3)
+    ab_676 = cand("ab_676", prob=rounded_payload_prob, max_profit=11558, max_loss=6442)
+    ab_676["premiumEdge"] = round(raw_prob * ab_676["maxProfit"] - (1 - raw_prob) * ab_676["maxLoss"])
     survivors, rejected, summary = brain._build3_apply_a8_ev_gate([ab_676])
     assert survivors == [ab_676]
     assert rejected == []
     assert summary["a8_gate_reason"] == "NONE"
+    assert ab_676["probProfit"] == 0.407
+    assert ab_676["premiumEdge"] == 892
     assert ab_676["a8_expected_win"] == 4704.11
     assert ab_676["a8_expected_loss"] == 3820.11
     assert ab_676["a8_ev_floor"] == 4202.12

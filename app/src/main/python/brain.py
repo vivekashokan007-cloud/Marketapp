@@ -6547,6 +6547,8 @@ def _current_ist_poll_ts():
 
 def _build3_candidate_ev(candidate):
     c = candidate if isinstance(candidate, dict) else {}
+    # NOTE: A8 consumes payload-rounded probProfit (3dp); premiumEdge uses raw prob.
+    # Known precision split - do not harmonize without a measured decision.
     prob = _safe_num(c.get('probProfit'), None)
     max_profit = _safe_num(c.get('maxProfit'), None)
     max_loss = _safe_num(c.get('maxLoss'), None)

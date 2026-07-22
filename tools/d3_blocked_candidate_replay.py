@@ -150,10 +150,15 @@ def _strategy_family(candidate: dict[str, Any]) -> str:
     return str(candidate.get("type") or candidate.get("strategy_type") or "OTHER").upper()
 
 
-def _premium_edge_bucket(candidate: dict[str, Any]) -> str:
+def _stored_premium_edge(candidate: dict[str, Any]) -> float | None:
     value = _safe_float(candidate.get("premiumEdge"))
     if value is None:
         value = _safe_float(candidate.get("premium_edge"))
+    return value
+
+
+def _premium_edge_bucket(candidate: dict[str, Any]) -> str:
+    value = _stored_premium_edge(candidate)
     if value is None:
         return "EDGE_MISSING"
     if value < 0:
