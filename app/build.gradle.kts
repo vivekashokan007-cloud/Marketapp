@@ -90,4 +90,5 @@ dependencies {
     implementation("com.google.android.material:material:1.11.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
