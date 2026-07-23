@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b346: fix close button onclick quoting regression and throttle heavy ML snapshot bridge reads.
+        // b351: fix poll jitter from duplicate log capture and duplicate resume sync wake.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 350
-        versionName = "2.5.19"
+        versionCode = 351
+        versionName = "2.5.20"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
