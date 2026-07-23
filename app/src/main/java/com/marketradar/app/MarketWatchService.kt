@@ -1014,7 +1014,6 @@ class MarketWatchService : Service() {
             runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson, nf50Breadth)
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
-            Log.d(TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
             LogBuffer.add('D', TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
         } finally {
             pollInProgress.set(false)
@@ -2982,7 +2981,6 @@ class MarketWatchService : Service() {
                 }
             }
             LogBuffer.add('W', TAG, diag)
-            Log.w(TAG, diag)
             if (rejectedRows == null || rejectedRows.length() == 0) return true
 
             val syntheticRows = buildRejectedCandidateRows(

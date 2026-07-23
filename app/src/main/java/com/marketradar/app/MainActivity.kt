@@ -55,6 +55,7 @@ class MainActivity : AppCompatActivity() {
     private val APP_URL = "https://vivekashokan007-cloud.github.io/MarketVivi/"
     private val UPDATE_URL = "https://api.github.com/repos/vivekashokan007-cloud/Marketapp/releases/latest"
     private val PURPLE = Color.parseColor("#7B2FC4")
+    private var lastNativeSyncElapsedMs = 0L
     private var isManualRefresh = false
     private var lastLoadFailedMainFrame = false
     private val client = OkHttpClient()
@@ -79,6 +80,7 @@ class MainActivity : AppCompatActivity() {
                         "(function(){ if(typeof syncFromNative==='function') syncFromNative('$escaped'); else console.warn('[APK] syncFromNative not found'); })()",
                         null
                     )
+                    lastNativeSyncElapsedMs = android.os.SystemClock.elapsedRealtime()
                 } else {
                     // Brain failed or no data, but still wake the UI to refresh poll badge
                     Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative (no data, poll-only wake)")
@@ -86,6 +88,7 @@ class MainActivity : AppCompatActivity() {
                         "(function(){ if(typeof syncFromNative==='function') syncFromNative(null); })()",
                         null
                     )
+                    lastNativeSyncElapsedMs = android.os.SystemClock.elapsedRealtime()
                 }
             }
         }
@@ -625,6 +628,10 @@ class MainActivity : AppCompatActivity() {
             if (lastLoadFailedMainFrame || neverLoaded) {
                 lastLoadFailedMainFrame = false
                 webView.loadUrl(restoredWebUrl())
+                return@post
+            }
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            if (nowElapsed - lastNativeSyncElapsedMs < 5_000L) {
                 return@post
             }
             injectNativeBridge()

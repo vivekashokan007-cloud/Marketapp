@@ -57,6 +57,7 @@ object LogcatCaptureService {
         for (line in newLines) {
             val m = pattern.matchEntire(line) ?: continue
             val (_, level, tag, msg) = m.destructured
+            if (LogBuffer.wasRecentlySeen(level[0], tag.trim(), msg)) continue
             // Do not mirror captured logcat lines back into logcat.
             // Mirroring here creates self-amplifying feedback loops.
             LogBuffer.add(level[0], tag.trim(), msg, mirrorToLogcat = false)

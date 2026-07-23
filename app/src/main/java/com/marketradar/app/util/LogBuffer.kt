@@ -68,6 +68,17 @@ object LogBuffer {
         }
     }
 
+    fun wasRecentlySeen(level: Char, tag: String, message: String, withinMs: Long = 6_000L): Boolean {
+        val cutoff = System.currentTimeMillis() - withinMs
+        for (entry in buffer) {
+            if (entry.timestampMs < cutoff) break
+            if (entry.level == level && entry.tag == tag && entry.message == message) {
+                return true
+            }
+        }
+        return false
+    }
+
     fun recordCrash(tag: String, message: String, throwable: Throwable? = null, extra: JSONObject? = null) {
         val now = System.currentTimeMillis()
         val fullMessage = buildString {
