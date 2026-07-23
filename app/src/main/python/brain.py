@@ -4978,10 +4978,11 @@ def position_verdict(trade, insights, regime, ctx):
             _pos_trace['final'] = dict(_final_verdict)
         return _final_verdict
 
-    pnl = raw_pnl
-    max_p = trade.get('max_profit', 1)
-    max_l = trade.get('max_loss', 1)
-    ci = trade.get('controlIndex')
+    pnl = _safe_num(raw_pnl, 0.0)
+    max_p = _safe_num(trade.get('max_profit'), 0.0)
+    max_l = _safe_num(trade.get('max_loss'), 0.0)
+    ci_raw = trade.get('controlIndex')
+    ci = None if ci_raw is None else _safe_num(ci_raw, None)
     pnl_pct = pnl / max_p if max_p > 0 else 0
     loss_pct = abs(pnl) / max_l if max_l > 0 and pnl < 0 else 0
     ci_meta = trade.get('controlIndexMeta') or {}
@@ -5012,10 +5013,10 @@ def position_verdict(trade, insights, regime, ctx):
 
     # b89: New signals from poll loop
     wall = trade.get('wallDrift') or {}
-    wall_sev = wall.get('severity', 0)
-    vix_chg = trade.get('vixChange', 0)
-    peak_erosion = trade.get('peakErosion', 0)  # % of peak lost
-    peak_pnl = trade.get('peak_pnl', 0)
+    wall_sev = _safe_num(wall.get('severity'), 0)
+    vix_chg = _safe_num(trade.get('vixChange'), 0)
+    peak_erosion = _safe_num(trade.get('peakErosion'), 0)  # % of peak lost
+    peak_pnl = _safe_num(trade.get('peak_pnl'), 0)
 
     # Check insights for strong signals
     has_wall = any(i.get('label', '').startswith('Wall') for i in insights)
@@ -5231,14 +5232,14 @@ def position_verdict(trade, insights, regime, ctx):
 
     # b115: Breakeven cushion — the REAL danger line, not sell strike
     # be_upper = upper breakeven (IC/IB/Bear Call), be_lower = lower breakeven (IC/IB/Bull Put)
-    be_upper = trade.get('be_upper') or trade.get('beUpper')
-    be_lower = trade.get('be_lower') or trade.get('beLower')
-    sell_strike = trade.get('sell_strike', 0)
-    spot = trade.get('current_spot', 0)
+    be_upper = _safe_num(trade.get('be_upper') or trade.get('beUpper'), None)
+    be_lower = _safe_num(trade.get('be_lower') or trade.get('beLower'), None)
+    sell_strike = _safe_num(trade.get('sell_strike'), 0)
+    spot = _safe_num(trade.get('current_spot'), 0)
     _be_matched = False
     if spot and (be_upper or be_lower):
         _be_eligible = True
-        vix = ctx.get('vix', 20)
+        vix = _safe_num(ctx.get('vix', 20), 20)
         # BR73: Annualized to daily volatility denominator fix
         daily_sigma = spot * (vix / 100) / math.sqrt(252) if spot > 0 else 300
         if is_4leg and be_upper and be_lower:
@@ -5759,7 +5760,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.21"
+BRAIN_VERSION = "2.5.22"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
