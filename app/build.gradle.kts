@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b351: fix poll jitter from duplicate log capture and duplicate resume sync wake.
+        // b352: harden web position rendering against nullable valuation fields.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 351
-        versionName = "2.5.20"
+        versionCode = 352
+        versionName = "2.5.21"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
