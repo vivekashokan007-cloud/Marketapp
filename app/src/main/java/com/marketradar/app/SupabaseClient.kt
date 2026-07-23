@@ -468,6 +468,7 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
+            sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
@@ -495,10 +496,23 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
+            sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
         return rows
+    }
+
+    private fun sanitizeFailedIntegrityTeacherRow(row: JSONObject) {
+        if (!row.optString("price_integrity").equals("FAIL", ignoreCase = true)) return
+        listOf(
+            "managed_pnl",
+            "managed_gross_pnl",
+            "friction_cost",
+            "r_multiple",
+            "captured_pct",
+            "is_success"
+        ).forEach(row::remove)
     }
 
     /**
@@ -1270,23 +1284,35 @@ object SupabaseClient {
     }
 
     fun fetchRecentEvaluationOutcomes(limit: Int = 1000): JSONArray {
-        val evaluationRows = select("ml_evaluation_outcomes", null, "created_at.desc", limit)
+        val shadowRows = normalizeShadowOutcomeRows(
+            select("ml_evaluation_outcomes_s1", null, "effective_session_date.desc,created_at.desc", limit)
+        )
+        if (shadowRows.length() > 0) return shadowRows
+        val evaluationRows = normalizeLegacyOutcomeRows(select("ml_evaluation_outcomes", null, "created_at.desc", limit))
         if (evaluationRows.length() > 0) return evaluationRows
-        return select("ml_decisions", null, "created_at.desc", limit)
+        return normalizeLegacyOutcomeRows(select("ml_decisions", null, "created_at.desc", limit))
     }
 
     fun fetchEvaluationOutcomesForDate(sessionDate: String, limit: Int = 5000): JSONArray {
         val filter = "session_date=eq.$sessionDate"
-        val evaluationRows = select("ml_evaluation_outcomes", filter, "created_at.desc", limit)
+        val shadowRows = normalizeShadowOutcomeRows(
+            select("ml_evaluation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
+        )
+        if (shadowRows.length() > 0) return shadowRows
+        val evaluationRows = normalizeLegacyOutcomeRows(select("ml_evaluation_outcomes", filter, "created_at.desc", limit))
         if (evaluationRows.length() > 0) return evaluationRows
-        val legacyRows = select("ml_decisions", filter, "created_at.desc", limit)
+        val legacyRows = normalizeLegacyOutcomeRows(select("ml_decisions", filter, "created_at.desc", limit))
         if (legacyRows.length() > 0) return legacyRows
         return JSONArray()
     }
 
     private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
         val filter = "session_date=eq.$sessionDate"
-        val rows = select("ml_recommendation_outcomes", filter, "created_at.desc", limit)
+        val shadowRows = normalizeShadowOutcomeRows(
+            select("ml_recommendation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
+        )
+        if (shadowRows.length() > 0) return shadowRows
+        val rows = normalizeLegacyOutcomeRows(select("ml_recommendation_outcomes", filter, "created_at.desc", limit))
         if (rows.length() > 0) {
             var hasNonPrimary = false
             for (i in 0 until rows.length()) {
@@ -1298,9 +1324,36 @@ object SupabaseClient {
             }
             if (hasNonPrimary) return rows
         }
-        val evalRows = select("ml_evaluation_outcomes", filter, "created_at.desc", limit)
+        val evalRows = normalizeLegacyOutcomeRows(select("ml_evaluation_outcomes", filter, "created_at.desc", limit))
         if (evalRows.length() > 0) return evalRows
         return JSONArray()
+    }
+
+    private fun normalizeLegacyOutcomeRows(rows: JSONArray): JSONArray {
+        for (i in 0 until rows.length()) {
+            rows.optJSONObject(i)?.let(::sanitizeFailedIntegrityTeacherRow)
+        }
+        return rows
+    }
+
+    private fun normalizeShadowOutcomeRows(rows: JSONArray): JSONArray {
+        val out = JSONArray()
+        for (i in 0 until rows.length()) {
+            val src = rows.optJSONObject(i) ?: continue
+            val row = JSONObject(src.toString())
+            if (!src.isNull("effective_session_date")) row.put("session_date", src.opt("effective_session_date"))
+            if (!src.isNull("new_sim_pnl_h2")) row.put("sim_pnl_h2", src.opt("new_sim_pnl_h2"))
+            if (!src.isNull("new_outcome_h2")) row.put("outcome_h2", src.opt("new_outcome_h2"))
+            if (!src.isNull("new_canonical_won")) row.put("canonical_won", src.opt("new_canonical_won"))
+            if (!src.isNull("new_price_integrity")) row.put("price_integrity", src.opt("new_price_integrity"))
+            if (!src.isNull("new_h2_price_integrity_reason")) row.put("h2_price_integrity_reason", src.opt("new_h2_price_integrity_reason"))
+            if (!src.isNull("new_raw_data_status")) row.put("raw_data_status", src.opt("new_raw_data_status"))
+            if (!src.isNull("new_teacher_success")) row.put("is_success", src.opt("new_teacher_success"))
+            if (!src.isNull("new_teacher_expectancy_r")) row.put("r_multiple", src.opt("new_teacher_expectancy_r"))
+            row.put("source_table", "s1_shadow")
+            out.put(row)
+        }
+        return out
     }
 
     fun fetchEvaluationLaneSummary(sessionDate: String, limit: Int = 1000): JSONObject {
