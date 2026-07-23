@@ -908,11 +908,12 @@ class MarketMLService : Service() {
             val preparedCount = completeMeta?.optInt("snapshot_count", -1) ?: -1
             val cachedLegKeyCount = completeMeta?.optInt("leg_key_count", -1) ?: -1
             val cachedEmptyReason = completeMeta?.optString("empty_reason", "")?.ifBlank { null }
+            val cachedH2CoverageOk = completeMeta?.optBoolean("h2_coverage_ok", false) == true
             if (preparedCount > 0) {
                 val cacheReady = if (cachedLegKeyCount == 0) {
                     cachedEmptyReason != null && chainFile.exists()
                 } else {
-                    chainFile.exists() && chainFile.length() > 0L
+                    chainFile.exists() && chainFile.length() > 0L && cachedH2CoverageOk
                 }
                 if (cacheReady) {
                     return@withContext EvaluationInputPreparation(
@@ -1029,12 +1030,23 @@ class MarketMLService : Service() {
             chainFile.delete()
             throw IllegalStateException("EVAL_NO_CHAINROWS: no matching chain rows found for ${legKeys.size} candidate legs from ${chainFeed.source}.")
         }
+        val h2Coverage = evaluateH2ChainCoverage(chainFile, legKeys)
+        if (!h2Coverage.ok) {
+            chainFile.delete()
+            completeFile.delete()
+            throw IllegalStateException(
+                "EVAL_CHAIN_H2_INCOMPLETE: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}; missing=${h2Coverage.missingPreview}"
+            )
+        }
         completeFile.writeText(
             org.json.JSONObject().apply {
                 put("session_date", sessionDate)
                 put("snapshot_count", snapshotCount)
                 put("leg_key_count", legKeys.size)
                 put("chain_row_count", chainFeed.rowCount)
+                put("h2_coverage_ok", h2Coverage.ok)
+                put("h2_coverage_required_legs", h2Coverage.required)
+                put("h2_coverage_present_legs", h2Coverage.present)
                 put("source", chainFeed.source)
                 put("page_count", chainFeed.pageCount)
                 put("completed_at", java.time.Instant.now().toString())
@@ -1053,6 +1065,76 @@ class MarketMLService : Service() {
             snapshotCount = snapshotCount,
             legKeyCount = legKeys.size
         )
+    }
+
+    private data class H2ChainCoverage(
+        val ok: Boolean,
+        val required: Int,
+        val present: Int,
+        val missingPreview: String
+    )
+
+    private fun evaluateH2ChainCoverage(
+        chainFile: File,
+        legKeys: List<SupabaseClient.EvaluationLegKey>
+    ): H2ChainCoverage {
+        if (legKeys.isEmpty()) return H2ChainCoverage(true, 0, 0, "")
+        val required = legKeys.distinctBy { evaluationLegKeyToken(it) }
+        val h2Rows = mutableListOf<org.json.JSONObject>()
+        val rows = readJsonArrayFile(chainFile)
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            if (!isH2EvaluationWindow(row.optString("poll_ts"))) continue
+            h2Rows.add(row)
+        }
+        val missing = required.filterNot { key -> h2Rows.any { row -> chainRowMatchesLegKey(row, key) } }
+        return H2ChainCoverage(
+            ok = missing.isEmpty(),
+            required = required.size,
+            present = required.size - missing.size,
+            missingPreview = missing.take(8).joinToString(";") { evaluationLegKeyToken(it) }
+        )
+    }
+
+    private fun chainRowMatchesLegKey(row: org.json.JSONObject, key: SupabaseClient.EvaluationLegKey): Boolean {
+        val indexKey = row.optString("index_key").trim()
+        val expiry = row.optString("expiry").trim()
+        val optionType = normalizeOptionType(row.optString("option_type"))
+        val strike = row.optDouble("strike", Double.NaN)
+        return key.indexKey.equals(indexKey, ignoreCase = true) &&
+            (key.expiry.isBlank() || expiry.isBlank() || key.expiry == expiry) &&
+            normalizeOptionType(key.optionType) == optionType &&
+            !strike.isNaN() &&
+            kotlin.math.abs(key.strike - strike) < 0.01
+    }
+
+    private fun evaluationLegKeyToken(key: SupabaseClient.EvaluationLegKey): String =
+        listOf(
+            key.indexKey.trim().uppercase(Locale.US),
+            key.expiry.trim(),
+            normalizeOptionType(key.optionType),
+            "%.2f".format(Locale.US, key.strike)
+        ).joinToString("|")
+
+    private fun normalizeOptionType(value: String): String {
+        return when (value.trim().uppercase(Locale.US)) {
+            "CALL", "C" -> "CE"
+            "PUT", "P" -> "PE"
+            else -> value.trim().uppercase(Locale.US)
+        }
+    }
+
+    private fun isH2EvaluationWindow(pollTs: String): Boolean {
+        if (pollTs.isBlank()) return false
+        return try {
+            val instant = java.time.OffsetDateTime.parse(pollTs).toInstant()
+            val cal = Calendar.getInstance(IST).apply { timeInMillis = instant.toEpochMilli() }
+            val hour = cal.get(Calendar.HOUR_OF_DAY)
+            val minute = cal.get(Calendar.MINUTE)
+            hour == 15 && minute in 15..30
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

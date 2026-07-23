@@ -127,6 +127,7 @@ class MarketWatchService : Service() {
         private const val LAST_POLL_GAP_WARNING_SLOT_KEY = "last_poll_gap_warning_slot"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
+        private const val SETTLED_EVALUATION_START_MINUTE = 16 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5
         private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
         private const val POLL_SLOT_TRIGGER_LAG_MS = 5_000L
@@ -847,18 +848,25 @@ class MarketWatchService : Service() {
 
         if (!currentHandedOff && !doneToday && !runningToday) {
             try {
-                val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
-                    action = "ACTION_DAY_EVALUATION"
-                    putExtra("session_date", today)
+                val targetMinute: String
+                if (minutes >= SETTLED_EVALUATION_START_MINUTE) {
+                    val mlService = Intent(this@MarketWatchService, MarketMLService::class.java).apply {
+                        action = "ACTION_DAY_EVALUATION"
+                        putExtra("session_date", today)
+                    }
+                    startForegroundService(mlService)
+                    targetMinute = "immediate_settled_window"
+                } else {
+                    MarketMLService.scheduleDayEvaluationReminder(this)
+                    targetMinute = "16:30+"
                 }
-                startForegroundService(mlService)
                 prefs.edit()
                     .putBoolean("hasDayEvalRun", true)
                     .putLong(DAY_EVAL_HANDOFF_TS_KEY, nowMs)
                     .putString(DAY_EVAL_HANDOFF_DATE_KEY, today)
                     .commit()
-                Log.i(TAG, "DAY_EVAL_HANDOFF: launched post-close evaluation for $today")
-                LogBuffer.add('I', TAG, "DAY_EVAL_HANDOFF: session=$today handoffTs=$nowMs")
+                Log.i(TAG, "DAY_EVAL_HANDOFF_DEFERRED: scheduled settled evaluation for $today target=$targetMinute")
+                LogBuffer.add('I', TAG, "DAY_EVAL_HANDOFF_DEFERRED: session=$today handoffTs=$nowMs target=$targetMinute")
             } catch (e: Exception) {
                 Log.e(TAG, "DAY_EVAL_HANDOFF_FAIL: ${e.message}")
                 prefs.edit()
