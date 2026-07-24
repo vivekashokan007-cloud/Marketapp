@@ -918,12 +918,12 @@ class MarketMLService : Service() {
             val preparedCount = completeMeta?.optInt("snapshot_count", -1) ?: -1
             val cachedLegKeyCount = completeMeta?.optInt("leg_key_count", -1) ?: -1
             val cachedEmptyReason = completeMeta?.optString("empty_reason", "")?.ifBlank { null }
-            val cachedH2CoverageOk = completeMeta?.optBoolean("h2_coverage_ok", false) == true
+            val cachedH2CoverageKnown = completeMeta?.has("h2_coverage_ok") == true
             if (preparedCount > 0) {
                 val cacheReady = if (cachedLegKeyCount == 0) {
                     cachedEmptyReason != null && chainFile.exists()
                 } else {
-                    chainFile.exists() && chainFile.length() > 0L && cachedH2CoverageOk
+                    chainFile.exists() && chainFile.length() > 0L && cachedH2CoverageKnown
                 }
                 if (cacheReady) {
                     return@withContext EvaluationInputPreparation(
@@ -1042,10 +1042,14 @@ class MarketMLService : Service() {
         }
         val h2Coverage = evaluateH2ChainCoverage(chainFile, legKeys)
         if (!h2Coverage.ok) {
-            chainFile.delete()
-            completeFile.delete()
-            throw IllegalStateException(
-                "EVAL_CHAIN_H2_INCOMPLETE: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}; missing=${h2Coverage.missingPreview}"
+            Log.w(
+                TAG,
+                "EVAL_CHAIN_H2_INCOMPLETE_ADVISORY: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}; missing=${h2Coverage.missingPreview}"
+            )
+            LogBuffer.add(
+                'W',
+                TAG,
+                "EVAL_CHAIN_H2_INCOMPLETE_ADVISORY: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}"
             )
         }
         completeFile.writeText(
@@ -1057,6 +1061,7 @@ class MarketMLService : Service() {
                 put("h2_coverage_ok", h2Coverage.ok)
                 put("h2_coverage_required_legs", h2Coverage.required)
                 put("h2_coverage_present_legs", h2Coverage.present)
+                put("h2_missing_preview", h2Coverage.missingPreview)
                 put("source", chainFeed.source)
                 put("page_count", chainFeed.pageCount)
                 put("completed_at", java.time.Instant.now().toString())

@@ -11,6 +11,7 @@ import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -234,7 +235,10 @@ object SupabaseClient {
         val source: String,
         val rowCount: Int,
         val pageCount: Int,
-        val capped: Boolean = false
+        val capped: Boolean = false,
+        val h2Required: Int = 0,
+        val h2Present: Int = 0,
+        val h2MissingPreview: String = ""
     )
 
     data class SnapshotStreamResult(
@@ -1013,6 +1017,8 @@ object SupabaseClient {
 
         val tmpFile = File(outputFile.parentFile, "${outputFile.name}.tmp")
         var lastResult = ChainStreamResult("no_chain_source", 0, 0)
+        var bestPartialResult: ChainStreamResult? = null
+        var bestPartialFile: File? = null
         for (candidateSource in sources) {
             tmpFile.delete()
             val result = writePagedFilteredChain(
@@ -1027,8 +1033,20 @@ object SupabaseClient {
             )
             lastResult = result
             if (result.rowCount > 0) {
-                replaceFile(tmpFile, outputFile)
-                return result
+                if (result.h2Required == 0 || result.h2Present >= result.h2Required) {
+                    replaceFile(tmpFile, outputFile)
+                    return result
+                }
+                if (bestPartialResult == null || result.h2Present > (bestPartialResult?.h2Present ?: -1)) {
+                    val partial = File(outputFile.parentFile, "${outputFile.name}.${candidateSource.source.hashCode()}.partial")
+                    replaceFile(tmpFile, partial)
+                    bestPartialFile?.delete()
+                    bestPartialFile = partial
+                    bestPartialResult = result
+                }
+                Log.w(TAG, "EVAL_CHAIN_SOURCE_H2_INCOMPLETE: source=${result.source} h2=${result.h2Present}/${result.h2Required}; trying next source")
+                LogBuffer.add('W', TAG, "EVAL_CHAIN_SOURCE_H2_INCOMPLETE: source=${result.source} h2=${result.h2Present}/${result.h2Required}; trying next source")
+                continue
             }
             if (result.capped) {
                 Log.w(TAG, "EVAL_CHAIN_SOURCE_CAPPED_EMPTY: source=${result.source} pages=${result.pageCount}; trying next source")
@@ -1037,6 +1055,12 @@ object SupabaseClient {
             tmpFile.delete()
         }
 
+        bestPartialResult?.let { result ->
+            bestPartialFile?.let { file ->
+                if (file.exists()) replaceFile(file, outputFile)
+            }
+            return result
+        }
         outputFile.writeText("[]")
         return lastResult
     }
@@ -1066,6 +1090,8 @@ object SupabaseClient {
         var rows = 0
         var reachedEnd = false
         var first = true
+        val requiredH2Legs = legKeys.distinctBy { evaluationLegKeyToken(it) }
+        val h2Present = linkedSetOf<String>()
         val bufferedRows = if (reverseOutput) mutableListOf<String>() else null
 
         outputFile.bufferedWriter().use { writer ->
@@ -1084,6 +1110,11 @@ object SupabaseClient {
                     val normalized = normalizedChainRow(raw) ?: continue
                     if (!matchesEvaluationLeg(normalized, legKeys)) continue
                     val rowText = normalized.toString()
+                    if (isH2EvaluationWindow(normalized.optString("poll_ts"))) {
+                        requiredH2Legs.firstOrNull { chainRowMatchesEvaluationLeg(normalized, it) }?.let { key ->
+                            h2Present.add(evaluationLegKeyToken(key))
+                        }
+                    }
                     if (bufferedRows != null) {
                         bufferedRows.add(rowText)
                     } else {
@@ -1115,22 +1146,48 @@ object SupabaseClient {
             source = source,
             rowCount = rows,
             pageCount = pages,
-            capped = !reachedEnd && pages >= maxPages
+            capped = !reachedEnd && pages >= maxPages,
+            h2Required = requiredH2Legs.size,
+            h2Present = h2Present.size,
+            h2MissingPreview = requiredH2Legs
+                .filterNot { h2Present.contains(evaluationLegKeyToken(it)) }
+                .take(8)
+                .joinToString(";") { evaluationLegKeyToken(it) }
         )
     }
 
     private fun matchesEvaluationLeg(row: JSONObject, legKeys: List<EvaluationLegKey>): Boolean {
+        return legKeys.any { key -> chainRowMatchesEvaluationLeg(row, key) }
+    }
+
+    private fun chainRowMatchesEvaluationLeg(row: JSONObject, key: EvaluationLegKey): Boolean {
         val indexKey = row.optString("index_key").trim()
         val expiry = row.optString("expiry").trim()
         val optionType = normalizeOptionType(row.optString("option_type"))
         val strike = row.optDouble("strike", Double.NaN)
         if (indexKey.isBlank() || optionType.isBlank() || strike.isNaN()) return false
 
-        return legKeys.any { key ->
-            key.indexKey.equals(indexKey, ignoreCase = true) &&
-                (key.expiry.isBlank() || expiry.isBlank() || key.expiry == expiry) &&
-                normalizeOptionType(key.optionType) == optionType &&
-                kotlin.math.abs(key.strike - strike) < 0.01
+        return key.indexKey.equals(indexKey, ignoreCase = true) &&
+            (key.expiry.isBlank() || expiry.isBlank() || key.expiry == expiry) &&
+            normalizeOptionType(key.optionType) == optionType &&
+            kotlin.math.abs(key.strike - strike) < 0.01
+    }
+
+    private fun evaluationLegKeyToken(key: EvaluationLegKey): String =
+        listOf(
+            key.indexKey.trim().uppercase(Locale.US),
+            key.expiry.trim(),
+            normalizeOptionType(key.optionType),
+            "%.2f".format(Locale.US, key.strike)
+        ).joinToString("|")
+
+    private fun isH2EvaluationWindow(pollTs: String): Boolean {
+        if (pollTs.isBlank()) return false
+        return try {
+            val zoned = OffsetDateTime.parse(pollTs).atZoneSameInstant(ZoneId.of("Asia/Kolkata"))
+            zoned.hour == 15 && zoned.minute in 15..30
+        } catch (_: Exception) {
+            false
         }
     }
 
