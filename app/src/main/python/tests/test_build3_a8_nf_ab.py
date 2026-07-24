@@ -29,23 +29,26 @@ def cand(cid, index="NF", lane="NF_intraday", is_credit=True, prob=0.50, max_pro
     }
 
 
-def test_credit_ev_negative_rejected_under_a8():
+def test_credit_ev_negative_released_under_shadow_a8():
     brain = load_brain()
     survivors, rejected, summary = brain._build3_apply_a8_ev_gate([
         cand("credit_bad", is_credit=True, prob=0.50, max_profit=1000, max_loss=1000)
     ])
-    assert survivors == []
+    assert [c["id"] for c in survivors] == ["credit_bad"]
     assert len(rejected) == 1
     assert rejected[0]["rejection_stage"] == "ev_below_floor"
-    assert summary["a8_gate_reason"] == brain.BUILD3_A8_BELOW_FLOOR_REASON
+    assert rejected[0]["candidate_released_to_ranking"] is True
+    assert summary["a8_gate_verdict"] == "PASS"
+    assert summary["a8_gate_mode"] == "SHADOW_ONLY"
+    assert summary["n_ev_below_floor_released_to_ranking"] == 1
 
 
-def test_debit_ev_negative_rejected_under_a8():
+def test_debit_ev_negative_released_under_shadow_a8():
     brain = load_brain()
     survivors, rejected, summary = brain._build3_apply_a8_ev_gate([
         cand("debit_bad", is_credit=False, prob=0.45, max_profit=1000, max_loss=1000)
     ])
-    assert survivors == []
+    assert [c["id"] for c in survivors] == ["debit_bad"]
     assert len(rejected) == 1
     assert summary["n_ev_below_floor"] == 1
 
@@ -62,12 +65,13 @@ def test_credit_ev_positive_survives_a8():
 
 def test_all_negative_candidate_set_returns_wait_reason():
     brain = load_brain()
-    _, _, summary = brain._build3_apply_a8_ev_gate([
+    survivors, _, summary = brain._build3_apply_a8_ev_gate([
         cand("bad1", prob=0.50, max_profit=1000, max_loss=1000),
         cand("bad2", prob=0.40, max_profit=1000, max_loss=1000),
     ])
-    assert summary["a8_gate_verdict"] == "WAIT"
-    assert summary["a8_gate_reason"] == brain.BUILD3_A8_BELOW_FLOOR_REASON
+    assert [c["id"] for c in survivors] == ["bad1", "bad2"]
+    assert summary["a8_gate_verdict"] == "PASS"
+    assert summary["a8_gate_reason"] == "EV_BELOW_FLOOR_SOFTENED_TO_RANKING"
 
 
 def test_a8_ev_ratio_is_explicit_and_uses_unhaircuted_expected_values():
@@ -180,8 +184,8 @@ def test_old_picker_counterfactual_uses_original_pool_when_new_waits():
 
 
 if __name__ == "__main__":
-    test_credit_ev_negative_rejected_under_a8()
-    test_debit_ev_negative_rejected_under_a8()
+    test_credit_ev_negative_released_under_shadow_a8()
+    test_debit_ev_negative_released_under_shadow_a8()
     test_credit_ev_positive_survives_a8()
     test_all_negative_candidate_set_returns_wait_reason()
     test_calm_regime_with_nf_survivor_removes_bnf_intraday()

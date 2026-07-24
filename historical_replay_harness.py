@@ -1957,26 +1957,40 @@ def _historical_day_bounds(session_date: str) -> tuple[str, str]:
     return f"{session_date}T03:30:00+00:00", f"{session_date}T10:15:00+00:00"
 
 
-def _fetch_historical_option_sample(limit: int = 5) -> list[dict[str, Any]]:
+def _fetch_historical_option_sample(
+    limit: int = 5,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "select": "underlying,expiry_date,strike_price,option_type,interval_mins,bar_ts,open,high,low,close,volume,open_interest,lot_size,instrument_key",
+        "order": "bar_ts.asc",
+        "limit": limit,
+    }
+    if date_from and date_to:
+        start_ts, _ = _historical_day_bounds(date_from)
+        _, end_ts = _historical_day_bounds(date_to)
+        params["bar_ts"] = [f"gte.{start_ts}", f"lte.{end_ts}"]
     rows = _supabase_get_page(
         "historical_option_candles",
-        {
-            "select": "underlying,expiry_date,strike_price,option_type,interval_mins,bar_ts,open,high,low,close,volume,open_interest,lot_size,instrument_key",
-            "order": "bar_ts.asc",
-            "limit": limit,
-        },
+        params,
     )
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _fetch_historical_option_span() -> tuple[str, str]:
+def _fetch_historical_option_span(date_from: str | None = None, date_to: str | None = None) -> tuple[str, str]:
+    base_params: dict[str, Any] = {}
+    if date_from and date_to:
+        start_ts, _ = _historical_day_bounds(date_from)
+        _, end_ts = _historical_day_bounds(date_to)
+        base_params["bar_ts"] = [f"gte.{start_ts}", f"lte.{end_ts}"]
     first_rows = _supabase_get_page(
         "historical_option_candles",
-        {"select": "bar_ts", "order": "bar_ts.asc", "limit": 1},
+        {**base_params, "select": "bar_ts", "order": "bar_ts.asc", "limit": 1},
     )
     last_rows = _supabase_get_page(
         "historical_option_candles",
-        {"select": "bar_ts", "order": "bar_ts.desc", "limit": 1},
+        {**base_params, "select": "bar_ts", "order": "bar_ts.desc", "limit": 1},
     )
     first = first_rows[0].get("bar_ts") if first_rows and isinstance(first_rows[0], dict) else ""
     last = last_rows[0].get("bar_ts") if last_rows and isinstance(last_rows[0], dict) else ""
@@ -2115,7 +2129,7 @@ def class_b_audit(date_from: str, date_to: str, sample_days: int = CLASS_B_SAMPL
     print(f"[class_b] range={date_from}..{date_to}")
 
     try:
-        sample = _fetch_historical_option_sample(limit=5)
+        sample = _fetch_historical_option_sample(limit=5, date_from=date_from, date_to=date_to)
     except RuntimeError as exc:
         print(f"[class_b] historical_option_candles_sample=ERROR {exc}")
         return 2
@@ -2131,7 +2145,11 @@ def class_b_audit(date_from: str, date_to: str, sample_days: int = CLASS_B_SAMPL
     }
     observed_columns = set(sample[0].keys()) if sample else set()
     missing_columns = sorted(required_columns - observed_columns)
-    first_bar, last_bar = _fetch_historical_option_span()
+    try:
+        first_bar, last_bar = _fetch_historical_option_span(date_from, date_to)
+    except RuntimeError as exc:
+        first_bar, last_bar = "", ""
+        print(f"[class_b] historical_option_candles_span=ERROR {exc}")
     print(f"[class_b] historical_option_candles_sample_rows={len(sample)}")
     print(f"[class_b] historical_option_candles_span first={first_bar or '--'} last={last_bar or '--'}")
     print(

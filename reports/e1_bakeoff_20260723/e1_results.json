@@ -1,0 +1,1762 @@
+{
+  "categorical_features": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike2",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_vix",
+    "downtrend",
+    "index",
+    "inside_day",
+    "is_credit",
+    "mode",
+    "outside_day",
+    "sell_strike2",
+    "strategy",
+    "uptrend",
+    "vix_regime"
+  ],
+  "created_at_utc": "2026-07-23T16:57:50Z",
+  "dataset": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1_bakeoff_20260723/e1_primary_dataset.csv",
+  "dataset_sha256": "c54584aaa26177fa7b0f0b712f2e2b54a8c014e6a1da2c5e2d67d5290192594c",
+  "environment_size": "4.9G\t.e1_venv",
+  "feature_columns": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike",
+    "buy_strike2",
+    "consec_days",
+    "cost",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_range_sigma",
+    "day_vix",
+    "downtrend",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "index",
+    "inside_day",
+    "is_credit",
+    "max_loss",
+    "max_profit",
+    "mode",
+    "move_sigma",
+    "outside_day",
+    "sell_strike",
+    "sell_strike2",
+    "sigma_away",
+    "spot",
+    "strategy",
+    "uptrend",
+    "vix",
+    "vix_regime",
+    "weekday",
+    "width"
+  ],
+  "folds": 26,
+  "frozen_deployed_model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+  "head_to_head_within_day": {
+    "base_rate__vs__frozen_deployed": {
+      "base_rate_wins": 5,
+      "common_gradeable_days": 17,
+      "frozen_deployed_wins": 11,
+      "ties": 1
+    },
+    "base_rate__vs__logistic_baseline": {
+      "base_rate_wins": 4,
+      "common_gradeable_days": 17,
+      "logistic_baseline_wins": 13,
+      "ties": 0
+    },
+    "base_rate__vs__tabicl": {
+      "base_rate_wins": 4,
+      "common_gradeable_days": 17,
+      "tabicl_wins": 13,
+      "ties": 0
+    },
+    "frozen_deployed__vs__logistic_baseline": {
+      "common_gradeable_days": 17,
+      "frozen_deployed_wins": 6,
+      "logistic_baseline_wins": 10,
+      "ties": 1
+    },
+    "frozen_deployed__vs__tabicl": {
+      "common_gradeable_days": 17,
+      "frozen_deployed_wins": 4,
+      "tabicl_wins": 12,
+      "ties": 1
+    },
+    "logistic_baseline__vs__tabicl": {
+      "common_gradeable_days": 17,
+      "logistic_baseline_wins": 9,
+      "tabicl_wins": 6,
+      "ties": 2
+    }
+  },
+  "min_train_rows": 50,
+  "models": {
+    "base_rate": {
+      "folds": [
+        {
+          "day": "2026-06-03",
+          "latency_sec": 0.00010687500071071554,
+          "test_rows": 17,
+          "train_rows": 63
+        },
+        {
+          "day": "2026-06-04",
+          "latency_sec": 0.00010989600013999734,
+          "test_rows": 25,
+          "train_rows": 80
+        },
+        {
+          "day": "2026-06-05",
+          "latency_sec": 0.00014302099953056313,
+          "test_rows": 30,
+          "train_rows": 105
+        },
+        {
+          "day": "2026-06-08",
+          "latency_sec": 0.00018161499974667095,
+          "test_rows": 16,
+          "train_rows": 135
+        },
+        {
+          "day": "2026-06-09",
+          "latency_sec": 0.00019791699924098793,
+          "test_rows": 16,
+          "train_rows": 151
+        },
+        {
+          "day": "2026-06-12",
+          "latency_sec": 0.000217759999941336,
+          "test_rows": 3,
+          "train_rows": 167
+        },
+        {
+          "day": "2026-06-15",
+          "latency_sec": 0.0002182299995183712,
+          "test_rows": 22,
+          "train_rows": 170
+        },
+        {
+          "day": "2026-06-17",
+          "latency_sec": 0.00024223900072684046,
+          "test_rows": 5,
+          "train_rows": 192
+        },
+        {
+          "day": "2026-06-22",
+          "latency_sec": 0.00025697899945953395,
+          "test_rows": 14,
+          "train_rows": 197
+        },
+        {
+          "day": "2026-06-23",
+          "latency_sec": 0.000264374999460415,
+          "test_rows": 52,
+          "train_rows": 211
+        },
+        {
+          "day": "2026-06-24",
+          "latency_sec": 0.0003307289989606943,
+          "test_rows": 44,
+          "train_rows": 263
+        },
+        {
+          "day": "2026-06-29",
+          "latency_sec": 0.00040072899901133496,
+          "test_rows": 25,
+          "train_rows": 307
+        },
+        {
+          "day": "2026-07-01",
+          "latency_sec": 0.0007070840001688339,
+          "test_rows": 58,
+          "train_rows": 332
+        },
+        {
+          "day": "2026-07-02",
+          "latency_sec": 0.0005500000006577466,
+          "test_rows": 72,
+          "train_rows": 390
+        },
+        {
+          "day": "2026-07-03",
+          "latency_sec": 0.0006566659994859947,
+          "test_rows": 61,
+          "train_rows": 462
+        },
+        {
+          "day": "2026-07-07",
+          "latency_sec": 0.0007288540000445209,
+          "test_rows": 57,
+          "train_rows": 523
+        },
+        {
+          "day": "2026-07-08",
+          "latency_sec": 0.0008009369994397275,
+          "test_rows": 22,
+          "train_rows": 580
+        },
+        {
+          "day": "2026-07-09",
+          "latency_sec": 0.0008708339992153924,
+          "test_rows": 1,
+          "train_rows": 602
+        },
+        {
+          "day": "2026-07-13",
+          "latency_sec": 0.0008043750003707828,
+          "test_rows": 1,
+          "train_rows": 603
+        },
+        {
+          "day": "2026-07-14",
+          "latency_sec": 0.000804217999757384,
+          "test_rows": 5,
+          "train_rows": 604
+        },
+        {
+          "day": "2026-07-16",
+          "latency_sec": 0.0008155209998221835,
+          "test_rows": 7,
+          "train_rows": 609
+        },
+        {
+          "day": "2026-07-17",
+          "latency_sec": 0.0008232290001615183,
+          "test_rows": 10,
+          "train_rows": 616
+        },
+        {
+          "day": "2026-07-20",
+          "latency_sec": 0.0008662500003993046,
+          "test_rows": 2,
+          "train_rows": 626
+        },
+        {
+          "day": "2026-07-21",
+          "latency_sec": 0.0008591139994678088,
+          "test_rows": 5,
+          "train_rows": 628
+        },
+        {
+          "day": "2026-07-22",
+          "latency_sec": 0.0008465110004181042,
+          "test_rows": 3,
+          "train_rows": 633
+        },
+        {
+          "day": "2026-07-23",
+          "latency_sec": 0.0008489060001011239,
+          "test_rows": 1,
+          "train_rows": 636
+        }
+      ],
+      "metrics": {
+        "auc": 0.45387426900584793,
+        "brier": 0.2879669666501715,
+        "ece_10": 0.16911986180402896,
+        "log_loss": 0.7905945730708254,
+        "max_batch_latency_sec": 0.0008708339992153924,
+        "mean_within_day_auc": 0.5,
+        "median_batch_latency_sec": 0.0006033330000718706,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK",
+      "within_day": {
+        "days": [
+          {
+            "auc": 0.5,
+            "day": "2026-06-03",
+            "gradeable": true,
+            "losses": 3,
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-04",
+            "gradeable": true,
+            "losses": 23,
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-05",
+            "gradeable": true,
+            "losses": 17,
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-08",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-09",
+            "gradeable": true,
+            "losses": 9,
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-12",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-15",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "gradeable": false,
+            "losses": 5,
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-22",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-23",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-24",
+            "gradeable": true,
+            "losses": 37,
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-29",
+            "gradeable": true,
+            "losses": 11,
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-01",
+            "gradeable": true,
+            "losses": 51,
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-02",
+            "gradeable": true,
+            "losses": 57,
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-03",
+            "gradeable": true,
+            "losses": 24,
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-07",
+            "gradeable": true,
+            "losses": 25,
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-08",
+            "gradeable": true,
+            "losses": 5,
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "gradeable": false,
+            "losses": 1,
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-14",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "gradeable": false,
+            "losses": 10,
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "gradeable": false,
+            "losses": 2,
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "gradeable_days": 17,
+        "mean_auc": 0.5,
+        "single_class_days": 9
+      }
+    },
+    "frozen_deployed": {
+      "folds": [
+        {
+          "day": "2026-06-03",
+          "latency_sec": 0.026180781998846214,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 17,
+          "test_wins": 14
+        },
+        {
+          "day": "2026-06-04",
+          "latency_sec": 0.03740218799975992,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 25,
+          "test_wins": 2
+        },
+        {
+          "day": "2026-06-05",
+          "latency_sec": 0.044960573000935256,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 30,
+          "test_wins": 13
+        },
+        {
+          "day": "2026-06-08",
+          "latency_sec": 0.024210989999119192,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 16,
+          "test_wins": 10
+        },
+        {
+          "day": "2026-06-09",
+          "latency_sec": 0.024233750000348664,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 16,
+          "test_wins": 7
+        },
+        {
+          "day": "2026-06-12",
+          "latency_sec": 0.004611146001479938,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 3,
+          "test_wins": 1
+        },
+        {
+          "day": "2026-06-15",
+          "latency_sec": 0.0342975519997708,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 22,
+          "test_wins": 16
+        },
+        {
+          "day": "2026-06-17",
+          "latency_sec": 0.007447603999025887,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 5,
+          "test_wins": 0
+        },
+        {
+          "day": "2026-06-22",
+          "latency_sec": 0.02068291700015834,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 14,
+          "test_wins": 10
+        },
+        {
+          "day": "2026-06-23",
+          "latency_sec": 0.07680354100011755,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "day": "2026-06-24",
+          "latency_sec": 0.06486406299882219,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "day": "2026-06-29",
+          "latency_sec": 0.03693718800059287,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "day": "2026-07-01",
+          "latency_sec": 0.08564416599983815,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "day": "2026-07-02",
+          "latency_sec": 0.10739593800099101,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "day": "2026-07-03",
+          "latency_sec": 0.09057499999835272,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "day": "2026-07-07",
+          "latency_sec": 0.08424276000005193,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "day": "2026-07-08",
+          "latency_sec": 0.03290364500026044,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "day": "2026-07-09",
+          "latency_sec": 0.0015218230000755284,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "day": "2026-07-13",
+          "latency_sec": 0.001464531000237912,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "day": "2026-07-14",
+          "latency_sec": 0.007457708999936585,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "day": "2026-07-16",
+          "latency_sec": 0.010378229000707506,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "day": "2026-07-17",
+          "latency_sec": 0.014742395000212127,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "day": "2026-07-20",
+          "latency_sec": 0.0029633859994646627,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "day": "2026-07-21",
+          "latency_sec": 0.0073742179993132595,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "day": "2026-07-22",
+          "latency_sec": 0.004397603999677813,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "day": "2026-07-23",
+          "latency_sec": 0.001463958000385901,
+          "model_path": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/app/src/main/assets/ml_model.json",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.42666910331384017,
+        "brier": 0.32509989635933023,
+        "ece_10": 0.27150151603528466,
+        "log_loss": 0.8637813470495052,
+        "max_batch_latency_sec": 0.10739593800099101,
+        "mean_within_day_auc": 0.5369413797006923,
+        "median_batch_latency_sec": 0.024222369999733928,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK",
+      "within_day": {
+        "days": [
+          {
+            "auc": 0.7142857142857143,
+            "day": "2026-06-03",
+            "gradeable": true,
+            "losses": 3,
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.6956521739130435,
+            "day": "2026-06-04",
+            "gradeable": true,
+            "losses": 23,
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.5520361990950227,
+            "day": "2026-06-05",
+            "gradeable": true,
+            "losses": 17,
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.5666666666666667,
+            "day": "2026-06-08",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 0.4444444444444444,
+            "day": "2026-06-09",
+            "gradeable": true,
+            "losses": 9,
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 0.0,
+            "day": "2026-06-12",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.6145833333333334,
+            "day": "2026-06-15",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "gradeable": false,
+            "losses": 5,
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.55,
+            "day": "2026-06-22",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.6302083333333334,
+            "day": "2026-06-23",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.4015444015444015,
+            "day": "2026-06-24",
+            "gradeable": true,
+            "losses": 37,
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.33766233766233766,
+            "day": "2026-06-29",
+            "gradeable": true,
+            "losses": 11,
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.40476190476190477,
+            "day": "2026-07-01",
+            "gradeable": true,
+            "losses": 51,
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.5695906432748538,
+            "day": "2026-07-02",
+            "gradeable": true,
+            "losses": 57,
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.6261261261261262,
+            "day": "2026-07-03",
+            "gradeable": true,
+            "losses": 24,
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.9675,
+            "day": "2026-07-07",
+            "gradeable": true,
+            "losses": 25,
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.5529411764705883,
+            "day": "2026-07-08",
+            "gradeable": true,
+            "losses": 5,
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "gradeable": false,
+            "losses": 1,
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-07-14",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "gradeable": false,
+            "losses": 10,
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "gradeable": false,
+            "losses": 2,
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "gradeable_days": 17,
+        "mean_auc": 0.5369413797006923,
+        "single_class_days": 9
+      }
+    },
+    "logistic_baseline": {
+      "folds": [
+        {
+          "day": "2026-06-03",
+          "latency_sec": 0.031164844000159064,
+          "test_rows": 17,
+          "test_wins": 14,
+          "train_rows": 63
+        },
+        {
+          "day": "2026-06-04",
+          "latency_sec": 0.031515676999333664,
+          "test_rows": 25,
+          "test_wins": 2,
+          "train_rows": 80
+        },
+        {
+          "day": "2026-06-05",
+          "latency_sec": 0.02885307299948181,
+          "test_rows": 30,
+          "test_wins": 13,
+          "train_rows": 105
+        },
+        {
+          "day": "2026-06-08",
+          "latency_sec": 0.05491166599858843,
+          "test_rows": 16,
+          "test_wins": 10,
+          "train_rows": 135
+        },
+        {
+          "day": "2026-06-09",
+          "latency_sec": 0.06383921899941924,
+          "test_rows": 16,
+          "test_wins": 7,
+          "train_rows": 151
+        },
+        {
+          "day": "2026-06-12",
+          "latency_sec": 0.20671505199970852,
+          "test_rows": 3,
+          "test_wins": 1,
+          "train_rows": 167
+        },
+        {
+          "day": "2026-06-15",
+          "latency_sec": 0.1535592189993622,
+          "test_rows": 22,
+          "test_wins": 16,
+          "train_rows": 170
+        },
+        {
+          "day": "2026-06-17",
+          "latency_sec": 0.041456666998783476,
+          "test_rows": 5,
+          "test_wins": 0,
+          "train_rows": 192
+        },
+        {
+          "day": "2026-06-22",
+          "latency_sec": 0.06603046899908804,
+          "test_rows": 14,
+          "test_wins": 10,
+          "train_rows": 197
+        },
+        {
+          "day": "2026-06-23",
+          "latency_sec": 0.046027344000322046,
+          "test_rows": 52,
+          "test_wins": 48,
+          "train_rows": 211
+        },
+        {
+          "day": "2026-06-24",
+          "latency_sec": 0.08843994699964242,
+          "test_rows": 44,
+          "test_wins": 7,
+          "train_rows": 263
+        },
+        {
+          "day": "2026-06-29",
+          "latency_sec": 0.39153437499953725,
+          "test_rows": 25,
+          "test_wins": 14,
+          "train_rows": 307
+        },
+        {
+          "day": "2026-07-01",
+          "latency_sec": 0.2688306769996416,
+          "test_rows": 58,
+          "test_wins": 7,
+          "train_rows": 332
+        },
+        {
+          "day": "2026-07-02",
+          "latency_sec": 0.05496640599994862,
+          "test_rows": 72,
+          "test_wins": 15,
+          "train_rows": 390
+        },
+        {
+          "day": "2026-07-03",
+          "latency_sec": 0.039043593998940196,
+          "test_rows": 61,
+          "test_wins": 37,
+          "train_rows": 462
+        },
+        {
+          "day": "2026-07-07",
+          "latency_sec": 0.13867072900029598,
+          "test_rows": 57,
+          "test_wins": 32,
+          "train_rows": 523
+        },
+        {
+          "day": "2026-07-08",
+          "latency_sec": 0.1824620839997806,
+          "test_rows": 22,
+          "test_wins": 17,
+          "train_rows": 580
+        },
+        {
+          "day": "2026-07-09",
+          "latency_sec": 0.0639394789996004,
+          "test_rows": 1,
+          "test_wins": 0,
+          "train_rows": 602
+        },
+        {
+          "day": "2026-07-13",
+          "latency_sec": 0.04574130199944193,
+          "test_rows": 1,
+          "test_wins": 1,
+          "train_rows": 603
+        },
+        {
+          "day": "2026-07-14",
+          "latency_sec": 0.17121213599966723,
+          "test_rows": 5,
+          "test_wins": 3,
+          "train_rows": 604
+        },
+        {
+          "day": "2026-07-16",
+          "latency_sec": 0.05932473999928334,
+          "test_rows": 7,
+          "test_wins": 7,
+          "train_rows": 609
+        },
+        {
+          "day": "2026-07-17",
+          "latency_sec": 0.06705041700115544,
+          "test_rows": 10,
+          "test_wins": 0,
+          "train_rows": 616
+        },
+        {
+          "day": "2026-07-20",
+          "latency_sec": 0.1720307289997436,
+          "test_rows": 2,
+          "test_wins": 0,
+          "train_rows": 626
+        },
+        {
+          "day": "2026-07-21",
+          "latency_sec": 0.32421307299955515,
+          "test_rows": 5,
+          "test_wins": 5,
+          "train_rows": 628
+        },
+        {
+          "day": "2026-07-22",
+          "latency_sec": 0.19203968799956783,
+          "test_rows": 3,
+          "test_wins": 3,
+          "train_rows": 633
+        },
+        {
+          "day": "2026-07-23",
+          "latency_sec": 0.08581869799854758,
+          "test_rows": 1,
+          "test_wins": 1,
+          "train_rows": 636
+        }
+      ],
+      "metrics": {
+        "auc": 0.5258284600389863,
+        "brier": 0.33955223287272945,
+        "ece_10": 0.3010937416496732,
+        "log_loss": 1.7407134143136107,
+        "max_batch_latency_sec": 0.39153437499953725,
+        "mean_within_day_auc": 0.6844039347078659,
+        "median_batch_latency_sec": 0.06654044300012174,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK",
+      "within_day": {
+        "days": [
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-06-03",
+            "gradeable": true,
+            "losses": 3,
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.6956521739130435,
+            "day": "2026-06-04",
+            "gradeable": true,
+            "losses": 23,
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.7239819004524887,
+            "day": "2026-06-05",
+            "gradeable": true,
+            "losses": 17,
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-06-08",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 0.9682539682539683,
+            "day": "2026-06-09",
+            "gradeable": true,
+            "losses": 9,
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.13541666666666666,
+            "day": "2026-06-15",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "gradeable": false,
+            "losses": 5,
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.8,
+            "day": "2026-06-22",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.9114583333333334,
+            "day": "2026-06-23",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.9034749034749034,
+            "day": "2026-06-24",
+            "gradeable": true,
+            "losses": 37,
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.525974025974026,
+            "day": "2026-06-29",
+            "gradeable": true,
+            "losses": 11,
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.7983193277310925,
+            "day": "2026-07-01",
+            "gradeable": true,
+            "losses": 51,
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.5672514619883041,
+            "day": "2026-07-02",
+            "gradeable": true,
+            "losses": 57,
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.615990990990991,
+            "day": "2026-07-03",
+            "gradeable": true,
+            "losses": 24,
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.98125,
+            "day": "2026-07-07",
+            "gradeable": true,
+            "losses": 25,
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.3411764705882353,
+            "day": "2026-07-08",
+            "gradeable": true,
+            "losses": 5,
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "gradeable": false,
+            "losses": 1,
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-07-14",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "gradeable": false,
+            "losses": 10,
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "gradeable": false,
+            "losses": 2,
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "gradeable_days": 17,
+        "mean_auc": 0.6844039347078659,
+        "single_class_days": 9
+      }
+    },
+    "tabicl": {
+      "folds": [
+        {
+          "day": "2026-06-03",
+          "latency_sec": 37.788153735999,
+          "test_rows": 17,
+          "test_wins": 14,
+          "train_rows": 63
+        },
+        {
+          "day": "2026-06-04",
+          "latency_sec": 6.302073278000535,
+          "test_rows": 25,
+          "test_wins": 2,
+          "train_rows": 80
+        },
+        {
+          "day": "2026-06-05",
+          "latency_sec": 5.552030258999366,
+          "test_rows": 30,
+          "test_wins": 13,
+          "train_rows": 105
+        },
+        {
+          "day": "2026-06-08",
+          "latency_sec": 5.64249317499889,
+          "test_rows": 16,
+          "test_wins": 10,
+          "train_rows": 135
+        },
+        {
+          "day": "2026-06-09",
+          "latency_sec": 5.831247809999695,
+          "test_rows": 16,
+          "test_wins": 7,
+          "train_rows": 151
+        },
+        {
+          "day": "2026-06-12",
+          "latency_sec": 5.936807342000975,
+          "test_rows": 3,
+          "test_wins": 1,
+          "train_rows": 167
+        },
+        {
+          "day": "2026-06-15",
+          "latency_sec": 6.687575101999755,
+          "test_rows": 22,
+          "test_wins": 16,
+          "train_rows": 170
+        },
+        {
+          "day": "2026-06-17",
+          "latency_sec": 8.991331871000511,
+          "test_rows": 5,
+          "test_wins": 0,
+          "train_rows": 192
+        },
+        {
+          "day": "2026-06-22",
+          "latency_sec": 2.111086664999675,
+          "test_rows": 14,
+          "test_wins": 10,
+          "train_rows": 197
+        },
+        {
+          "day": "2026-06-23",
+          "latency_sec": 2.155858332000207,
+          "test_rows": 52,
+          "test_wins": 48,
+          "train_rows": 211
+        },
+        {
+          "day": "2026-06-24",
+          "latency_sec": 2.4342466660000355,
+          "test_rows": 44,
+          "test_wins": 7,
+          "train_rows": 263
+        },
+        {
+          "day": "2026-06-29",
+          "latency_sec": 2.616351926000789,
+          "test_rows": 25,
+          "test_wins": 14,
+          "train_rows": 307
+        },
+        {
+          "day": "2026-07-01",
+          "latency_sec": 3.0505216649999056,
+          "test_rows": 58,
+          "test_wins": 7,
+          "train_rows": 332
+        },
+        {
+          "day": "2026-07-02",
+          "latency_sec": 3.9527526550009497,
+          "test_rows": 72,
+          "test_wins": 15,
+          "train_rows": 390
+        },
+        {
+          "day": "2026-07-03",
+          "latency_sec": 3.1452056239995727,
+          "test_rows": 61,
+          "test_wins": 37,
+          "train_rows": 462
+        },
+        {
+          "day": "2026-07-07",
+          "latency_sec": 3.4370521870005177,
+          "test_rows": 57,
+          "test_wins": 32,
+          "train_rows": 523
+        },
+        {
+          "day": "2026-07-08",
+          "latency_sec": 3.308419008999408,
+          "test_rows": 22,
+          "test_wins": 17,
+          "train_rows": 580
+        },
+        {
+          "day": "2026-07-09",
+          "latency_sec": 3.3811452589998225,
+          "test_rows": 1,
+          "test_wins": 0,
+          "train_rows": 602
+        },
+        {
+          "day": "2026-07-13",
+          "latency_sec": 3.1684698429999116,
+          "test_rows": 1,
+          "test_wins": 1,
+          "train_rows": 603
+        },
+        {
+          "day": "2026-07-14",
+          "latency_sec": 3.1719399979992886,
+          "test_rows": 5,
+          "test_wins": 3,
+          "train_rows": 604
+        },
+        {
+          "day": "2026-07-16",
+          "latency_sec": 3.1952484880002885,
+          "test_rows": 7,
+          "test_wins": 7,
+          "train_rows": 609
+        },
+        {
+          "day": "2026-07-17",
+          "latency_sec": 3.2309363530002884,
+          "test_rows": 10,
+          "test_wins": 0,
+          "train_rows": 616
+        },
+        {
+          "day": "2026-07-20",
+          "latency_sec": 3.255697238000721,
+          "test_rows": 2,
+          "test_wins": 0,
+          "train_rows": 626
+        },
+        {
+          "day": "2026-07-21",
+          "latency_sec": 3.26288077999925,
+          "test_rows": 5,
+          "test_wins": 5,
+          "train_rows": 628
+        },
+        {
+          "day": "2026-07-22",
+          "latency_sec": 3.2910627069995826,
+          "test_rows": 3,
+          "test_wins": 3,
+          "train_rows": 633
+        },
+        {
+          "day": "2026-07-23",
+          "latency_sec": 8.631402443999832,
+          "test_rows": 1,
+          "test_wins": 1,
+          "train_rows": 636
+        }
+      ],
+      "metrics": {
+        "auc": 0.5991228070175438,
+        "brier": 0.26992216858062484,
+        "ece_10": 0.21215862962855384,
+        "log_loss": 0.7821268741337991,
+        "max_batch_latency_sec": 37.788153735999,
+        "mean_within_day_auc": 0.6829299077764996,
+        "median_batch_latency_sec": 3.2997408579994953,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK",
+      "within_day": {
+        "days": [
+          {
+            "auc": 0.30952380952380953,
+            "day": "2026-06-03",
+            "gradeable": true,
+            "losses": 3,
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.6956521739130435,
+            "day": "2026-06-04",
+            "gradeable": true,
+            "losses": 23,
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.8642533936651584,
+            "day": "2026-06-05",
+            "gradeable": true,
+            "losses": 17,
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.6666666666666666,
+            "day": "2026-06-08",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 0.9047619047619048,
+            "day": "2026-06-09",
+            "gradeable": true,
+            "losses": 9,
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.10416666666666667,
+            "day": "2026-06-15",
+            "gradeable": true,
+            "losses": 6,
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "gradeable": false,
+            "losses": 5,
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.7,
+            "day": "2026-06-22",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.4739583333333333,
+            "day": "2026-06-23",
+            "gradeable": true,
+            "losses": 4,
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.5328185328185329,
+            "day": "2026-06-24",
+            "gradeable": true,
+            "losses": 37,
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.8376623376623377,
+            "day": "2026-06-29",
+            "gradeable": true,
+            "losses": 11,
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.803921568627451,
+            "day": "2026-07-01",
+            "gradeable": true,
+            "losses": 51,
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.935672514619883,
+            "day": "2026-07-02",
+            "gradeable": true,
+            "losses": 57,
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.6745495495495496,
+            "day": "2026-07-03",
+            "gradeable": true,
+            "losses": 24,
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.97875,
+            "day": "2026-07-07",
+            "gradeable": true,
+            "losses": 25,
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.29411764705882354,
+            "day": "2026-07-08",
+            "gradeable": true,
+            "losses": 5,
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "gradeable": false,
+            "losses": 1,
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.8333333333333334,
+            "day": "2026-07-14",
+            "gradeable": true,
+            "losses": 2,
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "gradeable": false,
+            "losses": 10,
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "gradeable": false,
+            "losses": 2,
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "gradeable": false,
+            "losses": 0,
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "gradeable_days": 17,
+        "mean_auc": 0.6829299077764996,
+        "single_class_days": 9
+      }
+    }
+  },
+  "numeric_features": [
+    "buy_strike",
+    "consec_days",
+    "cost",
+    "day_range_sigma",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "max_loss",
+    "max_profit",
+    "move_sigma",
+    "sell_strike",
+    "sigma_away",
+    "spot",
+    "vix",
+    "weekday",
+    "width"
+  ],
+  "rows": 637,
+  "ru_maxrss_kb": 837712,
+  "versions": {
+    "lightgbm": "4.7.0",
+    "numpy": "2.5.1",
+    "pandas": "3.0.5",
+    "scikit-learn": "1.9.0",
+    "tabicl": "2.1.1",
+    "tabpfn": "8.1.0",
+    "torch": "2.13.0"
+  }
+}

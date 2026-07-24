@@ -1,0 +1,127 @@
+{
+  "created_at_utc": "2026-07-24T02:16:19Z",
+  "dataset": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv",
+  "dataset_sha256": "8aff063ff15897417e18524b5374f044d5a8dc53389f89b909b50c0954f13fb3",
+  "k": 256,
+  "label_counts": {
+    "0": 3672,
+    "1": 5072
+  },
+  "leaky_or_close_known_excluded": [
+    "bearish_close",
+    "bullish_close",
+    "day_direction",
+    "day_range",
+    "day_range_sigma",
+    "downtrend",
+    "inside_day",
+    "outside_day",
+    "uptrend"
+  ],
+  "model": "tabicl",
+  "model_feature_count": 35,
+  "retrieval_categorical_features": [
+    "buy_strike2",
+    "day_group",
+    "day_vix",
+    "index",
+    "is_credit",
+    "mode",
+    "sell_strike2",
+    "strategy",
+    "vix_regime"
+  ],
+  "retrieval_excluded_fields": [
+    "bearish_close",
+    "bullish_close",
+    "candidate_id",
+    "canonical_won",
+    "date",
+    "day_direction",
+    "day_range",
+    "day_range_sigma",
+    "downtrend",
+    "effective_session_date",
+    "exit_reason",
+    "frozen_model_score",
+    "inside_day",
+    "legs",
+    "managed_pnl",
+    "net_pnl",
+    "outcome_h2",
+    "outside_day",
+    "paper_pnl",
+    "regen_batch_id",
+    "role",
+    "snapshot_id",
+    "source_s1_id",
+    "stop_hit",
+    "target_hit",
+    "training_role",
+    "uptrend",
+    "won"
+  ],
+  "retrieval_numeric_features": [
+    "buy_strike",
+    "consec_days",
+    "cost",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "max_loss",
+    "max_profit",
+    "move_sigma",
+    "sell_strike",
+    "sigma_away",
+    "spot",
+    "vix",
+    "weekday",
+    "width"
+  ],
+  "role_counts": {
+    "primary": 637,
+    "secondary": 8107
+  },
+  "rows": 8744,
+  "ru_maxrss_kb": 883424,
+  "strategies": {
+    "knn_256": {
+      "metrics": {
+        "auc": 0.7080994386527666,
+        "brier": 0.21390783119799628,
+        "day_aucs": [
+          {
+            "auc": 0.6666666666666666,
+            "day": "2026-06-03",
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.6521739130434783,
+            "day": "2026-06-04",
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.8868778280542986,
+            "day": "2026-06-05",
+            "rows": 30,
+            "wins": 13
+          }
+        ],
+        "ece_10": 0.23656233510700986,
+        "log_loss": 0.8375806112468481,
+        "max_batch_latency_sec": 34.756766914000764,
+        "mean_context_win_rate": 0.5504557291666666,
+        "mean_primary_context_rows": 9.23611111111111,
+        "mean_secondary_context_rows": 246.76388888888889,
+        "mean_within_day_auc": 0.7352394692548145,
+        "median_batch_latency_sec": 1.7018226814998343,
+        "rows": 72,
+        "single_class_days": 0,
+        "within_day_gradeable_days": 3
+      },
+      "status": "OK"
+    }
+  }
+}

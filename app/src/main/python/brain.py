@@ -15,6 +15,7 @@ TEACHER_CONFIG_VERSION = 'tc_2026_07_A'
 TEACHER_TIME_BASIS_DAYS = 252.0
 BUILD3_EXPERIMENT_NAME = 'week1_a8_nf_calm_gate'
 BUILD3_EV_FLOOR_MULT = 1.10
+BUILD3_A8_HARD_GATE_ACTIVE = False
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
 # Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
@@ -5760,7 +5761,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.25"
+BRAIN_VERSION = "2.5.26"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6621,6 +6622,9 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'a8_ev_floor': None if metrics.get('ev_floor') is None else round(metrics.get('ev_floor'), 2),
         'a8_ev_ratio': None if metrics.get('ev_ratio') is None else round(metrics.get('ev_ratio'), 4),
         'a8_pass': bool(metrics.get('passes')),
+        'a8_hard_gate_active': BUILD3_A8_HARD_GATE_ACTIVE,
+        'a8_softened_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
+        'candidate_released_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
     }
 
@@ -6643,16 +6647,23 @@ def _build3_apply_a8_ev_gate(candidates):
         cand['a8_ev_floor'] = cand['build3EvFloor']
         cand['a8_ev_ratio'] = cand['build3EvRatio']
         cand['a8_pass'] = cand['build3EvPass']
-        if metrics.get('passes'):
+        cand['build3A8HardGateActive'] = BUILD3_A8_HARD_GATE_ACTIVE
+        cand['build3A8SoftenedToRanking'] = (not BUILD3_A8_HARD_GATE_ACTIVE and not metrics.get('passes'))
+        cand['a8_hard_gate_active'] = BUILD3_A8_HARD_GATE_ACTIVE
+        cand['a8_softened_to_ranking'] = cand['build3A8SoftenedToRanking']
+        if metrics.get('passes') or not BUILD3_A8_HARD_GATE_ACTIVE:
             survivors.append(cand)
-        else:
+        if not metrics.get('passes'):
             rejected.append(_build3_rejection_from_candidate(cand, metrics))
     summary = {
         'n_candidates_pre_a8': len([c for c in candidates or [] if isinstance(c, dict)]),
         'n_ev_below_floor': len(rejected),
         'n_candidates_after_a8': len(survivors),
-        'a8_gate_verdict': 'WAIT' if candidates and not survivors and rejected else 'PASS',
-        'a8_gate_reason': BUILD3_A8_BELOW_FLOOR_REASON if candidates and not survivors and rejected else 'NONE',
+        'a8_gate_verdict': 'PASS',
+        'a8_gate_reason': 'EV_BELOW_FLOOR_SOFTENED_TO_RANKING' if rejected and not BUILD3_A8_HARD_GATE_ACTIVE else 'NONE',
+        'a8_hard_gate_active': BUILD3_A8_HARD_GATE_ACTIVE,
+        'a8_gate_mode': 'HARD_FILTER' if BUILD3_A8_HARD_GATE_ACTIVE else 'SHADOW_ONLY',
+        'n_ev_below_floor_released_to_ranking': len(rejected) if not BUILD3_A8_HARD_GATE_ACTIVE else 0,
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
     }
     return survivors, rejected, summary

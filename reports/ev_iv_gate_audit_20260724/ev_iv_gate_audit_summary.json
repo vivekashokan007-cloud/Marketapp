@@ -1,0 +1,48 @@
+{
+  "branch_columns": [
+    "session_window",
+    "index_key",
+    "side",
+    "strategy_family",
+    "premium_edge_bucket",
+    "vix_bucket",
+    "pcr_state",
+    "wall_state"
+  ],
+  "branch_count": 80,
+  "cohort_metrics": {
+    "A8_KILLED": {
+      "avg_net_pnl": -332.9953609896555,
+      "median_net_pnl": -277.85,
+      "positive_rate": 26.671643382745014,
+      "positive_rows": 2501,
+      "priced_rows": 9377,
+      "pricing_failed_rows": 467,
+      "rows": 9844,
+      "total_net_pnl": -3122497.5
+    },
+    "A8_SURVIVOR": {
+      "avg_net_pnl": -2518.3232729805018,
+      "median_net_pnl": -405.7500000000008,
+      "positive_rate": 29.20673076923077,
+      "positive_rows": 243,
+      "priced_rows": 832,
+      "pricing_failed_rows": 0,
+      "rows": 832,
+      "total_net_pnl": -1808156.1100000003
+    }
+  },
+  "failure_class_counts": {
+    "F1_DATA_MISSING": 581,
+    "F2_GATE_FALSE_NEGATIVE": 2501,
+    "F3_GATE_CORRECT_REJECTION": 6876,
+    "F4_SURVIVOR_UNDERPERFORMANCE": 475,
+    "F5_SURVIVOR_VALID": 243
+  },
+  "generated_at_note": "Offline local artifact audit; no Supabase calls.",
+  "input_csv": "reports/d3a_full_replay_rows_20260707_20260721.csv",
+  "killed_winner_pocket_count": 35,
+  "priced_rows": 10209,
+  "pricing_failed_rows": 467,
+  "total_rows": 10676
+}

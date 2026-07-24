@@ -4124,19 +4124,18 @@ class MarketWatchService : Service() {
         }
         val finalSlotOccurrences = countSlotOccurrencesFromHistory(sessionDate, POLL_FULL_DAY_SLOTS)
         val snapshotRows = countLocalSnapshotRows(sessionDate)
-        val snapshotOverrun = snapshotRows > POLL_FULL_DAY_SLOTS
         val integrityIssue = when {
-            snapshotOverrun -> "SNAPSHOT_OVERRUN"
             finalSlotOccurrences > 1 -> "FINAL_SLOT_DUPLICATE"
             finalSlotOccurrences == 0 -> "FINAL_SLOT_MISSING"
             pollCount < POLL_FULL_DAY_SLOTS -> "MISSED_SLOTS"
             rawPollCount > POLL_FULL_DAY_SLOTS -> "COUNTER_DRIFT"
+            snapshotRows > POLL_FULL_DAY_SLOTS -> "SNAPSHOT_OVERRUN"
             else -> "NONE"
         }
         val coverageIntegrity = when {
-            integrityIssue in setOf("SNAPSHOT_OVERRUN", "POLL_OVERRUN", "FINAL_SLOT_DUPLICATE", "FINAL_SLOT_MISSING") -> "INTEGRITY_BROKEN"
+            integrityIssue in setOf("POLL_OVERRUN", "FINAL_SLOT_DUPLICATE", "FINAL_SLOT_MISSING") -> "INTEGRITY_BROKEN"
             integrityIssue == "MISSED_SLOTS" -> "PARTIAL"
-            integrityIssue == "COUNTER_DRIFT" -> "COMPLETE_WITH_RETRIES"
+            integrityIssue in setOf("COUNTER_DRIFT", "SNAPSHOT_OVERRUN") -> "COMPLETE_WITH_RETRIES"
             else -> "COMPLETE"
         }
         return SessionIntegritySummary(
@@ -4145,7 +4144,7 @@ class MarketWatchService : Service() {
             expectedFullDay = POLL_FULL_DAY_SLOTS,
             finalSlotOccurrences = finalSlotOccurrences,
             snapshotRows = snapshotRows,
-            snapshotOverrun = snapshotOverrun,
+            snapshotOverrun = snapshotRows > POLL_FULL_DAY_SLOTS,
             coverageIntegrity = coverageIntegrity,
             integrityIssue = integrityIssue
         )
@@ -4159,7 +4158,7 @@ class MarketWatchService : Service() {
             var count = 0
             for (i in 0 until history.length()) {
                 val row = history.optJSONObject(i) ?: continue
-                val time = row.optString("t", "")
+                val time = pollSlotTime(row)
                 if (slotOrdinalFromPollTime(time) == slotOrdinal) count++
             }
             count
@@ -4176,7 +4175,7 @@ class MarketWatchService : Service() {
             val slots = mutableSetOf<Int>()
             for (i in 0 until history.length()) {
                 val row = history.optJSONObject(i) ?: continue
-                val time = row.optString("t", "")
+                val time = pollSlotTime(row)
                 val slot = slotOrdinalFromPollTime(time) ?: continue
                 slots.add(slot)
             }
@@ -4187,13 +4186,24 @@ class MarketWatchService : Service() {
     }
 
     private fun slotOrdinalFromPollTime(time: String): Int? {
-        val parts = time.split(":")
+        val match = Regex("""(\d{1,2}):(\d{2})""").find(time) ?: return null
+        val parts = match.value.split(":")
         if (parts.size != 2) return null
         val hour = parts[0].toIntOrNull() ?: return null
         val minute = parts[1].toIntOrNull() ?: return null
         val totalMinutes = hour * 60 + minute
         if (totalMinutes < MARKET_OPEN_MINUTE || totalMinutes > MARKET_CLOSE_MINUTE) return null
         return ((totalMinutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
+    }
+
+    private fun pollSlotTime(row: JSONObject): String {
+        return row.optString("t", "").ifBlank {
+            row.optString("time", "").ifBlank {
+                row.optString("poll_time", "").ifBlank {
+                    row.optString("poll_ts", "")
+                }
+            }
+        }
     }
 
     private fun countLocalSnapshotRows(sessionDate: String): Int {

@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b356: prefer recovered S1 labels and hide failed-integrity managed metrics.
+        // b357: soften A8 EV gate and unblock clean post-close evaluation retry.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 356
-        versionName = "2.5.25"
+        versionCode = 357
+        versionName = "2.5.26"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

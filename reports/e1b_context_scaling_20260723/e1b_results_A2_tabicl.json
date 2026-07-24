@@ -1,0 +1,480 @@
+{
+  "arms": [
+    "A2_primary_50"
+  ],
+  "categorical_features": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike2",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_vix",
+    "downtrend",
+    "index",
+    "inside_day",
+    "is_credit",
+    "mode",
+    "outside_day",
+    "role",
+    "sell_strike2",
+    "strategy",
+    "training_role",
+    "uptrend",
+    "vix_regime"
+  ],
+  "created_at_utc": "2026-07-23T20:13:35Z",
+  "dataset_csv": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv",
+  "dataset_jsonl": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.jsonl",
+  "dataset_sha256": "a2aa514c7e43b459504cff5b9067548f13adc9a78f412f36cb500de1936f712c",
+  "days": 27,
+  "feature_columns": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike",
+    "buy_strike2",
+    "consec_days",
+    "cost",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_range_sigma",
+    "day_vix",
+    "downtrend",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "index",
+    "inside_day",
+    "is_credit",
+    "max_loss",
+    "max_profit",
+    "mode",
+    "move_sigma",
+    "outside_day",
+    "role",
+    "sell_strike",
+    "sell_strike2",
+    "sigma_away",
+    "spot",
+    "strategy",
+    "training_role",
+    "uptrend",
+    "vix",
+    "vix_regime",
+    "weekday",
+    "width"
+  ],
+  "label_counts": {
+    "0": 3672,
+    "1": 5072
+  },
+  "models": {
+    "A2_primary_50__tabicl": {
+      "folds": [
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 52,
+          "day": "2026-06-05",
+          "latency_sec": 12.145906140998704,
+          "model": "tabicl",
+          "test_rows": 30,
+          "test_wins": 13
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 68,
+          "day": "2026-06-08",
+          "latency_sec": 1.0141194790012378,
+          "model": "tabicl",
+          "test_rows": 16,
+          "test_wins": 10
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 76,
+          "day": "2026-06-09",
+          "latency_sec": 0.9694355200008431,
+          "model": "tabicl",
+          "test_rows": 16,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 84,
+          "day": "2026-06-12",
+          "latency_sec": 0.9855303639997146,
+          "model": "tabicl",
+          "test_rows": 3,
+          "test_wins": 1
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 85,
+          "day": "2026-06-15",
+          "latency_sec": 1.039040104002197,
+          "model": "tabicl",
+          "test_rows": 22,
+          "test_wins": 16
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 96,
+          "day": "2026-06-17",
+          "latency_sec": 1.0604710929983412,
+          "model": "tabicl",
+          "test_rows": 5,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 98,
+          "day": "2026-06-22",
+          "latency_sec": 1.0951768220002123,
+          "model": "tabicl",
+          "test_rows": 14,
+          "test_wins": 10
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 106,
+          "day": "2026-06-23",
+          "latency_sec": 1.235090989001037,
+          "model": "tabicl",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 132,
+          "day": "2026-06-24",
+          "latency_sec": 5.483230205998552,
+          "model": "tabicl",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 154,
+          "day": "2026-06-29",
+          "latency_sec": 8.535966143001133,
+          "model": "tabicl",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 166,
+          "day": "2026-07-01",
+          "latency_sec": 9.721001505997265,
+          "model": "tabicl",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 195,
+          "day": "2026-07-02",
+          "latency_sec": 6.6071415600017644,
+          "model": "tabicl",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 231,
+          "day": "2026-07-03",
+          "latency_sec": 2.136624426002527,
+          "model": "tabicl",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 262,
+          "day": "2026-07-07",
+          "latency_sec": 2.1700067179990583,
+          "model": "tabicl",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 290,
+          "day": "2026-07-08",
+          "latency_sec": 2.1065417700010585,
+          "model": "tabicl",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 301,
+          "day": "2026-07-09",
+          "latency_sec": 2.1871331760012254,
+          "model": "tabicl",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 302,
+          "day": "2026-07-13",
+          "latency_sec": 2.0608946869979263,
+          "model": "tabicl",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 302,
+          "day": "2026-07-14",
+          "latency_sec": 2.0542529160011327,
+          "model": "tabicl",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 304,
+          "day": "2026-07-16",
+          "latency_sec": 2.135719843001425,
+          "model": "tabicl",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 308,
+          "day": "2026-07-17",
+          "latency_sec": 1.9167789569983142,
+          "model": "tabicl",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 313,
+          "day": "2026-07-20",
+          "latency_sec": 1.8245886969998537,
+          "model": "tabicl",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 314,
+          "day": "2026-07-21",
+          "latency_sec": 1.9078867700009141,
+          "model": "tabicl",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 316,
+          "day": "2026-07-22",
+          "latency_sec": 1.8658499469966046,
+          "model": "tabicl",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 318,
+          "day": "2026-07-23",
+          "latency_sec": 1.8521820299974934,
+          "model": "tabicl",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.648657451991163,
+        "brier": 0.24906233693079127,
+        "day_aucs": [
+          {
+            "auc": 0.8144796380090498,
+            "day": "2026-06-05",
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.55,
+            "day": "2026-06-08",
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-09",
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.09375,
+            "day": "2026-06-15",
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.7,
+            "day": "2026-06-22",
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.4791666666666667,
+            "day": "2026-06-23",
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.5096525096525096,
+            "day": "2026-06-24",
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.961038961038961,
+            "day": "2026-06-29",
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.7815126050420168,
+            "day": "2026-07-01",
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.9380116959064327,
+            "day": "2026-07-02",
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.4391891891891892,
+            "day": "2026-07-03",
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.9875,
+            "day": "2026-07-07",
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.4117647058823529,
+            "day": "2026-07-08",
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.6666666666666666,
+            "day": "2026-07-14",
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "ece_10": 0.13355942343928873,
+        "first_context_rows": 52,
+        "last_context_rows": 318,
+        "log_loss": 0.722186330427364,
+        "max_batch_latency_sec": 12.145906140998704,
+        "max_context_rows": 318,
+        "mean_within_day_auc": 0.6888488425369231,
+        "median_batch_latency_sec": 1.9855159364997235,
+        "rows": 532,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 15
+      },
+      "status": "OK"
+    }
+  },
+  "numeric_features": [
+    "buy_strike",
+    "consec_days",
+    "cost",
+    "day_range_sigma",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "max_loss",
+    "max_profit",
+    "move_sigma",
+    "sell_strike",
+    "sigma_away",
+    "spot",
+    "vix",
+    "weekday",
+    "width"
+  ],
+  "role_counts": {
+    "primary": 637,
+    "secondary": 8107
+  },
+  "rows": 8744,
+  "ru_maxrss_kb": 889524
+}

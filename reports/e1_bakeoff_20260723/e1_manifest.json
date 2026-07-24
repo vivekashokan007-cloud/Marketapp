@@ -1,0 +1,54 @@
+{
+  "base_rate_baseline": {
+    "auc": 0.45387426900584793,
+    "brier": 0.2879669666501715,
+    "coverage_rows": 574,
+    "log_loss": 0.7905945730708254
+  },
+  "created_at_utc": "2026-07-23T14:40:40Z",
+  "dataset_csv": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1_bakeoff_20260723/e1_primary_dataset.csv",
+  "dataset_jsonl": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1_bakeoff_20260723/e1_primary_dataset.jsonl",
+  "dataset_sha256": "e6b52e2984c8f9362b28ae5bd3c95599eb6994602884766ce4483be2445f81e1",
+  "feature_count": 50,
+  "frozen_model_baseline": {
+    "auc": null,
+    "brier": null,
+    "coverage_rows": 0,
+    "log_loss": null
+  },
+  "label_counts": {
+    "0": 309,
+    "1": 328
+  },
+  "package_probe": {
+    "numpy": {
+      "available": false,
+      "origin": null
+    },
+    "pandas": {
+      "available": false,
+      "origin": null
+    },
+    "sklearn": {
+      "available": false,
+      "origin": null
+    },
+    "tabicl": {
+      "available": false,
+      "origin": null
+    },
+    "tabpfn": {
+      "available": false,
+      "origin": null
+    },
+    "torch": {
+      "available": false,
+      "origin": null
+    }
+  },
+  "rows": 637,
+  "skipped": {},
+  "snapshot_ids": 637,
+  "snapshots_fetched": 637,
+  "source_s1_rows": 637
+}

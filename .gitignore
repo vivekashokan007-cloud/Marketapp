@@ -28,3 +28,7 @@ app/release/
 
 # Local research databases
 historical_outcomes*.sqlite
+
+# Local E1/offline bake-off artifacts
+.e1_venv/
+reports/e1_bakeoff_*/snapshot_cache.jsonl

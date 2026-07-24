@@ -1,0 +1,1584 @@
+{
+  "arms": [
+    "A1_primary_25",
+    "A2_primary_50",
+    "A3_primary_100",
+    "A4_primary_secondary_100"
+  ],
+  "categorical_features": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike2",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_vix",
+    "downtrend",
+    "index",
+    "inside_day",
+    "is_credit",
+    "mode",
+    "outside_day",
+    "role",
+    "sell_strike2",
+    "strategy",
+    "training_role",
+    "uptrend",
+    "vix_regime"
+  ],
+  "created_at_utc": "2026-07-24T00:23:39Z",
+  "dataset_csv": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.csv",
+  "dataset_jsonl": "/root/Documents/Codex/2026-07-04/this-my-project-read-and-understand/Marketapp-main-worktree/reports/e1b_context_scaling_20260723/e1b_all_roles_dataset.jsonl",
+  "dataset_sha256": "a2aa514c7e43b459504cff5b9067548f13adc9a78f412f36cb500de1936f712c",
+  "days": 27,
+  "feature_columns": [
+    "bearish_close",
+    "bullish_close",
+    "buy_strike",
+    "buy_strike2",
+    "consec_days",
+    "cost",
+    "day_direction",
+    "day_group",
+    "day_range",
+    "day_range_sigma",
+    "day_vix",
+    "downtrend",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "index",
+    "inside_day",
+    "is_credit",
+    "max_loss",
+    "max_profit",
+    "mode",
+    "move_sigma",
+    "outside_day",
+    "role",
+    "sell_strike",
+    "sell_strike2",
+    "sigma_away",
+    "spot",
+    "strategy",
+    "training_role",
+    "uptrend",
+    "vix",
+    "vix_regime",
+    "weekday",
+    "width"
+  ],
+  "label_counts": {
+    "0": 3672,
+    "1": 5072
+  },
+  "models": {
+    "A1_primary_25__logistic_baseline": {
+      "folds": [
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 53,
+          "day": "2026-06-23",
+          "latency_sec": 11.254038641996885,
+          "model": "logistic_baseline",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 66,
+          "day": "2026-06-24",
+          "latency_sec": 0.14837130199884996,
+          "model": "logistic_baseline",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 77,
+          "day": "2026-06-29",
+          "latency_sec": 0.15258869799799868,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 83,
+          "day": "2026-07-01",
+          "latency_sec": 0.15054416699786088,
+          "model": "logistic_baseline",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 98,
+          "day": "2026-07-02",
+          "latency_sec": 0.15877161400203477,
+          "model": "logistic_baseline",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 116,
+          "day": "2026-07-03",
+          "latency_sec": 0.18701557299937122,
+          "model": "logistic_baseline",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 131,
+          "day": "2026-07-07",
+          "latency_sec": 0.1533302600000752,
+          "model": "logistic_baseline",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 145,
+          "day": "2026-07-08",
+          "latency_sec": 0.1655971350010077,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 150,
+          "day": "2026-07-09",
+          "latency_sec": 0.1641212499998801,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 151,
+          "day": "2026-07-13",
+          "latency_sec": 0.16597567699864157,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 151,
+          "day": "2026-07-14",
+          "latency_sec": 0.14790708299915423,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 152,
+          "day": "2026-07-16",
+          "latency_sec": 0.14243802100099856,
+          "model": "logistic_baseline",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 154,
+          "day": "2026-07-17",
+          "latency_sec": 0.14427833299851045,
+          "model": "logistic_baseline",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 156,
+          "day": "2026-07-20",
+          "latency_sec": 0.15206447899981868,
+          "model": "logistic_baseline",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 157,
+          "day": "2026-07-21",
+          "latency_sec": 0.22726223999779904,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 158,
+          "day": "2026-07-22",
+          "latency_sec": 0.2919531250008731,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "arm": "A1_primary_25",
+          "context_rows": 159,
+          "day": "2026-07-23",
+          "latency_sec": 0.1524118749985064,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.5440560370624875,
+        "brier": 0.2876764539114578,
+        "day_aucs": [
+          {
+            "auc": 0.9114583333333334,
+            "day": "2026-06-23",
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.8957528957528957,
+            "day": "2026-06-24",
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.15584415584415584,
+            "day": "2026-06-29",
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.5154061624649859,
+            "day": "2026-07-01",
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.6526315789473685,
+            "day": "2026-07-02",
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.4436936936936937,
+            "day": "2026-07-03",
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.99125,
+            "day": "2026-07-07",
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.1411764705882353,
+            "day": "2026-07-08",
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.6666666666666666,
+            "day": "2026-07-14",
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "ece_10": 0.23850944366608182,
+        "first_context_rows": 53,
+        "last_context_rows": 159,
+        "log_loss": 0.8394203633954828,
+        "max_batch_latency_sec": 11.254038641996885,
+        "max_context_rows": 159,
+        "mean_within_day_auc": 0.5970977730323705,
+        "median_batch_latency_sec": 0.1533302600000752,
+        "rows": 426,
+        "single_class_days": 8,
+        "within_day_gradeable_days": 9
+      },
+      "status": "OK"
+    },
+    "A2_primary_50__logistic_baseline": {
+      "folds": [
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 52,
+          "day": "2026-06-05",
+          "latency_sec": 0.14334072900237516,
+          "model": "logistic_baseline",
+          "test_rows": 30,
+          "test_wins": 13
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 68,
+          "day": "2026-06-08",
+          "latency_sec": 0.14067854099994292,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 10
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 76,
+          "day": "2026-06-09",
+          "latency_sec": 0.14068479200068396,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 84,
+          "day": "2026-06-12",
+          "latency_sec": 0.13590281299912021,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 1
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 85,
+          "day": "2026-06-15",
+          "latency_sec": 0.1602386459999252,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 16
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 96,
+          "day": "2026-06-17",
+          "latency_sec": 0.14794963500025915,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 98,
+          "day": "2026-06-22",
+          "latency_sec": 0.15850604200022644,
+          "model": "logistic_baseline",
+          "test_rows": 14,
+          "test_wins": 10
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 106,
+          "day": "2026-06-23",
+          "latency_sec": 0.1547101560026931,
+          "model": "logistic_baseline",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 132,
+          "day": "2026-06-24",
+          "latency_sec": 0.15304526000181795,
+          "model": "logistic_baseline",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 154,
+          "day": "2026-06-29",
+          "latency_sec": 0.14560145900031785,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 166,
+          "day": "2026-07-01",
+          "latency_sec": 0.16496052100046654,
+          "model": "logistic_baseline",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 195,
+          "day": "2026-07-02",
+          "latency_sec": 0.1789719789994706,
+          "model": "logistic_baseline",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 231,
+          "day": "2026-07-03",
+          "latency_sec": 0.1648245840005984,
+          "model": "logistic_baseline",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 262,
+          "day": "2026-07-07",
+          "latency_sec": 0.14124328100297134,
+          "model": "logistic_baseline",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 290,
+          "day": "2026-07-08",
+          "latency_sec": 0.18021760400006315,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 301,
+          "day": "2026-07-09",
+          "latency_sec": 0.37987156300005154,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 302,
+          "day": "2026-07-13",
+          "latency_sec": 0.14544265600125073,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 302,
+          "day": "2026-07-14",
+          "latency_sec": 0.14614182299919776,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 304,
+          "day": "2026-07-16",
+          "latency_sec": 0.14112218799709808,
+          "model": "logistic_baseline",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 308,
+          "day": "2026-07-17",
+          "latency_sec": 0.15051885499997297,
+          "model": "logistic_baseline",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 313,
+          "day": "2026-07-20",
+          "latency_sec": 0.14489244799915468,
+          "model": "logistic_baseline",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 314,
+          "day": "2026-07-21",
+          "latency_sec": 0.1539272920017538,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 316,
+          "day": "2026-07-22",
+          "latency_sec": 0.15278645799844526,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "arm": "A2_primary_50",
+          "context_rows": 318,
+          "day": "2026-07-23",
+          "latency_sec": 0.23679296899717883,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.5643658301705092,
+        "brier": 0.3059734677746726,
+        "day_aucs": [
+          {
+            "auc": 0.7375565610859729,
+            "day": "2026-06-05",
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.26666666666666666,
+            "day": "2026-06-08",
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-09",
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.13541666666666666,
+            "day": "2026-06-15",
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.25,
+            "day": "2026-06-22",
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.9114583333333334,
+            "day": "2026-06-23",
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.8996138996138996,
+            "day": "2026-06-24",
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.525974025974026,
+            "day": "2026-06-29",
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.7282913165266106,
+            "day": "2026-07-01",
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.5274853801169591,
+            "day": "2026-07-02",
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.6024774774774775,
+            "day": "2026-07-03",
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.98625,
+            "day": "2026-07-07",
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.27058823529411763,
+            "day": "2026-07-08",
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-07-14",
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "ece_10": 0.25259870019783004,
+        "first_context_rows": 52,
+        "last_context_rows": 318,
+        "log_loss": 1.0714569088328967,
+        "max_batch_latency_sec": 0.37987156300005154,
+        "max_context_rows": 318,
+        "mean_within_day_auc": 0.6561185708503819,
+        "median_batch_latency_sec": 0.15165265649920912,
+        "rows": 532,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 15
+      },
+      "status": "OK"
+    },
+    "A3_primary_100__logistic_baseline": {
+      "folds": [
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 63,
+          "day": "2026-06-03",
+          "latency_sec": 0.15910218700082623,
+          "model": "logistic_baseline",
+          "test_rows": 17,
+          "test_wins": 14
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 80,
+          "day": "2026-06-04",
+          "latency_sec": 0.12192000000140979,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 2
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 105,
+          "day": "2026-06-05",
+          "latency_sec": 0.12108015600097133,
+          "model": "logistic_baseline",
+          "test_rows": 30,
+          "test_wins": 13
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 135,
+          "day": "2026-06-08",
+          "latency_sec": 0.1380093219995615,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 10
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 151,
+          "day": "2026-06-09",
+          "latency_sec": 0.13559541599897784,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 7
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 167,
+          "day": "2026-06-12",
+          "latency_sec": 0.14117463599905022,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 1
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 170,
+          "day": "2026-06-15",
+          "latency_sec": 0.13618775999930222,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 16
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 192,
+          "day": "2026-06-17",
+          "latency_sec": 0.13658979200044996,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 0
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 197,
+          "day": "2026-06-22",
+          "latency_sec": 0.14362869799879263,
+          "model": "logistic_baseline",
+          "test_rows": 14,
+          "test_wins": 10
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 211,
+          "day": "2026-06-23",
+          "latency_sec": 0.15248041700033355,
+          "model": "logistic_baseline",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 263,
+          "day": "2026-06-24",
+          "latency_sec": 0.16836416599835502,
+          "model": "logistic_baseline",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 307,
+          "day": "2026-06-29",
+          "latency_sec": 0.1604369790002238,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 332,
+          "day": "2026-07-01",
+          "latency_sec": 0.182180938001693,
+          "model": "logistic_baseline",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 390,
+          "day": "2026-07-02",
+          "latency_sec": 0.16025822899973718,
+          "model": "logistic_baseline",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 462,
+          "day": "2026-07-03",
+          "latency_sec": 0.1607252089997928,
+          "model": "logistic_baseline",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 523,
+          "day": "2026-07-07",
+          "latency_sec": 0.18517572899872903,
+          "model": "logistic_baseline",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 580,
+          "day": "2026-07-08",
+          "latency_sec": 0.17669953099903069,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 602,
+          "day": "2026-07-09",
+          "latency_sec": 0.20106833299723803,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 603,
+          "day": "2026-07-13",
+          "latency_sec": 0.21005843699822435,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 604,
+          "day": "2026-07-14",
+          "latency_sec": 0.19544124999811174,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 609,
+          "day": "2026-07-16",
+          "latency_sec": 0.18483239600027446,
+          "model": "logistic_baseline",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 616,
+          "day": "2026-07-17",
+          "latency_sec": 0.1974671869975282,
+          "model": "logistic_baseline",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 626,
+          "day": "2026-07-20",
+          "latency_sec": 0.19549640600234852,
+          "model": "logistic_baseline",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 628,
+          "day": "2026-07-21",
+          "latency_sec": 0.18935744700138457,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 633,
+          "day": "2026-07-22",
+          "latency_sec": 0.21394010400035768,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "arm": "A3_primary_100",
+          "context_rows": 636,
+          "day": "2026-07-23",
+          "latency_sec": 0.1954316139999719,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.5258893762183235,
+        "brier": 0.3395376447414478,
+        "day_aucs": [
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-06-03",
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.6956521739130435,
+            "day": "2026-06-04",
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.7239819004524887,
+            "day": "2026-06-05",
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-06-08",
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 0.9682539682539683,
+            "day": "2026-06-09",
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.13541666666666666,
+            "day": "2026-06-15",
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.8,
+            "day": "2026-06-22",
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.9114583333333334,
+            "day": "2026-06-23",
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.9034749034749034,
+            "day": "2026-06-24",
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.525974025974026,
+            "day": "2026-06-29",
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.8011204481792717,
+            "day": "2026-07-01",
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.5684210526315789,
+            "day": "2026-07-02",
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.615990990990991,
+            "day": "2026-07-03",
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.98125,
+            "day": "2026-07-07",
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.3411764705882353,
+            "day": "2026-07-08",
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-07-14",
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "ece_10": 0.30117664455020676,
+        "first_context_rows": 63,
+        "last_context_rows": 636,
+        "log_loss": 1.741059646164399,
+        "max_batch_latency_sec": 0.21394010400035768,
+        "max_context_rows": 636,
+        "mean_within_day_auc": 0.6846375059485396,
+        "median_batch_latency_sec": 0.16454468749907392,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK"
+    },
+    "A4_primary_secondary_100__logistic_baseline": {
+      "folds": [
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 620,
+          "day": "2026-06-03",
+          "latency_sec": 0.17724932200144394,
+          "model": "logistic_baseline",
+          "test_rows": 17,
+          "test_wins": 14
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 1953,
+          "day": "2026-06-04",
+          "latency_sec": 0.3365272390001337,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 2
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 2377,
+          "day": "2026-06-05",
+          "latency_sec": 0.38943890600057784,
+          "model": "logistic_baseline",
+          "test_rows": 30,
+          "test_wins": 13
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 2638,
+          "day": "2026-06-08",
+          "latency_sec": 0.4412080199981574,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 10
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 3515,
+          "day": "2026-06-09",
+          "latency_sec": 0.5473496359991259,
+          "model": "logistic_baseline",
+          "test_rows": 16,
+          "test_wins": 7
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 3589,
+          "day": "2026-06-12",
+          "latency_sec": 0.5583897399992566,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 1
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 3606,
+          "day": "2026-06-15",
+          "latency_sec": 0.5054873949993635,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 16
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 3724,
+          "day": "2026-06-17",
+          "latency_sec": 0.6073772399977315,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 0
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 3916,
+          "day": "2026-06-22",
+          "latency_sec": 0.7413966659987636,
+          "model": "logistic_baseline",
+          "test_rows": 14,
+          "test_wins": 10
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 4892,
+          "day": "2026-06-23",
+          "latency_sec": 1.283812552002928,
+          "model": "logistic_baseline",
+          "test_rows": 52,
+          "test_wins": 48
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 5405,
+          "day": "2026-06-24",
+          "latency_sec": 0.8779295309977897,
+          "model": "logistic_baseline",
+          "test_rows": 44,
+          "test_wins": 7
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 5816,
+          "day": "2026-06-29",
+          "latency_sec": 0.9164627080026548,
+          "model": "logistic_baseline",
+          "test_rows": 25,
+          "test_wins": 14
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 6341,
+          "day": "2026-07-01",
+          "latency_sec": 1.2853763540006184,
+          "model": "logistic_baseline",
+          "test_rows": 58,
+          "test_wins": 7
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 6921,
+          "day": "2026-07-02",
+          "latency_sec": 1.4453888019997976,
+          "model": "logistic_baseline",
+          "test_rows": 72,
+          "test_wins": 15
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 7546,
+          "day": "2026-07-03",
+          "latency_sec": 1.6652268750003714,
+          "model": "logistic_baseline",
+          "test_rows": 61,
+          "test_wins": 37
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 7901,
+          "day": "2026-07-07",
+          "latency_sec": 1.838748697002302,
+          "model": "logistic_baseline",
+          "test_rows": 57,
+          "test_wins": 32
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8411,
+          "day": "2026-07-08",
+          "latency_sec": 1.3834539579984266,
+          "model": "logistic_baseline",
+          "test_rows": 22,
+          "test_wins": 17
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8508,
+          "day": "2026-07-09",
+          "latency_sec": 1.3805698949981888,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 0
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8512,
+          "day": "2026-07-13",
+          "latency_sec": 1.5633489060019201,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8514,
+          "day": "2026-07-14",
+          "latency_sec": 1.9531310929996835,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 3
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8543,
+          "day": "2026-07-16",
+          "latency_sec": 2.1672521869986667,
+          "model": "logistic_baseline",
+          "test_rows": 7,
+          "test_wins": 7
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8592,
+          "day": "2026-07-17",
+          "latency_sec": 1.7685703640017891,
+          "model": "logistic_baseline",
+          "test_rows": 10,
+          "test_wins": 0
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8696,
+          "day": "2026-07-20",
+          "latency_sec": 2.087464426000224,
+          "model": "logistic_baseline",
+          "test_rows": 2,
+          "test_wins": 0
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8706,
+          "day": "2026-07-21",
+          "latency_sec": 1.7802012489992194,
+          "model": "logistic_baseline",
+          "test_rows": 5,
+          "test_wins": 5
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8732,
+          "day": "2026-07-22",
+          "latency_sec": 1.8375458840018837,
+          "model": "logistic_baseline",
+          "test_rows": 3,
+          "test_wins": 3
+        },
+        {
+          "arm": "A4_primary_secondary_100",
+          "context_rows": 8743,
+          "day": "2026-07-23",
+          "latency_sec": 2.02194776000033,
+          "model": "logistic_baseline",
+          "test_rows": 1,
+          "test_wins": 1
+        }
+      ],
+      "metrics": {
+        "auc": 0.4483674463937622,
+        "brier": 0.3401708288880767,
+        "day_aucs": [
+          {
+            "auc": 1.0,
+            "day": "2026-06-03",
+            "rows": 17,
+            "wins": 14
+          },
+          {
+            "auc": 0.21739130434782608,
+            "day": "2026-06-04",
+            "rows": 25,
+            "wins": 2
+          },
+          {
+            "auc": 0.5701357466063348,
+            "day": "2026-06-05",
+            "rows": 30,
+            "wins": 13
+          },
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-06-08",
+            "rows": 16,
+            "wins": 10
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-09",
+            "rows": 16,
+            "wins": 7
+          },
+          {
+            "auc": 1.0,
+            "day": "2026-06-12",
+            "rows": 3,
+            "wins": 1
+          },
+          {
+            "auc": 0.13541666666666666,
+            "day": "2026-06-15",
+            "rows": 22,
+            "wins": 16
+          },
+          {
+            "auc": null,
+            "day": "2026-06-17",
+            "rows": 5,
+            "wins": 0
+          },
+          {
+            "auc": 0.25,
+            "day": "2026-06-22",
+            "rows": 14,
+            "wins": 10
+          },
+          {
+            "auc": 0.9166666666666666,
+            "day": "2026-06-23",
+            "rows": 52,
+            "wins": 48
+          },
+          {
+            "auc": 0.8223938223938224,
+            "day": "2026-06-24",
+            "rows": 44,
+            "wins": 7
+          },
+          {
+            "auc": 0.5,
+            "day": "2026-06-29",
+            "rows": 25,
+            "wins": 14
+          },
+          {
+            "auc": 0.7478991596638656,
+            "day": "2026-07-01",
+            "rows": 58,
+            "wins": 7
+          },
+          {
+            "auc": 0.22573099415204678,
+            "day": "2026-07-02",
+            "rows": 72,
+            "wins": 15
+          },
+          {
+            "auc": 0.2894144144144144,
+            "day": "2026-07-03",
+            "rows": 61,
+            "wins": 37
+          },
+          {
+            "auc": 0.01125,
+            "day": "2026-07-07",
+            "rows": 57,
+            "wins": 32
+          },
+          {
+            "auc": 0.47058823529411764,
+            "day": "2026-07-08",
+            "rows": 22,
+            "wins": 17
+          },
+          {
+            "auc": null,
+            "day": "2026-07-09",
+            "rows": 1,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-13",
+            "rows": 1,
+            "wins": 1
+          },
+          {
+            "auc": 0.3333333333333333,
+            "day": "2026-07-14",
+            "rows": 5,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-16",
+            "rows": 7,
+            "wins": 7
+          },
+          {
+            "auc": null,
+            "day": "2026-07-17",
+            "rows": 10,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-20",
+            "rows": 2,
+            "wins": 0
+          },
+          {
+            "auc": null,
+            "day": "2026-07-21",
+            "rows": 5,
+            "wins": 5
+          },
+          {
+            "auc": null,
+            "day": "2026-07-22",
+            "rows": 3,
+            "wins": 3
+          },
+          {
+            "auc": null,
+            "day": "2026-07-23",
+            "rows": 1,
+            "wins": 1
+          }
+        ],
+        "ece_10": 0.22620485268710827,
+        "first_context_rows": 620,
+        "last_context_rows": 8743,
+        "log_loss": 1.25936998915493,
+        "max_batch_latency_sec": 2.1672521869986667,
+        "max_context_rows": 8743,
+        "mean_within_day_auc": 0.5190325692277898,
+        "median_batch_latency_sec": 1.3329731244994036,
+        "rows": 574,
+        "single_class_days": 9,
+        "within_day_gradeable_days": 17
+      },
+      "status": "OK"
+    }
+  },
+  "numeric_features": [
+    "buy_strike",
+    "consec_days",
+    "cost",
+    "day_range_sigma",
+    "dte",
+    "entry_credit",
+    "gap_sigma",
+    "max_loss",
+    "max_profit",
+    "move_sigma",
+    "sell_strike",
+    "sigma_away",
+    "spot",
+    "vix",
+    "weekday",
+    "width"
+  ],
+  "role_counts": {
+    "primary": 637,
+    "secondary": 8107
+  },
+  "rows": 8744,
+  "ru_maxrss_kb": 187752
+}

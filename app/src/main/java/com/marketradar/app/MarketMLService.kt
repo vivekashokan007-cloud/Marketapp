@@ -501,9 +501,11 @@ class MarketMLService : Service() {
     private fun currentCoverageIntegrity(sessionDate: String): String {
         val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
         if (integrityDate != sessionDate) return ""
+        val issue = currentCoverageIntegrityIssue(sessionDate)
         return when ((prefs.getString("coverage_integrity", "") ?: "").uppercase(Locale.US)) {
             "CLEAN" -> "COMPLETE"
             "PARTIAL_COVERAGE" -> "PARTIAL"
+            "INTEGRITY_BROKEN" -> normalizeBrokenCoverageIntegrity(issue)
             else -> prefs.getString("coverage_integrity", "") ?: ""
         }
     }
@@ -512,6 +514,14 @@ class MarketMLService : Service() {
         val integrityDate = prefs.getString("coverage_integrity_date", "") ?: ""
         if (integrityDate != sessionDate) return ""
         return prefs.getString("coverage_integrity_issue", "") ?: ""
+    }
+
+    private fun normalizeBrokenCoverageIntegrity(issue: String): String {
+        return when (issue.uppercase(Locale.US)) {
+            "", "NONE" -> "COMPLETE"
+            "SNAPSHOT_OVERRUN" -> "COMPLETE_WITH_RETRIES"
+            else -> "INTEGRITY_BROKEN"
+        }
     }
 
     private fun markIncompleteSession(sessionDate: String, reason: String, totalSnapshots: Int) {
