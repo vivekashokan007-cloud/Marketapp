@@ -5761,7 +5761,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.27"
+BRAIN_VERSION = "2.5.28"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -11217,8 +11217,13 @@ def _candidate_entry_premium(cand):
 
 
 def _candidate_vertical_width(cand, sell_label='sell', buy_label='buy'):
-    sell_strike = _float_or_none(cand.get(f'{sell_label}Strike'))
-    buy_strike = _float_or_none(cand.get(f'{buy_label}Strike'))
+    def _strike_key(label):
+        if label[-1:].isdigit():
+            return f"{label[:-1]}Strike{label[-1]}"
+        return f"{label}Strike"
+
+    sell_strike = _float_or_none(cand.get(_strike_key(sell_label)))
+    buy_strike = _float_or_none(cand.get(_strike_key(buy_label)))
     if sell_strike is None or buy_strike is None:
         return None
     width = abs(sell_strike - buy_strike)

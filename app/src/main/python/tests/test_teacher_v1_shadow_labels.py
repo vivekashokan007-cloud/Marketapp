@@ -255,6 +255,29 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
         candidate.pop('buyStrike2')
         self.assertIsNone(_structure_value_bound(candidate))
 
+    def test_s1_h2_four_leg_bound_uses_second_leg_strike_suffix(self):
+        candidate = {
+            'id': 'IC_VALID_BOUND',
+            'type': 'IRON_CONDOR',
+            'lane': 'NF_intraday',
+            'index': 'NF',
+            'trade_mode': 'intraday',
+            'expiry': '2026-07-14',
+            'sellStrike': 24000,
+            'buyStrike': 24200,
+            'sellType': 'CE',
+            'buyType': 'CE',
+            'sellStrike2': 23400,
+            'buyStrike2': 23200,
+            'sellType2': 'PE',
+            'buyType2': 'PE',
+            'lotSize': 65,
+            'netPremium': 100.0,
+            'maxProfit': 6500.0,
+            'maxLoss': 6500.0,
+        }
+        self.assertEqual(_structure_value_bound(candidate), 200.0)
+
 
 if __name__ == '__main__':
     unittest.main()
