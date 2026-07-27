@@ -1810,6 +1810,8 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
+            val reportableOutcomes = sanitizedTeacherOutcomesForReporting(evaluatedOutcomes)
+            val gradeableTeacherRows = countGradeableTeacherRows(reportableOutcomes)
             var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
             if (evaluatedOutcomes.length() > 0) {
                 evalPhase = "AGGREGATING"
@@ -1823,12 +1825,14 @@ class MarketMLService : Service() {
                     persistedCount = saveResult.persistedCount,
                     running = true
                 )
-                runAggregationPipeline(sessionDate, snapshotsFile, evaluatedOutcomes)
-                teacherResearchResult = buildTeacherResearchReport(brain, sessionDate, snapshotsFile, evaluatedOutcomes)
+                runAggregationPipeline(sessionDate, snapshotsFile, reportableOutcomes)
+                teacherResearchResult = buildTeacherResearchReport(brain, sessionDate, snapshotsFile, reportableOutcomes)
             }
 
             val evaluationMessage = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
                 "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence."
+            } else if (evaluatedOutcomes.length() > 0 && gradeableTeacherRows == 0) {
+                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase, but 0 gradeable teacher outcomes passed integrity checks."
             } else if (evaluatedOutcomes.length() > 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
             } else {
@@ -1908,6 +1912,35 @@ class MarketMLService : Service() {
             TAG,
             "DAY_EVAL_HANDOFF_STATE_CLEARED: reason=$reason hadLatch=$hadLatch hadTs=$hadTs hadRunning=$hadRunning commit=$result"
         )
+    }
+
+    private fun sanitizedTeacherOutcomesForReporting(source: org.json.JSONArray): org.json.JSONArray {
+        val out = org.json.JSONArray()
+        for (i in 0 until source.length()) {
+            val src = source.optJSONObject(i) ?: continue
+            val row = org.json.JSONObject(src.toString())
+            if (row.optString("price_integrity").equals("FAIL", ignoreCase = true)) {
+                listOf(
+                    "managed_pnl",
+                    "managed_gross_pnl",
+                    "friction_cost",
+                    "r_multiple",
+                    "captured_pct",
+                    "is_success"
+                ).forEach(row::remove)
+            }
+            out.put(row)
+        }
+        return out
+    }
+
+    private fun countGradeableTeacherRows(source: org.json.JSONArray): Int {
+        var count = 0
+        for (i in 0 until source.length()) {
+            val row = source.optJSONObject(i) ?: continue
+            if (!row.isNull("r_multiple")) count += 1
+        }
+        return count
     }
 
     // ── Batch 6: daily/weekly/monthly aggregation loop ───────────────────────

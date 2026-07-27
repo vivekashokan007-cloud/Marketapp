@@ -5761,7 +5761,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.29"
+BRAIN_VERSION = "2.5.30"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -12613,6 +12613,17 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'scope': 'stage2a_shadow_vs_deterministic',
     }
 
+    integrity_counts = {}
+    gradeable_teacher_rows = 0
+    gradeable_primary_rows = 0
+    for row in enriched_outcomes:
+        integrity_key = str(row.get('price_integrity') or 'UNKNOWN').strip() or 'UNKNOWN'
+        _count_key(integrity_counts, integrity_key)
+        if _safe_float(row.get('r_multiple')) is not None:
+            gradeable_teacher_rows += 1
+            if str(row.get('role') or '').lower() == 'primary':
+                gradeable_primary_rows += 1
+
     return json.dumps({
         'ok': True,
         'schema_version': 1,
@@ -12642,6 +12653,12 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'secondary': _summary_from_outcomes(secondary_rows),
             'by_strategy': strategy_summaries,
             'by_rank': rank_summaries,
+        },
+        'integrity_summary': {
+            'counts': integrity_counts,
+            'gradeable_teacher_rows': gradeable_teacher_rows,
+            'gradeable_primary_rows': gradeable_primary_rows,
+            'has_gradeable_teacher_rows': gradeable_teacher_rows > 0,
         },
         'stage2a_shadow': stage2a_shadow,
         'primary_vs_best': {

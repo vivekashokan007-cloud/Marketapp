@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b360: add AB A8 schema migration and shrink live ML bridge payload.
+        // b361: align teacher reporting with persisted integrity-safe outcomes.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 360
-        versionName = "2.5.29"
+        versionCode = 361
+        versionName = "2.5.30"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
