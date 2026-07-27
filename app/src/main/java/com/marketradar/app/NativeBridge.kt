@@ -220,7 +220,7 @@ class NativeBridge(private val context: Context) {
         return compact
     }
 
-    private fun compactTeacherResearchSnapshot(snapshot: JSONObject): JSONObject {
+    private fun compactTeacherResearchSnapshot(snapshot: JSONObject, includeRejectedCandidates: Boolean = true): JSONObject {
         val compact = JSONObject()
         compact.put("id", snapshot.opt("id"))
         compact.put("action", snapshot.opt("action"))
@@ -235,8 +235,6 @@ class NativeBridge(private val context: Context) {
         val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
-        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
-            ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
 
         val compactContext = JSONObject()
         val scalarKeys = arrayOf("vix", "bnfSpot", "nfSpot", "significant_move")
@@ -254,10 +252,14 @@ class NativeBridge(private val context: Context) {
         }
 
         val compactGenerated = compactTeacherResearchCandidates(generated)
-        val compactRejected = compactTeacherResearchCandidates(rejected)
         compactContext.put("snapshot_generated_candidates", compactGenerated)
-        if (compactRejected.length() > 0) {
-            compactContext.put("snapshot_rejected_candidates", compactRejected)
+        if (includeRejectedCandidates) {
+            val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
+                ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
+            val compactRejected = compactTeacherResearchCandidates(rejected)
+            if (compactRejected.length() > 0) {
+                compactContext.put("snapshot_rejected_candidates", compactRejected)
+            }
         }
         parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let { stats ->
             compactContext.put("snapshot_rejected_candidate_stats", stats)
@@ -2406,7 +2408,9 @@ class NativeBridge(private val context: Context) {
             )
             val capped = JSONArray()
             for (i in 0 until minOf(rows.length(), maxRows)) {
-                rows.optJSONObject(i)?.let { capped.put(compactTeacherResearchSnapshot(it)) }
+                rows.optJSONObject(i)?.let {
+                    capped.put(compactTeacherResearchSnapshot(it, includeRejectedCandidates = false))
+                }
             }
             val payload = capped.toString()
             mlBrainSnapshotsBridgeCacheKey = cacheKey
