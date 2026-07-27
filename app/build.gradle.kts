@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b361: align teacher reporting with persisted integrity-safe outcomes.
+        // b362: auto-start settled day evaluation and expose scheduler state.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 361
-        versionName = "2.5.30"
+        versionCode = 362
+        versionName = "2.5.31"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

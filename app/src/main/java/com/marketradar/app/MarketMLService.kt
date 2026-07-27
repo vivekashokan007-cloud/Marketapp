@@ -54,6 +54,11 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val istToday = MarketMLService.todayIstDate()
         val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+        val firedAt = System.currentTimeMillis()
+        prefs.edit()
+            .putString("evaluation_alarm_fired_date", istToday)
+            .putLong("evaluation_alarm_fired_at_ms", firedAt)
+            .commit()
         if (istToday == prefs.getString("evaluation_done_date", null)) {
             Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already done today")
             return
@@ -70,10 +75,26 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
             return
         }
 
-        Log.i("EvaluationAlarmReceiver", "4:30 PM+ alarm fired — showing evaluation reminder")
+        Log.i("EvaluationAlarmReceiver", "4:30 PM+ alarm fired — starting evaluation and showing reminder")
         val runIntent = Intent(context, MarketMLService::class.java).apply {
             action = "ACTION_DAY_EVALUATION"
+            putExtra("session_date", istToday)
         }
+        var autoStartStatus = "STARTED"
+        var autoStartError = ""
+        try {
+            context.startForegroundService(runIntent)
+        } catch (e: Exception) {
+            autoStartStatus = "FAILED"
+            autoStartError = e.message ?: e.javaClass.simpleName
+            Log.e("EvaluationAlarmReceiver", "DAY_EVAL_AUTO_START_FAIL: $autoStartError")
+        }
+        prefs.edit()
+            .putString("evaluation_auto_start_date", istToday)
+            .putLong("evaluation_auto_start_at_ms", System.currentTimeMillis())
+            .putString("evaluation_auto_start_status", autoStartStatus)
+            .putString("evaluation_auto_start_error", autoStartError)
+            .commit()
         val pendingIntent = PendingIntent.getForegroundService(
             context, 1002, runIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
