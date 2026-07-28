@@ -2406,7 +2406,7 @@ class NativeBridge(private val context: Context) {
             ) {
                 return mlBrainSnapshotsBridgeCacheValue
             }
-            val rows = EvaluationLocalCache.readRecentBrainSnapshots(
+            val rows = EvaluationLocalCache.readRecentBrainSnapshotSummaries(
                 context,
                 targetDate,
                 maxRows,
@@ -2414,15 +2414,13 @@ class NativeBridge(private val context: Context) {
             )
             val capped = JSONArray()
             for (i in 0 until minOf(rows.length(), maxRows)) {
-                rows.optJSONObject(i)?.let {
-                    capped.put(compactTeacherResearchSnapshot(it, includeRejectedCandidates = false))
-                }
+                rows.optJSONObject(i)?.let(capped::put)
             }
             val payload = capped.toString()
             mlBrainSnapshotsBridgeCacheKey = cacheKey
             mlBrainSnapshotsBridgeCacheValue = payload
             mlBrainSnapshotsBridgeCacheMs = now
-            LogBuffer.add('I', TAG, "ML_BRAIN_SNAPSHOTS_BRIDGE: date=$targetDate rows=${capped.length()} requested=$limit maxRows=$maxRows payloadBytes=${payload.toByteArray(Charsets.UTF_8).size}")
+            LogBuffer.add('I', TAG, "ML_BRAIN_SNAPSHOTS_BRIDGE: date=$targetDate source=summary rows=${capped.length()} requested=$limit maxRows=$maxRows payloadBytes=${payload.toByteArray(Charsets.UTF_8).size}")
             payload
         } catch (e: Throwable) {
             logTeacherResearchThrowable("getMLBrainSnapshots", e)

@@ -16,6 +16,8 @@ object EvaluationLocalCache {
     private const val DIR_NAME = "evaluation_local_cache"
     private const val RETENTION_DAYS = 45L
     private const val MAX_ROWS_PER_SESSION = 90
+    private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
+    private const val MAX_SUMMARY_BYTES_PER_SESSION = 512L * 1024L
     // Full-day brain snapshots are large because they carry chain/context evidence.
     // Keep enough local evidence for post-close evaluation instead of trimming to a
     // few rows and falsely marking an otherwise replayable session incomplete.
@@ -41,6 +43,10 @@ object EvaluationLocalCache {
         return File(cacheDir(context), "brain_snapshots_${safeDate(sessionDate)}.jsonl")
     }
 
+    private fun brainSnapshotSummaryFile(context: Context, sessionDate: String): File {
+        return File(cacheDir(context), "brain_snapshot_summaries_${safeDate(sessionDate)}.jsonl")
+    }
+
     private fun build3AbFile(context: Context, sessionDate: String): File {
         return File(cacheDir(context), "build3_ab_${safeDate(sessionDate)}.jsonl")
     }
@@ -57,10 +63,15 @@ object EvaluationLocalCache {
         val today = LocalDate.now(ZoneOffset.UTC)
         cacheDir(context).listFiles { file ->
             file.isFile &&
-                (file.name.startsWith("brain_snapshots_") || file.name.startsWith("build3_ab_")) &&
+                (
+                    file.name.startsWith("brain_snapshots_") ||
+                        file.name.startsWith("brain_snapshot_summaries_") ||
+                        file.name.startsWith("build3_ab_")
+                    ) &&
                 file.name.endsWith(".jsonl")
         }?.forEach { file ->
             val sessionDate = file.name
+                .removePrefix("brain_snapshot_summaries_")
                 .removePrefix("brain_snapshots_")
                 .removePrefix("build3_ab_")
                 .removeSuffix(".jsonl")
@@ -85,6 +96,30 @@ object EvaluationLocalCache {
     private fun trimToRecentLimit(rows: LinkedHashMap<String, String>, totalBytesRef: LongArray): Boolean {
         var trimmed = false
         while (rows.size > MAX_ROWS_PER_SESSION) {
+            val oldest = rows.entries.firstOrNull() ?: break
+            rows.remove(oldest.key)
+            totalBytesRef[0] -= rowBytes(oldest.value)
+            if (totalBytesRef[0] < 0L) totalBytesRef[0] = 0L
+            trimmed = true
+        }
+        return trimmed
+    }
+
+    private fun trimToLimit(
+        rows: LinkedHashMap<String, String>,
+        totalBytesRef: LongArray,
+        maxRows: Int,
+        maxBytes: Long
+    ): Boolean {
+        var trimmed = false
+        while (rows.size > maxRows) {
+            val oldest = rows.entries.firstOrNull() ?: break
+            rows.remove(oldest.key)
+            totalBytesRef[0] -= rowBytes(oldest.value)
+            if (totalBytesRef[0] < 0L) totalBytesRef[0] = 0L
+            trimmed = true
+        }
+        while (rows.isNotEmpty() && totalBytesRef[0] > maxBytes) {
             val oldest = rows.entries.firstOrNull() ?: break
             rows.remove(oldest.key)
             totalBytesRef[0] -= rowBytes(oldest.value)
@@ -160,6 +195,151 @@ object EvaluationLocalCache {
         return state
     }
 
+    private fun parseJsonObject(raw: Any?): JSONObject? {
+        return when (raw) {
+            is JSONObject -> raw
+            is String -> {
+                val trimmed = raw.trim()
+                if (!trimmed.startsWith("{")) null else try { JSONObject(trimmed) } catch (_: Exception) { null }
+            }
+            else -> null
+        }
+    }
+
+    private fun parseJsonArray(raw: Any?): JSONArray? {
+        return when (raw) {
+            is JSONArray -> raw
+            is String -> {
+                val trimmed = raw.trim()
+                if (!trimmed.startsWith("[")) null else try { JSONArray(trimmed) } catch (_: Exception) { null }
+            }
+            else -> null
+        }
+    }
+
+    private fun compactCandidate(raw: Any?): JSONObject? {
+        val src = parseJsonObject(raw) ?: return null
+        val out = JSONObject()
+        val keys = arrayOf(
+            "candidate_id",
+            "strategy",
+            "index",
+            "mode",
+            "lane",
+            "role",
+            "score",
+            "probability",
+            "expected_r",
+            "ev",
+            "entry_credit",
+            "max_profit",
+            "max_loss",
+            "width",
+            "sell_strike",
+            "buy_strike",
+            "sell_strike2",
+            "buy_strike2",
+            "rank"
+        )
+        for (key in keys) {
+            val value = src.opt(key)
+            if (value != null && value != JSONObject.NULL) out.put(key, value)
+        }
+        return if (out.length() > 0) out else null
+    }
+
+    private fun compactCandidates(raw: Any?, limit: Int): JSONArray {
+        val source = parseJsonArray(raw) ?: return JSONArray()
+        val out = JSONArray()
+        for (i in 0 until minOf(source.length(), limit)) {
+            compactCandidate(source.opt(i))?.let(out::put)
+        }
+        return out
+    }
+
+    private fun compactSnapshotSummary(snapshot: JSONObject): JSONObject {
+        val compact = JSONObject()
+        val scalarKeys = arrayOf(
+            "id",
+            "session_date",
+            "poll_ts",
+            "action",
+            "strategy",
+            "confidence",
+            "is_labelable",
+            "brain_version",
+            "app_version"
+        )
+        for (key in scalarKeys) {
+            val value = snapshot.opt(key)
+            if (value != null && value != JSONObject.NULL) compact.put(key, value)
+        }
+        compactCandidate(snapshot.opt("primary_candidate_json"))?.let {
+            compact.put("primary_candidate_json", it.toString())
+        }
+
+        val context = parseJsonObject(snapshot.opt("context_json")) ?: JSONObject()
+        val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
+            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
+            ?: JSONArray()
+        val compactGenerated = compactCandidates(generated, 12)
+        val compactContext = JSONObject()
+        val contextKeys = arrayOf(
+            "vix",
+            "bnfSpot",
+            "nfSpot",
+            "significant_move",
+            "snapshot_generation_skip_reason"
+        )
+        for (key in contextKeys) {
+            val value = context.opt(key)
+            if (value != null && value != JSONObject.NULL) compactContext.put(key, value)
+        }
+        parseJsonArray(context.opt("snapshot_generation_skip_reasons"))?.let {
+            if (it.length() > 0) compactContext.put("snapshot_generation_skip_reasons", it)
+        }
+        parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let {
+            compactContext.put("snapshot_rejected_candidate_stats", it)
+        }
+        compactContext.put("snapshot_generated_candidates", compactGenerated)
+        compact.put("context_json", compactContext.toString())
+        compact.put("top_candidates_json", compactGenerated.toString())
+        return compact
+    }
+
+    private fun appendSnapshotSummary(context: Context, sessionDate: String, snapshot: JSONObject): Boolean {
+        val file = brainSnapshotSummaryFile(context, sessionDate)
+        val state = loadSnapshotState(file)
+        val summary = compactSnapshotSummary(snapshot)
+        val key = snapshotKey(summary)
+        val json = summary.toString()
+        val previous = state.rows.put(key, json)
+        if (previous != null) {
+            state.totalBytes -= rowBytes(previous)
+            if (state.totalBytes < 0L) state.totalBytes = 0L
+        }
+        state.totalBytes += rowBytes(json)
+        val byteCounterRef = longArrayOf(state.totalBytes)
+        val trimmed = trimToLimit(
+            state.rows,
+            byteCounterRef,
+            MAX_SUMMARY_ROWS_PER_SESSION,
+            MAX_SUMMARY_BYTES_PER_SESSION
+        )
+        state.totalBytes = byteCounterRef[0]
+        rewriteCanonicalFile(file, state.rows)
+        state.needsRewrite = false
+        if (trimmed) {
+            LogBuffer.add(
+                'I',
+                TAG,
+                "LOCAL_SNAPSHOT_SUMMARY_TRIM: date=$sessionDate rows=${state.rows.size} bytes=${state.totalBytes} rowCap=$MAX_SUMMARY_ROWS_PER_SESSION byteCap=$MAX_SUMMARY_BYTES_PER_SESSION"
+            )
+        }
+        LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_SUMMARY_APPEND: date=$sessionDate bytes=${file.length()}")
+        return true
+    }
+
     @Synchronized
     fun appendBrainSnapshot(context: Context, sessionDate: String, snapshot: JSONObject): Boolean {
         return try {
@@ -194,6 +374,11 @@ object EvaluationLocalCache {
                 file.appendText(json + "\n")
             }
             LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
+            try {
+                appendSnapshotSummary(context, sessionDate, snapshot)
+            } catch (summaryError: Throwable) {
+                LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_SUMMARY_APPEND_FAIL: date=$sessionDate error=${summaryError.message}")
+            }
             true
         } catch (e: Throwable) {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_APPEND_FAIL: date=$sessionDate error=${e.message}")
@@ -224,6 +409,60 @@ object EvaluationLocalCache {
             LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_READ: date=$sessionDate rows=${out.length()} bytes=${file.length()}")
         } catch (e: Exception) {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_READ_FAIL: date=$sessionDate error=${e.message}")
+        }
+        return out
+    }
+
+    @Synchronized
+    fun readRecentBrainSnapshotSummaries(
+        context: Context,
+        sessionDate: String,
+        limit: Int,
+        maxBytes: Long
+    ): JSONArray {
+        val out = JSONArray()
+        val safeLimit = limit.coerceAtLeast(1)
+        val safeMaxBytes = maxBytes.coerceAtLeast(1024L)
+        val cappedRows = linkedMapOf<String, String>()
+        var cappedBytes = 0L
+
+        try {
+            pruneExpiredCacheFiles(context)
+            val file = brainSnapshotSummaryFile(context, sessionDate)
+            if (!file.exists()) return out
+
+            readRecentLinesFromEnd(file, safeLimit, safeMaxBytes).forEach { line ->
+                val trimmed = line.trim()
+                if (trimmed.isBlank()) return@forEach
+                val row = try { JSONObject(trimmed) } catch (_: Exception) { return@forEach }
+                val key = snapshotKey(row)
+                val json = row.toString()
+                val previous = cappedRows.remove(key)
+                if (previous != null) {
+                    cappedBytes -= rowBytes(previous)
+                    if (cappedBytes < 0L) cappedBytes = 0L
+                }
+                cappedRows[key] = json
+                cappedBytes += rowBytes(json)
+                while (cappedRows.size > safeLimit || (cappedRows.size > 1 && cappedBytes > safeMaxBytes)) {
+                    val oldest = cappedRows.entries.firstOrNull() ?: break
+                    cappedRows.remove(oldest.key)
+                    cappedBytes -= rowBytes(oldest.value)
+                    if (cappedBytes < 0L) cappedBytes = 0L
+                }
+            }
+
+            cappedRows.values.toList().asReversed().forEach { json ->
+                val row = try { JSONObject(json) } catch (_: Exception) { return@forEach }
+                out.put(row)
+            }
+            LogBuffer.add(
+                'I',
+                TAG,
+                "LOCAL_SNAPSHOT_SUMMARY_READ_RECENT: date=$sessionDate rows=${out.length()} bytes=$cappedBytes fileBytes=${file.length()} limit=$safeLimit byteCap=$safeMaxBytes"
+            )
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_SUMMARY_READ_RECENT_FAIL: date=$sessionDate error=${e.message}")
         }
         return out
     }
