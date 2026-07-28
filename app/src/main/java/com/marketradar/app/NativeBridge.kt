@@ -599,9 +599,19 @@ class NativeBridge(private val context: Context) {
             obj.put("nfExpiry", nfExpiry)
             obj.put("date", todayIstDate())
 
+            val globalDirection = try {
+                JSONObject(prefs.getString("global_direction", "{}") ?: "{}")
+            } catch (_: Exception) {
+                JSONObject()
+            }
+            globalDirection.put("dowClose", obj.optDouble("dowClose"))
+            globalDirection.put("crudeSettle", obj.optDouble("crudeSettle"))
+            globalDirection.put("_date", todayIstDate())
+
             prefs.edit()
                 .putString("morning_input", obj.toString())
                 .putString("morning_baseline", obj.toString())
+                .putString("global_direction", globalDirection.toString())
                 .putString("expiry_bnf", bnfExpiry)
                 .putString("expiry_nf", nfExpiry)
                 .remove("brain_result")
