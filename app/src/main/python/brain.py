@@ -5796,7 +5796,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.36"
+BRAIN_VERSION = "2.5.37"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -10264,6 +10264,14 @@ def _compact_rejected_candidates(rejected_candidates):
             'by_reason': {},
             'by_strategy': {},
             'by_lane': {},
+            'by_width': {},
+            'by_sigma_bucket': {},
+            'by_credit_ratio_bucket': {},
+            'by_net_premium_bucket': {},
+            'by_stage_width': {},
+            'by_stage_sigma_bucket': {},
+            'by_stage_credit_ratio_bucket': {},
+            'by_stage_net_premium_bucket': {},
             'by_stage_margin': {},
         }
 
@@ -10272,6 +10280,64 @@ def _compact_rejected_candidates(rejected_candidates):
             key = 'unknown'
         key = str(key)
         counter[key] = int(counter.get(key, 0)) + 1
+
+    def _float_or_none_local(value):
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _width_bucket(row):
+        width = _float_or_none_local(row.get('width'))
+        if width is None:
+            return 'unknown'
+        return str(int(round(width)))
+
+    def _sigma_bucket(row):
+        sigma = _float_or_none_local(row.get('sigmaOTM') or row.get('sigma_otm'))
+        if sigma is None:
+            return 'unknown'
+        if sigma < 0.5:
+            return 'lt_0.5'
+        if sigma < 0.8:
+            return '0.5_0.8'
+        if sigma <= 1.15:
+            return '0.8_1.15'
+        if sigma <= 1.4:
+            return '1.15_1.4'
+        return 'gt_1.4'
+
+    def _credit_ratio_bucket(row):
+        credit_ratio = _float_or_none_local(row.get('creditWidthRatio') or row.get('credit_ratio'))
+        if credit_ratio is None:
+            return 'unknown'
+        if credit_ratio < 0.05:
+            return 'lt_0.05'
+        if credit_ratio < 0.10:
+            return '0.05_0.10'
+        if credit_ratio < 0.15:
+            return '0.10_0.15'
+        if credit_ratio < 0.20:
+            return '0.15_0.20'
+        return 'ge_0.20'
+
+    def _net_premium_bucket(row):
+        net_premium = _float_or_none_local(row.get('netPremium') or row.get('net_premium'))
+        if net_premium is None:
+            return 'unknown'
+        if net_premium <= 0:
+            return 'non_positive'
+        if net_premium < 5:
+            return '0_5'
+        if net_premium < 10:
+            return '5_10'
+        if net_premium < 20:
+            return '10_20'
+        if net_premium < 40:
+            return '20_40'
+        return 'ge_40'
 
     def _sample_row(row):
         return {
@@ -10320,6 +10386,14 @@ def _compact_rejected_candidates(rejected_candidates):
         'by_reason': {},
         'by_strategy': {},
         'by_lane': {},
+        'by_width': {},
+        'by_sigma_bucket': {},
+        'by_credit_ratio_bucket': {},
+        'by_net_premium_bucket': {},
+        'by_stage_width': {},
+        'by_stage_sigma_bucket': {},
+        'by_stage_credit_ratio_bucket': {},
+        'by_stage_net_premium_bucket': {},
         'by_stage_margin': {},
     }
     margin_buckets = {}
@@ -10333,6 +10407,22 @@ def _compact_rejected_candidates(rejected_candidates):
         _bump(stats['by_strategy'], row.get('strategy_type'))
         _bump(stats['by_lane'], row.get('lane'))
         stage_key = str(row.get('rejection_stage') or 'unknown')
+        width_key = _width_bucket(row)
+        sigma_key = _sigma_bucket(row)
+        credit_ratio_key = _credit_ratio_bucket(row)
+        net_premium_key = _net_premium_bucket(row)
+        _bump(stats['by_width'], width_key)
+        _bump(stats['by_sigma_bucket'], sigma_key)
+        _bump(stats['by_credit_ratio_bucket'], credit_ratio_key)
+        _bump(stats['by_net_premium_bucket'], net_premium_key)
+        stats['by_stage_width'].setdefault(stage_key, {})
+        stats['by_stage_sigma_bucket'].setdefault(stage_key, {})
+        stats['by_stage_credit_ratio_bucket'].setdefault(stage_key, {})
+        stats['by_stage_net_premium_bucket'].setdefault(stage_key, {})
+        _bump(stats['by_stage_width'][stage_key], width_key)
+        _bump(stats['by_stage_sigma_bucket'][stage_key], sigma_key)
+        _bump(stats['by_stage_credit_ratio_bucket'][stage_key], credit_ratio_key)
+        _bump(stats['by_stage_net_premium_bucket'][stage_key], net_premium_key)
         margin = row.get('margin')
         try:
             abs_margin = abs(float(margin)) if margin is not None else None
