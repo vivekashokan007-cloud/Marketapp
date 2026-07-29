@@ -1863,7 +1863,8 @@ class NativeBridge(private val context: Context) {
             }
         }
         val effectiveBaselineIsToday = hasTodayBaseline()
-        val hasStaleMorningState = !baselineIsToday && (
+        if (hasActiveTodaySession) return
+        val hasStaleMorningState = !effectiveBaselineIsToday && (
             prefs.contains("morning_baseline") ||
             prefs.contains("morning_input") ||
             prefs.contains("expiry_bnf") ||
@@ -1876,7 +1877,7 @@ class NativeBridge(private val context: Context) {
             prefs.getInt("poll_count", 0) != 0 ||
             prefs.getString("latest_poll", "null") != "null" ||
             prefs.contains("last_poll_time"))
-        val hasStaleDerivedState = !baselineIsToday && lastPollDate != today && (
+        val hasStaleDerivedState = !effectiveBaselineIsToday && lastPollDate != today && (
             prefs.getString("brain_result", "null") != "null" ||
             prefs.getString("candidates", "[]") != "[]" ||
             prefs.getBoolean("service_running", false)
