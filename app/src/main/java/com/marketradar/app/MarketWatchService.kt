@@ -1019,7 +1019,18 @@ class MarketWatchService : Service() {
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-            runBrainAnalysis(pollObj, bnfChainJson, nfChainJson, bnfSpot, nfSpot, vix, bnfStocksJson, nf50Breadth)
+            runBrainAnalysis(
+                pollObj,
+                bnfChainJson,
+                nfChainJson,
+                bnfSpot,
+                nfSpot,
+                vix,
+                bnfStocksJson,
+                nf50Breadth,
+                bnfExpiry,
+                nfExpiry
+            )
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
             LogBuffer.add('D', TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
@@ -1911,7 +1922,9 @@ class MarketWatchService : Service() {
 
     private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
                                          bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
-                                         nf50Breadth: JSONObject) {
+                                         nf50Breadth: JSONObject,
+                                         liveBnfExpiry: String = (prefs.getString("expiry_bnf", "") ?: "").trim(),
+                                         liveNfExpiry: String = (prefs.getString("expiry_nf", "") ?: "").trim()) {
         var brainSuccess = false
 
         try {
@@ -1933,8 +1946,8 @@ class MarketWatchService : Service() {
             val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
             val todayDate = sdf.parse(todayIstDate())
             
-            val bnfExpiryPref = prefs.getString("expiry_bnf", "") ?: ""
-            val nfExpiryPref = prefs.getString("expiry_nf", "") ?: ""
+            val bnfExpiryPref = liveBnfExpiry.trim().ifBlank { (prefs.getString("expiry_bnf", "") ?: "").trim() }
+            val nfExpiryPref = liveNfExpiry.trim().ifBlank { (prefs.getString("expiry_nf", "") ?: "").trim() }
             val bnfExpDate = try { sdf.parse(bnfExpiryPref) } catch(e: Exception) { null }
             val nfExpDate = try { sdf.parse(nfExpiryPref) } catch(e: Exception) { null }
 

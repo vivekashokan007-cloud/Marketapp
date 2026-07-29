@@ -1495,6 +1495,15 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    private fun baselineHasCoreFields(rawBaseline: String = prefs.getString("morning_baseline", "{}") ?: "{}"): Boolean {
+        return try {
+            val baseline = JSONObject(rawBaseline)
+            baseline.has("bnfSpot") && baseline.has("nfSpot") && baseline.has("vix")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun hasTodayBaseline(): Boolean {
         return baselineDate() == todayIstDate()
     }
@@ -1841,7 +1850,19 @@ class NativeBridge(private val context: Context) {
     private fun clearStaleSessionStateIfNeeded() {
         val today = todayIstDate()
         val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
-        val baselineIsToday = hasTodayBaseline()
+        val rawBaseline = prefs.getString("morning_baseline", "{}") ?: "{}"
+        val baselineIsToday = baselineDate(rawBaseline) == today
+        val baselineHasCoreFields = baselineHasCoreFields(rawBaseline)
+        val hasActiveTodaySession = lastPollDate == today && prefs.getInt("poll_count", 0) > 0
+        if (!baselineIsToday && baselineHasCoreFields && hasActiveTodaySession) {
+            try {
+                val healed = JSONObject(rawBaseline).put("date", today).toString()
+                prefs.edit().putString("morning_baseline", healed).commit()
+                Log.i(TAG, "BASELINE_HEALED_DURING_CLEAR: date=$today")
+            } catch (_: Exception) {
+            }
+        }
+        val effectiveBaselineIsToday = hasTodayBaseline()
         val hasStaleMorningState = !baselineIsToday && (
             prefs.contains("morning_baseline") ||
             prefs.contains("morning_input") ||
@@ -1879,7 +1900,7 @@ class NativeBridge(private val context: Context) {
                 .remove("candidates")
                 .putBoolean("service_running", false)
         }
-        if (hasStaleMorningState) {
+        if (hasStaleMorningState && !effectiveBaselineIsToday) {
             editor
                 .remove("morning_baseline")
                 .remove("morning_input")

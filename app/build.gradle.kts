@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b365: DTE fabrication fix plus expiry-day supply-state observability.
+        // b366: protect same-poll expiry usage and restart-time baseline/expiry state.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 365
-        versionName = "2.5.34"
+        versionCode = 366
+        versionName = "2.5.35"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
