@@ -903,13 +903,26 @@ class MarketWatchService : Service() {
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting${slotKey?.let { " slot=$it" } ?: ""}")
 
             val (bnfExpiry, nfExpiry) = refreshActiveExpiries(token)
+            val today = todayIstDate()
+            if (!isUsableExpiry(bnfExpiry, today) || !isUsableExpiry(nfExpiry, today)) {
+                invalidateExpiryAuthority("poll_invalid_live_expiry", bnfExpiry, nfExpiry)
+                Log.w(TAG, "POLL_SKIP_INVALID_EXPIRY: bnf='$bnfExpiry' nf='$nfExpiry' session=$today")
+                LogBuffer.add('E', TAG, "POLL_SKIP_INVALID_EXPIRY: bnf='$bnfExpiry' nf='$nfExpiry' session=$today")
+                NotificationHelper.send(
+                    this,
+                    "⚠️ Expiry refresh failed",
+                    "Poll skipped. Live expiry authority is unavailable; open the app after connectivity stabilizes.",
+                    "info"
+                )
+                return
+            }
 
             // Expiry Rollover check
             val sdfUTC = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }
-            val today = sdfUTC.format(Date())
+            val todayCheck = sdfUTC.format(Date())
 
-            if (bnfExpiry < today) {
-                Log.w(TAG, "POLL_SKIP: Expiry passed: $bnfExpiry < $today")
+            if (bnfExpiry < todayCheck) {
+                Log.w(TAG, "POLL_SKIP: Expiry passed: $bnfExpiry < $todayCheck")
                 NotificationHelper.send(this, "⚠️ Expiry passed", "Poll skipped. Open app to refresh expiry dates.", "info")
                 return
             }
@@ -1923,8 +1936,8 @@ class MarketWatchService : Service() {
     private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
                                          bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
                                          nf50Breadth: JSONObject,
-                                         liveBnfExpiry: String = (prefs.getString("expiry_bnf", "") ?: "").trim(),
-                                         liveNfExpiry: String = (prefs.getString("expiry_nf", "") ?: "").trim()) {
+                                         liveBnfExpiry: String,
+                                         liveNfExpiry: String) {
         var brainSuccess = false
 
         try {
@@ -1943,13 +1956,30 @@ class MarketWatchService : Service() {
             ctxObj.put("approvedProposals", approvedBranchRows)
             
             // C1: Calculate DTE (Days to Expiry) for brain context
-            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-            val todayDate = sdf.parse(todayIstDate())
-            
-            val bnfExpiryPref = liveBnfExpiry.trim().ifBlank { (prefs.getString("expiry_bnf", "") ?: "").trim() }
-            val nfExpiryPref = liveNfExpiry.trim().ifBlank { (prefs.getString("expiry_nf", "") ?: "").trim() }
-            val bnfExpDate = try { sdf.parse(bnfExpiryPref) } catch(e: Exception) { null }
-            val nfExpDate = try { sdf.parse(nfExpiryPref) } catch(e: Exception) { null }
+            val sessionDate = todayIstDate()
+            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                isLenient = false
+                timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+            }
+            val todayDate = sdf.parse(sessionDate)
+
+            val resolvedBnfExpiry = liveBnfExpiry.trim()
+            val resolvedNfExpiry = liveNfExpiry.trim()
+            if (!isUsableExpiry(resolvedBnfExpiry, sessionDate) || !isUsableExpiry(resolvedNfExpiry, sessionDate)) {
+                invalidateExpiryAuthority("brain_invalid_live_expiry", resolvedBnfExpiry, resolvedNfExpiry)
+                Log.w(
+                    TAG,
+                    "BRAIN_SKIP_INVALID_EXPIRY: bnf='$resolvedBnfExpiry' nf='$resolvedNfExpiry' session=$sessionDate"
+                )
+                LogBuffer.add(
+                    'E',
+                    TAG,
+                    "BRAIN_SKIP_INVALID_EXPIRY: bnf='$resolvedBnfExpiry' nf='$resolvedNfExpiry' session=$sessionDate"
+                )
+                return
+            }
+            val bnfExpDate = parseExpiryDate(resolvedBnfExpiry)
+            val nfExpDate = parseExpiryDate(resolvedNfExpiry)
 
             fun writeDteContext(prefix: String, rawExpiry: String, expDate: java.util.Date?): Long? {
                 val dte = expDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) }
@@ -1957,7 +1987,7 @@ class MarketWatchService : Service() {
                 val meta = JSONObject()
                     .put("source", source)
                     .put("raw_expiry", rawExpiry)
-                    .put("session_date", todayIstDate())
+                    .put("session_date", sessionDate)
                 ctxObj.put("${prefix}DteSource", source)
                 ctxObj.put("${prefix}DteMeta", meta)
                 ctxObj.put("${prefix}DTE", dte ?: JSONObject.NULL)
@@ -1967,8 +1997,8 @@ class MarketWatchService : Service() {
                 return dte
             }
 
-            val bnfDTE = writeDteContext("bnf", bnfExpiryPref, bnfExpDate)
-            val nfDTE = writeDteContext("nf", nfExpiryPref, nfExpDate)
+            val bnfDTE = writeDteContext("bnf", resolvedBnfExpiry, bnfExpDate)
+            val nfDTE = writeDteContext("nf", resolvedNfExpiry, nfExpDate)
 
             Log.d(TAG, "BRAIN_START: Loading Chaquopy brain module")
             val py = Python.getInstance()
@@ -2032,9 +2062,9 @@ class MarketWatchService : Service() {
                 }
             }
 
-            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), bnfExpiryPref)
+            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), resolvedBnfExpiry)
             ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
-            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, nfExpiryPref)
+            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, resolvedNfExpiry)
             ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
 
             // Phase C: Inject OHLC for profile calculations
@@ -2124,8 +2154,8 @@ class MarketWatchService : Service() {
             ctxObj.put("ivPercentile", calculateIvPercentile(vix))
 
             ctxObj.put("capital",    prefs.getInt("capital", 250000))
-            ctxObj.put("bnfExpiry",  bnfExpiryPref)
-            ctxObj.put("nfExpiry",   nfExpiryPref)
+            ctxObj.put("bnfExpiry",  resolvedBnfExpiry)
+            ctxObj.put("nfExpiry",   resolvedNfExpiry)
             ctxObj.put("vix",        vix)
             ctxObj.put("bnfSpot",    bnfSpot)
             ctxObj.put("nfSpot",     nfSpot)
@@ -2223,7 +2253,7 @@ class MarketWatchService : Service() {
                     TAG,
                     "BRAIN_CTX: bnfStrikes=${bnfCtx?.optJSONObject("strikes")?.length() ?: -1} nfStrikes=${nfCtx?.optJSONObject("strikes")?.length() ?: -1} " +
                         "bnfAtm=${bnfCtx?.opt("atm")} nfAtm=${nfCtx?.opt("atm")} " +
-                        "bnfExp=$bnfExpiryPref nfExp=$nfExpiryPref bnfDTE=$bnfDTE nfDTE=$nfDTE " +
+                        "bnfExp=$resolvedBnfExpiry nfExp=$resolvedNfExpiry bnfDTE=$bnfDTE nfDTE=$nfDTE " +
                         "breadthPct=${bnfBreadth?.optDouble("pct")} breadthWeighted=${bnfBreadth?.optDouble("weightedPct")} " +
                         "breadthAdv=${bnfBreadth?.optInt("advancing")} breadthDec=${bnfBreadth?.optInt("declining")} " +
                         "nf50Pct=${nf50Breadth.optDouble("pct")} nf50Adv=${nf50Breadth.optInt("advancing")} " +
@@ -3625,7 +3655,62 @@ class MarketWatchService : Service() {
         )
     }
 
-    private fun resolveNearestExpiryLive(instrumentKey: String, token: String, fallback: String): String {
+    private fun parseExpiryDate(rawExpiry: String): Date? {
+        val trimmed = rawExpiry.trim()
+        if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(trimmed)) return null
+        return try {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                isLenient = false
+                timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+            }.parse(trimmed)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isUsableExpiry(rawExpiry: String, today: String = todayIstDate()): Boolean {
+        val trimmed = rawExpiry.trim()
+        return trimmed.isNotBlank() && trimmed >= today && parseExpiryDate(trimmed) != null
+    }
+
+    private fun invalidateExpiryAuthority(reason: String, bnfExpiry: String, nfExpiry: String) {
+        val today = todayIstDate()
+        val ctxObj = try {
+            JSONObject(prefs.getString("context", "{}") ?: "{}")
+        } catch (_: Exception) {
+            JSONObject()
+        }
+
+        fun apply(prefix: String, rawExpiry: String) {
+            ctxObj.put("${prefix}Expiry", JSONObject.NULL)
+            ctxObj.put("${prefix}DTE", JSONObject.NULL)
+            ctxObj.put("${prefix}DteSource", "INVALID_LIVE_EXPIRY")
+            ctxObj.put(
+                "${prefix}DteMeta",
+                JSONObject()
+                    .put("source", "INVALID_LIVE_EXPIRY")
+                    .put("raw_expiry", rawExpiry)
+                    .put("session_date", today)
+                    .put("reason", reason)
+            )
+            ctxObj.optJSONObject("${prefix}Chain")?.put("expiry", JSONObject.NULL)
+        }
+
+        apply("bnf", bnfExpiry.trim())
+        apply("nf", nfExpiry.trim())
+
+        prefs.edit()
+            .remove("expiry_bnf")
+            .remove("expiry_nf")
+            .remove(EXPIRY_REFRESH_DATE_KEY)
+            .putString("context", ctxObj.toString())
+            .commit()
+
+        Log.w(TAG, "EXPIRY_AUTHORITY_INVALID: reason=$reason bnf='$bnfExpiry' nf='$nfExpiry'")
+        LogBuffer.add('E', TAG, "EXPIRY_AUTHORITY_INVALID: reason=$reason bnf='$bnfExpiry' nf='$nfExpiry'")
+    }
+
+    private fun resolveNearestExpiryLive(instrumentKey: String, token: String): String {
         val today = todayIstDate()
         return try {
             val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
@@ -3641,33 +3726,33 @@ class MarketWatchService : Service() {
                     if (nearest == null || date < nearest) nearest = date
                 }
             }
-            when {
-                !nearest.isNullOrBlank() -> nearest
-                fallback.isNotBlank() && fallback >= today -> fallback
-                else -> getNextThursday()
-            }
+            nearest?.takeIf { isUsableExpiry(it, today) } ?: ""
         } catch (e: Exception) {
-            if (fallback.isNotBlank() && fallback >= today) fallback else getNextThursday()
+            ""
         }
     }
 
     private fun refreshActiveExpiries(token: String): Pair<String, String> {
         val today = todayIstDate()
-        val nextThu = getNextThursday()
-        val storedBnf = (prefs.getString("expiry_bnf", nextThu) ?: nextThu).trim()
-        val storedNf = (prefs.getString("expiry_nf", storedBnf.ifBlank { nextThu }) ?: storedBnf.ifBlank { nextThu }).trim()
+        val storedBnf = (prefs.getString("expiry_bnf", "") ?: "").trim()
+        val storedNf = (prefs.getString("expiry_nf", "") ?: "").trim()
         val lastRefreshDate = prefs.getString(EXPIRY_REFRESH_DATE_KEY, "") ?: ""
 
         if (
             lastRefreshDate == today &&
-            storedBnf.isNotBlank() && storedBnf >= today &&
-            storedNf.isNotBlank() && storedNf >= today
+            isUsableExpiry(storedBnf, today) &&
+            isUsableExpiry(storedNf, today)
         ) {
             return Pair(storedBnf, storedNf)
         }
 
-        val resolvedBnf = resolveNearestExpiryLive("NSE_INDEX|Nifty Bank", token, storedBnf.ifBlank { nextThu })
-        val resolvedNf = resolveNearestExpiryLive("NSE_INDEX|Nifty 50", token, storedNf.ifBlank { resolvedBnf })
+        val resolvedBnf = resolveNearestExpiryLive("NSE_INDEX|Nifty Bank", token)
+        val resolvedNf = resolveNearestExpiryLive("NSE_INDEX|Nifty 50", token)
+
+        if (!isUsableExpiry(resolvedBnf, today) || !isUsableExpiry(resolvedNf, today)) {
+            invalidateExpiryAuthority("expiry_refresh_failed", resolvedBnf, resolvedNf)
+            return Pair("", "")
+        }
 
         prefs.edit()
             .putString("expiry_bnf", resolvedBnf)

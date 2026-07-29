@@ -646,9 +646,19 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setExpiries(bnf: String, nf: String) {
+        val today = todayIstDate()
+        val trimmedBnf = bnf.trim()
+        val trimmedNf = nf.trim()
+        if (!isUsableExpiry(trimmedBnf, today) || !isUsableExpiry(trimmedNf, today)) {
+            Log.w(
+                "NativeBridge",
+                "IGNORING_INVALID_EXPIRIES: bnf='$trimmedBnf' nf='$trimmedNf' today=$today"
+            )
+            return
+        }
         prefs.edit().apply {
-            putString("expiry_bnf", bnf)
-            putString("expiry_nf", nf)
+            putString("expiry_bnf", trimmedBnf)
+            putString("expiry_nf", trimmedNf)
         }.commit()
     }
 
@@ -1947,14 +1957,26 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    private fun parseExpiryDate(rawExpiry: String): Date? {
+        val trimmed = rawExpiry.trim()
+        if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(trimmed)) return null
+        return try {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                isLenient = false
+                timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+            }.parse(trimmed)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isUsableExpiry(rawExpiry: String, today: String = todayIstDate()): Boolean {
+        val trimmed = rawExpiry.trim()
+        return trimmed.isNotBlank() && trimmed >= today && parseExpiryDate(trimmed) != null
+    }
+
     private fun resolveNearestExpiry(instrumentKey: String, token: String): String? {
         val today = todayIstDate()
-
-        val existing = (if (instrumentKey.contains("Nifty Bank")) {
-            prefs.getString("expiry_bnf", "")
-        } else {
-            prefs.getString("expiry_nf", "")
-        } ?: "").trim()
 
         val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
         val url = "https://api.upstox.com/v2/option/contract?instrument_key=$encodedKey"
@@ -1970,12 +1992,8 @@ class NativeBridge(private val context: Context) {
                 if (nearest == null || date < nearest) nearest = date
             }
         }
-        if (nearest != null) {
+        if (nearest != null && isUsableExpiry(nearest, today)) {
             return nearest
-        }
-        if (existing.isNotEmpty() && existing >= today) {
-            Log.w("NativeBridge", "Using stored expiry fallback for $instrumentKey: $existing")
-            return existing
         }
         val contractCount = arr?.length() ?: -1
         Log.w("NativeBridge", "No live expiry found for $instrumentKey; contracts=$contractCount, today=$today")
