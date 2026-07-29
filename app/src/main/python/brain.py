@@ -1631,11 +1631,11 @@ def signal_coherence(polls, ctx):
     return None
 
 def max_pain_gravity(polls, ctx):
-    # BR41: Warn if DTE missing — expected set after v2.2.7 Fix C1
-    dte = ctx.get('bnfDTE')
+    # BR41/E1: DTE must be producer-computed; do not fabricate expiry urgency.
+    dte = _dte_value(ctx, 'BNF')
     if dte is None:
-        print("max_pain_gravity: bnfDTE missing, using default 5")
-        dte = 5
+        print("max_pain_gravity: bnfDTE unavailable; skipping max-pain timing insight")
+        return None
     """Max pain as magnet — strongest on DTE 0-1."""
     profile = ctx.get('bnfProfile') or {}
     mp = profile.get('maxPain')
@@ -2212,7 +2212,9 @@ def compute_candle_signals(polls, ctx):
 
 def dte_urgency(polls, ctx):
     """DTE-aware urgency for timing."""
-    dte = ctx.get('bnfDTE', 5)
+    dte = _dte_value(ctx, 'BNF')
+    if dte is None:
+        return None
     if dte <= 1:
         return {"type": "timing", "icon": "⏰", "label": "EXPIRY DAY — theta maximum",
                 "detail": "Credit sellers: theta melting fastest. Debit buyers: theta death zone. IB/IC exit by 3PM.",
@@ -4482,7 +4484,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # Personal calibration boost/penalty
     vixs = get_vix_vals(polls)
     vix = vixs[-1] if vixs else 20
-    dte = ctx.get('bnfDTE', 5)
+    dte = _dte_value(ctx, 'BNF')
+    if dte is None:
+        dte = 5
 
     # b93: Z-SCORE VIX REGIME — dynamic, not hardcoded
     vix_hist = ctx.get('vixHistory', [])
@@ -4892,9 +4896,11 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 def position_verdict(trade, insights, regime, ctx):
     idx_key = trade.get('index_key', 'BNF')
     dte_key = 'bnfDTE' if idx_key == 'BNF' else 'nfDTE'
-    dte = ctx.get(dte_key)
+    dte = _dte_value(ctx, idx_key)
     if dte is None:
-        print(f"position_verdict: {dte_key} missing for trade {trade.get('id','?')} — default 5")
+        # Position management must remain available even when candidate generation
+        # cannot price new entries. Use neutral timing only for exit heuristics.
+        print(f"position_verdict: {dte_key} unavailable for trade {trade.get('id','?')} — neutral timing 5")
         dte = 5
     """ONE action per trade: BOOK / HOLD / EXIT + urgency + reason."""
 
@@ -5670,6 +5676,35 @@ def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
         current += timedelta(days=1)
     return max(float(count), 1.0)
 
+def _dte_value(ctx, index_key):
+    """Return numeric DTE for an index, or None when the producer could not compute it."""
+    key = 'bnfDTE' if index_key == 'BNF' else 'nfDTE'
+    value = (ctx or {}).get(key)
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+def _dte_source(ctx, index_key):
+    prefix = 'bnf' if index_key == 'BNF' else 'nf'
+    return (ctx or {}).get(f'{prefix}DteSource') or 'UNKNOWN'
+
+def _is_front_expiry_today(ctx, index_key):
+    expiry_key = 'bnfExpiry' if index_key == 'BNF' else 'nfExpiry'
+    today = _parse_yyyy_mm_dd((ctx or {}).get('today_ist') or (ctx or {}).get('session_date') or (ctx or {}).get('sessionDate'))
+    expiry = _parse_yyyy_mm_dd((ctx or {}).get(expiry_key))
+    return bool(today is not None and expiry is not None and today == expiry)
+
+def _append_supply_state(ctx, state, index_key, detail):
+    if not isinstance(ctx, dict):
+        return
+    states = ctx.setdefault('_supply_states', [])
+    row = {'state': state, 'index': index_key, 'detail': detail}
+    if row not in states:
+        states.append(row)
+
 def _daily_sigma(spot, vix):
     """Daily 1σ move from VIX"""
     try:
@@ -5761,7 +5796,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.33"
+BRAIN_VERSION = "2.5.34"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7113,6 +7148,37 @@ def _record_rejected_candidate(
     sigma_otm=None,
     extra=None,
 ):
+    def _rejection_margin(stage_name, row):
+        def _num_value(value):
+            try:
+                if value is None:
+                    return None
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        stage_name = str(stage_name or '')
+        if stage_name == 'credit_dte_below_floor':
+            return ('tDTE', _num_value(row.get('tDTE')), float(_CONST['MIN_CREDIT_DTE']))
+        if stage_name == 'credit_ratio_below_floor':
+            return ('creditWidthRatio', _num_value(row.get('creditWidthRatio') or row.get('credit_ratio')), float(_CONST['MIN_CREDIT_RATIO']))
+        if stage_name == 'iv_not_rich':
+            return ('ivRichness', _num_value(row.get('ivRichness') or row.get('iv_richness')), float(_CONST['IV_RICH_MIN']))
+        if stage_name == 'sigma_otm_too_close':
+            return ('sigmaOTM', _num_value(row.get('sigmaOTM') or row.get('sigma_otm')), float(_CONST['MIN_SIGMA_OTM']))
+        if stage_name == 'sigma_otm_too_far':
+            threshold = _num_value(row.get('max_sigma')) or float(_CONST['MAX_SIGMA_OTM'])
+            observed = _num_value(row.get('sigmaOTM') or row.get('sigma_otm'))
+            return ('sigmaOTM', observed, threshold)
+        if stage_name == 'width_too_narrow':
+            index_key = row.get('index')
+            threshold = float(_CONST['MIN_WIDTH_BNF'] if index_key == 'BNF' else _CONST['MIN_WIDTH_NF'])
+            return ('width', _num_value(row.get('width')), threshold)
+        if stage_name == 'capital_limit_exceeded':
+            threshold = float(_CONST['CAPITAL'] * (_CONST['MAX_RISK_PCT'] / 100.0))
+            return ('maxLoss', _num_value(row.get('maxLoss')), threshold)
+        return (None, None, None)
+
     rejected = ctx.setdefault('_rejected_candidates', [])
     rec = {
         'candidate_schema_version': CANDIDATE_SCHEMA_VERSION,
@@ -7141,6 +7207,16 @@ def _record_rejected_candidate(
     }
     if isinstance(extra, dict):
         rec.update(extra)
+    gate_field, observed_value, threshold_value = _rejection_margin(stage, rec)
+    if gate_field is not None:
+        rec['gate_name'] = stage
+        rec['gate_field'] = gate_field
+        rec['observed_value'] = observed_value
+        rec['threshold_value'] = threshold_value
+        if observed_value is not None and threshold_value is not None:
+            margin = observed_value - threshold_value
+            rec['margin'] = round(margin, 6)
+            rec['margin_pct'] = round(margin / threshold_value, 6) if threshold_value else None
     rejected.append(rec)
 
 def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx, atm):
@@ -7513,7 +7589,23 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     pw = chain.get('putWallStrike', 0)
     atm_iv = chain.get('atmIv', vix / 100)
     vol = atm_iv / 100 if atm_iv > 1 else atm_iv
-    tdte = ctx.get('bnfDTE' if is_bnf else 'nfDTE', 5)
+    candidates = []
+    rejected_baseline = len(ctx.setdefault('_rejected_candidates', []))
+    tdte = _dte_value(ctx, index_key)
+    if tdte is None:
+        _record_rejected_candidate(
+            ctx,
+            index_key=index_key,
+            trade_mode=ctx.get('tradeMode', 'swing'),
+            expiry=expiry,
+            stype='INDEX_SUPPLY',
+            width=None,
+            stage='dte_unavailable',
+            reason=f'{index_key} DTE unavailable; source={_dte_source(ctx, index_key)}',
+            tdte=None,
+            extra={'dte_source': _dte_source(ctx, index_key)},
+        )
+        return [], ctx.get('_rejected_candidates', [])[rejected_baseline:]
     trading_tdte = _trading_dte_from_dates(
         ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate'),
         expiry,
@@ -7545,8 +7637,6 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             'learned_block': sorted(list(learned.get('strategy_block', []))),
             'matched_branch_ids': list(learned.get('matched_ids', [])),
         }
-    candidates = []
-    rejected_baseline = len(ctx.setdefault('_rejected_candidates', []))
 
     # ═══ 1. DIRECTIONAL 2-LEG SPREADS ═══
     dir_types = [t for t in ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'] if t in allowed_types]
@@ -8727,6 +8817,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
             expiry_key = 'bnfExpiry' if idx_key == 'BNF' else 'nfExpiry'
             expiry = ctx.get(expiry_key, '')
+            if _is_front_expiry_today(ctx, idx_key):
+                _append_supply_state(
+                    ctx,
+                    'EXPIRY_DAY_NO_CREDIT_PATH',
+                    idx_key,
+                    f'{idx_key} front expiry is today; credit DTE floor can structurally prevent credit candidates',
+                )
+            if _dte_value(ctx, idx_key) is None:
+                _record_generation_skip(
+                    idx_key,
+                    chain_key,
+                    'dte_unavailable',
+                    f'{idx_key} DTE unavailable; source={_dte_source(ctx, idx_key)}',
+                )
             cands, rejected = generate_candidates(chain_data, spot, idx_key, expiry, cur_vix, active_bias, iv_pctl, ctx, regime)
             all_cands.extend(cands)
             all_rejected.extend(rejected)
@@ -8866,7 +8970,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                             enriched = {
                                 'strategy': c['type'], 'mode': ctx.get('tradeMode', 'intraday'),
                                 'vix': lv, 'sigma_away': c.get('sigmaOTM') or 0,
-                                'gap_sigma': gap_s, 'dte': c.get('tDTE', 3),
+                                'gap_sigma': gap_s, 'dte': c.get('tDTE'),
                                 'entry_credit': c.get('netPremium', 0), 'width': c['width'],
                                 'move_sigma': move_s, 'day_range_sigma': drs,
                                 'consec_days': consec, 'max_profit': c.get('maxProfit', 0),
@@ -10160,6 +10264,7 @@ def _compact_rejected_candidates(rejected_candidates):
             'by_reason': {},
             'by_strategy': {},
             'by_lane': {},
+            'by_stage_margin': {},
         }
 
     def _bump(counter, key):
@@ -10193,6 +10298,12 @@ def _compact_rejected_candidates(rejected_candidates):
             'ivRichness': row.get('ivRichness'),
             'creditWidthRatio': row.get('creditWidthRatio'),
             'sigmaOTM': row.get('sigmaOTM'),
+            'gate_name': row.get('gate_name'),
+            'gate_field': row.get('gate_field'),
+            'observed_value': row.get('observed_value'),
+            'threshold_value': row.get('threshold_value'),
+            'margin': row.get('margin'),
+            'margin_pct': row.get('margin_pct'),
             'rejection_stage': row.get('rejection_stage'),
             'rejection_reason': row.get('rejection_reason'),
             'sellStrike': row.get('sellStrike'),
@@ -10209,7 +10320,9 @@ def _compact_rejected_candidates(rejected_candidates):
         'by_reason': {},
         'by_strategy': {},
         'by_lane': {},
+        'by_stage_margin': {},
     }
+    margin_buckets = {}
     sample = []
     for row in rejected_candidates:
         if not isinstance(row, dict):
@@ -10219,8 +10332,29 @@ def _compact_rejected_candidates(rejected_candidates):
         _bump(stats['by_reason'], row.get('rejection_reason'))
         _bump(stats['by_strategy'], row.get('strategy_type'))
         _bump(stats['by_lane'], row.get('lane'))
+        stage_key = str(row.get('rejection_stage') or 'unknown')
+        margin = row.get('margin')
+        try:
+            abs_margin = abs(float(margin)) if margin is not None else None
+        except (TypeError, ValueError):
+            abs_margin = None
+        if abs_margin is not None:
+            margin_buckets.setdefault(stage_key, []).append(abs_margin)
         if len(sample) < REJECTED_CANDIDATE_SAMPLE_CAP:
             sample.append(_sample_row(row))
+    for stage_key, values in margin_buckets.items():
+        ordered = sorted(values)
+        n = len(ordered)
+        if n <= 0:
+            continue
+        p10_idx = min(n - 1, max(0, int(math.floor((n - 1) * 0.10))))
+        med_idx = min(n - 1, max(0, int(math.floor((n - 1) * 0.50))))
+        stats['by_stage_margin'][stage_key] = {
+            'n': n,
+            'min_abs_margin': round(ordered[0], 6),
+            'p10_abs_margin': round(ordered[p10_idx], 6),
+            'median_abs_margin': round(ordered[med_idx], 6),
+        }
     stats['truncated'] = stats['total'] > len(sample)
     return sample, stats
 
@@ -10254,6 +10388,12 @@ def _full_rejected_candidate_view(row):
         'ivRichness': row.get('ivRichness'),
         'creditWidthRatio': row.get('creditWidthRatio'),
         'sigmaOTM': row.get('sigmaOTM'),
+        'gate_name': row.get('gate_name'),
+        'gate_field': row.get('gate_field'),
+        'observed_value': row.get('observed_value'),
+        'threshold_value': row.get('threshold_value'),
+        'margin': row.get('margin'),
+        'margin_pct': row.get('margin_pct'),
         'rejection_stage': row.get('rejection_stage'),
         'rejection_reason': row.get('rejection_reason'),
         'sellStrike': row.get('sellStrike'),
@@ -10815,6 +10955,18 @@ def take_poll_snapshot(result, ctx, polls):
         'phase5_gate_registry_rows': len(phase5_gate_registry.get('rows') or []),
         'phase5_gate_registry_softening_candidates': phase5_gate_registry.get('softening_candidate_count'),
         'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
+        'supply_states': ctx.get('_supply_states') or [],
+        'supply_state': (ctx.get('_supply_states') or [{}])[0].get('state') if ctx.get('_supply_states') else None,
+        'bnf_dte_source': ctx.get('bnfDteSource'),
+        'nf_dte_source': ctx.get('nfDteSource'),
+        'dte_source': {
+            'BNF': ctx.get('bnfDteSource'),
+            'NF': ctx.get('nfDteSource'),
+        },
+        'dte_raw_expiry': {
+            'BNF': (ctx.get('bnfDteMeta') or {}).get('raw_expiry') if isinstance(ctx.get('bnfDteMeta'), dict) else None,
+            'NF': (ctx.get('nfDteMeta') or {}).get('raw_expiry') if isinstance(ctx.get('nfDteMeta'), dict) else None,
+        },
     }
 
     # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
@@ -10831,6 +10983,8 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_watchlist'] = clean_cands
     snapshot_context['snapshot_generation_skip_reason'] = result.get('generation_skip_reason')
     snapshot_context['snapshot_generation_skip_reasons'] = result.get('generation_skip_reasons') or []
+    snapshot_context['snapshot_supply_states'] = ctx.get('_supply_states') or []
+    snapshot_context['snapshot_supply_state'] = (ctx.get('_supply_states') or [{}])[0].get('state') if ctx.get('_supply_states') else None
     snapshot_context['snapshot_evaluation_legs'] = evaluation_ledger
     snapshot_context['snapshot_latest_poll'] = latest_poll if isinstance(latest_poll, dict) else {}
     snapshot_context['top_5_nf'] = clean_top_5_nf

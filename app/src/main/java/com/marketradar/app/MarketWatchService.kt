@@ -1937,12 +1937,25 @@ class MarketWatchService : Service() {
             val nfExpiryPref = prefs.getString("expiry_nf", "") ?: ""
             val bnfExpDate = try { sdf.parse(bnfExpiryPref) } catch(e: Exception) { null }
             val nfExpDate = try { sdf.parse(nfExpiryPref) } catch(e: Exception) { null }
-            
-            val bnfDTE = bnfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
-            val nfDTE = nfExpDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) } ?: 3
-            
-            ctxObj.put("bnfDTE", bnfDTE)
-            ctxObj.put("nfDTE",  nfDTE)
+
+            fun writeDteContext(prefix: String, rawExpiry: String, expDate: java.util.Date?): Long? {
+                val dte = expDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) }
+                val source = if (expDate != null && rawExpiry.isNotBlank()) "COMPUTED" else "PARSE_FAILED"
+                val meta = JSONObject()
+                    .put("source", source)
+                    .put("raw_expiry", rawExpiry)
+                    .put("session_date", todayIstDate())
+                ctxObj.put("${prefix}DteSource", source)
+                ctxObj.put("${prefix}DteMeta", meta)
+                ctxObj.put("${prefix}DTE", dte ?: JSONObject.NULL)
+                if (dte == null) {
+                    LogBuffer.add('W', TAG, "DTE_PARSE_FAILED: index=$prefix rawExpiry='$rawExpiry'")
+                }
+                return dte
+            }
+
+            val bnfDTE = writeDteContext("bnf", bnfExpiryPref, bnfExpDate)
+            val nfDTE = writeDteContext("nf", nfExpiryPref, nfExpDate)
 
             Log.d(TAG, "BRAIN_START: Loading Chaquopy brain module")
             val py = Python.getInstance()
