@@ -160,8 +160,12 @@ object NotificationHelper {
             .setPriority(priority)
             .setAutoCancel(true)
 
-        if (type == "urgent" || type == "ERROR") {
-            builder.setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        if (body.isNotBlank()) {
+            builder.setStyle(
+                NotificationCompat.BigTextStyle()
+                    .setBigContentTitle(title)
+                    .bigText(body)
+            )
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
