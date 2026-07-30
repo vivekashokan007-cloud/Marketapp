@@ -7,7 +7,7 @@ PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
-from brain import brain_notification_process, reset_notification_agent
+from brain import brain_notification_process, evaluate_alerts, reset_notification_agent
 
 
 def _call_contract(result, ctx):
@@ -68,6 +68,104 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         self.assertTrue(contract["notify_user"])
         self.assertEqual(contract["decision_type"], "POSITION_RISK")
         self.assertEqual(contract["notification_kind"], "RISK")
+
+    def test_position_alert_generation_does_not_require_significant_move(self):
+        alerts = evaluate_alerts(
+            open_trades=[
+                {
+                    "id": "trade123",
+                    "index_key": "NF",
+                    "strategy_type": "BULL_PUT",
+                    "sell_strike": 24000,
+                    "current_pnl": 850,
+                    "max_profit": 1000,
+                    "max_loss": 1500,
+                    "valuation_quality": "full",
+                    "controlIndexMeta": {"signal_completeness_pct": 100},
+                }
+            ],
+            watchlist=[],
+            result={},
+            ctx={
+                "mins_since_open": 60,
+                "now_ms": 123456,
+                "significant_move": False,
+                "entry_window_active": False,
+            },
+        )
+
+        self.assertTrue(any(alert.get("key") == "POS_TARGET_trade123" for alert in alerts))
+
+    def test_watchlist_alert_dispatches_as_entry(self):
+        payload = _call_contract(
+            {
+                "verdict": {"action": "WAIT", "strategy": None, "confidence": 0},
+                "watchlist": [],
+                "alerts": [
+                    {
+                        "key": "WATCHLIST_ENTRY_NF_24000_23900",
+                        "category": "WATCHLIST",
+                        "priority": "entry",
+                        "title": "Entry Window",
+                        "body": "NF BULL_PUT aligned 3/3",
+                    }
+                ],
+            },
+            {"now_ms": 2500, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 3},
+        )
+        contract = payload["brain_notification"]
+
+        self.assertTrue(contract["notify_user"])
+        self.assertEqual(contract["decision_type"], "TRADE")
+        self.assertEqual(contract["notification_kind"], "ENTRY")
+
+    def test_routine_alert_dispatches_as_update(self):
+        payload = _call_contract(
+            {
+                "verdict": {"action": "WAIT", "strategy": None, "confidence": 0},
+                "watchlist": [],
+                "alerts": [
+                    {
+                        "key": "ROUTINE_1",
+                        "category": "ROUTINE",
+                        "priority": "routine",
+                        "title": "Market Update",
+                        "body": "BNF 56000 | NF 24000 | VIX 12.0",
+                    }
+                ],
+            },
+            {"now_ms": 2600, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 4},
+        )
+        contract = payload["brain_notification"]
+
+        self.assertTrue(contract["notify_user"])
+        self.assertEqual(contract["decision_type"], "UPDATE")
+        self.assertEqual(contract["notification_kind"], "UPDATE")
+
+    def test_routine_alert_does_not_override_trade_notification(self):
+        result = {
+            "verdict": {"action": "SELL PREMIUM", "strategy": "BULL_PUT", "confidence": 66},
+            "watchlist": [_watchlist_candidate()],
+            "alerts": [
+                {
+                    "key": "ROUTINE_2",
+                    "category": "ROUTINE",
+                    "priority": "routine",
+                    "title": "Market Update",
+                    "body": "Routine status",
+                }
+            ],
+        }
+        _call_contract(result, {"now_ms": 1000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 5})
+        payload = _call_contract(
+            result,
+            {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 6},
+        )
+        contract = payload["brain_notification"]
+
+        self.assertTrue(contract["notify_user"])
+        self.assertEqual(contract["decision_type"], "TRADE")
+        self.assertEqual(contract["notification_kind"], "ENTRY")
 
     def test_repeated_identical_setup_dedupes_after_first_live_notification(self):
         result = {

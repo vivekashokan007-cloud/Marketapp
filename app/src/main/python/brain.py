@@ -2940,62 +2940,63 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — dropped to {aligned}/3",
                 })
 
-    # POSITION alerts: kept under significant_move (these are high-stakes;
-    # stop-loss and target alerts should only fire when market has actually moved)
+    # POSITION alerts are high-stakes and should not depend on a broad market
+    # move threshold. Otherwise live positions can drift into exit/risk states
+    # with no notification simply because the overall index move stayed quiet.
+    for trade in (open_trades or []):
+        t_index = trade.get('index_key', '')
+        t_type = trade.get('strategy_type', '')
+        t_sell_strike = trade.get('sell_strike', '')
+        t_id = trade.get('id', '')
+        current_pnl = trade.get('current_pnl', 0)
+        max_profit = trade.get('max_profit', 0)
+        max_loss = trade.get('max_loss', 0)
+        t_forces = trade.get('forces') or {}
+        t_aligned = t_forces.get('aligned')
+        trade_label = f"{t_index} {t_type} {t_sell_strike}"
+        quality = trade.get('valuation_quality')
+        ci_meta = trade.get('controlIndexMeta') or {}
+        completeness = ci_meta.get('signal_completeness_pct')
+        degraded_live_mark = bool(quality and quality != 'full')
+        low_ci_completeness = completeness is not None and completeness < 60
+        if degraded_live_mark or low_ci_completeness:
+            reason = f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}" if degraded_live_mark else f"CI signals {completeness}%"
+            alerts.append({
+                'key': f"POS_DATA_QUALITY_{t_id}",
+                'category': 'POSITION',
+                'priority': 'important',
+                'title': '🧪 Position Data Incomplete',
+                'body': f"{trade_label}: {reason}. Suppressing strong P&L/control alerts until data improves.",
+            })
+            continue
+
+        if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
+            pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
+            alerts.append({
+                'key': f"POS_TARGET_{t_id}",
+                'category': 'POSITION',
+                'priority': 'urgent',
+                'title': '💰 Target Near',
+                'body': f"{trade_label} P&L ₹{current_pnl} ({pct_of_max}% of max). Book profit.",
+            })
+        if max_loss and current_pnl <= -max_loss * _CONST.get('STOP_LOSS_RATIO', 0.7):
+            alerts.append({
+                'key': f"POS_STOP_{t_id}",
+                'category': 'POSITION',
+                'priority': 'urgent',
+                'title': '🛑 Stop Loss Near',
+                'body': f"{trade_label} P&L ₹{current_pnl}. Cut position.",
+            })
+        if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
+            alerts.append({
+                'key': f"POS_BOOK_{t_id}",
+                'category': 'POSITION',
+                'priority': 'urgent',
+                'title': '⚡ Book Profit',
+                'body': f"{trade_label} Forces {t_aligned}/3 but profitable ₹{current_pnl}. Take it.",
+            })
+
     if significant_move:
-        for trade in (open_trades or []):
-            t_index = trade.get('index_key', '')
-            t_type = trade.get('strategy_type', '')
-            t_sell_strike = trade.get('sell_strike', '')
-            t_id = trade.get('id', '')
-            current_pnl = trade.get('current_pnl', 0)
-            max_profit = trade.get('max_profit', 0)
-            max_loss = trade.get('max_loss', 0)
-            t_forces = trade.get('forces') or {}
-            t_aligned = t_forces.get('aligned')
-            trade_label = f"{t_index} {t_type} {t_sell_strike}"
-            quality = trade.get('valuation_quality')
-            ci_meta = trade.get('controlIndexMeta') or {}
-            completeness = ci_meta.get('signal_completeness_pct')
-            degraded_live_mark = bool(quality and quality != 'full')
-            low_ci_completeness = completeness is not None and completeness < 60
-            if degraded_live_mark or low_ci_completeness:
-                reason = f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}" if degraded_live_mark else f"CI signals {completeness}%"
-                alerts.append({
-                    'key': f"POS_DATA_QUALITY_{t_id}",
-                    'category': 'POSITION',
-                    'priority': 'important',
-                    'title': '🧪 Position Data Incomplete',
-                    'body': f"{trade_label}: {reason}. Suppressing strong P&L/control alerts until data improves.",
-                })
-                continue
-
-            if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
-                pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
-                alerts.append({
-                    'key': f"POS_TARGET_{t_id}",
-                    'category': 'POSITION',
-                    'priority': 'urgent',
-                    'title': '💰 Target Near',
-                    'body': f"{trade_label} P&L ₹{current_pnl} ({pct_of_max}% of max). Book profit.",
-                })
-            if max_loss and current_pnl <= -max_loss * _CONST.get('STOP_LOSS_RATIO', 0.7):
-                alerts.append({
-                    'key': f"POS_STOP_{t_id}",
-                    'category': 'POSITION',
-                    'priority': 'urgent',
-                    'title': '🛑 Stop Loss Near',
-                    'body': f"{trade_label} P&L ₹{current_pnl}. Cut position.",
-                })
-            if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
-                alerts.append({
-                    'key': f"POS_BOOK_{t_id}",
-                    'category': 'POSITION',
-                    'priority': 'urgent',
-                    'title': '⚡ Book Profit',
-                    'body': f"{trade_label} Forces {t_aligned}/3 but profitable ₹{current_pnl}. Take it.",
-                })
-
         if (abs_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
                 or abs_nf_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
                 or abs_vix_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)):
@@ -5796,7 +5797,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.38"
+BRAIN_VERSION = "2.5.39"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -12935,6 +12936,7 @@ class NotificationAgent:
                 'best_candidate_id': None,
                 'best_candidate_history': [],
                 'position_alert_keys': [],
+                'operational_alert_keys': [],
             }
         self.last_state = {
             'action': state.get('action', 'WAIT'),
@@ -12947,6 +12949,7 @@ class NotificationAgent:
         self.verdict_history = list(state.get('verdict_history', []) or [])
         self.best_candidate_history = list(state.get('best_candidate_history', []) or [])
         self.position_alert_keys = set(state.get('position_alert_keys', []) or [])
+        self.operational_alert_keys = set(state.get('operational_alert_keys', []) or [])
 
     def _best_executable_candidate(self, result):
         watchlist = result.get('watchlist') or []
@@ -13084,11 +13087,60 @@ class NotificationAgent:
             candidate_id=(str(alert.get('key') or '').split('_', 2)[-1] if alert.get('key') else None),
         )
 
+    def _operational_alert_to_contract(self, alert, base):
+        category = str((alert or {}).get('category') or '').upper()
+        key = str((alert or {}).get('key') or '').strip()
+        priority = str((alert or {}).get('priority') or '').lower()
+        title = alert.get('title', '')
+        body = alert.get('body', '')
+        if category == 'WATCHLIST':
+            is_entry = key.startswith('WATCHLIST_ENTRY_')
+            return self._build_contract(
+                base,
+                decision_type='TRADE' if is_entry else 'WARNING',
+                notify_user=True,
+                notification_kind='ENTRY' if is_entry else 'UPDATE',
+                title=title,
+                body=body,
+                reason_code=key or 'WATCHLIST_ALERT',
+                reason_text='Watchlist setup crossed a notification threshold.',
+                sound_class='entry' if is_entry else 'warning',
+                alert_key=key or alert.get('dedupe_bucket'),
+            )
+        if category == 'MARKET':
+            return self._build_contract(
+                base,
+                decision_type='WARNING',
+                notify_user=True,
+                notification_kind='UPDATE',
+                title=title,
+                body=body,
+                reason_code=key or 'MARKET_ALERT',
+                reason_text='Market condition crossed a notification threshold.',
+                sound_class='warning' if priority in ('important', 'urgent') else 'update',
+                alert_key=key or alert.get('dedupe_bucket'),
+            )
+        if category == 'ROUTINE':
+            return self._build_contract(
+                base,
+                decision_type='UPDATE',
+                notify_user=True,
+                notification_kind='UPDATE',
+                title=title,
+                body=body,
+                reason_code=key or 'ROUTINE_ALERT',
+                reason_text='Routine market status update.',
+                sound_class='routine',
+                alert_key=key or alert.get('dedupe_bucket'),
+            )
+        return None
+
     def snapshot_state(self):
         full = dict(self.last_state)
         full['verdict_history'] = list(self.verdict_history)
         full['best_candidate_history'] = list(self.best_candidate_history)
         full['position_alert_keys'] = sorted(self.position_alert_keys)
+        full['operational_alert_keys'] = sorted(self.operational_alert_keys)
         return full
 
     def process_contract(self, result, ctx):
@@ -13104,18 +13156,34 @@ class NotificationAgent:
         base = self._contract_base(result, ctx, best, verdict)
 
         position_alerts = []
+        operational_alerts = []
         for alert in (result.get('alerts') or []):
-            if isinstance(alert, dict) and alert.get('category') == 'POSITION':
+            if not isinstance(alert, dict):
+                continue
+            category = str(alert.get('category') or '').upper()
+            if category == 'POSITION':
                 position_alerts.append(alert)
+            elif category in ('WATCHLIST', 'MARKET', 'ROUTINE'):
+                operational_alerts.append(alert)
         position_alerts.sort(key=lambda item: self._priority_rank(item.get('priority')), reverse=True)
+        operational_alerts.sort(key=lambda item: self._priority_rank(item.get('priority')), reverse=True)
         current_position_keys = {
             str(alert.get('key') or '').strip()
             for alert in position_alerts
             if str(alert.get('key') or '').strip()
         }
+        current_operational_keys = {
+            str(alert.get('key') or '').strip()
+            for alert in operational_alerts
+            if str(alert.get('key') or '').strip()
+        }
         unseen_position_alerts = [
             alert for alert in position_alerts
             if str(alert.get('key') or '').strip() not in self.position_alert_keys
+        ]
+        unseen_operational_alerts = [
+            alert for alert in operational_alerts
+            if str(alert.get('key') or '').strip() not in self.operational_alert_keys
         ]
 
         self.verdict_history.append(action)
@@ -13226,10 +13294,15 @@ class NotificationAgent:
                 reason_text='No actionable trading notification for this poll.',
             )
 
-        self.position_alert_keys = current_position_keys
-
         if unseen_position_alerts:
             contract = self._position_alert_to_contract(unseen_position_alerts[0], base)
+        elif unseen_operational_alerts and not (contract or {}).get('notify_user'):
+            operational_contract = self._operational_alert_to_contract(unseen_operational_alerts[0], base)
+            if operational_contract is not None:
+                contract = operational_contract
+
+        self.position_alert_keys = current_position_keys
+        self.operational_alert_keys = current_operational_keys
 
         return {
             'brain_notification': contract,
