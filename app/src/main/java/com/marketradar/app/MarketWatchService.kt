@@ -126,7 +126,7 @@ class MarketWatchService : Service() {
         private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
         private const val LAST_POLL_GAP_WARNING_SLOT_KEY = "last_poll_gap_warning_slot"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
-        private const val MARKET_CLOSE_MINUTE = 15 * 60 + 30
+        private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
         private const val SETTLED_EVALUATION_START_MINUTE = 16 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5
         private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
@@ -3795,7 +3795,7 @@ class MarketWatchService : Service() {
         if (day == Calendar.SATURDAY || day == Calendar.SUNDAY) return false
         if (!isMarketDay()) return false
         val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        return mins in 555..930 // 9:15 AM to 3:30 PM IST
+        return mins in MARKET_OPEN_MINUTE..MARKET_CLOSE_MINUTE
     }
 
     private fun createNotification(title: String, text: String): Notification {
@@ -3867,8 +3867,8 @@ class MarketWatchService : Service() {
             }
         }
         
-        // 3:15 PM Window (15:00 - 15:30)
-        if (mins in 900..930 && !prefs.getBoolean("has315pmSnapshot", false)) {
+        // 3:15 PM close window (15:00 - official 15:40 close).
+        if (mins in 900..MARKET_CLOSE_MINUTE && !prefs.getBoolean("has315pmSnapshot", false)) {
             Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 315pm snapshot")
             prefs.edit().putBoolean("has315pmSnapshot", true).apply()
             serviceScope.launch(Dispatchers.IO) {

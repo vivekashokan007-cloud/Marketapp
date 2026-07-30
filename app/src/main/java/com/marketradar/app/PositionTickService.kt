@@ -574,7 +574,7 @@ class PositionTickService : Service() {
         private const val FLUSH_MIN_MS = 60_000L
         private const val MAX_PENDING_TICKS = 1_500
         private const val MARKET_OPEN_MINUTES = 9 * 60 + 15
-        private const val MARKET_CLOSE_MINUTES = 15 * 60 + 30
+        private const val MARKET_CLOSE_MINUTES = 15 * 60 + 40
         private const val POLICY_EOD_MINUTES = 15 * 60 + 15
         private val IST = TimeZone.getTimeZone("Asia/Kolkata")
         private val UTC = TimeZone.getTimeZone("UTC")

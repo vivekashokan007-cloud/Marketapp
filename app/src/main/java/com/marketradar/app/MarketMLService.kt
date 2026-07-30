@@ -1167,7 +1167,7 @@ class MarketMLService : Service() {
             val cal = Calendar.getInstance(IST).apply { timeInMillis = instant.toEpochMilli() }
             val hour = cal.get(Calendar.HOUR_OF_DAY)
             val minute = cal.get(Calendar.MINUTE)
-            hour == 15 && minute in 15..30
+            hour == 15 && minute in 15..40
         } catch (_: Exception) {
             false
         }

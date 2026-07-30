@@ -1185,7 +1185,7 @@ object SupabaseClient {
         if (pollTs.isBlank()) return false
         return try {
             val zoned = OffsetDateTime.parse(pollTs).atZoneSameInstant(ZoneId.of("Asia/Kolkata"))
-            zoned.hour == 15 && zoned.minute in 15..30
+            zoned.hour == 15 && zoned.minute in 15..40
         } catch (_: Exception) {
             false
         }

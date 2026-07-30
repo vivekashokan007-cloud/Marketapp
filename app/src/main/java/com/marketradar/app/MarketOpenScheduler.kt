@@ -21,6 +21,8 @@ object MarketOpenScheduler {
     private const val PREF_NEXT_MARKET_OPEN_MS = "next_market_open_ms"
     private const val PREF_LAST_FORCE_POLL_MS = "last_force_poll_ms"
     private const val FORCE_POLL_DEBOUNCE_MS = 15_000L
+    private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+    private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
 
     private val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
     private val HOLIDAYS_2026 = setOf(
@@ -56,7 +58,7 @@ object MarketOpenScheduler {
             return MarketClockStatus(marketDay = false, marketOpen = false, reason = "HOLIDAY")
         }
         val minutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
-        return if (minutes in 555..930) {
+        return if (minutes in MARKET_OPEN_MINUTE..MARKET_CLOSE_MINUTE) {
             MarketClockStatus(marketDay = true, marketOpen = true, reason = "OPEN")
         } else {
             MarketClockStatus(marketDay = true, marketOpen = false, reason = "OUT_OF_HOURS")
@@ -135,7 +137,7 @@ object MarketOpenScheduler {
         while (true) {
             val status = currentStatus(next)
             val minutes = next.get(Calendar.HOUR_OF_DAY) * 60 + next.get(Calendar.MINUTE)
-            val beforeOpenToday = status.marketDay && minutes < 555
+            val beforeOpenToday = status.marketDay && minutes < MARKET_OPEN_MINUTE
             if (beforeOpenToday) {
                 next.set(Calendar.HOUR_OF_DAY, 9)
                 next.set(Calendar.MINUTE, 15)

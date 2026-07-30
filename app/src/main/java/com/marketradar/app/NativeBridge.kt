@@ -58,6 +58,10 @@ class NativeBridge(private val context: Context) {
         private const val ML_BRAIN_SNAPSHOT_JS_MAX_ROWS = 5
         private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 2L * 1024L * 1024L
         private const val ML_BRAIN_SNAPSHOT_JS_CACHE_TTL_MS = 60_000L
+        private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+        private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
+        private const val POLL_SLOT_MINUTES = 5
+        private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
         private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val teacherResearchRebuildInFlight = AtomicBoolean(false)
         @Volatile private var teacherResearchLastRebuildKey = ""
@@ -1731,14 +1735,14 @@ class NativeBridge(private val context: Context) {
         if (lastPollDate != targetDate) return ""
         val pollCount = countDistinctSlotOrdinalsForDate(targetDate)
         val rawPollCount = prefs.getInt("poll_count", 0)
-        val finalSlotCount = countSlotOccurrencesForDate(targetDate, 76)
+        val finalSlotCount = countSlotOccurrencesForDate(targetDate, POLL_FULL_DAY_SLOTS)
         val snapshotRows = countLocalSnapshotRows(targetDate)
         return when {
             finalSlotCount > 1 -> "FINAL_SLOT_DUPLICATE"
             finalSlotCount == 0 -> "FINAL_SLOT_MISSING"
-            pollCount in 1..75 -> "MISSED_SLOTS"
-            rawPollCount > 76 -> "COUNTER_DRIFT"
-            snapshotRows > 76 -> "SNAPSHOT_OVERRUN"
+            pollCount in 1 until POLL_FULL_DAY_SLOTS -> "MISSED_SLOTS"
+            rawPollCount > POLL_FULL_DAY_SLOTS -> "COUNTER_DRIFT"
+            snapshotRows > POLL_FULL_DAY_SLOTS -> "SNAPSHOT_OVERRUN"
             pollCount > 0 -> "NONE"
             else -> ""
         }
@@ -1790,7 +1794,7 @@ class NativeBridge(private val context: Context) {
 
     private fun currentPollCoverage(clock: MarketOpenScheduler.MarketClockStatus): PollCoverage {
         val rawActual = if (hasTodaySession()) prefs.getInt("poll_count", 0) else 0
-        val expectedFullDay = 76
+        val expectedFullDay = POLL_FULL_DAY_SLOTS
         if (!clock.marketDay) {
             return PollCoverage(0, expectedFullDay, rawActual.coerceAtMost(expectedFullDay), 0, clock.reason)
         }
@@ -1798,12 +1802,13 @@ class NativeBridge(private val context: Context) {
 
         val ist = TimeZone.getTimeZone("Asia/Kolkata")
         val cal = Calendar.getInstance(ist)
+        val currentMinutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
         cal.add(Calendar.MINUTE, -2)
         val minutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
         val rawExpectedByNow = when {
-            minutes < 555 -> 0
-            minutes >= 930 -> expectedFullDay
-            else -> ((minutes - 555) / 5) + 1
+            currentMinutes >= MARKET_CLOSE_MINUTE -> expectedFullDay
+            minutes < MARKET_OPEN_MINUTE -> 0
+            else -> ((minutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
         }.coerceIn(0, expectedFullDay)
         val firstSlot = firstPollSlotOrdinalToday()
         val expectedByNow = when {
@@ -1843,8 +1848,8 @@ class NativeBridge(private val context: Context) {
         val hour = parts[0].toIntOrNull() ?: return null
         val minute = parts[1].toIntOrNull() ?: return null
         val totalMinutes = hour * 60 + minute
-        if (totalMinutes < 555 || totalMinutes > 930) return null
-        return ((totalMinutes - 555) / 5) + 1
+        if (totalMinutes < MARKET_OPEN_MINUTE || totalMinutes > MARKET_CLOSE_MINUTE) return null
+        return ((totalMinutes - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
     }
 
     private fun pollSlotTime(row: JSONObject): String {

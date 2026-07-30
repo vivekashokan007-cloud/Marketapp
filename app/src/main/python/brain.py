@@ -5797,7 +5797,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.40"
+BRAIN_VERSION = "2.5.41"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -11159,30 +11159,30 @@ def _parse_ist_hour_min(poll_ts_str):
 
 
 def _is_h2_window(poll_ts_str):
-    """True if timestamp falls inside H2 evaluation window (15:15-15:30 IST)."""
+    """True if timestamp falls inside H2 evaluation window (15:15-15:40 IST)."""
     hm = _parse_ist_hour_min(poll_ts_str)
     if hm is None:
         return False
     h, m = hm
-    return h == 15 and 15 <= m <= 30
+    return h == 15 and 15 <= m <= 40
 
 
 def _is_h2_preferred_window(poll_ts_str):
-    """Preferred evaluation window (15:15-15:25 IST)."""
+    """Preferred evaluation window (15:15-15:35 IST)."""
     hm = _parse_ist_hour_min(poll_ts_str)
     if hm is None:
         return False
     h, m = hm
-    return h == 15 and 15 <= m <= 25
+    return h == 15 and 15 <= m <= 35
 
 
 def _is_h2_final_fallback_window(poll_ts_str):
-    """Final fallback window near close (15:26-15:30 IST)."""
+    """Final fallback window near close (15:36-15:40 IST)."""
     hm = _parse_ist_hour_min(poll_ts_str)
     if hm is None:
         return False
     h, m = hm
-    return h == 15 and 26 <= m <= 30
+    return h == 15 and 36 <= m <= 40
 
 
 def _parse_iso_ts(ts_str):
@@ -11202,9 +11202,9 @@ def get_price(chain_rows, cand, side, suffix=''):
     """Pull price from chain_lookup within H2 window.
 
     Preferred source:
-    - earliest valid mark in 15:15-15:25 IST
+    - earliest valid mark in 15:15-15:35 IST
     Fallback source:
-    - latest valid mark in the final 15:26-15:30 IST close window
+    - latest valid mark in the final 15:36-15:40 IST close window
     Returns a float or None if no valid row exists.
     """
     strike_key = f"{side}Strike{suffix}"
