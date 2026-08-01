@@ -9580,6 +9580,190 @@ def _candidate_view(c):
     }
 
 
+def _shadow_num(value, default=None):
+    try:
+        if value is None:
+            return default
+        if isinstance(value, str) and not value.strip():
+            return default
+        out = float(value)
+        if math.isfinite(out):
+            return out
+    except Exception:
+        pass
+    return default
+
+
+def _shadow_selector_brief(cand, selector, score=None, reason=None, current_top=None):
+    if cand is None:
+        return {
+            'selector': selector,
+            'candidate_id': None,
+            'score': score,
+            'reason': reason or 'NO_ELIGIBLE_CANDIDATE',
+            'changed_from_current': False,
+        }
+    current_id = current_top.get('id') if isinstance(current_top, dict) else None
+    cand_id = cand.get('id')
+    return {
+        'selector': selector,
+        'candidate_id': cand_id,
+        'type': cand.get('type'),
+        'index': cand.get('index'),
+        'lane': cand.get('lane'),
+        'width': cand.get('width'),
+        'isCredit': cand.get('isCredit'),
+        'premiumEdge': cand.get('premiumEdge'),
+        'creditWidthRatio': cand.get('creditWidthRatio'),
+        'probProfit': cand.get('probProfit'),
+        'p_ml': cand.get('p_ml'),
+        'maxProfit': cand.get('maxProfit'),
+        'maxLoss': cand.get('maxLoss'),
+        'netPremium': cand.get('netPremium'),
+        'sigmaOTM': cand.get('sigmaOTM'),
+        'debitBreakevenSigma': cand.get('debitBreakevenSigma'),
+        'deterministic_rank': cand.get('deterministic_rank'),
+        'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
+        'score': round(score, 6) if isinstance(score, (int, float)) and math.isfinite(score) else score,
+        'reason': reason,
+        'changed_from_current': bool(current_id and cand_id and cand_id != current_id),
+        'family_changed': bool(current_top and cand.get('type') != current_top.get('type')),
+        'index_changed': bool(current_top and cand.get('index') != current_top.get('index')),
+        'width_changed': bool(current_top and cand.get('width') != current_top.get('width')),
+        'shadow_only': True,
+    }
+
+
+def _compute_managed_proxy_v0_score(cand):
+    """Small explainable selector proxy for shadow telemetry only.
+
+    This is not a trading model and must not control live ranking. It combines
+    managed-exit-relevant economics that already exist on candidate payloads.
+    """
+    if not isinstance(cand, dict):
+        return None
+    if cand.get('capitalBlocked'):
+        return None
+    max_loss = _shadow_num(cand.get('maxLoss'))
+    if max_loss is None or max_loss <= 0:
+        return None
+    max_profit = _shadow_num(cand.get('maxProfit'), 0.0) or 0.0
+    prob = _shadow_num(cand.get('probProfit'), 0.0) or 0.0
+    premium_edge = _shadow_num(cand.get('premiumEdge'), 0.0) or 0.0
+    p_ml = _shadow_num(cand.get('p_ml'), 0.0) or 0.0
+    credit_ratio = _shadow_num(cand.get('creditWidthRatio'), 0.0) or 0.0
+    sigma = _shadow_num(cand.get('sigmaOTM'))
+    debit_be_sigma = _shadow_num(cand.get('debitBreakevenSigma'))
+    rr = max_profit / max_loss if max_loss > 0 else 0.0
+    edge_r = premium_edge / max_loss if max_loss > 0 else 0.0
+    score = 0.0
+    score += 0.35 * (prob - 0.50)
+    score += 0.25 * edge_r
+    score += 0.15 * min(rr, 2.0)
+    score += 0.10 * min(max(credit_ratio, 0.0), 0.80)
+    score += 0.10 * (p_ml - 0.50)
+    if sigma is not None:
+        score -= 0.06 * abs(sigma - 0.90)
+    if debit_be_sigma is not None:
+        score -= 0.04 * abs(debit_be_sigma - 0.80)
+    if cand.get('directionSafe') is False:
+        score -= 0.50
+    if cand.get('mlUnsure') or cand.get('mlAction') == 'UNSURE':
+        score -= 0.10
+    if cand.get('mlOodBlocked'):
+        score -= 0.25
+    teacher_r = _shadow_num(cand.get('teacher_r_score'))
+    teacher_n = _shadow_num(cand.get('teacher_bucket_n'), 0.0) or 0.0
+    if teacher_r is not None and teacher_n >= 5:
+        score += 0.20 * teacher_r
+    return score
+
+
+def _compute_shadow_selector_suite(candidates, current_top=None):
+    """Compute alternate top picks for post-close comparison.
+
+    Shadow-only contract: this must never mutate candidates, rank order, verdict,
+    watchlist, notification routing, or execution.
+    """
+    cands = [
+        c for c in (candidates or [])
+        if isinstance(c, dict) and c.get('id') and not c.get('capitalBlocked')
+    ]
+    current_top = current_top if isinstance(current_top, dict) else (cands[0] if cands else None)
+
+    def best_by(selector, getter, reason, eligible=None):
+        eligible = eligible or (lambda c: True)
+        scored = []
+        for cand in cands:
+            if not eligible(cand):
+                continue
+            score = getter(cand)
+            if score is None:
+                continue
+            scored.append((score, str(cand.get('id') or ''), cand))
+        if not scored:
+            return _shadow_selector_brief(None, selector, None, reason, current_top)
+        score, _, cand = sorted(scored, key=lambda item: (-item[0], item[1]))[0]
+        return _shadow_selector_brief(cand, selector, score, reason, current_top)
+
+    managed = best_by(
+        'K4_managed_proxy_v0',
+        _compute_managed_proxy_v0_score,
+        'weighted_prob_edge_rr_credit_ratio_sigma_teacher_shadow',
+    )
+    managed_score = _shadow_num(managed.get('score')) if isinstance(managed, dict) else None
+    no_trade = {
+        'selector': 'K6_no_trade_guard',
+        'candidate_id': managed.get('candidate_id') if managed_score is not None and managed_score >= 0 else '__NO_TRADE__',
+        'score': managed_score,
+        'reason': 'NO_TRADE_when_managed_proxy_v0_below_zero',
+        'changed_from_current': bool(
+            current_top and (managed.get('candidate_id') if managed_score is not None and managed_score >= 0 else '__NO_TRADE__') != current_top.get('id')
+        ),
+        'shadow_only': True,
+    }
+
+    picks = [
+        _shadow_selector_brief(
+            current_top,
+            'K0_current_rank',
+            0.0,
+            'existing_live_candidate_order',
+            current_top,
+        ),
+        best_by('K1_premium_edge_rank', lambda c: _shadow_num(c.get('premiumEdge')), 'highest_premiumEdge'),
+        best_by(
+            'K2_credit_width_ratio_rank',
+            lambda c: _shadow_num(c.get('creditWidthRatio')),
+            'highest_creditWidthRatio_among_credit_candidates',
+            lambda c: bool(c.get('isCredit')),
+        ),
+        best_by('K3_prob_profit_rank', lambda c: _shadow_num(c.get('probProfit')), 'highest_probProfit'),
+        managed,
+        best_by(
+            'K5_model_advisory_if_available',
+            lambda c: _shadow_num(c.get('p_ml')),
+            'highest_p_ml_when_available_and_not_unsure',
+            lambda c: not (c.get('mlUnsure') or c.get('mlAction') == 'UNSURE' or c.get('mlOodBlocked')),
+        ),
+        no_trade,
+    ]
+    changed = [p for p in picks if isinstance(p, dict) and p.get('changed_from_current')]
+    return {
+        'schema_version': 'shadow_selector_suite_v1',
+        'shadow_only': True,
+        'candidate_count': len(cands),
+        'current_top_candidate_id': current_top.get('id') if current_top else None,
+        'selector_count': len(picks),
+        'changed_selector_count': len(changed),
+        'picks': picks,
+        'notes': [
+            'diagnostic_only_no_live_ranking_authority',
+            'post_close_teacher_report_compares_shadow_pick_to_current_primary',
+        ],
+    }
+
+
 def _snapshot_teaching_band(index_key, chain, spot, vix, expiry):
     if not isinstance(chain, dict):
         return []
@@ -10944,6 +11128,7 @@ def take_poll_snapshot(result, ctx, polls):
     phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(generated_candidates, rejected_candidates)
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(generated_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, generated_candidates)
+    shadow_selector_suite = _compute_shadow_selector_suite(generated_candidates, top_cand)
     clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
     clean_rejected_full = []
     if isinstance(rejected_candidates, list):
@@ -11018,6 +11203,7 @@ def take_poll_snapshot(result, ctx, polls):
         'phase3_expected_r_shadow': phase3_expected_r_shadow,
         'phase4_ev_ladder_shadow': phase4_ev_ladder_shadow,
         'phase5_gate_registry': phase5_gate_registry,
+        'shadow_selector_suite': shadow_selector_suite,
     }
     poll_summary = {
         'poll_count': len(polls) if isinstance(polls, list) else 0,
@@ -11046,6 +11232,8 @@ def take_poll_snapshot(result, ctx, polls):
         'phase5_gate_registry_rows': len(phase5_gate_registry.get('rows') or []),
         'phase5_gate_registry_softening_candidates': phase5_gate_registry.get('softening_candidate_count'),
         'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
+        'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
+        'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
         'supply_states': ctx.get('_supply_states') or [],
         'supply_state': (ctx.get('_supply_states') or [{}])[0].get('state') if ctx.get('_supply_states') else None,
         'bnf_dte_source': ctx.get('bnfDteSource'),
@@ -11067,6 +11255,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
+    snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
@@ -12504,6 +12693,10 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     stage2a_chosen_teacher_r_count = 0
     stage2a_chosen_teacher_n_sum = 0
     stage2a_chosen_teacher_n_count = 0
+    shadow_selector_snapshot_count = 0
+    shadow_selector_changed_snapshot_count = 0
+    shadow_selector_pick_meta = {}
+    shadow_selector_reason_counts = {}
     snapshots_with = {
         'with_primary': 0,
         'with_generated': 0,
@@ -12600,6 +12793,22 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                     stage2a_live_top_changed += 1
             if stage2a.get('hard_wait_triggered') is True:
                 stage2a_hard_wait_count += 1
+
+        shadow_suite = ctx.get('snapshot_shadow_selector_suite')
+        if isinstance(shadow_suite, dict) and shadow_suite:
+            shadow_selector_snapshot_count += 1
+            if int(shadow_suite.get('changed_selector_count') or 0) > 0:
+                shadow_selector_changed_snapshot_count += 1
+            for pick in shadow_suite.get('picks') or []:
+                if not isinstance(pick, dict):
+                    continue
+                selector = str(pick.get('selector') or '').strip()
+                if not selector:
+                    continue
+                shadow_selector_pick_meta[(sid, selector)] = pick
+                reason = str(pick.get('reason') or 'UNKNOWN').strip() or 'UNKNOWN'
+                selector_reasons = shadow_selector_reason_counts.setdefault(selector, {})
+                _count_key(selector_reasons, reason)
 
         first_pos = {}
         for rank_idx, cand in enumerate(generated, start=1):
@@ -12704,6 +12913,86 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             all_non_positive += 1
         improvement_sum += (best_r - primary_r)
         improvement_count += 1
+
+    shadow_selector_summary = {}
+    shadow_selector_rows = []
+    for (sid, selector), pick in shadow_selector_pick_meta.items():
+        rows = by_snapshot.get(sid) or []
+        primary = next((r for r in rows if str(r.get('role') or '').lower() == 'primary'), None)
+        scored = [r for r in rows if _safe_float(r.get('managed_pnl')) is not None]
+        if not primary or not scored:
+            continue
+        primary_pnl = _safe_float(primary.get('managed_pnl'))
+        if primary_pnl is None:
+            continue
+        oracle = max(scored, key=lambda r: _safe_float(r.get('managed_pnl')) or -999999.0)
+        oracle_pnl = _safe_float(oracle.get('managed_pnl')) or 0.0
+        pick_id = pick.get('candidate_id')
+        picked_row = None
+        picked_pnl = None
+        if pick_id == '__NO_TRADE__':
+            picked_pnl = 0.0
+        else:
+            picked_row = next((r for r in rows if r.get('candidate_id') == pick_id), None)
+            if picked_row is not None:
+                picked_pnl = _safe_float(picked_row.get('managed_pnl'))
+        if picked_pnl is None:
+            continue
+        delta = picked_pnl - primary_pnl
+        row = {
+            'snapshot_id': sid,
+            'selector': selector,
+            'candidate_id': pick_id,
+            'primary_candidate_id': primary.get('candidate_id'),
+            'oracle_candidate_id': oracle.get('candidate_id'),
+            'strategy_type': (picked_row or {}).get('strategy_type') or pick.get('type') or ('NO_TRADE' if pick_id == '__NO_TRADE__' else None),
+            'primary_strategy_type': primary.get('strategy_type'),
+            'oracle_strategy_type': oracle.get('strategy_type'),
+            'managed_pnl': picked_pnl,
+            'primary_pnl': primary_pnl,
+            'oracle_pnl': oracle_pnl,
+            'delta_vs_primary': delta,
+            'oracle_gap_remaining': oracle_pnl - picked_pnl,
+            'changed_from_current': bool(pick.get('changed_from_current')),
+            'family_changed': bool(pick.get('family_changed')),
+            'index_changed': bool(pick.get('index_changed')),
+            'width_changed': bool(pick.get('width_changed')),
+            'score': pick.get('score'),
+            'reason': pick.get('reason'),
+        }
+        shadow_selector_rows.append(row)
+
+    for selector in sorted({row.get('selector') for row in shadow_selector_rows if row.get('selector')}):
+        rows = [row for row in shadow_selector_rows if row.get('selector') == selector]
+        count = len(rows)
+        total_pnl = sum(_safe_float(row.get('managed_pnl')) or 0.0 for row in rows)
+        total_primary = sum(_safe_float(row.get('primary_pnl')) or 0.0 for row in rows)
+        total_oracle = sum(_safe_float(row.get('oracle_pnl')) or 0.0 for row in rows)
+        improved = sum(1 for row in rows if (_safe_float(row.get('delta_vs_primary')) or 0.0) > 0)
+        worse = sum(1 for row in rows if (_safe_float(row.get('delta_vs_primary')) or 0.0) < 0)
+        same = count - improved - worse
+        shadow_selector_summary[selector] = {
+            'compared': count,
+            'total_pnl': round(total_pnl, 2),
+            'total_primary_pnl': round(total_primary, 2),
+            'delta_vs_primary': round(total_pnl - total_primary, 2),
+            'total_oracle_pnl': round(total_oracle, 2),
+            'oracle_gap_remaining': round(total_oracle - total_pnl, 2),
+            'avg_pnl': round(total_pnl / count, 2) if count else 0.0,
+            'win_rate_pct': round(
+                sum(1 for row in rows if (_safe_float(row.get('managed_pnl')) or 0.0) > 0) * 100.0 / count,
+                2,
+            ) if count else None,
+            'improved_vs_primary': improved,
+            'worse_than_primary': worse,
+            'same_as_primary': same,
+            'changed_from_current': sum(1 for row in rows if row.get('changed_from_current')),
+            'family_changed': sum(1 for row in rows if row.get('family_changed')),
+            'index_changed': sum(1 for row in rows if row.get('index_changed')),
+            'width_changed': sum(1 for row in rows if row.get('width_changed')),
+            'reasons': shadow_selector_reason_counts.get(selector, {}),
+            'shadow_only': True,
+        }
 
     def series_summary(values):
         if not values:
@@ -12906,6 +13195,15 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'has_gradeable_teacher_rows': gradeable_teacher_rows > 0,
         },
         'stage2a_shadow': stage2a_shadow,
+        'shadow_selector_suite': {
+            'schema_version': 'shadow_selector_suite_eval_v1',
+            'shadow_only': True,
+            'snapshot_count': shadow_selector_snapshot_count,
+            'changed_snapshot_count': shadow_selector_changed_snapshot_count,
+            'selector_summary': shadow_selector_summary,
+            'compared_rows': len(shadow_selector_rows),
+            'scope': 'shadow_selector_vs_current_primary_post_close',
+        },
         'primary_vs_best': {
             'snapshots_compared': snapshot_compared,
             'primary_was_best': primary_best,
