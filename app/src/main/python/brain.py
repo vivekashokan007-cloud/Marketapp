@@ -5797,11 +5797,28 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.41"
+BRAIN_VERSION = "2.5.43"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
 REJECTED_CANDIDATE_SAMPLE_CAP = 20
+REJECTED_EVAL_CANDIDATE_CAP = 24
+
+REJECTED_EVAL_STAGE_PRIORITY = {
+    # Evidence gates are the most useful to audit: they had complete-ish
+    # structures, but policy/economics rejected them before display.
+    'ev_below_floor': 0,
+    'credit_ratio_below_floor': 1,
+    'iv_not_rich': 2,
+    'sigma_otm_too_close': 3,
+    'sigma_otm_too_far': 4,
+    'credit_prob_below_floor': 5,
+    'debit_prob_below_floor': 6,
+    'prob_below_floor': 7,
+    'capital_limit_exceeded': 8,
+    'credit_dte_below_floor': 9,
+    'width_too_narrow': 10,
+}
 
 
 # TASK 5.1 — Fresh trace skeleton for each analyze() call
@@ -6647,6 +6664,10 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'sellType': c.get('sellType'),
         'buyStrike': c.get('buyStrike'),
         'buyType': c.get('buyType'),
+        'sellStrike2': c.get('sellStrike2'),
+        'sellType2': c.get('sellType2'),
+        'buyStrike2': c.get('buyStrike2'),
+        'buyType2': c.get('buyType2'),
         'legs': legs,
         'candidate_id': c.get('id'),
         'expected_win': None if metrics.get('expected_win') is None else round(metrics.get('expected_win'), 2),
@@ -9509,6 +9530,7 @@ def _candidate_view(c):
         'index': c.get('index'),
         'lane': c.get('lane'),
         'width': c.get('width'),
+        'tDTE': c.get('tDTE'),
         'expiry': c.get('expiry'),
         'legs': c.get('legs'),
         'legCount': c.get('legCount', len(c.get('legs') or [])),
@@ -9594,24 +9616,28 @@ def _shadow_num(value, default=None):
     return default
 
 
-def _shadow_selector_brief(cand, selector, score=None, reason=None, current_top=None):
+def _shadow_selector_brief(cand, selector, score=None, reason=None, current_top=None, extra=None):
+    extra = extra if isinstance(extra, dict) else {}
     if cand is None:
-        return {
+        out = {
             'selector': selector,
             'candidate_id': None,
             'score': score,
             'reason': reason or 'NO_ELIGIBLE_CANDIDATE',
             'changed_from_current': False,
         }
+        out.update(extra)
+        return out
     current_id = current_top.get('id') if isinstance(current_top, dict) else None
     cand_id = cand.get('id')
-    return {
+    out = {
         'selector': selector,
         'candidate_id': cand_id,
         'type': cand.get('type'),
         'index': cand.get('index'),
         'lane': cand.get('lane'),
         'width': cand.get('width'),
+        'tDTE': cand.get('tDTE'),
         'isCredit': cand.get('isCredit'),
         'premiumEdge': cand.get('premiumEdge'),
         'creditWidthRatio': cand.get('creditWidthRatio'),
@@ -9632,6 +9658,8 @@ def _shadow_selector_brief(cand, selector, score=None, reason=None, current_top=
         'width_changed': bool(current_top and cand.get('width') != current_top.get('width')),
         'shadow_only': True,
     }
+    out.update(extra)
+    return out
 
 
 def _compute_managed_proxy_v0_score(cand):
@@ -9679,7 +9707,192 @@ def _compute_managed_proxy_v0_score(cand):
     return score
 
 
-def _compute_shadow_selector_suite(candidates, current_top=None):
+def _native_memory_feature(row, ctx=None):
+    """Compact tabular fingerprint used by the native in-context ranker.
+
+    This deliberately uses only fields already captured in snapshot payloads and
+    teacher outcomes so it can run on-device without a DB migration.
+    """
+    row = row if isinstance(row, dict) else {}
+    ctx = ctx if isinstance(ctx, dict) else {}
+
+    def first(*keys):
+        for key in keys:
+            value = row.get(key)
+            if value is not None:
+                return value
+        return None
+
+    max_profit = _shadow_num(first('maxProfit', 'max_profit'), 0.0) or 0.0
+    max_loss = _shadow_num(first('maxLoss', 'max_loss'), 0.0) or 0.0
+    rr = max_profit / max_loss if max_loss > 0 else None
+    vix = _shadow_num(first('vix', 'VIX'), None)
+    if vix is None:
+        vix = _shadow_num(ctx.get('vix') or ctx.get('VIX'), None)
+    return {
+        'type': str(first('type', 'strategy_type', 'strategy') or '').upper(),
+        'index': str(first('index', 'index_key') or '').upper(),
+        'lane': str(first('lane') or '').upper(),
+        'isCredit': bool(first('isCredit', 'is_credit')),
+        'width': _shadow_num(first('width')),
+        'tDTE': _shadow_num(first('tDTE', 'tdte', 'dte')),
+        'vix': vix,
+        'premiumEdge': _shadow_num(first('premiumEdge', 'premium_edge')),
+        'creditWidthRatio': _shadow_num(first('creditWidthRatio', 'credit_width_ratio')),
+        'probProfit': _shadow_num(first('probProfit', 'prob_profit')),
+        'p_ml': _shadow_num(first('p_ml', 'ml_probability')),
+        'sigmaOTM': _shadow_num(first('sigmaOTM', 'sigma_otm')),
+        'debitBreakevenSigma': _shadow_num(first('debitBreakevenSigma', 'debit_breakeven_sigma')),
+        'riskReward': _shadow_num(first('riskReward', 'risk_reward'), rr),
+    }
+
+
+def _native_memory_similarity(query, memory):
+    query = query if isinstance(query, dict) else {}
+    memory = memory if isinstance(memory, dict) else {}
+    score = 0.0
+    weight = 0.0
+
+    categorical = (
+        ('index', 2.0),
+        ('type', 2.5),
+        ('lane', 1.5),
+        ('isCredit', 1.0),
+    )
+    for key, w in categorical:
+        qv = query.get(key)
+        mv = memory.get(key)
+        if qv in (None, '') or mv in (None, ''):
+            continue
+        weight += w
+        if qv == mv:
+            score += w
+
+    numeric = (
+        ('width', 400.0, 0.8),
+        ('tDTE', 5.0, 1.2),
+        ('vix', 6.0, 1.0),
+        ('premiumEdge', 250.0, 1.1),
+        ('creditWidthRatio', 0.35, 1.0),
+        ('probProfit', 0.30, 1.0),
+        ('p_ml', 0.30, 0.7),
+        ('sigmaOTM', 1.0, 1.1),
+        ('debitBreakevenSigma', 1.0, 0.7),
+        ('riskReward', 1.5, 0.8),
+    )
+    for key, scale, w in numeric:
+        qv = _shadow_num(query.get(key))
+        mv = _shadow_num(memory.get(key))
+        if qv is None or mv is None:
+            continue
+        weight += w
+        closeness = max(0.0, 1.0 - abs(qv - mv) / scale)
+        score += w * closeness
+
+    return score / weight if weight > 0 else 0.0
+
+
+def _native_memory_outcome_r(row):
+    row = row if isinstance(row, dict) else {}
+    r_val = _shadow_num(row.get('r_multiple'))
+    if r_val is not None:
+        return r_val
+    pnl = _shadow_num(row.get('managed_pnl'))
+    risk = _shadow_num(row.get('maxLoss') or row.get('max_loss'))
+    if pnl is not None and risk and risk > 0:
+        return pnl / risk
+    return None
+
+
+def _native_memory_score_candidate(candidate, memory_rows, ctx=None, exclude_snapshot_id=None, top_k=25):
+    query = _native_memory_feature(candidate, ctx)
+    rows = memory_rows if isinstance(memory_rows, list) else []
+    matches = []
+    for row in rows[:2000]:
+        if not isinstance(row, dict):
+            continue
+        if exclude_snapshot_id is not None and row.get('snapshot_id') == exclude_snapshot_id:
+            continue
+        outcome_r = _native_memory_outcome_r(row)
+        if outcome_r is None:
+            continue
+        feature = row.get('_native_memory_feature')
+        if not isinstance(feature, dict):
+            feature = _native_memory_feature(row, ctx)
+        sim = _native_memory_similarity(query, feature)
+        if sim < 0.20:
+            continue
+        matches.append((sim, outcome_r, row))
+    if not matches:
+        return None
+    matches = sorted(matches, key=lambda item: item[0], reverse=True)[:max(1, int(top_k or 25))]
+    weight_sum = sum(sim for sim, _, _ in matches)
+    if weight_sum <= 0:
+        return None
+    weighted_r = sum(sim * outcome_r for sim, outcome_r, _ in matches) / weight_sum
+    wins = sum(1 for _, outcome_r, _ in matches if outcome_r > 0)
+    support = len(matches)
+    confidence = min(1.0, support / 20.0) * min(1.0, weight_sum / max(support, 1))
+    score = weighted_r * (0.65 + 0.35 * confidence)
+    return {
+        'score': score,
+        'expected_r': weighted_r,
+        'support': support,
+        'weighted_similarity': weight_sum / support,
+        'win_rate_pct': wins * 100.0 / support,
+        'top_match_snapshot_ids': [row.get('snapshot_id') for _, _, row in matches[:5]],
+    }
+
+
+def _native_memory_pick(candidates, memory_rows, current_top=None, ctx=None, selector='K7_native_memory_ranker_v0'):
+    cands = [
+        c for c in (candidates or [])
+        if isinstance(c, dict) and c.get('id') and not c.get('capitalBlocked')
+    ]
+    if not isinstance(memory_rows, list) or not memory_rows:
+        return _shadow_selector_brief(
+            None,
+            selector,
+            None,
+            'NO_PACKAGED_MEMORY_ROWS',
+            current_top,
+            {'native_memory_status': 'ABSTAIN_NO_MEMORY', 'shadow_only': True},
+        )
+    scored = []
+    for cand in cands:
+        detail = _native_memory_score_candidate(cand, memory_rows, ctx)
+        if not detail:
+            continue
+        scored.append((detail['score'], str(cand.get('id') or ''), cand, detail))
+    if not scored:
+        return _shadow_selector_brief(
+            None,
+            selector,
+            None,
+            'NO_SIMILAR_MEMORY_ROWS',
+            current_top,
+            {'native_memory_status': 'ABSTAIN_NO_MATCH', 'memory_row_count': len(memory_rows), 'shadow_only': True},
+        )
+    score, _, cand, detail = sorted(scored, key=lambda item: (-item[0], item[1]))[0]
+    return _shadow_selector_brief(
+        cand,
+        selector,
+        score,
+        'nearest_historical_context_weighted_expected_r',
+        current_top,
+        {
+            'native_memory_status': 'OK',
+            'native_expected_r': round(detail.get('expected_r') or 0.0, 5),
+            'native_support': detail.get('support'),
+            'native_similarity': round(detail.get('weighted_similarity') or 0.0, 5),
+            'native_win_rate_pct': round(detail.get('win_rate_pct') or 0.0, 2),
+            'native_top_match_snapshot_ids': detail.get('top_match_snapshot_ids') or [],
+            'memory_row_count': len(memory_rows),
+        },
+    )
+
+
+def _compute_shadow_selector_suite(candidates, current_top=None, ctx=None):
     """Compute alternate top picks for post-close comparison.
 
     Shadow-only contract: this must never mutate candidates, rank order, verdict,
@@ -9723,6 +9936,12 @@ def _compute_shadow_selector_suite(candidates, current_top=None):
         'shadow_only': True,
     }
 
+    memory_rows = []
+    if isinstance(ctx, dict):
+        raw_memory = ctx.get('native_memory_rows') or ctx.get('snapshot_native_memory_rows')
+        if isinstance(raw_memory, list):
+            memory_rows = raw_memory
+
     picks = [
         _shadow_selector_brief(
             current_top,
@@ -9747,6 +9966,7 @@ def _compute_shadow_selector_suite(candidates, current_top=None):
             lambda c: not (c.get('mlUnsure') or c.get('mlAction') == 'UNSURE' or c.get('mlOodBlocked')),
         ),
         no_trade,
+        _native_memory_pick(cands, memory_rows, current_top, ctx),
     ]
     changed = [p for p in picks if isinstance(p, dict) and p.get('changed_from_current')]
     return {
@@ -9760,6 +9980,349 @@ def _compute_shadow_selector_suite(candidates, current_top=None):
         'notes': [
             'diagnostic_only_no_live_ranking_authority',
             'post_close_teacher_report_compares_shadow_pick_to_current_primary',
+        ],
+    }
+
+
+M1_MENU_ABSTENTION_SCHEMA_VERSION = 'menu_abstention_shadow_v0'
+M1_MIN_SUPPORT_COUNT = 3
+
+
+def _m1_decode_history(raw):
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw.strip() else []
+        except Exception:
+            raw = []
+    if isinstance(raw, dict):
+        raw = raw.get('rows') or raw.get('history') or raw.get('data') or []
+    return raw if isinstance(raw, list) else []
+
+
+def _m1_history_rows(ctx):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    for key in (
+        'menu_abstention_history',
+        'm1_menu_history',
+        'm1_menu_abstention_history',
+        'snapshot_menu_abstention_history',
+    ):
+        rows = _m1_decode_history(ctx.get(key))
+        if rows:
+            return rows
+    return []
+
+
+def _m1_row_date(row):
+    if not isinstance(row, dict):
+        return None
+    return _parse_yyyy_mm_dd(row.get('session_date') or row.get('history_session_date') or row.get('date'))
+
+
+def _m1_outcome_pnl(row):
+    if not isinstance(row, dict):
+        return None
+    for key in ('menu_pnl', 'managed_pnl', 'primary_pnl', 'realized_pnl', 'pnl'):
+        val = _shadow_num(row.get(key))
+        if val is not None:
+            return val
+    return None
+
+
+def _m1_outcome_win(row, pnl=None):
+    if not isinstance(row, dict):
+        return None
+    raw = row.get('menu_won')
+    if raw is None:
+        raw = row.get('win_menu')
+    if raw is None:
+        raw = row.get('canonical_won')
+    if raw is None and pnl is not None:
+        return pnl > 0
+    if raw in (True, 1, '1'):
+        return True
+    if raw in (False, 0, '0'):
+        return False
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ('true', 'yes', 'win', 'won'):
+            return True
+        if lowered in ('false', 'no', 'loss', 'lost'):
+            return False
+    return None
+
+
+def _m1_flatten_history(raw_rows, current_session_date=None):
+    current_date = _parse_yyyy_mm_dd(current_session_date)
+    entries = []
+    for row in raw_rows or []:
+        if not isinstance(row, dict):
+            continue
+        row_date = _m1_row_date(row)
+        # Outcome-derived history must be strictly prior-session only.
+        if current_date is not None:
+            if row_date is None or row_date >= current_date:
+                continue
+        pnl = _m1_outcome_pnl(row)
+        win = _m1_outcome_win(row, pnl)
+        if pnl is None and win is None:
+            continue
+        signatures = row.get('signatures')
+        if isinstance(signatures, list):
+            for sig in signatures:
+                if not isinstance(sig, dict):
+                    continue
+                entries.append({
+                    'session_date': row.get('session_date') or row.get('history_session_date') or row.get('date'),
+                    'signature_type': sig.get('signature_type') or sig.get('type'),
+                    'signature_key': sig.get('signature_key') or sig.get('key'),
+                    'menu_pnl': pnl,
+                    'menu_won': win,
+                })
+            continue
+        entries.append({
+            'session_date': row.get('session_date') or row.get('history_session_date') or row.get('date'),
+            'signature_type': row.get('signature_type') or row.get('type'),
+            'signature_key': row.get('signature_key') or row.get('key'),
+            'menu_pnl': pnl,
+            'menu_won': win,
+        })
+    return entries
+
+
+def _m1_vix_bucket(vix_value):
+    vix = _shadow_num(vix_value)
+    if vix is None:
+        return 'UNKNOWN'
+    if vix >= 20:
+        return 'HIGH'
+    if vix < 15:
+        return 'LOW'
+    return 'NORMAL'
+
+
+def _m1_day_direction(ctx, latest_poll):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    latest_poll = latest_poll if isinstance(latest_poll, dict) else {}
+    for source in (latest_poll, ctx):
+        for key in ('dayDirection', 'day_direction', 'globalDirection', 'global_direction'):
+            val = str(source.get(key) or '').strip().upper()
+            if val:
+                return val
+    effective_bias = ctx.get('effective_bias') if isinstance(ctx.get('effective_bias'), dict) else {}
+    bias = str(effective_bias.get('bias') or '').strip().upper()
+    if bias:
+        return bias
+    return 'UNKNOWN'
+
+
+def _m1_day_range(ctx, latest_poll, result):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    latest_poll = latest_poll if isinstance(latest_poll, dict) else {}
+    result = result if isinstance(result, dict) else {}
+    for source in (latest_poll, ctx, result):
+        for key in ('dayRange', 'day_range'):
+            val = str(source.get(key) or '').strip().upper()
+            if val:
+                return val
+    sigma = _shadow_num(
+        latest_poll.get('dayRangeSigma')
+        or latest_poll.get('day_range_sigma')
+        or result.get('rangeSigma')
+        or ctx.get('rangeSigma')
+    )
+    if sigma is None:
+        return 'UNKNOWN'
+    if sigma < 0.35:
+        return 'TIGHT'
+    if sigma <= 1.0:
+        return 'NORMAL'
+    return 'WIDE'
+
+
+def _m1_primary_strategy(top_cand, generated_candidates, rejected_candidates, verdict):
+    if isinstance(top_cand, dict) and top_cand.get('type'):
+        return str(top_cand.get('type')).upper()
+    generated = generated_candidates if isinstance(generated_candidates, list) else []
+    for cand in generated:
+        if isinstance(cand, dict) and cand.get('type'):
+            return str(cand.get('type')).upper()
+    if isinstance(verdict, dict) and verdict.get('strategy'):
+        return str(verdict.get('strategy')).upper()
+    counts = {}
+    for cand in rejected_candidates if isinstance(rejected_candidates, list) else []:
+        if not isinstance(cand, dict):
+            continue
+        stype = cand.get('strategy_type') or cand.get('type')
+        if not stype:
+            continue
+        stype = str(stype).upper()
+        counts[stype] = counts.get(stype, 0) + 1
+    if counts:
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    return 'NONE'
+
+
+def _m1_build_signatures(primary_strategy, day_direction, day_range, day_vix_bucket):
+    primary_strategy = str(primary_strategy or 'NONE').upper()
+    day_direction = str(day_direction or 'UNKNOWN').upper()
+    day_range = str(day_range or 'UNKNOWN').upper()
+    day_vix_bucket = str(day_vix_bucket or 'UNKNOWN').upper()
+    return [
+        {
+            'signature_type': 'strategy_context',
+            'signature_key': f'{primary_strategy}|{day_direction}|{day_range}|{day_vix_bucket}',
+        },
+        {
+            'signature_type': 'primary_strategy_day_vix',
+            'signature_key': f'{primary_strategy}|{day_vix_bucket}',
+        },
+        {
+            'signature_type': 'day_vix_bucket',
+            'signature_key': day_vix_bucket,
+        },
+    ]
+
+
+def _m1_score_signature(signature, history_entries, record_type):
+    sig_type = signature.get('signature_type')
+    sig_key = signature.get('signature_key')
+    if record_type == 'NO_MENU_GENERATED':
+        return {
+            **signature,
+            'shadow_action': 'NO_DECISION',
+            'abstain_reason': None,
+            'support_count': 0,
+            'historical_avg_menu_pnl': None,
+            'historical_win_menu_rate': None,
+            'history_session_count': 0,
+        }
+    matches = [
+        row for row in history_entries or []
+        if row.get('signature_type') == sig_type and row.get('signature_key') == sig_key
+    ]
+    pnls = [_shadow_num(row.get('menu_pnl')) for row in matches]
+    pnls = [p for p in pnls if p is not None]
+    wins = [row.get('menu_won') for row in matches if row.get('menu_won') is not None]
+    support = len(pnls)
+    avg_pnl = sum(pnls) / support if support else None
+    win_rate = (sum(1 for win in wins if win is True) / len(wins)) if wins else None
+    if support <= 0:
+        action = 'ABSTAIN'
+        reason = 'NO_SUPPORT'
+    elif support < M1_MIN_SUPPORT_COUNT:
+        action = 'ABSTAIN'
+        reason = 'INSUFFICIENT_DATA'
+    elif avg_pnl is not None and avg_pnl < 0:
+        action = 'ABSTAIN'
+        reason = 'NEGATIVE_HISTORY'
+    else:
+        action = 'ACCEPT'
+        reason = None
+    return {
+        **signature,
+        'shadow_action': action,
+        'abstain_reason': reason,
+        'support_count': support,
+        'historical_avg_menu_pnl': round(avg_pnl, 2) if avg_pnl is not None else None,
+        'historical_win_menu_rate': round(win_rate, 4) if win_rate is not None else None,
+        'history_session_count': len({row.get('session_date') for row in matches if row.get('session_date')}),
+    }
+
+
+def _compute_menu_abstention_shadow(result, ctx, latest_poll, generated_candidates, rejected_candidates, top_cand=None):
+    """Menu-level accept/abstain telemetry only.
+
+    This deliberately cannot affect ranking, watchlist, verdict, notifications,
+    paper trades, sandbox orders, or live orders.
+    """
+    result = result if isinstance(result, dict) else {}
+    ctx = ctx if isinstance(ctx, dict) else {}
+    latest_poll = latest_poll if isinstance(latest_poll, dict) else {}
+    generated = generated_candidates if isinstance(generated_candidates, list) else []
+    rejected = rejected_candidates if isinstance(rejected_candidates, list) else []
+    if generated:
+        record_type = 'MENU_ACCEPTED_OR_GENERATED'
+        metric_cohort = 'generated_menu'
+        performance_metric_eligible = True
+    elif rejected:
+        record_type = 'MENU_REJECTED_BY_GATES'
+        metric_cohort = 'rejected_menu_separate_cohort'
+        performance_metric_eligible = True
+    else:
+        record_type = 'NO_MENU_GENERATED'
+        metric_cohort = 'operational_no_menu_excluded'
+        performance_metric_eligible = False
+
+    session_date = ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate')
+    vix = (
+        latest_poll.get('vix')
+        or latest_poll.get('VIX')
+        or ctx.get('vix')
+        or ctx.get('indiaVix')
+    )
+    primary_strategy = _m1_primary_strategy(top_cand, generated, rejected, result.get('verdict') or {})
+    day_vix_bucket = _m1_vix_bucket(vix)
+    signatures = _m1_build_signatures(
+        primary_strategy,
+        _m1_day_direction(ctx, latest_poll),
+        _m1_day_range(ctx, latest_poll, result),
+        day_vix_bucket,
+    )
+    history_entries = _m1_flatten_history(_m1_history_rows(ctx), session_date)
+    history_dates = sorted({row.get('session_date') for row in history_entries if row.get('session_date')})
+    scored_signatures = [
+        _m1_score_signature(sig, history_entries, record_type)
+        for sig in signatures
+    ]
+    dominant_action = 'NO_DECISION' if record_type == 'NO_MENU_GENERATED' else 'ACCEPT'
+    dominant_reason = None
+    for sig in scored_signatures:
+        if sig.get('shadow_action') == 'ABSTAIN':
+            dominant_action = 'ABSTAIN'
+            dominant_reason = sig.get('abstain_reason')
+            break
+    return {
+        'schema_version': M1_MENU_ABSTENTION_SCHEMA_VERSION,
+        'shadow_only': True,
+        'record_type': record_type,
+        'metric_cohort': metric_cohort,
+        'performance_metric_eligible': performance_metric_eligible,
+        'excluded_from_performance_reason': 'NO_MENU_GENERATED_IS_NOT_A_DECISION' if record_type == 'NO_MENU_GENERATED' else None,
+        'dominant_shadow_action': dominant_action,
+        'dominant_abstain_reason': dominant_reason,
+        'history_window_end': history_dates[-1] if history_dates else None,
+        'history_source': 'ctx.menu_abstention_history_prior_sessions',
+        'history_rows_seen': len(history_entries),
+        'menu': {
+            'session_date': session_date,
+            'poll_ts': _derive_poll_timestamp(session_date, latest_poll),
+            'poll_count': latest_poll.get('pollNumber') or latest_poll.get('poll_number') or ctx.get('poll_number'),
+            'primary_strategy': primary_strategy,
+            'day_direction': _m1_day_direction(ctx, latest_poll),
+            'day_range': _m1_day_range(ctx, latest_poll, result),
+            'day_vix_bucket': day_vix_bucket,
+            'vix': _shadow_num(vix),
+            'generated_count': len(generated),
+            'rejected_count': len(rejected),
+            'watchlist_count': len(result.get('watchlist') or []) if isinstance(result.get('watchlist'), list) else 0,
+            'generation_skip_reasons': result.get('generation_skip_reasons') or [],
+            'brain_action': (result.get('verdict') or {}).get('action') if isinstance(result.get('verdict'), dict) else None,
+            'brain_strategy': (result.get('verdict') or {}).get('strategy') if isinstance(result.get('verdict'), dict) else None,
+            'brain_confidence': (result.get('verdict') or {}).get('confidence') if isinstance(result.get('verdict'), dict) else None,
+            'decision_source': result.get('decision_source') or result.get('decisionSource'),
+        },
+        'signatures': scored_signatures,
+        'reporting_rules': {
+            'no_menu_generated_excluded_from_performance': True,
+            'rejected_menu_separate_cohort': True,
+            'threshold_values_not_authority': True,
+            'outcome_history_prior_completed_sessions_only': True,
+        },
+        'notes': [
+            'menu_level_shadow_only_no_live_authority',
+            'k7_native_memory_remains_candidate_level_shadow',
+            'rejected_candidate_realized_pnl_requires_separate_evaluator_extension',
         ],
     }
 
@@ -10220,6 +10783,15 @@ PHASE5_GATE_REGISTRY_META = {
         'softening_eligible': False,
         'evidence_bar': 'Not eligible without a separate expiry-risk policy change.',
     },
+    'dte_unavailable': {
+        'source_function': 'generate_candidates / analyze',
+        'source_ref': 'brain.py:generate_candidates:stage=dte_unavailable and analyze:_record_generation_skip(dte_unavailable)',
+        'gate_reason': 'Expiry distance could not be resolved from the option-chain/front-expiry context.',
+        'threshold': 'tDTE must be finite before strategy construction',
+        'classification': 'SAFETY',
+        'softening_eligible': False,
+        'evidence_bar': 'Not eligible: DTE is a required structure/input-integrity field and cannot be inferred by ranking evidence.',
+    },
     'sigma_otm_too_close': {
         'source_function': '_build_candidate / multi-leg construction',
         'source_ref': 'brain.py:_build_candidate and multi-leg stage=sigma_otm_too_close',
@@ -10638,14 +11210,16 @@ def _full_rejected_candidate_view(row):
     if not isinstance(row, dict):
         return None
     return {
+        'id': row.get('id'),
+        'candidate_id': row.get('candidate_id'),
         'candidate_schema_version': row.get('candidate_schema_version'),
         'leg_schema_version': row.get('leg_schema_version'),
-        'index': row.get('index'),
+        'index': row.get('index') or row.get('index_key'),
         'lane': row.get('lane'),
-        'strategy_type': row.get('strategy_type'),
+        'strategy_type': row.get('strategy_type') or row.get('type'),
         'expiry': row.get('expiry'),
         'width': row.get('width'),
-        'is_credit': row.get('is_credit'),
+        'is_credit': row.get('is_credit') if row.get('is_credit') is not None else row.get('isCredit'),
         'netPremium': row.get('netPremium'),
         'maxProfit': row.get('maxProfit'),
         'maxLoss': row.get('maxLoss'),
@@ -10654,15 +11228,15 @@ def _full_rejected_candidate_view(row):
         'prob_source': row.get('prob_source') or row.get('probSource'),
         'prob_status': row.get('prob_status'),
         'trueProb': row.get('trueProb'),
-        'premiumEdge': row.get('premiumEdge'),
+        'premiumEdge': row.get('premiumEdge') if row.get('premiumEdge') is not None else row.get('premium_edge'),
         'expected_win': row.get('expected_win'),
         'expected_loss': row.get('expected_loss'),
         'ev_floor': row.get('ev_floor'),
         'ev_floor_mult': row.get('ev_floor_mult'),
         'tDTE': row.get('tDTE'),
         'ivRichness': row.get('ivRichness'),
-        'creditWidthRatio': row.get('creditWidthRatio'),
-        'sigmaOTM': row.get('sigmaOTM'),
+        'creditWidthRatio': row.get('creditWidthRatio') if row.get('creditWidthRatio') is not None else row.get('credit_width_ratio'),
+        'sigmaOTM': row.get('sigmaOTM') if row.get('sigmaOTM') is not None else row.get('sigma_otm'),
         'gate_name': row.get('gate_name'),
         'gate_field': row.get('gate_field'),
         'observed_value': row.get('observed_value'),
@@ -10679,6 +11253,12 @@ def _full_rejected_candidate_view(row):
         'sellType2': row.get('sellType2'),
         'buyStrike2': row.get('buyStrike2'),
         'buyType2': row.get('buyType2'),
+        'sell_call': row.get('sell_call'),
+        'buy_call': row.get('buy_call'),
+        'sell_put': row.get('sell_put'),
+        'buy_put': row.get('buy_put'),
+        'call_credit': row.get('call_credit'),
+        'put_credit': row.get('put_credit'),
         'legs': row.get('legs') or [],
     }
 
@@ -11128,7 +11708,15 @@ def take_poll_snapshot(result, ctx, polls):
     phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(generated_candidates, rejected_candidates)
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(generated_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, generated_candidates)
-    shadow_selector_suite = _compute_shadow_selector_suite(generated_candidates, top_cand)
+    shadow_selector_suite = _compute_shadow_selector_suite(generated_candidates, top_cand, ctx)
+    menu_abstention_shadow = _compute_menu_abstention_shadow(
+        result,
+        ctx,
+        latest_poll,
+        generated_candidates,
+        rejected_candidates,
+        top_cand,
+    )
     clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
     clean_rejected_full = []
     if isinstance(rejected_candidates, list):
@@ -11181,6 +11769,8 @@ def take_poll_snapshot(result, ctx, polls):
             evaluation_ledger.append(ledger_row)
 
     market_forces = {
+        'app_version': BRAIN_VERSION,
+        'brain_version': BRAIN_VERSION,
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
         'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
@@ -11204,8 +11794,11 @@ def take_poll_snapshot(result, ctx, polls):
         'phase4_ev_ladder_shadow': phase4_ev_ladder_shadow,
         'phase5_gate_registry': phase5_gate_registry,
         'shadow_selector_suite': shadow_selector_suite,
+        'menu_abstention_shadow': menu_abstention_shadow,
     }
     poll_summary = {
+        'app_version': BRAIN_VERSION,
+        'brain_version': BRAIN_VERSION,
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'latest_time': latest_poll.get('t') or latest_poll.get('time'),
         'entry_window_active': ctx.get('entry_window_active'),
@@ -11234,6 +11827,10 @@ def take_poll_snapshot(result, ctx, polls):
         'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
+        'menu_abstention_record_type': menu_abstention_shadow.get('record_type'),
+        'menu_abstention_action': menu_abstention_shadow.get('dominant_shadow_action'),
+        'menu_abstention_reason': menu_abstention_shadow.get('dominant_abstain_reason'),
+        'menu_abstention_metric_eligible': menu_abstention_shadow.get('performance_metric_eligible'),
         'supply_states': ctx.get('_supply_states') or [],
         'supply_state': (ctx.get('_supply_states') or [{}])[0].get('state') if ctx.get('_supply_states') else None,
         'bnf_dte_source': ctx.get('bnfDteSource'),
@@ -11251,11 +11848,14 @@ def take_poll_snapshot(result, ctx, polls):
     # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
+    snapshot_context['snapshot_app_version'] = BRAIN_VERSION
+    snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
+    snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
@@ -11636,7 +12236,164 @@ def _teacher_candidate_leg_specs(cand):
 
 
 def _teacher_candidate_is_credit(cand):
-    return str(cand.get('type') or '') in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+    explicit = cand.get('isCredit') if cand.get('isCredit') is not None else cand.get('is_credit')
+    if isinstance(explicit, bool):
+        return explicit
+    if isinstance(explicit, str):
+        lowered = explicit.strip().lower()
+        if lowered in ('true', '1', 'yes'):
+            return True
+        if lowered in ('false', '0', 'no'):
+            return False
+    stype = str(cand.get('type') or cand.get('strategy_type') or '').upper()
+    return stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
+
+
+def _normalize_rejected_candidate_for_eval(cand, rank_idx=1):
+    if not isinstance(cand, dict):
+        return None
+    row = dict(cand)
+    stype = str(row.get('type') or row.get('strategy_type') or '').strip().upper()
+    if not stype:
+        return None
+    row['type'] = stype
+    row['strategy_type'] = stype
+    if not row.get('id') and row.get('candidate_id'):
+        row['id'] = row.get('candidate_id')
+    if not row.get('candidate_id') and row.get('id'):
+        row['candidate_id'] = row.get('id')
+
+    index_key = str(row.get('index') or row.get('index_key') or 'BNF').strip().upper() or 'BNF'
+    row['index'] = index_key
+    row['index_key'] = index_key
+
+    lane = row.get('lane')
+    trade_mode = row.get('trade_mode') or row.get('mode')
+    if not trade_mode and isinstance(lane, str):
+        if lane.endswith('_intraday'):
+            trade_mode = 'intraday'
+        elif lane.endswith('_swing'):
+            trade_mode = 'swing'
+    row['trade_mode'] = trade_mode or 'intraday'
+    if not row.get('lane'):
+        row['lane'] = _candidate_lane(index_key, row['trade_mode'])
+
+    is_credit = _teacher_candidate_is_credit(row)
+    row['isCredit'] = is_credit
+    row['is_credit'] = is_credit
+    row.setdefault('lotSize', _CONST['BNF_LOT'] if index_key == 'BNF' else _CONST['NF_LOT'])
+
+    def _fill_from_snake(camel_key, snake_key):
+        if row.get(camel_key) is None and row.get(snake_key) is not None:
+            row[camel_key] = row.get(snake_key)
+
+    _fill_from_snake('sellStrike', 'sell_strike')
+    _fill_from_snake('buyStrike', 'buy_strike')
+    _fill_from_snake('sellStrike2', 'sell_strike2')
+    _fill_from_snake('buyStrike2', 'buy_strike2')
+    _fill_from_snake('sellType', 'sell_type')
+    _fill_from_snake('buyType', 'buy_type')
+    _fill_from_snake('sellType2', 'sell_type2')
+    _fill_from_snake('buyType2', 'buy_type2')
+
+    if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        if row.get('sellStrike') is None and row.get('sell_call') is not None:
+            row['sellStrike'] = row.get('sell_call')
+        if row.get('buyStrike') is None and row.get('buy_call') is not None:
+            row['buyStrike'] = row.get('buy_call')
+        if row.get('sellStrike2') is None and row.get('sell_put') is not None:
+            row['sellStrike2'] = row.get('sell_put')
+        if row.get('buyStrike2') is None and row.get('buy_put') is not None:
+            row['buyStrike2'] = row.get('buy_put')
+        row.setdefault('sellType', 'CE')
+        row.setdefault('buyType', 'CE')
+        row.setdefault('sellType2', 'PE')
+        row.setdefault('buyType2', 'PE')
+
+    if row.get('sellStrike') is None or row.get('buyStrike') is None:
+        legs = row.get('legs') if isinstance(row.get('legs'), list) else []
+        sells = [leg for leg in legs if isinstance(leg, dict) and str(leg.get('side') or leg.get('action') or '').upper() == 'SELL']
+        buys = [leg for leg in legs if isinstance(leg, dict) and str(leg.get('side') or leg.get('action') or '').upper() == 'BUY']
+        if sells and row.get('sellStrike') is None:
+            row['sellStrike'] = sells[0].get('strike')
+            row['sellType'] = row.get('sellType') or sells[0].get('option_type') or sells[0].get('type')
+        if buys and row.get('buyStrike') is None:
+            row['buyStrike'] = buys[0].get('strike')
+            row['buyType'] = row.get('buyType') or buys[0].get('option_type') or buys[0].get('type')
+        if len(sells) > 1 and row.get('sellStrike2') is None:
+            row['sellStrike2'] = sells[1].get('strike')
+            row['sellType2'] = row.get('sellType2') or sells[1].get('option_type') or sells[1].get('type')
+        if len(buys) > 1 and row.get('buyStrike2') is None:
+            row['buyStrike2'] = buys[1].get('strike')
+            row['buyType2'] = row.get('buyType2') or buys[1].get('option_type') or buys[1].get('type')
+
+    if row.get('sellStrike') is None or row.get('buyStrike') is None:
+        return None
+    if row.get('sellType') is None or row.get('buyType') is None:
+        return None
+    if row.get('sellStrike2') is not None and (row.get('sellType2') is None or row.get('buyStrike2') is None or row.get('buyType2') is None):
+        return None
+
+    if not row.get('id'):
+        parts = [
+            'rejected',
+            str(rank_idx),
+            index_key,
+            stype,
+            str(row.get('sellStrike')),
+            str(row.get('buyStrike')),
+            str(row.get('sellStrike2') or ''),
+            str(row.get('buyStrike2') or ''),
+            str(row.get('rejection_stage') or row.get('gate_name') or 'unknown'),
+        ]
+        row['id'] = ':'.join(part.replace(':', '_') for part in parts)
+    if not row.get('candidate_id') and row.get('id'):
+        row['candidate_id'] = row.get('id')
+    return row
+
+
+def _select_rejected_candidates_for_eval(rejected_candidates, cap=REJECTED_EVAL_CANDIDATE_CAP):
+    if not isinstance(rejected_candidates, list) or cap <= 0:
+        return [], {'total': 0, 'selected': 0, 'cap': cap, 'skipped_not_evaluable': 0}
+
+    rows = []
+    skipped = 0
+    for idx, cand in enumerate(rejected_candidates, start=1):
+        normalized = _normalize_rejected_candidate_for_eval(cand, idx)
+        if normalized is None:
+            skipped += 1
+            continue
+        max_profit = _float_or_none(normalized.get('maxProfit'))
+        max_loss = _float_or_none(normalized.get('maxLoss'))
+        net_premium = _float_or_none(normalized.get('netPremium'))
+        if max_profit is None or max_profit <= 0 or max_loss is None or max_loss <= 0 or net_premium is None or net_premium <= 0:
+            skipped += 1
+            continue
+        rows.append(normalized)
+
+    def _priority(row):
+        stage = str(row.get('rejection_stage') or row.get('gate_name') or 'unknown').lower()
+        stage_rank = REJECTED_EVAL_STAGE_PRIORITY.get(stage, 99)
+        margin = _float_or_none(row.get('margin'))
+        abs_margin = abs(margin) if margin is not None else 999999.0
+        # Stable tie-breakers keep daily samples comparable.
+        return (
+            stage_rank,
+            abs_margin,
+            str(row.get('lane') or ''),
+            str(row.get('strategy_type') or row.get('type') or ''),
+            str(row.get('id') or ''),
+        )
+
+    selected = sorted(rows, key=_priority)[:cap]
+    return selected, {
+        'total': len(rejected_candidates),
+        'normalizable': len(rows),
+        'selected': len(selected),
+        'cap': cap,
+        'skipped_not_evaluable': skipped,
+        'truncated': len(rows) > len(selected),
+    }
 
 
 def _candidate_lot_size(cand):
@@ -12484,6 +13241,56 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 'error': str(exc),
             })
 
+    rejected_source = 'snapshot_rejected_candidates_full'
+    rejected = snap_ctx.get(rejected_source)
+    if not isinstance(rejected, list) or not rejected:
+        rejected_source = 'snapshot_rejected_candidates'
+        rejected = snap_ctx.get(rejected_source)
+    if isinstance(rejected, list) and rejected:
+        rejected_eval, rejected_selection = _select_rejected_candidates_for_eval(rejected)
+        if rejected_selection.get('total', 0) > 0 and not rejected_eval:
+            errors.append({
+                'scope': 'rejected_candidate_selection',
+                'snapshot_id': snap.get('id'),
+                'source': rejected_source,
+                'error': 'no_rejected_candidates_evaluable',
+                'selection': rejected_selection,
+            })
+        for rejected_rank, cand in enumerate(rejected_eval, start=1):
+            cand_id = cand.get('id')
+            if cand_id in seen_ids:
+                continue
+            seen_ids.add(cand_id)
+            try:
+                outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+                if outcome is not None:
+                    outcome['role'] = 'rejected'
+                    outcome['rank_in_snapshot'] = None
+                    outcome['rejected_rank_in_snapshot'] = rejected_rank
+                    outcome['rejected_eval_cap'] = REJECTED_EVAL_CANDIDATE_CAP
+                    outcome['rejected_eval_source'] = rejected_source
+                    outcome['source_record_type'] = 'MENU_REJECTED_BY_GATES'
+                    outcome['rejection_stage'] = cand.get('rejection_stage') or cand.get('gate_name')
+                    outcome['rejection_reason'] = cand.get('rejection_reason')
+                    outcome['gate_name'] = cand.get('gate_name')
+                    outcome['gate_field'] = cand.get('gate_field')
+                    outcome['observed_value'] = cand.get('observed_value')
+                    outcome['threshold_value'] = cand.get('threshold_value')
+                    outcome['margin'] = cand.get('margin')
+                    outcome['margin_pct'] = cand.get('margin_pct')
+                    outcome['premium_edge'] = cand.get('premiumEdge')
+                    outcome['credit_width_ratio'] = cand.get('creditWidthRatio')
+                    outcome['sigma_otm'] = cand.get('sigmaOTM')
+                    outcomes.append(outcome)
+            except Exception as exc:
+                errors.append({
+                    'scope': 'rejected',
+                    'snapshot_id': snap.get('id'),
+                    'candidate_id': cand_id,
+                    'rejection_stage': cand.get('rejection_stage') or cand.get('gate_name'),
+                    'error': str(exc),
+                })
+
     return {'outcomes': outcomes, 'errors': errors}
 
 
@@ -12566,7 +13373,8 @@ def evening_evaluator(session_date_str, snapshots_json_str, chain_slices_json_st
     Data is passed as JSON strings from Kotlin. No Supabase calls inside Python.
 
     PRIMARY outcome = surfaced recommendation (ML training target).
-    SECONDARY outcomes = all generated candidates captured in snapshot context."""
+    SECONDARY outcomes = all generated candidates captured in snapshot context.
+    REJECTED outcomes = bounded post-gate research cohort only; never authority."""
     if session_date_str in _CONST.get('NSE_HOLIDAYS', []):
         return json.dumps([])
 
@@ -12697,6 +13505,13 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     shadow_selector_changed_snapshot_count = 0
     shadow_selector_pick_meta = {}
     shadow_selector_reason_counts = {}
+    m1_snapshot_count = 0
+    m1_record_type_counts = {}
+    m1_metric_cohort_counts = {}
+    m1_signature_counts = {}
+    m1_signature_action_counts = {}
+    m1_signature_reason_counts = {}
+    m1_records = []
     snapshots_with = {
         'with_primary': 0,
         'with_generated': 0,
@@ -12810,6 +13625,37 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                 selector_reasons = shadow_selector_reason_counts.setdefault(selector, {})
                 _count_key(selector_reasons, reason)
 
+        menu_abstention = ctx.get('snapshot_menu_abstention_shadow')
+        if isinstance(menu_abstention, dict) and menu_abstention:
+            m1_snapshot_count += 1
+            record_type = str(menu_abstention.get('record_type') or 'UNKNOWN').strip() or 'UNKNOWN'
+            metric_cohort = str(menu_abstention.get('metric_cohort') or 'UNKNOWN').strip() or 'UNKNOWN'
+            _count_key(m1_record_type_counts, record_type)
+            _count_key(m1_metric_cohort_counts, metric_cohort)
+            for sig in menu_abstention.get('signatures') or []:
+                if not isinstance(sig, dict):
+                    continue
+                sig_type = str(sig.get('signature_type') or 'UNKNOWN').strip() or 'UNKNOWN'
+                action = str(sig.get('shadow_action') or 'UNKNOWN').strip() or 'UNKNOWN'
+                reason = str(sig.get('abstain_reason') or 'NONE').strip() or 'NONE'
+                _count_key(m1_signature_counts, sig_type)
+                _count_key(m1_signature_action_counts.setdefault(sig_type, {}), action)
+                _count_key(m1_signature_reason_counts.setdefault(sig_type, {}), reason)
+                m1_records.append({
+                    'snapshot_id': sid,
+                    'record_type': record_type,
+                    'metric_cohort': metric_cohort,
+                    'performance_metric_eligible': bool(menu_abstention.get('performance_metric_eligible')),
+                    'signature_type': sig_type,
+                    'signature_key': sig.get('signature_key'),
+                    'shadow_action': action,
+                    'abstain_reason': None if reason == 'NONE' else reason,
+                    'support_count': sig.get('support_count'),
+                    'historical_avg_menu_pnl': sig.get('historical_avg_menu_pnl'),
+                    'historical_win_menu_rate': sig.get('historical_win_menu_rate'),
+                    'history_window_end': menu_abstention.get('history_window_end'),
+                })
+
         first_pos = {}
         for rank_idx, cand in enumerate(generated, start=1):
             if not isinstance(cand, dict):
@@ -12825,10 +13671,21 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                 generated_meta[(sid, cand_id)] = {
                     'rank': rank_idx,
                     'type': stype,
+                    'index': cand.get('index'),
+                    'lane': cand.get('lane'),
                     'width': cand.get('width'),
+                    'tDTE': cand.get('tDTE'),
+                    'maxProfit': cand.get('maxProfit'),
+                    'maxLoss': cand.get('maxLoss'),
+                    'netPremium': cand.get('netPremium'),
+                    'probProfit': cand.get('probProfit'),
+                    'p_ml': cand.get('p_ml'),
                     'premium_edge': cand.get('premiumEdge'),
                     'credit_width_ratio': cand.get('creditWidthRatio'),
                     'sigma_otm': cand.get('sigmaOTM'),
+                    'debit_breakeven_sigma': cand.get('debitBreakevenSigma'),
+                    'risk_reward': cand.get('riskReward'),
+                    'isCredit': cand.get('isCredit'),
                 }
         has_bc = 'BEAR_CALL' in first_pos
         has_bp = 'BULL_PUT' in first_pos
@@ -12851,6 +13708,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     by_rank = {}
     primary_rows = []
     secondary_rows = []
+    rejected_outcome_rows = []
     for row in outcomes:
         if not isinstance(row, dict):
             continue
@@ -12861,21 +13719,44 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         if meta:
             enriched.setdefault('rank_in_snapshot', meta.get('rank'))
             enriched.setdefault('strategy_type', meta.get('type'))
+            enriched.setdefault('type', meta.get('type'))
+            enriched.setdefault('index', meta.get('index'))
+            enriched.setdefault('lane', meta.get('lane'))
             enriched.setdefault('width', meta.get('width'))
+            enriched.setdefault('tDTE', meta.get('tDTE'))
+            enriched.setdefault('maxProfit', meta.get('maxProfit'))
+            enriched.setdefault('maxLoss', meta.get('maxLoss'))
+            enriched.setdefault('netPremium', meta.get('netPremium'))
+            enriched.setdefault('probProfit', meta.get('probProfit'))
+            enriched.setdefault('p_ml', meta.get('p_ml'))
             enriched.setdefault('premium_edge', meta.get('premium_edge'))
+            enriched.setdefault('premiumEdge', meta.get('premium_edge'))
             enriched.setdefault('credit_width_ratio', meta.get('credit_width_ratio'))
+            enriched.setdefault('creditWidthRatio', meta.get('credit_width_ratio'))
             enriched.setdefault('sigma_otm', meta.get('sigma_otm'))
+            enriched.setdefault('sigmaOTM', meta.get('sigma_otm'))
+            enriched.setdefault('debit_breakeven_sigma', meta.get('debit_breakeven_sigma'))
+            enriched.setdefault('debitBreakevenSigma', meta.get('debit_breakeven_sigma'))
+            enriched.setdefault('risk_reward', meta.get('risk_reward'))
+            enriched.setdefault('riskReward', meta.get('risk_reward'))
+            enriched.setdefault('isCredit', meta.get('isCredit'))
         enriched_outcomes.append(enriched)
         by_snapshot.setdefault(sid, []).append(enriched)
-        by_strategy.setdefault(enriched.get('strategy_type') or 'UNKNOWN', []).append(enriched)
-        rank = enriched.get('rank_in_snapshot')
-        if rank is not None:
-            by_rank.setdefault(str(rank), []).append(enriched)
         role = str(enriched.get('role') or '').lower()
         if role == 'primary':
             primary_rows.append(enriched)
+            by_strategy.setdefault(enriched.get('strategy_type') or 'UNKNOWN', []).append(enriched)
+            rank = enriched.get('rank_in_snapshot')
+            if rank is not None:
+                by_rank.setdefault(str(rank), []).append(enriched)
+        elif role == 'rejected':
+            rejected_outcome_rows.append(enriched)
         else:
             secondary_rows.append(enriched)
+            by_strategy.setdefault(enriched.get('strategy_type') or 'UNKNOWN', []).append(enriched)
+            rank = enriched.get('rank_in_snapshot')
+            if rank is not None:
+                by_rank.setdefault(str(rank), []).append(enriched)
 
     best_type_counts = {}
     best_rank_counts = {}
@@ -12887,8 +13768,12 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     improvement_sum = 0.0
     improvement_count = 0
     for sid, rows in by_snapshot.items():
-        primary = next((r for r in rows if str(r.get('role') or '').lower() == 'primary'), None)
-        scored = [r for r in rows if _safe_float(r.get('r_multiple')) is not None]
+        accepted_rows = [
+            r for r in rows
+            if str(r.get('role') or '').lower() in ('primary', 'secondary')
+        ]
+        primary = next((r for r in accepted_rows if str(r.get('role') or '').lower() == 'primary'), None)
+        scored = [r for r in accepted_rows if _safe_float(r.get('r_multiple')) is not None]
         if not primary or not scored:
             continue
         primary_r = _safe_float(primary.get('r_multiple'))
@@ -12907,9 +13792,9 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             primary_best += 1
         if best_r > primary_r:
             better_available += 1
-        if any((_safe_float(r.get('r_multiple')) or 0.0) > 0 for r in rows if r is not primary):
+        if any((_safe_float(r.get('r_multiple')) or 0.0) > 0 for r in accepted_rows if r is not primary):
             positive_alternative += 1
-        if all((_safe_float(r.get('r_multiple')) or 0.0) <= 0 for r in rows):
+        if all((_safe_float(r.get('r_multiple')) or 0.0) <= 0 for r in accepted_rows):
             all_non_positive += 1
         improvement_sum += (best_r - primary_r)
         improvement_count += 1
@@ -12918,8 +13803,12 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     shadow_selector_rows = []
     for (sid, selector), pick in shadow_selector_pick_meta.items():
         rows = by_snapshot.get(sid) or []
-        primary = next((r for r in rows if str(r.get('role') or '').lower() == 'primary'), None)
-        scored = [r for r in rows if _safe_float(r.get('managed_pnl')) is not None]
+        accepted_rows = [
+            r for r in rows
+            if str(r.get('role') or '').lower() in ('primary', 'secondary')
+        ]
+        primary = next((r for r in accepted_rows if str(r.get('role') or '').lower() == 'primary'), None)
+        scored = [r for r in accepted_rows if _safe_float(r.get('managed_pnl')) is not None]
         if not primary or not scored:
             continue
         primary_pnl = _safe_float(primary.get('managed_pnl'))
@@ -12933,7 +13822,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         if pick_id == '__NO_TRADE__':
             picked_pnl = 0.0
         else:
-            picked_row = next((r for r in rows if r.get('candidate_id') == pick_id), None)
+            picked_row = next((r for r in accepted_rows if r.get('candidate_id') == pick_id), None)
             if picked_row is not None:
                 picked_pnl = _safe_float(picked_row.get('managed_pnl'))
         if picked_pnl is None:
@@ -12994,6 +13883,210 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'shadow_only': True,
         }
 
+    m1_signature_summary = {}
+    for sig_type in sorted({row.get('signature_type') for row in m1_records if row.get('signature_type')}):
+        rows = [row for row in m1_records if row.get('signature_type') == sig_type]
+        eligible_rows = [
+            row for row in rows
+            if row.get('performance_metric_eligible') and row.get('record_type') != 'NO_MENU_GENERATED'
+        ]
+        generated_rows = [row for row in eligible_rows if row.get('record_type') == 'MENU_ACCEPTED_OR_GENERATED']
+        m1_rejected_records = [row for row in eligible_rows if row.get('record_type') == 'MENU_REJECTED_BY_GATES']
+        no_menu_rows = [row for row in rows if row.get('record_type') == 'NO_MENU_GENERATED']
+        outcome_rows = []
+        rejected_outcomes_for_sig = []
+        abstain_delta_sum = 0.0
+        abstain_delta_count = 0
+        accept_primary_pnl_sum = 0.0
+        accept_primary_pnl_count = 0
+        for row in generated_rows:
+            snap_rows = by_snapshot.get(row.get('snapshot_id')) or []
+            primary = next((r for r in snap_rows if str(r.get('role') or '').lower() == 'primary'), None)
+            primary_pnl = _safe_float((primary or {}).get('managed_pnl'))
+            if primary_pnl is None:
+                continue
+            outcome_rows.append(row)
+            if row.get('shadow_action') == 'ABSTAIN':
+                abstain_delta_sum += (0.0 - primary_pnl)
+                abstain_delta_count += 1
+            elif row.get('shadow_action') == 'ACCEPT':
+                accept_primary_pnl_sum += primary_pnl
+                accept_primary_pnl_count += 1
+        for row in m1_rejected_records:
+            snap_rows = by_snapshot.get(row.get('snapshot_id')) or []
+            rejected_matches = [
+                r for r in snap_rows
+                if str(r.get('role') or '').lower() == 'rejected'
+                and _safe_float(r.get('managed_pnl')) is not None
+            ]
+            rejected_outcomes_for_sig.extend(rejected_matches)
+        rejected_pnls = [
+            _safe_float(row.get('managed_pnl'))
+            for row in rejected_outcomes_for_sig
+            if _safe_float(row.get('managed_pnl')) is not None
+        ]
+        rejected_positive = sum(1 for pnl in rejected_pnls if pnl is not None and pnl > 0)
+        support_values = [
+            _safe_float(row.get('support_count'))
+            for row in rows
+            if _safe_float(row.get('support_count')) is not None
+        ]
+        m1_signature_summary[sig_type] = {
+            'records': len(rows),
+            'snapshots': len({row.get('snapshot_id') for row in rows if row.get('snapshot_id') is not None}),
+            'eligible_records': len(eligible_rows),
+            'generated_menu_records': len(generated_rows),
+            'rejected_menu_records_separate_cohort': len(m1_rejected_records),
+            'no_menu_generated_excluded': len(no_menu_rows),
+            'with_generated_primary_outcome': len(outcome_rows),
+            'rejected_menu_outcome_available': len(rejected_pnls),
+            'rejected_menu_positive_count': rejected_positive,
+            'rejected_menu_pnl_sum': round(sum(pnl for pnl in rejected_pnls if pnl is not None), 2),
+            'rejected_menu_avg_pnl': round(
+                sum(pnl for pnl in rejected_pnls if pnl is not None) / len(rejected_pnls),
+                2,
+            ) if rejected_pnls else 0.0,
+            'rejected_menu_best_pnl': round(max(rejected_pnls), 2) if rejected_pnls else None,
+            'rejected_eval_candidate_cap': REJECTED_EVAL_CANDIDATE_CAP,
+            'actions': m1_signature_action_counts.get(sig_type, {}),
+            'abstain_reasons': m1_signature_reason_counts.get(sig_type, {}),
+            'avg_support_count': round(sum(support_values) / len(support_values), 2) if support_values else 0.0,
+            'accepted_primary_pnl_sum': round(accept_primary_pnl_sum, 2),
+            'accepted_primary_pnl_count': accept_primary_pnl_count,
+            'abstain_vs_primary_delta_sum': round(abstain_delta_sum, 2),
+            'abstain_vs_primary_delta_count': abstain_delta_count,
+            'performance_warning': (
+                'NO_MENU_GENERATED excluded; MENU_REJECTED_BY_GATES reported separately; '
+                'rejected candidate realised PnL is bounded research evidence, not display-menu performance'
+            ),
+            'shadow_only': True,
+        }
+
+    menu_abstention_shadow_summary = {
+        'schema_version': f'{M1_MENU_ABSTENTION_SCHEMA_VERSION}_report_v1',
+        'shadow_only': True,
+        'snapshot_count': m1_snapshot_count,
+        'record_type_counts': m1_record_type_counts,
+        'metric_cohort_counts': m1_metric_cohort_counts,
+        'signature_counts': m1_signature_counts,
+        'signature_summary': m1_signature_summary,
+        'no_menu_generated_excluded_from_performance': m1_record_type_counts.get('NO_MENU_GENERATED', 0),
+        'rejected_menu_metrics_pooled_with_generated': False,
+        'authority': 'NONE',
+        'scope': 'menu_level_shadow_accept_abstain_instrumentation',
+    }
+
+    native_memory_rows = []
+    for row in enriched_outcomes:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get('role') or '').lower() not in ('primary', 'secondary'):
+            continue
+        if _native_memory_outcome_r(row) is None:
+            continue
+        mem_row = dict(row)
+        mem_row['_native_memory_feature'] = _native_memory_feature(mem_row)
+        native_memory_rows.append(mem_row)
+
+    native_memory_replay_rows = []
+    for sid, rows in by_snapshot.items():
+        candidate_rows = [
+            r for r in rows
+            if str(r.get('role') or '').lower() in ('primary', 'secondary')
+            and _safe_float(r.get('managed_pnl')) is not None
+        ]
+        primary = next((r for r in candidate_rows if str(r.get('role') or '').lower() == 'primary'), None)
+        if not primary or not candidate_rows:
+            continue
+        primary_pnl = _safe_float(primary.get('managed_pnl'))
+        if primary_pnl is None:
+            continue
+        scored = []
+        for cand in candidate_rows:
+            detail = _native_memory_score_candidate(
+                cand,
+                native_memory_rows,
+                None,
+                exclude_snapshot_id=sid,
+                top_k=25,
+            )
+            if detail:
+                scored.append((detail['score'], str(cand.get('candidate_id') or ''), cand, detail))
+        if not scored:
+            native_memory_replay_rows.append({
+                'snapshot_id': sid,
+                'status': 'ABSTAIN_NO_SIMILAR_MEMORY',
+                'primary_candidate_id': primary.get('candidate_id'),
+                'primary_pnl': primary_pnl,
+                'shadow_only': True,
+            })
+            continue
+        score, _, picked, detail = sorted(scored, key=lambda item: (-item[0], item[1]))[0]
+        oracle = max(candidate_rows, key=lambda r: _safe_float(r.get('managed_pnl')) or -999999.0)
+        picked_pnl = _safe_float(picked.get('managed_pnl'))
+        oracle_pnl = _safe_float(oracle.get('managed_pnl'))
+        if picked_pnl is None or oracle_pnl is None:
+            continue
+        native_memory_replay_rows.append({
+            'snapshot_id': sid,
+            'status': 'OK',
+            'candidate_id': picked.get('candidate_id'),
+            'strategy_type': picked.get('strategy_type') or picked.get('type'),
+            'primary_candidate_id': primary.get('candidate_id'),
+            'primary_strategy_type': primary.get('strategy_type') or primary.get('type'),
+            'oracle_candidate_id': oracle.get('candidate_id'),
+            'oracle_strategy_type': oracle.get('strategy_type') or oracle.get('type'),
+            'managed_pnl': picked_pnl,
+            'primary_pnl': primary_pnl,
+            'oracle_pnl': oracle_pnl,
+            'delta_vs_primary': picked_pnl - primary_pnl,
+            'oracle_gap_remaining': oracle_pnl - picked_pnl,
+            'score': round(score, 6),
+            'native_expected_r': round(detail.get('expected_r') or 0.0, 5),
+            'native_support': detail.get('support'),
+            'native_similarity': round(detail.get('weighted_similarity') or 0.0, 5),
+            'native_win_rate_pct': round(detail.get('win_rate_pct') or 0.0, 2),
+            'changed_from_current': picked.get('candidate_id') != primary.get('candidate_id'),
+            'family_changed': (picked.get('strategy_type') or picked.get('type')) != (primary.get('strategy_type') or primary.get('type')),
+            'shadow_only': True,
+        })
+
+    native_ok_rows = [row for row in native_memory_replay_rows if row.get('status') == 'OK']
+    native_count = len(native_ok_rows)
+    native_total_pnl = sum(_safe_float(row.get('managed_pnl')) or 0.0 for row in native_ok_rows)
+    native_total_primary = sum(_safe_float(row.get('primary_pnl')) or 0.0 for row in native_ok_rows)
+    native_total_oracle = sum(_safe_float(row.get('oracle_pnl')) or 0.0 for row in native_ok_rows)
+    native_improved = sum(1 for row in native_ok_rows if (_safe_float(row.get('delta_vs_primary')) or 0.0) > 0)
+    native_worse = sum(1 for row in native_ok_rows if (_safe_float(row.get('delta_vs_primary')) or 0.0) < 0)
+    native_memory_summary = {
+        'schema_version': 'native_memory_ranker_eval_v0',
+        'shadow_only': True,
+        'scope': 'leave_one_snapshot_out_same_session_research_not_live_proof',
+        'memory_row_count': len(native_memory_rows),
+        'snapshots_compared': native_count,
+        'abstained': len(native_memory_replay_rows) - native_count,
+        'total_pnl': round(native_total_pnl, 2),
+        'total_primary_pnl': round(native_total_primary, 2),
+        'delta_vs_primary': round(native_total_pnl - native_total_primary, 2),
+        'total_oracle_pnl': round(native_total_oracle, 2),
+        'oracle_gap_remaining': round(native_total_oracle - native_total_pnl, 2),
+        'avg_pnl': round(native_total_pnl / native_count, 2) if native_count else 0.0,
+        'win_rate_pct': round(
+            sum(1 for row in native_ok_rows if (_safe_float(row.get('managed_pnl')) or 0.0) > 0) * 100.0 / native_count,
+            2,
+        ) if native_count else None,
+        'improved_vs_primary': native_improved,
+        'worse_than_primary': native_worse,
+        'same_as_primary': native_count - native_improved - native_worse,
+        'changed_from_current': sum(1 for row in native_ok_rows if row.get('changed_from_current')),
+        'family_changed': sum(1 for row in native_ok_rows if row.get('family_changed')),
+        'avg_support': round(
+            sum(int(row.get('native_support') or 0) for row in native_ok_rows) / native_count,
+            2,
+        ) if native_count else 0.0,
+        'sample_rows': native_memory_replay_rows[:12],
+    }
+
     def series_summary(values):
         if not values:
             return {}
@@ -13012,6 +14105,42 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     rank_summaries = {}
     for key, rows in by_rank.items():
         rank_summaries[key] = _summary_from_outcomes(rows)
+    rejected_stage_summaries = {}
+    rejected_strategy_summaries = {}
+    for row in rejected_outcome_rows:
+        stage = str(row.get('rejection_stage') or row.get('gate_name') or 'unknown')
+        rejected_stage_summaries.setdefault(stage, []).append(row)
+        rejected_strategy_summaries.setdefault(row.get('strategy_type') or row.get('type') or 'UNKNOWN', []).append(row)
+    rejected_stage_summaries = {
+        key: _summary_from_outcomes(rows)
+        for key, rows in rejected_stage_summaries.items()
+    }
+    rejected_strategy_summaries = {
+        key: _summary_from_outcomes(rows)
+        for key, rows in rejected_strategy_summaries.items()
+    }
+    top_rejected_opportunities = []
+    for row in sorted(
+        rejected_outcome_rows,
+        key=lambda item: _safe_float(item.get('managed_pnl')) if _safe_float(item.get('managed_pnl')) is not None else -999999999.0,
+        reverse=True,
+    )[:12]:
+        top_rejected_opportunities.append({
+            'snapshot_id': row.get('snapshot_id'),
+            'candidate_id': row.get('candidate_id'),
+            'lane': row.get('lane'),
+            'strategy_type': row.get('strategy_type') or row.get('type'),
+            'rejection_stage': row.get('rejection_stage') or row.get('gate_name'),
+            'rejection_reason': row.get('rejection_reason'),
+            'managed_pnl': row.get('managed_pnl'),
+            'r_multiple': row.get('r_multiple'),
+            'exit_reason': row.get('exit_reason'),
+            'premium_edge': row.get('premium_edge') or row.get('premiumEdge'),
+            'credit_width_ratio': row.get('credit_width_ratio') or row.get('creditWidthRatio'),
+            'sigma_otm': row.get('sigma_otm') or row.get('sigmaOTM'),
+            'margin': row.get('margin'),
+            'margin_pct': row.get('margin_pct'),
+        })
 
     primary_snapshot_ids = sorted({row.get('snapshot_id') for row in primary_rows if row.get('snapshot_id') is not None})
     primary_snapshot_lookup = {}
@@ -13093,9 +14222,10 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'generated_menu_ready_count': primary_generated_ready,
         'rejected_menu_ready_count': primary_rejected_ready,
         'snapshot_count': len(snapshots),
-        'outcome_count': len(enriched_outcomes),
+        'outcome_count': len(primary_rows) + len(secondary_rows),
         'primary_outcome_count': len(primary_rows),
         'secondary_outcome_count': len(secondary_rows),
+        'rejected_research_outcome_count': len(rejected_outcome_rows),
         'with_context_snapshots': snapshots_with['with_context'],
         'with_generated_snapshots': snapshots_with['with_generated'],
         'with_rejected_snapshots': snapshots_with['with_rejected'],
@@ -13148,15 +14278,19 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     }
 
     integrity_counts = {}
+    rejected_integrity_counts = {}
     gradeable_teacher_rows = 0
     gradeable_primary_rows = 0
-    for row in enriched_outcomes:
+    for row in primary_rows + secondary_rows:
         integrity_key = str(row.get('price_integrity') or 'UNKNOWN').strip() or 'UNKNOWN'
         _count_key(integrity_counts, integrity_key)
         if _safe_float(row.get('r_multiple')) is not None:
             gradeable_teacher_rows += 1
             if str(row.get('role') or '').lower() == 'primary':
                 gradeable_primary_rows += 1
+    for row in rejected_outcome_rows:
+        integrity_key = str(row.get('price_integrity') or 'UNKNOWN').strip() or 'UNKNOWN'
+        _count_key(rejected_integrity_counts, integrity_key)
 
     return json.dumps({
         'ok': True,
@@ -13164,7 +14298,8 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'session_date': session_date_str,
         'scope': 'daily_primary_vs_generated_teacher_research',
         'snapshot_count': len(snapshots),
-        'outcome_count': len(enriched_outcomes),
+        'outcome_count': len(primary_rows) + len(secondary_rows),
+        'rejected_research_outcome_count': len(rejected_outcome_rows),
         'class_a_gate': class_a_gate,
         'market': {
             'vix': series_summary(vix_values),
@@ -13185,11 +14320,18 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'teacher_outcomes': {
             'primary': _summary_from_outcomes(primary_rows),
             'secondary': _summary_from_outcomes(secondary_rows),
+            'rejected_research': _summary_from_outcomes(rejected_outcome_rows),
+            'rejected_research_separate_cohort': True,
+            'rejected_research_candidate_cap_per_snapshot': REJECTED_EVAL_CANDIDATE_CAP,
+            'rejected_research_by_stage': rejected_stage_summaries,
+            'rejected_research_by_strategy': rejected_strategy_summaries,
+            'top_rejected_opportunities': top_rejected_opportunities,
             'by_strategy': strategy_summaries,
             'by_rank': rank_summaries,
         },
         'integrity_summary': {
             'counts': integrity_counts,
+            'rejected_research_counts': rejected_integrity_counts,
             'gradeable_teacher_rows': gradeable_teacher_rows,
             'gradeable_primary_rows': gradeable_primary_rows,
             'has_gradeable_teacher_rows': gradeable_teacher_rows > 0,
@@ -13204,6 +14346,8 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'compared_rows': len(shadow_selector_rows),
             'scope': 'shadow_selector_vs_current_primary_post_close',
         },
+        'menu_abstention_shadow': menu_abstention_shadow_summary,
+        'native_memory_ranker': native_memory_summary,
         'primary_vs_best': {
             'snapshots_compared': snapshot_compared,
             'primary_was_best': primary_best,

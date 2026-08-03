@@ -226,6 +226,12 @@ object SupabaseClient {
         val message: String
     )
 
+    private data class OutcomePostResult(
+        val success: Boolean,
+        val expectedRows: Int,
+        val mode: String
+    )
+
     data class ChainFeedResult(
         val source: String,
         val rows: JSONArray
@@ -485,6 +491,7 @@ object SupabaseClient {
         for (i in 0 until body.length()) {
             val src = body.optJSONObject(i) ?: continue
             val role = src.optString("role", "secondary").ifBlank { "secondary" }.lowercase(Locale.US)
+            if (role == "rejected") continue
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
             row.put("session_date", sessionDate)
@@ -1258,75 +1265,107 @@ object SupabaseClient {
             return legacy
         }
 
+        fun stripRejectedResearch(rows: JSONArray): JSONArray {
+            val legacy = JSONArray()
+            for (i in 0 until rows.length()) {
+                val src = rows.optJSONObject(i) ?: continue
+                val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
+                if (role == "rejected") continue
+                legacy.put(JSONObject(src.toString()))
+            }
+            return legacy
+        }
+
+        val evaluationRowsNoRejected = stripRejectedResearch(evaluationRows)
         val evaluationRowsNoShadow = stripShadowTeacher(evaluationRows)
+        val evaluationRowsNoRejectedNoShadow = stripShadowTeacher(evaluationRowsNoRejected)
         val recommendationRowsNoShadow = stripShadowTeacher(recommendationRows)
         val evaluationRowsNoCanonical = stripCanonical(evaluationRowsNoShadow)
+        val evaluationRowsNoRejectedNoCanonical = stripCanonical(evaluationRowsNoRejectedNoShadow)
         val recommendationRowsNoCanonical = stripCanonical(recommendationRowsNoShadow)
         val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
+        val evaluationRowsNoRejectedLegacy = stripCanonical(stripAttribution(evaluationRowsNoRejectedNoShadow))
         val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
 
         fun postOutcomeRowsWithFallback(
             table: String,
             fullRows: JSONArray,
+            noRejectedRows: JSONArray,
             noShadowRows: JSONArray,
+            noRejectedNoShadowRows: JSONArray,
             noCanonicalRows: JSONArray,
-            legacyRows: JSONArray
-        ): Boolean {
-            if (postArrayToTableChunked(table, fullRows)) return true
-            if (postArrayToTableChunked(table, noShadowRows)) {
+            noRejectedNoCanonicalRows: JSONArray,
+            legacyRows: JSONArray,
+            noRejectedLegacyRows: JSONArray
+        ): OutcomePostResult {
+            val attempts = listOf(
+                "full" to fullRows,
+                "no_rejected_research" to noRejectedRows,
+                "no_shadow" to noShadowRows,
+                "no_rejected_research_no_shadow" to noRejectedNoShadowRows,
+                "no_shadow_no_canonical" to noCanonicalRows,
+                "no_rejected_research_no_shadow_no_canonical" to noRejectedNoCanonicalRows,
+                "legacy" to legacyRows,
+                "no_rejected_research_legacy" to noRejectedLegacyRows
+            )
+            for ((mode, rows) in attempts) {
+                if (rows.length() == 0) {
+                    if (mode != "full") {
+                        LogBuffer.add(
+                            'W',
+                            TAG,
+                            "OUTCOME_FALLBACK_EMPTY_PAYLOAD: table=$table mode=$mode fullRows=${fullRows.length()}"
+                        )
+                    }
+                    return OutcomePostResult(success = true, expectedRows = 0, mode = mode)
+                }
+                if (!postArrayToTableChunked(table, rows)) continue
+                if (mode == "full") return OutcomePostResult(success = true, expectedRows = rows.length(), mode = mode)
                 LogBuffer.add(
                     'W',
                     TAG,
-                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=no_shadow rows=${fullRows.length()} migration_required_before_release"
+                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=$mode rows=${fullRows.length()} persistedTarget=${rows.length()} migration_required_before_release"
                 )
-                return true
+                return OutcomePostResult(success = true, expectedRows = rows.length(), mode = mode)
             }
-            if (postArrayToTableChunked(table, noCanonicalRows)) {
-                LogBuffer.add(
-                    'W',
-                    TAG,
-                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=no_shadow_no_canonical rows=${fullRows.length()} migration_required_before_release"
-                )
-                return true
-            }
-            if (postArrayToTableChunked(table, legacyRows)) {
-                LogBuffer.add(
-                    'W',
-                    TAG,
-                    "S1_PRICE_INTEGRITY_FALLBACK_STRIPPED: table=$table mode=legacy rows=${fullRows.length()} migration_required_before_release"
-                )
-                return true
-            }
-            return false
+            return OutcomePostResult(success = false, expectedRows = fullRows.length(), mode = "failed")
         }
 
-        val evaluationWriteAttempted = postOutcomeRowsWithFallback(
+        val evaluationWriteResult = postOutcomeRowsWithFallback(
             "ml_evaluation_outcomes",
             evaluationRows,
+            evaluationRowsNoRejected,
             evaluationRowsNoShadow,
+            evaluationRowsNoRejectedNoShadow,
             evaluationRowsNoCanonical,
-            evaluationRowsLegacy
+            evaluationRowsNoRejectedNoCanonical,
+            evaluationRowsLegacy,
+            evaluationRowsNoRejectedLegacy
         )
-        val recommendationWriteAttempted = postOutcomeRowsWithFallback(
+        val recommendationWriteResult = postOutcomeRowsWithFallback(
             "ml_recommendation_outcomes",
             recommendationRows,
+            recommendationRows,
+            recommendationRowsNoShadow,
             recommendationRowsNoShadow,
             recommendationRowsNoCanonical,
+            recommendationRowsNoCanonical,
+            recommendationRowsLegacy,
             recommendationRowsLegacy
         )
 
         val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")
         val recommendationPersisted = countRows("ml_recommendation_outcomes", "session_date=eq.$sessionDate")
-        val evaluationSaved = evaluationPersisted >= evaluationRows.length()
-        val recommendationSaved = recommendationPersisted > 0 && recommendationWriteAttempted
+        val evaluationSaved = evaluationWriteResult.success && evaluationPersisted >= evaluationWriteResult.expectedRows
+        val recommendationSaved = recommendationPersisted > 0 && recommendationWriteResult.success
         val success = evaluationSaved
         val message = when {
             evaluationSaved && recommendationSaved ->
-                "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately."
+                "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
             evaluationSaved ->
-                "Persisted $evaluationPersisted evaluation rows to Supabase; recommendation rows were not fully verified."
+                "Persisted $evaluationPersisted evaluation rows to Supabase; recommendation rows were not fully verified. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
             recommendationSaved ->
-                "Persisted $recommendationPersisted recommendation rows to Supabase; evaluation rows were not saved."
+                "Persisted $recommendationPersisted recommendation rows to Supabase; evaluation rows were not saved. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
             else -> "Supabase persistence failed for evaluation outcomes."
         }
 
@@ -1534,13 +1573,18 @@ object SupabaseClient {
         var primaryLegacyRows = 0
         var primaryLegacyLabeled = 0
         var primaryLegacyWins = 0
+        var rejectedResearchRows = 0
         for (i in 0 until todayRows.length()) {
             val row = todayRows.optJSONObject(i) ?: continue
+            val role = row.optString("role", "").trim().lowercase(Locale.US)
+            if (role == "rejected") {
+                rejectedResearchRows += 1
+                continue
+            }
             val lane = row.optString("lane", "").trim()
             val bucket = lanes[lane] ?: continue
             bucket[0] += 1 // rows
             attributedRows += 1
-            val role = row.optString("role", "").trim().lowercase(Locale.US)
             val mixBucket = recommendationMixLanes[lane]
             if (mixBucket != null) {
                 mixBucket[0] += 1
@@ -1549,7 +1593,7 @@ object SupabaseClient {
                     "secondary" -> mixBucket[2] += 1
                 }
             }
-            val isPrimaryLike = role != "secondary"
+            val isPrimaryLike = role != "secondary" && role != "rejected"
             val won = normalizeWon(
                 when {
                     !row.isNull("canonical_won") -> row.opt("canonical_won")
@@ -1711,6 +1755,7 @@ object SupabaseClient {
             .put("rowsFetched", rows.length())
             .put("rowsToday", todayRows.length())
             .put("attributedRows", attributedRows)
+            .put("rejectedResearchRows", rejectedResearchRows)
             .put("primary_legacy_lanes", primaryLegacyJson)
             .put("recommendation_mix_lanes", recommendationMixJson)
             .put("teacherRows", teacherRows)

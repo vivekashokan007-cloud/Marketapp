@@ -1959,6 +1959,8 @@ class MarketMLService : Service() {
         var count = 0
         for (i in 0 until source.length()) {
             val row = source.optJSONObject(i) ?: continue
+            val role = row.optString("role", "secondary").trim().lowercase(java.util.Locale.US)
+            if (role != "primary" && role != "secondary") continue
             if (!row.isNull("r_multiple")) count += 1
         }
         return count
