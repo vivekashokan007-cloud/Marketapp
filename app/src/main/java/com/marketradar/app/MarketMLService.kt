@@ -1850,12 +1850,13 @@ class MarketMLService : Service() {
                 teacherResearchResult = buildTeacherResearchReport(brain, sessionDate, snapshotsFile, reportableOutcomes)
             }
 
+            val saveDetails = saveResult.message.take(700)
             val evaluationMessage = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
-                "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence."
+                "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence. $saveDetails"
             } else if (evaluatedOutcomes.length() > 0 && gradeableTeacherRows == 0) {
-                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase, but 0 gradeable teacher outcomes passed integrity checks."
+                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase, but 0 gradeable teacher outcomes passed integrity checks. $saveDetails"
             } else if (evaluatedOutcomes.length() > 0) {
-                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase."
+                "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase. $saveDetails"
             } else {
                 "Evaluation done for $sessionDate: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
             }
@@ -1884,7 +1885,7 @@ class MarketMLService : Service() {
             } else {
                 Log.i(
                     TAG,
-                    "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} for $sessionDate — reminder cancelled"
+                    "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} rejectedPersisted=${saveResult.rejectedPersistedCount}/${saveResult.rejectedExpectedCount} rejectedMode=${saveResult.rejectedSaveMode} for $sessionDate — reminder cancelled"
                 )
             }
         } catch (e: Exception) {

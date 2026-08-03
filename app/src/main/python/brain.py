@@ -5797,12 +5797,18 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.43"
+BRAIN_VERSION = "2.5.44"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
 REJECTED_CANDIDATE_SAMPLE_CAP = 20
 REJECTED_EVAL_CANDIDATE_CAP = 24
+REJECTED_EVAL_MAX_STAGES = 6
+REJECTED_EVAL_PER_STAGE_CAP = 4
+CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
+CONTEXT_PERCENTILE_WINDOWS = (30, 60)
+CONTEXT_PERCENTILE_MIN_SUPPORT = 10
+CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 
 REJECTED_EVAL_STAGE_PRIORITY = {
     # Evidence gates are the most useful to audit: they had complete-ish
@@ -6483,6 +6489,277 @@ def _compute_context_score(cand, spot, tdte, vix, ctx):
 
     return round(penalty, 2)
 
+def _percentile_float(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        out = float(value)
+        return out if math.isfinite(out) else None
+    except Exception:
+        return None
+
+def _numeric_series(values):
+    out = []
+    for value in values or []:
+        num = _percentile_float(value)
+        if num is not None:
+            out.append(num)
+    return out
+
+def _row_value(row, keys):
+    if not isinstance(row, dict):
+        return None
+    for key in keys:
+        value = row.get(key)
+        num = _percentile_float(value)
+        if num is not None:
+            return num
+    return None
+
+def _history_rows_from_ctx(ctx):
+    rows = []
+    for key in ('premiumHistory', 'premium_history', 'fiiHistory', 'fii_history'):
+        source = ctx.get(key) if isinstance(ctx, dict) else None
+        if isinstance(source, str):
+            try:
+                source = json.loads(source)
+            except Exception:
+                source = None
+        if isinstance(source, list):
+            for row in source:
+                if isinstance(row, dict):
+                    rows.append(row)
+    # Supabase returns premium history newest-first. Reverse once so trailing
+    # windows take the most recent rows after duplicate dates are collapsed.
+    dedup = {}
+    for row in rows:
+        day = str(row.get('date') or row.get('session_date') or row.get('sessionDate') or '').strip()
+        if day:
+            merged = dict(dedup.get(day, {}))
+            merged.update(row)
+            dedup[day] = merged
+    return list(reversed(list(dedup.values())))
+
+def _history_values(ctx, key_options, window):
+    rows = _history_rows_from_ctx(ctx)
+    values = []
+    for row in rows:
+        value = _row_value(row, key_options)
+        if value is not None:
+            values.append(value)
+    return values[-window:]
+
+def _earlier_poll_values(polls, key_options, window):
+    source = polls[:-1] if isinstance(polls, list) and len(polls) > 1 else []
+    values = []
+    for row in source:
+        value = _row_value(row, key_options)
+        if value is not None:
+            values.append(value)
+    return values[-window:]
+
+def _median(values):
+    vals = sorted(_numeric_series(values))
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+def _candidate_median(candidates, keys, predicate=None):
+    values = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        value = _row_value(cand, keys)
+        if value is not None:
+            values.append(value)
+    return _median(values)
+
+def _percentile_rank(value, history):
+    num = _percentile_float(value)
+    vals = sorted(_numeric_series(history))
+    if num is None or not vals:
+        return None
+    lower = sum(1 for item in vals if item < num)
+    equal = sum(1 for item in vals if item == num)
+    return round(((lower + 0.5 * equal) * 100.0) / len(vals), 2)
+
+def _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT):
+    vals = _numeric_series(history)
+    support = len(vals)
+    pct = _percentile_rank(value, vals) if support >= min_support else None
+    return {
+        'value': None if _percentile_float(value) is None else round(_percentile_float(value), 4),
+        'percentile': pct,
+        'support_count': support,
+        'min': round(min(vals), 4) if vals else None,
+        'max': round(max(vals), 4) if vals else None,
+        'insufficient_support': support < min_support,
+    }
+
+def _latest_poll_value(polls, key_options):
+    latest = polls[-1] if isinstance(polls, list) and polls else {}
+    return _row_value(latest, key_options)
+
+def _context_percentile_value(summary, window, name):
+    try:
+        cell = (summary.get('windows') or {}).get(str(window), {}).get(name) or {}
+        return _percentile_float(cell.get('percentile'))
+    except Exception:
+        return None
+
+def _build_context_percentiles(ctx, polls, candidates, rejected_candidates):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
+    history_window_end = (
+        latest_poll.get('poll_ts')
+        or latest_poll.get('ts')
+        or latest_poll.get('time')
+        or latest_poll.get('t')
+        or _current_ist_poll_ts()
+    )
+    credit_candidates = [c for c in candidates or [] if isinstance(c, dict) and c.get('isCredit')]
+    current_values = {
+        'vix': _percentile_float(ctx.get('vix')) or _latest_poll_value(polls, ('vix', 'VIX')),
+        'fii_short_pct': (
+            _percentile_float(ctx.get('fiiShort'))
+            or _percentile_float(ctx.get('fii_short_pct'))
+            or _latest_poll_value(polls, ('fiiShort', 'fii_short_pct', 'fii_short'))
+        ),
+        'iv_richness_menu_median': _candidate_median(candidates, ('ivRichness', 'iv_richness')),
+        'realized_day_range': (
+            _latest_poll_value(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'))
+            or _percentile_float(ctx.get('rangeSigma'))
+        ),
+        'sigma_otm_menu_median': _candidate_median(candidates, ('sigmaOTM', 'sigma_otm')),
+        'credit_width_ratio_menu_median': _candidate_median(
+            credit_candidates,
+            ('creditWidthRatio', 'credit_width_ratio')
+        ),
+        'rejected_sigma_otm_median': _candidate_median(rejected_candidates, ('sigmaOTM', 'sigma_otm')),
+    }
+    windows = {}
+    for window in CONTEXT_PERCENTILE_WINDOWS:
+        vix_hist = (
+            _numeric_series(ctx.get('vixHistory'))[-window:]
+            + _history_values(ctx, ('vix', 'VIX'), window)
+            + _earlier_poll_values(polls, ('vix', 'VIX'), window)
+        )[-window:]
+        fii_short_hist = (
+            _history_values(ctx, ('fiiShort', 'fii_short_pct', 'fii_short'), window)
+            + _earlier_poll_values(polls, ('fiiShort', 'fii_short_pct', 'fii_short'), window)
+        )[-window:]
+        day_range_hist = (
+            _history_values(ctx, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'), window)
+            + _earlier_poll_values(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'), window)
+        )[-window:]
+        iv_richness_hist = _history_values(ctx, ('ivRichness', 'iv_richness'), window)
+        sigma_hist = _history_values(ctx, ('sigmaOTM', 'sigma_otm', 'sigma_otm_menu_median'), window)
+        credit_width_hist = _history_values(ctx, ('creditWidthRatio', 'credit_width_ratio', 'credit_width_ratio_menu_median'), window)
+        menu_win_hist = _history_values(ctx, ('menuWinRate', 'menu_win_rate', 'menu_win_rate_pct'), window)
+        windows[str(window)] = {
+            'vix': _percentile_cell(current_values['vix'], vix_hist),
+            'fii_short_pct': _percentile_cell(current_values['fii_short_pct'], fii_short_hist),
+            'iv_richness_menu_median': _percentile_cell(current_values['iv_richness_menu_median'], iv_richness_hist),
+            'realized_day_range': _percentile_cell(current_values['realized_day_range'], day_range_hist),
+            'sigma_otm_menu_median': _percentile_cell(current_values['sigma_otm_menu_median'], sigma_hist),
+            'credit_width_ratio_menu_median': _percentile_cell(current_values['credit_width_ratio_menu_median'], credit_width_hist),
+            'menu_win_rate_prior_sessions_only': _percentile_cell(None, menu_win_hist),
+            'rejected_sigma_otm_median': _percentile_cell(current_values['rejected_sigma_otm_median'], sigma_hist),
+        }
+    return {
+        'schema_version': CONTEXT_PERCENTILES_SCHEMA_VERSION,
+        'live_ranking_influence': True,
+        'hard_gate_authority': False,
+        'history_window_end': history_window_end,
+        'support_policy': {
+            'minimum_support': CONTEXT_PERCENTILE_MIN_SUPPORT,
+            'insufficient_support_percentile': None,
+            'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
+            'outcome_variables': 'prior_completed_sessions_only',
+        },
+        'current_values': {k: (round(v, 4) if v is not None else None) for k, v in current_values.items()},
+        'windows': windows,
+    }
+
+def _apply_context_percentile_live_ranking(candidates, context_percentiles):
+    if not isinstance(context_percentiles, dict):
+        return candidates
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        score = 0.0
+        signals = []
+        is_credit = bool(cand.get('isCredit'))
+        stype = cand.get('type')
+        is_bear = stype in _CONST['DIR_BEAR']
+        is_bull = stype in _CONST['DIR_BULL']
+        iv_pct = _context_percentile_value(context_percentiles, 30, 'iv_richness_menu_median')
+        credit_width_pct = _context_percentile_value(context_percentiles, 30, 'credit_width_ratio_menu_median')
+        range_pct = _context_percentile_value(context_percentiles, 30, 'realized_day_range')
+        vix_pct = _context_percentile_value(context_percentiles, 30, 'vix')
+        fii_short_pct = _context_percentile_value(context_percentiles, 30, 'fii_short_pct')
+
+        if iv_pct is not None:
+            if is_credit and iv_pct < 25:
+                score -= 0.25
+                signals.append('credit_penalty_low_iv_richness_percentile')
+            elif is_credit and iv_pct >= 70:
+                score += 0.20
+                signals.append('credit_support_high_iv_richness_percentile')
+            elif not is_credit and iv_pct < 25:
+                score += 0.10
+                signals.append('debit_support_low_iv_richness_percentile')
+        if credit_width_pct is not None and is_credit:
+            if credit_width_pct < 25:
+                score -= 0.20
+                signals.append('credit_penalty_low_credit_width_percentile')
+            elif credit_width_pct >= 70:
+                score += 0.15
+                signals.append('credit_support_high_credit_width_percentile')
+        if range_pct is not None and not is_credit:
+            if range_pct >= 70:
+                score += 0.12
+                signals.append('debit_support_high_range_percentile')
+            elif range_pct < 25:
+                score -= 0.08
+                signals.append('debit_penalty_low_range_percentile')
+        if vix_pct is not None:
+            if is_credit and vix_pct >= 70:
+                score += 0.08
+                signals.append('credit_support_high_vix_percentile')
+            elif not is_credit and vix_pct < 25:
+                score += 0.05
+                signals.append('debit_support_low_vix_percentile')
+        if fii_short_pct is not None:
+            if fii_short_pct >= 80:
+                if is_bear:
+                    score += 0.10
+                    signals.append('bear_support_extreme_fii_short_percentile')
+                elif is_bull:
+                    score -= 0.10
+                    signals.append('bull_penalty_extreme_fii_short_percentile')
+            elif fii_short_pct <= 20:
+                if is_bull:
+                    score += 0.10
+                    signals.append('bull_support_low_fii_short_percentile')
+                elif is_bear:
+                    score -= 0.10
+                    signals.append('bear_penalty_low_fii_short_percentile')
+
+        score = max(-CONTEXT_PERCENTILE_MAX_RANKING_ABS, min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, score))
+        cand['contextPercentileScore'] = round(score, 4)
+        cand['contextPercentileSignals'] = signals
+        cand['contextPercentileSchemaVersion'] = CONTEXT_PERCENTILES_SCHEMA_VERSION
+        cand['contextPercentileLiveRanking'] = True
+    return candidates
+
 # ─── STRIKE PAIR GENERATION ───
 
 def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw):
@@ -6816,6 +7093,7 @@ def _build3_rank_fingerprint(candidate):
         'teacher_n': 0,
         'premiumEdge': candidate.get('premiumEdge'),
         'premium_edge_status': 'OK' if candidate.get('premiumEdge') is not None else 'MISSING',
+        'contextPercentileScore': candidate.get('contextPercentileScore'),
         'probProfit': candidate.get('probProfit'),
         'p_ml': candidate.get('p_ml') if not candidate.get('mlUnsure') else 0.0,
         'note': 'rank tuple unchanged; teacher ranking inactive for BUILD 3',
@@ -8295,9 +8573,11 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         else:
             c['premium_edge_status'] = 'OK'
             premium_edge = c.get('premiumEdge')
-        # 9: Probability
+        # 9: Live percentile context. Bounded modifier only; never a hard gate.
+        context_percentile_score = _safe_num(c.get('contextPercentileScore'), 0.0)
+        # 10: Probability
         prob = c.get('probProfit', 0)
-        # 10: ML score — tiebreaker. Neutralised when OOD/UNSURE.
+        # 11: ML score — tiebreaker. Neutralised when OOD/UNSURE.
         p_ml = c.get('p_ml') or 0.0
         if c.get('mlUnsure') or c.get('mlAction') == 'UNSURE':
             p_ml = 0.0
@@ -8307,7 +8587,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         return (
             safe, tier,
             teacher_rank_active, -teacher_score, -teacher_n,
-            -premium_edge, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
+            -premium_edge, -context_percentile_score, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
         )
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
@@ -8859,6 +9139,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['rejected_candidates'] = all_rejected
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
+        context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected)
+        _apply_context_percentile_live_ranking(all_cands, context_percentiles)
+        result['context_percentiles'] = context_percentiles
+        ctx['context_percentiles'] = context_percentiles
         if not all_cands:
             no_trade_reason = (
                 "All candidates rejected by the gate waterfall. "
@@ -9567,6 +9851,10 @@ def _candidate_view(c):
         'entryAction': c.get('entryAction'),
         'directionSafe': c.get('directionSafe'),
         'brainScore': c.get('brainScore'),
+        'contextPercentileScore': c.get('contextPercentileScore'),
+        'contextPercentileSignals': c.get('contextPercentileSignals'),
+        'contextPercentileSchemaVersion': c.get('contextPercentileSchemaVersion'),
+        'contextPercentileLiveRanking': c.get('contextPercentileLiveRanking'),
         'p_ml': c.get('p_ml'),
         'mlAction': c.get('mlAction'),
         'mlEdge': c.get('mlEdge'),
@@ -11827,6 +12115,10 @@ def take_poll_snapshot(result, ctx, polls):
         'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
+        'context_percentiles_status': 'OK' if (result.get('context_percentiles') or {}).get('schema_version') else 'MISSING',
+        'context_percentiles_schema_version': (result.get('context_percentiles') or {}).get('schema_version'),
+        'context_percentile_live_ranking': bool((result.get('context_percentiles') or {}).get('live_ranking_influence')),
+        'context_percentiles': result.get('context_percentiles') or {},
         'menu_abstention_record_type': menu_abstention_shadow.get('record_type'),
         'menu_abstention_action': menu_abstention_shadow.get('dominant_shadow_action'),
         'menu_abstention_reason': menu_abstention_shadow.get('dominant_abstain_reason'),
@@ -11856,6 +12148,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
+    snapshot_context['context_percentiles'] = result.get('context_percentiles') or {}
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
@@ -12354,22 +12647,51 @@ def _normalize_rejected_candidate_for_eval(cand, rank_idx=1):
 
 def _select_rejected_candidates_for_eval(rejected_candidates, cap=REJECTED_EVAL_CANDIDATE_CAP):
     if not isinstance(rejected_candidates, list) or cap <= 0:
-        return [], {'total': 0, 'selected': 0, 'cap': cap, 'skipped_not_evaluable': 0}
+        return [], {
+            'total': 0,
+            'selected': 0,
+            'cap': cap,
+            'skipped_not_evaluable': 0,
+            'by_stage': {},
+        }
 
-    rows = []
+    rows_by_stage = {}
+    stats_by_stage = {}
     skipped = 0
     for idx, cand in enumerate(rejected_candidates, start=1):
+        raw_stage = 'unknown'
+        if isinstance(cand, dict):
+            raw_stage = str(cand.get('rejection_stage') or cand.get('gate_name') or 'unknown').lower()
+        stats = stats_by_stage.setdefault(raw_stage, {
+            'total': 0,
+            'normalizable': 0,
+            'selected': 0,
+            'skipped_not_evaluable': 0,
+        })
+        stats['total'] += 1
         normalized = _normalize_rejected_candidate_for_eval(cand, idx)
         if normalized is None:
             skipped += 1
+            stats['skipped_not_evaluable'] += 1
             continue
+        normalized['rejected_rank_in_source'] = idx
+        stage = str(normalized.get('rejection_stage') or normalized.get('gate_name') or raw_stage or 'unknown').lower()
+        if stage != raw_stage:
+            stats = stats_by_stage.setdefault(stage, {
+                'total': 0,
+                'normalizable': 0,
+                'selected': 0,
+                'skipped_not_evaluable': 0,
+            })
         max_profit = _float_or_none(normalized.get('maxProfit'))
         max_loss = _float_or_none(normalized.get('maxLoss'))
         net_premium = _float_or_none(normalized.get('netPremium'))
         if max_profit is None or max_profit <= 0 or max_loss is None or max_loss <= 0 or net_premium is None or net_premium <= 0:
             skipped += 1
+            stats['skipped_not_evaluable'] += 1
             continue
-        rows.append(normalized)
+        stats['normalizable'] += 1
+        rows_by_stage.setdefault(stage, []).append(normalized)
 
     def _priority(row):
         stage = str(row.get('rejection_stage') or row.get('gate_name') or 'unknown').lower()
@@ -12385,14 +12707,73 @@ def _select_rejected_candidates_for_eval(rejected_candidates, cap=REJECTED_EVAL_
             str(row.get('id') or ''),
         )
 
-    selected = sorted(rows, key=_priority)[:cap]
+    stage_order = sorted(
+        stats_by_stage.keys(),
+        key=lambda stage: (
+            -(stats_by_stage.get(stage, {}).get('total') or 0),
+            REJECTED_EVAL_STAGE_PRIORITY.get(stage, 99),
+            stage,
+        )
+    )
+    selected = []
+    selected_ids = set()
+    for stage in stage_order[:REJECTED_EVAL_MAX_STAGES]:
+        stage_rows = sorted(rows_by_stage.get(stage, []), key=_priority)
+        for row in stage_rows[:REJECTED_EVAL_PER_STAGE_CAP]:
+            if len(selected) >= cap:
+                break
+            row_id = row.get('id') or row.get('candidate_id')
+            if row_id in selected_ids:
+                continue
+            selected_ids.add(row_id)
+            selected.append(row)
+        if len(selected) >= cap:
+            break
+    leftovers = []
+    for stage_rows in rows_by_stage.values():
+        leftovers.extend(stage_rows)
+    for row in sorted(leftovers, key=_priority):
+        if len(selected) >= cap:
+            break
+        row_id = row.get('id') or row.get('candidate_id')
+        if row_id in selected_ids:
+            continue
+        selected_ids.add(row_id)
+        selected.append(row)
+
+    selected_by_stage = {}
+    for row in selected:
+        stage = str(row.get('rejection_stage') or row.get('gate_name') or 'unknown').lower()
+        selected_by_stage[stage] = selected_by_stage.get(stage, 0) + 1
+    for stage, count in selected_by_stage.items():
+        if stage in stats_by_stage:
+            stats_by_stage[stage]['selected'] = count
+    for row in selected:
+        stage = str(row.get('rejection_stage') or row.get('gate_name') or 'unknown').lower()
+        total = stats_by_stage.get(stage, {}).get('total') or 0
+        picked = stats_by_stage.get(stage, {}).get('selected') or 0
+        row['stage_sample_fraction'] = round(picked / total, 6) if total else None
+        row['stage_total_rejected'] = total
+        row['stage_normalizable'] = stats_by_stage.get(stage, {}).get('normalizable')
+        row['stage_skipped_not_evaluable'] = stats_by_stage.get(stage, {}).get('skipped_not_evaluable')
+
+    normalizable_total = sum(len(rows) for rows in rows_by_stage.values())
     return selected, {
         'total': len(rejected_candidates),
-        'normalizable': len(rows),
+        'normalizable': normalizable_total,
         'selected': len(selected),
         'cap': cap,
         'skipped_not_evaluable': skipped,
-        'truncated': len(rows) > len(selected),
+        'truncated': normalizable_total > len(selected),
+        'max_stages': REJECTED_EVAL_MAX_STAGES,
+        'per_stage_cap': REJECTED_EVAL_PER_STAGE_CAP,
+        'selected_stage_order': stage_order[:REJECTED_EVAL_MAX_STAGES],
+        'by_stage': stats_by_stage,
+        'selected_by_stage': selected_by_stage,
+        'skipped_not_evaluable_by_stage': {
+            stage: stats.get('skipped_not_evaluable', 0)
+            for stage, stats in stats_by_stage.items()
+        },
     }
 
 
@@ -13266,9 +13647,15 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 if outcome is not None:
                     outcome['role'] = 'rejected'
                     outcome['rank_in_snapshot'] = None
-                    outcome['rejected_rank_in_snapshot'] = rejected_rank
+                    outcome['rejected_rank_in_snapshot'] = cand.get('rejected_rank_in_source') or rejected_rank
+                    outcome['rejected_eval_rank'] = rejected_rank
                     outcome['rejected_eval_cap'] = REJECTED_EVAL_CANDIDATE_CAP
                     outcome['rejected_eval_source'] = rejected_source
+                    outcome['rejected_eval_selection'] = rejected_selection
+                    outcome['stage_sample_fraction'] = cand.get('stage_sample_fraction')
+                    outcome['stage_total_rejected'] = cand.get('stage_total_rejected')
+                    outcome['stage_normalizable'] = cand.get('stage_normalizable')
+                    outcome['stage_skipped_not_evaluable'] = cand.get('stage_skipped_not_evaluable')
                     outcome['source_record_type'] = 'MENU_REJECTED_BY_GATES'
                     outcome['rejection_stage'] = cand.get('rejection_stage') or cand.get('gate_name')
                     outcome['rejection_reason'] = cand.get('rejection_reason')

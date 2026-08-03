@@ -141,9 +141,9 @@ jobs:
 
           assert summary[0]["build3_old_candidates"] > 0, summary
           assert summary[0]["build3_old_verdict"] == "TRADE", summary
-          assert summary[0]["build3_new_verdict"] == "WAIT", summary
-          assert summary[0]["build3_gate_reason"] == "ALL_NEGATIVE_EV", summary
-          assert summary[0]["generated"] == summary[0]["build3_after_a8"], summary
+          assert summary[0]["build3_gate_reason"] == "EV_BELOW_FLOOR_SOFTENED_TO_RANKING", summary
+          assert summary[0]["build3_after_a8"] == summary[0]["build3_old_candidates"], summary
+          assert summary[0]["generated"] > 0, summary
           assert summary[1]["iron_condor"] == 0, summary
           print(json.dumps(summary, sort_keys=True))
           PY

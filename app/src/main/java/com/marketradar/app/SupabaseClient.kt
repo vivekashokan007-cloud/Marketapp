@@ -223,7 +223,10 @@ object SupabaseClient {
         val persistedCount: Int,
         val primaryPersistedCount: Int,
         val evaluationPersistedCount: Int,
-        val message: String
+        val message: String,
+        val rejectedPersistedCount: Int = 0,
+        val rejectedExpectedCount: Int = 0,
+        val rejectedSaveMode: String = "not_attempted"
     )
 
     private data class OutcomePostResult(
@@ -463,6 +466,8 @@ object SupabaseClient {
         val rows = JSONArray()
         for (i in 0 until body.length()) {
             val src = body.optJSONObject(i) ?: continue
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
+            if (role == "rejected") continue
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
             row.put("session_date", src.opt("session_date"))
@@ -471,7 +476,7 @@ object SupabaseClient {
             row.put("index_key", src.opt("index_key"))
             row.put("trade_mode", src.opt("trade_mode"))
             row.put("strategy_type", src.opt("strategy_type"))
-            row.put("role", src.optString("role", "secondary"))
+            row.put("role", role.ifBlank { "secondary" })
             row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
             if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
             if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
@@ -479,6 +484,131 @@ object SupabaseClient {
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
             sanitizeFailedIntegrityTeacherRow(row)
+            row.put("created_at", nowIso)
+            rows.put(row)
+        }
+        return rows
+    }
+
+    private fun hasValue(src: JSONObject, key: String): Boolean = src.has(key) && !src.isNull(key)
+
+    private fun putIfPresent(row: JSONObject, src: JSONObject, key: String, dest: String = key) {
+        if (hasValue(src, key)) row.put(dest, src.opt(key))
+    }
+
+    private fun putOptionalDouble(row: JSONObject, src: JSONObject, key: String, dest: String = key) {
+        if (!hasValue(src, key)) return
+        val value = src.optDouble(key, Double.NaN)
+        if (java.lang.Double.isFinite(value)) row.put(dest, value)
+    }
+
+    private fun putOptionalInt(row: JSONObject, src: JSONObject, key: String, dest: String = key) {
+        if (!hasValue(src, key)) return
+        row.put(dest, src.optInt(key))
+    }
+
+    private fun optBooleanish(src: JSONObject, key: String): Boolean? {
+        if (!hasValue(src, key)) return null
+        return when (val raw = src.opt(key)) {
+            is Boolean -> raw
+            is Number -> raw.toInt() != 0
+            is String -> when (raw.trim().lowercase(Locale.US)) {
+                "true", "t", "yes", "y", "1", "win", "success" -> true
+                "false", "f", "no", "n", "0", "loss", "fail" -> false
+                else -> null
+            }
+            else -> null
+        }
+    }
+
+    private fun putOptionalBoolean(row: JSONObject, src: JSONObject, key: String, dest: String = key) {
+        optBooleanish(src, key)?.let { row.put(dest, it) }
+    }
+
+    private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
+        val snapshotId = src.optString("snapshot_id").ifBlank { "snapshot_unknown" }
+        val candidateId = src.optString("candidate_id").ifBlank { "candidate_$rowIndex" }
+        val labelVersion = src.optString("label_version").ifBlank { "teacher_v1" }
+        return "$sessionDate:$snapshotId:$candidateId:$labelVersion"
+            .replace(Regex("\\s+"), "_")
+            .take(300)
+    }
+
+    private fun buildRejectedEvaluationRows(sessionDate: String, body: JSONArray): JSONArray {
+        val nowIso = java.time.Instant.now().toString()
+        val rows = JSONArray()
+        for (i in 0 until body.length()) {
+            val src = body.optJSONObject(i) ?: continue
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
+            if (role != "rejected") continue
+            val row = JSONObject()
+            row.put("id", rejectedOutcomeId(sessionDate, src, i))
+            row.put("snapshot_id", src.optString("snapshot_id").ifBlank { "snapshot_unknown" })
+            row.put("session_date", sessionDate)
+            row.put("candidate_id", src.optString("candidate_id").ifBlank { "candidate_$i" })
+            row.put("role", "rejected")
+
+            listOf(
+                "poll_ts",
+                "lane",
+                "index_key",
+                "trade_mode",
+                "strategy_type",
+                "exit_reason",
+                "exit_ts",
+                "regime_bucket",
+                "label_version",
+                "teacher_config_version",
+                "price_integrity",
+                "h2_price_integrity_reason",
+                "rejection_stage",
+                "rejection_reason",
+                "gate_name",
+                "gate_field",
+                "rejected_eval_source",
+                "source_record_type",
+                "app_version"
+            ).forEach { key -> putIfPresent(row, src, key) }
+
+            listOf(
+                "sim_pnl_h2",
+                "managed_pnl",
+                "managed_gross_pnl",
+                "friction_cost",
+                "r_multiple",
+                "captured_pct",
+                "risk_at_entry",
+                "tp_threshold",
+                "sl_threshold",
+                "break_even_win_rate_pct",
+                "premium_edge",
+                "credit_width_ratio",
+                "sigma_otm",
+                "observed_value",
+                "threshold_value",
+                "margin",
+                "margin_pct",
+                "stage_sample_fraction"
+            ).forEach { key -> putOptionalDouble(row, src, key) }
+
+            listOf(
+                "exit_step",
+                "path_points_count",
+                "rejected_rank_in_snapshot",
+                "rejected_eval_rank",
+                "rejected_eval_cap",
+                "stage_total_rejected",
+                "stage_normalizable",
+                "stage_skipped_not_evaluable"
+            ).forEach { key -> putOptionalInt(row, src, key) }
+
+            listOf("outcome_h2", "canonical_won", "is_success").forEach { key ->
+                putOptionalBoolean(row, src, key)
+            }
+
+            val selection = src.optJSONObject("rejected_eval_selection")
+            if (selection != null) row.put("rejected_eval_selection", selection)
+            row.put("outcome_json", JSONObject(src.toString()))
             row.put("created_at", nowIso)
             rows.put(row)
         }
@@ -1227,6 +1357,7 @@ object SupabaseClient {
     fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {
         val evaluationRows = buildEvaluationRows(body)
         val recommendationRows = buildRecommendationRows(sessionDate, body)
+        val rejectedRows = buildRejectedEvaluationRows(sessionDate, body)
 
         fun stripShadowTeacher(rows: JSONArray): JSONArray {
             val legacy = JSONArray()
@@ -1353,13 +1484,30 @@ object SupabaseClient {
             recommendationRowsLegacy,
             recommendationRowsLegacy
         )
+        val rejectedWriteMode = if (rejectedRows.length() > 0) "separate_table" else "not_applicable"
+        val rejectedWriteSuccess = if (rejectedRows.length() > 0) {
+            postArrayToTableChunked(
+                "ml_rejected_candidate_outcomes?on_conflict=id",
+                rejectedRows,
+                chunkSize = 100
+            )
+        } else {
+            true
+        }
 
         val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")
         val recommendationPersisted = countRows("ml_recommendation_outcomes", "session_date=eq.$sessionDate")
+        val rejectedPersisted = if (rejectedRows.length() > 0) {
+            countRows("ml_rejected_candidate_outcomes", "session_date=eq.$sessionDate")
+        } else {
+            0
+        }
         val evaluationSaved = evaluationWriteResult.success && evaluationPersisted >= evaluationWriteResult.expectedRows
         val recommendationSaved = recommendationPersisted > 0 && recommendationWriteResult.success
+        val rejectedSaved = rejectedRows.length() == 0 ||
+            (rejectedWriteSuccess && rejectedPersisted >= rejectedRows.length())
         val success = evaluationSaved
-        val message = when {
+        val baseMessage = when {
             evaluationSaved && recommendationSaved ->
                 "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
             evaluationSaved ->
@@ -1368,14 +1516,30 @@ object SupabaseClient {
                 "Persisted $recommendationPersisted recommendation rows to Supabase; evaluation rows were not saved. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
             else -> "Supabase persistence failed for evaluation outcomes."
         }
+        val rejectedMessage = when {
+            rejectedRows.length() == 0 ->
+                " rejectedResearch=0/0 mode=not_applicable"
+            rejectedSaved ->
+                " rejectedResearch=$rejectedPersisted/${rejectedRows.length()} mode=$rejectedWriteMode"
+            else -> {
+                val warning = " REJECTED_RESEARCH_SAVE_FAILED expected=${rejectedRows.length()} persisted=$rejectedPersisted table=ml_rejected_candidate_outcomes migration_required."
+                LogBuffer.add('E', TAG, warning.trim())
+                Log.e(TAG, warning.trim())
+                warning
+            }
+        }
+        val message = baseMessage + rejectedMessage
 
         return EvaluationSaveResult(
             success = success,
-            producedCount = evaluationRows.length(),
-            persistedCount = evaluationPersisted,
+            producedCount = body.length(),
+            persistedCount = evaluationPersisted + rejectedPersisted,
             primaryPersistedCount = recommendationPersisted,
             evaluationPersistedCount = evaluationPersisted,
-            message = message
+            message = message,
+            rejectedPersistedCount = rejectedPersisted,
+            rejectedExpectedCount = rejectedRows.length(),
+            rejectedSaveMode = if (rejectedSaved) rejectedWriteMode else "failed"
         )
     }
 

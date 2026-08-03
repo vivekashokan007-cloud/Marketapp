@@ -7,10 +7,13 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from brain import (
+    _apply_context_percentile_live_ranking,
+    _build_context_percentiles,
     _compute_menu_abstention_shadow,
     _compute_shadow_selector_suite,
     _evaluate_snapshot_outcomes,
     _normalize_rejected_candidate_for_eval,
+    _select_rejected_candidates_for_eval,
     _stage2a_annotate_candidates,
     _stage2a_apply_live_wait_guard,
     rank_candidates,
@@ -460,6 +463,80 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(outcome["rejection_stage"], "iv_not_rich")
         self.assertIsNotNone(outcome["managed_pnl"])
         self.assertIsNone(outcome["rank_in_snapshot"])
+
+    def test_rejected_eval_sampler_is_stage_stratified_by_volume(self):
+        def rejected_row(idx, stage):
+            return {
+                "candidate_id": f"rej-{stage}-{idx}",
+                "strategy_type": "BEAR_CALL",
+                "index": "BNF",
+                "lane": "BNF_intraday",
+                "expiry": "2026-07-31",
+                "width": 400,
+                "is_credit": True,
+                "netPremium": 80,
+                "maxProfit": 2400,
+                "maxLoss": 9600,
+                "sellStrike": 57000 + idx,
+                "sellType": "CE",
+                "buyStrike": 57400 + idx,
+                "buyType": "CE",
+                "rejection_stage": stage,
+                "margin": 0.01 * idx,
+            }
+
+        rejected = (
+            [rejected_row(i, "price_zero") for i in range(8)]
+            + [rejected_row(i, "iv_not_rich") for i in range(8)]
+            + [rejected_row(i, "sigma_otm_too_far") for i in range(30)]
+        )
+        selected, meta = _select_rejected_candidates_for_eval(rejected, cap=12)
+        selected_stages = [row["rejection_stage"] for row in selected]
+        self.assertIn("sigma_otm_too_far", selected_stages)
+        self.assertLessEqual(selected_stages.count("sigma_otm_too_far"), 4)
+        self.assertEqual(meta["by_stage"]["sigma_otm_too_far"]["total"], 30)
+        self.assertEqual(meta["selected_by_stage"]["sigma_otm_too_far"], 4)
+        sigma_sample = next(row for row in selected if row["rejection_stage"] == "sigma_otm_too_far")
+        self.assertAlmostEqual(sigma_sample["stage_sample_fraction"], 4 / 30, places=5)
+
+    def test_context_percentiles_apply_live_bounded_rank_modifier(self):
+        candidates = [
+            _candidate("credit", "BEAR_CALL", 0.4),
+            _candidate("debit", "BULL_CALL", 0.4),
+        ]
+        candidates[0]["isCredit"] = True
+        candidates[0]["ivRichness"] = 0.9
+        candidates[0]["creditWidthRatio"] = 0.35
+        candidates[1]["isCredit"] = False
+        candidates[1]["ivRichness"] = 0.2
+
+        premium_history = []
+        for i in range(30):
+            premium_history.append(
+                {
+                    "date": f"2026-07-{i + 1:02d}",
+                    "vix": 10 + i * 0.1,
+                    "fii_short_pct": 20 + i,
+                    "iv_richness": 0.2 + i * 0.01,
+                    "credit_width_ratio": 0.10 + i * 0.005,
+                }
+            )
+        ctx = {
+            "vix": 16.0,
+            "fiiShort": 91,
+            "premiumHistory": premium_history,
+        }
+        polls = [{"time": "10:00", "vix": 16.0, "dayRangeSigma": 1.1}]
+        context = _build_context_percentiles(ctx, polls, candidates, [])
+        _apply_context_percentile_live_ranking(candidates, context)
+
+        self.assertEqual(context["schema_version"], "context_percentiles_v1")
+        self.assertTrue(context["live_ranking_influence"])
+        self.assertFalse(context["hard_gate_authority"])
+        self.assertIsNotNone(context["windows"]["30"]["vix"]["percentile"])
+        self.assertGreater(candidates[0]["contextPercentileScore"], 0)
+        self.assertIn("bear_support_extreme_fii_short_percentile", candidates[0]["contextPercentileSignals"])
+        self.assertLessEqual(abs(candidates[0]["contextPercentileScore"]), 0.35)
 
     def test_native_memory_shadow_selector_picks_similar_profitable_family(self):
         bear = _candidate("bear", "BEAR_CALL", 0.8)

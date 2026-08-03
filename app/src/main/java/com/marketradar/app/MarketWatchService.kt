@@ -1745,7 +1745,7 @@ class MarketWatchService : Service() {
                     entry.put("date", date)
                     uniqueDays[date] = entry
                 }
-                if (uniqueDays.size >= 5) break
+                if (uniqueDays.size >= 60) break
             }
         } catch (e: Exception) {
             Log.e(TAG, "extractFiiHistory error: ${e.message}")
@@ -2146,6 +2146,7 @@ class MarketWatchService : Service() {
                 val v = premHist.getJSONObject(i).optDouble("vix", 0.0)
                 if (v > 0) vixHist.put(v)
             }
+            if (premHist.length() > 0) ctxObj.put("premiumHistory", premHist)
             if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
             
             val fiiHist = extractFiiHistory()

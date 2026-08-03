@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b373: add shadow selector suite telemetry for managed-horizon ranker proof.
+        // b375: persist rejected-candidate research and live context percentiles.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 374
-        versionName = "2.5.43"
+        versionCode = 375
+        versionName = "2.5.44"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
