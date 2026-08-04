@@ -5797,7 +5797,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.44"
+BRAIN_VERSION = "2.5.45"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -5806,9 +5806,186 @@ REJECTED_EVAL_CANDIDATE_CAP = 24
 REJECTED_EVAL_MAX_STAGES = 6
 REJECTED_EVAL_PER_STAGE_CAP = 4
 CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
+CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
+
+C3_CONTEXT_PERCENTILE_VARIABLES = {
+    'existing': (
+        'vix',
+        'fii_short_pct',
+        'iv_richness_menu_median',
+        'realized_day_range',
+        'sigma_otm_menu_median',
+        'credit_width_ratio_menu_median',
+        'menu_win_rate_prior_sessions_only',
+        'rejected_sigma_otm_median',
+    ),
+    'candidate_economics': (
+        'premium_edge_menu_median',
+        'premium_edge_menu_best',
+        'ev_per_1k_menu_median',
+        'ev_per_1k_menu_best',
+        'prob_profit_menu_median',
+        'prob_profit_menu_best',
+        'net_premium_menu_median',
+        'net_premium_menu_best',
+        'max_profit_menu_median',
+        'max_profit_menu_best',
+        'max_loss_menu_median',
+        'max_loss_menu_best',
+        'risk_reward_menu_median',
+        'risk_reward_menu_best',
+        'width_menu_median',
+        'width_menu_best',
+        'debit_breakeven_sigma_menu_median',
+        'debit_breakeven_sigma_menu_best',
+        'theta_friction_minutes_menu_median',
+        'theta_friction_minutes_menu_best',
+        'net_theta_menu_median',
+        'net_theta_menu_best',
+    ),
+    'market_state': (
+        'atm_iv',
+        'iv_percentile',
+        'daily_sigma',
+        'pcr',
+        'near_atm_pcr',
+        'max_pain_distance',
+        'call_wall_distance',
+        'put_wall_distance',
+        'total_call_oi',
+        'total_put_oi',
+        'oi_skew',
+        'realized_vs_implied_range_ratio',
+        'overnight_gap',
+        'spot_vs_vwap',
+        'abs_spot_sigma',
+        'abs_nf_spot_sigma',
+        'bnf_atm_iv',
+        'nf_atm_iv',
+        'bnf_pcr',
+        'nf_pcr',
+        'bnf_near_atm_pcr',
+        'nf_near_atm_pcr',
+        'bnf_max_pain_distance',
+        'nf_max_pain_distance',
+        'bnf_call_wall_distance',
+        'nf_call_wall_distance',
+        'bnf_put_wall_distance',
+        'nf_put_wall_distance',
+        'bnf_total_call_oi',
+        'nf_total_call_oi',
+        'bnf_total_put_oi',
+        'nf_total_put_oi',
+        'bnf_oi_skew',
+        'nf_oi_skew',
+    ),
+    'supply_process': (
+        'generated_count',
+        'rejected_count',
+        'watchlist_survivors',
+        'distinct_families_generated',
+        'menu_size',
+    ),
+    'decision_state': (
+        'confidence',
+        'signal_independence_score',
+        'bull_score',
+        'bear_score',
+        'signal_accuracy',
+    ),
+    'outcome_state': (
+        'menu_mean_pnl_prior_sessions_only',
+        'realized_r_prior_sessions_only',
+        'notification_count_session',
+    ),
+}
+
+C3_KIND_A_CONSTS = {
+    'CAPITAL': 'absolute capital base',
+    'MAX_RISK_PCT': 'absolute per-trade risk budget',
+    'BNF_LOT': 'broker lot reality',
+    'NF_LOT': 'broker lot reality',
+    'BNF_SHORT_MARGIN': 'broker/margin reality',
+    'NF_SHORT_MARGIN': 'broker/margin reality',
+    'MIN_CREDIT_DTE': 'structural expiry floor until explicit 0-DTE policy',
+}
+
+C3_KIND_B_CONSTS = {
+    'BNF_WIDTHS': 'market-judgment ladder; record and compare by percentile/lane',
+    'NF_WIDTHS': 'market-judgment ladder; record and compare by percentile/lane',
+    'IV_HIGH': 'volatility regime threshold should be percentile-contextual',
+    'IV_VERY_HIGH': 'volatility regime threshold should be percentile-contextual',
+    'IV_LOW': 'volatility regime threshold should be percentile-contextual',
+    'MIN_PROB': 'probability threshold requires calibration/regime evidence',
+    'MIN_CREDIT_RATIO': 'credit economics threshold should be percentile-contextual',
+    'IV_RICH_MIN': 'split into absolute >1.00 floor plus percentile authority later',
+    'MIN_SIGMA_OTM': 'distance threshold should be percentile-contextual',
+    'MAX_SIGMA_OTM': 'distance threshold should be percentile-contextual',
+    'IC_WALL_MAX_SIGMA': 'wall-distance market judgment',
+    'MIN_WIDTH_BNF': 'width floor needs lane/fill evidence before live softening',
+    'MIN_WIDTH_NF': 'width floor needs lane/fill evidence before live softening',
+    'DOW_THRESHOLD': 'cross-market move threshold should be history-relative',
+    'CRUDE_THRESHOLD': 'cross-market move threshold should be history-relative',
+    'GIFT_THRESHOLD': 'cross-market move threshold should be history-relative',
+    'NOISE_WINDOW': 'market microstructure judgment',
+    'LAST_ENTRY_CUTOFF': 'entry-window policy threshold',
+    'ROUTINE_NOTIFY_MS': 'notification cadence policy threshold',
+    'SIGMA_IMPORTANT_THRESHOLD': 'sigma regime threshold should be history-relative',
+    'TARGET_NEAR_RATIO': 'managed-exit policy threshold',
+    'STOP_LOSS_RATIO': 'managed-exit policy threshold',
+    'SIGMA_ENTRY_THRESHOLD': 'sigma regime threshold should be history-relative',
+    'SIGMA_EXIT_THRESHOLD': 'sigma regime threshold should be history-relative',
+    'CANDLE_MARUBOZU_SHADOW_PCT': 'pattern threshold; needs replay calibration',
+    'CANDLE_DOJI_BODY_PCT': 'pattern threshold; needs replay calibration',
+    'CANDLE_SPINNING_MIN_BODY_PCT': 'pattern threshold; needs replay calibration',
+    'CANDLE_SPINNING_MAX_BODY_PCT': 'pattern threshold; needs replay calibration',
+    'CANDLE_SHADOW_RATIO_MIN': 'pattern threshold; needs replay calibration',
+    'CANDLE_SHADOW_RATIO_MAX': 'pattern threshold; needs replay calibration',
+    'CANDLE_HAMMER_SHADOW_MIN': 'pattern threshold; needs replay calibration',
+    'CANDLE_HAMMER_UPPER_MAX_BODY': 'pattern threshold; needs replay calibration',
+    'CANDLE_HAMMER_UPPER_MAX_RANGE': 'pattern threshold; needs replay calibration',
+    'CANDLE_ENGULF_BODY_MIN': 'pattern threshold; needs replay calibration',
+    'CANDLE_PRIOR_TREND_CANDLES': 'pattern threshold; needs replay calibration',
+    'CANDLE_PRIOR_TREND_THRESHOLD': 'pattern threshold; needs replay calibration',
+    'CANDLE_GAP_PCT': 'pattern threshold; needs replay calibration',
+}
+
+
+def _c3_const_inventory():
+    rows = []
+    for key, value in _CONST.items():
+        if key in C3_KIND_A_CONSTS:
+            kind = 'A_ABSOLUTE_FLOOR'
+            rationale = C3_KIND_A_CONSTS[key]
+        elif key in C3_KIND_B_CONSTS:
+            kind = 'B_MARKET_JUDGMENT'
+            rationale = C3_KIND_B_CONSTS[key]
+        elif key in ('CREDIT_TYPES', 'DEBIT_TYPES', 'NEUTRAL_TYPES', 'DIR_BULL', 'DIR_BEAR'):
+            kind = 'STRUCTURAL_ENUM'
+            rationale = 'strategy taxonomy, not a tunable threshold'
+        elif key == 'NSE_HOLIDAYS':
+            kind = 'MARKET_CALENDAR'
+            rationale = 'official exchange calendar, not a percentile threshold'
+        else:
+            kind = 'UNCLASSIFIED'
+            rationale = 'requires explicit C.3 classification before any authority change'
+        rows.append({
+            'constant': key,
+            'value': value,
+            'kind': kind,
+            'rationale': rationale,
+            'behavior_change': False,
+        })
+    return {
+        'schema_version': 'c3_const_inventory_v1',
+        'status': 'OK' if not any(r['kind'] == 'UNCLASSIFIED' for r in rows) else 'NEEDS_REVIEW',
+        'row_count': len(rows),
+        'unclassified': [r['constant'] for r in rows if r['kind'] == 'UNCLASSIFIED'],
+        'rows': rows,
+    }
 
 REJECTED_EVAL_STAGE_PRIORITY = {
     # Evidence gates are the most useful to audit: they had complete-ish
@@ -6581,6 +6758,88 @@ def _candidate_median(candidates, keys, predicate=None):
             values.append(value)
     return _median(values)
 
+def _candidate_best(candidates, keys, predicate=None, prefer_abs=False):
+    values = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        value = _row_value(cand, keys)
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    return max(values, key=abs) if prefer_abs else max(values)
+
+def _candidate_count(candidates, predicate=None):
+    count = 0
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        count += 1
+    return count
+
+def _numeric_ratio(num, den):
+    num = _percentile_float(num)
+    den = _percentile_float(den)
+    if num is None or den is None or den == 0:
+        return None
+    return num / den
+
+def _distance_from_spot(level, spot):
+    level = _percentile_float(level)
+    spot = _percentile_float(spot)
+    if level is None or spot is None:
+        return None
+    return level - spot
+
+def _ev_per_1k(cand):
+    if not isinstance(cand, dict):
+        return None
+    ev = _row_value(cand, ('ev', 'premiumEdge', 'premium_edge'))
+    risk = _row_value(cand, ('maxLoss', 'max_loss', 'risk_at_entry'))
+    if ev is None or risk is None or risk <= 0:
+        return None
+    return (ev / risk) * 1000.0
+
+def _theta_friction_from_candidate(cand):
+    if not isinstance(cand, dict):
+        return None
+    est_cost = _row_value(cand, ('estCost', 'est_cost'))
+    net_theta = _row_value(cand, ('netTheta', 'net_theta'))
+    if est_cost is None or net_theta is None:
+        return None
+    return theta_friction_minutes(est_cost, abs(net_theta))
+
+def _candidate_derived_median(candidates, derive_fn, predicate=None):
+    values = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        value = derive_fn(cand)
+        if _percentile_float(value) is not None:
+            values.append(value)
+    return _median(values)
+
+def _candidate_derived_best(candidates, derive_fn, predicate=None, prefer_abs=False):
+    values = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        value = derive_fn(cand)
+        if _percentile_float(value) is not None:
+            values.append(value)
+    if not values:
+        return None
+    return max(values, key=abs) if prefer_abs else max(values)
+
 def _percentile_rank(value, history):
     num = _percentile_float(value)
     vals = sorted(_numeric_series(history))
@@ -6607,6 +6866,23 @@ def _latest_poll_value(polls, key_options):
     latest = polls[-1] if isinstance(polls, list) and polls else {}
     return _row_value(latest, key_options)
 
+def _dict_value(row, *keys):
+    return row if isinstance(row, dict) else {}
+
+def _first_row_value(*sources_and_keys):
+    for source, keys in sources_and_keys:
+        value = _row_value(source, keys)
+        if value is not None:
+            return value
+    return None
+
+def _positive_row_value(*sources_and_keys):
+    for source, keys in sources_and_keys:
+        value = _row_value(source, keys)
+        if value is not None and value > 0:
+            return value
+    return None
+
 def _context_percentile_value(summary, window, name):
     try:
         cell = (summary.get('windows') or {}).get(str(window), {}).get(name) or {}
@@ -6614,9 +6890,18 @@ def _context_percentile_value(summary, window, name):
     except Exception:
         return None
 
-def _build_context_percentiles(ctx, polls, candidates, rejected_candidates):
+def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, result=None):
     ctx = ctx if isinstance(ctx, dict) else {}
+    result = result if isinstance(result, dict) else {}
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
+    snapshot_latest_poll = _dict_value(ctx.get('snapshot_latest_poll'))
+    morning_input = _dict_value(ctx.get('morning_input') or ctx.get('morningInput'))
+    bnf_chain = _dict_value(ctx.get('bnfChain') or ctx.get('bnf_chain'))
+    nf_chain = _dict_value(ctx.get('nfChain') or ctx.get('nf_chain'))
+    snapshot_profiles = _dict_value(ctx.get('snapshot_market_profiles') or ctx.get('market_profiles'))
+    snapshot_bnf_profile = _dict_value(snapshot_profiles.get('bnfProfile') or snapshot_profiles.get('bnf_profile'))
+    snapshot_nf_profile = _dict_value(snapshot_profiles.get('nfProfile') or snapshot_profiles.get('nf_profile'))
+    market_forces = _dict_value(result.get('marketForces') or result.get('market_forces') or ctx.get('market_forces'))
     history_window_end = (
         latest_poll.get('poll_ts')
         or latest_poll.get('ts')
@@ -6625,27 +6910,219 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates):
         or _current_ist_poll_ts()
     )
     credit_candidates = [c for c in candidates or [] if isinstance(c, dict) and c.get('isCredit')]
+    debit_candidates = [c for c in candidates or [] if isinstance(c, dict) and not c.get('isCredit')]
+    bnf_spot = (
+        _row_value(latest_poll, ('bnfSpot', 'bnf', 'BNF'))
+        or _row_value(snapshot_latest_poll, ('bnfSpot', 'bnf_spot', 'bnf', 'BNF'))
+        or _percentile_float(ctx.get('bnfSpot'))
+        or _percentile_float(ctx.get('bnf_spot'))
+    )
+    nf_spot = (
+        _row_value(latest_poll, ('nfSpot', 'nf', 'NF'))
+        or _row_value(snapshot_latest_poll, ('nfSpot', 'nf_spot', 'nf', 'NF'))
+        or _percentile_float(ctx.get('nfSpot'))
+        or _percentile_float(ctx.get('nf_spot'))
+    )
+    bnf_profile = result.get('bnfProfile') if isinstance(result.get('bnfProfile'), dict) else snapshot_bnf_profile
+    nf_profile = result.get('nfProfile') if isinstance(result.get('nfProfile'), dict) else snapshot_nf_profile
+    verdict = result.get('verdict') if isinstance(result.get('verdict'), dict) else {}
+    signal_independence = _compute_signal_independence(result, ctx) if result else {}
+    generated_types = set()
+    for cand in candidates or []:
+        if isinstance(cand, dict) and (cand.get('type') or cand.get('strategy_type')):
+            generated_types.add(cand.get('type') or cand.get('strategy_type'))
+
+    def _profile_value(profile, *keys):
+        return _row_value(profile, keys)
+
+    bnf_atm_iv = _positive_row_value(
+        (bnf_profile, ('atmIv', 'atm_iv')),
+        (bnf_chain, ('atmIv', 'atm_iv')),
+        (snapshot_latest_poll, ('bnfAtmIv', 'bnf_atm_iv')),
+        (ctx, ('bnfAtmIv', 'bnf_atm_iv')),
+    )
+    nf_atm_iv = _positive_row_value(
+        (nf_profile, ('atmIv', 'atm_iv')),
+        (nf_chain, ('atmIv', 'atm_iv')),
+        (snapshot_latest_poll, ('nfAtmIv', 'nf_atm_iv')),
+        (ctx, ('nfAtmIv', 'nf_atm_iv')),
+    )
+    vix_now = _first_row_value(
+        (latest_poll, ('vix', 'VIX')),
+        (snapshot_latest_poll, ('vix', 'VIX')),
+        (ctx, ('vix',)),
+        (market_forces, ('vix',)),
+    )
+    bnf_daily_sigma = _daily_sigma(bnf_spot, vix_now)
+    nf_daily_sigma = _daily_sigma(nf_spot, vix_now)
+    bnf_call_wall = (
+        _profile_value(bnf_profile, 'callWallStrike', 'callWall', 'call_wall')
+        or _row_value(bnf_chain, ('callWallStrike', 'callWall', 'call_wall'))
+        or _row_value(snapshot_latest_poll, ('bnfCallWall', 'bnf_call_wall'))
+    )
+    nf_call_wall = (
+        _profile_value(nf_profile, 'callWallStrike', 'callWall', 'call_wall')
+        or _row_value(nf_chain, ('callWallStrike', 'callWall', 'call_wall'))
+        or _row_value(snapshot_latest_poll, ('nfCallWall', 'nf_call_wall'))
+    )
+    bnf_put_wall = (
+        _profile_value(bnf_profile, 'putWallStrike', 'putWall', 'put_wall')
+        or _row_value(bnf_chain, ('putWallStrike', 'putWall', 'put_wall'))
+        or _row_value(snapshot_latest_poll, ('bnfPutWall', 'bnf_put_wall'))
+    )
+    nf_put_wall = (
+        _profile_value(nf_profile, 'putWallStrike', 'putWall', 'put_wall')
+        or _row_value(nf_chain, ('putWallStrike', 'putWall', 'put_wall'))
+        or _row_value(snapshot_latest_poll, ('nfPutWall', 'nf_put_wall'))
+    )
+    bnf_max_pain = _profile_value(bnf_profile, 'maxPain', 'max_pain') or _row_value(bnf_chain, ('maxPain', 'max_pain'))
+    nf_max_pain = _profile_value(nf_profile, 'maxPain', 'max_pain') or _row_value(nf_chain, ('maxPain', 'max_pain'))
+    bnf_call_oi = _first_row_value(
+        (bnf_chain, ('totalCallOI', 'totalCallOi')),
+        (market_forces, ('bnf_total_call_oi', 'bnfTotalCallOi')),
+        (ctx, ('bnfTotalCallOi', 'bnf_total_call_oi')),
+        (latest_poll, ('bnf_total_call_oi',)),
+        (snapshot_latest_poll, ('bnf_total_call_oi',)),
+    )
+    nf_call_oi = _first_row_value(
+        (nf_chain, ('totalCallOI', 'totalCallOi')),
+        (market_forces, ('nf_total_call_oi', 'nfTotalCallOi')),
+        (ctx, ('nfTotalCallOi', 'nf_total_call_oi')),
+        (latest_poll, ('nf_total_call_oi',)),
+        (snapshot_latest_poll, ('nf_total_call_oi',)),
+    )
+    bnf_put_oi = _first_row_value(
+        (bnf_chain, ('totalPutOI', 'totalPutOi')),
+        (market_forces, ('bnf_total_put_oi', 'bnfTotalPutOi')),
+        (ctx, ('bnfTotalPutOi', 'bnf_total_put_oi')),
+        (latest_poll, ('bnf_total_put_oi',)),
+        (snapshot_latest_poll, ('bnf_total_put_oi',)),
+    )
+    nf_put_oi = _first_row_value(
+        (nf_chain, ('totalPutOI', 'totalPutOi')),
+        (market_forces, ('nf_total_put_oi', 'nfTotalPutOi')),
+        (ctx, ('nfTotalPutOi', 'nf_total_put_oi')),
+        (latest_poll, ('nf_total_put_oi',)),
+        (snapshot_latest_poll, ('nf_total_put_oi',)),
+    )
+    bnf_vwap = _row_value(latest_poll, ('bnfVwap', 'bnfVWAP', 'bnf_vwap')) or _row_value(snapshot_latest_poll, ('bnfVwap', 'bnfVWAP', 'bnf_vwap'))
+    nf_vwap = _row_value(latest_poll, ('nfVwap', 'nfVWAP', 'nf_vwap')) or _row_value(snapshot_latest_poll, ('nfVwap', 'nfVWAP', 'nf_vwap'))
+    bnf_abs_spot_sigma = abs(_numeric_ratio(_distance_from_spot(bnf_spot, bnf_vwap), bnf_daily_sigma)) if bnf_vwap is not None else None
+    nf_abs_spot_sigma = abs(_numeric_ratio(_distance_from_spot(nf_spot, nf_vwap), nf_daily_sigma)) if nf_vwap is not None else None
+    day_range = (
+        _latest_poll_value(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'))
+        or _percentile_float(ctx.get('rangeSigma'))
+    )
     current_values = {
         'vix': _percentile_float(ctx.get('vix')) or _latest_poll_value(polls, ('vix', 'VIX')),
         'fii_short_pct': (
             _percentile_float(ctx.get('fiiShort'))
             or _percentile_float(ctx.get('fii_short_pct'))
+            or _row_value(morning_input, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short'))
+            or _row_value(market_forces, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short'))
             or _latest_poll_value(polls, ('fiiShort', 'fii_short_pct', 'fii_short'))
         ),
         'iv_richness_menu_median': _candidate_median(candidates, ('ivRichness', 'iv_richness')),
-        'realized_day_range': (
-            _latest_poll_value(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'))
-            or _percentile_float(ctx.get('rangeSigma'))
-        ),
+        'realized_day_range': day_range,
         'sigma_otm_menu_median': _candidate_median(candidates, ('sigmaOTM', 'sigma_otm')),
         'credit_width_ratio_menu_median': _candidate_median(
             credit_candidates,
             ('creditWidthRatio', 'credit_width_ratio')
         ),
         'rejected_sigma_otm_median': _candidate_median(rejected_candidates, ('sigmaOTM', 'sigma_otm')),
+        'premium_edge_menu_median': _candidate_median(candidates, ('premiumEdge', 'premium_edge')),
+        'premium_edge_menu_best': _candidate_best(candidates, ('premiumEdge', 'premium_edge')),
+        'ev_per_1k_menu_median': _candidate_derived_median(candidates, _ev_per_1k),
+        'ev_per_1k_menu_best': _candidate_derived_best(candidates, _ev_per_1k),
+        'prob_profit_menu_median': _candidate_median(candidates, ('probProfit', 'prob_profit', 'prob')),
+        'prob_profit_menu_best': _candidate_best(candidates, ('probProfit', 'prob_profit', 'prob')),
+        'net_premium_menu_median': _candidate_median(candidates, ('netPremium', 'net_premium')),
+        'net_premium_menu_best': _candidate_best(candidates, ('netPremium', 'net_premium')),
+        'max_profit_menu_median': _candidate_median(candidates, ('maxProfit', 'max_profit')),
+        'max_profit_menu_best': _candidate_best(candidates, ('maxProfit', 'max_profit')),
+        'max_loss_menu_median': _candidate_median(candidates, ('maxLoss', 'max_loss')),
+        'max_loss_menu_best': _candidate_best(candidates, ('maxLoss', 'max_loss')),
+        'risk_reward_menu_median': _candidate_median(candidates, ('riskReward', 'risk_reward')),
+        'risk_reward_menu_best': _candidate_best(candidates, ('riskReward', 'risk_reward')),
+        'width_menu_median': _candidate_median(candidates, ('width',)),
+        'width_menu_best': _candidate_best(candidates, ('width',)),
+        'debit_breakeven_sigma_menu_median': _candidate_median(debit_candidates, ('debitBreakevenSigma', 'debit_breakeven_sigma')),
+        'debit_breakeven_sigma_menu_best': _candidate_best(debit_candidates, ('debitBreakevenSigma', 'debit_breakeven_sigma')),
+        'theta_friction_minutes_menu_median': _candidate_derived_median(candidates, _theta_friction_from_candidate),
+        'theta_friction_minutes_menu_best': _candidate_derived_best(candidates, _theta_friction_from_candidate),
+        'net_theta_menu_median': _candidate_median(candidates, ('netTheta', 'net_theta')),
+        'net_theta_menu_best': _candidate_best(candidates, ('netTheta', 'net_theta'), prefer_abs=True),
+        'atm_iv': bnf_atm_iv or nf_atm_iv,
+        'iv_percentile': _percentile_float(ctx.get('ivPercentile')) or _latest_poll_value(polls, ('ivPercentile', 'iv_percentile')),
+        'daily_sigma': bnf_daily_sigma or nf_daily_sigma,
+        'pcr': _profile_value(bnf_profile, 'pcr') or _row_value(bnf_chain, ('pcr',)) or _latest_poll_value(polls, ('pcr', 'bnfPcr')),
+        'near_atm_pcr': _profile_value(bnf_profile, 'nearAtmPCR', 'near_atm_pcr') or _row_value(bnf_chain, ('nearAtmPCR', 'near_atm_pcr')) or _latest_poll_value(polls, ('nearAtmPCR', 'near_atm_pcr')),
+        'max_pain_distance': _distance_from_spot(bnf_max_pain, bnf_spot),
+        'call_wall_distance': _distance_from_spot(bnf_call_wall, bnf_spot),
+        'put_wall_distance': _distance_from_spot(bnf_put_wall, bnf_spot),
+        'total_call_oi': bnf_call_oi,
+        'total_put_oi': bnf_put_oi,
+        'oi_skew': _numeric_ratio((bnf_put_oi or 0) - (bnf_call_oi or 0), (bnf_put_oi or 0) + (bnf_call_oi or 0)),
+        'realized_vs_implied_range_ratio': _numeric_ratio(day_range, 1.0),
+        'overnight_gap': _latest_poll_value(polls, ('overnightGap', 'overnight_gap', 'gapSigma', 'gap_sigma')),
+        'spot_vs_vwap': _distance_from_spot(bnf_spot, bnf_vwap),
+        'abs_spot_sigma': bnf_abs_spot_sigma,
+        'abs_nf_spot_sigma': nf_abs_spot_sigma,
+        'bnf_atm_iv': bnf_atm_iv,
+        'nf_atm_iv': nf_atm_iv,
+        'bnf_pcr': _profile_value(bnf_profile, 'pcr') or _row_value(bnf_chain, ('pcr',)) or _latest_poll_value(polls, ('bnfPcr',)),
+        'nf_pcr': _profile_value(nf_profile, 'pcr') or _row_value(nf_chain, ('pcr',)) or _latest_poll_value(polls, ('nfPcr',)),
+        'bnf_near_atm_pcr': _profile_value(bnf_profile, 'nearAtmPCR', 'near_atm_pcr') or _row_value(bnf_chain, ('nearAtmPCR', 'near_atm_pcr')),
+        'nf_near_atm_pcr': _profile_value(nf_profile, 'nearAtmPCR', 'near_atm_pcr') or _row_value(nf_chain, ('nearAtmPCR', 'near_atm_pcr')),
+        'bnf_max_pain_distance': _distance_from_spot(bnf_max_pain, bnf_spot),
+        'nf_max_pain_distance': _distance_from_spot(nf_max_pain, nf_spot),
+        'bnf_call_wall_distance': _distance_from_spot(bnf_call_wall, bnf_spot),
+        'nf_call_wall_distance': _distance_from_spot(nf_call_wall, nf_spot),
+        'bnf_put_wall_distance': _distance_from_spot(bnf_put_wall, bnf_spot),
+        'nf_put_wall_distance': _distance_from_spot(nf_put_wall, nf_spot),
+        'bnf_total_call_oi': bnf_call_oi,
+        'nf_total_call_oi': nf_call_oi,
+        'bnf_total_put_oi': bnf_put_oi,
+        'nf_total_put_oi': nf_put_oi,
+        'bnf_oi_skew': _numeric_ratio((bnf_put_oi or 0) - (bnf_call_oi or 0), (bnf_put_oi or 0) + (bnf_call_oi or 0)),
+        'nf_oi_skew': _numeric_ratio((nf_put_oi or 0) - (nf_call_oi or 0), (nf_put_oi or 0) + (nf_call_oi or 0)),
+        'generated_count': _candidate_count(candidates),
+        'rejected_count': _candidate_count(rejected_candidates),
+        'watchlist_survivors': _candidate_count(result.get('watchlist') if isinstance(result.get('watchlist'), list) else candidates),
+        'distinct_families_generated': len(generated_types),
+        'menu_size': _candidate_count(candidates),
+        'confidence': _percentile_float(verdict.get('confidence')),
+        'signal_independence_score': _percentile_float(signal_independence.get('score') or verdict.get('signal_independence_score') or verdict.get('signalIndependenceScore')),
+        'bull_score': _percentile_float(verdict.get('bullScore') or verdict.get('bull_score') or verdict.get('bull')),
+        'bear_score': _percentile_float(verdict.get('bearScore') or verdict.get('bear_score') or verdict.get('bear')),
+        'signal_accuracy': _percentile_float(result.get('signalAccuracy') or result.get('signal_accuracy')),
+        'menu_win_rate_prior_sessions_only': None,
+        'menu_mean_pnl_prior_sessions_only': None,
+        'realized_r_prior_sessions_only': None,
+        'notification_count_session': _percentile_float(ctx.get('notificationCountSession') or ctx.get('notification_count_session')),
     }
+    stage_counts = {}
+    stage_margins = {}
+    for row in rejected_candidates or []:
+        if not isinstance(row, dict):
+            continue
+        stage = str(row.get('rejection_stage') or row.get('stage') or 'unknown')
+        stage_counts[stage] = int(stage_counts.get(stage, 0)) + 1
+        margin = _row_value(row, ('margin', 'margin_pct'))
+        if margin is not None:
+            stage_margins.setdefault(stage, []).append(abs(margin))
+    for stage, count in stage_counts.items():
+        safe_stage = stage.lower().replace(' ', '_')
+        current_values[f'rejection_stage_count__{safe_stage}'] = count
+    for stage, margins in stage_margins.items():
+        safe_stage = stage.lower().replace(' ', '_')
+        current_values[f'rejection_stage_margin_median__{safe_stage}'] = _median(margins)
+
     windows = {}
     for window in CONTEXT_PERCENTILE_WINDOWS:
+        def _hist(*keys):
+            return _history_values(ctx, keys, window)
+
         vix_hist = (
             _numeric_series(ctx.get('vixHistory'))[-window:]
             + _history_values(ctx, ('vix', 'VIX'), window)
@@ -6663,28 +7140,130 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates):
         sigma_hist = _history_values(ctx, ('sigmaOTM', 'sigma_otm', 'sigma_otm_menu_median'), window)
         credit_width_hist = _history_values(ctx, ('creditWidthRatio', 'credit_width_ratio', 'credit_width_ratio_menu_median'), window)
         menu_win_hist = _history_values(ctx, ('menuWinRate', 'menu_win_rate', 'menu_win_rate_pct'), window)
-        windows[str(window)] = {
+        window_cells = {
             'vix': _percentile_cell(current_values['vix'], vix_hist),
             'fii_short_pct': _percentile_cell(current_values['fii_short_pct'], fii_short_hist),
             'iv_richness_menu_median': _percentile_cell(current_values['iv_richness_menu_median'], iv_richness_hist),
             'realized_day_range': _percentile_cell(current_values['realized_day_range'], day_range_hist),
             'sigma_otm_menu_median': _percentile_cell(current_values['sigma_otm_menu_median'], sigma_hist),
             'credit_width_ratio_menu_median': _percentile_cell(current_values['credit_width_ratio_menu_median'], credit_width_hist),
-            'menu_win_rate_prior_sessions_only': _percentile_cell(None, menu_win_hist),
+            'menu_win_rate_prior_sessions_only': _percentile_cell(current_values['menu_win_rate_prior_sessions_only'], menu_win_hist),
             'rejected_sigma_otm_median': _percentile_cell(current_values['rejected_sigma_otm_median'], sigma_hist),
         }
+        generic_histories = {
+            'premium_edge_menu_median': _hist('premiumEdge', 'premium_edge', 'premium_edge_menu_median'),
+            'premium_edge_menu_best': _hist('premiumEdge', 'premium_edge', 'premium_edge_menu_best'),
+            'ev_per_1k_menu_median': _hist('ev_per_1k', 'ev_per_1k_menu_median'),
+            'ev_per_1k_menu_best': _hist('ev_per_1k', 'ev_per_1k_menu_best'),
+            'prob_profit_menu_median': _hist('probProfit', 'prob_profit', 'prob_profit_menu_median'),
+            'prob_profit_menu_best': _hist('probProfit', 'prob_profit', 'prob_profit_menu_best'),
+            'net_premium_menu_median': _hist('netPremium', 'net_premium', 'net_premium_menu_median'),
+            'net_premium_menu_best': _hist('netPremium', 'net_premium', 'net_premium_menu_best'),
+            'max_profit_menu_median': _hist('maxProfit', 'max_profit', 'max_profit_menu_median'),
+            'max_profit_menu_best': _hist('maxProfit', 'max_profit', 'max_profit_menu_best'),
+            'max_loss_menu_median': _hist('maxLoss', 'max_loss', 'max_loss_menu_median'),
+            'max_loss_menu_best': _hist('maxLoss', 'max_loss', 'max_loss_menu_best'),
+            'risk_reward_menu_median': _hist('riskReward', 'risk_reward', 'risk_reward_menu_median'),
+            'risk_reward_menu_best': _hist('riskReward', 'risk_reward', 'risk_reward_menu_best'),
+            'width_menu_median': _hist('width', 'width_menu_median'),
+            'width_menu_best': _hist('width', 'width_menu_best'),
+            'debit_breakeven_sigma_menu_median': _hist('debitBreakevenSigma', 'debit_breakeven_sigma', 'debit_breakeven_sigma_menu_median'),
+            'debit_breakeven_sigma_menu_best': _hist('debitBreakevenSigma', 'debit_breakeven_sigma', 'debit_breakeven_sigma_menu_best'),
+            'theta_friction_minutes_menu_median': _hist('thetaFrictionMinutes', 'theta_friction_minutes', 'theta_friction_minutes_menu_median'),
+            'theta_friction_minutes_menu_best': _hist('thetaFrictionMinutes', 'theta_friction_minutes', 'theta_friction_minutes_menu_best'),
+            'net_theta_menu_median': _hist('netTheta', 'net_theta', 'net_theta_menu_median'),
+            'net_theta_menu_best': _hist('netTheta', 'net_theta', 'net_theta_menu_best'),
+            'atm_iv': _hist('atmIv', 'atm_iv'),
+            'iv_percentile': _hist('ivPercentile', 'iv_percentile'),
+            'daily_sigma': _hist('dailySigma', 'daily_sigma'),
+            'pcr': _hist('pcr'),
+            'near_atm_pcr': _hist('nearAtmPCR', 'near_atm_pcr'),
+            'max_pain_distance': _hist('maxPainDistance', 'max_pain_distance'),
+            'call_wall_distance': _hist('callWallDistance', 'call_wall_distance'),
+            'put_wall_distance': _hist('putWallDistance', 'put_wall_distance'),
+            'total_call_oi': _hist('totalCallOi', 'total_call_oi'),
+            'total_put_oi': _hist('totalPutOi', 'total_put_oi'),
+            'oi_skew': _hist('oiSkew', 'oi_skew'),
+            'realized_vs_implied_range_ratio': _hist('realizedVsImpliedRangeRatio', 'realized_vs_implied_range_ratio'),
+            'overnight_gap': _hist('overnightGap', 'overnight_gap', 'gapSigma', 'gap_sigma'),
+            'spot_vs_vwap': _hist('spotVsVwap', 'spot_vs_vwap'),
+            'abs_spot_sigma': _hist('absSpotSigma', 'abs_spot_sigma'),
+            'abs_nf_spot_sigma': _hist('absNfSpotSigma', 'abs_nf_spot_sigma'),
+            'bnf_atm_iv': _hist('bnfAtmIv', 'bnf_atm_iv'),
+            'nf_atm_iv': _hist('nfAtmIv', 'nf_atm_iv'),
+            'bnf_pcr': _hist('bnfPcr', 'bnf_pcr'),
+            'nf_pcr': _hist('nfPcr', 'nf_pcr'),
+            'bnf_near_atm_pcr': _hist('bnfNearAtmPcr', 'bnf_near_atm_pcr'),
+            'nf_near_atm_pcr': _hist('nfNearAtmPcr', 'nf_near_atm_pcr'),
+            'bnf_max_pain_distance': _hist('bnfMaxPainDistance', 'bnf_max_pain_distance'),
+            'nf_max_pain_distance': _hist('nfMaxPainDistance', 'nf_max_pain_distance'),
+            'bnf_call_wall_distance': _hist('bnfCallWallDistance', 'bnf_call_wall_distance'),
+            'nf_call_wall_distance': _hist('nfCallWallDistance', 'nf_call_wall_distance'),
+            'bnf_put_wall_distance': _hist('bnfPutWallDistance', 'bnf_put_wall_distance'),
+            'nf_put_wall_distance': _hist('nfPutWallDistance', 'nf_put_wall_distance'),
+            'bnf_total_call_oi': _hist('bnfTotalCallOi', 'bnf_total_call_oi'),
+            'nf_total_call_oi': _hist('nfTotalCallOi', 'nf_total_call_oi'),
+            'bnf_total_put_oi': _hist('bnfTotalPutOi', 'bnf_total_put_oi'),
+            'nf_total_put_oi': _hist('nfTotalPutOi', 'nf_total_put_oi'),
+            'bnf_oi_skew': _hist('bnfOiSkew', 'bnf_oi_skew'),
+            'nf_oi_skew': _hist('nfOiSkew', 'nf_oi_skew'),
+            'generated_count': _hist('generatedCount', 'generated_count'),
+            'rejected_count': _hist('rejectedCount', 'rejected_count'),
+            'watchlist_survivors': _hist('watchlistSurvivors', 'watchlist_survivors'),
+            'distinct_families_generated': _hist('distinctFamiliesGenerated', 'distinct_families_generated'),
+            'menu_size': _hist('menuSize', 'menu_size'),
+            'confidence': _hist('confidence'),
+            'signal_independence_score': _hist('signalIndependenceScore', 'signal_independence_score'),
+            'bull_score': _hist('bullScore', 'bull_score'),
+            'bear_score': _hist('bearScore', 'bear_score'),
+            'signal_accuracy': _hist('signalAccuracy', 'signal_accuracy'),
+            'menu_mean_pnl_prior_sessions_only': _hist('menuMeanPnl', 'menu_mean_pnl'),
+            'realized_r_prior_sessions_only': _hist('realizedR', 'realized_r'),
+            'notification_count_session': _hist('notificationCountSession', 'notification_count_session'),
+        }
+        for name, hist in generic_histories.items():
+            window_cells[name] = _percentile_cell(current_values.get(name), hist)
+        for name in current_values:
+            if name.startswith('rejection_stage_count__') or name.startswith('rejection_stage_margin_median__'):
+                window_cells[name] = _percentile_cell(current_values.get(name), _hist(name), min_support=1)
+        windows[str(window)] = window_cells
+
+    variables = {}
+    all_names = set(current_values.keys())
+    for group_names in C3_CONTEXT_PERCENTILE_VARIABLES.values():
+        all_names.update(group_names)
+    for name in sorted(all_names):
+        cells = {str(window): (windows.get(str(window)) or {}).get(name) or {} for window in CONTEXT_PERCENTILE_WINDOWS}
+        support_counts = [int((cells[str(window)] or {}).get('support_count') or 0) for window in CONTEXT_PERCENTILE_WINDOWS]
+        variables[name] = {
+            'value': None if _percentile_float(current_values.get(name)) is None else round(_percentile_float(current_values.get(name)), 4),
+            'pct_30': cells.get('30', {}).get('percentile'),
+            'pct_60': cells.get('60', {}).get('percentile'),
+            'support_count': max(support_counts) if support_counts else 0,
+            'support_count_30': cells.get('30', {}).get('support_count'),
+            'support_count_60': cells.get('60', {}).get('support_count'),
+            'history_window_end': history_window_end,
+            'history_source': 'live',
+            'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
+        }
+
     return {
         'schema_version': CONTEXT_PERCENTILES_SCHEMA_VERSION,
+        'recording_version': CONTEXT_PERCENTILES_RECORDING_VERSION,
         'live_ranking_influence': True,
         'hard_gate_authority': False,
         'history_window_end': history_window_end,
+        'history_source': 'live',
+        'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
         'support_policy': {
             'minimum_support': CONTEXT_PERCENTILE_MIN_SUPPORT,
             'insufficient_support_percentile': None,
             'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
             'outcome_variables': 'prior_completed_sessions_only',
         },
+        'variable_catalog': C3_CONTEXT_PERCENTILE_VARIABLES,
         'current_values': {k: (round(v, 4) if v is not None else None) for k, v in current_values.items()},
+        'variables': variables,
         'windows': windows,
     }
 
@@ -6696,6 +7275,7 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
             continue
         score = 0.0
         signals = []
+        components = []
         is_credit = bool(cand.get('isCredit'))
         stype = cand.get('type')
         is_bear = stype in _CONST['DIR_BEAR']
@@ -6706,57 +7286,99 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
         vix_pct = _context_percentile_value(context_percentiles, 30, 'vix')
         fii_short_pct = _context_percentile_value(context_percentiles, 30, 'fii_short_pct')
 
+        raw_inputs = {
+            'iv_richness_menu_median': iv_pct,
+            'credit_width_ratio_menu_median': credit_width_pct,
+            'realized_day_range': range_pct,
+            'vix': vix_pct,
+            'fii_short_pct': fii_short_pct,
+        }
+
+        def _add_component(name, percentile, contribution, rule):
+            if contribution == 0:
+                return
+            components.append({
+                'variable': name,
+                'window': 30,
+                'percentile': percentile,
+                'contribution': contribution,
+                'rule': rule,
+            })
+
         if iv_pct is not None:
             if is_credit and iv_pct < 25:
                 score -= 0.25
+                _add_component('iv_richness_menu_median', iv_pct, -0.25, 'credit iv pct < 25')
                 signals.append('credit_penalty_low_iv_richness_percentile')
             elif is_credit and iv_pct >= 70:
                 score += 0.20
+                _add_component('iv_richness_menu_median', iv_pct, 0.20, 'credit iv pct >= 70')
                 signals.append('credit_support_high_iv_richness_percentile')
             elif not is_credit and iv_pct < 25:
                 score += 0.10
+                _add_component('iv_richness_menu_median', iv_pct, 0.10, 'debit iv pct < 25')
                 signals.append('debit_support_low_iv_richness_percentile')
         if credit_width_pct is not None and is_credit:
             if credit_width_pct < 25:
                 score -= 0.20
+                _add_component('credit_width_ratio_menu_median', credit_width_pct, -0.20, 'credit width pct < 25')
                 signals.append('credit_penalty_low_credit_width_percentile')
             elif credit_width_pct >= 70:
                 score += 0.15
+                _add_component('credit_width_ratio_menu_median', credit_width_pct, 0.15, 'credit width pct >= 70')
                 signals.append('credit_support_high_credit_width_percentile')
         if range_pct is not None and not is_credit:
             if range_pct >= 70:
                 score += 0.12
+                _add_component('realized_day_range', range_pct, 0.12, 'debit range pct >= 70')
                 signals.append('debit_support_high_range_percentile')
             elif range_pct < 25:
                 score -= 0.08
+                _add_component('realized_day_range', range_pct, -0.08, 'debit range pct < 25')
                 signals.append('debit_penalty_low_range_percentile')
         if vix_pct is not None:
             if is_credit and vix_pct >= 70:
                 score += 0.08
+                _add_component('vix', vix_pct, 0.08, 'credit vix pct >= 70')
                 signals.append('credit_support_high_vix_percentile')
             elif not is_credit and vix_pct < 25:
                 score += 0.05
+                _add_component('vix', vix_pct, 0.05, 'debit vix pct < 25')
                 signals.append('debit_support_low_vix_percentile')
         if fii_short_pct is not None:
             if fii_short_pct >= 80:
                 if is_bear:
                     score += 0.10
+                    _add_component('fii_short_pct', fii_short_pct, 0.10, 'bear fii short pct >= 80')
                     signals.append('bear_support_extreme_fii_short_percentile')
                 elif is_bull:
                     score -= 0.10
+                    _add_component('fii_short_pct', fii_short_pct, -0.10, 'bull fii short pct >= 80')
                     signals.append('bull_penalty_extreme_fii_short_percentile')
             elif fii_short_pct <= 20:
                 if is_bull:
                     score += 0.10
+                    _add_component('fii_short_pct', fii_short_pct, 0.10, 'bull fii short pct <= 20')
                     signals.append('bull_support_low_fii_short_percentile')
                 elif is_bear:
                     score -= 0.10
+                    _add_component('fii_short_pct', fii_short_pct, -0.10, 'bear fii short pct <= 20')
                     signals.append('bear_penalty_low_fii_short_percentile')
 
+        raw_score = score
         score = max(-CONTEXT_PERCENTILE_MAX_RANKING_ABS, min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, score))
         cand['contextPercentileScore'] = round(score, 4)
         cand['contextPercentileSignals'] = signals
+        cand['contextPercentileInputs'] = raw_inputs
+        cand['contextPercentileComponents'] = components
+        cand['contextPercentileRawScore'] = round(raw_score, 4)
+        cand['contextPercentileClamp'] = {
+            'min': -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+            'max': CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+            'applied': round(raw_score, 4) != round(score, 4),
+        }
         cand['contextPercentileSchemaVersion'] = CONTEXT_PERCENTILES_SCHEMA_VERSION
+        cand['contextPercentileRecordingVersion'] = CONTEXT_PERCENTILES_RECORDING_VERSION
         cand['contextPercentileLiveRanking'] = True
     return candidates
 
@@ -9139,7 +9761,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['rejected_candidates'] = all_rejected
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
-        context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected)
+        context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result)
         _apply_context_percentile_live_ranking(all_cands, context_percentiles)
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
@@ -9853,7 +10475,12 @@ def _candidate_view(c):
         'brainScore': c.get('brainScore'),
         'contextPercentileScore': c.get('contextPercentileScore'),
         'contextPercentileSignals': c.get('contextPercentileSignals'),
+        'contextPercentileInputs': c.get('contextPercentileInputs'),
+        'contextPercentileComponents': c.get('contextPercentileComponents'),
+        'contextPercentileRawScore': c.get('contextPercentileRawScore'),
+        'contextPercentileClamp': c.get('contextPercentileClamp'),
         'contextPercentileSchemaVersion': c.get('contextPercentileSchemaVersion'),
+        'contextPercentileRecordingVersion': c.get('contextPercentileRecordingVersion'),
         'contextPercentileLiveRanking': c.get('contextPercentileLiveRanking'),
         'p_ml': c.get('p_ml'),
         'mlAction': c.get('mlAction'),
@@ -11996,6 +12623,7 @@ def take_poll_snapshot(result, ctx, polls):
     phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(generated_candidates, rejected_candidates)
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(generated_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, generated_candidates)
+    c3_const_inventory = _c3_const_inventory()
     shadow_selector_suite = _compute_shadow_selector_suite(generated_candidates, top_cand, ctx)
     menu_abstention_shadow = _compute_menu_abstention_shadow(
         result,
@@ -12081,6 +12709,7 @@ def take_poll_snapshot(result, ctx, polls):
         'phase3_expected_r_shadow': phase3_expected_r_shadow,
         'phase4_ev_ladder_shadow': phase4_ev_ladder_shadow,
         'phase5_gate_registry': phase5_gate_registry,
+        'c3_const_inventory': c3_const_inventory,
         'shadow_selector_suite': shadow_selector_suite,
         'menu_abstention_shadow': menu_abstention_shadow,
     }
@@ -12113,12 +12742,21 @@ def take_poll_snapshot(result, ctx, polls):
         'phase5_gate_registry_rows': len(phase5_gate_registry.get('rows') or []),
         'phase5_gate_registry_softening_candidates': phase5_gate_registry.get('softening_candidate_count'),
         'phase5_gate_registry_complete': phase5_gate_registry.get('registry_complete_for_observed_stages'),
+        'c3_const_inventory_status': c3_const_inventory.get('status'),
+        'c3_const_inventory_rows': c3_const_inventory.get('row_count'),
+        'c3_const_inventory_unclassified': c3_const_inventory.get('unclassified'),
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
         'context_percentiles_status': 'OK' if (result.get('context_percentiles') or {}).get('schema_version') else 'MISSING',
         'context_percentiles_schema_version': (result.get('context_percentiles') or {}).get('schema_version'),
         'context_percentile_live_ranking': bool((result.get('context_percentiles') or {}).get('live_ranking_influence')),
-        'context_percentiles': result.get('context_percentiles') or {},
+        'context_percentiles_summary': {
+            'schema_version': (result.get('context_percentiles') or {}).get('schema_version'),
+            'recording_version': (result.get('context_percentiles') or {}).get('recording_version'),
+            'history_source': (result.get('context_percentiles') or {}).get('history_source'),
+            'hard_gate_authority': bool((result.get('context_percentiles') or {}).get('hard_gate_authority')),
+            'variable_count': len((result.get('context_percentiles') or {}).get('variables') or {}),
+        },
         'menu_abstention_record_type': menu_abstention_shadow.get('record_type'),
         'menu_abstention_action': menu_abstention_shadow.get('dominant_shadow_action'),
         'menu_abstention_reason': menu_abstention_shadow.get('dominant_abstain_reason'),
@@ -12146,6 +12784,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
+    snapshot_context['snapshot_c3_const_inventory'] = c3_const_inventory
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['context_percentiles'] = result.get('context_percentiles') or {}

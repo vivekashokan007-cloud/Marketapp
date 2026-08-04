@@ -91,6 +91,56 @@ class MarketWatchService : Service() {
         }
     }
 
+    private fun mergeHistoryRowsByDate(base: JSONArray, overlay: JSONArray): JSONArray {
+        val merged = LinkedHashMap<String, JSONObject>()
+
+        fun upsertAll(source: JSONArray, replaceExisting: Boolean) {
+            for (i in 0 until source.length()) {
+                val row = source.optJSONObject(i) ?: continue
+                val day = row.optString("date", row.optString("session_date", "")).trim()
+                if (day.isEmpty()) continue
+                val current = merged[day] ?: JSONObject()
+                val target = if (replaceExisting) JSONObject(current.toString()) else current
+                val names = row.names() ?: JSONArray()
+                for (j in 0 until names.length()) {
+                    val key = names.optString(j).trim()
+                    if (key.isEmpty()) continue
+                    if (!replaceExisting && target.has(key)) continue
+                    target.put(key, row.opt(key))
+                }
+                if (!target.has("date")) target.put("date", day)
+                if (!target.has("session_date")) target.put("session_date", day)
+                merged[day] = target
+            }
+        }
+
+        upsertAll(base, replaceExisting = false)
+        upsertAll(overlay, replaceExisting = true)
+
+        val out = JSONArray()
+        for ((_, row) in merged) {
+            out.put(row)
+        }
+        return out
+    }
+
+    private fun countPercentileEnrichedHistoryRows(history: JSONArray): Int {
+        var count = 0
+        for (i in 0 until history.length()) {
+            val row = history.optJSONObject(i) ?: continue
+            if (
+                row.has("iv_richness_menu_median") ||
+                row.has("credit_width_ratio_menu_median") ||
+                row.has("sigma_otm_menu_median") ||
+                row.has("premium_edge_menu_median") ||
+                row.has("history_window_end")
+            ) {
+                count += 1
+            }
+        }
+        return count
+    }
+
     companion object {
         const val CHANNEL_ID = "market_radar_service"
         const val NOTIFICATION_ID = 1001
@@ -530,7 +580,11 @@ class MarketWatchService : Service() {
                 }
 
                 // 5. Historial Premium Data & Signal
-                val premHistory = SupabaseClient.getPremiumHistory()
+                val percentileHistory = SupabaseClient.getContextPercentileDailyHistory()
+                val premHistory = mergeHistoryRowsByDate(
+                    SupabaseClient.getPremiumHistory(),
+                    percentileHistory
+                )
                 if (premHistory.length() > 0) {
                     prefs.edit().putString("premium_history", premHistory.toString()).apply()
                 }
@@ -547,7 +601,7 @@ class MarketWatchService : Service() {
                     .putLong(APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY, now)
                     .apply()
 
-                val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}"
+                val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}, percentileDays=${percentileHistory.length()}"
                 Log.d(TAG, historyLoadedLog)
 
                 prefs.edit().putLong("last_bootstrap_time", now).commit()
@@ -2148,6 +2202,14 @@ class MarketWatchService : Service() {
             }
             if (premHist.length() > 0) ctxObj.put("premiumHistory", premHist)
             if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
+            val percentileHistoryRows = countPercentileEnrichedHistoryRows(premHist)
+            val latestHistoryDay = premHist.optJSONObject(0)?.optString("date")
+                ?: premHist.optJSONObject(0)?.optString("session_date")
+                ?: ""
+            Log.d(
+                TAG,
+                "CTX_PERCENTILE_HISTORY_BRIDGE: premiumRows=${premHist.length()}, enrichedRows=$percentileHistoryRows, latestDay=$latestHistoryDay"
+            )
             
             val fiiHist = extractFiiHistory()
             if (fiiHist.length() > 0) ctxObj.put("fiiHistory", fiiHist)
@@ -2348,6 +2410,22 @@ class MarketWatchService : Service() {
             
             if (result != null) {
                 val resultObj = JSONObject(result)
+                try {
+                    val contextPercentiles = resultObj.optJSONObject("context_percentiles")
+                    val variables = contextPercentiles?.optJSONObject("variables")
+                    val premiumHistForLog = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
+                    val ctxPercentileLog =
+                        "CTX_PERCENTILE_RESULT: " +
+                            "historySource=${contextPercentiles?.optString("history_source", "missing") ?: "missing"}, " +
+                            "liveRanking=${contextPercentiles?.optBoolean("live_ranking_influence", false) ?: false}, " +
+                            "variableCount=${variables?.length() ?: 0}, " +
+                            "premiumRows=${premiumHistForLog.length()}, " +
+                            "enrichedRows=${countPercentileEnrichedHistoryRows(premiumHistForLog)}"
+                    Log.d(TAG, ctxPercentileLog)
+                    LogBuffer.add('I', TAG, ctxPercentileLog)
+                } catch (e: Exception) {
+                    Log.w(TAG, "CTX_PERCENTILE_RESULT_LOG_FAIL: ${e.message}")
+                }
                 val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
                 enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
                 brainSuccess = true

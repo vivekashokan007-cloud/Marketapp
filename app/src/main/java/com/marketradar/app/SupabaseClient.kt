@@ -14,6 +14,7 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.LinkedHashMap
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -736,6 +737,74 @@ object SupabaseClient {
             Log.e(TAG, "Error parsing premium history: ${e.message}")
             JSONArray()
         }
+    }
+
+    /**
+     * Reads the per-poll context percentile history and collapses it to one
+     * enriched row per session date using the latest recorded value for each
+     * variable on that day. This preserves the existing ctx premiumHistory
+     * contract while making the persisted percentile-era variables available
+     * to the live brain.
+     */
+    fun getContextPercentileDailyHistory(maxDays: Int = 60): JSONArray {
+        val pageSize = 1000
+        val maxPages = 8
+        val allRows = JSONArray()
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val path =
+                "ml_context_percentile_history" +
+                    "?select=session_date,variable_name,value,history_window_end,pre_t_clean" +
+                    "&order=session_date.desc,history_window_end.desc,variable_name.asc" +
+                    "&limit=$pageSize&offset=$offset"
+            val request = getBaseRequest(path).get().build()
+            val json = fetchSync(request) ?: break
+            val pageRows = try {
+                JSONArray(json)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing context percentile history page=$page: ${e.message}")
+                break
+            }
+            if (pageRows.length() == 0) break
+            for (i in 0 until pageRows.length()) {
+                allRows.put(pageRows.optJSONObject(i) ?: continue)
+            }
+            if (pageRows.length() < pageSize) break
+        }
+        if (allRows.length() == 0) return JSONArray()
+
+        val dayRows = LinkedHashMap<String, JSONObject>()
+        for (i in 0 until allRows.length()) {
+            val row = allRows.optJSONObject(i) ?: continue
+            val sessionDate = row.optString("session_date", "").trim()
+            val variableName = row.optString("variable_name", "").trim()
+            if (sessionDate.isEmpty() || variableName.isEmpty()) continue
+            if (!dayRows.containsKey(sessionDate) && dayRows.size >= maxDays) {
+                continue
+            }
+            val dayObj = dayRows.getOrPut(sessionDate) {
+                JSONObject().put("date", sessionDate).put("session_date", sessionDate)
+            }
+            if (!dayObj.has("pre_t_clean") && row.has("pre_t_clean")) {
+                dayObj.put("pre_t_clean", row.optBoolean("pre_t_clean", false))
+            }
+            if (!dayObj.has("history_window_end")) {
+                val historyWindowEnd = row.optString("history_window_end", "").trim()
+                if (historyWindowEnd.isNotEmpty()) {
+                    dayObj.put("history_window_end", historyWindowEnd)
+                }
+            }
+            if (!dayObj.has(variableName) && row.has("value") && !row.isNull("value")) {
+                dayObj.put(variableName, row.optDouble("value"))
+            }
+        }
+
+        val out = JSONArray()
+        for ((_, value) in dayRows) {
+            out.put(value)
+            if (out.length() >= maxDays) break
+        }
+        return out
     }
     
     /**
