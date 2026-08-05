@@ -3095,6 +3095,11 @@ class MarketWatchService : Service() {
     private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject): Boolean {
         val candidates = factPack.optJSONArray("candidates") ?: return true
         val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
+        val persistedCandidateCount = if (!candidateCounts.isNull("ranked_evidence")) {
+            candidateCounts.opt("ranked_evidence")
+        } else {
+            candidateCounts.opt("generated")
+        }
         val generationSkip = factPack.optJSONObject("generation_skip_reason")
         val generationSkipSummary = generationSkip?.optString("detail")
             ?: factPack.optString("generation_skip_reason", "")
@@ -3142,6 +3147,7 @@ class MarketWatchService : Service() {
                 factPack = factPack,
                 snapObj = snapObj,
                 candidateCounts = candidateCounts,
+                persistedCandidateCount = persistedCandidateCount,
                 generationSkipSummary = generationSkipSummary
             )
             if (syntheticRows.length() == 0) return true
@@ -3281,7 +3287,7 @@ class MarketWatchService : Service() {
             row.putIfValue("ml_ood_flag", overlay.opt("ml_ood_flag"))
 
             row.putIfValue("signal_independence_score", signalIndependence.opt("score"))
-            row.putIfValue("generated_count", candidateCounts.opt("generated"))
+            row.putIfValue("generated_count", persistedCandidateCount)
             row.putIfValue("watchlist_count", candidateCounts.opt("watchlist"))
             rows.put(row)
         }
@@ -3308,6 +3314,7 @@ class MarketWatchService : Service() {
         factPack: JSONObject,
         snapObj: JSONObject,
         candidateCounts: JSONObject,
+        persistedCandidateCount: Any?,
         generationSkipSummary: String
     ): JSONArray {
         val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
@@ -3425,7 +3432,7 @@ class MarketWatchService : Service() {
                 }
             )
             row.putIfValue("ml_action", "REJECTED")
-            row.putIfValue("generated_count", candidateCounts.opt("generated"))
+            row.putIfValue("generated_count", persistedCandidateCount)
             row.putIfValue("watchlist_count", candidateCounts.opt("watchlist"))
             rows.put(row)
         }

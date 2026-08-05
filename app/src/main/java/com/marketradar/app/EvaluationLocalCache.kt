@@ -222,23 +222,39 @@ object EvaluationLocalCache {
         val out = JSONObject()
         val keys = arrayOf(
             "candidate_id",
+            "id",
+            "type",
             "strategy",
+            "strategy_type",
             "index",
             "mode",
+            "trade_mode",
             "lane",
             "role",
             "score",
             "probability",
+            "probProfit",
             "expected_r",
             "ev",
+            "premiumEdge",
+            "netPremium",
             "entry_credit",
             "max_profit",
+            "maxProfit",
             "max_loss",
+            "maxLoss",
             "width",
             "sell_strike",
+            "sellStrike",
             "buy_strike",
+            "buyStrike",
             "sell_strike2",
+            "sellStrike2",
             "buy_strike2",
+            "buyStrike2",
+            "sigmaOTM",
+            "ivRichness",
+            "creditWidthRatio",
             "rank"
         )
         for (key in keys) {
@@ -282,7 +298,9 @@ object EvaluationLocalCache {
         val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
+        val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
         val compactGenerated = compactCandidates(generated, 12)
+        val compactRankedFull = compactCandidates(rankedFull, 50)
         val compactContext = JSONObject()
         val contextKeys = arrayOf(
             "vix",
@@ -301,7 +319,19 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let {
             compactContext.put("snapshot_rejected_candidate_stats", it)
         }
+        parseJsonObject(context.opt("snapshot_build3_gate"))?.let {
+            compactContext.put("snapshot_build3_gate", it)
+        }
+        parseJsonObject(context.opt("snapshot_build3_lane_gate"))?.let {
+            compactContext.put("snapshot_build3_lane_gate", it)
+        }
+        parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
+            compactContext.put("snapshot_build3_flow", it)
+        }
         compactContext.put("snapshot_generated_candidates", compactGenerated)
+        if (compactRankedFull.length() > 0) {
+            compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
+        }
         compact.put("context_json", compactContext.toString())
         compact.put("top_candidates_json", compactGenerated.toString())
         return compact

@@ -712,15 +712,27 @@ class MarketMLService : Service() {
         val compact = org.json.JSONObject()
         val keys = arrayOf(
             "id",
+            "candidate_id",
+            "rank",
+            "watchlist_rank",
             "type",
             "strategy_type",
             "index",
             "lane",
+            "trade_mode",
             "expiry",
             "width",
             "premiumEdge",
+            "ev",
+            "evPer1k",
             "creditWidthRatio",
             "sigmaOTM",
+            "ivRichness",
+            "probProfit",
+            "prob_source",
+            "prob_status",
+            "trueProb",
+            "riskReward",
             "sellStrike",
             "buyStrike",
             "sellType",
@@ -730,8 +742,26 @@ class MarketMLService : Service() {
             "sellType2",
             "buyType2",
             "netPremium",
+            "maxProfit",
             "maxLoss",
+            "estCost",
+            "isCredit",
+            "capitalBlocked",
+            "executionReady",
+            "executionGate",
             "entryAction",
+            "directionSafe",
+            "brainScore",
+            "contextPercentileScore",
+            "p_ml",
+            "mlAction",
+            "mlEdge",
+            "mlRegime",
+            "mlUnsure",
+            "mlOodFlag",
+            "deterministic_rank",
+            "teacher_shadow_rank",
+            "stage2a_live_rank",
             "reason_code",
             "reject_reason"
         )
@@ -773,6 +803,7 @@ class MarketMLService : Service() {
         val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: org.json.JSONArray()
+        val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
         val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
             ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
 
@@ -795,11 +826,26 @@ class MarketMLService : Service() {
         val compactGenerated = compactTeacherResearchCandidates(generated)
         val compactRejected = compactTeacherResearchCandidates(rejected)
         compactContext.put("snapshot_generated_candidates", compactGenerated)
+        rankedFull?.let {
+            val compactRankedFull = compactTeacherResearchCandidates(it)
+            if (compactRankedFull.length() > 0) {
+                compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
+            }
+        }
         if (compactRejected.length() > 0) {
             compactContext.put("snapshot_rejected_candidates", compactRejected)
         }
         parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let { stats ->
             compactContext.put("snapshot_rejected_candidate_stats", stats)
+        }
+        parseJsonObject(context.opt("snapshot_build3_gate"))?.let { gate ->
+            compactContext.put("snapshot_build3_gate", gate)
+        }
+        parseJsonObject(context.opt("snapshot_build3_lane_gate"))?.let { gate ->
+            compactContext.put("snapshot_build3_lane_gate", gate)
+        }
+        parseJsonObject(context.opt("snapshot_build3_flow"))?.let { flow ->
+            compactContext.put("snapshot_build3_flow", flow)
         }
         val skipReason = context.opt("snapshot_generation_skip_reason")
         if (skipReason != null && skipReason != org.json.JSONObject.NULL) {

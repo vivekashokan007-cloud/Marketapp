@@ -17,6 +17,7 @@ BUILD3_EXPERIMENT_NAME = 'week1_a8_nf_calm_gate'
 BUILD3_EV_FLOOR_MULT = 1.10
 BUILD3_A8_HARD_GATE_ACTIVE = False
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
+BUILD3_RANKED_EVIDENCE_CAP = 150
 # Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
@@ -5797,7 +5798,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.46"
+BRAIN_VERSION = "2.5.47"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7663,21 +7664,198 @@ def _build3_apply_calm_nf_lane_gate(candidates, trade_mode, regime, cur_vix):
     else:
         reason = 'NONE'
         survivors = cands
+    survivor_obj_ids = {id(c) for c in survivors if isinstance(c, dict)}
+    removed = [c for c in cands if isinstance(c, dict) and id(c) not in survivor_obj_ids]
+
+    def _count_by(field):
+        counts = {}
+        for cand in removed:
+            key = cand.get(field) or '__missing__'
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def _removed_view(cand):
+        return {
+            'id': cand.get('id'),
+            'type': cand.get('type') or cand.get('strategy_type'),
+            'index': cand.get('index'),
+            'lane': cand.get('lane'),
+            'expiry': cand.get('expiry'),
+            'sellStrike': cand.get('sellStrike'),
+            'sellType': cand.get('sellType'),
+            'buyStrike': cand.get('buyStrike'),
+            'buyType': cand.get('buyType'),
+            'sellStrike2': cand.get('sellStrike2'),
+            'sellType2': cand.get('sellType2'),
+            'buyStrike2': cand.get('buyStrike2'),
+            'buyType2': cand.get('buyType2'),
+            'width': cand.get('width'),
+            'netPremium': cand.get('netPremium'),
+            'maxProfit': cand.get('maxProfit'),
+            'maxLoss': cand.get('maxLoss'),
+            'probProfit': cand.get('probProfit'),
+            'premiumEdge': cand.get('premiumEdge'),
+            'sigmaOTM': cand.get('sigmaOTM'),
+            'creditWidthRatio': cand.get('creditWidthRatio'),
+            'build3EvRatio': cand.get('build3EvRatio'),
+            'build3EvPass': cand.get('build3EvPass'),
+        }
+
     summary = {
         'calm_regime': calm,
         'range_sigma': _safe_num((regime or {}).get('sigma'), 0.0) if isinstance(regime, dict) else 0.0,
         'regime_type': (regime or {}).get('type') if isinstance(regime, dict) else None,
         'vix': cur_vix,
-        'n_bnf_removed_by_calm_lane_gate': max(0, len(cands) - len(survivors)) if reason == 'CALM_NF_LANE_RESTRICTION' else 0,
+        'n_bnf_removed_by_calm_lane_gate': sum(1 for c in removed if c.get('lane') == 'BNF_intraday'),
+        'n_removed_by_lane_gate': len(removed),
         'n_nf_survivors_after_a8': len(nf_survivors),
         'n_bnf_survivors_after_a8': len(bnf_intraday),
         'n_candidates_after_lane_gate': len(survivors),
+        'removed_candidate_ids': [c.get('id') for c in removed if c.get('id')][:30],
+        'removed_candidates': [_removed_view(c) for c in removed[:30]],
+        'removed_by_lane': _count_by('lane'),
+        'removed_by_family': _count_by('type'),
         'lane_gate_reason': reason,
         'lane_scope': 'calm_intraday_only',
         'calm_range_sigma_max': BUILD3_CALM_RANGE_SIGMA_MAX,
         'iv_high_threshold': _CONST['IV_HIGH'],
     }
     return survivors, summary
+
+
+def _build3_candidate_flow_summary(
+    *,
+    built_candidates=None,
+    rejected_candidates=None,
+    old_ranked=None,
+    a8_summary=None,
+    lane_summary=None,
+    gated_candidates=None,
+    ranked_final=None,
+    watchlist=None,
+    persisted_generated=None,
+    ranked_evidence=None,
+):
+    built = [c for c in built_candidates or [] if isinstance(c, dict)]
+    rejected = [c for c in rejected_candidates or [] if isinstance(c, dict)]
+    old_ranked_list = [c for c in old_ranked or [] if isinstance(c, dict)]
+    gated = [c for c in gated_candidates or [] if isinstance(c, dict)]
+    ranked = [c for c in ranked_final or [] if isinstance(c, dict)]
+    watch = [c for c in watchlist or [] if isinstance(c, dict)]
+    persisted = [c for c in persisted_generated or [] if isinstance(c, dict)]
+    evidence = [c for c in ranked_evidence or [] if isinstance(c, dict)]
+    a8 = a8_summary if isinstance(a8_summary, dict) else {}
+    lane = lane_summary if isinstance(lane_summary, dict) else {}
+    capital_blocked_pre_a8 = sum(1 for c in built if c.get('capitalBlocked'))
+    capital_blocked_after_lane_gate = sum(1 for c in gated if c.get('capitalBlocked'))
+    pre_build3_rank_drop = max(0, len(built) - len(old_ranked_list))
+    final_rank_drop = max(0, len(gated) - len(ranked))
+    capital_drop_pre_build3 = min(capital_blocked_pre_a8, pre_build3_rank_drop)
+    capital_drop_final = min(capital_blocked_after_lane_gate, final_rank_drop)
+    rejected_by_stage = {}
+    for cand in rejected:
+        stage = cand.get('rejection_stage') or cand.get('stage') or '__missing__'
+        rejected_by_stage[stage] = rejected_by_stage.get(stage, 0) + 1
+    return {
+        'schema_version': 'build3_flow_v1',
+        'candidate_total_built': len(built),
+        'rejected_total': len(rejected),
+        'rejected_by_stage': rejected_by_stage,
+        'ranked_before_build3': len(old_ranked_list),
+        'capital_blocked_before_build3_rank': capital_blocked_pre_a8,
+        'dropped_capital_at_build3_rank': capital_drop_pre_build3,
+        'unexplained_drop_at_build3_rank': max(0, pre_build3_rank_drop - capital_drop_pre_build3),
+        'pre_a8_count': a8.get('n_candidates_pre_a8', len(built)),
+        'a8_rejected_count': a8.get('n_ev_below_floor', 0),
+        'a8_released_to_ranking': a8.get('n_ev_below_floor_released_to_ranking', 0),
+        'after_a8_count': a8.get('n_candidates_after_a8'),
+        'lane_gate_reason': lane.get('lane_gate_reason'),
+        'lane_gate_removed_count': lane.get('n_removed_by_lane_gate', 0),
+        'lane_gate_removed_bnf_count': lane.get('n_bnf_removed_by_calm_lane_gate', 0),
+        'after_lane_gate_count': lane.get('n_candidates_after_lane_gate', len(gated)),
+        'capital_blocked_after_lane_gate': capital_blocked_after_lane_gate,
+        'dropped_capital_at_final_rank': capital_drop_final,
+        'unexplained_drop_at_final_rank': max(0, final_rank_drop - capital_drop_final),
+        'ranked_before_persistence': len(ranked),
+        'generated_persisted': len(persisted),
+        'generated_candidate_cap': 30,
+        'ranked_evidence_cap': BUILD3_RANKED_EVIDENCE_CAP,
+        'ranked_evidence_persisted': len(evidence),
+        'truncated_at_ranked_evidence': max(0, len(ranked) - len(evidence)),
+        'truncated_at_persistence': max(0, len(ranked) - len(persisted)),
+        'watchlist_count': len(watch),
+        'flow_identity_scope': 'counts_only_no_behavior_change',
+    }
+
+
+def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RANKED_EVIDENCE_CAP):
+    ranked = [c for c in candidates or [] if isinstance(c, dict)]
+    watch_ids = {}
+    for idx, cand in enumerate(watchlist or [], start=1):
+        if isinstance(cand, dict) and cand.get('id'):
+            watch_ids[cand.get('id')] = idx
+
+    evidence = []
+    for rank, cand in enumerate(ranked[:cap], start=1):
+        cid = cand.get('id')
+        evidence.append({
+            'id': cid,
+            'candidate_id': cid,
+            'rank': rank,
+            'watchlist_rank': watch_ids.get(cid),
+            'type': cand.get('type'),
+            'index': cand.get('index'),
+            'lane': cand.get('lane'),
+            'trade_mode': 'swing' if str(cand.get('lane') or '').endswith('_swing') else 'intraday',
+            'width': cand.get('width'),
+            'tDTE': cand.get('tDTE'),
+            'expiry': cand.get('expiry'),
+            'legCount': cand.get('legCount', len(cand.get('legs') or [])),
+            'legs': cand.get('legs'),
+            'leg_schema_version': cand.get('leg_schema_version'),
+            'candidate_schema_version': cand.get('candidate_schema_version'),
+            'sellStrike': cand.get('sellStrike'),
+            'sellType': cand.get('sellType'),
+            'buyStrike': cand.get('buyStrike'),
+            'buyType': cand.get('buyType'),
+            'sellStrike2': cand.get('sellStrike2'),
+            'sellType2': cand.get('sellType2'),
+            'buyStrike2': cand.get('buyStrike2'),
+            'buyType2': cand.get('buyType2'),
+            'netPremium': cand.get('netPremium'),
+            'maxProfit': cand.get('maxProfit'),
+            'maxLoss': cand.get('maxLoss'),
+            'riskReward': cand.get('riskReward'),
+            'premiumEdge': cand.get('premiumEdge'),
+            'ev': cand.get('ev'),
+            'evPer1k': cand.get('evPer1k'),
+            'estCost': cand.get('estCost'),
+            'capitalBlocked': cand.get('capitalBlocked'),
+            'probProfit': cand.get('probProfit'),
+            'prob_source': cand.get('prob_source') or cand.get('probSource'),
+            'prob_status': cand.get('prob_status'),
+            'trueProb': cand.get('trueProb'),
+            'sigmaOTM': cand.get('sigmaOTM'),
+            'ivRichness': cand.get('ivRichness'),
+            'creditWidthRatio': cand.get('creditWidthRatio'),
+            'isCredit': cand.get('isCredit'),
+            'executionReady': cand.get('executionReady'),
+            'executionGate': cand.get('executionGate'),
+            'entryAction': cand.get('entryAction'),
+            'directionSafe': cand.get('directionSafe'),
+            'brainScore': cand.get('brainScore'),
+            'contextPercentileScore': cand.get('contextPercentileScore'),
+            'p_ml': cand.get('p_ml'),
+            'mlAction': cand.get('mlAction'),
+            'mlEdge': cand.get('mlEdge'),
+            'mlRegime': cand.get('mlRegime'),
+            'mlUnsure': cand.get('mlUnsure'),
+            'mlOodFlag': cand.get('mlOodFlag'),
+            'deterministic_rank': cand.get('deterministic_rank'),
+            'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
+            'stage2a_live_rank': cand.get('stage2a_live_rank'),
+        })
+    return evidence
 
 
 def _build3_candidate_brief(candidate, rank=None):
@@ -7946,7 +8124,7 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
     polls = polls if isinstance(polls, list) else []
     latest_poll = polls[-1] if polls else {}
     verdict = result.get('verdict') or {}
-    generated = result.get('generated_candidates') or []
+    generated = result.get('ranked_candidates_full') or result.get('generated_candidates') or []
     rejected_candidates = result.get('rejected_candidates') or []
     watchlist = result.get('watchlist') or []
     generation_skip_reasons = result.get('generation_skip_reasons') or []
@@ -8044,7 +8222,11 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
             'conflicts': verdict.get('conflicts'),
         },
         'candidate_counts': {
-            'generated': len(generated) if isinstance(generated, list) else 0,
+            'generated': len(result.get('generated_candidates') or []) if isinstance(result.get('generated_candidates'), list) else 0,
+            'ranked_evidence': len(generated) if isinstance(generated, list) else 0,
+            'ranked_evidence_cap': BUILD3_RANKED_EVIDENCE_CAP,
+            'ranked_before_persistence': (result.get('build3_flow') or {}).get('ranked_before_persistence') if isinstance(result.get('build3_flow'), dict) else None,
+            'truncated_at_ranked_evidence': (result.get('build3_flow') or {}).get('truncated_at_ranked_evidence') if isinstance(result.get('build3_flow'), dict) else None,
             'watchlist': len(watchlist) if isinstance(watchlist, list) else 0,
             'rejected': len(rejected_candidates) if isinstance(rejected_candidates, list) else 0,
         },
@@ -9424,6 +9606,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "bear": 0.0,
         }
         result["generated_candidates"] = []
+        result["ranked_candidates_full"] = []
         result["watchlist"] = []
         result["candidateTrace"] = False
         result["decisionSource"] = "DEFAULT_BRAIN_MATH"
@@ -9797,6 +9980,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             result['decision_reason'] = no_trade_reason
             result['no_candidates_reason'] = no_trade_reason
             result['generated_candidates'] = []
+            result['ranked_candidates_full'] = []
             result['watchlist'] = []
             empty_a8_summary = {
                 'n_candidates_pre_a8': 0,
@@ -9812,9 +9996,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 'regime_type': (regime or {}).get('type') if isinstance(regime, dict) else None,
                 'vix': cur_vix,
                 'n_bnf_removed_by_calm_lane_gate': 0,
+                'n_removed_by_lane_gate': 0,
                 'n_nf_survivors_after_a8': 0,
                 'n_bnf_survivors_after_a8': 0,
                 'n_candidates_after_lane_gate': 0,
+                'removed_candidate_ids': [],
+                'removed_candidates': [],
+                'removed_by_lane': {},
+                'removed_by_family': {},
                 'lane_gate_reason': 'NO_CANDIDATES',
                 'lane_scope': 'calm_intraday_only',
                 'calm_range_sigma_max': BUILD3_CALM_RANGE_SIGMA_MAX,
@@ -9826,6 +10015,18 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 'lane': empty_lane_summary,
                 'teacher_first_active': False,
             }
+            result['build3_flow'] = _build3_candidate_flow_summary(
+                built_candidates=[],
+                rejected_candidates=all_rejected,
+                old_ranked=[],
+                a8_summary=empty_a8_summary,
+                lane_summary=empty_lane_summary,
+                gated_candidates=[],
+                ranked_final=[],
+                watchlist=[],
+                persisted_generated=[],
+                ranked_evidence=[],
+            )
             result['build3_ab'] = _build3_make_ab_payload(
                 ctx=ctx,
                 latest_poll=latest_poll,
@@ -10062,7 +10263,23 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             )
             # BR129: Cap at 30 for PWA consumption
             result["generated_candidates"] = ranked[:30]
+            result["ranked_candidates_full"] = _build3_ranked_candidate_evidence(
+                ranked,
+                watchlist=result.get("watchlist") or watchlist,
+            )
             result["rejected_candidates"] = all_rejected
+            result["build3_flow"] = _build3_candidate_flow_summary(
+                built_candidates=all_cands,
+                rejected_candidates=all_rejected,
+                old_ranked=old_ranked,
+                a8_summary=a8_summary,
+                lane_summary=lane_summary,
+                gated_candidates=gated_cands,
+                ranked_final=ranked,
+                watchlist=result.get("watchlist") or watchlist,
+                persisted_generated=result.get("generated_candidates"),
+                ranked_evidence=result.get("ranked_candidates_full"),
+            )
 
             by_index = {"BNF": 0, "NF": 0}
             by_lane = {}
@@ -12531,6 +12748,8 @@ def take_poll_snapshot(result, ctx, polls):
 
     watchlist = result.get('watchlist', [])
     generated_candidates = result.get('generated_candidates', [])
+    ranked_candidates_full = result.get('ranked_candidates_full', [])
+    research_candidates = ranked_candidates_full if isinstance(ranked_candidates_full, list) and ranked_candidates_full else generated_candidates
     rejected_candidates = result.get('rejected_candidates', [])
     top_5_nf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'NF'][:5]
     top_5_bnf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'BNF'][:5]
@@ -12628,16 +12847,22 @@ def take_poll_snapshot(result, ctx, polls):
             if not isinstance(c, dict):
                 continue
             clean_generated.append(_candidate_view(c))
-    phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(generated_candidates, rejected_candidates)
-    phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(generated_candidates, rejected_candidates)
-    phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, generated_candidates)
+    clean_ranked_full = []
+    if isinstance(ranked_candidates_full, list):
+        for c in ranked_candidates_full:
+            if not isinstance(c, dict):
+                continue
+            clean_ranked_full.append(c)
+    phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(research_candidates, rejected_candidates)
+    phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(research_candidates, rejected_candidates)
+    phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, research_candidates)
     c3_const_inventory = _c3_const_inventory()
-    shadow_selector_suite = _compute_shadow_selector_suite(generated_candidates, top_cand, ctx)
+    shadow_selector_suite = _compute_shadow_selector_suite(research_candidates, top_cand, ctx)
     menu_abstention_shadow = _compute_menu_abstention_shadow(
         result,
         ctx,
         latest_poll,
-        generated_candidates,
+        research_candidates,
         rejected_candidates,
         top_cand,
     )
@@ -12687,11 +12912,14 @@ def take_poll_snapshot(result, ctx, polls):
         }
 
     evaluation_ledger = []
-    for c in generated_candidates if isinstance(generated_candidates, list) else []:
+    for c in research_candidates if isinstance(research_candidates, list) else []:
         ledger_row = _candidate_leg_ledger(c)
         if ledger_row and ledger_row.get('candidate_id'):
             evaluation_ledger.append(ledger_row)
 
+    build3_gate = result.get('build3_gate') if isinstance(result.get('build3_gate'), dict) else {}
+    build3_lane_gate = build3_gate.get('lane') if isinstance(build3_gate.get('lane'), dict) else {}
+    build3_flow = result.get('build3_flow') if isinstance(result.get('build3_flow'), dict) else {}
     market_forces = {
         'app_version': BRAIN_VERSION,
         'brain_version': BRAIN_VERSION,
@@ -12720,6 +12948,9 @@ def take_poll_snapshot(result, ctx, polls):
         'c3_const_inventory': c3_const_inventory,
         'shadow_selector_suite': shadow_selector_suite,
         'menu_abstention_shadow': menu_abstention_shadow,
+        'build3_lane_gate': build3_lane_gate,
+        'build3_flow': build3_flow,
+        'ranked_evidence_count': len(ranked_candidates_full) if isinstance(ranked_candidates_full, list) else 0,
     }
     poll_summary = {
         'app_version': BRAIN_VERSION,
@@ -12730,6 +12961,8 @@ def take_poll_snapshot(result, ctx, polls):
         'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
         'watchlist_count': len(watchlist) if isinstance(watchlist, list) else 0,
         'generated_count': len(generated_candidates) if isinstance(generated_candidates, list) else 0,
+        'ranked_evidence_count': len(ranked_candidates_full) if isinstance(ranked_candidates_full, list) else 0,
+        'ranked_evidence_cap': BUILD3_RANKED_EVIDENCE_CAP,
         'rejected_count': len(rejected_candidates) if isinstance(rejected_candidates, list) else 0,
         'top_candidate_type': top_cand.get('type') if top_cand else None,
         'signal_independence_score': signal_independence.get('score'),
@@ -12769,6 +13002,8 @@ def take_poll_snapshot(result, ctx, polls):
         'menu_abstention_action': menu_abstention_shadow.get('dominant_shadow_action'),
         'menu_abstention_reason': menu_abstention_shadow.get('dominant_abstain_reason'),
         'menu_abstention_metric_eligible': menu_abstention_shadow.get('performance_metric_eligible'),
+        'build3_lane_gate': build3_lane_gate,
+        'build3_flow': build3_flow,
         'supply_states': ctx.get('_supply_states') or [],
         'supply_state': (ctx.get('_supply_states') or [{}])[0].get('state') if ctx.get('_supply_states') else None,
         'bnf_dte_source': ctx.get('bnfDteSource'),
@@ -12789,12 +13024,16 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_app_version'] = BRAIN_VERSION
     snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
     snapshot_context['snapshot_generated_candidates'] = clean_generated
+    snapshot_context['snapshot_ranked_candidates_full'] = clean_ranked_full
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
     snapshot_context['snapshot_c3_const_inventory'] = c3_const_inventory
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
+    snapshot_context['snapshot_build3_gate'] = build3_gate
+    snapshot_context['snapshot_build3_lane_gate'] = build3_lane_gate
+    snapshot_context['snapshot_build3_flow'] = build3_flow
     snapshot_context['context_percentiles'] = result.get('context_percentiles') or {}
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full

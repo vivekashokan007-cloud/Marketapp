@@ -121,6 +121,10 @@ def test_calm_regime_with_nf_survivor_removes_bnf_intraday():
     assert [c["id"] for c in survivors] == ["nf"]
     assert summary["lane_gate_reason"] == "CALM_NF_LANE_RESTRICTION"
     assert summary["n_bnf_removed_by_calm_lane_gate"] == 1
+    assert summary["n_removed_by_lane_gate"] == 1
+    assert summary["removed_candidate_ids"] == ["bnf"]
+    assert summary["removed_candidates"][0]["id"] == "bnf"
+    assert summary["removed_by_lane"] == {"BNF_intraday": 1}
 
 
 def test_calm_regime_with_only_bnf_returns_wait():
@@ -134,6 +138,11 @@ def test_calm_regime_with_only_bnf_returns_wait():
     )
     assert survivors == []
     assert summary["lane_gate_reason"] == "CALM_NF_ONLY_WAIT"
+    assert summary["n_bnf_removed_by_calm_lane_gate"] == 1
+    assert summary["n_removed_by_lane_gate"] == 1
+    assert summary["removed_candidate_ids"] == ["bnf"]
+    assert summary["removed_candidates"][0]["id"] == "bnf"
+    assert summary["removed_by_family"] == {"BEAR_CALL": 1}
 
 
 def test_non_calm_regime_does_not_lane_gate():
@@ -146,6 +155,76 @@ def test_non_calm_regime_does_not_lane_gate():
     survivors, summary = brain._build3_apply_calm_nf_lane_gate(original, "intraday", regime, 22)
     assert [c["id"] for c in survivors] == ["nf", "bnf"]
     assert summary["lane_gate_reason"] == "NONE"
+
+
+def test_build3_flow_reports_persistence_truncation():
+    brain = load_brain()
+    built = [cand(f"c{i}") for i in range(35)]
+    persisted = built[:30]
+    evidence = brain._build3_ranked_candidate_evidence(built, watchlist=built[:6])
+    flow = brain._build3_candidate_flow_summary(
+        built_candidates=built,
+        rejected_candidates=[],
+        old_ranked=built,
+        a8_summary={"n_candidates_pre_a8": 35, "n_ev_below_floor": 0, "n_candidates_after_a8": 35},
+        lane_summary={"lane_gate_reason": "NONE", "n_removed_by_lane_gate": 0, "n_candidates_after_lane_gate": 35},
+        gated_candidates=built,
+        ranked_final=built,
+        watchlist=built[:6],
+        persisted_generated=persisted,
+        ranked_evidence=evidence,
+    )
+    assert flow["schema_version"] == "build3_flow_v1"
+    assert flow["candidate_total_built"] == 35
+    assert flow["ranked_before_persistence"] == 35
+    assert flow["generated_persisted"] == 30
+    assert flow["generated_candidate_cap"] == 30
+    assert flow["ranked_evidence_persisted"] == 35
+    assert flow["truncated_at_ranked_evidence"] == 0
+    assert flow["truncated_at_persistence"] == 5
+
+
+def test_ranked_candidate_evidence_extends_beyond_ui_cap():
+    brain = load_brain()
+    built = [cand(f"c{i}") for i in range(40)]
+    evidence = brain._build3_ranked_candidate_evidence(built, watchlist=built[:2])
+    assert len(evidence) == 40
+    assert evidence[0]["rank"] == 1
+    assert evidence[0]["watchlist_rank"] == 1
+    assert evidence[31]["rank"] == 32
+    assert evidence[31]["candidate_id"] == "c31"
+
+
+def test_ranked_candidate_evidence_has_safety_cap():
+    brain = load_brain()
+    built = [cand(f"c{i}") for i in range(brain.BUILD3_RANKED_EVIDENCE_CAP + 5)]
+    evidence = brain._build3_ranked_candidate_evidence(built)
+    assert len(evidence) == brain.BUILD3_RANKED_EVIDENCE_CAP
+    assert evidence[-1]["rank"] == brain.BUILD3_RANKED_EVIDENCE_CAP
+
+
+def test_build3_flow_reports_capital_blocked_ranking_drop():
+    brain = load_brain()
+    open_cand = cand("open")
+    blocked = cand("blocked")
+    blocked["capitalBlocked"] = True
+    flow = brain._build3_candidate_flow_summary(
+        built_candidates=[open_cand, blocked],
+        rejected_candidates=[],
+        old_ranked=[open_cand],
+        a8_summary={"n_candidates_pre_a8": 2, "n_ev_below_floor": 0, "n_candidates_after_a8": 2},
+        lane_summary={"lane_gate_reason": "NONE", "n_removed_by_lane_gate": 0, "n_candidates_after_lane_gate": 2},
+        gated_candidates=[open_cand, blocked],
+        ranked_final=[open_cand],
+        watchlist=[open_cand],
+        persisted_generated=[open_cand],
+    )
+    assert flow["capital_blocked_before_build3_rank"] == 1
+    assert flow["capital_blocked_after_lane_gate"] == 1
+    assert flow["dropped_capital_at_build3_rank"] == 1
+    assert flow["dropped_capital_at_final_rank"] == 1
+    assert flow["unexplained_drop_at_build3_rank"] == 0
+    assert flow["unexplained_drop_at_final_rank"] == 0
 
 
 def test_old_picker_counterfactual_uses_original_pool_when_new_waits():
@@ -167,7 +246,8 @@ def test_old_picker_counterfactual_uses_original_pool_when_new_waits():
         lane_summary={
             "lane_gate_reason": "CALM_NF_ONLY_WAIT",
             "n_candidates_after_lane_gate": 0,
-            "n_bnf_removed_by_calm_lane_gate": 0,
+            "n_bnf_removed_by_calm_lane_gate": 1,
+            "n_removed_by_lane_gate": 1,
             "n_nf_survivors_after_a8": 0,
             "vix": 12,
             "range_sigma": 0.2,
@@ -191,5 +271,9 @@ if __name__ == "__main__":
     test_calm_regime_with_nf_survivor_removes_bnf_intraday()
     test_calm_regime_with_only_bnf_returns_wait()
     test_non_calm_regime_does_not_lane_gate()
+    test_build3_flow_reports_persistence_truncation()
+    test_ranked_candidate_evidence_extends_beyond_ui_cap()
+    test_ranked_candidate_evidence_has_safety_cap()
+    test_build3_flow_reports_capital_blocked_ranking_drop()
     test_old_picker_counterfactual_uses_original_pool_when_new_waits()
     print("BUILD 3 A8/NF/AB TESTS: PASSED")

@@ -90,6 +90,39 @@ POST_ANALYZE_CTX_KEYS = {
     "position_live",
 }
 
+G1_PERCENTILE_VARIABLES = (
+    "vix",
+    "fii_short_pct",
+    "iv_richness_menu_median",
+    "realized_day_range",
+    "credit_width_ratio_menu_median",
+    "sigma_otm_menu_median",
+)
+
+
+def _load_gradle_property(key: str) -> str:
+    for rel in ("local.properties", "gradle.properties"):
+        path = REPO_ROOT / rel
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() == key:
+                return value.strip()
+    return ""
+
+
+if not SUPABASE_URL:
+    SUPABASE_URL = _load_gradle_property("SUPABASE_URL").rstrip("/")
+if not SUPABASE_SERVICE_KEY:
+    SUPABASE_SERVICE_KEY = (
+        _load_gradle_property("SUPABASE_SERVICE_ROLE_KEY")
+        or _load_gradle_property("SUPABASE_ANON_KEY")
+    )
+
 
 def _require_supabase_config() -> None:
     if not SUPABASE_URL:
@@ -521,6 +554,651 @@ def _supabase_get_page(table: str, params: dict[str, Any] | None = None) -> list
     if not isinstance(page, list):
         raise RuntimeError(f"Supabase GET {table} returned non-list payload")
     return page
+
+
+def _g1_fetch_percentile_daily_history(
+    history_from: str,
+    date_to: str,
+    *,
+    variables: tuple[str, ...] = G1_PERCENTILE_VARIABLES,
+) -> list[dict[str, Any]]:
+    if not variables:
+        return []
+    variable_filter = "in.(" + ",".join(variables) + ")"
+    rows = _supabase_get(
+        "ml_context_percentile_history",
+        {
+            "session_date": [f"gte.{history_from}", f"lte.{date_to}"],
+            "variable_name": variable_filter,
+            "select": "session_date,variable_name,value,history_window_end,pre_t_clean",
+            "order": "session_date.desc,history_window_end.desc,variable_name.asc",
+            "limit": 1000,
+        },
+    )
+    day_rows: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        session_date = str(row.get("session_date") or "").strip()
+        variable_name = str(row.get("variable_name") or "").strip()
+        if not session_date or not variable_name:
+            continue
+        day_obj = day_rows.setdefault(
+            session_date,
+            {"date": session_date, "session_date": session_date},
+        )
+        if "pre_t_clean" not in day_obj and "pre_t_clean" in row:
+            day_obj["pre_t_clean"] = bool(row.get("pre_t_clean"))
+        if "history_window_end" not in day_obj:
+            history_window_end = str(row.get("history_window_end") or "").strip()
+            if history_window_end:
+                day_obj["history_window_end"] = history_window_end
+        key = f"pct_{variable_name}"
+        if key not in day_obj and row.get("value") is not None:
+            day_obj[key] = row.get("value")
+    return [day_rows[day] for day in sorted(day_rows.keys(), reverse=True)]
+
+
+def _g1_merge_history_rows_by_date(base: list[Any], overlay: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    def upsert(rows: list[Any], *, replace_existing: bool) -> None:
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            day = str(row.get("date") or row.get("session_date") or row.get("sessionDate") or "").strip()
+            if not day:
+                continue
+            target = dict(merged.get(day, {}))
+            for key, value in row.items():
+                if not replace_existing and key in target:
+                    continue
+                target[key] = value
+            target.setdefault("date", day)
+            target.setdefault("session_date", day)
+            merged[day] = target
+
+    upsert(base, replace_existing=False)
+    upsert(overlay, replace_existing=True)
+    return [merged[day] for day in sorted(merged.keys(), reverse=True)]
+
+
+def _g1_enrich_context_with_percentile_history(
+    ctx: dict[str, Any],
+    percentile_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    out = dict(ctx)
+    source = out.get("premiumHistory") or out.get("premium_history") or []
+    if isinstance(source, str):
+        source = _json_load(source, [])
+    if not isinstance(source, list):
+        source = []
+    merged = _g1_merge_history_rows_by_date(source, percentile_history)
+    out["premiumHistory"] = merged
+    out["premium_history"] = merged
+    return out
+
+
+def _g1_source_mix_for_context(
+    ctx: dict[str, Any],
+    *,
+    variables: tuple[str, ...] = G1_PERCENTILE_VARIABLES,
+    window: int = 30,
+) -> dict[str, dict[str, int]]:
+    rows = ctx.get("premiumHistory") or ctx.get("premium_history") or []
+    if isinstance(rows, str):
+        rows = _json_load(rows, [])
+    if not isinstance(rows, list):
+        rows = []
+    ordered = list(reversed([row for row in rows if isinstance(row, dict)]))[-window:]
+    out: dict[str, dict[str, int]] = {}
+    for variable in variables:
+        pct_key = f"pct_{variable}"
+        fallback_keys = [variable]
+        if variable == "fii_short_pct":
+            fallback_keys.extend(["fiiShort", "fii_short"])
+        elif variable == "vix":
+            fallback_keys.append("VIX")
+        elif variable == "iv_richness_menu_median":
+            fallback_keys.extend(["ivRichness", "iv_richness"])
+        elif variable == "realized_day_range":
+            fallback_keys.extend(["dayRangeSigma", "day_range_sigma", "rangeSigma", "range_sigma"])
+        elif variable == "credit_width_ratio_menu_median":
+            fallback_keys.extend(["creditWidthRatio", "credit_width_ratio"])
+        elif variable == "sigma_otm_menu_median":
+            fallback_keys.extend(["sigmaOTM", "sigma_otm"])
+        pct_hits = 0
+        fallback_hits = 0
+        missing = 0
+        for row in ordered:
+            if row.get(pct_key) is not None:
+                pct_hits += 1
+                continue
+            if any(row.get(key) is not None for key in fallback_keys):
+                fallback_hits += 1
+            else:
+                missing += 1
+        total = pct_hits + fallback_hits + missing
+        out[variable] = {
+            "pct_hits": pct_hits,
+            "fallback_hits": fallback_hits,
+            "missing": missing,
+            "total": total,
+            "majority_fallback": 1 if fallback_hits > pct_hits else 0,
+        }
+    return out
+
+
+def _g1_history_before_day(percentile_history: list[dict[str, Any]], session_date: str) -> list[dict[str, Any]]:
+    return [
+        row for row in percentile_history
+        if str(row.get("session_date") or row.get("date") or "") < session_date
+    ]
+
+
+def _g1_merge_mix(target: dict[str, dict[str, int]], source: dict[str, dict[str, int]]) -> None:
+    for variable, stats in source.items():
+        bucket = target.setdefault(
+            variable,
+            {"pct_hits": 0, "fallback_hits": 0, "missing": 0, "total": 0, "majority_fallback_polls": 0},
+        )
+        bucket["pct_hits"] += int(stats.get("pct_hits") or 0)
+        bucket["fallback_hits"] += int(stats.get("fallback_hits") or 0)
+        bucket["missing"] += int(stats.get("missing") or 0)
+        bucket["total"] += int(stats.get("total") or 0)
+        bucket["majority_fallback_polls"] += int(stats.get("majority_fallback") or 0)
+
+
+def _g1_percentile_gate_markdown(
+    *,
+    date_from: str,
+    date_to: str,
+    history_from: str,
+    rows: list[dict[str, Any]],
+    day_summaries: list[dict[str, Any]],
+    source_mix: dict[str, dict[str, int]],
+    failures: list[dict[str, Any]],
+) -> str:
+    total = len(rows)
+    count_matches = sum(1 for row in rows if row.get("generated_count_match"))
+    exact_matches = sum(1 for row in rows if row.get("generated_exact_match"))
+    lines: list[str] = []
+    lines.append("# G1 Percentile Gate Replay Prerequisite Report")
+    lines.append("")
+    lines.append(f"- Window: `{date_from}` to `{date_to}`")
+    lines.append(f"- Percentile history anchor: `{history_from}`")
+    lines.append("- Scope: parity and source-mix only; no gate authority tested yet")
+    lines.append("- Parity replay policy: saved snapshot context is replayed without percentile overlay")
+    lines.append("- Percentile window under consideration: `pct_30`")
+    lines.append("- History policy: prior completed percentile sessions only; replay day itself excluded")
+    lines.append("")
+    lines.append("## Parity Gate")
+    lines.append("")
+    lines.append(f"- Snapshots checked: `{total}`")
+    lines.append(f"- Generated-count matches: `{count_matches}/{total}`")
+    lines.append(f"- Exact generated-menu matches: `{exact_matches}/{total}`")
+    lines.append(f"- Result: `{'PASS' if total and count_matches == total else 'FAIL'}`")
+    lines.append("")
+    lines.append("## By Day")
+    lines.append("")
+    for day in day_summaries:
+        lines.append(
+            f"- `{day['session_date']}`: checked=`{day['checked']}` "
+            f"count=`{day['generated_count_matches']}/{day['checked']}` "
+            f"exact=`{day['generated_exact_matches']}/{day['checked']}` "
+            f"avg_pct_rows=`{day['avg_pct_rows']}`"
+        )
+    lines.append("")
+    lines.append("## Source Mix")
+    lines.append("")
+    for variable in G1_PERCENTILE_VARIABLES:
+        stats = source_mix.get(variable, {})
+        total_hits = int(stats.get("pct_hits") or 0) + int(stats.get("fallback_hits") or 0)
+        fallback_share = round((int(stats.get("fallback_hits") or 0) * 100.0) / total_hits, 2) if total_hits else None
+        lines.append(
+            f"- `{variable}`: pct_hits=`{int(stats.get('pct_hits') or 0)}` "
+            f"fallback_hits=`{int(stats.get('fallback_hits') or 0)}` "
+            f"missing=`{int(stats.get('missing') or 0)}` "
+            f"majority_fallback_polls=`{int(stats.get('majority_fallback_polls') or 0)}` "
+            f"fallback_share=`{fallback_share if fallback_share is not None else '--'}%`"
+        )
+    if failures:
+        lines.append("")
+        lines.append("## Failures")
+        lines.append("")
+        for row in failures[:30]:
+            lines.append(
+                f"- `{row.get('session_date')} {row.get('poll_ts')}` reason=`{row.get('reason')}` "
+                f"live_gen=`{row.get('live_generated_count')}` replay_gen=`{row.get('replay_generated_count')}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def g1_percentile_gate_prereq(
+    date_from: str,
+    date_to: str,
+    *,
+    history_from: str = "2026-07-01",
+    max_snapshots: int = 0,
+    report_out: str = "reports/g1_percentile_gate_replay/G1_PERCENTILE_GATE_PREREQ_REPORT.md",
+) -> int:
+    _require_supabase_config()
+    report_path = Path(report_out)
+    if not report_path.is_absolute():
+        report_path = REPO_ROOT / report_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    percentile_history = _g1_fetch_percentile_daily_history(history_from, date_to)
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    day_summaries: list[dict[str, Any]] = []
+    source_mix: dict[str, dict[str, int]] = {}
+
+    for session_date in _iter_session_dates(date_from, date_to):
+        snapshots = _fetch_snapshots_for_session_date(
+            session_date,
+            limit=max_snapshots if max_snapshots > 0 else None,
+        )
+        if not snapshots:
+            continue
+        baseline = _fetch_baseline(session_date)
+        fallback_open_trades, fallback_closed_trades = _fetch_trade_state()
+        cumulative_polls: list[dict[str, Any]] = []
+        checked = 0
+        count_matches = 0
+        exact_matches = 0
+        pct_row_counts: list[int] = []
+        day_percentile_history = _g1_history_before_day(percentile_history, session_date)
+
+        for snap in snapshots:
+            snap_ctx = _json_load(snap.get("context_json"), {})
+            if not isinstance(snap_ctx, dict):
+                continue
+            latest_poll = snap_ctx.get("snapshot_latest_poll")
+            if not isinstance(latest_poll, dict) or not latest_poll:
+                continue
+            cumulative_polls.append(latest_poll)
+            if not _snapshot_replayability_detail(snap_ctx).get("chain"):
+                continue
+            replay_ctx = _strip_snapshot_artifacts(dict(snap_ctx))
+            mix_ctx = _g1_enrich_context_with_percentile_history(
+                dict(replay_ctx),
+                day_percentile_history,
+            )
+            mix = _g1_source_mix_for_context(mix_ctx)
+            _g1_merge_mix(source_mix, mix)
+            pct_row_counts.append(sum(1 for row in mix_ctx.get("premiumHistory", []) if isinstance(row, dict) and any(row.get(f"pct_{v}") is not None for v in G1_PERCENTILE_VARIABLES)))
+            inputs, result = _replay_snapshot_with_context(
+                session_date,
+                cumulative_polls,
+                replay_ctx,
+                baseline,
+                fallback_open_trades,
+                fallback_closed_trades,
+                source_tag="g1_percentile_gate_prereq",
+            )
+            del inputs
+            live_generated = _load_live_generated(snap_ctx)
+            replay_generated = result.get("generated_candidates") or []
+            gen_exact, gen_detail = _compare_candidate_lists("g1_generated", live_generated, replay_generated)
+            count_match = len(live_generated) == len(replay_generated)
+            row = {
+                "session_date": session_date,
+                "snapshot_id": str(snap.get("id") or ""),
+                "poll_ts": str(snap.get("poll_ts") or ""),
+                "live_generated_count": len(live_generated),
+                "replay_generated_count": len(replay_generated),
+                "generated_count_match": count_match,
+                "generated_exact_match": gen_exact,
+                "generated_detail": gen_detail if not gen_exact else "",
+                "source_mix": mix,
+            }
+            rows.append(row)
+            checked += 1
+            count_matches += 1 if count_match else 0
+            exact_matches += 1 if gen_exact else 0
+            if not count_match:
+                failures.append({**row, "reason": "generated_count_mismatch"})
+            print(
+                f"[g1] session={session_date} ts={row['poll_ts']} "
+                f"count_match={count_match} exact_match={gen_exact} "
+                f"live_gen={len(live_generated)} replay_gen={len(replay_generated)} "
+                f"pct_days={len(day_percentile_history)}"
+            )
+            if max_snapshots > 0 and checked >= max_snapshots:
+                break
+        if checked:
+            day_summaries.append(
+                {
+                    "session_date": session_date,
+                    "checked": checked,
+                    "generated_count_matches": count_matches,
+                    "generated_exact_matches": exact_matches,
+                    "avg_pct_rows": round(sum(pct_row_counts) / len(pct_row_counts), 2) if pct_row_counts else 0,
+                }
+            )
+
+    report_text = _g1_percentile_gate_markdown(
+        date_from=date_from,
+        date_to=date_to,
+        history_from=history_from,
+        rows=rows,
+        day_summaries=day_summaries,
+        source_mix=source_mix,
+        failures=failures,
+    )
+    report_path.write_text(report_text, encoding="utf-8")
+    report_path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "history_from": history_from,
+                "rows": rows,
+                "day_summaries": day_summaries,
+                "source_mix": source_mix,
+                "failures": failures,
+            },
+            indent=2,
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[g1] report={report_path}")
+    print(f"[g1] sidecar={report_path.with_suffix('.json')}")
+    if not rows:
+        return 2
+    return 0 if not failures else 1
+
+
+def _l2_candidate_leg_keys(cand: dict[str, Any]) -> list[tuple[str, str, str, float]]:
+    index_key = str(cand.get("index") or cand.get("index_key") or "").strip()
+    expiry = str(cand.get("expiry") or "").strip()
+    if not index_key or not expiry:
+        return []
+    out: list[tuple[str, str, str, float]] = []
+    for side in ("sell", "buy"):
+        for suffix in ("", "2"):
+            strike = _safe_float(cand.get(f"{side}Strike{suffix}"))
+            option_type = _normalize_option_type(cand.get(f"{side}Type{suffix}"))
+            if strike is None or not option_type:
+                continue
+            out.append((index_key, expiry, option_type, float(strike)))
+    return out
+
+
+def _l2_filter_chain_rows_for_candidate(
+    chain_rows: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    cand: dict[str, Any],
+) -> list[dict[str, Any]]:
+    keys = set(_l2_candidate_leg_keys(cand))
+    if not keys:
+        return []
+    entry_ts = _parse_timestamp(snapshot.get("poll_ts") or _outcome_poll_ts(snapshot))
+    out: list[dict[str, Any]] = []
+    for row in chain_rows:
+        row_ts = _parse_timestamp(row.get("poll_ts"))
+        if entry_ts and row_ts and row_ts < entry_ts:
+            continue
+        strike = _safe_float(row.get("strike"))
+        if strike is None:
+            continue
+        row_key = (
+            str(row.get("index_key") or ""),
+            str(row.get("expiry") or ""),
+            _normalize_option_type(row.get("option_type")),
+            float(strike),
+        )
+        if row_key in keys:
+            out.append(row)
+    return out
+
+
+def _l2_merge_counts(target: dict[str, int], source: dict[str, Any]) -> None:
+    for key, value in (source or {}).items():
+        target[str(key)] = target.get(str(key), 0) + int(value or 0)
+
+
+def _l2_calm_lane_markdown(
+    *,
+    date_from: str,
+    date_to: str,
+    rows: list[dict[str, Any]],
+    day_summaries: list[dict[str, Any]],
+    outcome_rows: list[dict[str, Any]],
+    errors: list[dict[str, Any]],
+) -> str:
+    hit_rows = [row for row in rows if row.get("lane_gate_reason") == "CALM_NF_ONLY_WAIT"]
+    zero_supply_hits = [row for row in hit_rows if int(row.get("replay_generated_count") or 0) == 0 and int(row.get("removed_count") or 0) > 0]
+    ok_outcomes = [row for row in outcome_rows if row.get("price_integrity") == "OK" and _safe_float(row.get("r_multiple")) is not None]
+    avg_r = round(sum(float(row["r_multiple"]) for row in ok_outcomes) / len(ok_outcomes), 4) if ok_outcomes else None
+    lines: list[str] = []
+    lines.append("# L2 Calm Lane Gate Offline Audit")
+    lines.append("")
+    lines.append(f"- Window: `{date_from}` to `{date_to}`")
+    lines.append("- Scope: offline replay only; no gate behavior change")
+    lines.append("- Replay basis: current local brain against saved snapshot contexts")
+    lines.append("")
+    lines.append("## Aggregate")
+    lines.append("")
+    lines.append(f"- Replayable snapshots checked: `{len(rows)}`")
+    lines.append(f"- `CALM_NF_ONLY_WAIT` polls: `{len(hit_rows)}`")
+    lines.append(f"- Zero-supply polls explained by calm-lane wipe: `{len(zero_supply_hits)}`")
+    lines.append(f"- Wiped candidates captured: `{sum(int(row.get('removed_count') or 0) for row in hit_rows)}`")
+    lines.append(f"- Evaluable wiped outcomes with `price_integrity=OK`: `{len(ok_outcomes)}`")
+    lines.append(f"- Avg wiped-candidate managed R: `{avg_r if avg_r is not None else '--'}`")
+    lines.append(f"- Evaluation errors/non-evaluable candidates: `{len(errors)}`")
+    lines.append("")
+    lines.append("## By Day")
+    lines.append("")
+    for day in day_summaries:
+        lines.append(
+            f"- `{day['session_date']}` checked=`{day['checked']}` "
+            f"calm_wait=`{day['calm_wait_polls']}` "
+            f"zero_supply_explained=`{day['zero_supply_explained']}` "
+            f"removed=`{day['removed_count']}` "
+            f"ok_outcomes=`{day['ok_outcomes']}` "
+            f"avg_r=`{day['avg_r'] if day['avg_r'] is not None else '--'}` "
+            f"families=`{day['removed_by_family']}` lanes=`{day['removed_by_lane']}`"
+        )
+    if outcome_rows:
+        lines.append("")
+        lines.append("## Outcome Sample")
+        lines.append("")
+        for row in outcome_rows[:30]:
+            lines.append(
+                f"- `{row.get('session_date')} {row.get('poll_ts')}` "
+                f"{row.get('candidate_id')} {row.get('strategy_type')} "
+                f"R=`{row.get('r_multiple')}` pnl=`{row.get('managed_pnl')}` "
+                f"integrity=`{row.get('price_integrity')}` exit=`{row.get('exit_reason')}`"
+            )
+    if errors:
+        lines.append("")
+        lines.append("## Evaluation Errors")
+        lines.append("")
+        for row in errors[:30]:
+            lines.append(
+                f"- `{row.get('session_date')} {row.get('poll_ts')}` "
+                f"{row.get('candidate_id')} reason=`{row.get('error')}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def l2_calm_lane_audit(
+    date_from: str,
+    date_to: str,
+    *,
+    max_snapshots: int = 0,
+    report_out: str = "reports/l2_calm_lane_gate/L2_CALM_LANE_AUDIT_REPORT.md",
+) -> int:
+    _require_supabase_config()
+    report_path = Path(report_out)
+    if not report_path.is_absolute():
+        report_path = REPO_ROOT / report_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    day_summaries: list[dict[str, Any]] = []
+    outcome_rows: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    teacher_config = brain._teacher_default_config()
+
+    for session_date in _iter_session_dates(date_from, date_to):
+        snapshots = _fetch_snapshots_for_session_date(
+            session_date,
+            limit=max_snapshots if max_snapshots > 0 else None,
+        )
+        if not snapshots:
+            continue
+        chain_rows = _context_chain_rows_for_snapshots(snapshots)
+        baseline = _fetch_baseline(session_date)
+        fallback_open_trades, fallback_closed_trades = _fetch_trade_state()
+        cumulative_polls: list[dict[str, Any]] = []
+        checked = 0
+        day_removed_by_family: dict[str, int] = {}
+        day_removed_by_lane: dict[str, int] = {}
+        day_outcomes: list[dict[str, Any]] = []
+        day_errors: list[dict[str, Any]] = []
+        calm_wait_polls = 0
+        zero_supply_explained = 0
+        removed_count = 0
+
+        for snap in snapshots:
+            snap_ctx = _json_load(snap.get("context_json"), {})
+            if not isinstance(snap_ctx, dict):
+                continue
+            latest_poll = snap_ctx.get("snapshot_latest_poll")
+            if not isinstance(latest_poll, dict) or not latest_poll:
+                continue
+            cumulative_polls.append(latest_poll)
+            if not _snapshot_replayability_detail(snap_ctx).get("chain"):
+                continue
+            replay_ctx = _strip_snapshot_artifacts(dict(snap_ctx))
+            _, result = _replay_snapshot_with_context(
+                session_date,
+                cumulative_polls,
+                replay_ctx,
+                baseline,
+                fallback_open_trades,
+                fallback_closed_trades,
+                source_tag="l2_calm_lane_audit",
+            )
+            lane = ((result.get("build3_gate") or {}).get("lane") or {}) if isinstance(result.get("build3_gate"), dict) else {}
+            reason = str(lane.get("lane_gate_reason") or "NONE")
+            removed_candidates = lane.get("removed_candidates") if isinstance(lane.get("removed_candidates"), list) else []
+            replay_generated_count = len(result.get("generated_candidates") or [])
+            row = {
+                "session_date": session_date,
+                "snapshot_id": str(snap.get("id") or ""),
+                "poll_ts": str(snap.get("poll_ts") or ""),
+                "lane_gate_reason": reason,
+                "calm_regime": bool(lane.get("calm_regime")),
+                "regime_type": lane.get("regime_type"),
+                "range_sigma": lane.get("range_sigma"),
+                "vix": lane.get("vix"),
+                "n_nf_survivors_after_a8": int(lane.get("n_nf_survivors_after_a8") or 0),
+                "n_bnf_survivors_after_a8": int(lane.get("n_bnf_survivors_after_a8") or 0),
+                "replay_generated_count": replay_generated_count,
+                "removed_count": int(lane.get("n_removed_by_lane_gate") or 0),
+                "removed_by_family": lane.get("removed_by_family") or {},
+                "removed_by_lane": lane.get("removed_by_lane") or {},
+                "removed_candidate_ids": lane.get("removed_candidate_ids") or [],
+            }
+            rows.append(row)
+            checked += 1
+            if reason == "CALM_NF_ONLY_WAIT":
+                calm_wait_polls += 1
+                removed_count += int(row["removed_count"])
+                _l2_merge_counts(day_removed_by_family, row["removed_by_family"])
+                _l2_merge_counts(day_removed_by_lane, row["removed_by_lane"])
+                if replay_generated_count == 0 and int(row["removed_count"]) > 0:
+                    zero_supply_explained += 1
+                for cand in removed_candidates:
+                    if not isinstance(cand, dict):
+                        continue
+                    cand = dict(cand)
+                    cand.setdefault("trade_mode", "intraday" if str(cand.get("lane") or "").endswith("_intraday") else "unknown")
+                    candidate_chain_rows = _l2_filter_chain_rows_for_candidate(chain_rows, snap, cand)
+                    try:
+                        outcome = brain._eval_single_candidate(candidate_chain_rows, snap, cand, teacher_config)
+                        if not outcome:
+                            raise RuntimeError("not_evaluable_no_price_path")
+                        out_row = {
+                            "session_date": session_date,
+                            "snapshot_id": str(snap.get("id") or ""),
+                            "poll_ts": str(snap.get("poll_ts") or ""),
+                            "candidate_id": cand.get("id"),
+                            "strategy_type": cand.get("type") or cand.get("strategy_type"),
+                            "lane": cand.get("lane"),
+                            "price_integrity": outcome.get("price_integrity"),
+                            "h2_price_integrity_reason": outcome.get("h2_price_integrity_reason"),
+                            "managed_pnl": outcome.get("managed_pnl"),
+                            "r_multiple": outcome.get("r_multiple"),
+                            "exit_reason": outcome.get("exit_reason"),
+                            "exit_ts": outcome.get("exit_ts"),
+                        }
+                        outcome_rows.append(out_row)
+                        day_outcomes.append(out_row)
+                    except Exception as exc:
+                        err = {
+                            "session_date": session_date,
+                            "snapshot_id": str(snap.get("id") or ""),
+                            "poll_ts": str(snap.get("poll_ts") or ""),
+                            "candidate_id": cand.get("id"),
+                            "error": str(exc),
+                        }
+                        errors.append(err)
+                        day_errors.append(err)
+            print(
+                f"[l2] session={session_date} ts={row['poll_ts']} reason={reason} "
+                f"removed={row['removed_count']} replay_gen={replay_generated_count}"
+            )
+            if max_snapshots > 0 and checked >= max_snapshots:
+                break
+        if checked:
+            ok = [r for r in day_outcomes if r.get("price_integrity") == "OK" and _safe_float(r.get("r_multiple")) is not None]
+            avg_r = round(sum(float(r["r_multiple"]) for r in ok) / len(ok), 4) if ok else None
+            day_summaries.append(
+                {
+                    "session_date": session_date,
+                    "checked": checked,
+                    "calm_wait_polls": calm_wait_polls,
+                    "zero_supply_explained": zero_supply_explained,
+                    "removed_count": removed_count,
+                    "removed_by_family": day_removed_by_family,
+                    "removed_by_lane": day_removed_by_lane,
+                    "ok_outcomes": len(ok),
+                    "avg_r": avg_r,
+                    "errors": len(day_errors),
+                }
+            )
+
+    report_text = _l2_calm_lane_markdown(
+        date_from=date_from,
+        date_to=date_to,
+        rows=rows,
+        day_summaries=day_summaries,
+        outcome_rows=outcome_rows,
+        errors=errors,
+    )
+    report_path.write_text(report_text, encoding="utf-8")
+    report_path.with_suffix(".json").write_text(
+        json.dumps(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "rows": rows,
+                "day_summaries": day_summaries,
+                "outcome_rows": outcome_rows,
+                "errors": errors,
+            },
+            indent=2,
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[l2] report={report_path}")
+    print(f"[l2] sidecar={report_path.with_suffix('.json')}")
+    return 0 if rows else 2
 
 
 def _fetch_baseline(session_date: str) -> dict[str, Any]:
@@ -3349,6 +4027,608 @@ def class_b_parity_local_day(
     return 0
 
 
+def _extract_rows_by_index_for_snapshots(
+    session_date: str,
+    snapshots: list[dict[str, Any]],
+    index_key: str,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any], list[str]]:
+    specs = _class_b_extract_specs(snapshots)
+    spec = specs.get(index_key)
+    if not spec:
+        return {}, {}, [f"{index_key}:missing_saved_chain_spec"]
+    requested_expiry = str(spec.get("expiry") or "").strip()
+    strikes = [int(v) for v in (spec.get("strikes") or [])]
+    if not requested_expiry or not strikes:
+        return {}, {}, [f"{index_key}:missing_expiry_or_strikes"]
+    try:
+        rows = _fetch_historical_option_rows_for_session(session_date, index_key, requested_expiry, strikes)
+    except RuntimeError as exc:
+        return {}, {}, [f"{index_key}:candle_fetch_failed:{exc}"]
+    resolved_expiry = requested_expiry
+    if not rows:
+        discovered_expiry = _discover_historical_expiry_for_session(session_date, index_key)
+        if discovered_expiry and discovered_expiry != requested_expiry:
+            try:
+                rows = _fetch_historical_option_rows_for_session(session_date, index_key, discovered_expiry, strikes)
+                resolved_expiry = discovered_expiry
+            except RuntimeError as exc:
+                return {}, {}, [f"{index_key}:candle_refetch_failed:{exc}"]
+    spec_summary = {
+        "requested_expiry": requested_expiry,
+        "resolved_expiry": resolved_expiry,
+        "strike_count": len(strikes),
+        "row_count": len(rows),
+        "snapshot_ids": [v for v in (spec.get("snapshot_ids") or []) if v is not None],
+    }
+    return {index_key: rows}, spec_summary, []
+
+
+def _replay_snapshot_with_context(
+    session_date: str,
+    cumulative_polls: list[dict[str, Any]],
+    runtime_ctx: dict[str, Any],
+    baseline: dict[str, Any],
+    fallback_open_trades: str,
+    fallback_closed_trades: str,
+    *,
+    source_tag: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    brain.reset_notification_agent()
+    inputs = build_poll_inputs(
+        session_date,
+        cumulative_polls,
+        runtime_ctx,
+        baseline,
+        fallback_open_trades,
+        fallback_closed_trades,
+    )
+    replay_out = brain.replay(inputs, source_tag=source_tag)
+    result = replay_out.get("result", {}) if isinstance(replay_out, dict) else {}
+    return inputs, result
+
+
+def _overlap_fidelity_markdown(
+    *,
+    date_from: str,
+    date_to: str,
+    index_key: str,
+    rows: list[dict[str, Any]],
+    day_summaries: list[dict[str, Any]],
+    blocked_days: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    lines.append("# Overlap Fidelity Report")
+    lines.append("")
+    lines.append(f"- Window: `{date_from}` to `{date_to}`")
+    lines.append(f"- Index: `{index_key}`")
+    lines.append("- Comparison: stored full chain vs candle-modelled chain")
+    lines.append("- Purpose: measure whether candle reconstruction is trustworthy enough to justify more Class B investment")
+    lines.append("")
+    total_checked = len(rows)
+    exact_matches = sum(1 for row in rows if row.get("generated_exact_match"))
+    top1_matches = sum(1 for row in rows if row.get("top1_match"))
+    action_matches = sum(1 for row in rows if row.get("action_match"))
+    avg_top6_overlap = round(sum(float(row.get("top6_overlap_count") or 0.0) for row in rows) / total_checked, 3) if total_checked else 0.0
+    avg_net_premium_abs = round(
+        sum(abs(float(row.get("shared_metric_diff", {}).get("diff", {}).get("netPremium") or 0.0)) for row in rows if row.get("shared_metric_diff", {}).get("diff", {}).get("netPremium") is not None)
+        / max(1, sum(1 for row in rows if row.get("shared_metric_diff", {}).get("diff", {}).get("netPremium") is not None)),
+        4,
+    ) if rows else 0.0
+    lines.append("## Aggregate")
+    lines.append("")
+    lines.append(f"- Snapshots checked: `{total_checked}`")
+    lines.append(f"- Exact generated-menu matches: `{exact_matches}/{total_checked}`")
+    lines.append(f"- Top-1 matches: `{top1_matches}/{total_checked}`")
+    lines.append(f"- Action/strategy matches: `{action_matches}/{total_checked}`")
+    lines.append(f"- Average top-6 overlap count: `{avg_top6_overlap}`")
+    lines.append(f"- Average absolute shared-candidate netPremium diff: `{avg_net_premium_abs}`")
+    if blocked_days:
+        lines.append(f"- Blocked days: `{len(blocked_days)}`")
+    lines.append("")
+    lines.append("## By Day")
+    lines.append("")
+    for day in day_summaries:
+        lines.append(
+            f"- `{day['session_date']}`: checked=`{day['checked']}` "
+            f"exact=`{day['generated_exact_matches']}/{day['checked']}` "
+            f"top1=`{day['top1_matches']}/{day['checked']}` "
+            f"action=`{day['action_matches']}/{day['checked']}` "
+            f"avg_top6_overlap=`{day['avg_top6_overlap']}` "
+            f"rows=`{day['historical_row_count']}`"
+        )
+    if blocked_days:
+        lines.append("")
+        lines.append("## Blocked Days")
+        lines.append("")
+        for day in blocked_days:
+            lines.append(f"- `{day['session_date']}`: `{'; '.join(day.get('errors') or [])}`")
+    if rows:
+        worst = sorted(
+            rows,
+            key=lambda row: (
+                1 if row.get("generated_exact_match") else 0,
+                1 if row.get("top1_match") else 0,
+                float(row.get("top6_overlap_count") or 0.0),
+            ),
+        )[:10]
+        lines.append("")
+        lines.append("## Worst Divergences")
+        lines.append("")
+        for row in worst:
+            lines.append(
+                f"- `{row['session_date']} {row['poll_ts']}` exact=`{row['generated_exact_match']}` "
+                f"top1=`{row['top1_match']}` action=`{row['action_match']}` "
+                f"stored_gen=`{row['stored_generated_count']}` candle_gen=`{row['candle_generated_count']}` "
+                f"top6_overlap=`{row['top6_overlap_count']}` shared=`{row.get('shared_candidate') or '--'}` "
+                f"netPremium_diff=`{row.get('shared_metric_diff', {}).get('diff', {}).get('netPremium')}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _load_overlap_focus_snapshot_ids(sidecar_path: str) -> set[str]:
+    path = Path(sidecar_path)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    payload = _json_load(path.read_text(encoding="utf-8"), {})
+    rows = payload.get("rows") if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return set()
+    focus: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        stored_count = int(row.get("stored_generated_count") or 0)
+        candle_count = int(row.get("candle_generated_count") or 0)
+        if stored_count > 0 or candle_count > 0:
+            sid = str(row.get("snapshot_id") or "").strip()
+            if sid:
+                focus.add(sid)
+    return focus
+
+
+def _truthiness_summary(rows: list[dict[str, Any]], field: str) -> str:
+    total = len(rows)
+    matched = sum(1 for row in rows if row.get(field))
+    return f"`{matched}/{total}`"
+
+
+def _stored_live_verification_markdown(
+    *,
+    date_from: str,
+    date_to: str,
+    index_key: str,
+    rows: list[dict[str, Any]],
+    focus_rows: list[dict[str, Any]],
+    live_nontrivial_rows: list[dict[str, Any]],
+    day_summaries: list[dict[str, Any]],
+) -> str:
+    lines: list[str] = []
+    lines.append("# Stored-vs-Live Harness Verification")
+    lines.append("")
+    lines.append(f"- Window: `{date_from}` to `{date_to}`")
+    lines.append(f"- Index: `{index_key}`")
+    lines.append("- Comparison: saved live snapshot output vs stored-chain replay")
+    lines.append("- Purpose: verify whether the replay harness is faithful before attributing Class B failure to candle reconstruction")
+    lines.append("")
+    lines.append("## Aggregate")
+    lines.append("")
+    lines.append(f"- Snapshots checked: `{len(rows)}`")
+    lines.append(f"- Generated exact matches: {_truthiness_summary(rows, 'generated_exact_match')}")
+    lines.append(f"- Top-1 matches: {_truthiness_summary(rows, 'top1_match')}")
+    lines.append(f"- Action/strategy matches: {_truthiness_summary(rows, 'action_match')}")
+    lines.append(f"- Rejected sample matches: {_truthiness_summary(rows, 'rejected_match')}")
+    lines.append(f"- Notification contract matches: {_truthiness_summary(rows, 'notification_match')}")
+    lines.append("")
+    lines.append("## Live-Nontrivial Slice")
+    lines.append("")
+    lines.append("- Definition: saved live snapshot had one or more generated candidates.")
+    lines.append(f"- Snapshots: `{len(live_nontrivial_rows)}`")
+    lines.append(f"- Generated exact matches: {_truthiness_summary(live_nontrivial_rows, 'generated_exact_match')}")
+    lines.append(f"- Top-1 matches: {_truthiness_summary(live_nontrivial_rows, 'top1_match')}")
+    lines.append(f"- Action/strategy matches: {_truthiness_summary(live_nontrivial_rows, 'action_match')}")
+    lines.append(f"- Rejected sample matches: {_truthiness_summary(live_nontrivial_rows, 'rejected_match')}")
+    lines.append("")
+    lines.append("## Overlap-Focus Slice")
+    lines.append("")
+    lines.append("- Definition: the 14 nontrivial snapshots from the stored-vs-candle overlap report.")
+    lines.append(f"- Snapshots: `{len(focus_rows)}`")
+    lines.append(f"- Generated exact matches: {_truthiness_summary(focus_rows, 'generated_exact_match')}")
+    lines.append(f"- Top-1 matches: {_truthiness_summary(focus_rows, 'top1_match')}")
+    lines.append(f"- Action/strategy matches: {_truthiness_summary(focus_rows, 'action_match')}")
+    lines.append(f"- Rejected sample matches: {_truthiness_summary(focus_rows, 'rejected_match')}")
+    lines.append("")
+    lines.append("## By Day")
+    lines.append("")
+    for day in day_summaries:
+        lines.append(
+            f"- `{day['session_date']}`: checked=`{day['checked']}` "
+            f"generated=`{day['generated_exact_matches']}/{day['checked']}` "
+            f"top1=`{day['top1_matches']}/{day['checked']}` "
+            f"action=`{day['action_matches']}/{day['checked']}` "
+            f"rejected=`{day['rejected_matches']}/{day['checked']}` "
+            f"notify=`{day['notification_matches']}/{day['checked']}`"
+        )
+    mismatches = [row for row in rows if not (row.get("generated_exact_match") and row.get("rejected_match") and row.get("notification_match"))]
+    if mismatches:
+        lines.append("")
+        lines.append("## Worst Mismatches")
+        lines.append("")
+        for row in mismatches[:12]:
+            lines.append(
+                f"- `{row['session_date']} {row['poll_ts']}` generated=`{row['generated_exact_match']}` "
+                f"top1=`{row['top1_match']}` action=`{row['action_match']}` "
+                f"rejected=`{row['rejected_match']}` notify=`{row['notification_match']}` "
+                f"live_gen=`{row['live_generated_count']}` replay_gen=`{row['stored_generated_count']}`"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def stored_live_verification_range(
+    date_from: str,
+    date_to: str,
+    *,
+    index_key: str = "NF",
+    focus_sidecar: str = "/tmp/OVERLAP_FIDELITY_REPORT_20260726.json",
+    focus_only: bool = False,
+    report_out: str = "STORED_LIVE_VERIFICATION_REPORT.md",
+) -> int:
+    _require_supabase_config()
+    report_path = Path(report_out)
+    if not report_path.is_absolute():
+        report_path = REPO_ROOT / report_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    focus_snapshot_ids = _load_overlap_focus_snapshot_ids(focus_sidecar)
+    all_rows: list[dict[str, Any]] = []
+    day_summaries: list[dict[str, Any]] = []
+
+    for session_date in _iter_session_dates(date_from, date_to):
+        snapshots = _fetch_snapshots_for_session_date(session_date)
+        if not snapshots:
+            continue
+        baseline = _fetch_baseline(session_date)
+        fallback_open_trades, fallback_closed_trades = _fetch_trade_state()
+        cumulative_polls: list[dict[str, Any]] = []
+        checked = 0
+        generated_exact_matches = 0
+        top1_matches = 0
+        action_matches = 0
+        rejected_matches = 0
+        notification_matches = 0
+
+        for snap in snapshots:
+            snap_ctx = _json_load(snap.get("context_json"), {})
+            if not isinstance(snap_ctx, dict):
+                continue
+            latest_poll = snap_ctx.get("snapshot_latest_poll")
+            if not isinstance(latest_poll, dict) or not latest_poll:
+                continue
+            cumulative_polls.append(latest_poll)
+
+            live_generated = _filter_candidates_for_index(_load_live_generated(snap_ctx), index_key)
+            live_rejected_sample, live_rejected_stats = _load_live_rejected(snap_ctx)
+            live_rejected_sample = _filter_candidates_for_index(live_rejected_sample, index_key)
+            live_notification = snap_ctx.get("snapshot_brain_notification") if isinstance(snap_ctx.get("snapshot_brain_notification"), dict) else {}
+            sid = str(snap.get("id") or "")
+            if focus_only and sid not in focus_snapshot_ids:
+                continue
+            if not live_generated and not live_rejected_sample and not (focus_only and sid in focus_snapshot_ids):
+                continue
+            if not _snapshot_replayability_detail(snap_ctx).get("chain"):
+                continue
+
+            stored_ctx = _strip_snapshot_artifacts(dict(snap_ctx))
+            _, stored_result = _replay_snapshot_with_context(
+                session_date,
+                cumulative_polls,
+                stored_ctx,
+                baseline,
+                fallback_open_trades,
+                fallback_closed_trades,
+                source_tag="stored_live_verify",
+            )
+
+            stored_generated = _filter_candidates_for_index(stored_result.get("generated_candidates") or [], index_key)
+            generated_exact_match, generated_detail = _compare_candidate_lists("stored_live_generated", live_generated, stored_generated)
+
+            stored_top1 = stored_generated[0] if stored_generated else None
+            live_top1 = live_generated[0] if live_generated else None
+            top1_match = _candidate_key_without_id(live_top1) == _candidate_key_without_id(stored_top1) if live_top1 and stored_top1 else live_top1 is None and stored_top1 is None
+            live_action = ("TRADE" if live_top1 else "WAIT", str((live_top1 or {}).get("type") or (live_top1 or {}).get("strategy_type") or "--"))
+            stored_action = ("TRADE" if stored_top1 else "WAIT", str((stored_top1 or {}).get("type") or (stored_top1 or {}).get("strategy_type") or "--"))
+            action_match = live_action == stored_action
+
+            stored_rejected_sample, stored_rejected_stats = brain._compact_rejected_candidates(stored_result.get("rejected_candidates") or [])
+            stored_rejected_sample = _filter_candidates_for_index(stored_rejected_sample, index_key)
+            rej_sample_ok, rej_sample_detail = _compare_candidate_lists(
+                "stored_live_rejected",
+                live_rejected_sample,
+                stored_rejected_sample,
+            )
+            rej_stats_ok = _canonicalize(live_rejected_stats) == _canonicalize(stored_rejected_stats)
+            rejected_match = rej_sample_ok and rej_stats_ok
+
+            stored_notification = stored_result.get("brain_notification") if isinstance(stored_result.get("brain_notification"), dict) else {}
+            notification_match, notification_detail = _compare_notification_contract(live_notification, stored_notification)
+
+            row = {
+                "session_date": session_date,
+                "snapshot_id": sid,
+                "poll_ts": str(snap.get("poll_ts") or _outcome_poll_ts(snap) or ""),
+                "generated_exact_match": generated_exact_match,
+                "generated_detail": generated_detail,
+                "top1_match": top1_match,
+                "action_match": action_match,
+                "rejected_match": rejected_match,
+                "rejected_sample_detail": rej_sample_detail,
+                "rejected_stats_match": rej_stats_ok,
+                "notification_match": notification_match,
+                "notification_detail": notification_detail,
+                "live_generated_count": len(live_generated),
+                "stored_generated_count": len(stored_generated),
+                "live_rejected_count": len(live_rejected_sample),
+                "stored_rejected_count": len(stored_rejected_sample),
+                "focus_snapshot": sid in focus_snapshot_ids,
+            }
+            all_rows.append(row)
+            checked += 1
+            generated_exact_matches += 1 if generated_exact_match else 0
+            top1_matches += 1 if top1_match else 0
+            action_matches += 1 if action_match else 0
+            rejected_matches += 1 if rejected_match else 0
+            notification_matches += 1 if notification_match else 0
+
+            print(
+                f"[stored_live] session={session_date} ts={row['poll_ts']} "
+                f"generated={generated_exact_match} top1={top1_match} action={action_match} "
+                f"rejected={rejected_match} notify={notification_match} "
+                f"live_gen={len(live_generated)} replay_gen={len(stored_generated)}"
+            )
+
+        if checked:
+            day_summaries.append(
+                {
+                    "session_date": session_date,
+                    "checked": checked,
+                    "generated_exact_matches": generated_exact_matches,
+                    "top1_matches": top1_matches,
+                    "action_matches": action_matches,
+                    "rejected_matches": rejected_matches,
+                    "notification_matches": notification_matches,
+                }
+            )
+
+    focus_rows = [row for row in all_rows if row.get("focus_snapshot")]
+    live_nontrivial_rows = [row for row in all_rows if int(row.get("live_generated_count") or 0) > 0]
+    report_text = _stored_live_verification_markdown(
+        date_from=date_from,
+        date_to=date_to,
+        index_key=index_key,
+        rows=all_rows,
+        focus_rows=focus_rows,
+        live_nontrivial_rows=live_nontrivial_rows,
+        day_summaries=day_summaries,
+    )
+    report_path.write_text(report_text, encoding="utf-8")
+    sidecar_path = report_path.with_suffix(".json")
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "index": index_key,
+                "focus_sidecar": focus_sidecar,
+                "rows": all_rows,
+                "focus_snapshot_count": len(focus_rows),
+                "live_nontrivial_count": len(live_nontrivial_rows),
+                "day_summaries": day_summaries,
+            },
+            indent=2,
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        f"[stored_live] result=OK checked={len(all_rows)} focus={len(focus_rows)} "
+        f"live_nontrivial={len(live_nontrivial_rows)} report={report_path} sidecar={sidecar_path}"
+    )
+    return 0 if all_rows else 2
+
+
+def overlap_fidelity_range(
+    date_from: str,
+    date_to: str,
+    *,
+    index_key: str = "NF",
+    max_snapshots: int = 0,
+    report_out: str = "OVERLAP_FIDELITY_REPORT.md",
+) -> int:
+    _require_supabase_config()
+    report_path = Path(report_out)
+    if not report_path.is_absolute():
+        report_path = REPO_ROOT / report_path
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    all_rows: list[dict[str, Any]] = []
+    day_summaries: list[dict[str, Any]] = []
+    blocked_days: list[dict[str, Any]] = []
+
+    for session_date in _iter_session_dates(date_from, date_to):
+        snapshots = _fetch_snapshots_for_session_date(session_date)
+        if not snapshots:
+            continue
+        rows_by_index, spec_summary, extract_errors = _extract_rows_by_index_for_snapshots(session_date, snapshots, index_key)
+        if extract_errors or not rows_by_index.get(index_key):
+            blocked_days.append(
+                {
+                    "session_date": session_date,
+                    "errors": extract_errors or [f"{index_key}:no_historical_rows"],
+                }
+            )
+            print(f"[overlap] session={session_date} blocked errors={extract_errors or [f'{index_key}:no_historical_rows']}")
+            continue
+
+        baseline = _fetch_baseline(session_date)
+        fallback_open_trades, fallback_closed_trades = _fetch_trade_state()
+        cumulative_polls: list[dict[str, Any]] = []
+        checked = 0
+        generated_exact_matches = 0
+        top1_matches = 0
+        action_matches = 0
+        top6_total = 0
+
+        for snap in snapshots:
+            snap_ctx = _json_load(snap.get("context_json"), {})
+            if not isinstance(snap_ctx, dict):
+                continue
+            latest_poll = snap_ctx.get("snapshot_latest_poll")
+            if not isinstance(latest_poll, dict) or not latest_poll:
+                continue
+            cumulative_polls.append(latest_poll)
+
+            if max_snapshots > 0 and checked >= max_snapshots:
+                break
+
+            if not _snapshot_replayability_detail(snap_ctx).get("chain"):
+                continue
+
+            stored_ctx = _strip_snapshot_artifacts(dict(snap_ctx))
+            _, stored_result = _replay_snapshot_with_context(
+                session_date,
+                cumulative_polls,
+                stored_ctx,
+                baseline,
+                fallback_open_trades,
+                fallback_closed_trades,
+                source_tag="overlap_stored_chain",
+            )
+
+            candle_ctx, recon_errors = _reconstruct_context_for_snapshot_local(
+                session_date,
+                snap,
+                rows_by_index,
+                active_indexes=(index_key,),
+            )
+            if candle_ctx is None or recon_errors:
+                blocked_days.append(
+                    {
+                        "session_date": session_date,
+                        "errors": recon_errors or ["reconstructed_context_missing"],
+                        "snapshot_id": snap.get("id"),
+                        "poll_ts": snap.get("poll_ts"),
+                    }
+                )
+                continue
+
+            _, candle_result = _replay_snapshot_with_context(
+                session_date,
+                cumulative_polls,
+                candle_ctx,
+                baseline,
+                fallback_open_trades,
+                fallback_closed_trades,
+                source_tag="overlap_candle_chain",
+            )
+
+            stored_generated = _filter_candidates_for_index(stored_result.get("generated_candidates") or [], index_key)
+            candle_generated = _filter_candidates_for_index(candle_result.get("generated_candidates") or [], index_key)
+            generated_exact_match, _ = _compare_candidate_lists("overlap_generated", stored_generated, candle_generated)
+
+            stored_top1 = stored_generated[0] if stored_generated else None
+            candle_top1 = candle_generated[0] if candle_generated else None
+            top1_match = _candidate_key_without_id(stored_top1) == _candidate_key_without_id(candle_top1) if stored_top1 and candle_top1 else stored_top1 is None and candle_top1 is None
+
+            stored_action = (
+                "TRADE" if stored_top1 else "WAIT",
+                str((stored_top1 or {}).get("type") or (stored_top1 or {}).get("strategy_type") or "--"),
+            )
+            candle_action = (
+                "TRADE" if candle_top1 else "WAIT",
+                str((candle_top1 or {}).get("type") or (candle_top1 or {}).get("strategy_type") or "--"),
+            )
+            action_match = stored_action == candle_action
+
+            top6_overlap_count = _candidate_top_overlap_count(stored_generated, candle_generated, top_n=6)
+            shared_stored, shared_candle = _first_shared_candidate(stored_generated, candle_generated)
+            shared_metric_diff = _candidate_metric_diff(shared_stored, shared_candle)
+            shared_candidate = _candidate_short_str(shared_stored) if shared_stored else None
+
+            row = {
+                "session_date": session_date,
+                "snapshot_id": str(snap.get("id") or ""),
+                "poll_ts": str(snap.get("poll_ts") or _outcome_poll_ts(snap) or ""),
+                "generated_exact_match": generated_exact_match,
+                "top1_match": top1_match,
+                "action_match": action_match,
+                "stored_action": stored_action[0],
+                "stored_strategy": stored_action[1],
+                "candle_action": candle_action[0],
+                "candle_strategy": candle_action[1],
+                "stored_generated_count": len(stored_generated),
+                "candle_generated_count": len(candle_generated),
+                "top6_overlap_count": top6_overlap_count,
+                "shared_candidate": shared_candidate,
+                "shared_metric_diff": shared_metric_diff,
+            }
+            all_rows.append(row)
+            checked += 1
+            generated_exact_matches += 1 if generated_exact_match else 0
+            top1_matches += 1 if top1_match else 0
+            action_matches += 1 if action_match else 0
+            top6_total += top6_overlap_count
+
+            print(
+                f"[overlap] session={session_date} ts={row['poll_ts']} exact={generated_exact_match} "
+                f"top1={top1_match} action={action_match} stored_gen={len(stored_generated)} "
+                f"candle_gen={len(candle_generated)} top6_overlap={top6_overlap_count}"
+            )
+
+        if checked:
+            avg_top6_overlap = round(top6_total / checked, 3)
+            day_summaries.append(
+                {
+                    "session_date": session_date,
+                    "checked": checked,
+                    "generated_exact_matches": generated_exact_matches,
+                    "top1_matches": top1_matches,
+                    "action_matches": action_matches,
+                    "avg_top6_overlap": avg_top6_overlap,
+                    "historical_row_count": int(spec_summary.get("row_count") or 0),
+                }
+            )
+
+    report_text = _overlap_fidelity_markdown(
+        date_from=date_from,
+        date_to=date_to,
+        index_key=index_key,
+        rows=all_rows,
+        day_summaries=day_summaries,
+        blocked_days=blocked_days,
+    )
+    report_path.write_text(report_text, encoding="utf-8")
+    sidecar_path = report_path.with_suffix(".json")
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "date_from": date_from,
+                "date_to": date_to,
+                "index": index_key,
+                "rows": all_rows,
+                "day_summaries": day_summaries,
+                "blocked_days": blocked_days,
+            },
+            indent=2,
+            ensure_ascii=True,
+        ),
+        encoding="utf-8",
+    )
+    print(
+        f"[overlap] result=OK checked={len(all_rows)} days={len(day_summaries)} "
+        f"blocked_days={len(blocked_days)} report={report_path} sidecar={sidecar_path}"
+    )
+    return 0 if all_rows else 2
+
+
 def _load_live_generated(ctx: dict[str, Any]) -> list[Any]:
     generated = ctx.get("snapshot_generated_candidates")
     if not isinstance(generated, list) or not generated:
@@ -3368,6 +4648,84 @@ def _load_live_rejected(ctx: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]
     if not isinstance(stats, dict):
         stats = {}
     return rejected, stats
+
+
+def _candidate_map_without_id(rows: list[Any]) -> dict[tuple[Any, ...], dict[str, Any]]:
+    out: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        key = _candidate_key_without_id(row)
+        if key is None or not isinstance(row, dict):
+            continue
+        out[key] = row
+    return out
+
+
+def _candidate_top_overlap_count(left: list[Any], right: list[Any], top_n: int = 6) -> int:
+    left_keys = {
+        _candidate_key_without_id(row)
+        for row in left[:top_n]
+        if _candidate_key_without_id(row) is not None
+    }
+    right_keys = {
+        _candidate_key_without_id(row)
+        for row in right[:top_n]
+        if _candidate_key_without_id(row) is not None
+    }
+    return len(left_keys & right_keys)
+
+
+def _first_shared_candidate(
+    preferred_order: list[Any],
+    alternate_order: list[Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    alternate_map = _candidate_map_without_id(alternate_order)
+    for row in preferred_order:
+        key = _candidate_key_without_id(row)
+        if key is None or key not in alternate_map or not isinstance(row, dict):
+            continue
+        return row, alternate_map[key]
+    return None, None
+
+
+def _candidate_metric_snapshot(cand: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(cand, dict):
+        return {}
+    metrics = {
+        "id": cand.get("id"),
+        "type": cand.get("type") or cand.get("strategy_type"),
+        "netPremium": _normalize_number(cand.get("netPremium")),
+        "maxProfit": _normalize_number(cand.get("maxProfit")),
+        "maxLoss": _normalize_number(cand.get("maxLoss")),
+        "premiumEdge": _normalize_number(cand.get("premiumEdge")),
+        "creditWidthRatio": _normalize_number(cand.get("creditWidthRatio")),
+        "sigmaOTM": _normalize_number(cand.get("sigmaOTM")),
+    }
+    return metrics
+
+
+def _metric_diff(left: Any, right: Any) -> float | None:
+    left_num = _safe_float(left)
+    right_num = _safe_float(right)
+    if left_num is None or right_num is None:
+        return None
+    return round(right_num - left_num, 4)
+
+
+def _candidate_metric_diff(stored: dict[str, Any] | None, candle: dict[str, Any] | None) -> dict[str, Any]:
+    left = _candidate_metric_snapshot(stored)
+    right = _candidate_metric_snapshot(candle)
+    return {
+        "stored": left,
+        "candle": right,
+        "diff": {
+            "netPremium": _metric_diff(left.get("netPremium"), right.get("netPremium")),
+            "maxProfit": _metric_diff(left.get("maxProfit"), right.get("maxProfit")),
+            "maxLoss": _metric_diff(left.get("maxLoss"), right.get("maxLoss")),
+            "premiumEdge": _metric_diff(left.get("premiumEdge"), right.get("premiumEdge")),
+            "creditWidthRatio": _metric_diff(left.get("creditWidthRatio"), right.get("creditWidthRatio")),
+            "sigmaOTM": _metric_diff(left.get("sigmaOTM"), right.get("sigmaOTM")),
+        },
+    }
 
 
 def _normalize_rejected_candidate(cand: Any, index: int) -> dict[str, Any] | None:
@@ -5095,6 +6453,11 @@ def main() -> int:
     parser.add_argument("--class-b-extract-day", metavar="YYYY-MM-DD", help="Fetch one bounded local snapshot+candle extract for offline Class B parity.")
     parser.add_argument("--class-b-parity-day", metavar="YYYY-MM-DD", help="Attempt Class B reconstructed-chain parity for a known Class A day.")
     parser.add_argument("--class-b-local-day", metavar="YYYY-MM-DD", help="Run offline Class B parity from local extracted files.")
+    parser.add_argument("--overlap-fidelity", action="store_true", help="Compare stored-chain replay vs candle-modelled replay over an overlap window.")
+    parser.add_argument("--stored-live-verify", action="store_true", help="Compare saved live snapshot output vs stored-chain replay over a window.")
+    parser.add_argument("--g1-percentile-prereq", action="store_true", help="Run the G1 percentile-gate parity/source-mix prerequisite replay.")
+    parser.add_argument("--l2-calm-lane-audit", action="store_true", help="Run the L2 calm-lane wipe offline replay audit.")
+    parser.add_argument("--focus-only", action="store_true", help="Restrict verification to focus snapshot ids loaded from the sidecar report.")
     parser.add_argument("--audit-replayability", action="store_true", help="Audit saved snapshot exact-replay capture fields.")
     parser.add_argument("--audit-grade-b", action="store_true", help="Audit replay Grade B exclusions and ATM sampling.")
     parser.add_argument("--build-teacher-table", action="store_true", help="Build Stage 2A teacher table from GRADE_A_CHAIN snapshots.")
@@ -5108,6 +6471,7 @@ def main() -> int:
     parser.add_argument("--out-dir", default="parity_data", help="Output directory for local extract artifacts.")
     parser.add_argument("--teacher-table-out", default="app/src/main/assets/teacher_table_stage2a.json", help="Output path for --build-teacher-table.")
     parser.add_argument("--report-out", default="VERIFICATION_MATRIX_REPORT_FOR_CLAUDE_20260628.md", help="Output report path for matrix and audit commands.")
+    parser.add_argument("--history-from", default="2026-07-01", help="First percentile-history date used by --g1-percentile-prereq.")
     parser.add_argument("--min-prior", type=int, default=STAGE1_MIN_PRIOR_BUCKET_N, help="Minimum prior bucket n for teacher table confidence.")
     parser.add_argument("--index", choices=("NF", "BNF"), default="NF", help="Index lane for offline local Class B parity.")
     parser.add_argument(
@@ -5136,6 +6500,45 @@ def main() -> int:
         if not (args.date_from and args.date_to):
             parser.error("--class-b-audit requires --from and --to")
         return class_b_audit(args.date_from, args.date_to, sample_days=args.sample_days)
+    if args.overlap_fidelity:
+        if not (args.date_from and args.date_to):
+            parser.error("--overlap-fidelity requires --from and --to")
+        return overlap_fidelity_range(
+            args.date_from,
+            args.date_to,
+            index_key=args.index,
+            max_snapshots=args.max_snapshots,
+            report_out=args.report_out,
+        )
+    if args.stored_live_verify:
+        if not (args.date_from and args.date_to):
+            parser.error("--stored-live-verify requires --from and --to")
+        return stored_live_verification_range(
+            args.date_from,
+            args.date_to,
+            index_key=args.index,
+            focus_only=args.focus_only,
+            report_out=args.report_out,
+        )
+    if args.g1_percentile_prereq:
+        if not (args.date_from and args.date_to):
+            parser.error("--g1-percentile-prereq requires --from and --to")
+        return g1_percentile_gate_prereq(
+            args.date_from,
+            args.date_to,
+            history_from=args.history_from,
+            max_snapshots=args.max_snapshots,
+            report_out=args.report_out,
+        )
+    if args.l2_calm_lane_audit:
+        if not (args.date_from and args.date_to):
+            parser.error("--l2-calm-lane-audit requires --from and --to")
+        return l2_calm_lane_audit(
+            args.date_from,
+            args.date_to,
+            max_snapshots=args.max_snapshots,
+            report_out=args.report_out,
+        )
     if args.audit_replayability:
         if not (args.date_from and args.date_to):
             parser.error("--audit-replayability requires --from and --to")
