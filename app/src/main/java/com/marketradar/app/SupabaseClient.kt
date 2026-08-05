@@ -44,6 +44,18 @@ object SupabaseClient {
         val exceptionMessage: String? = null
     )
 
+    private data class ArrayPostResult(
+        val success: Boolean,
+        val table: String,
+        val code: Int? = null,
+        val message: String? = null,
+        val errorBody: String? = null,
+        val exceptionMessage: String? = null,
+        val failedChunkIndex: Int? = null,
+        val failedChunkRows: Int = 0,
+        val totalChunks: Int = 0
+    )
+
     private fun getBaseRequest(path: String): Request.Builder {
         return Request.Builder()
             .url("$URL/rest/v1/$path")
@@ -75,6 +87,22 @@ object SupabaseClient {
         "h2_entry_basis_points",
         "h2_bound_width_points",
         "h2_formula"
+    )
+
+    private val rejectedOutcomeColumns = setOf(
+        "id", "snapshot_id", "session_date", "poll_ts", "candidate_id", "lane", "index_key",
+        "trade_mode", "strategy_type", "role", "sim_pnl_h2", "outcome_h2", "canonical_won",
+        "managed_pnl", "managed_gross_pnl", "friction_cost", "exit_reason", "exit_step",
+        "exit_ts", "path_points_count", "r_multiple", "captured_pct", "is_success",
+        "risk_at_entry", "regime_bucket", "label_version", "teacher_config_version",
+        "tp_threshold", "sl_threshold", "break_even_win_rate_pct", "price_integrity",
+        "h2_price_integrity_reason", "premium_edge", "credit_width_ratio", "sigma_otm",
+        "rejection_stage", "rejection_reason", "gate_name", "gate_field", "observed_value",
+        "threshold_value", "margin", "margin_pct", "rejected_rank_in_snapshot",
+        "rejected_eval_rank", "rejected_eval_cap", "rejected_eval_source",
+        "stage_sample_fraction", "stage_total_rejected", "stage_normalizable",
+        "stage_skipped_not_evaluable", "rejected_eval_selection", "source_record_type",
+        "outcome_json", "app_version", "created_at"
     )
 
     private fun fetchSync(request: Request): String? {
@@ -279,8 +307,8 @@ object SupabaseClient {
         val endIso: String
     )
 
-    private fun postArrayToTable(table: String, body: JSONArray): Boolean {
-        if (body.length() == 0) return true
+    private fun postArrayToTableDetailed(table: String, body: JSONArray): ArrayPostResult {
+        if (body.length() == 0) return ArrayPostResult(success = true, table = table)
         val request = getBaseRequest(table)
             .header("Prefer", "resolution=merge-duplicates")
             .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
@@ -288,17 +316,29 @@ object SupabaseClient {
         return try {
             client.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
-                    true
+                    ArrayPostResult(success = true, table = table, code = response.code, message = response.message)
                 } else {
                     val err = response.body?.string() ?: ""
                     Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
-                    false
+                    LogBuffer.add('E', TAG, "POST_ARRAY_FAILED: table=$table status=${response.code} message=${response.message} body=${err.take(700)}")
+                    ArrayPostResult(
+                        success = false,
+                        table = table,
+                        code = response.code,
+                        message = response.message,
+                        errorBody = err
+                    )
                 }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Post exception ($table): ${e.message}")
-            false
+            LogBuffer.add('E', TAG, "POST_ARRAY_EXCEPTION: table=$table error=${e.message}")
+            ArrayPostResult(success = false, table = table, exceptionMessage = e.message)
         }
+    }
+
+    private fun postArrayToTable(table: String, body: JSONArray): Boolean {
+        return postArrayToTableDetailed(table, body).success
     }
 
     private fun splitJSONArray(body: JSONArray, chunkSize: Int): List<JSONArray> {
@@ -323,18 +363,37 @@ object SupabaseClient {
         body: JSONArray,
         chunkSize: Int = 250
     ): Boolean {
-        if (body.length() == 0) return true
+        return postArrayToTableChunkedDetailed(table, body, chunkSize).success
+    }
+
+    private fun postArrayToTableChunkedDetailed(
+        table: String,
+        body: JSONArray,
+        chunkSize: Int = 250
+    ): ArrayPostResult {
+        if (body.length() == 0) return ArrayPostResult(success = true, table = table)
         val chunks = splitJSONArray(body, chunkSize)
-        if (chunks.isEmpty()) return true
+        if (chunks.isEmpty()) return ArrayPostResult(success = true, table = table)
         var chunkIndex = 0
         for (chunk in chunks) {
             chunkIndex += 1
-            if (!postArrayToTable(table, chunk)) {
+            val result = postArrayToTableDetailed(table, chunk)
+            if (!result.success) {
                 Log.e(TAG, "Chunked post failed ($table) chunk=$chunkIndex/${chunks.size} rows=${chunk.length()}")
-                return false
+                LogBuffer.add(
+                    'E',
+                    TAG,
+                    "CHUNKED_POST_FAILED: table=$table chunk=$chunkIndex/${chunks.size} rows=${chunk.length()} " +
+                        "status=${result.code ?: "exception"} body=${result.errorBody?.take(700) ?: result.exceptionMessage.orEmpty()}"
+                )
+                return result.copy(
+                    failedChunkIndex = chunkIndex,
+                    failedChunkRows = chunk.length(),
+                    totalChunks = chunks.size
+                )
             }
         }
-        return true
+        return ArrayPostResult(success = true, table = table, totalChunks = chunks.size)
     }
 
     private fun countRows(table: String, filter: String? = null): Int {
@@ -524,6 +583,26 @@ object SupabaseClient {
 
     private fun putOptionalBoolean(row: JSONObject, src: JSONObject, key: String, dest: String = key) {
         optBooleanish(src, key)?.let { row.put(dest, it) }
+    }
+
+    private fun jsonKeys(obj: JSONObject): Set<String> {
+        val keys = linkedSetOf<String>()
+        val iterator = obj.keys()
+        while (iterator.hasNext()) {
+            keys.add(iterator.next())
+        }
+        return keys
+    }
+
+    private fun rejectedPayloadKeyDiff(rows: JSONArray): String {
+        val keys = linkedSetOf<String>()
+        for (i in 0 until rows.length()) {
+            rows.optJSONObject(i)?.let { keys.addAll(jsonKeys(it)) }
+        }
+        val unknown = keys.filterNot(rejectedOutcomeColumns::contains).sorted()
+        val missingRequired = listOf("id", "snapshot_id", "session_date", "candidate_id", "role")
+            .filterNot(keys::contains)
+        return "keys=${keys.size} unknown=$unknown missingRequired=$missingRequired"
     }
 
     private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
@@ -747,6 +826,24 @@ object SupabaseClient {
      * to the live brain.
      */
     fun getContextPercentileDailyHistory(maxDays: Int = 60): JSONArray {
+        fun sourceRank(row: JSONObject): Int {
+            return when (row.optString("history_source", "").trim().lowercase(Locale.US)) {
+                "live" -> 2
+                "backfill" -> 1
+                else -> 0
+            }
+        }
+
+        fun betterContextPercentileRow(candidate: JSONObject, existing: JSONObject?): Boolean {
+            if (existing == null) return true
+            val candidateRank = sourceRank(candidate)
+            val existingRank = sourceRank(existing)
+            if (candidateRank != existingRank) return candidateRank > existingRank
+            val candidateWindow = candidate.optString("history_window_end", "")
+            val existingWindow = existing.optString("history_window_end", "")
+            return candidateWindow > existingWindow
+        }
+
         val pageSize = 1000
         val maxPages = 8
         val allRows = JSONArray()
@@ -754,7 +851,7 @@ object SupabaseClient {
             val offset = page * pageSize
             val path =
                 "ml_context_percentile_history" +
-                    "?select=session_date,variable_name,value,history_window_end,pre_t_clean" +
+                    "?select=session_date,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60" +
                     "&order=session_date.desc,history_window_end.desc,variable_name.asc" +
                     "&limit=$pageSize&offset=$offset"
             val request = getBaseRequest(path).get().build()
@@ -773,15 +870,28 @@ object SupabaseClient {
         }
         if (allRows.length() == 0) return JSONArray()
 
-        val dayRows = LinkedHashMap<String, JSONObject>()
+        val dayOrder = LinkedHashSet<String>()
+        val selectedByDayVariable = LinkedHashMap<String, JSONObject>()
         for (i in 0 until allRows.length()) {
             val row = allRows.optJSONObject(i) ?: continue
             val sessionDate = row.optString("session_date", "").trim()
             val variableName = row.optString("variable_name", "").trim()
             if (sessionDate.isEmpty() || variableName.isEmpty()) continue
-            if (!dayRows.containsKey(sessionDate) && dayRows.size >= maxDays) {
+            if (!dayOrder.contains(sessionDate) && dayOrder.size >= maxDays) {
                 continue
             }
+            dayOrder.add(sessionDate)
+            val key = "$sessionDate|$variableName"
+            val existing = selectedByDayVariable[key]
+            if (betterContextPercentileRow(row, existing)) {
+                selectedByDayVariable[key] = row
+            }
+        }
+
+        val dayRows = LinkedHashMap<String, JSONObject>()
+        for ((_, row) in selectedByDayVariable) {
+            val sessionDate = row.optString("session_date", "").trim()
+            val variableName = row.optString("variable_name", "").trim()
             val dayObj = dayRows.getOrPut(sessionDate) {
                 JSONObject().put("date", sessionDate).put("session_date", sessionDate)
             }
@@ -797,6 +907,8 @@ object SupabaseClient {
             val percentileKey = "pct_$variableName"
             if (!dayObj.has(percentileKey) && row.has("value") && !row.isNull("value")) {
                 dayObj.put(percentileKey, row.optDouble("value"))
+                dayObj.put("${percentileKey}_history_source", row.optString("history_source", ""))
+                dayObj.put("${percentileKey}_support_count", row.optInt("support_count", 0))
             }
         }
 
@@ -1555,14 +1667,16 @@ object SupabaseClient {
             recommendationRowsLegacy
         )
         val rejectedWriteMode = if (rejectedRows.length() > 0) "separate_table" else "not_applicable"
-        val rejectedWriteSuccess = if (rejectedRows.length() > 0) {
-            postArrayToTableChunked(
+        val rejectedWriteResult = if (rejectedRows.length() > 0) {
+            val keyDiff = rejectedPayloadKeyDiff(rejectedRows)
+            LogBuffer.add('I', TAG, "REJECTED_RESEARCH_PAYLOAD_AUDIT: rows=${rejectedRows.length()} $keyDiff")
+            postArrayToTableChunkedDetailed(
                 "ml_rejected_candidate_outcomes?on_conflict=id",
                 rejectedRows,
                 chunkSize = 100
             )
         } else {
-            true
+            ArrayPostResult(success = true, table = "ml_rejected_candidate_outcomes")
         }
 
         val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")
@@ -1575,7 +1689,7 @@ object SupabaseClient {
         val evaluationSaved = evaluationWriteResult.success && evaluationPersisted >= evaluationWriteResult.expectedRows
         val recommendationSaved = recommendationPersisted > 0 && recommendationWriteResult.success
         val rejectedSaved = rejectedRows.length() == 0 ||
-            (rejectedWriteSuccess && rejectedPersisted >= rejectedRows.length())
+            (rejectedWriteResult.success && rejectedPersisted >= rejectedRows.length())
         val success = evaluationSaved
         val baseMessage = when {
             evaluationSaved && recommendationSaved ->
@@ -1592,7 +1706,16 @@ object SupabaseClient {
             rejectedSaved ->
                 " rejectedResearch=$rejectedPersisted/${rejectedRows.length()} mode=$rejectedWriteMode"
             else -> {
-                val warning = " REJECTED_RESEARCH_SAVE_FAILED expected=${rejectedRows.length()} persisted=$rejectedPersisted table=ml_rejected_candidate_outcomes migration_required."
+                val status = rejectedWriteResult.code?.toString() ?: "exception"
+                val detail = rejectedWriteResult.errorBody
+                    ?.replace(Regex("\\s+"), " ")
+                    ?.take(500)
+                    ?: rejectedWriteResult.exceptionMessage?.take(500)
+                    ?: "unknown_error"
+                val keyDiff = rejectedPayloadKeyDiff(rejectedRows)
+                val warning = " REJECTED_RESEARCH_SAVE_FAILED expected=${rejectedRows.length()} persisted=$rejectedPersisted " +
+                    "table=ml_rejected_candidate_outcomes status=$status chunk=${rejectedWriteResult.failedChunkIndex ?: 0}/${rejectedWriteResult.totalChunks} " +
+                    "$keyDiff error=$detail"
                 LogBuffer.add('E', TAG, warning.trim())
                 Log.e(TAG, warning.trim())
                 warning

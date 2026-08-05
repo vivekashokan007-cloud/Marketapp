@@ -1062,7 +1062,7 @@ class NativeBridge(private val context: Context) {
             status.put("pollCoverageState", coverage.state)
             status.put("coverageIntegrity", coverageIntegrity)
             status.put("coverageIntegrityIssue", coverageIntegrityIssue)
-            status.put("evaluationPromotionEligible", coverageIntegrity in setOf("COMPLETE", "COMPLETE_WITH_RETRIES"))
+            status.put("evaluationPromotionEligible", coverageIntegrity in setOf("COMPLETE", "COMPLETE_WITH_RETRIES", "PARTIAL"))
             status.put("evaluationTargetDate", targetDate ?: "")
             status.put("evaluationTargetIsToday", targetIsToday)
             status.put("evaluationReady", evaluationReady)
