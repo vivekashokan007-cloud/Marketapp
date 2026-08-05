@@ -550,6 +550,42 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertIn("contextPercentileInputs", candidates[0])
         self.assertLessEqual(abs(candidates[0]["contextPercentileScore"]), 0.35)
 
+    def test_context_percentile_history_prefers_namespaced_overlay_keys(self):
+        candidates = [_candidate("credit", "BEAR_CALL", 0.4)]
+        candidates[0]["isCredit"] = True
+        candidates[0]["ivRichness"] = 0.9
+        candidates[0]["creditWidthRatio"] = 0.35
+
+        premium_history = []
+        for i in range(30):
+            premium_history.append(
+                {
+                    "date": f"2026-07-{i + 1:02d}",
+                    "vix": 99.0,
+                    "pct_vix": 10 + i * 0.1,
+                    "fii_short_pct": 5.0,
+                    "pct_fii_short_pct": 20 + i,
+                    "pct_iv_richness_menu_median": 0.2 + i * 0.01,
+                    "pct_credit_width_ratio_menu_median": 0.10 + i * 0.005,
+                }
+            )
+        ctx = {
+            "vix": 16.0,
+            "fiiShort": 91,
+            "premiumHistory": premium_history,
+        }
+        polls = [{"time": "10:00", "vix": 16.0, "dayRangeSigma": 1.1}]
+
+        context = _build_context_percentiles(ctx, polls, candidates, [])
+
+        vix_cell = context["windows"]["30"]["vix"]
+        fii_cell = context["windows"]["30"]["fii_short_pct"]
+        self.assertAlmostEqual(vix_cell["min"], 10.0)
+        self.assertAlmostEqual(vix_cell["max"], 12.9)
+        self.assertAlmostEqual(fii_cell["min"], 20.0)
+        self.assertAlmostEqual(fii_cell["max"], 49.0)
+        self.assertIsNotNone(context["windows"]["30"]["iv_richness_menu_median"]["percentile"])
+
     def test_context_percentiles_extract_nested_market_inputs_without_zero_iv(self):
         ctx = {
             "morning_input": {

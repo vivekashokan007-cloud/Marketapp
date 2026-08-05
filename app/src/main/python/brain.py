@@ -5797,7 +5797,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.45"
+BRAIN_VERSION = "2.5.46"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6721,9 +6721,17 @@ def _history_rows_from_ctx(ctx):
 
 def _history_values(ctx, key_options, window):
     rows = _history_rows_from_ctx(ctx)
+    lookup_keys = []
+    for key in key_options:
+        key = str(key)
+        pct_key = f'pct_{key}'
+        if not key.startswith('pct_') and pct_key not in lookup_keys:
+            lookup_keys.append(pct_key)
+        if key not in lookup_keys:
+            lookup_keys.append(key)
     values = []
     for row in rows:
-        value = _row_value(row, key_options)
+        value = _row_value(row, lookup_keys)
         if value is not None:
             values.append(value)
     return values[-window:]
@@ -7133,10 +7141,10 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             + _earlier_poll_values(polls, ('fiiShort', 'fii_short_pct', 'fii_short'), window)
         )[-window:]
         day_range_hist = (
-            _history_values(ctx, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'), window)
+            _history_values(ctx, ('realized_day_range', 'dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'), window)
             + _earlier_poll_values(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'), window)
         )[-window:]
-        iv_richness_hist = _history_values(ctx, ('ivRichness', 'iv_richness'), window)
+        iv_richness_hist = _history_values(ctx, ('iv_richness_menu_median', 'ivRichness', 'iv_richness'), window)
         sigma_hist = _history_values(ctx, ('sigmaOTM', 'sigma_otm', 'sigma_otm_menu_median'), window)
         credit_width_hist = _history_values(ctx, ('creditWidthRatio', 'credit_width_ratio', 'credit_width_ratio_menu_median'), window)
         menu_win_hist = _history_values(ctx, ('menuWinRate', 'menu_win_rate', 'menu_win_rate_pct'), window)

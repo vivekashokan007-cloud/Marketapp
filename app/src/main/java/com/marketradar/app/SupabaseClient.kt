@@ -794,8 +794,9 @@ object SupabaseClient {
                     dayObj.put("history_window_end", historyWindowEnd)
                 }
             }
-            if (!dayObj.has(variableName) && row.has("value") && !row.isNull("value")) {
-                dayObj.put(variableName, row.optDouble("value"))
+            val percentileKey = "pct_$variableName"
+            if (!dayObj.has(percentileKey) && row.has("value") && !row.isNull("value")) {
+                dayObj.put(percentileKey, row.optDouble("value"))
             }
         }
 

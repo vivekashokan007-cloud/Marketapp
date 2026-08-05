@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b376: bootstrap persisted context percentiles into live brain history.
+        // b377: namespace persisted percentile history to prevent live input collisions.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 376
-        versionName = "2.5.45"
+        versionCode = 377
+        versionName = "2.5.46"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

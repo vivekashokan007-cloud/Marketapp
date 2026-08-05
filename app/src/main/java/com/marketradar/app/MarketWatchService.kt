@@ -93,6 +93,9 @@ class MarketWatchService : Service() {
 
     private fun mergeHistoryRowsByDate(base: JSONArray, overlay: JSONArray): JSONArray {
         val merged = LinkedHashMap<String, JSONObject>()
+        val protectedLiveKeys = setOf("vix", "pcr", "fii_short_pct")
+        var protectedOverwriteCount = 0
+        val protectedOverwriteKeys = linkedSetOf<String>()
 
         fun upsertAll(source: JSONArray, replaceExisting: Boolean) {
             for (i in 0 until source.length()) {
@@ -106,6 +109,10 @@ class MarketWatchService : Service() {
                     val key = names.optString(j).trim()
                     if (key.isEmpty()) continue
                     if (!replaceExisting && target.has(key)) continue
+                    if (replaceExisting && target.has(key) && protectedLiveKeys.contains(key)) {
+                        protectedOverwriteCount += 1
+                        protectedOverwriteKeys.add(key)
+                    }
                     target.put(key, row.opt(key))
                 }
                 if (!target.has("date")) target.put("date", day)
@@ -116,6 +123,10 @@ class MarketWatchService : Service() {
 
         upsertAll(base, replaceExisting = false)
         upsertAll(overlay, replaceExisting = true)
+        Log.i(
+            TAG,
+            "CTX_PERCENTILE_MERGE_COLLISION_CHECK: protectedOverwrites=$protectedOverwriteCount keys=${protectedOverwriteKeys.joinToString(",")}"
+        )
 
         val out = JSONArray()
         for ((_, row) in merged) {
@@ -129,10 +140,10 @@ class MarketWatchService : Service() {
         for (i in 0 until history.length()) {
             val row = history.optJSONObject(i) ?: continue
             if (
-                row.has("iv_richness_menu_median") ||
-                row.has("credit_width_ratio_menu_median") ||
-                row.has("sigma_otm_menu_median") ||
-                row.has("premium_edge_menu_median") ||
+                row.has("pct_iv_richness_menu_median") ||
+                row.has("pct_credit_width_ratio_menu_median") ||
+                row.has("pct_sigma_otm_menu_median") ||
+                row.has("pct_premium_edge_menu_median") ||
                 row.has("history_window_end")
             ) {
                 count += 1
