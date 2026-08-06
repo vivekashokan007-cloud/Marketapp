@@ -4,6 +4,7 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
 import android.os.*
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -194,6 +195,10 @@ class MarketWatchService : Service() {
         private const val POLL_SLOT_TRIGGER_LAG_MS = 5_000L
         private const val SERVICE_SELF_HEAL_REQ_CODE = 74052
         private const val SERVICE_SELF_HEAL_DELAY_MS = 15_000L
+        private const val FGS_BLOCKED_UNTIL_MS_KEY = "market_watch_fgs_blocked_until_ms"
+        private const val FGS_BLOCKED_COUNT_KEY = "market_watch_fgs_blocked_count"
+        private const val FGS_BLOCKED_BASE_BACKOFF_MS = 10 * 60 * 1000L
+        private const val FGS_BLOCKED_MAX_BACKOFF_MS = 30 * 60 * 1000L
         private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
         private const val UPSTOX_MARGIN_URL = "https://api.upstox.com/v2/charges/margin"
         private const val GENERATED_CANDIDATE_PERSIST_CAP = 50
@@ -387,6 +392,14 @@ class MarketWatchService : Service() {
             return START_NOT_STICKY
         }
 
+        if (foregroundStartBackoffRemainingMs() > 0L) {
+            val remainingMs = foregroundStartBackoffRemainingMs()
+            Log.w(TAG, "SERVICE_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
+            LogBuffer.add('W', TAG, "SERVICE_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val lease = claimLease()
         Log.w(TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
         LogBuffer.add('W', TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
@@ -396,10 +409,12 @@ class MarketWatchService : Service() {
         }
 
         try {
-            startForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
+            startLiveForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
+            clearForegroundStartBackoff()
         } catch (t: Throwable) {
             Log.e(TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
             LogBuffer.add('E', TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            recordForegroundStartBlocked(t)
             releaseLease()
             stopSelf()
             return START_NOT_STICKY
@@ -496,6 +511,41 @@ class MarketWatchService : Service() {
             .remove(LEASE_STARTED_MS_KEY)
             .remove(LEASE_HEARTBEAT_MS_KEY)
             .commit()
+    }
+
+    private fun startLiveForeground(id: Int, notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(id, notification)
+        }
+    }
+
+    private fun foregroundStartBackoffRemainingMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val untilMs = prefs.getLong(FGS_BLOCKED_UNTIL_MS_KEY, 0L)
+        return (untilMs - nowMs).coerceAtLeast(0L)
+    }
+
+    private fun clearForegroundStartBackoff() {
+        if (!prefs.contains(FGS_BLOCKED_UNTIL_MS_KEY) && !prefs.contains(FGS_BLOCKED_COUNT_KEY)) return
+        prefs.edit()
+            .remove(FGS_BLOCKED_UNTIL_MS_KEY)
+            .remove(FGS_BLOCKED_COUNT_KEY)
+            .commit()
+        LogBuffer.add('I', TAG, "SERVICE_START_BACKOFF_CLEARED")
+    }
+
+    private fun recordForegroundStartBlocked(t: Throwable) {
+        val now = System.currentTimeMillis()
+        val previousCount = prefs.getInt(FGS_BLOCKED_COUNT_KEY, 0)
+        val count = (previousCount + 1).coerceAtMost(6)
+        val backoffMs = (FGS_BLOCKED_BASE_BACKOFF_MS * count).coerceAtMost(FGS_BLOCKED_MAX_BACKOFF_MS)
+        prefs.edit()
+            .putInt(FGS_BLOCKED_COUNT_KEY, count)
+            .putLong(FGS_BLOCKED_UNTIL_MS_KEY, now + backoffMs)
+            .commit()
+        Log.w(TAG, "SERVICE_START_FOREGROUND_BACKOFF: count=$count backoffMs=$backoffMs error=${t.javaClass.simpleName}")
+        LogBuffer.add('W', TAG, "SERVICE_START_FOREGROUND_BACKOFF: count=$count backoffMs=$backoffMs error=${t.javaClass.simpleName}")
     }
 
     private suspend fun bootstrapFromSupabase() {
@@ -4230,13 +4280,14 @@ class MarketWatchService : Service() {
         if (!isMarketOpen()) return
         try {
             val am = getSystemService(ALARM_SERVICE) as AlarmManager
-            val triggerAt = SystemClock.elapsedRealtime() + SERVICE_SELF_HEAL_DELAY_MS
+            val delayMs = maxOf(SERVICE_SELF_HEAL_DELAY_MS, foregroundStartBackoffRemainingMs())
+            val triggerAt = SystemClock.elapsedRealtime() + delayMs
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()) {
                 am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, selfHealIntent())
             } else {
                 am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, selfHealIntent())
             }
-            LogBuffer.add('W', TAG, "SERVICE_SELF_HEAL_SCHEDULED")
+            LogBuffer.add('W', TAG, "SERVICE_SELF_HEAL_SCHEDULED: delayMs=$delayMs")
         } catch (e: Exception) {
             LogBuffer.add('W', TAG, "SERVICE_SELF_HEAL_FAIL: ${e.message}")
         }

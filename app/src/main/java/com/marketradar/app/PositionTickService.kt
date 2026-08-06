@@ -6,6 +6,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -46,12 +47,21 @@ class PositionTickService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (foregroundStartBackoffRemainingMs() > 0L) {
+            val remainingMs = foregroundStartBackoffRemainingMs()
+            Log.w(TAG, "POSITION_TICK_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
+            LogBuffer.add('W', TAG, "POSITION_TICK_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
+            stopSelf()
+            return
+        }
         try {
-            startForeground(NOTIFICATION_ID, buildNotification())
+            startTickForeground(NOTIFICATION_ID, buildNotification())
             foregroundReady = true
+            clearForegroundStartBackoff()
         } catch (t: Throwable) {
             Log.e(TAG, "POSITION_TICK_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
             LogBuffer.add('E', TAG, "POSITION_TICK_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            recordForegroundStartBlocked(t)
             stopSelf()
         }
     }
@@ -71,6 +81,41 @@ class PositionTickService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startTickForeground(id: Int, notification: android.app.Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(id, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+        } else {
+            startForeground(id, notification)
+        }
+    }
+
+    private fun foregroundStartBackoffRemainingMs(nowMs: Long = System.currentTimeMillis()): Long {
+        val untilMs = prefs.getLong(PREF_FGS_BLOCKED_UNTIL_MS, 0L)
+        return (untilMs - nowMs).coerceAtLeast(0L)
+    }
+
+    private fun clearForegroundStartBackoff() {
+        if (!prefs.contains(PREF_FGS_BLOCKED_UNTIL_MS) && !prefs.contains(PREF_FGS_BLOCKED_COUNT)) return
+        prefs.edit()
+            .remove(PREF_FGS_BLOCKED_UNTIL_MS)
+            .remove(PREF_FGS_BLOCKED_COUNT)
+            .commit()
+        LogBuffer.add('I', TAG, "POSITION_TICK_BACKOFF_CLEARED")
+    }
+
+    private fun recordForegroundStartBlocked(t: Throwable) {
+        val now = System.currentTimeMillis()
+        val previousCount = prefs.getInt(PREF_FGS_BLOCKED_COUNT, 0)
+        val count = (previousCount + 1).coerceAtMost(6)
+        val backoffMs = (FGS_BLOCKED_BASE_BACKOFF_MS * count).coerceAtMost(FGS_BLOCKED_MAX_BACKOFF_MS)
+        prefs.edit()
+            .putInt(PREF_FGS_BLOCKED_COUNT, count)
+            .putLong(PREF_FGS_BLOCKED_UNTIL_MS, now + backoffMs)
+            .commit()
+        Log.w(TAG, "POSITION_TICK_FOREGROUND_BACKOFF: count=$count backoffMs=$backoffMs error=${t.javaClass.simpleName}")
+        LogBuffer.add('W', TAG, "POSITION_TICK_FOREGROUND_BACKOFF: count=$count backoffMs=$backoffMs error=${t.javaClass.simpleName}")
+    }
 
     private suspend fun runLoop() {
         while (serviceScope.coroutineContext.isActive) {
@@ -566,6 +611,8 @@ class PositionTickService : Service() {
         private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
         private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
         private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
+        private const val PREF_FGS_BLOCKED_UNTIL_MS = "position_tick_fgs_blocked_until_ms"
+        private const val PREF_FGS_BLOCKED_COUNT = "position_tick_fgs_blocked_count"
         private const val NOTIFICATION_CHANNEL_ID = "position_tick_capture"
         private const val NOTIFICATION_ID = 23018
         private const val SOURCE = "P1_REST_60S"
@@ -573,6 +620,8 @@ class PositionTickService : Service() {
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
         private const val MAX_PENDING_TICKS = 1_500
+        private const val FGS_BLOCKED_BASE_BACKOFF_MS = 10 * 60 * 1000L
+        private const val FGS_BLOCKED_MAX_BACKOFF_MS = 30 * 60 * 1000L
         private const val MARKET_OPEN_MINUTES = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTES = 15 * 60 + 40
         private const val POLICY_EOD_MINUTES = 15 * 60 + 15
@@ -593,6 +642,12 @@ class PositionTickService : Service() {
                 JSONArray()
             }
             if (open.length() == 0 || !marketSessionActiveNow()) return
+            val blockedUntilMs = prefs.getLong(PREF_FGS_BLOCKED_UNTIL_MS, 0L)
+            val remainingMs = (blockedUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
+            if (remainingMs > 0L) {
+                LogBuffer.add('W', TAG, "POSITION_TICK_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
+                return
+            }
             val intent = Intent(context.applicationContext, PositionTickService::class.java)
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
