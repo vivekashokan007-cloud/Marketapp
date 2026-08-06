@@ -5798,7 +5798,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.50"
+BRAIN_VERSION = "2.5.51"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7659,8 +7659,8 @@ def _build3_apply_calm_nf_lane_gate(candidates, trade_mode, regime, cur_vix):
         reason = 'CALM_NF_LANE_RESTRICTION' if bnf_intraday else 'NONE'
         survivors = [c for c in cands if c.get('lane') != 'BNF_intraday']
     elif bnf_intraday:
-        reason = 'CALM_NF_ONLY_WAIT'
-        survivors = []
+        reason = 'CALM_BNF_ONLY_FALLBACK'
+        survivors = cands
     else:
         reason = 'NONE'
         survivors = cands

@@ -127,7 +127,7 @@ def test_calm_regime_with_nf_survivor_removes_bnf_intraday():
     assert summary["removed_by_lane"] == {"BNF_intraday": 1}
 
 
-def test_calm_regime_with_only_bnf_returns_wait():
+def test_calm_regime_with_only_bnf_falls_back_to_bnf():
     brain = load_brain()
     regime = {"type": "range", "sigma": 0.20}
     survivors, summary = brain._build3_apply_calm_nf_lane_gate(
@@ -136,13 +136,13 @@ def test_calm_regime_with_only_bnf_returns_wait():
         regime,
         12,
     )
-    assert survivors == []
-    assert summary["lane_gate_reason"] == "CALM_NF_ONLY_WAIT"
-    assert summary["n_bnf_removed_by_calm_lane_gate"] == 1
-    assert summary["n_removed_by_lane_gate"] == 1
-    assert summary["removed_candidate_ids"] == ["bnf"]
-    assert summary["removed_candidates"][0]["id"] == "bnf"
-    assert summary["removed_by_family"] == {"BEAR_CALL": 1}
+    assert [c["id"] for c in survivors] == ["bnf"]
+    assert summary["lane_gate_reason"] == "CALM_BNF_ONLY_FALLBACK"
+    assert summary["n_bnf_removed_by_calm_lane_gate"] == 0
+    assert summary["n_removed_by_lane_gate"] == 0
+    assert summary["removed_candidate_ids"] == []
+    assert summary["removed_candidates"] == []
+    assert summary["removed_by_family"] == {}
 
 
 def test_non_calm_regime_does_not_lane_gate():
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     test_credit_ev_positive_survives_a8()
     test_all_negative_candidate_set_returns_wait_reason()
     test_calm_regime_with_nf_survivor_removes_bnf_intraday()
-    test_calm_regime_with_only_bnf_returns_wait()
+    test_calm_regime_with_only_bnf_falls_back_to_bnf()
     test_non_calm_regime_does_not_lane_gate()
     test_build3_flow_reports_persistence_truncation()
     test_ranked_candidate_evidence_extends_beyond_ui_cap()
