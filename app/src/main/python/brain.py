@@ -17,7 +17,8 @@ BUILD3_EXPERIMENT_NAME = 'week1_a8_nf_calm_gate'
 BUILD3_EV_FLOOR_MULT = 1.10
 BUILD3_A8_HARD_GATE_ACTIVE = False
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
-BUILD3_RANKED_EVIDENCE_CAP = 150
+BUILD3_GENERATED_CANDIDATE_UI_CAP = 30
+BUILD3_RANKED_EVIDENCE_CAP = 200
 # Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
@@ -5798,7 +5799,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.52"
+BRAIN_VERSION = "2.5.56"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7778,7 +7779,7 @@ def _build3_candidate_flow_summary(
         'unexplained_drop_at_final_rank': max(0, final_rank_drop - capital_drop_final),
         'ranked_before_persistence': len(ranked),
         'generated_persisted': len(persisted),
-        'generated_candidate_cap': 30,
+        'generated_candidate_cap': BUILD3_GENERATED_CANDIDATE_UI_CAP,
         'ranked_evidence_cap': BUILD3_RANKED_EVIDENCE_CAP,
         'ranked_evidence_persisted': len(evidence),
         'truncated_at_ranked_evidence': max(0, len(ranked) - len(evidence)),
@@ -7843,17 +7844,26 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'executionGate': cand.get('executionGate'),
             'entryAction': cand.get('entryAction'),
             'directionSafe': cand.get('directionSafe'),
+            'varsityTier': cand.get('varsityTier'),
+            'forces': cand.get('forces'),
+            'forceAligned': (cand.get('forces') or {}).get('aligned', 0) if isinstance(cand.get('forces'), dict) else 0,
+            'forceAgainst': (cand.get('forces') or {}).get('against', 0) if isinstance(cand.get('forces'), dict) else 0,
             'brainScore': cand.get('brainScore'),
+            'contextScore': cand.get('contextScore'),
             'contextPercentileScore': cand.get('contextPercentileScore'),
+            'gammaRisk': cand.get('gammaRisk'),
+            'wallScore': cand.get('wallScore'),
             'p_ml': cand.get('p_ml'),
             'mlAction': cand.get('mlAction'),
             'mlEdge': cand.get('mlEdge'),
             'mlRegime': cand.get('mlRegime'),
             'mlUnsure': cand.get('mlUnsure'),
             'mlOodFlag': cand.get('mlOodFlag'),
+            'premium_edge_status': cand.get('premium_edge_status') or ('OK' if cand.get('premiumEdge') is not None else 'MISSING'),
             'deterministic_rank': cand.get('deterministic_rank'),
             'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
             'stage2a_live_rank': cand.get('stage2a_live_rank'),
+            'rank_diagnostics': cand.get('rank_diagnostics') or _build3_rank_fingerprint(cand),
         })
     return evidence
 
@@ -7890,21 +7900,139 @@ def _build3_candidate_brief(candidate, rank=None):
     }
 
 
-def _build3_rank_fingerprint(candidate):
+def _build3_candidate_structure_key(candidate):
     if not isinstance(candidate, dict):
         return None
+    legs = candidate.get('legs') if isinstance(candidate.get('legs'), list) else []
+    leg_parts = []
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        action = leg.get('action') or leg.get('side') or ''
+        opt_type = leg.get('type') or leg.get('optionType') or leg.get('option_type') or ''
+        strike = leg.get('strike') or leg.get('strikePrice') or leg.get('strike_price') or ''
+        leg_parts.append(f"{action}:{opt_type}:{strike}")
+    if not leg_parts:
+        leg_parts = [
+            f"SELL:{candidate.get('sellType') or ''}:{candidate.get('sellStrike') or ''}",
+            f"BUY:{candidate.get('buyType') or ''}:{candidate.get('buyStrike') or ''}",
+        ]
+        if candidate.get('sellStrike2') is not None or candidate.get('buyStrike2') is not None:
+            leg_parts.extend([
+                f"SELL:{candidate.get('sellType2') or ''}:{candidate.get('sellStrike2') or ''}",
+                f"BUY:{candidate.get('buyType2') or ''}:{candidate.get('buyStrike2') or ''}",
+            ])
+    return "|".join([
+        str(candidate.get('index') or ''),
+        str(candidate.get('lane') or ''),
+        str(candidate.get('type') or ''),
+        str(candidate.get('expiry') or ''),
+        str(candidate.get('width') or ''),
+        ";".join(leg_parts),
+    ])
+
+
+def _build3_structure_stability_marker(candidate):
+    if not isinstance(candidate, dict):
+        return None
+    raw_hold = (
+        candidate.get('structure_hold_index')
+        if candidate.get('structure_hold_index') is not None
+        else candidate.get('structureHoldIndex')
+        if candidate.get('structureHoldIndex') is not None
+        else candidate.get('consecutive_poll_hold_index')
+        if candidate.get('consecutive_poll_hold_index') is not None
+        else candidate.get('consecutivePollHoldIndex')
+    )
+    hold_index = None
+    if raw_hold is not None:
+        try:
+            hold_index = int(raw_hold)
+        except (TypeError, ValueError):
+            hold_index = None
     return {
-        'directionSafe': candidate.get('directionSafe', True),
-        'varsityTier': candidate.get('varsityTier'),
-        'teacher_rank_active': 1,
-        'teacher_score': 0.0,
-        'teacher_n': 0,
-        'premiumEdge': candidate.get('premiumEdge'),
+        'candidate_id': candidate.get('id') or candidate.get('candidate_id'),
+        'structure_key': _build3_candidate_structure_key(candidate),
+        'structure_hold_index': hold_index,
+        'structure_hold_index_source': 'candidate_supplied' if hold_index is not None else 'unavailable_at_ranker_scope',
+        'ranker_scope': 'single_poll_full_menu',
+    }
+
+
+def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, stage2a=None):
+    if not isinstance(candidate, dict):
+        return None
+    cal = calibration or {}
+    strat_cal = cal.get('strategy', {}) if isinstance(cal, dict) else {}
+    stage2a = stage2a or {}
+    teacher_live = bool(stage2a.get('ranking_active'))
+    forces = candidate.get('forces') if isinstance(candidate.get('forces'), dict) else {}
+    teacher_rank_active = bool(teacher_live and candidate.get('teacher_ranking_eligible'))
+    teacher_score = _safe_num(candidate.get('teacher_r_score'), 0.0) if teacher_rank_active else 0.0
+    teacher_n = int(candidate.get('teacher_bucket_n') or 0) if teacher_rank_active else 0
+    brain_verdict_alignment = 0
+    if brain_verdict and brain_verdict.get('action') and (brain_verdict.get('confidence', 0) >= 30):
+        is_buy = brain_verdict['action'] == 'BUY PREMIUM'
+        is_sell = brain_verdict['action'] == 'SELL PREMIUM'
+        is_debit = not candidate.get('isCredit')
+        is_4leg = candidate.get('type') in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+        if is_buy and is_debit:
+            brain_verdict_alignment = -2
+        elif is_sell and is_4leg:
+            brain_verdict_alignment = -2
+        elif is_sell and candidate.get('isCredit') and not is_4leg:
+            brain_verdict_alignment = -1
+        elif is_buy and is_4leg:
+            brain_verdict_alignment = 1
+        elif is_sell and is_debit:
+            brain_verdict_alignment = 1
+    strategy_stats = strat_cal.get(candidate.get('type'), {}) if isinstance(strat_cal, dict) else {}
+    calibration_win_rate = (
+        strategy_stats.get('wins') / strategy_stats.get('total')
+        if strategy_stats.get('total', 0) >= 3
+        else 0.5
+    )
+    premium_edge = candidate.get('premiumEdge') if candidate.get('premiumEdge') is not None else float('-inf')
+    context_percentile_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
+    context_plus_brain = (candidate.get('contextScore', 0) + candidate.get('brainScore', 0))
+    ml_unsure = bool(candidate.get('mlUnsure') or candidate.get('mlAction') == 'UNSURE')
+    ml_ood_low_conf = bool(candidate.get('mlOod') and (candidate.get('mlOodConf') or 1.0) < 0.6)
+    p_ml_effective = 0.0 if (ml_unsure or ml_ood_low_conf) else (candidate.get('p_ml') or 0.0)
+    premium_edge_sort_component = 'MISSING_LAST' if premium_edge == float('-inf') else -premium_edge
+    sort_tuple = (
+        0 if candidate.get('directionSafe', True) else 1,
+        0 if candidate.get('varsityTier') == 'PRIMARY' else 1,
+        0 if teacher_rank_active else 1,
+        -teacher_score,
+        -teacher_n,
+        premium_edge_sort_component,
+        -context_percentile_score,
+        brain_verdict_alignment,
+        -calibration_win_rate,
+        -forces.get('aligned', 0),
+        forces.get('against', 0),
+        -context_plus_brain,
+        candidate.get('gammaRisk', 0),
+        -candidate.get('wallScore', 0),
+        -candidate.get('probProfit', 0),
+        -p_ml_effective,
+    )
+    structure_stability = _build3_structure_stability_marker(candidate)
+    return {
+        'candidate_id': candidate.get('id') or candidate.get('candidate_id'),
+        'structure_stability_marker': structure_stability,
+        'rank_method_version': 'build3_rank_v2_premium_edge_first',
+        'teacher_rank_active': teacher_rank_active,
+        'teacher_score': teacher_score,
+        'teacher_n': teacher_n,
         'premium_edge_status': 'OK' if candidate.get('premiumEdge') is not None else 'MISSING',
-        'contextPercentileScore': candidate.get('contextPercentileScore'),
-        'probProfit': candidate.get('probProfit'),
-        'p_ml': candidate.get('p_ml') if not candidate.get('mlUnsure') else 0.0,
-        'note': 'rank tuple unchanged; teacher ranking inactive for BUILD 3',
+        'brain_verdict_alignment': brain_verdict_alignment,
+        'calibration_win_rate': calibration_win_rate,
+        'contextPlusBrainScore': context_plus_brain,
+        'p_ml_effective': p_ml_effective,
+        'ml_neutralized': bool(ml_unsure or ml_ood_low_conf),
+        'sort_tuple_fields': 'directionSafe|varsityTier|teacherActive|teacherScore|teacherN|premiumEdge|contextPercentile|brainVerdictAlignment|calibrationWinRate|forceAligned|forceAgainst|contextPlusBrain|gammaRisk|wallScore|probProfit|pMlEffective',
+        'sort_tuple': sort_tuple,
     }
 
 
@@ -9404,6 +9532,14 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
     ranked.sort(key=sort_key)
+    for rank, cand in enumerate(ranked, start=1):
+        cand['deterministic_rank'] = cand.get('deterministic_rank') or rank
+        cand['rank_diagnostics'] = _build3_rank_fingerprint(
+            cand,
+            calibration=cal,
+            brain_verdict=brain_verdict,
+            stage2a=stage2a,
+        )
     return ranked
 
 def _strategy_action(strategy_type):
@@ -10261,8 +10397,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 new_verdict=result.get('verdict'),
                 original_count=len(old_candidate_pool),
             )
-            # BR129: Cap at 30 for PWA consumption
-            result["generated_candidates"] = ranked[:30]
+            # BR129: Keep PWA payload compact; full ranking evidence is stored separately.
+            result["generated_candidates"] = ranked[:BUILD3_GENERATED_CANDIDATE_UI_CAP]
             result["ranked_candidates_full"] = _build3_ranked_candidate_evidence(
                 ranked,
                 watchlist=result.get("watchlist") or watchlist,

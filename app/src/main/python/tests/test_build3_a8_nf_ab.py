@@ -26,6 +26,11 @@ def cand(cid, index="NF", lane="NF_intraday", is_credit=True, prob=0.50, max_pro
         "varsityTier": "PRIMARY",
         "directionSafe": True,
         "capitalBlocked": False,
+        "forces": {"aligned": 1, "against": 0},
+        "contextScore": 0,
+        "brainScore": 0,
+        "gammaRisk": 0.1,
+        "wallScore": 0,
     }
 
 
@@ -178,7 +183,7 @@ def test_build3_flow_reports_persistence_truncation():
     assert flow["candidate_total_built"] == 35
     assert flow["ranked_before_persistence"] == 35
     assert flow["generated_persisted"] == 30
-    assert flow["generated_candidate_cap"] == 30
+    assert flow["generated_candidate_cap"] == brain.BUILD3_GENERATED_CANDIDATE_UI_CAP
     assert flow["ranked_evidence_persisted"] == 35
     assert flow["truncated_at_ranked_evidence"] == 0
     assert flow["truncated_at_persistence"] == 5
@@ -191,6 +196,18 @@ def test_ranked_candidate_evidence_extends_beyond_ui_cap():
     assert len(evidence) == 40
     assert evidence[0]["rank"] == 1
     assert evidence[0]["watchlist_rank"] == 1
+    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v2_premium_edge_first"
+    assert evidence[0]["rank_diagnostics"]["candidate_id"] == "c0"
+    assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["candidate_id"] == "c0"
+    assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["structure_hold_index_source"] == "unavailable_at_ranker_scope"
+    assert evidence[0]["rank_diagnostics"]["sort_tuple_fields"].startswith("directionSafe|varsityTier")
+    assert evidence[0]["varsityTier"] == "PRIMARY"
+    assert evidence[0]["forceAligned"] == 1
+    assert evidence[0]["forceAgainst"] == 0
+    assert evidence[0]["contextScore"] == 0
+    assert evidence[0]["gammaRisk"] == 0.1
+    assert evidence[0]["wallScore"] == 0
+    assert evidence[0]["premium_edge_status"] == "OK"
     assert evidence[31]["rank"] == 32
     assert evidence[31]["candidate_id"] == "c31"
 

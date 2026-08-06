@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b385: Reduce post-close evaluator snapshot memory pressure.
+        // b387: Add rank diagnostics evidence for candidate-selection root cause analysis.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 386
-        versionName = "2.5.55"
+        versionCode = 387
+        versionName = "2.5.56"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
