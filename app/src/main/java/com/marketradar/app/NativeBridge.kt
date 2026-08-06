@@ -207,7 +207,9 @@ class NativeBridge(private val context: Context) {
             "capitalBlocked", "executionReady", "executionGate", "entryAction", "directionSafe",
             "brainScore", "contextPercentileScore", "p_ml", "mlAction", "mlEdge", "mlRegime",
             "mlUnsure", "mlOodFlag", "deterministic_rank", "teacher_shadow_rank", "stage2a_live_rank",
-            "reason_code", "reject_reason"
+            "reason_code", "reject_reason",
+            "rejection_stage", "rejection_reason", "gate_name", "gate_field",
+            "observed_value", "threshold_value", "margin", "margin_pct"
         )
         for (key in keys) {
             val value = cand.opt(key)

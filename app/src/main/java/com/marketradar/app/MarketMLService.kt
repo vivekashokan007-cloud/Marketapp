@@ -763,7 +763,15 @@ class MarketMLService : Service() {
             "teacher_shadow_rank",
             "stage2a_live_rank",
             "reason_code",
-            "reject_reason"
+            "reject_reason",
+            "rejection_stage",
+            "rejection_reason",
+            "gate_name",
+            "gate_field",
+            "observed_value",
+            "threshold_value",
+            "margin",
+            "margin_pct"
         )
         for (key in keys) {
             val value = cand.opt(key)
@@ -925,6 +933,14 @@ class MarketMLService : Service() {
                     addCandidate(generated.opt(j))
                 }
             }
+
+            val rejected = parseJsonArray(context?.opt("snapshot_rejected_candidates_full"))
+                ?: parseJsonArray(context?.opt("snapshot_rejected_candidates"))
+            if (rejected != null) {
+                for (j in 0 until rejected.length()) {
+                    addCandidate(rejected.opt(j))
+                }
+            }
         }
 
         return keys.toList()
@@ -960,6 +976,14 @@ class MarketMLService : Service() {
         if (generated != null) {
             for (j in 0 until generated.length()) {
                 addCandidate(generated.opt(j))
+            }
+        }
+
+        val rejected = parseJsonArray(context?.opt("snapshot_rejected_candidates_full"))
+            ?: parseJsonArray(context?.opt("snapshot_rejected_candidates"))
+        if (rejected != null) {
+            for (j in 0 until rejected.length()) {
+                addCandidate(rejected.opt(j))
             }
         }
     }
