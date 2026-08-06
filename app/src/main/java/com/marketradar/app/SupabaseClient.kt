@@ -819,11 +819,14 @@ object SupabaseClient {
     }
 
     /**
-     * Reads the per-poll context percentile history and collapses it to one
+     * Reads daily-grain context percentile history and collapses it to one
      * enriched row per session date using the latest recorded value for each
      * variable on that day. This preserves the existing ctx premiumHistory
      * contract while making the persisted percentile-era variables available
      * to the live brain.
+     *
+     * Daily rows have poll_ts = NULL. Legacy poll-level backfills share the
+     * same history_source label, so the reader must pin grain structurally.
      */
     fun getContextPercentileDailyHistory(maxDays: Int = 60): JSONArray {
         fun sourceRank(row: JSONObject): Int {
@@ -851,7 +854,8 @@ object SupabaseClient {
             val offset = page * pageSize
             val path =
                 "ml_context_percentile_history" +
-                    "?select=session_date,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60" +
+                    "?select=session_date,poll_ts,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60" +
+                    "&poll_ts=is.null" +
                     "&order=session_date.desc,history_window_end.desc,variable_name.asc" +
                     "&limit=$pageSize&offset=$offset"
             val request = getBaseRequest(path).get().build()
