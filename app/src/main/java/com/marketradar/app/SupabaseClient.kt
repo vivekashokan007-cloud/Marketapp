@@ -89,7 +89,7 @@ object SupabaseClient {
         "h2_formula"
     )
 
-    private val rejectedOutcomeColumns = setOf(
+    private val rejectedOutcomeColumns = listOf(
         "id", "snapshot_id", "session_date", "poll_ts", "candidate_id", "lane", "index_key",
         "trade_mode", "strategy_type", "role", "sim_pnl_h2", "outcome_h2", "canonical_won",
         "managed_pnl", "managed_gross_pnl", "friction_cost", "exit_reason", "exit_step",
@@ -104,6 +104,7 @@ object SupabaseClient {
         "stage_skipped_not_evaluable", "rejected_eval_selection", "source_record_type",
         "outcome_json", "app_version", "created_at"
     )
+    private val rejectedOutcomeColumnSet = rejectedOutcomeColumns.toSet()
 
     private fun fetchSync(request: Request): String? {
         return try {
@@ -603,13 +604,43 @@ object SupabaseClient {
 
     private fun rejectedPayloadKeyDiff(rows: JSONArray): String {
         val keys = linkedSetOf<String>()
+        var keysetMismatches = 0
+        var firstMismatch = ""
         for (i in 0 until rows.length()) {
-            rows.optJSONObject(i)?.let { keys.addAll(jsonKeys(it)) }
+            rows.optJSONObject(i)?.let { row ->
+                val rowKeys = jsonKeys(row)
+                keys.addAll(rowKeys)
+                if (rowKeys != rejectedOutcomeColumnSet) {
+                    keysetMismatches += 1
+                    if (firstMismatch.isBlank()) {
+                        val missing = rejectedOutcomeColumns.filterNot(rowKeys::contains)
+                        val extra = rowKeys.filterNot(rejectedOutcomeColumnSet::contains).sorted()
+                        firstMismatch = " firstMismatchRow=$i missing=${missing.take(8)} missingCount=${missing.size} extra=$extra"
+                    }
+                }
+            }
         }
-        val unknown = keys.filterNot(rejectedOutcomeColumns::contains).sorted()
+        val unknown = keys.filterNot(rejectedOutcomeColumnSet::contains).sorted()
         val missingRequired = listOf("id", "snapshot_id", "session_date", "candidate_id", "role")
             .filterNot(keys::contains)
-        return "keys=${keys.size} unknown=$unknown missingRequired=$missingRequired"
+        return "keys=${keys.size}/${rejectedOutcomeColumns.size} unknown=$unknown missingRequired=$missingRequired keysetMismatches=$keysetMismatches$firstMismatch"
+    }
+
+    private fun canonicalizeRejectedOutcomeRows(rows: JSONArray): JSONArray {
+        val normalized = JSONArray()
+        for (i in 0 until rows.length()) {
+            val src = rows.optJSONObject(i) ?: continue
+            val row = JSONObject()
+            rejectedOutcomeColumns.forEach { key ->
+                if (src.has(key) && !src.isNull(key)) {
+                    row.put(key, src.opt(key))
+                } else {
+                    row.put(key, JSONObject.NULL)
+                }
+            }
+            normalized.put(row)
+        }
+        return normalized
     }
 
     private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
@@ -699,7 +730,7 @@ object SupabaseClient {
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return rows
+        return canonicalizeRejectedOutcomeRows(rows)
     }
 
     private fun buildRecommendationRows(sessionDate: String, body: JSONArray): JSONArray {
