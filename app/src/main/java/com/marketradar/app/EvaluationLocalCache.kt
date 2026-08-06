@@ -437,7 +437,7 @@ object EvaluationLocalCache {
                 if (key.isBlank() || seen.add(key)) out.put(row)
             }
             LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_READ: date=$sessionDate rows=${out.length()} bytes=${file.length()}")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_READ_FAIL: date=$sessionDate error=${e.message}")
         }
         return out

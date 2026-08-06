@@ -26,7 +26,7 @@ object SupabaseClient {
     // Supabase REST caps page payloads at 1000 rows in this project, so using
     // a larger requested limit causes offset-based pagination gaps.
     private const val CHAIN_PAGE_SIZE = 1000
-    private const val EVALUATION_SNAPSHOT_PAGE_SIZE = 12
+    private const val EVALUATION_SNAPSHOT_PAGE_SIZE = 1
     private const val EVALUATION_CHAIN_EXACT_MAX_PAGES = 200
     private const val EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES = 30
 
@@ -437,8 +437,15 @@ object SupabaseClient {
         val json = fetchSync(request) ?: return null
         return try {
             JSONArray(json)
+        } catch (oom: OutOfMemoryError) {
+            Log.e(TAG, "FETCH_ARRAY_OOM: path=$path bytes=${json.length} error=${oom.message}")
+            LogBuffer.add('E', TAG, "FETCH_ARRAY_OOM: path=${path.take(180)} bytes=${json.length}")
+            System.gc()
+            null
         } catch (_: Exception) {
             null
+        } finally {
+            System.gc()
         }
     }
 

@@ -1049,7 +1049,20 @@ class MarketMLService : Service() {
         )
 
         var snapshotsJsonArray = org.json.JSONArray()
-        if (snapshotResult.count == 0) {
+        if (!snapshotResult.complete || snapshotResult.count == 0) {
+            if (snapshotResult.count > 0) {
+                Log.w(
+                    TAG,
+                    "EVAL_SNAPSHOT_REMOTE_INCOMPLETE: date=$sessionDate source=${snapshotResult.source} rows=${snapshotResult.count} pages=${snapshotResult.pageCount}; using local fallback"
+                )
+                LogBuffer.add(
+                    'W',
+                    TAG,
+                    "EVAL_SNAPSHOT_REMOTE_INCOMPLETE: date=$sessionDate rows=${snapshotResult.count} pages=${snapshotResult.pageCount}"
+                )
+                snapshotsFile.delete()
+                snapshotLegKeys.clear()
+            }
             val localSnapshots = EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
             if (localSnapshots.length() > 0) {
                 Log.w(TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
