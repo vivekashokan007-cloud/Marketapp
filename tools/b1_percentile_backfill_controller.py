@@ -676,8 +676,8 @@ def tier1_premium_history(args: argparse.Namespace) -> int:
     lines.extend(coverage)
     written = 0
     if args.write:
-        if history_source not in _migration_allowed_history_sources():
-            raise RuntimeError(f"history_source={history_source!r} is not allowed by local migration. Refusing write.")
+        if args.history_source not in _migration_allowed_history_sources():
+            raise RuntimeError(f"history_source={args.history_source!r} is not allowed by local migration. Refusing write.")
         written = _post_rows(
             "ml_context_percentile_history",
             rows,
@@ -717,8 +717,8 @@ def tier1_premium_history(args: argparse.Namespace) -> int:
 
 
 def tier1_merged_daily(args: argparse.Namespace) -> int:
-    if args.write:
-        raise RuntimeError("Merged daily stage is report-only until source precedence is approved.")
+    if args.write and not args.allow_merged_write:
+        raise RuntimeError("Merged daily stage requires --allow-merged-write with --write.")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     premium_rows = _paged(
         "premium_history",
@@ -784,8 +784,19 @@ def tier1_merged_daily(args: argparse.Namespace) -> int:
 
     source_counts = Counter(source_by_day.values())
     coverage, status = _coverage_lines(rows)
+    written = 0
+    if args.write:
+        if args.history_source not in _migration_allowed_history_sources():
+            raise RuntimeError(f"history_source={args.history_source!r} is not allowed by local migration. Refusing write.")
+        written = _post_rows(
+            "ml_context_percentile_history",
+            rows,
+            write_chunk=args.write_chunk,
+            sleep_sec=args.sleep_sec,
+        )
+
     lines = [
-        "# B1 Tier 1 Merged Daily Percentile Backfill Dry Run",
+        "# B1 Tier 1 Merged Daily Percentile Backfill",
         "",
         f"- Generated at UTC: `{_now_utc()}`.",
         f"- Premium source rows read: `{len(premium_rows)}`.",
@@ -794,7 +805,8 @@ def tier1_merged_daily(args: argparse.Namespace) -> int:
         f"- Snapshot end: `{args.snapshot_end or 'latest'}`.",
         f"- Merged trading days: `{len(merged_daily)}`.",
         f"- Candidate percentile rows built: `{len(rows)}`.",
-        "- Supabase rows written: `0` dry-run.",
+        f"- Write requested: `{'YES' if args.write else 'NO'}`.",
+        f"- Supabase rows written: `{written}`.",
         f"- Source day counts: `{dict(source_counts)}`.",
         f"- CSV: `{csv_path}`.",
         "",
@@ -823,6 +835,7 @@ def tier1_merged_daily(args: argparse.Namespace) -> int:
             "snapshot_rows": len(snapshot_rows),
             "merged_days": len(merged_daily),
             "built_rows": len(rows),
+            "written_rows": written,
             "csv_path": str(csv_path),
             "report_path": str(report_path),
         },
@@ -835,6 +848,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", required=True, choices=("schema_probe", "tier1_premium_history", "tier1_merged_daily"))
     parser.add_argument("--write", action="store_true", help="Actually write to Supabase. Defaults to dry-run.")
+    parser.add_argument("--allow-merged-write", action="store_true", help="Required with --write for the merged daily stage.")
     parser.add_argument("--insert-missing-only", action="store_true", help="Filter rows already present for premium_history.")
     parser.add_argument("--history-source", default="backfill", help="history_source stamp. Keep 'backfill' unless schema is migrated.")
     parser.add_argument("--page-size", type=int, default=int(os.environ.get("B1_PAGE_SIZE") or "50"))

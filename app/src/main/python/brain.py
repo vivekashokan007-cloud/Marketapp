@@ -5798,7 +5798,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.48"
+BRAIN_VERSION = "2.5.49"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -12920,6 +12920,15 @@ def take_poll_snapshot(result, ctx, polls):
     build3_gate = result.get('build3_gate') if isinstance(result.get('build3_gate'), dict) else {}
     build3_lane_gate = build3_gate.get('lane') if isinstance(build3_gate.get('lane'), dict) else {}
     build3_flow = result.get('build3_flow') if isinstance(result.get('build3_flow'), dict) else {}
+    effective_bias = result.get('effective_bias') if isinstance(result.get('effective_bias'), dict) else {}
+    if not effective_bias and isinstance(ctx.get('effective_bias'), dict):
+        effective_bias = ctx.get('effective_bias') or {}
+    morning_bias = result.get('morningBias') if isinstance(result.get('morningBias'), dict) else {}
+    if not morning_bias and isinstance(ctx.get('morningBias'), dict):
+        morning_bias = ctx.get('morningBias') or {}
+    bias_net = _safe_num(effective_bias.get('net'), None)
+    if bias_net is None:
+        bias_net = _safe_num(morning_bias.get('net'), None)
     market_forces = {
         'app_version': BRAIN_VERSION,
         'brain_version': BRAIN_VERSION,
@@ -12932,6 +12941,9 @@ def take_poll_snapshot(result, ctx, polls):
         'breadth': latest_poll.get('breadth') or latest_poll.get('nf50Breadth'),
         'range_sigma': result.get('rangeSigma') or verdict.get('range_sigma') or verdict.get('rangeSigma'),
         'regime': result.get('regime') or verdict.get('regime'),
+        'bias_net': bias_net,
+        'effective_bias': effective_bias,
+        'morning_bias': morning_bias,
         'bnf_total_call_oi': latest_poll.get('bnfCOI'),
         'bnf_total_put_oi': latest_poll.get('bnfPOI'),
         'nf_total_call_oi': latest_poll.get('nfCOI'),
@@ -13023,6 +13035,9 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     snapshot_context['snapshot_app_version'] = BRAIN_VERSION
     snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
+    snapshot_context['bias_net'] = bias_net
+    snapshot_context['effective_bias'] = effective_bias
+    snapshot_context['morningBias'] = morning_bias
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_ranked_candidates_full'] = clean_ranked_full
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
