@@ -18,10 +18,10 @@ object EvaluationLocalCache {
     private const val MAX_ROWS_PER_SESSION = 90
     private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
     private const val MAX_SUMMARY_BYTES_PER_SESSION = 512L * 1024L
-    // Full-day brain snapshots are large because they carry chain/context evidence.
-    // Keep enough local evidence for post-close evaluation instead of trimming to a
-    // few rows and falsely marking an otherwise replayable session incomplete.
-    private const val MAX_BYTES_PER_SESSION = 64L * 1024L * 1024L
+    // Local fallback snapshots do not need the full raw poll payload. Keep enough
+    // compact evaluator-grade evidence for post-close replay without letting the
+    // phone accumulate tens of MB during the live session.
+    private const val MAX_BYTES_PER_SESSION = 16L * 1024L * 1024L
 
     private data class SnapshotFileState(
         val rows: LinkedHashMap<String, String>,
@@ -264,13 +264,104 @@ object EvaluationLocalCache {
         return if (out.length() > 0) out else null
     }
 
-    private fun compactCandidates(raw: Any?, limit: Int): JSONArray {
+    private fun compactCandidates(raw: Any?, limit: Int = Int.MAX_VALUE): JSONArray {
         val source = parseJsonArray(raw) ?: return JSONArray()
         val out = JSONArray()
         for (i in 0 until minOf(source.length(), limit)) {
             compactCandidate(source.opt(i))?.let(out::put)
         }
         return out
+    }
+
+    private fun compactBrainSnapshot(snapshot: JSONObject): JSONObject {
+        val compact = JSONObject()
+        val scalarKeys = arrayOf(
+            "id",
+            "recommendation_id",
+            "session_date",
+            "poll_ts",
+            "action",
+            "strategy",
+            "direction",
+            "confidence",
+            "is_labelable",
+            "brain_version",
+            "app_version",
+            "pre_alignment_action",
+            "pre_alignment_strategy",
+            "dominant_lane",
+            "dominant_count",
+            "execution_aligned"
+        )
+        for (key in scalarKeys) {
+            val value = snapshot.opt(key)
+            if (value != null && value != JSONObject.NULL) compact.put(key, value)
+        }
+
+        compactCandidate(snapshot.opt("primary_candidate_json"))?.let {
+            compact.put("primary_candidate_json", it.toString())
+        }
+
+        val context = parseJsonObject(snapshot.opt("context_json")) ?: JSONObject()
+        val generated = parseJsonArray(context.opt("snapshot_generated_candidates"))
+            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
+            ?: JSONArray()
+        val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
+        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
+            ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
+
+        val compactContext = JSONObject()
+        val contextKeys = arrayOf(
+            "vix",
+            "bnfSpot",
+            "nfSpot",
+            "significant_move",
+            "snapshot_generation_skip_reason"
+        )
+        for (key in contextKeys) {
+            val value = context.opt(key)
+            if (value != null && value != JSONObject.NULL) compactContext.put(key, value)
+        }
+
+        parseJsonArray(context.opt("snapshot_generation_skip_reasons"))?.let {
+            if (it.length() > 0) compactContext.put("snapshot_generation_skip_reasons", it)
+        }
+        parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let {
+            compactContext.put("snapshot_rejected_candidate_stats", it)
+        }
+        parseJsonObject(context.opt("snapshot_build3_gate"))?.let {
+            compactContext.put("snapshot_build3_gate", it)
+        }
+        parseJsonObject(context.opt("snapshot_build3_lane_gate"))?.let {
+            compactContext.put("snapshot_build3_lane_gate", it)
+        }
+        parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
+            compactContext.put("snapshot_build3_flow", it)
+        }
+
+        val gap = parseJsonObject(context.opt("gap"))
+        if (gap != null) {
+            val gapType = gap.opt("type")
+            if (gapType != null && gapType != JSONObject.NULL) {
+                compactContext.put("gap", JSONObject().put("type", gapType))
+            }
+        }
+
+        val compactGenerated = compactCandidates(generated)
+        val compactRankedFull = compactCandidates(rankedFull)
+        val compactRejected = compactCandidates(rejected)
+
+        compactContext.put("snapshot_generated_candidates", compactGenerated)
+        if (compactRankedFull.length() > 0) {
+            compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
+        }
+        if (compactRejected.length() > 0) {
+            compactContext.put("snapshot_rejected_candidates", compactRejected)
+        }
+
+        compact.put("context_json", compactContext.toString())
+        compact.put("top_candidates_json", compactGenerated.toString())
+        return compact
     }
 
     private fun compactSnapshotSummary(snapshot: JSONObject): JSONObject {
@@ -376,12 +467,15 @@ object EvaluationLocalCache {
             pruneExpiredCacheFiles(context)
             val file = brainSnapshotFile(context, sessionDate)
             val state = loadSnapshotState(file)
-            val key = snapshotKey(snapshot)
+            val compactSnapshot = compactBrainSnapshot(snapshot)
+            val key = snapshotKey(compactSnapshot)
             if (state.rows.containsKey(key)) {
                 LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_SKIP_DUP: date=$sessionDate key=$key")
                 return true
             }
-            val json = snapshot.toString()
+            val rawBytes = rowBytes(snapshot.toString())
+            val json = compactSnapshot.toString()
+            val compactBytes = rowBytes(json)
             state.rows[key] = json
             state.totalBytes += rowBytes(json)
             val byteCounterRef = longArrayOf(state.totalBytes)
@@ -403,9 +497,14 @@ object EvaluationLocalCache {
             } else {
                 file.appendText(json + "\n")
             }
+            LogBuffer.add(
+                'I',
+                TAG,
+                "LOCAL_SNAPSHOT_COMPACTED: date=$sessionDate rawBytes=$rawBytes compactBytes=$compactBytes"
+            )
             LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
             try {
-                appendSnapshotSummary(context, sessionDate, snapshot)
+                appendSnapshotSummary(context, sessionDate, compactSnapshot)
             } catch (summaryError: Throwable) {
                 LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_SUMMARY_APPEND_FAIL: date=$sessionDate error=${summaryError.message}")
             }
