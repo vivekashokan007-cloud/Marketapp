@@ -112,11 +112,13 @@ object NotificationHelper {
         type: String,
         tab: String? = null
     ) {
-        // 30-second throttle per unique title prevents notification bursts.
+        // 30-second throttle per rendered alert prevents bursts without merging
+        // different positions that share a generic title like Stop Loss Near.
         val now = System.currentTimeMillis()
-        val lastTime = lastNotifyTimes[title] ?: 0L
+        val throttleKey = "$type|$title|$body"
+        val lastTime = lastNotifyTimes[throttleKey] ?: 0L
         if (now - lastTime < 30_000L) return
-        lastNotifyTimes[title] = now
+        lastNotifyTimes[throttleKey] = now
 
         createChannels(context)
 

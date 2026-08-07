@@ -2893,6 +2893,112 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
 # ───────────────────────────────────────────────────────────────
 # DECISION #27 — evaluate_alerts
 # ───────────────────────────────────────────────────────────────
+def _alert_num(value, default=None):
+    try:
+        if value is None or value == '':
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _alert_money(value):
+    num = _alert_num(value)
+    if num is None:
+        return '₹--'
+    return f"₹{int(round(num)):,}"
+
+
+def _alert_strike(value):
+    num = _alert_num(value)
+    if num is None:
+        return '--'
+    return str(int(round(num)))
+
+
+def _alert_percent(value):
+    num = _alert_num(value)
+    if num is None:
+        return '--'
+    return f"{num:.0f}%"
+
+
+def _alert_lots(item):
+    lots = _alert_num(
+        item.get('lots')
+        or item.get('lot_count')
+        or item.get('lotCount')
+        or item.get('quantityLots')
+        or item.get('quantity_lots'),
+        1,
+    )
+    return f"{int(round(lots))} lot{'s' if int(round(lots)) != 1 else ''}"
+
+
+def _alert_strategy_strikes(item, camel=True):
+    if camel:
+        sell = item.get('sellStrike')
+        buy = item.get('buyStrike')
+        sell2 = item.get('sellStrike2')
+        buy2 = item.get('buyStrike2')
+    else:
+        sell = item.get('sell_strike')
+        buy = item.get('buy_strike')
+        sell2 = item.get('sell_strike2')
+        buy2 = item.get('buy_strike2')
+
+    primary = f"{_alert_strike(sell)}/{_alert_strike(buy)}"
+    if sell2 is not None or buy2 is not None:
+        return f"{primary} + {_alert_strike(sell2)}/{_alert_strike(buy2)}"
+    return primary
+
+
+def _entry_alert_body(cand, aligned):
+    cand_index = cand.get('index', '')
+    cand_type = cand.get('type', '')
+    side = 'Credit' if cand.get('isCredit', False) else 'Debit'
+    confidence = _alert_num(cand.get('confidence') or cand.get('score') or cand.get('rankScore'))
+    dte = cand.get('tDTE') if cand.get('tDTE') is not None else cand.get('dte')
+    first_line = f"{cand_index} {cand_type} {_alert_strategy_strikes(cand, camel=True)} · {_alert_lots(cand)}"
+    economics = (
+        f"{side} {_alert_money(cand.get('netPremium'))}"
+        f" · Max loss {_alert_money(cand.get('maxLoss'))}"
+        f" · TP {_alert_money(cand.get('targetProfit'))}"
+        f" · SL {_alert_money(cand.get('stopLoss'))}"
+    )
+    context = f"Forces {aligned}/3"
+    if confidence is not None:
+        context += f" · Confidence {_alert_percent(confidence)}"
+    if dte is not None:
+        context += f" · DTE {_alert_strike(dte)}"
+    return f"{first_line}\n{economics}\n{context}"
+
+
+def _position_alert_body(trade, current_pnl, action_text, quality_note='', pct_of_max=None):
+    t_index = trade.get('index_key', '')
+    t_type = trade.get('strategy_type', '')
+    t_forces = trade.get('forces') or {}
+    t_aligned = t_forces.get('aligned')
+    max_profit = _alert_num(trade.get('max_profit'))
+    max_loss = _alert_num(trade.get('max_loss'))
+    pnl = _alert_num(current_pnl, 0)
+    label = f"{t_index} {t_type} {_alert_strategy_strikes(trade, camel=False)} · {_alert_lots(trade)}"
+    risk_bits = []
+    if pct_of_max is not None:
+        risk_bits.append(f"{pct_of_max}% of max")
+    elif max_profit and pnl > 0:
+        risk_bits.append(f"{round(pnl / max_profit * 100)}% of max profit")
+    if max_loss and pnl < 0:
+        risk_bits.append(f"{round(abs(pnl) / max_loss * 100)}% of max loss")
+    risk_suffix = f" ({', '.join(risk_bits)})" if risk_bits else ''
+    detail = f"P&L {_alert_money(pnl)}{risk_suffix} · Max profit {_alert_money(max_profit)} · Max loss {_alert_money(max_loss)}"
+    if t_aligned is not None:
+        detail += f" · Forces {t_aligned}/3"
+    if quality_note:
+        detail += quality_note
+    return f"{label}\n{detail}\n{action_text}"
+
+
 def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict) -> list:
     alerts = []
     elapsed = ctx.get('mins_since_open', 0)
@@ -2921,8 +3027,6 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             cand_type = cand.get('type', '')
             sell_strike = cand.get('sellStrike', '')
             buy_strike = cand.get('buyStrike', '')
-            is_credit = cand.get('isCredit', False)
-            net_premium = cand.get('netPremium', 0)
 
             if aligned == 3 and prev_aligned < 3:
                 if elapsed < _CONST.get('LAST_ENTRY_CUTOFF', 345):
@@ -2931,7 +3035,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                         'category': 'WATCHLIST',
                         'priority': 'entry',
                         'title': '🎯 Entry Window',
-                        'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — 3/3 aligned. {'Credit' if is_credit else 'Debit'} ₹{net_premium}",
+                        'body': _entry_alert_body(cand, aligned),
                     })
             elif prev_aligned == 3 and aligned < 3:
                 alerts.append({
@@ -2950,7 +3054,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         t_type = trade.get('strategy_type', '')
         t_sell_strike = trade.get('sell_strike', '')
         t_id = trade.get('id', '')
-        current_pnl = trade.get('current_pnl', 0)
+        current_pnl = trade.get('current_pnl')
         max_profit = trade.get('max_profit', 0)
         max_loss = trade.get('max_loss', 0)
         t_forces = trade.get('forces') or {}
@@ -2961,16 +3065,24 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         completeness = ci_meta.get('signal_completeness_pct')
         degraded_live_mark = bool(quality and quality != 'full')
         low_ci_completeness = completeness is not None and completeness < 60
-        if degraded_live_mark or low_ci_completeness:
-            reason = f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}" if degraded_live_mark else f"CI signals {completeness}%"
+        quality_reasons = []
+        if degraded_live_mark:
+            quality_reasons.append(f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}")
+        if low_ci_completeness:
+            quality_reasons.append(f"CI signals {completeness}%")
+        quality_note = f" Mark degraded: {', '.join(quality_reasons)}." if quality_reasons else ''
+        if quality_reasons:
             alerts.append({
                 'key': f"POS_DATA_QUALITY_{t_id}",
                 'category': 'POSITION',
                 'priority': 'important',
                 'title': '🧪 Position Data Incomplete',
-                'body': f"{trade_label}: {reason}. Suppressing strong P&L/control alerts until data improves.",
+                'body': f"{trade_label}: {', '.join(quality_reasons)}. Risk/exit alerts remain active when P&L is computable.",
             })
-            continue
+            if current_pnl is None:
+                continue
+
+        current_pnl = current_pnl or 0
 
         if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
             pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
@@ -2979,7 +3091,13 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'category': 'POSITION',
                 'priority': 'urgent',
                 'title': '💰 Target Near',
-                'body': f"{trade_label} P&L ₹{current_pnl} ({pct_of_max}% of max). Book profit.",
+                'body': _position_alert_body(
+                    trade,
+                    current_pnl,
+                    'Book profit.',
+                    quality_note=quality_note,
+                    pct_of_max=pct_of_max,
+                ),
             })
         if max_loss and current_pnl <= -max_loss * _CONST.get('STOP_LOSS_RATIO', 0.7):
             alerts.append({
@@ -2987,7 +3105,12 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'category': 'POSITION',
                 'priority': 'urgent',
                 'title': '🛑 Stop Loss Near',
-                'body': f"{trade_label} P&L ₹{current_pnl}. Cut position.",
+                'body': _position_alert_body(
+                    trade,
+                    current_pnl,
+                    'Cut position.',
+                    quality_note=quality_note,
+                ),
             })
         if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
             alerts.append({
@@ -2995,7 +3118,12 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'category': 'POSITION',
                 'priority': 'urgent',
                 'title': '⚡ Book Profit',
-                'body': f"{trade_label} Forces {t_aligned}/3 but profitable ₹{current_pnl}. Take it.",
+                'body': _position_alert_body(
+                    trade,
+                    current_pnl,
+                    'Forces weak while profitable. Take it.',
+                    quality_note=quality_note,
+                ),
             })
 
     if significant_move:
@@ -5799,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.57"
+BRAIN_VERSION = "2.5.58"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -15802,6 +15930,7 @@ class NotificationAgent:
                 'best_candidate_id': None,
                 'best_candidate_history': [],
                 'position_alert_keys': [],
+                'position_alert_states': [],
                 'operational_alert_keys': [],
             }
         self.last_state = {
@@ -15815,6 +15944,7 @@ class NotificationAgent:
         self.verdict_history = list(state.get('verdict_history', []) or [])
         self.best_candidate_history = list(state.get('best_candidate_history', []) or [])
         self.position_alert_keys = set(state.get('position_alert_keys', []) or [])
+        self.position_alert_states = set(state.get('position_alert_states', []) or [])
         self.operational_alert_keys = set(state.get('operational_alert_keys', []) or [])
 
     def _best_executable_candidate(self, result):
@@ -15854,6 +15984,17 @@ class NotificationAgent:
 
     def _position_alert_notification_kind(self, alert):
         return 'EXIT' if self._position_alert_decision_type(alert) == 'POSITION_EXIT' else 'RISK'
+
+    def _position_alert_state_key(self, alert):
+        key = str((alert or {}).get('key') or '').strip()
+        if not key:
+            return ''
+        parts = key.split('_', 2)
+        if len(parts) >= 3:
+            state = '_'.join(parts[:2])
+            trade_id = parts[2]
+            return f"{trade_id}:{state}"
+        return key
 
     def _resolve_source_mode(self, result, verdict, best):
         decision_source = str(
@@ -16001,11 +16142,68 @@ class NotificationAgent:
             )
         return None
 
+    def _entry_contract_diagnostics(self, action, confidence, entry_window_active, best_id):
+        stable_action = (
+            len(self.verdict_history) >= 2
+            and self.verdict_history[-2:] == [action, action]
+        )
+        stable_best = (
+            len(self.best_candidate_history) >= 2
+            and self.best_candidate_history[-2:] == [best_id, best_id]
+        )
+        two_poll_stability = stable_action and stable_best
+        conditions = [
+            {
+                'name': 'action_not_wait',
+                'passed': action != 'WAIT',
+                'observed': action,
+                'threshold': '!= WAIT',
+            },
+            {
+                'name': 'confidence_min',
+                'passed': confidence >= 55,
+                'observed': round(confidence, 2),
+                'threshold': 55,
+            },
+            {
+                'name': 'entry_window_active',
+                'passed': bool(entry_window_active),
+                'observed': bool(entry_window_active),
+                'threshold': True,
+            },
+            {
+                'name': 'executable_candidate_present',
+                'passed': bool(best_id),
+                'observed': best_id,
+                'threshold': 'non-empty candidate id',
+            },
+            {
+                'name': 'two_poll_stability',
+                'passed': two_poll_stability,
+                'observed': {
+                    'stable_action': stable_action,
+                    'stable_candidate': stable_best,
+                    'recent_actions': list(self.verdict_history[-2:]),
+                    'recent_candidate_ids': list(self.best_candidate_history[-2:]),
+                },
+                'threshold': 'same action and same candidate for 2 consecutive polls',
+            },
+        ]
+        failed = [item['name'] for item in conditions if not item['passed']]
+        return {
+            'schema': 1,
+            'scope': 'entry_notification_contract',
+            'eligible': not failed,
+            'failed_conditions': failed,
+            'conditions': conditions,
+        }
+
     def snapshot_state(self):
         full = dict(self.last_state)
         full['verdict_history'] = list(self.verdict_history)
         full['best_candidate_history'] = list(self.best_candidate_history)
         full['position_alert_keys'] = sorted(self.position_alert_keys)
+        full['position_alert_states'] = sorted(self.position_alert_states)
         full['operational_alert_keys'] = sorted(self.operational_alert_keys)
         return full
 
@@ -16038,6 +16236,11 @@ class NotificationAgent:
             for alert in position_alerts
             if str(alert.get('key') or '').strip()
         }
+        current_position_states = {
+            self._position_alert_state_key(alert)
+            for alert in position_alerts
+            if self._position_alert_state_key(alert)
+        }
         current_operational_keys = {
             str(alert.get('key') or '').strip()
             for alert in operational_alerts
@@ -16045,7 +16248,7 @@ class NotificationAgent:
         }
         unseen_position_alerts = [
             alert for alert in position_alerts
-            if str(alert.get('key') or '').strip() not in self.position_alert_keys
+            if self._position_alert_state_key(alert) not in self.position_alert_states
         ]
         unseen_operational_alerts = [
             alert for alert in operational_alerts
@@ -16058,6 +16261,12 @@ class NotificationAgent:
         self.best_candidate_history.append(best_id)
         if len(self.best_candidate_history) > 6:
             self.best_candidate_history.pop(0)
+        entry_contract_diagnostics = self._entry_contract_diagnostics(
+            action,
+            confidence,
+            ctx.get('entry_window_active', False),
+            best_id,
+        )
 
         contract = None
 
@@ -16160,18 +16369,30 @@ class NotificationAgent:
                 reason_text='No actionable trading notification for this poll.',
             )
 
-        if unseen_position_alerts:
-            contract = self._position_alert_to_contract(unseen_position_alerts[0], base)
+        position_notification_contracts = [
+            self._position_alert_to_contract(alert, base)
+            for alert in unseen_position_alerts
+        ]
+
+        if position_notification_contracts:
+            contract = position_notification_contracts[0]
         elif unseen_operational_alerts and not (contract or {}).get('notify_user'):
             operational_contract = self._operational_alert_to_contract(unseen_operational_alerts[0], base)
             if operational_contract is not None:
                 contract = operational_contract
 
+        contract = self._build_contract(
+            contract or base,
+            entry_contract_diagnostics=entry_contract_diagnostics,
+        )
+
         self.position_alert_keys = current_position_keys
+        self.position_alert_states.update(current_position_states)
         self.operational_alert_keys = current_operational_keys
 
         return {
             'brain_notification': contract,
+            'brain_notifications': position_notification_contracts if position_notification_contracts else [],
             'agent_state': self.snapshot_state(),
         }
 

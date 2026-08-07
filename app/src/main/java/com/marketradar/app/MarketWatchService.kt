@@ -2971,10 +2971,22 @@ class MarketWatchService : Service() {
             }
 
             val transportMode = prefs.getString(PREF_NOTIFICATION_TRANSPORT_MODE, "live") ?: "live"
-            val dispatched = dispatchUnifiedBrainNotification(brainNotification, transportMode)
+            val brainNotifications = payload.optJSONArray("brain_notifications")
+            var dispatchedCount = 0
+            if (brainNotifications != null && brainNotifications.length() > 0) {
+                for (i in 0 until brainNotifications.length()) {
+                    val contract = brainNotifications.optJSONObject(i)
+                    if (dispatchUnifiedBrainNotification(contract, transportMode)) dispatchedCount += 1
+                }
+            } else if (dispatchUnifiedBrainNotification(brainNotification, transportMode)) {
+                dispatchedCount = 1
+            }
+            val dispatched = dispatchedCount > 0
             val transportMeta = JSONObject().apply {
                 put("mode", transportMode)
                 put("dispatched", dispatched)
+                put("dispatched_count", dispatchedCount)
+                put("contract_count", brainNotifications?.length() ?: if (brainNotification != null) 1 else 0)
                 put("notify_user", brainNotification?.optBoolean("notify_user", false) ?: false)
                 put("decision_type", brainNotification?.optString("decision_type", "WAIT") ?: "WAIT")
                 put("reason_code", brainNotification?.optString("reason_code", "") ?: "")
@@ -2988,7 +3000,7 @@ class MarketWatchService : Service() {
             LogBuffer.add(
                 'I',
                 TAG,
-                "BRAIN_NOTIFICATION_MODE: mode=$transportMode dispatched=$dispatched notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+                "BRAIN_NOTIFICATION_MODE: mode=$transportMode dispatched=$dispatched count=$dispatchedCount notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
             )
         } catch (e: Exception) {
             Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")

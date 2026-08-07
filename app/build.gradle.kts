@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b388: Compact local full-session snapshot cache to reduce process death/relaunch pressure.
+        // b389: Restore position notification reachability and diagnostics.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 388
-        versionName = "2.5.57"
+        versionCode = 389
+        versionName = "2.5.58"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
