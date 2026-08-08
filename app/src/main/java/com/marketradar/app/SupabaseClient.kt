@@ -97,7 +97,8 @@ object SupabaseClient {
         "risk_at_entry", "regime_bucket", "label_version", "teacher_config_version",
         "tp_threshold", "sl_threshold", "break_even_win_rate_pct", "price_integrity",
         "h2_price_integrity_reason", "premium_edge", "credit_width_ratio", "sigma_otm",
-        "rejection_stage", "rejection_reason", "gate_name", "gate_field", "observed_value",
+        "iv_richness", "width", "prob_profit", "rejection_stage", "rejection_reason",
+        "gate_name", "gate_field", "observed_value",
         "threshold_value", "margin", "margin_pct", "rejected_rank_in_snapshot",
         "rejected_eval_rank", "rejected_eval_cap", "rejected_eval_source",
         "stage_sample_fraction", "stage_total_rejected", "stage_normalizable",
@@ -702,12 +703,18 @@ object SupabaseClient {
                 "premium_edge",
                 "credit_width_ratio",
                 "sigma_otm",
+                "iv_richness",
+                "width",
+                "prob_profit",
                 "observed_value",
                 "threshold_value",
                 "margin",
                 "margin_pct",
                 "stage_sample_fraction"
             ).forEach { key -> putOptionalDouble(row, src, key) }
+            putOptionalDouble(row, src, "ivRichness", "iv_richness")
+            putOptionalDouble(row, src, "probProfit", "prob_profit")
+            putOptionalDouble(row, src, "width", "width")
 
             listOf(
                 "exit_step",

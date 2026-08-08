@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b390: Preserve candidate margin provenance and rejected-candidate parity evidence.
+        // b391: Capture rejected parity fields and margin shadow evidence.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 390
-        versionName = "2.5.59"
+        versionCode = 391
+        versionName = "2.5.60"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

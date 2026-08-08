@@ -201,6 +201,7 @@ class MarketWatchService : Service() {
         private const val FGS_BLOCKED_MAX_BACKOFF_MS = 30 * 60 * 1000L
         private const val ELEPHANT_BASE_URL = "https://marketradar-oracle.online"
         private const val UPSTOX_MARGIN_URL = "https://api.upstox.com/v2/charges/margin"
+        private const val MARGIN_SHADOW_CANDIDATE_CAP = 10
         private const val GENERATED_CANDIDATE_PERSIST_CAP = 50
         private const val DAY_EVAL_HANDOFF_TS_KEY = "day_eval_handoff_ts"
         private const val DAY_EVAL_HANDOFF_DATE_KEY = "day_eval_handoff_date"
@@ -3593,27 +3594,37 @@ class MarketWatchService : Service() {
         marginQuoteCache.clear()
     }
 
-    private fun selectTopCandidateForMargin(resultObj: JSONObject): JSONObject? {
-        val arrays = listOf(
-            resultObj.optJSONArray("watchlist"),
-            resultObj.optJSONArray("generated_candidates"),
-            resultObj.optJSONArray("candidates")
-        )
-        for (arr in arrays) {
-            if (arr == null) continue
+    private fun candidateKey(candidate: JSONObject): String =
+        candidate.optString("id", "").ifBlank { candidate.optString("candidate_id", "") }.trim()
+
+    private fun isMarginQuoteCandidate(candidate: JSONObject): Boolean {
+        if (candidate.optBoolean("capitalBlocked", false)) return false
+        if (candidate.has("executionReady") && !candidate.optBoolean("executionReady", true)) return false
+        if (candidate.optBoolean("blocked", false)) return false
+        if (candidate.optString("entryAction", "").equals("BLOCKED", ignoreCase = true)) return false
+        if (candidate.has("directionSafe") && !candidate.optBoolean("directionSafe", true)) return false
+        if (candidateKey(candidate).isBlank()) return false
+        if (candidate.optString("type", "").isBlank()) return false
+        return true
+    }
+
+    private fun collectMarginShadowCandidates(resultObj: JSONObject, cap: Int): List<JSONObject> {
+        if (cap <= 0) return emptyList()
+        val selected = mutableListOf<JSONObject>()
+        val seen = linkedSetOf<String>()
+        val arrays = listOf("watchlist", "generated_candidates", "candidates")
+        for (name in arrays) {
+            val arr = resultObj.optJSONArray(name) ?: continue
             for (i in 0 until arr.length()) {
+                if (selected.size >= cap) return selected
                 val candidate = arr.optJSONObject(i) ?: continue
-                if (candidate.optBoolean("capitalBlocked", false)) continue
-                if (candidate.has("executionReady") && !candidate.optBoolean("executionReady", true)) continue
-                if (candidate.optBoolean("blocked", false)) continue
-                if (candidate.optString("entryAction", "").equals("BLOCKED", ignoreCase = true)) continue
-                if (candidate.has("directionSafe") && !candidate.optBoolean("directionSafe", true)) continue
-                if (candidate.optString("id", "").isBlank()) continue
-                if (candidate.optString("type", "").isBlank()) continue
-                return candidate
+                if (!isMarginQuoteCandidate(candidate)) continue
+                val id = candidateKey(candidate)
+                if (!seen.add(id)) continue
+                selected.add(candidate)
             }
         }
-        return null
+        return selected
     }
 
     private fun buildMarginPayload(candidate: JSONObject): Pair<String, JSONArray>? {
@@ -3743,6 +3754,14 @@ class MarketWatchService : Service() {
         candidate.put("marginQuote", quote.toJson())
     }
 
+    private fun annotateMarginQuoteSkipped(candidate: JSONObject, reason: String) {
+        candidate.put("marginQuoteStatus", "SKIPPED")
+        candidate.put("marginQuoteError", reason)
+        candidate.put("marginSizingBehavior", "EVIDENCE_ONLY_DO_NOT_RANK")
+        if (!candidate.has("marginSource")) candidate.put("marginSource", "STATIC_FALLBACK")
+        if (!candidate.has("marginFallbackUsed")) candidate.put("marginFallbackUsed", true)
+    }
+
     private fun annotateMatchingCandidates(resultObj: JSONObject, candidateId: String, quote: MarginQuote) {
         val arrays = listOf("watchlist", "generated_candidates", "candidates")
         for (name in arrays) {
@@ -3763,62 +3782,78 @@ class MarketWatchService : Service() {
             return
         }
 
-        val candidate = selectTopCandidateForMargin(resultObj)
-        if (candidate == null) {
-            LogBuffer.add('I', TAG, "MARGIN_SKIP: no actionable candidate surfaced")
-            return
-        }
-        val candidateId = candidate.optString("id", "")
-        val payload = buildMarginPayload(candidate)
-        if (payload == null) {
-            LogBuffer.add('W', TAG, "MARGIN_SKIP: candidate=$candidateId missing leg instrument keys or lot size")
-            candidate.put("marginQuoteStatus", "SKIPPED")
-            candidate.put("marginQuoteError", "candidate_missing_margin_inputs")
+        val marginCandidates = collectMarginShadowCandidates(resultObj, MARGIN_SHADOW_CANDIDATE_CAP)
+        if (marginCandidates.isEmpty()) {
+            LogBuffer.add('I', TAG, "MARGIN_SKIP: no actionable candidate surfaced for shadow quote")
             return
         }
 
-        val (cacheKey, instruments) = payload
-        val quote = marginQuoteCache.getOrPut(cacheKey) {
-            fetchMarginQuote(authToken, instruments)
-        }
-        annotateMarginQuote(candidate, quote)
-        annotateMatchingCandidates(resultObj, candidateId, quote)
-
-        val marginJson = quote.toJson().apply {
-            put("candidate_id", candidateId)
-            put("candidate_type", candidate.optString("type"))
-            put("candidate_index", candidate.optString("index"))
-            put("brain_max_loss", candidate.optDouble("maxLoss", Double.NaN).takeIf { it.isFinite() })
-            put("lot_size", candidate.optInt("lotSize", 0))
-            put("instrument_count", instruments.length())
-            put("request_payload", JSONObject().put("instruments", instruments))
-        }
         val marginByCandidate = ctxObj.optJSONObject("marginByCandidate") ?: JSONObject()
-        marginByCandidate.put(candidateId, marginJson)
-        ctxObj.put("marginByCandidate", marginByCandidate)
-        ctxObj.put("topCandidateMargin", marginJson)
-        resultObj.put("top_candidate_margin", marginJson)
+        val summary = JSONObject()
+            .put("mode", "shadow_evidence_only")
+            .put("candidate_cap", MARGIN_SHADOW_CANDIDATE_CAP)
+            .put("candidate_count", marginCandidates.size)
+            .put("quoted", 0)
+            .put("errors", 0)
+            .put("skipped", 0)
+            .put("cache_size", marginQuoteCache.size)
+            .put("capital_gate_behavior", "UNCHANGED_MAX_LOSS_BASED")
 
-        val brainMaxLoss = candidate.optDouble("maxLoss", Double.NaN)
+        var topMarginJson: JSONObject? = null
+        for (candidate in marginCandidates) {
+            val candidateId = candidateKey(candidate)
+            val payload = buildMarginPayload(candidate)
+            if (payload == null) {
+                annotateMarginQuoteSkipped(candidate, "candidate_missing_margin_inputs")
+                summary.put("skipped", summary.optInt("skipped") + 1)
+                continue
+            }
+
+            val (cacheKey, instruments) = payload
+            val quote = marginQuoteCache.getOrPut(cacheKey) {
+                fetchMarginQuote(authToken, instruments)
+            }
+            annotateMarginQuote(candidate, quote)
+            annotateMatchingCandidates(resultObj, candidateId, quote)
+
+            val marginJson = quote.toJson().apply {
+                put("candidate_id", candidateId)
+                put("candidate_type", candidate.optString("type"))
+                put("candidate_index", candidate.optString("index"))
+                put("brain_max_loss", candidate.optDouble("maxLoss", Double.NaN).takeIf { it.isFinite() })
+                put("lot_size", candidate.optInt("lotSize", 0))
+                put("instrument_count", instruments.length())
+                put("request_payload", JSONObject().put("instruments", instruments))
+                put("capital_gate_behavior", "UNCHANGED_MAX_LOSS_BASED")
+            }
+            marginByCandidate.put(candidateId, marginJson)
+            if (topMarginJson == null) topMarginJson = marginJson
+            if (quote.status == "ERROR") {
+                summary.put("errors", summary.optInt("errors") + 1)
+            } else {
+                summary.put("quoted", summary.optInt("quoted") + 1)
+            }
+        }
+
+        ctxObj.put("marginByCandidate", marginByCandidate)
+        topMarginJson?.let {
+            ctxObj.put("topCandidateMargin", it)
+            resultObj.put("top_candidate_margin", it)
+        }
+        summary.put("cache_size", marginQuoteCache.size)
+        ctxObj.put("marginShadowSummary", summary)
+        resultObj.put("margin_shadow_summary", summary)
+
         LogBuffer.add(
-            if (quote.status == "ERROR") 'W' else 'I',
+            if (summary.optInt("errors") > 0) 'W' else 'I',
             TAG,
             buildString {
-                append("[margin] candidate=").append(candidateId)
-                append(" structure=").append(candidate.optString("type"))
-                append('\n')
-                append("  brain_max_loss=").append(if (brainMaxLoss.isFinite()) String.format(Locale.US, "%.2f", brainMaxLoss) else "NA")
-                append('\n')
-                append("  upstox_required_margin=").append(quote.requiredMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
-                append('\n')
-                append("  upstox_final_margin=").append(quote.finalMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
-                append('\n')
-                append("  span=").append(quote.spanMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
-                append(" exposure=").append(quote.exposureMargin?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
-                append(" net_buy_premium=").append(quote.netBuyPremium?.let { String.format(Locale.US, "%.2f", it) } ?: "NA")
-                if (!quote.error.isNullOrBlank()) {
-                    append('\n').append("  error=").append(quote.error)
-                }
+                append("[margin_shadow] candidates=").append(summary.optInt("candidate_count"))
+                append(" quoted=").append(summary.optInt("quoted"))
+                append(" errors=").append(summary.optInt("errors"))
+                append(" skipped=").append(summary.optInt("skipped"))
+                append(" cache=").append(summary.optInt("cache_size"))
+                append(" behavior=").append(summary.optString("capital_gate_behavior"))
             }
         )
     }
