@@ -285,6 +285,8 @@ if __name__ == "__main__":
     test_debit_ev_negative_released_under_shadow_a8()
     test_credit_ev_positive_survives_a8()
     test_all_negative_candidate_set_returns_wait_reason()
+    test_a8_ev_ratio_is_explicit_and_uses_unhaircuted_expected_values()
+    test_ranking_missing_premium_edge_loses_to_edge_candidate()
     test_calm_regime_with_nf_survivor_removes_bnf_intraday()
     test_calm_regime_with_only_bnf_falls_back_to_bnf()
     test_non_calm_regime_does_not_lane_gate()

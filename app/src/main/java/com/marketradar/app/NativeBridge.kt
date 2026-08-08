@@ -198,18 +198,23 @@ class NativeBridge(private val context: Context) {
         val compact = JSONObject()
         val keys = arrayOf(
             "id", "candidate_id", "rank", "watchlist_rank",
-            "type", "strategy_type", "index", "lane", "trade_mode", "expiry", "width",
+            "type", "strategy_type", "index", "lane", "trade_mode", "poll_ts", "expiry", "width", "tDTE",
             "premiumEdge", "ev", "evPer1k", "creditWidthRatio", "sigmaOTM", "ivRichness",
             "probProfit", "prob_source", "prob_status", "trueProb", "riskReward",
             "sellStrike", "buyStrike", "sellType", "buyType",
             "sellStrike2", "buyStrike2", "sellType2", "buyType2",
-            "netPremium", "maxProfit", "maxLoss", "estCost", "isCredit",
+            "netPremium", "maxProfit", "maxLoss", "targetProfit", "stopLoss", "estCost", "isCredit",
             "capitalBlocked", "executionReady", "executionGate", "entryAction", "directionSafe",
             "brainScore", "contextPercentileScore", "p_ml", "mlAction", "mlEdge", "mlRegime",
             "mlUnsure", "mlOodFlag", "deterministic_rank", "teacher_shadow_rank", "stage2a_live_rank",
             "reason_code", "reject_reason",
             "rejection_stage", "rejection_reason", "gate_name", "gate_field",
-            "observed_value", "threshold_value", "margin", "margin_pct"
+            "observed_value", "threshold_value", "margin", "margin_pct",
+            "marginRequired", "marginForSizing", "marginSource", "marginFallbackUsed",
+            "marginFallbackValue", "marginFallbackReason", "marginModelVersion", "brainMaxLoss",
+            "marginSizingBehavior", "marginQuoteStatus", "marginQuoteSource", "marginQuotedAt",
+            "marginRequestUrl", "marginQuoteError", "realMargin", "upstoxRequiredMargin",
+            "upstoxFinalMargin", "upstoxSpanMargin", "upstoxExposureMargin", "upstoxNetBuyPremium"
         )
         for (key in keys) {
             val value = cand.opt(key)

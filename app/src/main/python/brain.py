@@ -5927,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.58"
+BRAIN_VERSION = "2.5.59"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7637,6 +7637,67 @@ def _current_ist_poll_ts():
     return datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
+MARGIN_CONTRACT_VERSION = 'margin_contract_v1'
+
+
+def _candidate_static_margin(index_key):
+    idx = str(index_key or '').upper()
+    return float(_CONST['BNF_SHORT_MARGIN'] if idx == 'BNF' else _CONST['NF_SHORT_MARGIN'])
+
+
+def _candidate_margin_contract(index_key, max_loss=None, margin_value=None, source=None, status=None):
+    static_margin = _candidate_static_margin(index_key)
+    quoted = _safe_num(margin_value, None)
+    has_quote = quoted is not None and quoted > 0
+    required = quoted if has_quote else static_margin
+    return {
+        'marginRequired': round(required, 2),
+        'marginForSizing': round(required, 2),
+        'marginSource': source or ('BROKER_QUOTE' if has_quote else 'STATIC_FALLBACK'),
+        'marginFallbackUsed': not has_quote,
+        'marginFallbackValue': round(static_margin, 2),
+        'marginFallbackReason': None if has_quote else 'broker_margin_quote_not_available_at_python_generation',
+        'marginModelVersion': MARGIN_CONTRACT_VERSION,
+        'marginQuoteStatus': status or ('OK' if has_quote else 'FALLBACK_STATIC'),
+        'brainMaxLoss': max_loss,
+        'marginSizingBehavior': 'EVIDENCE_ONLY_DO_NOT_RANK',
+    }
+
+
+def _candidate_margin_fields_from(row, index_key=None, max_loss=None):
+    src = row if isinstance(row, dict) else {}
+    margin_value = (
+        src.get('marginRequired')
+        or src.get('marginForSizing')
+        or src.get('realMargin')
+        or src.get('upstoxFinalMargin')
+        or src.get('upstoxRequiredMargin')
+    )
+    fields = _candidate_margin_contract(
+        index_key or src.get('index') or src.get('index_key'),
+        max_loss if max_loss is not None else src.get('maxLoss'),
+        margin_value=margin_value,
+        source=src.get('marginSource') or src.get('marginQuoteSource'),
+        status=src.get('marginQuoteStatus'),
+    )
+    for key in (
+        'realMargin',
+        'upstoxRequiredMargin',
+        'upstoxFinalMargin',
+        'upstoxSpanMargin',
+        'upstoxExposureMargin',
+        'upstoxNetBuyPremium',
+        'marginQuoteSource',
+        'marginQuotedAt',
+        'marginRequestUrl',
+        'marginQuoteError',
+        'marginQuote',
+    ):
+        if src.get(key) is not None:
+            fields[key] = src.get(key)
+    return fields
+
+
 def _build3_candidate_ev(candidate):
     c = candidate if isinstance(candidate, dict) else {}
     # NOTE: A8 consumes payload-rounded probProfit (3dp); premiumEdge uses raw prob.
@@ -7683,6 +7744,8 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'netPremium': c.get('netPremium'),
         'maxProfit': c.get('maxProfit'),
         'maxLoss': c.get('maxLoss'),
+        'targetProfit': c.get('targetProfit'),
+        'stopLoss': c.get('stopLoss'),
         'prob': c.get('probProfit'),
         'probProfit': c.get('probProfit'),
         'prob_source': c.get('prob_source') or c.get('probSource'),
@@ -7720,6 +7783,7 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'a8_softened_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
         'candidate_released_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
+        **_candidate_margin_fields_from(c),
     }
 
 
@@ -8411,6 +8475,16 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
                 'ev_per_1k': cand.get('evPer1k'),
                 'est_cost': cand.get('estCost'),
                 'capital_blocked': cand.get('capitalBlocked'),
+                'target_profit': cand.get('targetProfit'),
+                'stop_loss': cand.get('stopLoss'),
+                'margin_required': cand.get('marginRequired'),
+                'margin_for_sizing': cand.get('marginForSizing'),
+                'margin_source': cand.get('marginSource'),
+                'margin_fallback_used': cand.get('marginFallbackUsed'),
+                'margin_fallback_value': cand.get('marginFallbackValue'),
+                'margin_model_version': cand.get('marginModelVersion'),
+                'brain_max_loss': cand.get('brainMaxLoss'),
+                'margin_sizing_behavior': cand.get('marginSizingBehavior'),
             },
             'structure': {
                 'width': cand.get('width'),
@@ -8428,6 +8502,8 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
                 'execution_gate': cand.get('executionGate'),
                 'entry_action': cand.get('entryAction'),
                 'direction_safe': cand.get('directionSafe'),
+                'margin_quote_status': cand.get('marginQuoteStatus'),
+                'margin_quote_source': cand.get('marginQuoteSource'),
             },
             'ml_overlay': {
                 'brain_score': cand.get('brainScore'),
@@ -8572,6 +8648,7 @@ def _record_rejected_candidate(
         'buyStrike': pair.get('buy') if isinstance(pair, dict) else None,
         'buyType': pair.get('buyType') if isinstance(pair, dict) else None,
         'legs': legs or [],
+        **_candidate_margin_contract(index_key, max_loss),
     }
     if isinstance(extra, dict):
         rec.update(extra)
@@ -8826,6 +8903,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
         'targetProfit': round(max_profit * 0.5),
         'stopLoss': round(max_loss * 0.6 if is_credit else max_loss * 0.5),
+        **_candidate_margin_contract(idx, max_loss),
         # ── 5 display fields ──
         'estCost':       est_cost,
         'estCostPct':    est_cost_pct,
@@ -9387,6 +9465,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
                     'targetProfit': round(max_profit * 0.5),
                     'stopLoss': round(max_loss * 0.6),
+                    **_candidate_margin_contract(idx, max_loss),
                     'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl, regime),
                     'varsityTier': 'PRIMARY' if 'IRON_CONDOR' in varsity['primary'] else 'ALLOWED',
                     'wallScore': 0, 'gammaRisk': 0, 'contextScore': 0,
@@ -9573,6 +9652,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'riskReward': f"1:{max_profit/max_loss:.2f}" if max_loss > 0 else '--',
                 'targetProfit': round(max_profit * 0.5),
                 'stopLoss': round(max_loss * 0.6),
+                **_candidate_margin_contract(idx, max_loss),
                 'beUpper': round(upper_be), 'beLower': round(lower_be),
             }
             ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
@@ -9590,6 +9670,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     return candidates, ctx.get('_rejected_candidates', [])[rejected_baseline:]
 
 # ─── RANK CANDIDATES ───
+
 
 def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=None):
     """Varsity waterfall ranking. Premium edge outranks raw win-rate once safety gates pass."""
@@ -9655,7 +9736,8 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         return (
             safe, tier,
             teacher_rank_active, -teacher_score, -teacher_n,
-            -premium_edge, -context_percentile_score, bv, -win_rate, -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
+            -premium_edge, -context_percentile_score, bv, -win_rate,
+            -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
         )
 
     ranked = [c for c in candidates if not c.get('capitalBlocked')]
@@ -10924,6 +11006,7 @@ def _candidate_view(c):
         'type': c.get('type'),
         'index': c.get('index'),
         'lane': c.get('lane'),
+        'poll_ts': c.get('poll_ts'),
         'width': c.get('width'),
         'tDTE': c.get('tDTE'),
         'expiry': c.get('expiry'),
@@ -10956,6 +11039,8 @@ def _candidate_view(c):
         'isCredit': c.get('isCredit'),
         'lotSize': c.get('lotSize'),
         'estCost': c.get('estCost'),
+        'targetProfit': c.get('targetProfit'),
+        'stopLoss': c.get('stopLoss'),
         'capitalBlocked': c.get('capitalBlocked'),
         'executionReady': c.get('executionReady'),
         'executionGate': c.get('executionGate'),
@@ -10991,6 +11076,15 @@ def _candidate_view(c):
         'teacher_success_rate_pct': c.get('teacher_success_rate_pct'),
         'teacher_coverage': c.get('teacher_coverage'),
         'teacher_recommendable': c.get('teacher_recommendable'),
+        'marginRequired': c.get('marginRequired'),
+        'marginForSizing': c.get('marginForSizing'),
+        'marginSource': c.get('marginSource'),
+        'marginFallbackUsed': c.get('marginFallbackUsed'),
+        'marginFallbackValue': c.get('marginFallbackValue'),
+        'marginFallbackReason': c.get('marginFallbackReason'),
+        'marginModelVersion': c.get('marginModelVersion'),
+        'brainMaxLoss': c.get('brainMaxLoss'),
+        'marginSizingBehavior': c.get('marginSizingBehavior'),
         'realMargin': c.get('realMargin'),
         'upstoxRequiredMargin': c.get('upstoxRequiredMargin'),
         'upstoxFinalMargin': c.get('upstoxFinalMargin'),
@@ -12505,6 +12599,7 @@ def _compact_rejected_candidates(rejected_candidates):
             'index': row.get('index'),
             'lane': row.get('lane'),
             'strategy_type': row.get('strategy_type'),
+            'poll_ts': row.get('poll_ts'),
             'expiry': row.get('expiry'),
             'width': row.get('width'),
             'is_credit': row.get('is_credit'),
@@ -12521,6 +12616,8 @@ def _compact_rejected_candidates(rejected_candidates):
             'expected_loss': row.get('expected_loss'),
             'ev_floor': row.get('ev_floor'),
             'ev_floor_mult': row.get('ev_floor_mult'),
+            'targetProfit': row.get('targetProfit'),
+            'stopLoss': row.get('stopLoss'),
             'tDTE': row.get('tDTE'),
             'ivRichness': row.get('ivRichness'),
             'creditWidthRatio': row.get('creditWidthRatio'),
@@ -12531,6 +12628,20 @@ def _compact_rejected_candidates(rejected_candidates):
             'threshold_value': row.get('threshold_value'),
             'margin': row.get('margin'),
             'margin_pct': row.get('margin_pct'),
+            'marginRequired': row.get('marginRequired'),
+            'marginForSizing': row.get('marginForSizing'),
+            'marginSource': row.get('marginSource'),
+            'marginFallbackUsed': row.get('marginFallbackUsed'),
+            'marginFallbackValue': row.get('marginFallbackValue'),
+            'marginFallbackReason': row.get('marginFallbackReason'),
+            'marginModelVersion': row.get('marginModelVersion'),
+            'brainMaxLoss': row.get('brainMaxLoss'),
+            'marginSizingBehavior': row.get('marginSizingBehavior'),
+            'marginQuoteStatus': row.get('marginQuoteStatus'),
+            'marginQuoteSource': row.get('marginQuoteSource'),
+            'realMargin': row.get('realMargin'),
+            'upstoxRequiredMargin': row.get('upstoxRequiredMargin'),
+            'upstoxFinalMargin': row.get('upstoxFinalMargin'),
             'rejection_stage': row.get('rejection_stage'),
             'rejection_reason': row.get('rejection_reason'),
             'sellStrike': row.get('sellStrike'),
@@ -12621,6 +12732,7 @@ def _full_rejected_candidate_view(row):
         'index': row.get('index') or row.get('index_key'),
         'lane': row.get('lane'),
         'strategy_type': row.get('strategy_type') or row.get('type'),
+        'poll_ts': row.get('poll_ts'),
         'expiry': row.get('expiry'),
         'width': row.get('width'),
         'is_credit': row.get('is_credit') if row.get('is_credit') is not None else row.get('isCredit'),
@@ -12637,6 +12749,8 @@ def _full_rejected_candidate_view(row):
         'expected_loss': row.get('expected_loss'),
         'ev_floor': row.get('ev_floor'),
         'ev_floor_mult': row.get('ev_floor_mult'),
+        'targetProfit': row.get('targetProfit'),
+        'stopLoss': row.get('stopLoss'),
         'tDTE': row.get('tDTE'),
         'ivRichness': row.get('ivRichness'),
         'creditWidthRatio': row.get('creditWidthRatio') if row.get('creditWidthRatio') is not None else row.get('credit_width_ratio'),
@@ -12647,6 +12761,26 @@ def _full_rejected_candidate_view(row):
         'threshold_value': row.get('threshold_value'),
         'margin': row.get('margin'),
         'margin_pct': row.get('margin_pct'),
+        'marginRequired': row.get('marginRequired'),
+        'marginForSizing': row.get('marginForSizing'),
+        'marginSource': row.get('marginSource'),
+        'marginFallbackUsed': row.get('marginFallbackUsed'),
+        'marginFallbackValue': row.get('marginFallbackValue'),
+        'marginFallbackReason': row.get('marginFallbackReason'),
+        'marginModelVersion': row.get('marginModelVersion'),
+        'brainMaxLoss': row.get('brainMaxLoss'),
+        'marginSizingBehavior': row.get('marginSizingBehavior'),
+        'marginQuoteStatus': row.get('marginQuoteStatus'),
+        'marginQuoteSource': row.get('marginQuoteSource'),
+        'marginQuotedAt': row.get('marginQuotedAt'),
+        'marginRequestUrl': row.get('marginRequestUrl'),
+        'marginQuoteError': row.get('marginQuoteError'),
+        'realMargin': row.get('realMargin'),
+        'upstoxRequiredMargin': row.get('upstoxRequiredMargin'),
+        'upstoxFinalMargin': row.get('upstoxFinalMargin'),
+        'upstoxSpanMargin': row.get('upstoxSpanMargin'),
+        'upstoxExposureMargin': row.get('upstoxExposureMargin'),
+        'upstoxNetBuyPremium': row.get('upstoxNetBuyPremium'),
         'rejection_stage': row.get('rejection_stage'),
         'rejection_reason': row.get('rejection_reason'),
         'sellStrike': row.get('sellStrike'),
@@ -14778,6 +14912,16 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 outcome['premium_edge'] = cand.get('premiumEdge')
                 outcome['credit_width_ratio'] = cand.get('creditWidthRatio')
                 outcome['sigma_otm'] = cand.get('sigmaOTM')
+                outcome['poll_ts'] = cand.get('poll_ts') or snap.get('poll_ts')
+                outcome['targetProfit'] = cand.get('targetProfit')
+                outcome['stopLoss'] = cand.get('stopLoss')
+                outcome['marginRequired'] = cand.get('marginRequired')
+                outcome['marginForSizing'] = cand.get('marginForSizing')
+                outcome['marginSource'] = cand.get('marginSource')
+                outcome['marginFallbackUsed'] = cand.get('marginFallbackUsed')
+                outcome['marginFallbackValue'] = cand.get('marginFallbackValue')
+                outcome['marginModelVersion'] = cand.get('marginModelVersion')
+                outcome['brainMaxLoss'] = cand.get('brainMaxLoss')
                 outcomes.append(outcome)
         except Exception as exc:
             errors.append({
@@ -14833,6 +14977,16 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                     outcome['premium_edge'] = cand.get('premiumEdge')
                     outcome['credit_width_ratio'] = cand.get('creditWidthRatio')
                     outcome['sigma_otm'] = cand.get('sigmaOTM')
+                    outcome['poll_ts'] = cand.get('poll_ts') or snap.get('poll_ts')
+                    outcome['targetProfit'] = cand.get('targetProfit')
+                    outcome['stopLoss'] = cand.get('stopLoss')
+                    outcome['marginRequired'] = cand.get('marginRequired')
+                    outcome['marginForSizing'] = cand.get('marginForSizing')
+                    outcome['marginSource'] = cand.get('marginSource')
+                    outcome['marginFallbackUsed'] = cand.get('marginFallbackUsed')
+                    outcome['marginFallbackValue'] = cand.get('marginFallbackValue')
+                    outcome['marginModelVersion'] = cand.get('marginModelVersion')
+                    outcome['brainMaxLoss'] = cand.get('brainMaxLoss')
                     outcomes.append(outcome)
             except Exception as exc:
                 errors.append({
@@ -15226,9 +15380,13 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                     'index': cand.get('index'),
                     'lane': cand.get('lane'),
                     'width': cand.get('width'),
+                    'expiry': cand.get('expiry'),
+                    'poll_ts': cand.get('poll_ts') or snap.get('poll_ts'),
                     'tDTE': cand.get('tDTE'),
                     'maxProfit': cand.get('maxProfit'),
                     'maxLoss': cand.get('maxLoss'),
+                    'targetProfit': cand.get('targetProfit'),
+                    'stopLoss': cand.get('stopLoss'),
                     'netPremium': cand.get('netPremium'),
                     'probProfit': cand.get('probProfit'),
                     'p_ml': cand.get('p_ml'),
@@ -15238,6 +15396,15 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                     'debit_breakeven_sigma': cand.get('debitBreakevenSigma'),
                     'risk_reward': cand.get('riskReward'),
                     'isCredit': cand.get('isCredit'),
+                    'marginRequired': cand.get('marginRequired'),
+                    'marginForSizing': cand.get('marginForSizing'),
+                    'marginSource': cand.get('marginSource'),
+                    'marginFallbackUsed': cand.get('marginFallbackUsed'),
+                    'marginFallbackValue': cand.get('marginFallbackValue'),
+                    'marginModelVersion': cand.get('marginModelVersion'),
+                    'brainMaxLoss': cand.get('brainMaxLoss'),
+                    'marginQuoteStatus': cand.get('marginQuoteStatus'),
+                    'marginQuoteSource': cand.get('marginQuoteSource'),
                 }
         has_bc = 'BEAR_CALL' in first_pos
         has_bp = 'BULL_PUT' in first_pos
@@ -15275,9 +15442,13 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             enriched.setdefault('index', meta.get('index'))
             enriched.setdefault('lane', meta.get('lane'))
             enriched.setdefault('width', meta.get('width'))
+            enriched.setdefault('expiry', meta.get('expiry'))
+            enriched.setdefault('poll_ts', meta.get('poll_ts'))
             enriched.setdefault('tDTE', meta.get('tDTE'))
             enriched.setdefault('maxProfit', meta.get('maxProfit'))
             enriched.setdefault('maxLoss', meta.get('maxLoss'))
+            enriched.setdefault('targetProfit', meta.get('targetProfit'))
+            enriched.setdefault('stopLoss', meta.get('stopLoss'))
             enriched.setdefault('netPremium', meta.get('netPremium'))
             enriched.setdefault('probProfit', meta.get('probProfit'))
             enriched.setdefault('p_ml', meta.get('p_ml'))
@@ -15292,6 +15463,15 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             enriched.setdefault('risk_reward', meta.get('risk_reward'))
             enriched.setdefault('riskReward', meta.get('risk_reward'))
             enriched.setdefault('isCredit', meta.get('isCredit'))
+            enriched.setdefault('marginRequired', meta.get('marginRequired'))
+            enriched.setdefault('marginForSizing', meta.get('marginForSizing'))
+            enriched.setdefault('marginSource', meta.get('marginSource'))
+            enriched.setdefault('marginFallbackUsed', meta.get('marginFallbackUsed'))
+            enriched.setdefault('marginFallbackValue', meta.get('marginFallbackValue'))
+            enriched.setdefault('marginModelVersion', meta.get('marginModelVersion'))
+            enriched.setdefault('brainMaxLoss', meta.get('brainMaxLoss'))
+            enriched.setdefault('marginQuoteStatus', meta.get('marginQuoteStatus'))
+            enriched.setdefault('marginQuoteSource', meta.get('marginQuoteSource'))
         enriched_outcomes.append(enriched)
         by_snapshot.setdefault(sid, []).append(enriched)
         role = str(enriched.get('role') or '').lower()
@@ -15692,6 +15872,13 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             'sigma_otm': row.get('sigma_otm') or row.get('sigmaOTM'),
             'margin': row.get('margin'),
             'margin_pct': row.get('margin_pct'),
+            'margin_required': row.get('marginRequired'),
+            'margin_for_sizing': row.get('marginForSizing'),
+            'margin_source': row.get('marginSource'),
+            'margin_fallback_used': row.get('marginFallbackUsed'),
+            'margin_fallback_value': row.get('marginFallbackValue'),
+            'margin_model_version': row.get('marginModelVersion'),
+            'brain_max_loss': row.get('brainMaxLoss'),
         })
 
     primary_snapshot_ids = sorted({row.get('snapshot_id') for row in primary_rows if row.get('snapshot_id') is not None})

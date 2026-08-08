@@ -3720,6 +3720,7 @@ class MarketWatchService : Service() {
     private fun annotateMarginQuote(candidate: JSONObject, quote: MarginQuote) {
         candidate.put("marginQuoteStatus", quote.status)
         candidate.put("marginQuoteSource", "UPSTOX_MARGIN_API")
+        candidate.put("marginModelVersion", "margin_contract_v1")
         candidate.put("marginRequestUrl", quote.requestUrl)
         quote.quotedAt?.let { candidate.put("marginQuotedAt", it) }
         quote.error?.let { candidate.put("marginQuoteError", it) }
@@ -3727,6 +3728,14 @@ class MarketWatchService : Service() {
         if (quote.finalMargin != null) {
             candidate.put("upstoxFinalMargin", quote.finalMargin)
             candidate.put("realMargin", quote.finalMargin)
+        }
+        val normalizedMargin = quote.finalMargin ?: quote.requiredMargin
+        if (normalizedMargin != null && normalizedMargin > 0.0) {
+            candidate.put("marginRequired", normalizedMargin)
+            candidate.put("marginForSizing", normalizedMargin)
+            candidate.put("marginSource", "UPSTOX_MARGIN_API")
+            candidate.put("marginFallbackUsed", false)
+            candidate.put("marginSizingBehavior", "EVIDENCE_ONLY_DO_NOT_RANK")
         }
         if (quote.spanMargin != null) candidate.put("upstoxSpanMargin", quote.spanMargin)
         if (quote.exposureMargin != null) candidate.put("upstoxExposureMargin", quote.exposureMargin)
