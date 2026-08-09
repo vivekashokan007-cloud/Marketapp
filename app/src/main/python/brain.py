@@ -5927,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.62"
+BRAIN_VERSION = "2.5.63"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -5941,6 +5941,7 @@ CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
+OPPORTUNITY_GATE_SOFTENING_VERSION = "opportunity_gate_softening_v1"
 
 PC2_GATE_CALIBRATION = {
     'MIN_CREDIT_RATIO': {
@@ -7337,6 +7338,47 @@ def _pc2_gate_basis_summary(gate_rows):
             if g.get('pct_target_review_flag') == 'owner_approved_extreme_percentile'
         ],
     }
+
+def _opportunity_gate_soft_failure(gate, stage, reason):
+    gate = gate if isinstance(gate, dict) else {}
+    observed = _percentile_float(gate.get('observed_value'))
+    threshold = _percentile_float(gate.get('threshold_value') or gate.get('hard_threshold_value'))
+    comparator = gate.get('comparator') or '>='
+    severity = 0.0
+    if observed is not None and threshold is not None and threshold != 0:
+        if comparator == '<=':
+            severity = max(0.0, (observed - threshold) / abs(threshold))
+        else:
+            severity = max(0.0, (threshold - observed) / abs(threshold))
+    return {
+        'version': OPPORTUNITY_GATE_SOFTENING_VERSION,
+        'constant': gate.get('constant'),
+        'gate_group': gate.get('gate_group'),
+        'stage': stage,
+        'reason': reason,
+        'observed_value': observed,
+        'threshold_value': threshold,
+        'comparator': comparator,
+        'gate_basis': gate.get('gate_basis'),
+        'severity': round(min(1.0, severity), 6),
+        'released_to_ranking': True,
+    }
+
+def _opportunity_gate_penalty(candidate):
+    candidate = candidate if isinstance(candidate, dict) else {}
+    failures = candidate.get('opportunityGateFailures') or candidate.get('softGateFailures') or []
+    if not isinstance(failures, list) or not failures:
+        return 0.0
+    max_profit = _safe_num(candidate.get('maxProfit'), 0.0)
+    if max_profit <= 0:
+        max_profit = abs(_safe_num(candidate.get('premiumEdge'), 0.0)) or 100.0
+    penalty = 0.0
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        severity = max(0.0, min(1.0, _safe_num(failure.get('severity'), 0.0)))
+        penalty += max_profit * (0.02 + 0.08 * severity)
+    return round(min(max_profit * 0.50, penalty), 4)
 
 def _pc2_gate_meta_for_row(row, context_percentiles=None, const_name=None, stage=None, passed=None):
     row = row if isinstance(row, dict) else {}
@@ -9189,6 +9231,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     # feature (debitBreakevenSigma) — NOT overloaded into sigmaOTM. Matches the verified
     # debitBE_sigma_v1 backfill (breakeven = buy strike -/+ net debit) used for clean p_ml eval.
     debit_be_sigma = None
+    opportunity_gate_failures = []
     if (not is_credit) and stype in ('BEAR_PUT', 'BULL_CALL') and ds is not None and ds > 0:
         _net_debit = round(net_prem, 2)
         _breakeven = pair['buy'] - _net_debit if stype == 'BEAR_PUT' else pair['buy'] + _net_debit
@@ -9215,25 +9258,18 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         }
         min_sigma_gate = _pc2_live_gate_decision(ctx, sigma_row, 'MIN_SIGMA_OTM', sigma_otm, min_sigma)
         if not min_sigma_gate.get('passed'):
-            record_rejection('sigma_otm_too_close', 'is_credit directional and sigma_otm < 0.5',
-                             sigma_otm=round(sigma_otm, 2),
-                             net_prem=round(net_prem, 4),
-                             max_profit=round(max_profit, 2),
-                             max_loss=round(max_loss, 2),
-                             credit_ratio=round(net_prem / width, 4) if width else None,
-                             pc2_gate_decision=min_sigma_gate)
-            return None
+            opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                min_sigma_gate,
+                'sigma_otm_too_close',
+                'is_credit directional and sigma_otm below context floor',
+            ))
         max_sigma_gate = _pc2_live_gate_decision(ctx, sigma_row, 'MAX_SIGMA_OTM', sigma_otm, max_sigma)
         if not max_sigma_gate.get('passed'):
-            record_rejection('sigma_otm_too_far', 'is_credit directional and sigma_otm > max_sigma',
-                             sigma_otm=round(sigma_otm, 2),
-                             max_sigma=max_sigma,
-                             net_prem=round(net_prem, 4),
-                             max_profit=round(max_profit, 2),
-                             max_loss=round(max_loss, 2),
-                             credit_ratio=round(net_prem / width, 4) if width else None,
-                             pc2_gate_decision=max_sigma_gate)
-            return None
+            opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                max_sigma_gate,
+                'sigma_otm_too_far',
+                'is_credit directional and sigma_otm above context ceiling',
+            ))
         sigma_otm = round(sigma_otm, 2)
 
     # Minimum width filter — narrow credit directional rejected
@@ -9255,8 +9291,11 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         }
         credit_gate = _pc2_live_gate_decision(ctx, credit_row, 'MIN_CREDIT_RATIO', credit_ratio, _CONST['MIN_CREDIT_RATIO'])
         if not credit_gate.get('passed'):
-            record_rejection('credit_ratio_below_floor', 'is_credit directional and credit/width < MIN_CREDIT_RATIO', credit_ratio=round(credit_ratio, 4), net_prem=round(net_prem, 4), pc2_gate_decision=credit_gate)
-            return None
+            opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                credit_gate,
+                'credit_ratio_below_floor',
+                'is_credit directional credit/width below context floor',
+            ))
         realized_vol = _realized_vol_proxy(vix)
         iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
         iv_gate = _pc2_live_gate_decision(
@@ -9267,8 +9306,11 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
             _CONST['IV_RICH_MIN'],
         ) if iv_richness is not None else {'passed': True}
         if not iv_gate.get('passed'):
-            record_rejection('iv_not_rich', 'is_credit directional and iv_richness < IV_RICH_MIN', iv_richness=round(iv_richness, 3), atm_iv_pct=round(vol * 100, 2), vix=vix, net_prem=round(net_prem, 4), credit_ratio=round(credit_ratio, 4), pc2_gate_decision=iv_gate)
-            return None
+            opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                iv_gate,
+                'iv_not_rich',
+                'is_credit directional iv_richness below context floor',
+            ))
     else:
         credit_ratio = (net_prem / width) if (is_credit and width > 0) else None
         iv_richness = None
@@ -9292,8 +9334,11 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         _CONST['MIN_PROB'],
     ) if is_credit else {'passed': True}
     if is_credit and not prob_gate.get('passed'):
-        record_rejection('credit_prob_below_floor', 'is_credit and prob < MIN_PROB', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4), pc2_gate_decision=prob_gate)
-        return None
+        opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+            prob_gate,
+            'credit_prob_below_floor',
+            'is_credit probability below context floor',
+        ))
     if not is_credit:
         # For debit: retain the probability floor. The 1.10 EV floor is now
         # applied post-generation by BUILD 3 so the old arm sees the full menu.
@@ -9399,6 +9444,11 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'decisionReason': 'candidate ranked by deterministic brain rules',
         'pc2_gate_basis': pc2_gate_basis,
         'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
+        'opportunityGateFailures': opportunity_gate_failures,
+        'softGateFailures': opportunity_gate_failures,
+        'opportunityGateFailureCount': len(opportunity_gate_failures),
+        'opportunityGateSoftenedToRanking': bool(opportunity_gate_failures),
+        'opportunityGateSofteningVersion': OPPORTUNITY_GATE_SOFTENING_VERSION,
         'decision_reason': 'candidate ranked by deterministic brain rules',
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
@@ -9708,6 +9758,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
                     )
                     continue
+                opportunity_gate_failures = []
                 ic_sigma_row = {
                     'index': idx,
                     'strategy_type': 'IRON_CONDOR',
@@ -9723,26 +9774,18 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     min_sigma,
                 )
                 if not min_sigma_gate.get('passed'):
-                    _record_multi_leg_rejection(
-                        stype='IRON_CONDOR',
-                        width=width,
-                        stage='sigma_otm_too_close',
-                        reason='iron_condor sell leg sigma below minimum',
-                        sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'pc2_gate_decision': min_sigma_gate},
-                    )
-                    continue
+                    opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                        min_sigma_gate,
+                        'sigma_otm_too_close',
+                        'iron_condor sell leg sigma below context floor',
+                    ))
                 max_sigma_gate = _pc2_live_gate_decision(ctx, ic_sigma_row, 'MAX_SIGMA_OTM', max(call_sigma, put_sigma), max_sigma)
                 if not max_sigma_gate.get('passed'):
-                    _record_multi_leg_rejection(
-                        stype='IRON_CONDOR',
-                        width=width,
-                        stage='sigma_otm_too_far',
-                        reason='iron_condor sell leg sigma above maximum',
-                        sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'max_sigma': max_sigma, 'pc2_gate_decision': max_sigma_gate},
-                    )
-                    continue
+                    opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                        max_sigma_gate,
+                        'sigma_otm_too_far',
+                        'iron_condor sell leg sigma above context ceiling',
+                    ))
                 if sell_call not in all_set or buy_call not in all_set or sell_put not in all_set or buy_put not in all_set:
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
@@ -9857,19 +9900,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     _CONST['MIN_PROB'],
                 )
                 if not prob_gate.get('passed'):
-                    _record_multi_leg_rejection(
-                        stype='IRON_CONDOR',
-                        width=width,
-                        stage='prob_below_floor',
-                        reason='iron_condor probability below minimum floor',
-                        legs=ic_legs,
-                        net_premium=total_credit,
-                        max_profit=max_profit,
-                        max_loss=max_loss,
-                        sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4), 'pc2_gate_decision': prob_gate},
-                    )
-                    continue
+                    opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                        prob_gate,
+                        'prob_below_floor',
+                        'iron_condor probability below context floor',
+                    ))
                 credit_ratio = total_credit / width if width else None
                 credit_gate = _pc2_live_gate_decision(
                     ctx,
@@ -9879,20 +9914,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     _CONST['MIN_CREDIT_RATIO'],
                 ) if credit_ratio is not None else {'passed': True}
                 if not credit_gate.get('passed'):
-                    _record_multi_leg_rejection(
-                        stype='IRON_CONDOR',
-                        width=width,
-                        stage='credit_ratio_below_floor',
-                        reason='iron_condor credit/width below minimum ratio',
-                        legs=ic_legs,
-                        net_premium=total_credit,
-                        max_profit=max_profit,
-                        max_loss=max_loss,
-                        credit_width_ratio=credit_ratio,
-                        sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'pc2_gate_decision': credit_gate},
-                    )
-                    continue
+                    opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                        credit_gate,
+                        'credit_ratio_below_floor',
+                        'iron_condor credit/width below context floor',
+                    ))
                 realized_vol = _realized_vol_proxy(vix)
                 iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
                 iv_gate = _pc2_live_gate_decision(
@@ -9903,21 +9929,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     _CONST['IV_RICH_MIN'],
                 ) if iv_richness is not None else {'passed': True}
                 if not iv_gate.get('passed'):
-                    _record_multi_leg_rejection(
-                        stype='IRON_CONDOR',
-                        width=width,
-                        stage='iv_not_rich',
-                        reason='iron_condor and iv_richness < IV_RICH_MIN',
-                        legs=ic_legs,
-                        net_premium=total_credit,
-                        max_profit=max_profit,
-                        max_loss=max_loss,
-                        iv_richness=iv_richness,
-                        credit_width_ratio=credit_ratio,
-                        sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix, 'pc2_gate_decision': iv_gate},
-                    )
-                    continue
+                    opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                        iv_gate,
+                        'iv_not_rich',
+                        'iron_condor iv_richness below context floor',
+                    ))
 
                 ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
                 premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
@@ -9990,6 +10006,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'beUpper': round(upper_be), 'beLower': round(lower_be),
                     'pc2_gate_basis': pc2_gate_basis,
                     'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
+                    'opportunityGateFailures': opportunity_gate_failures,
+                    'softGateFailures': opportunity_gate_failures,
+                    'opportunityGateFailureCount': len(opportunity_gate_failures),
+                    'opportunityGateSoftenedToRanking': bool(opportunity_gate_failures),
+                    'opportunityGateSofteningVersion': OPPORTUNITY_GATE_SOFTENING_VERSION,
                 }
                 ic['wallScore'] = _compute_wall_score(ic, chain, is_bnf)
                 ic['wallTag'] = _wall_tag(ic['wallScore'], ic['type'])
@@ -10092,6 +10113,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             prob_above = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
             prob_below = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
             prob = max(0, prob_above + prob_below - 1)
+            opportunity_gate_failures = []
             prob_gate = _pc2_live_gate_decision(
                 ctx,
                 {'index': idx, 'strategy_type': 'IRON_BUTTERFLY', 'trade_mode': trade_mode, 'probProfit': prob, 'vix': vix},
@@ -10100,19 +10122,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 _CONST['MIN_PROB'],
             )
             if not prob_gate.get('passed'):
-                _record_multi_leg_rejection(
-                    stype='IRON_BUTTERFLY',
-                    width=width,
-                    stage='prob_below_floor',
-                    reason='iron_butterfly probability below minimum floor',
-                    legs=ib_legs,
-                    net_premium=total_credit,
-                    max_profit=max_profit,
-                    max_loss=max_loss,
-                    sigma_otm=0.0,
-                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4), 'pc2_gate_decision': prob_gate},
-                )
-                continue
+                opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                    prob_gate,
+                    'prob_below_floor',
+                    'iron_butterfly probability below context floor',
+                ))
             realized_vol = _realized_vol_proxy(vix)
             iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
             iv_gate = _pc2_live_gate_decision(
@@ -10123,20 +10137,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 _CONST['IV_RICH_MIN'],
             ) if iv_richness is not None else {'passed': True}
             if not iv_gate.get('passed'):
-                _record_multi_leg_rejection(
-                    stype='IRON_BUTTERFLY',
-                    width=width,
-                    stage='iv_not_rich',
-                    reason='iron_butterfly and iv_richness < IV_RICH_MIN',
-                    legs=ib_legs,
-                    net_premium=total_credit,
-                    max_profit=max_profit,
-                    max_loss=max_loss,
-                    iv_richness=iv_richness,
-                    sigma_otm=0.0,
-                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix, 'pc2_gate_decision': iv_gate},
-                )
-                continue
+                opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                    iv_gate,
+                    'iv_not_rich',
+                    'iron_butterfly iv_richness below context floor',
+                ))
 
             ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
             premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
@@ -10196,6 +10201,11 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'beUpper': round(upper_be), 'beLower': round(lower_be),
                 'pc2_gate_basis': pc2_gate_basis,
                 'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
+                'opportunityGateFailures': opportunity_gate_failures,
+                'softGateFailures': opportunity_gate_failures,
+                'opportunityGateFailureCount': len(opportunity_gate_failures),
+                'opportunityGateSoftenedToRanking': bool(opportunity_gate_failures),
+                'opportunityGateSofteningVersion': OPPORTUNITY_GATE_SOFTENING_VERSION,
             }
             ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
             ib['wallTag'] = _wall_tag(ib['wallScore'], ib['type'])
@@ -10264,6 +10274,13 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         else:
             c['premium_edge_status'] = 'OK'
             premium_edge = c.get('premiumEdge')
+        opportunity_gate_penalty = _opportunity_gate_penalty(c)
+        c['opportunityGatePenalty'] = opportunity_gate_penalty
+        c['adjustedPremiumEdge'] = (
+            premium_edge - opportunity_gate_penalty
+            if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge)
+            else premium_edge
+        )
         # 9: Live percentile context. Bounded modifier only; never a hard gate.
         context_percentile_score = _safe_num(c.get('contextPercentileScore'), 0.0)
         # 10: Probability
@@ -10278,7 +10295,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         return (
             safe, tier,
             teacher_rank_active, -teacher_score, -teacher_n,
-            -premium_edge, -context_percentile_score, bv, -win_rate,
+            -c['adjustedPremiumEdge'], -context_percentile_score, bv, -win_rate,
             -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
         )
 
