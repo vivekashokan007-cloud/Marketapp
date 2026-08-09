@@ -1,0 +1,14 @@
+{
+  "boundary": "Byte-identical proof is valid only for cached rows. IV_LOW is reachable, but ivPercentile is present and low on all cached rows, so deleting hard VIX from force3 is equivalent in this evidence slice.",
+  "counts": {
+    "ivp_lt_25": 1601,
+    "vix_le_iv_low": 1597
+  },
+  "force3_delta_count": 0,
+  "force3_delta_sample": [],
+  "missing_iv_percentile_rows": 0,
+  "routing_delta_count": 0,
+  "routing_delta_sample": [],
+  "rows_checked": 1601,
+  "verdict": "BYTE_IDENTICAL_ON_CACHE"
+}

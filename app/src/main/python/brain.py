@@ -5927,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.60"
+BRAIN_VERSION = "2.5.62"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -5940,6 +5940,71 @@ CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
+PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
+
+PC2_GATE_CALIBRATION = {
+    'MIN_CREDIT_RATIO': {
+        'gate_name': 'credit_ratio_below_floor',
+        'field': 'creditWidthRatio',
+        'context_variable': 'credit_width_ratio_menu_median',
+        'pct_target': 14.64,
+        'support_count': 9728,
+        'gate_group': 'G3_CREDIT_ECONOMICS',
+        'comparator': '>=',
+        'activation_status': 'percentile_candidate_after_stability_pass',
+        'review_flag': 'eligible_pending_batch5_wiring',
+    },
+    'IV_RICH_MIN': {
+        'gate_name': 'iv_not_rich',
+        'field': 'ivRichness',
+        'context_variable': 'iv_richness_menu_median',
+        'pct_target': 0.62,
+        'support_count': 2647,
+        'gate_group': 'G4_IV_RICHNESS',
+        'comparator': '>=',
+        'activation_status': 'percentile_candidate_after_stability_pass',
+        'review_flag': 'owner_approved_extreme_percentile',
+    },
+    'MIN_PROB': {
+        'gate_name': 'credit_prob_below_floor',
+        'field': 'probProfit',
+        'context_variable': 'prob_profit_menu_median',
+        'pct_target': 44.88,
+        'support_count': 2756,
+        'gate_group': 'G1_PROBABILITY',
+        'comparator': '>=',
+        'activation_status': 'percentile_candidate_after_stability_pass',
+        'review_flag': 'eligible_pending_batch5_wiring',
+    },
+    'MIN_SIGMA_OTM': {
+        'gate_name': 'sigma_otm_too_close',
+        'field': 'sigmaOTM',
+        'context_variable': 'sigma_otm_menu_median',
+        'pct_target': 17.10,
+        'support_count': 9953,
+        'gate_group': 'G7_SIGMA_LOWER',
+        'comparator': '>=',
+        'activation_status': 'percentile_candidate_after_stability_pass',
+        'review_flag': 'eligible_pending_batch5_wiring',
+    },
+    'MAX_SIGMA_OTM': {
+        'gate_name': 'sigma_otm_too_far',
+        'field': 'sigmaOTM',
+        'context_variable': 'sigma_otm_menu_median',
+        'pct_target': 39.86,
+        'support_count': 9953,
+        'gate_group': 'G7_SIGMA_UPPER',
+        'comparator': '<=',
+        'activation_status': 'percentile_candidate_after_stability_pass',
+        'review_flag': 'eligible_pending_batch5_wiring',
+    },
+}
+
+PC2_REJECTION_STAGE_TO_CONST = {
+    meta['gate_name']: const_name
+    for const_name, meta in PC2_GATE_CALIBRATION.items()
+}
+PC2_REJECTION_STAGE_TO_CONST['prob_below_floor'] = 'MIN_PROB'
 
 C3_CONTEXT_PERCENTILE_VARIABLES = {
     'existing': (
@@ -6987,18 +7052,105 @@ def _percentile_rank(value, history):
     equal = sum(1 for item in vals if item == num)
     return round(((lower + 0.5 * equal) * 100.0) / len(vals), 2)
 
+def _percentile_quantile(vals, pct):
+    series = sorted(_numeric_series(vals))
+    target = _percentile_float(pct)
+    if not series or target is None:
+        return None
+    if len(series) == 1:
+        return series[0]
+    target = max(0.0, min(100.0, target))
+    position = (target / 100.0) * (len(series) - 1)
+    lower_idx = int(math.floor(position))
+    upper_idx = int(math.ceil(position))
+    if lower_idx == upper_idx:
+        return series[lower_idx]
+    lower = series[lower_idx]
+    upper = series[upper_idx]
+    return lower + (upper - lower) * (position - lower_idx)
+
+def _iqr(vals):
+    series = sorted(_numeric_series(vals))
+    if not series:
+        return None
+    q1 = _percentile_quantile(series, 25.0)
+    q3 = _percentile_quantile(series, 75.0)
+    if q1 is None or q3 is None:
+        return None
+    return q3 - q1
+
+def _jackknife_threshold_stability(history, target_pct):
+    vals = sorted(_numeric_series(history))
+    pct = _percentile_float(target_pct)
+    if pct is None or len(vals) <= 1:
+        return {
+            'stability_ratio': None,
+            'stability_spread': None,
+            'stability_scale': _iqr(vals),
+            'jackknife_n': len(vals),
+            'stability_method': 'jackknife_iqr_threshold_v1',
+        }
+    estimates = []
+    for idx in range(len(vals)):
+        sample = vals[:idx] + vals[idx + 1:]
+        threshold = _percentile_quantile(sample, pct)
+        if threshold is not None:
+            estimates.append(threshold)
+    spread = _iqr(estimates)
+    scale = _iqr(vals)
+    ratio = None
+    if spread is not None and scale is not None:
+        ratio = 0.0 if scale == 0 and spread == 0 else (spread / scale if scale else None)
+    return {
+        'stability_ratio': None if ratio is None else round(ratio, 6),
+        'stability_spread': None if spread is None else round(spread, 6),
+        'stability_scale': None if scale is None else round(scale, 6),
+        'jackknife_n': len(estimates),
+        'stability_method': 'jackknife_iqr_threshold_v1',
+    }
+
 def _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT):
     vals = _numeric_series(history)
     support = len(vals)
     pct = _percentile_rank(value, vals) if support >= min_support else None
-    return {
+    stability = _jackknife_threshold_stability(vals, pct)
+    cell = {
         'value': None if _percentile_float(value) is None else round(_percentile_float(value), 4),
         'percentile': pct,
         'support_count': support,
         'min': round(min(vals), 4) if vals else None,
         'max': round(max(vals), 4) if vals else None,
         'insufficient_support': support < min_support,
+        'support_mode': 'legacy_min_support_with_pc2_jackknife_metadata',
+        'stability_ratio': stability.get('stability_ratio'),
+        'stability_spread': stability.get('stability_spread'),
+        'stability_scale': stability.get('stability_scale'),
+        'jackknife_n': stability.get('jackknife_n'),
+        'stability_method': stability.get('stability_method'),
+        'bar': None,
+        'stability_pass': False,
+        'switch_basis': 'hard_fallback',
     }
+    return cell
+
+def _apply_pc2_stability_bar(windows):
+    if not isinstance(windows, dict):
+        return None
+    vix_cell = (windows.get('60') or {}).get('vix') or {}
+    bar = _percentile_float(vix_cell.get('stability_ratio'))
+    if bar is None or int(vix_cell.get('support_count') or 0) < 60:
+        bar = None
+    for window_cells in windows.values():
+        if not isinstance(window_cells, dict):
+            continue
+        for cell in window_cells.values():
+            if not isinstance(cell, dict):
+                continue
+            ratio = _percentile_float(cell.get('stability_ratio'))
+            cell['bar'] = None if bar is None else round(bar, 6)
+            cell['stability_pass'] = bool(bar is not None and ratio is not None and ratio <= bar)
+            cell['switch_basis'] = 'percentile_pending_calibration' if cell['stability_pass'] and not cell.get('insufficient_support') else 'hard_fallback'
+    return None if bar is None else round(bar, 6)
 
 def _latest_poll_value(polls, key_options):
     latest = polls[-1] if isinstance(polls, list) and polls else {}
@@ -7027,6 +7179,263 @@ def _context_percentile_value(summary, window, name):
         return _percentile_float(cell.get('percentile'))
     except Exception:
         return None
+
+def _pc2_direction(row):
+    row = row if isinstance(row, dict) else {}
+    stype = str(row.get('strategy_type') or row.get('type') or '').upper()
+    if stype in ('BEAR_CALL', 'BEAR_PUT'):
+        return 'BEAR'
+    if stype in ('BULL_PUT', 'BULL_CALL'):
+        return 'BULL'
+    if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        return 'NEUTRAL'
+    return 'UNKNOWN'
+
+def _pc2_slice_key(row, variable_name=None):
+    row = row if isinstance(row, dict) else {}
+    index_key = row.get('index') or row.get('index_key') or 'UNKNOWN'
+    lane = row.get('lane')
+    trade_mode = row.get('trade_mode')
+    if not trade_mode and isinstance(lane, str) and '_' in lane:
+        trade_mode = lane.split('_', 1)[1]
+    return f"{variable_name or 'unknown'}|{index_key}|{_pc2_direction(row)}|{trade_mode or 'UNKNOWN'}"
+
+def _pc2_context_cell(context_percentiles, variable_name, window=60):
+    if not isinstance(context_percentiles, dict) or not variable_name:
+        return {}
+    cell = ((context_percentiles.get('windows') or {}).get(str(window)) or {}).get(variable_name)
+    return cell if isinstance(cell, dict) else {}
+
+def _pc2_snake(name):
+    out = []
+    for idx, ch in enumerate(str(name or '')):
+        if ch.isupper() and idx > 0:
+            out.append('_')
+        out.append(ch.lower())
+    return ''.join(out)
+
+def _pc2_history_keys(meta):
+    meta = meta if isinstance(meta, dict) else {}
+    field = str(meta.get('field') or '')
+    variable = str(meta.get('context_variable') or '')
+    keys = []
+    for key in (variable, field, _pc2_snake(field)):
+        if key and key not in keys:
+            keys.append(key)
+    return tuple(keys)
+
+def _pc2_compare(value, threshold, comparator):
+    value = _percentile_float(value)
+    threshold = _percentile_float(threshold)
+    if value is None or threshold is None:
+        return None
+    return value >= threshold if str(comparator) == '>=' else value <= threshold
+
+def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold, context_percentiles=None):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    row = row if isinstance(row, dict) else {}
+    meta = PC2_GATE_CALIBRATION.get(const_name or '')
+    hard_threshold = _percentile_float(hard_threshold)
+    observed_value = _percentile_float(observed_value)
+    if not meta or hard_threshold is None or observed_value is None:
+        return {
+            'version': PC2_GATE_BASIS_VERSION,
+            'constant': const_name,
+            'gate_basis': 'hard_fallback',
+            'basis': 'hard_fallback',
+            'threshold_value': hard_threshold,
+            'passed': _pc2_compare(observed_value, hard_threshold, '>='),
+            'live_behavior_change': False,
+            'fallback_reason': 'missing_gate_inputs',
+        }
+    comparator = meta.get('comparator') or '>='
+    hard_pass = _pc2_compare(observed_value, hard_threshold, comparator)
+    history = _history_values(ctx, _pc2_history_keys(meta), 60)
+    pct_target = _percentile_float(meta.get('pct_target'))
+    percentile_threshold = _percentile_quantile(history, pct_target)
+
+    vix_hist = (
+        _numeric_series(ctx.get('vixHistory'))
+        + _history_values(ctx, ('vix', 'VIX'), 60)
+    )[-60:]
+    vix_now = _percentile_float(ctx.get('vix') or row.get('vix'))
+    vix_cell = _percentile_cell(vix_now, vix_hist)
+    stability = _jackknife_threshold_stability(history, pct_target)
+    stability_ratio = stability.get('stability_ratio')
+    stability_bar = vix_cell.get('stability_ratio') if int(vix_cell.get('support_count') or 0) >= 60 else None
+    stability_pass = bool(
+        percentile_threshold is not None
+        and stability_ratio is not None
+        and stability_bar is not None
+        and stability_ratio <= stability_bar
+    )
+    gate_basis = 'percentile' if stability_pass else 'hard_fallback'
+    active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
+    percentile_pass = _pc2_compare(observed_value, percentile_threshold, comparator)
+    active_pass = _pc2_compare(observed_value, active_threshold, comparator)
+    live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
+    return {
+        'version': PC2_GATE_BASIS_VERSION,
+        'constant': const_name,
+        'gate_group': meta.get('gate_group'),
+        'gate_name': meta.get('gate_name'),
+        'gate_field': meta.get('field'),
+        'comparator': comparator,
+        'basis': gate_basis,
+        'gate_basis': gate_basis,
+        'threshold_value': None if active_threshold is None else round(active_threshold, 6),
+        'hard_threshold_value': round(hard_threshold, 6),
+        'percentile_threshold_value': None if percentile_threshold is None else round(percentile_threshold, 6),
+        'observed_value': round(observed_value, 6),
+        'passed': active_pass,
+        'hard_passed': hard_pass,
+        'percentile_passed': percentile_pass,
+        'counterfactual_basis': 'hard_fallback' if gate_basis == 'percentile' else ('percentile' if percentile_threshold is not None else None),
+        'counterfactual_available': percentile_threshold is not None,
+        'counterfactual_behavior_change': live_behavior_change,
+        'pct_target': meta.get('pct_target'),
+        'pct_target_source': 'pc2_batch2_calibration_v1',
+        'pct_target_review_flag': meta.get('review_flag'),
+        'slice_key': _pc2_slice_key(row, meta.get('context_variable')),
+        'support_count': len(_numeric_series(history)),
+        'stability_ratio': stability_ratio,
+        'stability_bar': stability_bar,
+        'stability_pass': stability_pass,
+        'switch_basis': gate_basis,
+        'window': 60,
+        'activation_status': meta.get('activation_status'),
+        'live_percentile_authority': gate_basis == 'percentile',
+        'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
+        'fallback_reason': None if gate_basis == 'percentile' else 'stability_or_history_not_ready',
+    }
+
+def _pc2_gate_basis_summary(gate_rows):
+    gate_rows = [g for g in (gate_rows or []) if isinstance(g, dict)]
+    if not gate_rows:
+        return {
+            'version': PC2_GATE_BASIS_VERSION,
+            'basis': 'hard_fallback',
+            'live_behavior_change': False,
+            'gates': 0,
+            'percentile_live_gates': 0,
+            'hard_fallback_gates': 0,
+            'percentile_counterfactual_available': 0,
+            'owner_approved_extreme_percentiles': [],
+        }
+    basis_set = {g.get('gate_basis') for g in gate_rows}
+    return {
+        'version': PC2_GATE_BASIS_VERSION,
+        'basis': 'mixed' if len(basis_set) > 1 else (gate_rows[0].get('gate_basis') or 'hard_fallback'),
+        'live_behavior_change': any(g.get('live_behavior_change') for g in gate_rows),
+        'gates': len(gate_rows),
+        'percentile_live_gates': sum(1 for g in gate_rows if g.get('gate_basis') == 'percentile'),
+        'hard_fallback_gates': sum(1 for g in gate_rows if g.get('gate_basis') == 'hard_fallback'),
+        'percentile_counterfactual_available': sum(1 for g in gate_rows if g.get('counterfactual_available')),
+        'owner_approved_extreme_percentiles': [
+            g.get('constant')
+            for g in gate_rows
+            if g.get('pct_target_review_flag') == 'owner_approved_extreme_percentile'
+        ],
+    }
+
+def _pc2_gate_meta_for_row(row, context_percentiles=None, const_name=None, stage=None, passed=None):
+    row = row if isinstance(row, dict) else {}
+    if not const_name:
+        stage_key = str(stage or row.get('rejection_stage') or row.get('gate_name') or '')
+        const_name = PC2_REJECTION_STAGE_TO_CONST.get(stage_key)
+    meta = PC2_GATE_CALIBRATION.get(const_name or '')
+    if not meta:
+        return None
+    live_decision = row.get('pc2_gate_decision')
+    if isinstance(live_decision, dict) and live_decision.get('constant') == const_name:
+        return dict(live_decision)
+    variable_name = meta.get('context_variable')
+    cell = _pc2_context_cell(context_percentiles, variable_name, 60)
+    stability_pass = bool(cell.get('stability_pass'))
+    gate_basis = 'hard_fallback'
+    return {
+        'version': PC2_GATE_BASIS_VERSION,
+        'constant': const_name,
+        'gate_group': meta.get('gate_group'),
+        'gate_name': meta.get('gate_name'),
+        'gate_field': meta.get('field'),
+        'comparator': meta.get('comparator'),
+        'basis': gate_basis,
+        'gate_basis': gate_basis,
+        'counterfactual_basis': 'percentile' if stability_pass else None,
+        'counterfactual_available': bool(stability_pass),
+        'counterfactual_behavior_change': False,
+        'pct_target': meta.get('pct_target'),
+        'pct_target_source': 'pc2_batch2_calibration_v1',
+        'pct_target_review_flag': meta.get('review_flag'),
+        'slice_key': _pc2_slice_key(row, variable_name),
+        'support_count': meta.get('support_count'),
+        'stability_ratio': cell.get('stability_ratio'),
+        'stability_bar': cell.get('bar'),
+        'stability_pass': stability_pass,
+        'switch_basis': cell.get('switch_basis') or 'hard_fallback',
+        'window': 60,
+        'activation_status': meta.get('activation_status'),
+        'live_behavior_change': False,
+        'passed_current_basis': passed,
+    }
+
+def _pc2_stamp_gate_basis(rows, context_percentiles=None):
+    if not isinstance(rows, list):
+        return []
+    stamped = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        gate_meta = _pc2_gate_meta_for_row(row, context_percentiles, stage=row.get('rejection_stage') or row.get('gate_name'), passed=False)
+        if not gate_meta:
+            continue
+        row['pc2_gate_basis'] = gate_meta
+        row['gate_basis'] = gate_meta.get('gate_basis')
+        row['pct_target'] = gate_meta.get('pct_target')
+        row['slice_key'] = gate_meta.get('slice_key')
+        row['basis_support_count'] = gate_meta.get('support_count')
+        row['basis_stability_ratio'] = gate_meta.get('stability_ratio')
+        row['basis_stability_bar'] = gate_meta.get('stability_bar')
+        row['basis_stability_pass'] = gate_meta.get('stability_pass')
+        row['counterfactual_basis'] = gate_meta.get('counterfactual_basis')
+        stamped.append(row)
+    return stamped
+
+def _pc2_stamp_candidate_gate_context(candidates, context_percentiles=None):
+    if not isinstance(candidates, list):
+        return []
+    stamped = []
+    for cand in candidates:
+        if not isinstance(cand, dict):
+            continue
+        if not cand.get('isCredit'):
+            continue
+        existing_basis = cand.get('pc2_gate_basis')
+        basis_rows = list(existing_basis) if isinstance(existing_basis, list) else []
+        gate_order = []
+        existing_constants = {item.get('constant') for item in basis_rows if isinstance(item, dict)}
+        if (cand.get('creditWidthRatio') is not None or cand.get('credit_width_ratio') is not None) and 'MIN_CREDIT_RATIO' not in existing_constants:
+            gate_order.append('MIN_CREDIT_RATIO')
+        if (cand.get('ivRichness') is not None or cand.get('iv_richness') is not None) and 'IV_RICH_MIN' not in existing_constants:
+            gate_order.append('IV_RICH_MIN')
+        if (cand.get('probProfit') is not None or cand.get('prob_profit') is not None or cand.get('prob') is not None) and 'MIN_PROB' not in existing_constants:
+            gate_order.append('MIN_PROB')
+        if cand.get('sigmaOTM') is not None or cand.get('sigma_otm') is not None:
+            if 'MIN_SIGMA_OTM' not in existing_constants:
+                gate_order.append('MIN_SIGMA_OTM')
+            if 'MAX_SIGMA_OTM' not in existing_constants:
+                gate_order.append('MAX_SIGMA_OTM')
+        for const_name in gate_order:
+            gate_meta = _pc2_gate_meta_for_row(cand, context_percentiles, const_name=const_name, passed=True)
+            if gate_meta:
+                basis_rows.append(gate_meta)
+        if not basis_rows:
+            continue
+        cand['pc2_gate_basis'] = basis_rows
+        cand['gate_basis_summary'] = _pc2_gate_basis_summary(basis_rows)
+        stamped.append(cand)
+    return stamped
 
 def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, result=None):
     ctx = ctx if isinstance(ctx, dict) else {}
@@ -7366,6 +7775,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
                 window_cells[name] = _percentile_cell(current_values.get(name), _hist(name), min_support=1)
         windows[str(window)] = window_cells
 
+    pc2_stability_bar = _apply_pc2_stability_bar(windows)
     variables = {}
     all_names = set(current_values.keys())
     for group_names in C3_CONTEXT_PERCENTILE_VARIABLES.values():
@@ -7380,6 +7790,16 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'support_count': max(support_counts) if support_counts else 0,
             'support_count_30': cells.get('30', {}).get('support_count'),
             'support_count_60': cells.get('60', {}).get('support_count'),
+            'stability_ratio_30': cells.get('30', {}).get('stability_ratio'),
+            'stability_ratio_60': cells.get('60', {}).get('stability_ratio'),
+            'stability_bar_30': cells.get('30', {}).get('bar'),
+            'stability_bar_60': cells.get('60', {}).get('bar'),
+            'stability_pass_30': cells.get('30', {}).get('stability_pass'),
+            'stability_pass_60': cells.get('60', {}).get('stability_pass'),
+            'switch_basis_30': cells.get('30', {}).get('switch_basis'),
+            'switch_basis_60': cells.get('60', {}).get('switch_basis'),
+            'jackknife_n_30': cells.get('30', {}).get('jackknife_n'),
+            'jackknife_n_60': cells.get('60', {}).get('jackknife_n'),
             'history_window_end': history_window_end,
             'history_source': 'live',
             'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
@@ -7395,6 +7815,10 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
         'support_policy': {
             'minimum_support': CONTEXT_PERCENTILE_MIN_SUPPORT,
+            'pc2_support_mode': 'jackknife_stability_bar_v1',
+            'pc2_stability_bar_source': 'vix_60_window_full_support',
+            'pc2_stability_bar': pc2_stability_bar,
+            'pc2_activation_rule': 'percentile_when_calibrated_and_stability_passes_else_hard_fallback',
             'insufficient_support_percentile': None,
             'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
             'outcome_variables': 'prior_completed_sessions_only',
@@ -8051,6 +8475,8 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'mlRegime': cand.get('mlRegime'),
             'mlUnsure': cand.get('mlUnsure'),
             'mlOodFlag': cand.get('mlOodFlag'),
+            'pc2_gate_basis': cand.get('pc2_gate_basis'),
+            'gate_basis_summary': cand.get('gate_basis_summary'),
             'premium_edge_status': cand.get('premium_edge_status') or ('OK' if cand.get('premiumEdge') is not None else 'MISSING'),
             'deterministic_rank': cand.get('deterministic_rank'),
             'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
@@ -8780,22 +9206,33 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT') and ds > 0:
         sigma_otm = abs(pair['sell'] - spot) / ds
         min_sigma, max_sigma = _credit_sigma_limits(ctx)
-        if sigma_otm < min_sigma:
+        sigma_row = {
+            'index': idx,
+            'strategy_type': stype,
+            'trade_mode': trade_mode,
+            'sigmaOTM': sigma_otm,
+            'vix': vix,
+        }
+        min_sigma_gate = _pc2_live_gate_decision(ctx, sigma_row, 'MIN_SIGMA_OTM', sigma_otm, min_sigma)
+        if not min_sigma_gate.get('passed'):
             record_rejection('sigma_otm_too_close', 'is_credit directional and sigma_otm < 0.5',
                              sigma_otm=round(sigma_otm, 2),
                              net_prem=round(net_prem, 4),
                              max_profit=round(max_profit, 2),
                              max_loss=round(max_loss, 2),
-                             credit_ratio=round(net_prem / width, 4) if width else None)
+                             credit_ratio=round(net_prem / width, 4) if width else None,
+                             pc2_gate_decision=min_sigma_gate)
             return None
-        if _sigma_above_max(sigma_otm, max_sigma):
+        max_sigma_gate = _pc2_live_gate_decision(ctx, sigma_row, 'MAX_SIGMA_OTM', sigma_otm, max_sigma)
+        if not max_sigma_gate.get('passed'):
             record_rejection('sigma_otm_too_far', 'is_credit directional and sigma_otm > max_sigma',
                              sigma_otm=round(sigma_otm, 2),
                              max_sigma=max_sigma,
                              net_prem=round(net_prem, 4),
                              max_profit=round(max_profit, 2),
                              max_loss=round(max_loss, 2),
-                             credit_ratio=round(net_prem / width, 4) if width else None)
+                             credit_ratio=round(net_prem / width, 4) if width else None,
+                             pc2_gate_decision=max_sigma_gate)
             return None
         sigma_otm = round(sigma_otm, 2)
 
@@ -8809,13 +9246,28 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
             record_rejection('credit_dte_below_floor', 'is_credit directional and tdte < MIN_CREDIT_DTE')
             return None
         credit_ratio = (net_prem / width) if width > 0 else 0
-        if credit_ratio < _CONST['MIN_CREDIT_RATIO']:
-            record_rejection('credit_ratio_below_floor', 'is_credit directional and credit/width < MIN_CREDIT_RATIO', credit_ratio=round(credit_ratio, 4), net_prem=round(net_prem, 4))
+        credit_row = {
+            'index': idx,
+            'strategy_type': stype,
+            'trade_mode': trade_mode,
+            'creditWidthRatio': credit_ratio,
+            'vix': vix,
+        }
+        credit_gate = _pc2_live_gate_decision(ctx, credit_row, 'MIN_CREDIT_RATIO', credit_ratio, _CONST['MIN_CREDIT_RATIO'])
+        if not credit_gate.get('passed'):
+            record_rejection('credit_ratio_below_floor', 'is_credit directional and credit/width < MIN_CREDIT_RATIO', credit_ratio=round(credit_ratio, 4), net_prem=round(net_prem, 4), pc2_gate_decision=credit_gate)
             return None
         realized_vol = _realized_vol_proxy(vix)
         iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
-        if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
-            record_rejection('iv_not_rich', 'is_credit directional and iv_richness < IV_RICH_MIN', iv_richness=round(iv_richness, 3), atm_iv_pct=round(vol * 100, 2), vix=vix, net_prem=round(net_prem, 4), credit_ratio=round(credit_ratio, 4))
+        iv_gate = _pc2_live_gate_decision(
+            ctx,
+            {**credit_row, 'ivRichness': iv_richness},
+            'IV_RICH_MIN',
+            iv_richness,
+            _CONST['IV_RICH_MIN'],
+        ) if iv_richness is not None else {'passed': True}
+        if not iv_gate.get('passed'):
+            record_rejection('iv_not_rich', 'is_credit directional and iv_richness < IV_RICH_MIN', iv_richness=round(iv_richness, 3), atm_iv_pct=round(vol * 100, 2), vix=vix, net_prem=round(net_prem, 4), credit_ratio=round(credit_ratio, 4), pc2_gate_decision=iv_gate)
             return None
     else:
         credit_ratio = (net_prem / width) if (is_credit and width > 0) else None
@@ -8832,8 +9284,15 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         prob = abs(_chain_delta(strikes, be, pair['buyType'], spot, T, vol))
 
     # BR98: Credit requires 50% prob floor. Debit can be acceptable <50% if EV clearly positive.
-    if is_credit and prob < _CONST['MIN_PROB']:
-        record_rejection('credit_prob_below_floor', 'is_credit and prob < MIN_PROB', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4))
+    prob_gate = _pc2_live_gate_decision(
+        ctx,
+        {'index': idx, 'strategy_type': stype, 'trade_mode': trade_mode, 'probProfit': prob, 'vix': vix},
+        'MIN_PROB',
+        prob,
+        _CONST['MIN_PROB'],
+    ) if is_credit else {'passed': True}
+    if is_credit and not prob_gate.get('passed'):
+        record_rejection('credit_prob_below_floor', 'is_credit and prob < MIN_PROB', net_prem=round(net_prem, 4), max_profit=round(max_profit, 2), max_loss=round(max_loss, 2), prob=round(prob, 4), pc2_gate_decision=prob_gate)
         return None
     if not is_credit:
         # For debit: retain the probability floor. The 1.10 EV floor is now
@@ -8874,6 +9333,16 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'sell': pair.get('sell'), 'buy': pair.get('buy'),
         'width': width, 'result': 'accepted',
     })
+    pc2_gate_basis = [
+        gate for gate in (
+            locals().get('min_sigma_gate'),
+            locals().get('max_sigma_gate'),
+            locals().get('credit_gate'),
+            locals().get('iv_gate'),
+            locals().get('prob_gate'),
+        )
+        if isinstance(gate, dict) and gate.get('version') == PC2_GATE_BASIS_VERSION
+    ]
     return {
         'id': cid, 'type': stype, 'width': width, 'legs': [
         _build_leg_record(pair['buy'], pair['buyType'], 'BUY', expiry, buy_data, atm),
@@ -8928,6 +9397,8 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'decisionSource': 'DEFAULT_BRAIN_MATH',
         'decision_source': 'DEFAULT_BRAIN_MATH',
         'decisionReason': 'candidate ranked by deterministic brain rules',
+        'pc2_gate_basis': pc2_gate_basis,
+        'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
         'decision_reason': 'candidate ranked by deterministic brain rules',
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
@@ -9237,24 +9708,39 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
                     )
                     continue
-                if call_sigma < min_sigma or put_sigma < min_sigma:
+                ic_sigma_row = {
+                    'index': idx,
+                    'strategy_type': 'IRON_CONDOR',
+                    'trade_mode': trade_mode,
+                    'sigmaOTM': max(call_sigma, put_sigma),
+                    'vix': vix,
+                }
+                min_sigma_gate = _pc2_live_gate_decision(
+                    ctx,
+                    {**ic_sigma_row, 'sigmaOTM': min(call_sigma, put_sigma)},
+                    'MIN_SIGMA_OTM',
+                    min(call_sigma, put_sigma),
+                    min_sigma,
+                )
+                if not min_sigma_gate.get('passed'):
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
                         width=width,
                         stage='sigma_otm_too_close',
                         reason='iron_condor sell leg sigma below minimum',
                         sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'pc2_gate_decision': min_sigma_gate},
                     )
                     continue
-                if _sigma_above_max(call_sigma, max_sigma) or _sigma_above_max(put_sigma, max_sigma):
+                max_sigma_gate = _pc2_live_gate_decision(ctx, ic_sigma_row, 'MAX_SIGMA_OTM', max(call_sigma, put_sigma), max_sigma)
+                if not max_sigma_gate.get('passed'):
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
                         width=width,
                         stage='sigma_otm_too_far',
                         reason='iron_condor sell leg sigma above maximum',
                         sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'max_sigma': max_sigma},
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'max_sigma': max_sigma, 'pc2_gate_decision': max_sigma_gate},
                     )
                     continue
                 if sell_call not in all_set or buy_call not in all_set or sell_put not in all_set or buy_put not in all_set:
@@ -9363,7 +9849,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 prob_above_put = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
                 prob_below_call = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
                 prob = max(0, prob_above_put + prob_below_call - 1)
-                if prob < _CONST['MIN_PROB']:
+                prob_gate = _pc2_live_gate_decision(
+                    ctx,
+                    {'index': idx, 'strategy_type': 'IRON_CONDOR', 'trade_mode': trade_mode, 'probProfit': prob, 'vix': vix},
+                    'MIN_PROB',
+                    prob,
+                    _CONST['MIN_PROB'],
+                )
+                if not prob_gate.get('passed'):
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
                         width=width,
@@ -9374,11 +9867,18 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         max_profit=max_profit,
                         max_loss=max_loss,
                         sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4)},
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4), 'pc2_gate_decision': prob_gate},
                     )
                     continue
                 credit_ratio = total_credit / width if width else None
-                if credit_ratio is not None and credit_ratio < _CONST['MIN_CREDIT_RATIO']:
+                credit_gate = _pc2_live_gate_decision(
+                    ctx,
+                    {'index': idx, 'strategy_type': 'IRON_CONDOR', 'trade_mode': trade_mode, 'creditWidthRatio': credit_ratio, 'vix': vix},
+                    'MIN_CREDIT_RATIO',
+                    credit_ratio,
+                    _CONST['MIN_CREDIT_RATIO'],
+                ) if credit_ratio is not None else {'passed': True}
+                if not credit_gate.get('passed'):
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
                         width=width,
@@ -9390,12 +9890,19 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         max_loss=max_loss,
                         credit_width_ratio=credit_ratio,
                         sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put},
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'pc2_gate_decision': credit_gate},
                     )
                     continue
                 realized_vol = _realized_vol_proxy(vix)
                 iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
-                if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
+                iv_gate = _pc2_live_gate_decision(
+                    ctx,
+                    {'index': idx, 'strategy_type': 'IRON_CONDOR', 'trade_mode': trade_mode, 'ivRichness': iv_richness, 'vix': vix},
+                    'IV_RICH_MIN',
+                    iv_richness,
+                    _CONST['IV_RICH_MIN'],
+                ) if iv_richness is not None else {'passed': True}
+                if not iv_gate.get('passed'):
                     _record_multi_leg_rejection(
                         stype='IRON_CONDOR',
                         width=width,
@@ -9408,7 +9915,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         iv_richness=iv_richness,
                         credit_width_ratio=credit_ratio,
                         sigma_otm=max(call_sigma, put_sigma),
-                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix},
+                        extra={'sell_call': sell_call, 'sell_put': sell_put, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix, 'pc2_gate_decision': iv_gate},
                     )
                     continue
 
@@ -9420,6 +9927,16 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     _chain_theta(strikes, buy_call, 'CE', spot, T, vol) -
                     _chain_theta(strikes, buy_put, 'PE', spot, T, vol)
                 ) * lot_size)
+                pc2_gate_basis = [
+                    gate for gate in (
+                        min_sigma_gate,
+                        max_sigma_gate,
+                        prob_gate,
+                        credit_gate,
+                        iv_gate,
+                    )
+                    if isinstance(gate, dict) and gate.get('version') == PC2_GATE_BASIS_VERSION
+                ]
 
                 ic = {
                     'id': f"IC_{idx}_{sell_call}_{sell_put}_W{width}",
@@ -9471,6 +9988,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'wallScore': 0, 'gammaRisk': 0, 'contextScore': 0,
                     'directionSafe': True, 'capitalBlocked': False,
                     'beUpper': round(upper_be), 'beLower': round(lower_be),
+                    'pc2_gate_basis': pc2_gate_basis,
+                    'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
                 }
                 ic['wallScore'] = _compute_wall_score(ic, chain, is_bnf)
                 ic['wallTag'] = _wall_tag(ic['wallScore'], ic['type'])
@@ -9573,7 +10092,14 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             prob_above = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
             prob_below = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
             prob = max(0, prob_above + prob_below - 1)
-            if prob < _CONST['MIN_PROB']:
+            prob_gate = _pc2_live_gate_decision(
+                ctx,
+                {'index': idx, 'strategy_type': 'IRON_BUTTERFLY', 'trade_mode': trade_mode, 'probProfit': prob, 'vix': vix},
+                'MIN_PROB',
+                prob,
+                _CONST['MIN_PROB'],
+            )
+            if not prob_gate.get('passed'):
                 _record_multi_leg_rejection(
                     stype='IRON_BUTTERFLY',
                     width=width,
@@ -9584,12 +10110,19 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     max_profit=max_profit,
                     max_loss=max_loss,
                     sigma_otm=0.0,
-                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4)},
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'prob': round(prob, 4), 'pc2_gate_decision': prob_gate},
                 )
                 continue
             realized_vol = _realized_vol_proxy(vix)
             iv_richness = (vol / realized_vol) if realized_vol and vol > 0 else None
-            if iv_richness is not None and iv_richness < _CONST['IV_RICH_MIN']:
+            iv_gate = _pc2_live_gate_decision(
+                ctx,
+                {'index': idx, 'strategy_type': 'IRON_BUTTERFLY', 'trade_mode': trade_mode, 'ivRichness': iv_richness, 'vix': vix},
+                'IV_RICH_MIN',
+                iv_richness,
+                _CONST['IV_RICH_MIN'],
+            ) if iv_richness is not None else {'passed': True}
+            if not iv_gate.get('passed'):
                 _record_multi_leg_rejection(
                     stype='IRON_BUTTERFLY',
                     width=width,
@@ -9601,12 +10134,19 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     max_loss=max_loss,
                     iv_richness=iv_richness,
                     sigma_otm=0.0,
-                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix},
+                    extra={'sell_call': atm, 'sell_put': atm, 'buy_call': buy_call, 'buy_put': buy_put, 'atm_iv_pct': round(vol * 100, 2), 'vix': vix, 'pc2_gate_decision': iv_gate},
                 )
                 continue
 
             ev = round(prob * max_profit * DISPLAY_EV_PROFIT_HAIRCUT - (1 - prob) * max_loss)
             premium_edge = round(prob * max_profit - (1 - prob) * max_loss)
+            pc2_gate_basis = [
+                gate for gate in (
+                    prob_gate,
+                    iv_gate,
+                )
+                if isinstance(gate, dict) and gate.get('version') == PC2_GATE_BASIS_VERSION
+            ]
             ib = {
                 'id': f"IB_{idx}_{atm}_W{width}",
                 'type': 'IRON_BUTTERFLY', 'width': width, 'legs': [
@@ -9654,6 +10194,8 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'stopLoss': round(max_loss * 0.6),
                 **_candidate_margin_contract(idx, max_loss),
                 'beUpper': round(upper_be), 'beLower': round(lower_be),
+                'pc2_gate_basis': pc2_gate_basis,
+                'gate_basis_summary': _pc2_gate_basis_summary(pc2_gate_basis),
             }
             ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
             ib['wallTag'] = _wall_tag(ib['wallScore'], ib['type'])
@@ -10299,6 +10841,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
         context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result)
+        _pc2_stamp_candidate_gate_context(all_cands, context_percentiles)
+        _pc2_stamp_gate_basis(all_rejected, context_percentiles)
         _apply_context_percentile_live_ranking(all_cands, context_percentiles)
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
@@ -12624,6 +13168,15 @@ def _compact_rejected_candidates(rejected_candidates):
             'sigmaOTM': row.get('sigmaOTM'),
             'gate_name': row.get('gate_name'),
             'gate_field': row.get('gate_field'),
+            'gate_basis': row.get('gate_basis'),
+            'pc2_gate_basis': row.get('pc2_gate_basis'),
+            'pct_target': row.get('pct_target'),
+            'slice_key': row.get('slice_key'),
+            'basis_support_count': row.get('basis_support_count'),
+            'basis_stability_ratio': row.get('basis_stability_ratio'),
+            'basis_stability_bar': row.get('basis_stability_bar'),
+            'basis_stability_pass': row.get('basis_stability_pass'),
+            'counterfactual_basis': row.get('counterfactual_basis'),
             'observed_value': row.get('observed_value'),
             'threshold_value': row.get('threshold_value'),
             'margin': row.get('margin'),
@@ -12757,6 +13310,15 @@ def _full_rejected_candidate_view(row):
         'sigmaOTM': row.get('sigmaOTM') if row.get('sigmaOTM') is not None else row.get('sigma_otm'),
         'gate_name': row.get('gate_name'),
         'gate_field': row.get('gate_field'),
+        'gate_basis': row.get('gate_basis'),
+        'pc2_gate_basis': row.get('pc2_gate_basis'),
+        'pct_target': row.get('pct_target'),
+        'slice_key': row.get('slice_key'),
+        'basis_support_count': row.get('basis_support_count'),
+        'basis_stability_ratio': row.get('basis_stability_ratio'),
+        'basis_stability_bar': row.get('basis_stability_bar'),
+        'basis_stability_pass': row.get('basis_stability_pass'),
+        'counterfactual_basis': row.get('counterfactual_basis'),
         'observed_value': row.get('observed_value'),
         'threshold_value': row.get('threshold_value'),
         'margin': row.get('margin'),
@@ -14991,6 +15553,15 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                     outcome['rejection_reason'] = cand.get('rejection_reason')
                     outcome['gate_name'] = cand.get('gate_name')
                     outcome['gate_field'] = cand.get('gate_field')
+                    outcome['gate_basis'] = cand.get('gate_basis')
+                    outcome['pc2_gate_basis'] = cand.get('pc2_gate_basis')
+                    outcome['pct_target'] = cand.get('pct_target')
+                    outcome['slice_key'] = cand.get('slice_key')
+                    outcome['basis_support_count'] = cand.get('basis_support_count')
+                    outcome['basis_stability_ratio'] = cand.get('basis_stability_ratio')
+                    outcome['basis_stability_bar'] = cand.get('basis_stability_bar')
+                    outcome['basis_stability_pass'] = cand.get('basis_stability_pass')
+                    outcome['counterfactual_basis'] = cand.get('counterfactual_basis')
                     outcome['observed_value'] = cand.get('observed_value')
                     outcome['threshold_value'] = cand.get('threshold_value')
                     outcome['margin'] = cand.get('margin')
