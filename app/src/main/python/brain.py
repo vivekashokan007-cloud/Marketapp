@@ -14688,6 +14688,9 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     managed_gross_pnl = None
     friction_cost = None
     managed_pnl = None
+    peak_pnl = None
+    trough_pnl = None
+    time_to_peak_step = None
 
     for idx, point in enumerate(path_points, start=1):
         gross_pnl, sell_premium_value = _gross_spread_pnl(snap, cand, point, entry_point=entry_point)
@@ -14696,6 +14699,11 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, config)
         round_trip_cost = cost_breakdown['total']
         net_pnl = round(gross_pnl - round_trip_cost, 2)
+        if peak_pnl is None or net_pnl > peak_pnl:
+            peak_pnl = net_pnl
+            time_to_peak_step = idx
+        if trough_pnl is None or net_pnl < trough_pnl:
+            trough_pnl = net_pnl
         if net_pnl >= tp_threshold:
             exit_reason = 'TP'
             exit_point = point
@@ -14722,8 +14730,14 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     entry_vix = _resolve_entry_vix(snap)
     regime_bucket = _teacher_regime_bucket(entry_vix, config)
     managed_pnl = round(managed_pnl if managed_pnl is not None else 0.0, 2)
+    peak_pnl = round(peak_pnl if peak_pnl is not None else managed_pnl, 2)
+    trough_pnl = round(trough_pnl if trough_pnl is not None else managed_pnl, 2)
     r_multiple = round(managed_pnl / risk_at_entry, 4) if risk_at_entry > 0 else None
     captured_pct = round(managed_pnl / max_profit, 4) if max_profit > 0 else None
+    max_capture_pct = round(peak_pnl / max_profit, 4) if max_profit > 0 else None
+    near_target_pct = round(peak_pnl / tp_threshold, 4) if tp_threshold > 0 else None
+    target_gap_pnl = round(tp_threshold - peak_pnl, 2) if tp_threshold > 0 else None
+    target_was_reached = bool(tp_threshold > 0 and peak_pnl >= tp_threshold)
     success = exit_reason == 'TP'
     avg_win_r = max(tp_threshold / risk_at_entry, 0.0) if risk_at_entry > 0 else 0.0
     avg_loss_r = 1.0
@@ -14739,6 +14753,13 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         'path_points_count': len(path_points),
         'r_multiple': r_multiple,
         'captured_pct': captured_pct,
+        'peak_pnl': peak_pnl,
+        'trough_pnl': trough_pnl,
+        'max_capture_pct': max_capture_pct,
+        'near_target_pct': near_target_pct,
+        'target_gap_pnl': target_gap_pnl,
+        'time_to_peak_step': time_to_peak_step,
+        'target_was_reached': 1 if target_was_reached else 0,
         'is_success': 1 if success else 0,
         'risk_at_entry': round(risk_at_entry, 2),
         'regime_bucket': regime_bucket,

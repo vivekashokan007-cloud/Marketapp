@@ -73,6 +73,13 @@ object SupabaseClient {
         "exit_ts",
         "r_multiple",
         "captured_pct",
+        "peak_pnl",
+        "trough_pnl",
+        "max_capture_pct",
+        "near_target_pct",
+        "target_gap_pnl",
+        "time_to_peak_step",
+        "target_was_reached",
         "is_success",
         "risk_at_entry",
         "regime_bucket",
@@ -94,7 +101,8 @@ object SupabaseClient {
         "trade_mode", "strategy_type", "role", "sim_pnl_h2", "outcome_h2", "canonical_won",
         "managed_pnl", "managed_gross_pnl", "friction_cost", "exit_reason", "exit_step",
         "exit_ts", "path_points_count", "r_multiple", "captured_pct", "is_success",
-        "risk_at_entry", "regime_bucket", "label_version", "teacher_config_version",
+        "peak_pnl", "trough_pnl", "max_capture_pct", "near_target_pct", "target_gap_pnl",
+        "time_to_peak_step", "target_was_reached", "risk_at_entry", "regime_bucket", "label_version", "teacher_config_version",
         "tp_threshold", "sl_threshold", "break_even_win_rate_pct", "price_integrity",
         "h2_price_integrity_reason", "premium_edge", "credit_width_ratio", "sigma_otm",
         "iv_richness", "width", "prob_profit", "rejection_stage", "rejection_reason",
@@ -696,6 +704,11 @@ object SupabaseClient {
                 "friction_cost",
                 "r_multiple",
                 "captured_pct",
+                "peak_pnl",
+                "trough_pnl",
+                "max_capture_pct",
+                "near_target_pct",
+                "target_gap_pnl",
                 "risk_at_entry",
                 "tp_threshold",
                 "sl_threshold",
@@ -719,6 +732,7 @@ object SupabaseClient {
             listOf(
                 "exit_step",
                 "path_points_count",
+                "time_to_peak_step",
                 "rejected_rank_in_snapshot",
                 "rejected_eval_rank",
                 "rejected_eval_cap",
@@ -727,7 +741,7 @@ object SupabaseClient {
                 "stage_skipped_not_evaluable"
             ).forEach { key -> putOptionalInt(row, src, key) }
 
-            listOf("outcome_h2", "canonical_won", "is_success").forEach { key ->
+            listOf("outcome_h2", "canonical_won", "is_success", "target_was_reached").forEach { key ->
                 putOptionalBoolean(row, src, key)
             }
 
@@ -777,6 +791,13 @@ object SupabaseClient {
             "friction_cost",
             "r_multiple",
             "captured_pct",
+            "peak_pnl",
+            "trough_pnl",
+            "max_capture_pct",
+            "near_target_pct",
+            "target_gap_pnl",
+            "time_to_peak_step",
+            "target_was_reached",
             "is_success"
         ).forEach(row::remove)
     }
