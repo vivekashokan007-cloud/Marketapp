@@ -5927,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.63"
+BRAIN_VERSION = "2.5.64"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6148,6 +6148,241 @@ C3_KIND_B_CONSTS = {
     'CANDLE_PRIOR_TREND_THRESHOLD': 'pattern threshold; needs replay calibration',
     'CANDLE_GAP_PCT': 'pattern threshold; needs replay calibration',
 }
+
+PC2_PARAMETER_AUTHORITY_VERSION = 'pc2_parameter_authority_v1'
+PC2_LIVE_SOFT_OPPORTUNITY_CONSTS = tuple(PC2_GATE_CALIBRATION.keys())
+PC2_LIVE_CONTEXT_RANKING_VARIABLES = (
+    'iv_richness_menu_median',
+    'credit_width_ratio_menu_median',
+    'realized_day_range',
+    'vix',
+    'fii_short_pct',
+)
+
+PC2_BATCH_A_WIDTH_WALL_VERSION = 'pc2_batch_a_width_wall_shadow_v1'
+PC2_BATCH_A_WIDTH_WALL_CONSTS = {
+    'BNF_WIDTHS': {
+        'authority': 'generation_supply_ladder',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'width ladder controls which spreads are enumerated; replay evidence is needed before widening supply live',
+    },
+    'NF_WIDTHS': {
+        'authority': 'generation_supply_ladder',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'width ladder controls which spreads are enumerated; replay evidence is needed before widening supply live',
+    },
+    'MIN_WIDTH_BNF': {
+        'authority': 'lane_enable_not_percentile',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'minimum width protects fill/liquidity realism; not enough evidence to convert it into live percentile scoring',
+    },
+    'MIN_WIDTH_NF': {
+        'authority': 'lane_enable_not_percentile',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'minimum width protects fill/liquidity realism; not enough evidence to convert it into live percentile scoring',
+    },
+    'IC_WALL_MAX_SIGMA': {
+        'authority': 'context_measure_first',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'wall-distance condor seeding can flood low-quality candidates; record first, soften only after replay',
+    },
+}
+
+PC2_BATCH_B_REGIME_SIGMA_VERSION = 'pc2_batch_b_regime_sigma_shadow_v1'
+PC2_BATCH_B_REGIME_SIGMA_CONSTS = {
+    'IV_HIGH': {
+        'authority': 'delete_proof_required',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'VIX regime threshold routes strategy families and force scoring; live conversion needs delete-proof replay',
+    },
+    'IV_VERY_HIGH': {
+        'authority': 'delete_proof_required',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'very-high VIX enables debit co-primary routing; live conversion needs delete-proof replay',
+    },
+    'IV_LOW': {
+        'authority': 'delete_proof_required',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'low VIX changes credit/debit force scoring; live conversion needs delete-proof replay',
+    },
+    'SIGMA_IMPORTANT_THRESHOLD': {
+        'authority': 'context_measure_first',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'significant-move notification threshold; record context before any live policy change',
+    },
+    'SIGMA_ENTRY_THRESHOLD': {
+        'authority': 'context_measure_first',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'entry sigma constant is classified as market judgment but lacks live replay authority',
+    },
+    'SIGMA_EXIT_THRESHOLD': {
+        'authority': 'context_measure_first',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'exit sigma constant is classified as market judgment but lacks G2 mechanism proof',
+    },
+}
+
+PC2_BATCH_C_CROSS_MARKET_VERSION = 'pc2_batch_c_cross_market_shadow_v1'
+PC2_BATCH_C_CROSS_MARKET_CONSTS = {
+    'DOW_THRESHOLD': {
+        'authority': 'missing_percentile_history',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'Dow percentage move exists in runtime logic, but no durable percentile history is available yet',
+    },
+    'CRUDE_THRESHOLD': {
+        'authority': 'missing_percentile_history',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'Crude percentage move exists in runtime logic, but no durable percentile history is available yet',
+    },
+    'GIFT_THRESHOLD': {
+        'authority': 'missing_percentile_history',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'GIFT percentage move exists in runtime logic, but no durable percentile history is available yet',
+    },
+}
+
+PC2_BATCH_D_EXIT_POLICY_VERSION = 'pc2_batch_d_exit_policy_shadow_v1'
+PC2_BATCH_D_EXIT_POLICY_CONSTS = {
+    'TARGET_NEAR_RATIO': {
+        'authority': 'g2_mechanism_only',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'target-near ratio controls position-management alerting; it is not an entry ranking gate',
+    },
+    'STOP_LOSS_RATIO': {
+        'authority': 'g2_mechanism_only',
+        'status': 'SHADOW_ONLY',
+        'rationale': 'stop-loss ratio controls position-management alerting; it is not an entry ranking gate',
+    },
+}
+
+
+def _pc2_parameter_authority_inventory():
+    """Auditable map of which constants currently have percentile authority."""
+    kind_a = list(C3_KIND_A_CONSTS.keys())
+    kind_b = list(C3_KIND_B_CONSTS.keys())
+    structural = ['CREDIT_TYPES', 'DEBIT_TYPES', 'NEUTRAL_TYPES', 'DIR_BULL', 'DIR_BEAR']
+    calendar = ['NSE_HOLIDAYS']
+    live_soft = list(PC2_LIVE_SOFT_OPPORTUNITY_CONSTS)
+    pending_kind_b = [k for k in kind_b if k not in set(live_soft)]
+    unclassified = [
+        k for k in _CONST
+        if k not in set(kind_a + kind_b + structural + calendar)
+    ]
+    return {
+        'schema_version': PC2_PARAMETER_AUTHORITY_VERSION,
+        'status': 'OK' if not unclassified else 'NEEDS_REVIEW',
+        'total_constants': len(_CONST),
+        'kind_a_hard_safety_count': len(kind_a),
+        'kind_b_market_judgment_count': len(kind_b),
+        'live_soft_opportunity_count': len(live_soft),
+        'pending_kind_b_count': len(pending_kind_b),
+        'structural_enum_count': len(structural),
+        'market_calendar_count': len(calendar),
+        'unclassified': unclassified,
+        'hard_safety_constants': kind_a,
+        'live_soft_opportunity_constants': live_soft,
+        'live_context_ranking_variables': list(PC2_LIVE_CONTEXT_RANKING_VARIABLES),
+        'pending_kind_b_constants': pending_kind_b,
+        'structural_enum_constants': structural,
+        'market_calendar_constants': calendar,
+        'behavior_change': False,
+    }
+
+
+def _pc2_batch_a_width_wall_inventory():
+    """Batch-A audit map. No live behavior changes until replay proves safe."""
+    rows = []
+    for key, meta in PC2_BATCH_A_WIDTH_WALL_CONSTS.items():
+        rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': meta.get('authority'),
+            'status': meta.get('status'),
+            'rationale': meta.get('rationale'),
+            'live_softened': False,
+            'behavior_change': False,
+        })
+    return {
+        'schema_version': PC2_BATCH_A_WIDTH_WALL_VERSION,
+        'status': 'SHADOW_ONLY',
+        'row_count': len(rows),
+        'shadow_only_count': len(rows),
+        'live_softened_count': 0,
+        'behavior_change': False,
+        'rows': rows,
+    }
+
+
+def _pc2_batch_b_regime_sigma_inventory():
+    """Batch-B audit map for VIX regime and market sigma constants."""
+    rows = []
+    for key, meta in PC2_BATCH_B_REGIME_SIGMA_CONSTS.items():
+        rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': meta.get('authority'),
+            'status': meta.get('status'),
+            'rationale': meta.get('rationale'),
+            'live_softened': False,
+            'behavior_change': False,
+        })
+    return {
+        'schema_version': PC2_BATCH_B_REGIME_SIGMA_VERSION,
+        'status': 'SHADOW_ONLY',
+        'row_count': len(rows),
+        'shadow_only_count': len(rows),
+        'live_softened_count': 0,
+        'behavior_change': False,
+        'rows': rows,
+    }
+
+
+def _pc2_batch_c_cross_market_inventory():
+    """Batch-C audit map for cross-market percentage thresholds."""
+    rows = []
+    for key, meta in PC2_BATCH_C_CROSS_MARKET_CONSTS.items():
+        rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': meta.get('authority'),
+            'status': meta.get('status'),
+            'rationale': meta.get('rationale'),
+            'live_softened': False,
+            'behavior_change': False,
+        })
+    return {
+        'schema_version': PC2_BATCH_C_CROSS_MARKET_VERSION,
+        'status': 'MISSING_HISTORY_SHADOW_ONLY',
+        'row_count': len(rows),
+        'shadow_only_count': len(rows),
+        'live_softened_count': 0,
+        'behavior_change': False,
+        'rows': rows,
+    }
+
+
+def _pc2_batch_d_exit_policy_inventory():
+    """Batch-D audit map for G2 exit-policy constants."""
+    rows = []
+    for key, meta in PC2_BATCH_D_EXIT_POLICY_CONSTS.items():
+        rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': meta.get('authority'),
+            'status': meta.get('status'),
+            'rationale': meta.get('rationale'),
+            'live_softened': False,
+            'behavior_change': False,
+        })
+    return {
+        'schema_version': PC2_BATCH_D_EXIT_POLICY_VERSION,
+        'status': 'G2_MECHANISM_SHADOW_ONLY',
+        'row_count': len(rows),
+        'shadow_only_count': len(rows),
+        'live_softened_count': 0,
+        'behavior_change': False,
+        'rows': rows,
+    }
 
 
 def _c3_const_inventory():
@@ -13834,6 +14069,11 @@ def take_poll_snapshot(result, ctx, polls):
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(research_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, research_candidates)
     c3_const_inventory = _c3_const_inventory()
+    pc2_parameter_authority = _pc2_parameter_authority_inventory()
+    pc2_batch_a_width_wall = _pc2_batch_a_width_wall_inventory()
+    pc2_batch_b_regime_sigma = _pc2_batch_b_regime_sigma_inventory()
+    pc2_batch_c_cross_market = _pc2_batch_c_cross_market_inventory()
+    pc2_batch_d_exit_policy = _pc2_batch_d_exit_policy_inventory()
     shadow_selector_suite = _compute_shadow_selector_suite(research_candidates, top_cand, ctx)
     menu_abstention_shadow = _compute_menu_abstention_shadow(
         result,
@@ -13935,6 +14175,11 @@ def take_poll_snapshot(result, ctx, polls):
         'phase4_ev_ladder_shadow': phase4_ev_ladder_shadow,
         'phase5_gate_registry': phase5_gate_registry,
         'c3_const_inventory': c3_const_inventory,
+        'pc2_parameter_authority': pc2_parameter_authority,
+        'pc2_batch_a_width_wall': pc2_batch_a_width_wall,
+        'pc2_batch_b_regime_sigma': pc2_batch_b_regime_sigma,
+        'pc2_batch_c_cross_market': pc2_batch_c_cross_market,
+        'pc2_batch_d_exit_policy': pc2_batch_d_exit_policy,
         'shadow_selector_suite': shadow_selector_suite,
         'menu_abstention_shadow': menu_abstention_shadow,
         'build3_lane_gate': build3_lane_gate,
@@ -13975,6 +14220,22 @@ def take_poll_snapshot(result, ctx, polls):
         'c3_const_inventory_status': c3_const_inventory.get('status'),
         'c3_const_inventory_rows': c3_const_inventory.get('row_count'),
         'c3_const_inventory_unclassified': c3_const_inventory.get('unclassified'),
+        'pc2_parameter_authority_status': pc2_parameter_authority.get('status'),
+        'pc2_parameter_authority_schema_version': pc2_parameter_authority.get('schema_version'),
+        'pc2_live_soft_opportunity_count': pc2_parameter_authority.get('live_soft_opportunity_count'),
+        'pc2_pending_kind_b_count': pc2_parameter_authority.get('pending_kind_b_count'),
+        'pc2_batch_a_width_wall_status': pc2_batch_a_width_wall.get('status'),
+        'pc2_batch_a_width_wall_shadow_count': pc2_batch_a_width_wall.get('shadow_only_count'),
+        'pc2_batch_a_width_wall_live_softened_count': pc2_batch_a_width_wall.get('live_softened_count'),
+        'pc2_batch_b_regime_sigma_status': pc2_batch_b_regime_sigma.get('status'),
+        'pc2_batch_b_regime_sigma_shadow_count': pc2_batch_b_regime_sigma.get('shadow_only_count'),
+        'pc2_batch_b_regime_sigma_live_softened_count': pc2_batch_b_regime_sigma.get('live_softened_count'),
+        'pc2_batch_c_cross_market_status': pc2_batch_c_cross_market.get('status'),
+        'pc2_batch_c_cross_market_shadow_count': pc2_batch_c_cross_market.get('shadow_only_count'),
+        'pc2_batch_c_cross_market_live_softened_count': pc2_batch_c_cross_market.get('live_softened_count'),
+        'pc2_batch_d_exit_policy_status': pc2_batch_d_exit_policy.get('status'),
+        'pc2_batch_d_exit_policy_shadow_count': pc2_batch_d_exit_policy.get('shadow_only_count'),
+        'pc2_batch_d_exit_policy_live_softened_count': pc2_batch_d_exit_policy.get('live_softened_count'),
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
         'context_percentiles_status': 'OK' if (result.get('context_percentiles') or {}).get('schema_version') else 'MISSING',
@@ -14021,6 +14282,11 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
     snapshot_context['snapshot_c3_const_inventory'] = c3_const_inventory
+    snapshot_context['snapshot_pc2_parameter_authority'] = pc2_parameter_authority
+    snapshot_context['snapshot_pc2_batch_a_width_wall'] = pc2_batch_a_width_wall
+    snapshot_context['snapshot_pc2_batch_b_regime_sigma'] = pc2_batch_b_regime_sigma
+    snapshot_context['snapshot_pc2_batch_c_cross_market'] = pc2_batch_c_cross_market
+    snapshot_context['snapshot_pc2_batch_d_exit_policy'] = pc2_batch_d_exit_policy
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_build3_gate'] = build3_gate

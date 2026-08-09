@@ -10,6 +10,11 @@ from brain import (
     _apply_context_percentile_live_ranking,
     _build_context_percentiles,
     _c3_const_inventory,
+    _pc2_batch_a_width_wall_inventory,
+    _pc2_batch_b_regime_sigma_inventory,
+    _pc2_batch_c_cross_market_inventory,
+    _pc2_batch_d_exit_policy_inventory,
+    _pc2_parameter_authority_inventory,
     _compute_menu_abstention_shadow,
     _compute_shadow_selector_suite,
     _evaluate_snapshot_outcomes,
@@ -655,6 +660,80 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(by_name["CAPITAL"]["kind"], "A_ABSOLUTE_FLOOR")
         self.assertEqual(by_name["IV_RICH_MIN"]["kind"], "B_MARKET_JUDGMENT")
         self.assertFalse(by_name["IV_RICH_MIN"]["behavior_change"])
+
+    def test_pc2_parameter_authority_map_tracks_live_and_pending_constants(self):
+        inventory = _pc2_parameter_authority_inventory()
+        self.assertEqual(inventory["schema_version"], "pc2_parameter_authority_v1")
+        self.assertEqual(inventory["status"], "OK")
+        self.assertFalse(inventory["unclassified"])
+        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["total_constants"], 50)
+        self.assertEqual(inventory["kind_a_hard_safety_count"], 7)
+        self.assertEqual(inventory["kind_b_market_judgment_count"], 37)
+        self.assertEqual(inventory["live_soft_opportunity_count"], 5)
+        self.assertEqual(inventory["pending_kind_b_count"], 32)
+        self.assertEqual(
+            set(inventory["live_soft_opportunity_constants"]),
+            {"MIN_CREDIT_RATIO", "IV_RICH_MIN", "MIN_PROB", "MIN_SIGMA_OTM", "MAX_SIGMA_OTM"},
+        )
+        self.assertIn("TARGET_NEAR_RATIO", inventory["pending_kind_b_constants"])
+        self.assertIn("BNF_LOT", inventory["hard_safety_constants"])
+
+    def test_pc2_batch_a_width_wall_is_shadow_only_until_replay_proves_safe(self):
+        inventory = _pc2_batch_a_width_wall_inventory()
+        self.assertEqual(inventory["schema_version"], "pc2_batch_a_width_wall_shadow_v1")
+        self.assertEqual(inventory["status"], "SHADOW_ONLY")
+        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["row_count"], 5)
+        self.assertEqual(inventory["shadow_only_count"], 5)
+        self.assertEqual(inventory["live_softened_count"], 0)
+        by_name = {row["constant"]: row for row in inventory["rows"]}
+        self.assertEqual(by_name["MIN_WIDTH_BNF"]["authority"], "lane_enable_not_percentile")
+        self.assertEqual(by_name["MIN_WIDTH_NF"]["authority"], "lane_enable_not_percentile")
+        self.assertEqual(by_name["IC_WALL_MAX_SIGMA"]["authority"], "context_measure_first")
+        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+
+    def test_pc2_batch_b_regime_sigma_is_shadow_only_until_delete_proof(self):
+        inventory = _pc2_batch_b_regime_sigma_inventory()
+        self.assertEqual(inventory["schema_version"], "pc2_batch_b_regime_sigma_shadow_v1")
+        self.assertEqual(inventory["status"], "SHADOW_ONLY")
+        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["row_count"], 6)
+        self.assertEqual(inventory["shadow_only_count"], 6)
+        self.assertEqual(inventory["live_softened_count"], 0)
+        by_name = {row["constant"]: row for row in inventory["rows"]}
+        self.assertEqual(by_name["IV_HIGH"]["authority"], "delete_proof_required")
+        self.assertEqual(by_name["IV_VERY_HIGH"]["authority"], "delete_proof_required")
+        self.assertEqual(by_name["IV_LOW"]["authority"], "delete_proof_required")
+        self.assertEqual(by_name["SIGMA_IMPORTANT_THRESHOLD"]["authority"], "context_measure_first")
+        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+
+    def test_pc2_batch_c_cross_market_is_shadow_only_until_history_exists(self):
+        inventory = _pc2_batch_c_cross_market_inventory()
+        self.assertEqual(inventory["schema_version"], "pc2_batch_c_cross_market_shadow_v1")
+        self.assertEqual(inventory["status"], "MISSING_HISTORY_SHADOW_ONLY")
+        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["row_count"], 3)
+        self.assertEqual(inventory["shadow_only_count"], 3)
+        self.assertEqual(inventory["live_softened_count"], 0)
+        by_name = {row["constant"]: row for row in inventory["rows"]}
+        self.assertEqual(by_name["DOW_THRESHOLD"]["authority"], "missing_percentile_history")
+        self.assertEqual(by_name["CRUDE_THRESHOLD"]["authority"], "missing_percentile_history")
+        self.assertEqual(by_name["GIFT_THRESHOLD"]["authority"], "missing_percentile_history")
+        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+
+    def test_pc2_batch_d_exit_policy_is_mechanism_only_not_entry_ranking(self):
+        inventory = _pc2_batch_d_exit_policy_inventory()
+        self.assertEqual(inventory["schema_version"], "pc2_batch_d_exit_policy_shadow_v1")
+        self.assertEqual(inventory["status"], "G2_MECHANISM_SHADOW_ONLY")
+        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["row_count"], 2)
+        self.assertEqual(inventory["shadow_only_count"], 2)
+        self.assertEqual(inventory["live_softened_count"], 0)
+        by_name = {row["constant"]: row for row in inventory["rows"]}
+        self.assertEqual(by_name["TARGET_NEAR_RATIO"]["authority"], "g2_mechanism_only")
+        self.assertEqual(by_name["STOP_LOSS_RATIO"]["authority"], "g2_mechanism_only")
+        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
 
     def test_native_memory_shadow_selector_picks_similar_profitable_family(self):
         bear = _candidate("bear", "BEAR_CALL", 0.8)
