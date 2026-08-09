@@ -3890,7 +3890,7 @@ def update_watchlist_forces(watchlist, ctx, vix, iv_pctl, regime=None):
             or {'bias': 'NEUTRAL', 'strength': '', 'net': 0})
     for c in watchlist:
         try:
-            c['forces'] = _get_forces(c.get('type'), bias, vix, iv_pctl, regime)
+            c['forces'] = _get_forces(c.get('type'), bias, vix, iv_pctl, regime, ctx)
         except: pass
     return watchlist
 
@@ -5927,7 +5927,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.64"
+BRAIN_VERSION = "2.5.65"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6188,22 +6188,22 @@ PC2_BATCH_A_WIDTH_WALL_CONSTS = {
     },
 }
 
-PC2_BATCH_B_REGIME_SIGMA_VERSION = 'pc2_batch_b_regime_sigma_shadow_v1'
+PC2_BATCH_B_REGIME_SIGMA_VERSION = 'pc2_batch_b_regime_sigma_live_v1'
 PC2_BATCH_B_REGIME_SIGMA_CONSTS = {
     'IV_HIGH': {
-        'authority': 'delete_proof_required',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'VIX regime threshold routes strategy families and force scoring; live conversion needs delete-proof replay',
+        'authority': 'percentile_live_with_constant_shadow',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'VIX regime routing uses relative VIX/IV percentile context; absolute VIX 20 is retained only as diagnostic shadow',
     },
     'IV_VERY_HIGH': {
-        'authority': 'delete_proof_required',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'very-high VIX enables debit co-primary routing; live conversion needs delete-proof replay',
+        'authority': 'percentile_live_with_constant_shadow',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'very-high VIX routing uses relative percentile context; absolute VIX 24 is retained only as diagnostic shadow',
     },
     'IV_LOW': {
-        'authority': 'delete_proof_required',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'low VIX changes credit/debit force scoring; live conversion needs delete-proof replay',
+        'authority': 'percentile_live_with_constant_shadow',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'low VIX credit/debit force scoring uses relative percentile context; absolute VIX 15 is retained only as diagnostic shadow',
     },
     'SIGMA_IMPORTANT_THRESHOLD': {
         'authority': 'context_measure_first',
@@ -6263,7 +6263,8 @@ def _pc2_parameter_authority_inventory():
     structural = ['CREDIT_TYPES', 'DEBIT_TYPES', 'NEUTRAL_TYPES', 'DIR_BULL', 'DIR_BEAR']
     calendar = ['NSE_HOLIDAYS']
     live_soft = list(PC2_LIVE_SOFT_OPPORTUNITY_CONSTS)
-    pending_kind_b = [k for k in kind_b if k not in set(live_soft)]
+    live_context_constants = ['IV_HIGH', 'IV_VERY_HIGH', 'IV_LOW']
+    pending_kind_b = [k for k in kind_b if k not in set(live_soft + live_context_constants)]
     unclassified = [
         k for k in _CONST
         if k not in set(kind_a + kind_b + structural + calendar)
@@ -6275,6 +6276,7 @@ def _pc2_parameter_authority_inventory():
         'kind_a_hard_safety_count': len(kind_a),
         'kind_b_market_judgment_count': len(kind_b),
         'live_soft_opportunity_count': len(live_soft),
+        'live_context_authority_count': len(live_context_constants),
         'pending_kind_b_count': len(pending_kind_b),
         'structural_enum_count': len(structural),
         'market_calendar_count': len(calendar),
@@ -6282,10 +6284,11 @@ def _pc2_parameter_authority_inventory():
         'hard_safety_constants': kind_a,
         'live_soft_opportunity_constants': live_soft,
         'live_context_ranking_variables': list(PC2_LIVE_CONTEXT_RANKING_VARIABLES),
+        'live_context_authority_constants': live_context_constants,
         'pending_kind_b_constants': pending_kind_b,
         'structural_enum_constants': structural,
         'market_calendar_constants': calendar,
-        'behavior_change': False,
+        'behavior_change': True,
     }
 
 
@@ -6317,22 +6320,27 @@ def _pc2_batch_b_regime_sigma_inventory():
     """Batch-B audit map for VIX regime and market sigma constants."""
     rows = []
     for key, meta in PC2_BATCH_B_REGIME_SIGMA_CONSTS.items():
+        live_softened = meta.get('status') == 'LIVE_CONTEXT'
         rows.append({
             'constant': key,
             'value': _CONST.get(key),
             'authority': meta.get('authority'),
             'status': meta.get('status'),
             'rationale': meta.get('rationale'),
-            'live_softened': False,
-            'behavior_change': False,
+            'live_softened': live_softened,
+            'behavior_change': live_softened,
         })
+    live_count = sum(1 for row in rows if row.get('live_softened'))
+    shadow_count = len(rows) - live_count
     return {
         'schema_version': PC2_BATCH_B_REGIME_SIGMA_VERSION,
-        'status': 'SHADOW_ONLY',
+        'status': 'PARTIAL_LIVE_CONTEXT',
         'row_count': len(rows),
-        'shadow_only_count': len(rows),
-        'live_softened_count': 0,
-        'behavior_change': False,
+        'shadow_only_count': shadow_count,
+        'live_softened_count': live_count,
+        'behavior_change': live_count > 0,
+        'live_scope': 'VIX regime routing and Force3 only',
+        'shadow_scope': 'absolute VIX thresholds and sigma thresholds retained for diagnostics',
         'rows': rows,
     }
 
@@ -6586,14 +6594,85 @@ def _detect_flip(current_verdict, previous_verdict):
 # ─── VARSITY FILTER ───
 
 
-def _get_varsity_filter(bias, vix, trade_mode, range_detected=False):
+PC2_VIX_REGIME_CONTEXT_VERSION = 'pc2_vix_regime_context_live_v1'
+
+
+def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
+    """Relative VIX regime authority.
+
+    Absolute IV_HIGH/IV_LOW constants are deliberately shadow-only here. When
+    percentile evidence is missing, default to NORMAL rather than reviving an
+    old hard threshold as hidden live authority.
+    """
+    ctx = ctx if isinstance(ctx, dict) else {}
+    vix_value = _percentile_float(vix if vix is not None else ctx.get('vix'))
+    iv_pct = _percentile_float(iv_pctl if iv_pctl is not None else ctx.get('ivPercentile'))
+    vix_hist = (
+        _numeric_series(ctx.get('vixHistory'))
+        + _history_values(ctx, ('vix', 'VIX'), 60)
+    )[-60:]
+    vix_pct = _percentile_rank(vix_value, vix_hist) if vix_value is not None and vix_hist else None
+    support = len(vix_hist)
+    evidence_pct = vix_pct if vix_pct is not None else iv_pct
+    support_status = 'SUPPORTED' if support >= CONTEXT_PERCENTILE_MIN_SUPPORT else 'LOW_SUPPORT'
+    if evidence_pct is None:
+        support_status = 'MISSING_CONTEXT'
+
+    if evidence_pct is None:
+        regime = 'NORMAL'
+    elif evidence_pct >= 85:
+        regime = 'VERY_HIGH'
+    elif evidence_pct >= 65:
+        regime = 'HIGH'
+    elif evidence_pct < 25:
+        regime = 'LOW'
+    else:
+        regime = 'NORMAL'
+
+    old_low = vix_value is not None and vix_value <= _CONST['IV_LOW']
+    old_high = vix_value is not None and vix_value >= _CONST['IV_HIGH']
+    old_very_high = vix_value is not None and vix_value >= _CONST['IV_VERY_HIGH']
+    old_regime = (
+        'VERY_HIGH' if old_very_high else
+        'HIGH' if old_high else
+        'LOW' if old_low else
+        'NORMAL'
+    )
+    return {
+        'schema_version': PC2_VIX_REGIME_CONTEXT_VERSION,
+        'authority': 'percentile_live_with_constant_shadow',
+        'regime': regime,
+        'basis': 'vix_percentile' if vix_pct is not None else ('iv_percentile' if iv_pct is not None else 'neutral_missing_context'),
+        'vix': None if vix_value is None else round(vix_value, 4),
+        'vix_percentile': vix_pct,
+        'iv_percentile': iv_pct,
+        'evidence_percentile': evidence_pct,
+        'support_count': support,
+        'support_status': support_status,
+        'low_support_warning': support_status != 'SUPPORTED',
+        'old_constant_shadow': {
+            'schema_version': 'pc2_vix_constant_shadow_v1',
+            'regime': old_regime,
+            'iv_low': _CONST['IV_LOW'],
+            'iv_high': _CONST['IV_HIGH'],
+            'iv_very_high': _CONST['IV_VERY_HIGH'],
+            'old_low': old_low,
+            'old_high': old_high,
+            'old_very_high': old_very_high,
+            'differs_from_live': old_regime != regime,
+        },
+    }
+
+
+def _get_varsity_filter(bias, vix, trade_mode, range_detected=False, ctx=None):
     """Maps bias + VIX → PRIMARY / ALLOWED / BLOCKED strategy types.
     Exact port of Zerodha Varsity Modules 5, 6 logic."""
     b = bias.get('bias', 'NEUTRAL')
     strength = bias.get('strength', '')
     is_strong = strength == 'STRONG'
-    iv_high = vix >= _CONST['IV_HIGH']
-    very_high = vix >= _CONST['IV_VERY_HIGH']
+    vix_regime = _pc2_vix_regime_context(ctx, vix, ctx.get('ivPercentile') if isinstance(ctx, dict) else None)
+    iv_high = vix_regime.get('regime') in ('HIGH', 'VERY_HIGH')
+    very_high = vix_regime.get('regime') == 'VERY_HIGH'
 
     if b == 'BEAR' and iv_high:
         primary = ['BEAR_CALL']
@@ -6681,14 +6760,11 @@ def _assess_force2(stype):
     """Theta force: credit = +1, debit = -1"""
     return 1 if stype in _CONST['CREDIT_TYPES'] else -1
 
-def _assess_force3(stype, vix, iv_pctl):
+def _assess_force3(stype, vix, iv_pctl, ctx=None):
     """IV force: VIX regime → favor credit or debit"""
     is_credit = stype in _CONST['CREDIT_TYPES']
     is_debit = stype in _CONST['DEBIT_TYPES']
-    regime = 'NORMAL'
-    if vix >= _CONST['IV_HIGH'] or (iv_pctl is not None and iv_pctl > 65): regime = 'HIGH'
-    if vix >= _CONST['IV_VERY_HIGH'] or (iv_pctl is not None and iv_pctl > 85): regime = 'VERY_HIGH'
-    if vix <= _CONST['IV_LOW'] or (iv_pctl is not None and iv_pctl < 25): regime = 'LOW'
+    regime = _pc2_vix_regime_context(ctx, vix, iv_pctl).get('regime', 'NORMAL')
     if regime == 'VERY_HIGH':
         if is_debit: return 1
         return 1 if stype in _CONST['NEUTRAL_TYPES'] else 0
@@ -6696,10 +6772,10 @@ def _assess_force3(stype, vix, iv_pctl):
     if regime == 'LOW': return 1 if is_debit else -1
     return 1
 
-def _get_forces(stype, bias, vix, iv_pctl, regime=None):
+def _get_forces(stype, bias, vix, iv_pctl, regime=None, ctx=None):
     f1 = _assess_force1(stype, bias, regime)
     f2 = _assess_force2(stype)
-    f3 = _assess_force3(stype, vix, iv_pctl)
+    f3 = _assess_force3(stype, vix, iv_pctl, ctx)
     aligned = sum(1 for f in [f1, f2, f3] if f == 1)
     against = sum(1 for f in [f1, f2, f3] if f == -1)
     return {'f1': f1, 'f2': f2, 'f3': f3, 'aligned': aligned, 'against': against, 'score': f1+f2+f3}
@@ -9820,7 +9896,9 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     # Range detection from context
     range_detected = (ctx.get('rangeSigma') or 999) < 0.3
 
-    varsity = _get_varsity_filter(bias, vix, trade_mode, range_detected)
+    vix_regime_context = _pc2_vix_regime_context(ctx, vix, iv_pctl)
+    ctx['_pc2_vix_regime_context'] = vix_regime_context
+    varsity = _get_varsity_filter(bias, vix, trade_mode, range_detected, ctx)
     allowed_types = varsity['primary'] + varsity['allowed']
     learned = _learned_branch_overrides(ctx, index_key, regime, vix)
     ctx['_learned_branch_overrides'] = learned
@@ -9835,6 +9913,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             'primary': list(varsity.get('primary', [])),
             'allowed': list(varsity.get('allowed', [])),
             'blocked': list(varsity.get('blocked', [])),
+            'pc2_vix_regime_context': vix_regime_context,
             'learned_allow': sorted(list(learned.get('strategy_allow', []))),
             'learned_block': sorted(list(learned.get('strategy_block', []))),
             'matched_branch_ids': list(learned.get('matched_ids', [])),
@@ -9857,7 +9936,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     if stype == 'BULL_CALL' and width > trade_sigma * 1.2: continue
                     if stype == 'BEAR_PUT' and width > trade_sigma * 1.2: continue
 
-                cand['forces'] = _get_forces(stype, bias, vix, iv_pctl, regime)
+                cand['forces'] = _get_forces(stype, bias, vix, iv_pctl, regime, ctx)
                 cand['varsityTier'] = 'PRIMARY' if stype in varsity['primary'] else 'ALLOWED'
                 cand['wallScore'] = _compute_wall_score(cand, chain, is_bnf)
                 cand['wallTag'] = _wall_tag(cand['wallScore'], cand['type'])
@@ -10234,7 +10313,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     'targetProfit': round(max_profit * 0.5),
                     'stopLoss': round(max_loss * 0.6),
                     **_candidate_margin_contract(idx, max_loss),
-                    'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl, regime),
+                    'forces': _get_forces('IRON_CONDOR', bias, vix, iv_pctl, regime, ctx),
                     'varsityTier': 'PRIMARY' if 'IRON_CONDOR' in varsity['primary'] else 'ALLOWED',
                     'wallScore': 0, 'gammaRisk': 0, 'contextScore': 0,
                     'directionSafe': True, 'capitalBlocked': False,
@@ -10424,7 +10503,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 'ev': ev, 'isCredit': True,
                 'lotSize': lot_size, 'index': idx, 'expiry': expiry, 'tDTE': tdte,
                 'ivRichness': round(iv_richness, 3) if iv_richness is not None else None,
-                'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl, regime),
+                'forces': _get_forces('IRON_BUTTERFLY', bias, vix, iv_pctl, regime, ctx),
                 'varsityTier': 'PRIMARY' if 'IRON_BUTTERFLY' in varsity['primary'] else 'ALLOWED',
                 'wallScore': _compute_wall_score({'type': 'IRON_BUTTERFLY', 'sellStrike': atm}, chain, is_bnf),
                 'gammaRisk': 0.5 if tdte <= 2 else 0.3 if tdte <= 3 else 0.1,
@@ -14074,6 +14153,11 @@ def take_poll_snapshot(result, ctx, polls):
     pc2_batch_b_regime_sigma = _pc2_batch_b_regime_sigma_inventory()
     pc2_batch_c_cross_market = _pc2_batch_c_cross_market_inventory()
     pc2_batch_d_exit_policy = _pc2_batch_d_exit_policy_inventory()
+    pc2_vix_regime_context = (
+        ctx.get('_pc2_vix_regime_context')
+        if isinstance(ctx.get('_pc2_vix_regime_context'), dict)
+        else _pc2_vix_regime_context(ctx, latest_poll.get('vix') or latest_poll.get('VIX'), ctx.get('ivPercentile'))
+    )
     shadow_selector_suite = _compute_shadow_selector_suite(research_candidates, top_cand, ctx)
     menu_abstention_shadow = _compute_menu_abstention_shadow(
         result,
@@ -14178,6 +14262,7 @@ def take_poll_snapshot(result, ctx, polls):
         'pc2_parameter_authority': pc2_parameter_authority,
         'pc2_batch_a_width_wall': pc2_batch_a_width_wall,
         'pc2_batch_b_regime_sigma': pc2_batch_b_regime_sigma,
+        'pc2_vix_regime_context': pc2_vix_regime_context,
         'pc2_batch_c_cross_market': pc2_batch_c_cross_market,
         'pc2_batch_d_exit_policy': pc2_batch_d_exit_policy,
         'shadow_selector_suite': shadow_selector_suite,
@@ -14230,6 +14315,7 @@ def take_poll_snapshot(result, ctx, polls):
         'pc2_batch_b_regime_sigma_status': pc2_batch_b_regime_sigma.get('status'),
         'pc2_batch_b_regime_sigma_shadow_count': pc2_batch_b_regime_sigma.get('shadow_only_count'),
         'pc2_batch_b_regime_sigma_live_softened_count': pc2_batch_b_regime_sigma.get('live_softened_count'),
+        'pc2_vix_regime_context': pc2_vix_regime_context,
         'pc2_batch_c_cross_market_status': pc2_batch_c_cross_market.get('status'),
         'pc2_batch_c_cross_market_shadow_count': pc2_batch_c_cross_market.get('shadow_only_count'),
         'pc2_batch_c_cross_market_live_softened_count': pc2_batch_c_cross_market.get('live_softened_count'),
@@ -14285,6 +14371,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_parameter_authority'] = pc2_parameter_authority
     snapshot_context['snapshot_pc2_batch_a_width_wall'] = pc2_batch_a_width_wall
     snapshot_context['snapshot_pc2_batch_b_regime_sigma'] = pc2_batch_b_regime_sigma
+    snapshot_context['snapshot_pc2_vix_regime_context'] = pc2_vix_regime_context
     snapshot_context['snapshot_pc2_batch_c_cross_market'] = pc2_batch_c_cross_market
     snapshot_context['snapshot_pc2_batch_d_exit_policy'] = pc2_batch_d_exit_policy
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite

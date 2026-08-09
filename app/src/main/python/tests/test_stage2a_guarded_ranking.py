@@ -10,6 +10,7 @@ from brain import (
     _apply_context_percentile_live_ranking,
     _build_context_percentiles,
     _c3_const_inventory,
+    _pc2_vix_regime_context,
     _pc2_batch_a_width_wall_inventory,
     _pc2_batch_b_regime_sigma_inventory,
     _pc2_batch_c_cross_market_inventory,
@@ -666,16 +667,20 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(inventory["schema_version"], "pc2_parameter_authority_v1")
         self.assertEqual(inventory["status"], "OK")
         self.assertFalse(inventory["unclassified"])
-        self.assertFalse(inventory["behavior_change"])
+        self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["total_constants"], 50)
         self.assertEqual(inventory["kind_a_hard_safety_count"], 7)
         self.assertEqual(inventory["kind_b_market_judgment_count"], 37)
         self.assertEqual(inventory["live_soft_opportunity_count"], 5)
-        self.assertEqual(inventory["pending_kind_b_count"], 32)
+        self.assertEqual(inventory["live_context_authority_count"], 3)
+        self.assertEqual(inventory["pending_kind_b_count"], 29)
         self.assertEqual(
             set(inventory["live_soft_opportunity_constants"]),
             {"MIN_CREDIT_RATIO", "IV_RICH_MIN", "MIN_PROB", "MIN_SIGMA_OTM", "MAX_SIGMA_OTM"},
         )
+        self.assertIn("IV_HIGH", inventory["live_context_authority_constants"])
+        self.assertIn("IV_VERY_HIGH", inventory["live_context_authority_constants"])
+        self.assertIn("IV_LOW", inventory["live_context_authority_constants"])
         self.assertIn("TARGET_NEAR_RATIO", inventory["pending_kind_b_constants"])
         self.assertIn("BNF_LOT", inventory["hard_safety_constants"])
 
@@ -693,20 +698,36 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(by_name["IC_WALL_MAX_SIGMA"]["authority"], "context_measure_first")
         self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
 
-    def test_pc2_batch_b_regime_sigma_is_shadow_only_until_delete_proof(self):
+    def test_pc2_batch_b_regime_sigma_uses_live_vix_context_with_sigma_shadow(self):
         inventory = _pc2_batch_b_regime_sigma_inventory()
-        self.assertEqual(inventory["schema_version"], "pc2_batch_b_regime_sigma_shadow_v1")
-        self.assertEqual(inventory["status"], "SHADOW_ONLY")
-        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["schema_version"], "pc2_batch_b_regime_sigma_live_v1")
+        self.assertEqual(inventory["status"], "PARTIAL_LIVE_CONTEXT")
+        self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["row_count"], 6)
-        self.assertEqual(inventory["shadow_only_count"], 6)
-        self.assertEqual(inventory["live_softened_count"], 0)
+        self.assertEqual(inventory["shadow_only_count"], 3)
+        self.assertEqual(inventory["live_softened_count"], 3)
         by_name = {row["constant"]: row for row in inventory["rows"]}
-        self.assertEqual(by_name["IV_HIGH"]["authority"], "delete_proof_required")
-        self.assertEqual(by_name["IV_VERY_HIGH"]["authority"], "delete_proof_required")
-        self.assertEqual(by_name["IV_LOW"]["authority"], "delete_proof_required")
+        self.assertEqual(by_name["IV_HIGH"]["authority"], "percentile_live_with_constant_shadow")
+        self.assertEqual(by_name["IV_VERY_HIGH"]["authority"], "percentile_live_with_constant_shadow")
+        self.assertEqual(by_name["IV_LOW"]["authority"], "percentile_live_with_constant_shadow")
         self.assertEqual(by_name["SIGMA_IMPORTANT_THRESHOLD"]["authority"], "context_measure_first")
-        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+        self.assertTrue(by_name["IV_HIGH"]["live_softened"])
+        self.assertFalse(by_name["SIGMA_IMPORTANT_THRESHOLD"]["live_softened"])
+
+    def test_pc2_vix_regime_context_live_authority_keeps_old_constants_shadow(self):
+        ctx = {"vixHistory": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+        regime = _pc2_vix_regime_context(ctx, 22, None)
+        self.assertEqual(regime["regime"], "VERY_HIGH")
+        self.assertEqual(regime["basis"], "vix_percentile")
+        self.assertEqual(regime["old_constant_shadow"]["regime"], "HIGH")
+        self.assertTrue(regime["old_constant_shadow"]["differs_from_live"])
+
+    def test_pc2_vix_regime_context_missing_history_is_neutral_not_constant_fallback(self):
+        regime = _pc2_vix_regime_context({}, 14, None)
+        self.assertEqual(regime["regime"], "NORMAL")
+        self.assertEqual(regime["basis"], "neutral_missing_context")
+        self.assertEqual(regime["support_status"], "MISSING_CONTEXT")
+        self.assertEqual(regime["old_constant_shadow"]["regime"], "LOW")
 
     def test_pc2_batch_c_cross_market_is_shadow_only_until_history_exists(self):
         inventory = _pc2_batch_c_cross_market_inventory()

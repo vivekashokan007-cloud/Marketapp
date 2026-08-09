@@ -15,12 +15,12 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b394: Soften opportunity gates into ranking evidence, not hard rejects.
+        // b396: Make VIX regime percentile-live with constant shadow diagnostics.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 395
-        versionName = "2.5.64"
+        versionCode = 396
+        versionName = "2.5.65"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
