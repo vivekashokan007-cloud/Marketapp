@@ -62,6 +62,10 @@ class NativeBridge(private val context: Context) {
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
         private const val POLL_SLOT_MINUTES = 5
         private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
+        private const val TEACHER_RESEARCH_GENERATED_CANDIDATE_CAP = 20
+        private const val TEACHER_RESEARCH_RANKED_CANDIDATE_CAP = 30
+        private const val TEACHER_RESEARCH_REJECTED_CANDIDATE_CAP = 12
+        private const val TEACHER_RESEARCH_REJECTED_OUTCOME_CAP = 500
         private val teacherResearchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         private val teacherResearchRebuildInFlight = AtomicBoolean(false)
         @Volatile private var teacherResearchLastRebuildKey = ""
@@ -231,10 +235,11 @@ class NativeBridge(private val context: Context) {
         return if (compact.length() > 0) compact else null
     }
 
-    private fun compactTeacherResearchCandidates(raw: Any?): JSONArray {
+    private fun compactTeacherResearchCandidates(raw: Any?, limit: Int = Int.MAX_VALUE): JSONArray {
         val source = parseJsonArray(raw) ?: return JSONArray()
         val compact = JSONArray()
-        for (i in 0 until source.length()) {
+        val end = minOf(source.length(), limit)
+        for (i in 0 until end) {
             compactTeacherResearchCandidate(source.opt(i))?.let(compact::put)
         }
         return compact
@@ -272,10 +277,10 @@ class NativeBridge(private val context: Context) {
             }
         }
 
-        val compactGenerated = compactTeacherResearchCandidates(generated)
+        val compactGenerated = compactTeacherResearchCandidates(generated, TEACHER_RESEARCH_GENERATED_CANDIDATE_CAP)
         compactContext.put("snapshot_generated_candidates", compactGenerated)
         rankedFull?.let {
-            val compactRankedFull = compactTeacherResearchCandidates(it)
+            val compactRankedFull = compactTeacherResearchCandidates(it, TEACHER_RESEARCH_RANKED_CANDIDATE_CAP)
             if (compactRankedFull.length() > 0) {
                 compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
             }
@@ -283,7 +288,7 @@ class NativeBridge(private val context: Context) {
         if (includeRejectedCandidates) {
             val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
                 ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
-            val compactRejected = compactTeacherResearchCandidates(rejected)
+            val compactRejected = compactTeacherResearchCandidates(rejected, TEACHER_RESEARCH_REJECTED_CANDIDATE_CAP)
             if (compactRejected.length() > 0) {
                 compactContext.put("snapshot_rejected_candidates", compactRejected)
             }
@@ -320,6 +325,99 @@ class NativeBridge(private val context: Context) {
             compact.put(compactTeacherResearchSnapshot(row))
         }
         return compact
+    }
+
+    private fun compactTeacherResearchOutcomePayload(source: JSONArray): JSONArray {
+        val out = JSONArray()
+        var rejectedKept = 0
+        val keys = arrayOf(
+            "snapshot_id",
+            "session_date",
+            "poll_ts",
+            "candidate_id",
+            "lane",
+            "index_key",
+            "trade_mode",
+            "strategy_type",
+            "sim_pnl_h2",
+            "outcome_h2",
+            "canonical_won",
+            "managed_pnl",
+            "managed_gross_pnl",
+            "friction_cost",
+            "exit_reason",
+            "exit_step",
+            "exit_ts",
+            "path_points_count",
+            "r_multiple",
+            "captured_pct",
+            "is_success",
+            "peak_pnl",
+            "trough_pnl",
+            "max_capture_pct",
+            "near_target_pct",
+            "target_gap_pnl",
+            "time_to_peak_step",
+            "target_was_reached",
+            "risk_at_entry",
+            "regime_bucket",
+            "label_version",
+            "teacher_config_version",
+            "tp_threshold",
+            "sl_threshold",
+            "break_even_win_rate_pct",
+            "price_integrity",
+            "h2_price_integrity_reason",
+            "premium_edge",
+            "credit_width_ratio",
+            "sigma_otm",
+            "iv_richness",
+            "width",
+            "prob_profit",
+            "rejection_stage",
+            "rejection_reason",
+            "gate_name",
+            "gate_field",
+            "observed_value",
+            "threshold_value",
+            "margin",
+            "margin_pct",
+            "rejected_rank_in_snapshot",
+            "rejected_eval_rank",
+            "rejected_eval_cap",
+            "rejected_eval_source",
+            "source_record_type"
+        )
+        for (i in 0 until source.length()) {
+            val src = source.optJSONObject(i) ?: continue
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US).ifBlank { "secondary" }
+            if (role == "rejected") {
+                if (rejectedKept >= TEACHER_RESEARCH_REJECTED_OUTCOME_CAP) continue
+                rejectedKept += 1
+            }
+            val row = JSONObject()
+            row.put("role", role)
+            for (key in keys) {
+                val value = src.opt(key)
+                if (value != null && value != JSONObject.NULL) row.put(key, value)
+            }
+            if (row.optString("price_integrity").equals("FAIL", ignoreCase = true)) {
+                listOf(
+                    "managed_pnl",
+                    "managed_gross_pnl",
+                    "friction_cost",
+                    "r_multiple",
+                    "captured_pct",
+                    "is_success"
+                ).forEach(row::remove)
+            }
+            out.put(row)
+        }
+        Log.i(
+            TAG,
+            "teacher research outcome payload compacted input=${source.length()} output=${out.length()} rejectedKept=$rejectedKept rejectedCap=$TEACHER_RESEARCH_REJECTED_OUTCOME_CAP"
+        )
+        return out
     }
 
     private fun loadLocalSavedSnapshots(date: String, limit: Int = 200): JSONArray {
@@ -387,7 +485,7 @@ class NativeBridge(private val context: Context) {
             val outcomesFile = File(MarketMLService.evaluationOutcomesPath(context, targetDate))
             if (!snapshotsFile.exists() || !outcomesFile.exists()) return null
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
-            val outcomes = readJsonArrayFile(outcomesFile)
+            val outcomes = compactTeacherResearchOutcomePayload(readJsonArrayFile(outcomesFile))
             if (compactSnapshots.length() == 0 || outcomes.length() == 0) return null
 
             val py = Python.getInstance()
@@ -420,7 +518,7 @@ class NativeBridge(private val context: Context) {
     private fun rebuildTeacherResearchReportFromRemoteIfPossible(targetDate: String): JSONObject? {
         return try {
             val snapshots = SupabaseClient.fetchBrainSnapshots(targetDate)
-            val outcomes = SupabaseClient.fetchEvaluationOutcomesForDate(targetDate)
+            val outcomes = compactTeacherResearchOutcomePayload(SupabaseClient.fetchEvaluationOutcomesForDate(targetDate))
             if (snapshots.length() <= 0 || outcomes.length() <= 0) return null
 
             val compactSnapshots = JSONArray()

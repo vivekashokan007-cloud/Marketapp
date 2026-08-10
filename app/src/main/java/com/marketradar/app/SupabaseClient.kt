@@ -114,6 +114,23 @@ object SupabaseClient {
         "outcome_json", "app_version", "created_at"
     )
     private val rejectedOutcomeColumnSet = rejectedOutcomeColumns.toSet()
+    private val rejectedOutcomeLegacyColumns = rejectedOutcomeColumns.filterNot {
+        it == "iv_richness" || it == "width" || it == "prob_profit"
+    }
+    private val outcomeBaseColumns = listOf(
+        "snapshot_id",
+        "session_date",
+        "candidate_id",
+        "lane",
+        "index_key",
+        "trade_mode",
+        "strategy_type",
+        "role",
+        "sim_pnl_h2",
+        "outcome_h2",
+        "canonical_won"
+    )
+    private val outcomeFullColumns = outcomeBaseColumns + shadowTeacherKeys + "created_at"
 
     private fun fetchSync(request: Request): String? {
         return try {
@@ -564,7 +581,7 @@ object SupabaseClient {
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return rows
+        return canonicalizeRows(rows, outcomeFullColumns)
     }
 
     private fun hasValue(src: JSONObject, key: String): Boolean = src.has(key) && !src.isNull(key)
@@ -635,12 +652,12 @@ object SupabaseClient {
         return "keys=${keys.size}/${rejectedOutcomeColumns.size} unknown=$unknown missingRequired=$missingRequired keysetMismatches=$keysetMismatches$firstMismatch"
     }
 
-    private fun canonicalizeRejectedOutcomeRows(rows: JSONArray): JSONArray {
+    private fun canonicalizeRows(rows: JSONArray, columns: List<String>): JSONArray {
         val normalized = JSONArray()
         for (i in 0 until rows.length()) {
             val src = rows.optJSONObject(i) ?: continue
             val row = JSONObject()
-            rejectedOutcomeColumns.forEach { key ->
+            columns.forEach { key ->
                 if (src.has(key) && !src.isNull(key)) {
                     row.put(key, src.opt(key))
                 } else {
@@ -650,6 +667,19 @@ object SupabaseClient {
             normalized.put(row)
         }
         return normalized
+    }
+
+    private fun canonicalizeRejectedOutcomeRows(rows: JSONArray): JSONArray =
+        canonicalizeRows(rows, rejectedOutcomeColumns)
+
+    private fun isMissingRejectedContextColumnError(result: ArrayPostResult): Boolean {
+        if (result.code != 400) return false
+        val body = result.errorBody.orEmpty()
+        if (!body.contains("PGRST204")) return false
+        return body.contains("iv_richness") ||
+            body.contains("prob_profit") ||
+            body.contains("\"width\"") ||
+            body.contains("'width'")
     }
 
     private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
@@ -780,7 +810,7 @@ object SupabaseClient {
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return rows
+        return canonicalizeRows(rows, outcomeFullColumns)
     }
 
     private fun sanitizeFailedIntegrityTeacherRow(row: JSONObject) {
@@ -1659,6 +1689,16 @@ object SupabaseClient {
             return legacy
         }
 
+        fun outcomeWritePath(table: String): String {
+            return when (table) {
+                "ml_evaluation_outcomes" ->
+                    "ml_evaluation_outcomes?on_conflict=snapshot_id,candidate_id,role"
+                "ml_recommendation_outcomes" ->
+                    "ml_recommendation_outcomes?on_conflict=snapshot_id,candidate_id,role"
+                else -> table
+            }
+        }
+
         val evaluationRowsNoRejected = stripRejectedResearch(evaluationRows)
         val evaluationRowsNoShadow = stripShadowTeacher(evaluationRows)
         val evaluationRowsNoRejectedNoShadow = stripShadowTeacher(evaluationRowsNoRejected)
@@ -1702,7 +1742,7 @@ object SupabaseClient {
                     }
                     return OutcomePostResult(success = true, expectedRows = 0, mode = mode)
                 }
-                if (!postArrayToTableChunked(table, rows)) continue
+                if (!postArrayToTableChunked(outcomeWritePath(table), rows)) continue
                 if (mode == "full") return OutcomePostResult(success = true, expectedRows = rows.length(), mode = mode)
                 LogBuffer.add(
                     'W',
@@ -1736,8 +1776,8 @@ object SupabaseClient {
             recommendationRowsLegacy,
             recommendationRowsLegacy
         )
-        val rejectedWriteMode = if (rejectedRows.length() > 0) "separate_table" else "not_applicable"
-        val rejectedWriteResult = if (rejectedRows.length() > 0) {
+        var rejectedWriteMode = if (rejectedRows.length() > 0) "separate_table" else "not_applicable"
+        var rejectedWriteResult = if (rejectedRows.length() > 0) {
             val keyDiff = rejectedPayloadKeyDiff(rejectedRows)
             LogBuffer.add('I', TAG, "REJECTED_RESEARCH_PAYLOAD_AUDIT: rows=${rejectedRows.length()} $keyDiff")
             postArrayToTableChunkedDetailed(
@@ -1747,6 +1787,20 @@ object SupabaseClient {
             )
         } else {
             ArrayPostResult(success = true, table = "ml_rejected_candidate_outcomes")
+        }
+        if (rejectedRows.length() > 0 && !rejectedWriteResult.success && isMissingRejectedContextColumnError(rejectedWriteResult)) {
+            val legacyRejectedRows = canonicalizeRows(rejectedRows, rejectedOutcomeLegacyColumns)
+            rejectedWriteMode = "separate_table_context_stripped"
+            LogBuffer.add(
+                'W',
+                TAG,
+                "REJECTED_RESEARCH_CONTEXT_COLUMN_FALLBACK: rows=${rejectedRows.length()} stripping=iv_richness,width,prob_profit migration_required"
+            )
+            rejectedWriteResult = postArrayToTableChunkedDetailed(
+                "ml_rejected_candidate_outcomes?on_conflict=id",
+                legacyRejectedRows,
+                chunkSize = 100
+            )
         }
 
         val evaluationPersisted = countRows("ml_evaluation_outcomes", "session_date=eq.$sessionDate")

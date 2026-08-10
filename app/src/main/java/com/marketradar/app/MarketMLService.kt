@@ -140,6 +140,10 @@ class MarketMLService : Service() {
         private const val EVAL_BATCH_TIMEOUT_MS = 120_000L
         private const val MONTHLY_RETRAIN_GATE_ROWS = 500
         private const val RETRAIN_DISABLED_REASON = "Retrain paused until canonical won-label unification is completed."
+        private const val TEACHER_RESEARCH_GENERATED_CANDIDATE_CAP = 20
+        private const val TEACHER_RESEARCH_RANKED_CANDIDATE_CAP = 30
+        private const val TEACHER_RESEARCH_REJECTED_CANDIDATE_CAP = 12
+        private const val TEACHER_RESEARCH_REJECTED_OUTCOME_CAP = 500
         internal val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
         internal const val EVAL_STALE_AFTER_MS = 15 * 60 * 1000L
         private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
@@ -821,10 +825,14 @@ class MarketMLService : Service() {
         return if (compact.length() > 0) compact else null
     }
 
-    private fun compactTeacherResearchCandidates(raw: Any?): org.json.JSONArray {
+    private fun compactTeacherResearchCandidates(
+        raw: Any?,
+        limit: Int = Int.MAX_VALUE
+    ): org.json.JSONArray {
         val source = parseJsonArray(raw) ?: return org.json.JSONArray()
         val compact = org.json.JSONArray()
-        for (i in 0 until source.length()) {
+        val end = minOf(source.length(), limit)
+        for (i in 0 until end) {
             compactTeacherResearchCandidate(source.opt(i))?.let(compact::put)
         }
         return compact
@@ -865,11 +873,11 @@ class MarketMLService : Service() {
             }
         }
 
-        val compactGenerated = compactTeacherResearchCandidates(generated)
-        val compactRejected = compactTeacherResearchCandidates(rejected)
+        val compactGenerated = compactTeacherResearchCandidates(generated, TEACHER_RESEARCH_GENERATED_CANDIDATE_CAP)
+        val compactRejected = compactTeacherResearchCandidates(rejected, TEACHER_RESEARCH_REJECTED_CANDIDATE_CAP)
         compactContext.put("snapshot_generated_candidates", compactGenerated)
         rankedFull?.let {
-            val compactRankedFull = compactTeacherResearchCandidates(it)
+            val compactRankedFull = compactTeacherResearchCandidates(it, TEACHER_RESEARCH_RANKED_CANDIDATE_CAP)
             if (compactRankedFull.length() > 0) {
                 compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
             }
@@ -2055,9 +2063,80 @@ class MarketMLService : Service() {
 
     private fun sanitizedTeacherOutcomesForReporting(source: org.json.JSONArray): org.json.JSONArray {
         val out = org.json.JSONArray()
+        var rejectedKept = 0
+        val keys = arrayOf(
+            "snapshot_id",
+            "session_date",
+            "poll_ts",
+            "candidate_id",
+            "lane",
+            "index_key",
+            "trade_mode",
+            "strategy_type",
+            "sim_pnl_h2",
+            "outcome_h2",
+            "canonical_won",
+            "managed_pnl",
+            "managed_gross_pnl",
+            "friction_cost",
+            "exit_reason",
+            "exit_step",
+            "exit_ts",
+            "path_points_count",
+            "r_multiple",
+            "captured_pct",
+            "is_success",
+            "peak_pnl",
+            "trough_pnl",
+            "max_capture_pct",
+            "near_target_pct",
+            "target_gap_pnl",
+            "time_to_peak_step",
+            "target_was_reached",
+            "risk_at_entry",
+            "regime_bucket",
+            "label_version",
+            "teacher_config_version",
+            "tp_threshold",
+            "sl_threshold",
+            "break_even_win_rate_pct",
+            "price_integrity",
+            "h2_price_integrity_reason",
+            "premium_edge",
+            "credit_width_ratio",
+            "sigma_otm",
+            "iv_richness",
+            "width",
+            "prob_profit",
+            "rejection_stage",
+            "rejection_reason",
+            "gate_name",
+            "gate_field",
+            "observed_value",
+            "threshold_value",
+            "margin",
+            "margin_pct",
+            "rejected_rank_in_snapshot",
+            "rejected_eval_rank",
+            "rejected_eval_cap",
+            "rejected_eval_source",
+            "source_record_type"
+        )
         for (i in 0 until source.length()) {
             val src = source.optJSONObject(i) ?: continue
-            val row = org.json.JSONObject(src.toString())
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US).ifBlank { "secondary" }
+            if (role == "rejected") {
+                if (rejectedKept >= TEACHER_RESEARCH_REJECTED_OUTCOME_CAP) continue
+                rejectedKept += 1
+            }
+            val row = org.json.JSONObject()
+            row.put("role", role)
+            for (key in keys) {
+                val value = src.opt(key)
+                if (value != null && value != org.json.JSONObject.NULL) {
+                    row.put(key, value)
+                }
+            }
             if (row.optString("price_integrity").equals("FAIL", ignoreCase = true)) {
                 listOf(
                     "managed_pnl",
@@ -2070,6 +2149,10 @@ class MarketMLService : Service() {
             }
             out.put(row)
         }
+        Log.i(
+            TAG,
+            "TEACHER_RESEARCH_OUTCOME_COMPACTED: input=${source.length()} output=${out.length()} rejectedKept=$rejectedKept rejectedCap=$TEACHER_RESEARCH_REJECTED_OUTCOME_CAP"
+        )
         return out
     }
 
@@ -2156,6 +2239,10 @@ class MarketMLService : Service() {
         }
         try {
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
+            Log.i(
+                TAG,
+                "TEACHER_RESEARCH_PAYLOAD_READY: session=$sessionDate snapshots=${compactSnapshots.length()} outcomes=${evaluatedOutcomes.length()}"
+            )
             val reportRaw = brain.callAttr(
                 "session_teacher_research_report",
                 sessionDate,
@@ -2230,13 +2317,15 @@ class MarketMLService : Service() {
                 "TEACHER_RESEARCH_REPORT: session=$sessionDate compared=${pvb.optInt("snapshots_compared", 0)} better=${pvb.optInt("better_candidate_available", 0)} upliftR=${pvb.optDouble("avg_best_minus_primary_r", 0.0)} writePath=$outputPath readPath=$readbackPath"
             )
             return TeacherResearchBuildResult(success = true)
-        } catch (e: Exception) {
-            val error = e.message ?: e.javaClass.simpleName
+        } catch (t: Throwable) {
+            val error = t.message ?: t.javaClass.simpleName
             prefs.edit()
                 .putString("teacher_research_report_status", "FAILED")
                 .putString("teacher_research_report_error", error)
                 .commit()
-            Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: $error")
+            val runtime = Runtime.getRuntime()
+            val memory = "mem used=${(runtime.totalMemory() - runtime.freeMemory()) / 1048576}MB max=${runtime.maxMemory() / 1048576}MB"
+            Log.w(TAG, "TEACHER_RESEARCH_REPORT_FAIL: ${t.javaClass.simpleName}: $error $memory")
             return TeacherResearchBuildResult(success = false, error = error)
         }
     }
