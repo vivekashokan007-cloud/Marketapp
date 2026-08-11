@@ -2637,8 +2637,9 @@ def compute_overnight_delta(ctx):
     """Phase B: compute Dow/Crude/GIFT deltas since evening close.
     Replaces JS computeOvernightDelta(currentNfSpot).
     """
-    DOW_THRESHOLD = 0.5
-    CRUDE_THRESHOLD = 1.5
+    dow_threshold = _CONST.get('DOW_THRESHOLD', 0.5)
+    crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
+    gift_threshold = _CONST.get('GIFT_THRESHOLD', 0.3)
     
     eve = ctx.get('eveningClose')
     if not eve:
@@ -2653,23 +2654,50 @@ def compute_overnight_delta(ctx):
     if eve.get('dow') and m_dow:
         e_dow = float(eve['dow'])
         pct = round((m_dow - e_dow) / e_dow * 100, 2)
-        dir = 'NEUTRAL' if abs(pct) < DOW_THRESHOLD else ('BULL' if pct > 0 else 'BEAR')
-        delta['signals'].append({'name': 'Dow', 'from': e_dow, 'to': m_dow, 'pct': pct, 'dir': dir, 'threshold': DOW_THRESHOLD})
+        dow_context = _pc2_cross_market_move_context(ctx, 'DOW_THRESHOLD', pct, dow_threshold, ('dow_pct', 'dowPct'))
+        dir = 'NEUTRAL' if not dow_context.get('active') else ('BULL' if pct > 0 else 'BEAR')
+        delta['signals'].append({
+            'name': 'Dow',
+            'from': e_dow,
+            'to': m_dow,
+            'pct': pct,
+            'dir': dir,
+            'threshold': dow_context.get('threshold_value'),
+            'pc2CrossMarketContext': dow_context,
+        })
         
     if eve.get('crude') and m_crude:
         e_crude = float(eve['crude'])
         pct = round((m_crude - e_crude) / e_crude * 100, 2)
         # Crude up = bearish
-        dir = 'NEUTRAL' if abs(pct) < CRUDE_THRESHOLD else ('BEAR' if pct > 0 else 'BULL')
-        delta['signals'].append({'name': 'Crude', 'from': e_crude, 'to': m_crude, 'pct': pct, 'dir': dir, 'threshold': CRUDE_THRESHOLD})
+        crude_context = _pc2_cross_market_move_context(ctx, 'CRUDE_THRESHOLD', pct, crude_threshold, ('crude_pct', 'crudePct'))
+        dir = 'NEUTRAL' if not crude_context.get('active') else ('BEAR' if pct > 0 else 'BULL')
+        delta['signals'].append({
+            'name': 'Crude',
+            'from': e_crude,
+            'to': m_crude,
+            'pct': pct,
+            'dir': dir,
+            'threshold': crude_context.get('threshold_value'),
+            'pc2CrossMarketContext': crude_context,
+        })
         
     gift_spot = ctx.get('morning_input', {}).get('giftSpot')
     if eve.get('gift') and gift_spot:
         e_gift = float(eve['gift'])
         m_gift = float(gift_spot)
         pct = round((m_gift - e_gift) / e_gift * 100, 2)
-        g_dir = 'BULL' if pct > 0.4 else 'BEAR' if pct < -0.4 else 'NEUTRAL'
-        delta['signals'].append({'name': 'GIFT', 'from': e_gift, 'to': m_gift, 'pct': pct, 'dir': g_dir, 'threshold': 0.4})
+        gift_context = _pc2_cross_market_move_context(ctx, 'GIFT_THRESHOLD', pct, gift_threshold, ('gift_pct', 'giftPct'))
+        g_dir = 'NEUTRAL' if not gift_context.get('active') else ('BULL' if pct > 0 else 'BEAR')
+        delta['signals'].append({
+            'name': 'GIFT',
+            'from': e_gift,
+            'to': m_gift,
+            'pct': pct,
+            'dir': g_dir,
+            'threshold': gift_context.get('threshold_value'),
+            'pc2CrossMarketContext': gift_context,
+        })
     elif eve.get('gift') and ctx.get('gap'):
         # Fallback to sigma if giftSpot missing (preserving existing resilience)
         gap_sigma = ctx['gap'].get('sigma', 0)
@@ -2840,6 +2868,7 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
     gd = ctx.get('globalDirection', {}) or {}
     is_bull = base_signal == 'BULLISH'
     boost = 0
+    cross_market_context = []
 
     dow_threshold = _CONST.get('DOW_THRESHOLD', 0.5)
     crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
@@ -2849,7 +2878,10 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
     dow_now = gd.get('dowNow')
     if dow_close and dow_now:
         dow_pct = ((dow_now - dow_close) / dow_close) * 100.0
-        if abs(dow_pct) >= dow_threshold:
+        dow_context = _pc2_cross_market_move_context(ctx, 'DOW_THRESHOLD', dow_pct, dow_threshold, ('dow_pct', 'dowPct'))
+        dow_context['name'] = 'Dow'
+        cross_market_context.append(dow_context)
+        if dow_context.get('active'):
             if (dow_pct > 0 and is_bull) or (dow_pct < 0 and not is_bull):
                 boost += 1
             else:
@@ -2859,7 +2891,10 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
     crude_now = gd.get('crudeNow')
     if crude_settle and crude_now:
         crude_pct = ((crude_now - crude_settle) / crude_settle) * 100.0
-        if abs(crude_pct) >= crude_threshold:
+        crude_context = _pc2_cross_market_move_context(ctx, 'CRUDE_THRESHOLD', crude_pct, crude_threshold, ('crude_pct', 'crudePct'))
+        crude_context['name'] = 'Crude'
+        cross_market_context.append(crude_context)
+        if crude_context.get('active'):
             if (crude_pct < 0 and is_bull) or (crude_pct > 0 and not is_bull):
                 boost += 1
             else:
@@ -2869,7 +2904,10 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
     gift_now = gd.get('giftNow')
     if gift_ref and gift_now:
         gift_pct = ((gift_now - gift_ref) / gift_ref) * 100.0
-        if abs(gift_pct) >= gift_threshold:
+        gift_context = _pc2_cross_market_move_context(ctx, 'GIFT_THRESHOLD', gift_pct, gift_threshold, ('gift_pct', 'giftPct'))
+        gift_context['name'] = 'GIFT'
+        cross_market_context.append(gift_context)
+        if gift_context.get('active'):
             if (gift_pct > 0 and is_bull) or (gift_pct < 0 and not is_bull):
                 boost += 1
             else:
@@ -2882,6 +2920,9 @@ def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
             boost += 1
         elif (gift_bull and not is_bull) or (gift_bear and is_bull):
             boost -= 1
+
+    if cross_market_context:
+        tomorrow_signal['crossMarketContext'] = cross_market_context
 
     if boost != 0:
         base_strength = positioning_result.get('strength', 1)
@@ -3013,6 +3054,11 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
     abs_spot_sigma = ctx.get('abs_spot_sigma', 0.0)
     abs_nf_spot_sigma = ctx.get('abs_nf_spot_sigma', 0.0)
     abs_vix_sigma = ctx.get('abs_vix_sigma', 0.0)
+    sigma_move_context = _pc2_sigma_important_context(
+        ctx,
+        (result or {}).get('context_percentiles') or ctx.get('context_percentiles'),
+    )
+    significant_move = bool(significant_move or sigma_move_context.get('triggered'))
 
     # WATCHLIST alerts: use entry_window (0.3σ) not significant_move (1.5σ)
     # This allows entry notifications on normal trading days
@@ -3083,8 +3129,16 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 continue
 
         current_pnl = current_pnl or 0
+        position_alert_context = _pc2_position_alert_context(
+            trade=trade,
+            current_pnl=current_pnl,
+            max_profit=max_profit,
+            max_loss=max_loss,
+            ctx=ctx,
+            context_percentiles=(result or {}).get('context_percentiles') or ctx.get('context_percentiles'),
+        )
 
-        if max_profit and current_pnl >= max_profit * _CONST.get('TARGET_NEAR_RATIO', 0.8):
+        if (position_alert_context.get('target_near') or {}).get('triggered'):
             pct_of_max = round(current_pnl / max_profit * 100) if max_profit else 0
             alerts.append({
                 'key': f"POS_TARGET_{t_id}",
@@ -3098,8 +3152,9 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     quality_note=quality_note,
                     pct_of_max=pct_of_max,
                 ),
+                'pc2_exit_policy_context': position_alert_context,
             })
-        if max_loss and current_pnl <= -max_loss * _CONST.get('STOP_LOSS_RATIO', 0.7):
+        if (position_alert_context.get('stop_loss_near') or {}).get('triggered'):
             alerts.append({
                 'key': f"POS_STOP_{t_id}",
                 'category': 'POSITION',
@@ -3111,6 +3166,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'Cut position.',
                     quality_note=quality_note,
                 ),
+                'pc2_exit_policy_context': position_alert_context,
             })
         if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
             alerts.append({
@@ -3127,9 +3183,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             })
 
     if significant_move:
-        if (abs_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
-                or abs_nf_spot_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
-                or abs_vix_sigma > _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)):
+        if sigma_move_context.get('triggered'):
             live = ctx.get('live', {}) or {}
             bnf_spot = live.get('bnfSpot') or ctx.get('bnfSpot')
             nf_spot = live.get('nfSpot') or ctx.get('nfSpot')
@@ -3146,6 +3200,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'priority': 'important',
                 'title': '📊 Significant Move',
                 'body': f"BNF {bnf_str} ({spot_sigma}σ) | NF {nf_str} ({nf_spot_sigma}σ) | VIX {vix_str} ({vix_sigma}σ)",
+                'pc2_sigma_context': sigma_move_context,
             })
 
     if (now_ms - last_routine_notify) >= _CONST.get('ROUTINE_NOTIFY_MS', 3600000):
@@ -5927,7 +5982,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.66"
+BRAIN_VERSION = "2.5.67"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -5999,6 +6054,17 @@ PC2_GATE_CALIBRATION = {
         'activation_status': 'percentile_candidate_after_stability_pass',
         'review_flag': 'eligible_pending_batch5_wiring',
     },
+    'IC_WALL_MAX_SIGMA': {
+        'gate_name': 'ic_wall_sigma_too_far',
+        'field': 'sigmaOTM',
+        'context_variable': 'sigma_otm_menu_median',
+        'pct_target': 39.86,
+        'support_count': 9953,
+        'gate_group': 'G7_IC_WALL_SIGMA',
+        'comparator': '<=',
+        'activation_status': 'live_soft_constructed_ic_only_after_stability_pass',
+        'review_flag': 'constructed_ic_only_wall_seed_shadow',
+    },
 }
 
 PC2_REJECTION_STAGE_TO_CONST = {
@@ -6059,6 +6125,7 @@ C3_CONTEXT_PERCENTILE_VARIABLES = {
         'spot_vs_vwap',
         'abs_spot_sigma',
         'abs_nf_spot_sigma',
+        'abs_vix_sigma',
         'bnf_atm_iv',
         'nf_atm_iv',
         'bnf_pcr',
@@ -6097,6 +6164,12 @@ C3_CONTEXT_PERCENTILE_VARIABLES = {
         'realized_r_prior_sessions_only',
         'notification_count_session',
     ),
+    'position_state': (
+        'open_position_profit_capture_max',
+        'open_position_profit_capture_median',
+        'open_position_loss_capture_max',
+        'open_position_loss_capture_median',
+    ),
 }
 
 C3_KIND_A_CONSTS = {
@@ -6121,8 +6194,8 @@ C3_KIND_B_CONSTS = {
     'MIN_SIGMA_OTM': 'distance threshold should be percentile-contextual',
     'MAX_SIGMA_OTM': 'distance threshold should be percentile-contextual',
     'IC_WALL_MAX_SIGMA': 'wall-distance market judgment',
-    'MIN_WIDTH_BNF': 'width floor needs lane/fill evidence before live softening',
-    'MIN_WIDTH_NF': 'width floor needs lane/fill evidence before live softening',
+    'MIN_WIDTH_BNF': 'directional width floor is live-soft opportunity context; narrow spreads are ranked with penalty',
+    'MIN_WIDTH_NF': 'directional width floor is live-soft opportunity context; narrow spreads are ranked with penalty',
     'DOW_THRESHOLD': 'cross-market move threshold should be history-relative',
     'CRUDE_THRESHOLD': 'cross-market move threshold should be history-relative',
     'GIFT_THRESHOLD': 'cross-market move threshold should be history-relative',
@@ -6159,7 +6232,7 @@ PC2_LIVE_CONTEXT_RANKING_VARIABLES = (
     'fii_short_pct',
 )
 
-PC2_BATCH_A_WIDTH_WALL_VERSION = 'pc2_batch_a_width_wall_shadow_v1'
+PC2_BATCH_A_WIDTH_WALL_VERSION = 'pc2_batch_a_width_wall_width_ic_soft_v1'
 PC2_BATCH_A_WIDTH_WALL_CONSTS = {
     'BNF_WIDTHS': {
         'authority': 'generation_supply_ladder',
@@ -6172,19 +6245,19 @@ PC2_BATCH_A_WIDTH_WALL_CONSTS = {
         'rationale': 'width ladder controls which spreads are enumerated; replay evidence is needed before widening supply live',
     },
     'MIN_WIDTH_BNF': {
-        'authority': 'lane_enable_not_percentile',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'minimum width protects fill/liquidity realism; not enough evidence to convert it into live percentile scoring',
+        'authority': 'live_soft_opportunity_with_constant_shadow',
+        'status': 'LIVE_SOFT_SUPPLY',
+        'rationale': 'minimum width is a quality/liquidity signal, not a broker impossibility; below-floor candidates are released to ranking with penalty',
     },
     'MIN_WIDTH_NF': {
-        'authority': 'lane_enable_not_percentile',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'minimum width protects fill/liquidity realism; not enough evidence to convert it into live percentile scoring',
+        'authority': 'live_soft_opportunity_with_constant_shadow',
+        'status': 'LIVE_SOFT_SUPPLY',
+        'rationale': 'minimum width is a quality/liquidity signal, not a broker impossibility; below-floor candidates are released to ranking with penalty',
     },
     'IC_WALL_MAX_SIGMA': {
-        'authority': 'context_measure_first',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'wall-distance condor seeding can flood low-quality candidates; record first, soften only after replay',
+        'authority': 'constructed_candidate_live_soft_with_seed_shadow',
+        'status': 'LIVE_SOFT_CONSTRUCTED_ONLY',
+        'rationale': 'constructed iron-condor wall sigma is a quality signal released to ranking with penalty; wall-distance seed expansion remains shadow to avoid candidate flood',
     },
 }
 
@@ -6206,9 +6279,9 @@ PC2_BATCH_B_REGIME_SIGMA_CONSTS = {
         'rationale': 'low VIX credit/debit force scoring uses relative percentile context; absolute VIX 15 is retained only as diagnostic shadow',
     },
     'SIGMA_IMPORTANT_THRESHOLD': {
-        'authority': 'context_measure_first',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'significant-move notification threshold; record context before any live policy change',
+        'authority': 'percentile_live_with_constant_shadow',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'significant-move notification uses relative BNF/NF/VIX sigma context; absolute 2.0σ remains diagnostic shadow',
     },
     'SIGMA_ENTRY_THRESHOLD': {
         'authority': 'context_measure_first',
@@ -6222,36 +6295,36 @@ PC2_BATCH_B_REGIME_SIGMA_CONSTS = {
     },
 }
 
-PC2_BATCH_C_CROSS_MARKET_VERSION = 'pc2_batch_c_cross_market_shadow_v1'
+PC2_BATCH_C_CROSS_MARKET_VERSION = 'pc2_batch_c_cross_market_live_context_v1'
 PC2_BATCH_C_CROSS_MARKET_CONSTS = {
     'DOW_THRESHOLD': {
-        'authority': 'missing_percentile_history',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'Dow percentage move exists in runtime logic, but no durable percentile history is available yet',
+        'authority': 'percentile_live_with_constant_fallback',
+        'status': 'LIVE_CONTEXT_WITH_CONSTANT_FALLBACK',
+        'rationale': 'Dow percentage move uses relative cross-market history for boost/bias significance; old absolute percent remains fallback when history is thin',
     },
     'CRUDE_THRESHOLD': {
-        'authority': 'missing_percentile_history',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'Crude percentage move exists in runtime logic, but no durable percentile history is available yet',
+        'authority': 'percentile_live_with_constant_fallback',
+        'status': 'LIVE_CONTEXT_WITH_CONSTANT_FALLBACK',
+        'rationale': 'Crude percentage move uses relative cross-market history for boost/bias significance; old absolute percent remains fallback when history is thin',
     },
     'GIFT_THRESHOLD': {
-        'authority': 'missing_percentile_history',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'GIFT percentage move exists in runtime logic, but no durable percentile history is available yet',
+        'authority': 'percentile_live_with_constant_fallback',
+        'status': 'LIVE_CONTEXT_WITH_CONSTANT_FALLBACK',
+        'rationale': 'GIFT percentage move uses relative cross-market history for boost/bias significance; old absolute percent remains fallback when history is thin',
     },
 }
 
-PC2_BATCH_D_EXIT_POLICY_VERSION = 'pc2_batch_d_exit_policy_shadow_v1'
+PC2_BATCH_D_EXIT_POLICY_VERSION = 'pc2_batch_d_exit_policy_live_context_v1'
 PC2_BATCH_D_EXIT_POLICY_CONSTS = {
     'TARGET_NEAR_RATIO': {
-        'authority': 'g2_mechanism_only',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'target-near ratio controls position-management alerting; it is not an entry ranking gate',
+        'authority': 'percentile_live_with_constant_safety_floor',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'target-near alert uses relative open-position profit capture when supported; old 80% ratio remains a safety floor',
     },
     'STOP_LOSS_RATIO': {
-        'authority': 'g2_mechanism_only',
-        'status': 'SHADOW_ONLY',
-        'rationale': 'stop-loss ratio controls position-management alerting; it is not an entry ranking gate',
+        'authority': 'percentile_live_with_constant_safety_floor',
+        'status': 'LIVE_CONTEXT',
+        'rationale': 'stop-loss alert uses relative open-position loss capture when supported; old 70% ratio remains a safety floor',
     },
 }
 
@@ -6263,7 +6336,19 @@ def _pc2_parameter_authority_inventory():
     structural = ['CREDIT_TYPES', 'DEBIT_TYPES', 'NEUTRAL_TYPES', 'DIR_BULL', 'DIR_BEAR']
     calendar = ['NSE_HOLIDAYS']
     live_soft = list(PC2_LIVE_SOFT_OPPORTUNITY_CONSTS)
-    live_context_constants = ['IV_HIGH', 'IV_VERY_HIGH', 'IV_LOW']
+    live_context_constants = [
+        'IV_HIGH',
+        'IV_VERY_HIGH',
+        'IV_LOW',
+        'SIGMA_IMPORTANT_THRESHOLD',
+        'MIN_WIDTH_BNF',
+        'MIN_WIDTH_NF',
+        'DOW_THRESHOLD',
+        'CRUDE_THRESHOLD',
+        'GIFT_THRESHOLD',
+        'TARGET_NEAR_RATIO',
+        'STOP_LOSS_RATIO',
+    ]
     pending_kind_b = [k for k in kind_b if k not in set(live_soft + live_context_constants)]
     unclassified = [
         k for k in _CONST
@@ -6293,25 +6378,30 @@ def _pc2_parameter_authority_inventory():
 
 
 def _pc2_batch_a_width_wall_inventory():
-    """Batch-A audit map. No live behavior changes until replay proves safe."""
+    """Batch-A audit map for width/wall supply constants."""
     rows = []
     for key, meta in PC2_BATCH_A_WIDTH_WALL_CONSTS.items():
+        live_softened = meta.get('status') in ('LIVE_SOFT_SUPPLY', 'LIVE_SOFT_CONSTRUCTED_ONLY')
         rows.append({
             'constant': key,
             'value': _CONST.get(key),
             'authority': meta.get('authority'),
             'status': meta.get('status'),
             'rationale': meta.get('rationale'),
-            'live_softened': False,
-            'behavior_change': False,
+            'live_softened': live_softened,
+            'behavior_change': live_softened,
         })
+    live_count = sum(1 for row in rows if row.get('live_softened'))
+    shadow_count = len(rows) - live_count
     return {
         'schema_version': PC2_BATCH_A_WIDTH_WALL_VERSION,
-        'status': 'SHADOW_ONLY',
+        'status': 'PARTIAL_LIVE_SOFT_SUPPLY',
         'row_count': len(rows),
-        'shadow_only_count': len(rows),
-        'live_softened_count': 0,
-        'behavior_change': False,
+        'shadow_only_count': shadow_count,
+        'live_softened_count': live_count,
+        'behavior_change': live_count > 0,
+        'live_scope': 'directional credit minimum-width floor and constructed iron-condor wall sigma are no longer pre-ranking hard rejects',
+        'shadow_scope': 'width ladders and wall-distance seed expansion remain measured before live supply widening',
         'rows': rows,
     }
 
@@ -6339,8 +6429,8 @@ def _pc2_batch_b_regime_sigma_inventory():
         'shadow_only_count': shadow_count,
         'live_softened_count': live_count,
         'behavior_change': live_count > 0,
-        'live_scope': 'VIX regime routing and Force3 only',
-        'shadow_scope': 'absolute VIX thresholds and sigma thresholds retained for diagnostics',
+        'live_scope': 'VIX regime routing, Force3, and significant-move notification sensitivity',
+        'shadow_scope': 'absolute VIX thresholds and remaining entry/exit sigma declarations retained for diagnostics',
         'rows': rows,
     }
 
@@ -6349,22 +6439,27 @@ def _pc2_batch_c_cross_market_inventory():
     """Batch-C audit map for cross-market percentage thresholds."""
     rows = []
     for key, meta in PC2_BATCH_C_CROSS_MARKET_CONSTS.items():
+        live_softened = str(meta.get('status') or '').startswith('LIVE_CONTEXT')
         rows.append({
             'constant': key,
             'value': _CONST.get(key),
             'authority': meta.get('authority'),
             'status': meta.get('status'),
             'rationale': meta.get('rationale'),
-            'live_softened': False,
-            'behavior_change': False,
+            'live_softened': live_softened,
+            'behavior_change': live_softened,
         })
+    live_count = sum(1 for row in rows if row.get('live_softened'))
+    shadow_count = len(rows) - live_count
     return {
         'schema_version': PC2_BATCH_C_CROSS_MARKET_VERSION,
-        'status': 'MISSING_HISTORY_SHADOW_ONLY',
+        'status': 'LIVE_CONTEXT_WITH_CONSTANT_FALLBACK',
         'row_count': len(rows),
-        'shadow_only_count': len(rows),
-        'live_softened_count': 0,
-        'behavior_change': False,
+        'shadow_only_count': shadow_count,
+        'live_softened_count': live_count,
+        'behavior_change': live_count > 0,
+        'live_scope': 'Dow/Crude/GIFT movement significance for global boost and overnight bias classification',
+        'fallback_scope': 'legacy absolute percent thresholds remain active only when cross-market history lacks support',
         'rows': rows,
     }
 
@@ -6373,22 +6468,27 @@ def _pc2_batch_d_exit_policy_inventory():
     """Batch-D audit map for G2 exit-policy constants."""
     rows = []
     for key, meta in PC2_BATCH_D_EXIT_POLICY_CONSTS.items():
+        live_softened = meta.get('status') == 'LIVE_CONTEXT'
         rows.append({
             'constant': key,
             'value': _CONST.get(key),
             'authority': meta.get('authority'),
             'status': meta.get('status'),
             'rationale': meta.get('rationale'),
-            'live_softened': False,
-            'behavior_change': False,
+            'live_softened': live_softened,
+            'behavior_change': live_softened,
         })
+    live_count = sum(1 for row in rows if row.get('live_softened'))
+    shadow_count = len(rows) - live_count
     return {
         'schema_version': PC2_BATCH_D_EXIT_POLICY_VERSION,
-        'status': 'G2_MECHANISM_SHADOW_ONLY',
+        'status': 'LIVE_CONTEXT_WITH_CONSTANT_SAFETY_FLOOR',
         'row_count': len(rows),
-        'shadow_only_count': len(rows),
-        'live_softened_count': 0,
-        'behavior_change': False,
+        'shadow_only_count': shadow_count,
+        'live_softened_count': live_count,
+        'behavior_change': live_count > 0,
+        'live_scope': 'position target/stop notification sensitivity',
+        'safety_floor': 'legacy target/stop ratios still trigger alerts even when percentile support is weak',
         'rows': rows,
     }
 
@@ -6434,12 +6534,13 @@ REJECTED_EVAL_STAGE_PRIORITY = {
     'iv_not_rich': 2,
     'sigma_otm_too_close': 3,
     'sigma_otm_too_far': 4,
-    'credit_prob_below_floor': 5,
-    'debit_prob_below_floor': 6,
-    'prob_below_floor': 7,
-    'capital_limit_exceeded': 8,
-    'credit_dte_below_floor': 9,
-    'width_too_narrow': 10,
+    'ic_wall_sigma_too_far': 5,
+    'credit_prob_below_floor': 6,
+    'debit_prob_below_floor': 7,
+    'prob_below_floor': 8,
+    'capital_limit_exceeded': 9,
+    'credit_dte_below_floor': 10,
+    'width_too_narrow': 11,
 }
 
 
@@ -6595,6 +6696,11 @@ def _detect_flip(current_verdict, previous_verdict):
 
 
 PC2_VIX_REGIME_CONTEXT_VERSION = 'pc2_vix_regime_context_live_v1'
+PC2_SIGMA_IMPORTANT_CONTEXT_VERSION = 'pc2_sigma_important_context_live_v1'
+PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE = 85.0
+PC2_POSITION_ALERT_CONTEXT_VERSION = 'pc2_position_alert_context_live_v1'
+PC2_POSITION_TARGET_CAPTURE_PERCENTILE = 85.0
+PC2_POSITION_STOP_CAPTURE_PERCENTILE = 85.0
 
 
 def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
@@ -6661,6 +6767,290 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
             'old_very_high': old_very_high,
             'differs_from_live': old_regime != regime,
         },
+    }
+
+
+def _pc2_sigma_important_context(ctx=None, context_percentiles=None):
+    """Relative sigma-move authority for notifications only.
+
+    This replaces the old absolute 2.0 sigma significant-move notification
+    threshold when percentile evidence exists. On low support, the old constant
+    is used as a continuity fallback and still recorded as shadow evidence.
+    """
+    ctx = ctx if isinstance(ctx, dict) else {}
+    context_percentiles = context_percentiles if isinstance(context_percentiles, dict) else {}
+    current_values = context_percentiles.get('current_values') or {}
+    live = ctx.get('live') if isinstance(ctx.get('live'), dict) else {}
+    old_threshold = _CONST.get('SIGMA_IMPORTANT_THRESHOLD', 2.0)
+
+    variable_specs = (
+        {
+            'name': 'abs_spot_sigma',
+            'label': 'BNF',
+            'ctx_keys': ('abs_spot_sigma', 'absSpotSigma'),
+            'live_keys': ('bnfSpotSigma', 'spotSigma'),
+            'history_keys': ('absSpotSigma', 'abs_spot_sigma', 'bnfSpotSigma', 'spotSigma', 'spot_sigma'),
+        },
+        {
+            'name': 'abs_nf_spot_sigma',
+            'label': 'NF',
+            'ctx_keys': ('abs_nf_spot_sigma', 'absNfSpotSigma'),
+            'live_keys': ('nfSpotSigma', 'nf_spot_sigma'),
+            'history_keys': ('absNfSpotSigma', 'abs_nf_spot_sigma', 'nfSpotSigma', 'nf_spot_sigma'),
+        },
+        {
+            'name': 'abs_vix_sigma',
+            'label': 'VIX',
+            'ctx_keys': ('abs_vix_sigma', 'absVixSigma'),
+            'live_keys': ('vixSigma', 'vix_sigma'),
+            'history_keys': ('absVixSigma', 'abs_vix_sigma', 'vixSigma', 'vix_sigma'),
+        },
+    )
+
+    def _first_numeric(*values):
+        for value in values:
+            converted = _percentile_float(value)
+            if converted is not None:
+                return converted
+        return None
+
+    rows = []
+    live_triggered = False
+    fallback_triggered = False
+    old_triggered = False
+    supported_variables = 0
+    triggered_by = []
+
+    for spec in variable_specs:
+        name = spec['name']
+        cell_60 = _pc2_context_cell(context_percentiles, name, 60)
+        cell_30 = _pc2_context_cell(context_percentiles, name, 30)
+        source_cell = cell_60 if int(cell_60.get('support_count') or 0) >= CONTEXT_PERCENTILE_MIN_SUPPORT else cell_30
+
+        value = _first_numeric(
+            *[ctx.get(key) for key in spec['ctx_keys']],
+            current_values.get(name),
+            source_cell.get('value'),
+            *[live.get(key) for key in spec['live_keys']],
+        )
+        if value is not None:
+            value = abs(value)
+
+        percentile = _percentile_float(source_cell.get('percentile'))
+        support_count = int(source_cell.get('support_count') or 0)
+        window = 60 if source_cell is cell_60 else 30
+
+        if (percentile is None or support_count < CONTEXT_PERCENTILE_MIN_SUPPORT) and value is not None:
+            history = [
+                abs(converted)
+                for x in _history_values(ctx, spec['history_keys'], 60)
+                for converted in [_percentile_float(x)]
+                if converted is not None
+            ]
+            if len(history) >= CONTEXT_PERCENTILE_MIN_SUPPORT:
+                percentile = _percentile_rank(value, history)
+                support_count = len(history)
+                window = 60
+
+        support_status = 'SUPPORTED' if support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT and percentile is not None else 'LOW_SUPPORT'
+        if value is None:
+            support_status = 'MISSING_VALUE'
+        elif percentile is None:
+            support_status = 'MISSING_CONTEXT'
+
+        old_pass = bool(value is not None and old_threshold is not None and value > old_threshold)
+        live_pass = bool(
+            value is not None
+            and percentile is not None
+            and support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT
+            and percentile >= PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE
+        )
+        fallback_pass = bool(support_status != 'SUPPORTED' and old_pass)
+        effective_pass = live_pass or fallback_pass
+        if support_status == 'SUPPORTED':
+            supported_variables += 1
+        if live_pass:
+            live_triggered = True
+            triggered_by.append(name)
+        if fallback_pass:
+            fallback_triggered = True
+            triggered_by.append(name)
+        if old_pass:
+            old_triggered = True
+
+        rows.append({
+            'variable': name,
+            'label': spec['label'],
+            'value': None if value is None else round(value, 4),
+            'percentile': None if percentile is None else round(percentile, 2),
+            'window': window,
+            'support_count': support_count,
+            'support_status': support_status,
+            'notify_percentile': PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE,
+            'live_percentile_triggered': live_pass,
+            'fallback_triggered': fallback_pass,
+            'triggered': effective_pass,
+            'old_constant_shadow': {
+                'threshold': old_threshold,
+                'old_pass': old_pass,
+                'differs_from_live': old_pass != effective_pass,
+            },
+        })
+
+    basis = (
+        'percentile_context'
+        if live_triggered else
+        'old_constant_low_support_fallback'
+        if fallback_triggered else
+        'percentile_context_no_trigger'
+        if supported_variables > 0 else
+        'missing_context_no_trigger'
+    )
+
+    return {
+        'schema_version': PC2_SIGMA_IMPORTANT_CONTEXT_VERSION,
+        'authority': 'percentile_live_with_constant_shadow',
+        'behavior_scope': 'notification_only',
+        'triggered': bool(live_triggered or fallback_triggered),
+        'live_percentile_triggered': live_triggered,
+        'fallback_triggered': fallback_triggered,
+        'triggered_by': triggered_by,
+        'basis': basis,
+        'supported_variables': supported_variables,
+        'notify_percentile': PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE,
+        'variables': rows,
+        'old_constant_shadow': {
+            'threshold': old_threshold,
+            'old_triggered': old_triggered,
+            'differs_from_live': old_triggered != bool(live_triggered or fallback_triggered),
+        },
+    }
+
+
+def _pc2_position_alert_context(
+    trade=None,
+    current_pnl=None,
+    max_profit=None,
+    max_loss=None,
+    ctx=None,
+    context_percentiles=None,
+):
+    """Position alert sensitivity with percentile-live context and hard safety floors.
+
+    These are notification thresholds only. The old constants remain a safety
+    floor, so target/stop alerts cannot become less protective due to thin
+    percentile support.
+    """
+    trade = trade if isinstance(trade, dict) else {}
+    ctx = ctx if isinstance(ctx, dict) else {}
+    context_percentiles = context_percentiles if isinstance(context_percentiles, dict) else {}
+    current_values = context_percentiles.get('current_values') or {}
+
+    pnl = _percentile_float(current_pnl)
+    profit_cap = _percentile_float(max_profit)
+    loss_cap = _percentile_float(max_loss)
+    old_target = _CONST.get('TARGET_NEAR_RATIO', 0.8)
+    old_stop = _CONST.get('STOP_LOSS_RATIO', 0.7)
+
+    profit_capture = _numeric_ratio(pnl, profit_cap) if pnl is not None and profit_cap and profit_cap > 0 and pnl > 0 else None
+    loss_capture = _numeric_ratio(abs(pnl), loss_cap) if pnl is not None and loss_cap and loss_cap > 0 and pnl < 0 else None
+
+    def _alert_row(name, value, threshold, percentile_cutoff, history_keys):
+        cell_60 = _pc2_context_cell(context_percentiles, name, 60)
+        cell_30 = _pc2_context_cell(context_percentiles, name, 30)
+        source_cell = cell_60 if int(cell_60.get('support_count') or 0) >= CONTEXT_PERCENTILE_MIN_SUPPORT else cell_30
+        cell_value = _percentile_float(source_cell.get('value'))
+        current_value = _percentile_float(current_values.get(name))
+        if value is not None:
+            effective_value = value
+        elif current_value is not None:
+            effective_value = current_value
+        else:
+            effective_value = cell_value
+        percentile = _percentile_float(source_cell.get('percentile'))
+        support_count = int(source_cell.get('support_count') or 0)
+        window = 60 if source_cell is cell_60 else 30
+
+        if (
+            (percentile is None or support_count < CONTEXT_PERCENTILE_MIN_SUPPORT)
+            and effective_value is not None
+        ):
+            history = [
+                converted
+                for x in _history_values(ctx, history_keys, 60)
+                for converted in [_percentile_float(x)]
+                if converted is not None
+            ]
+            if len(history) >= CONTEXT_PERCENTILE_MIN_SUPPORT:
+                percentile = _percentile_rank(effective_value, history)
+                support_count = len(history)
+                window = 60
+
+        old_pass = bool(effective_value is not None and threshold is not None and effective_value >= threshold)
+        live_pass = bool(
+            effective_value is not None
+            and percentile is not None
+            and support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT
+            and percentile >= percentile_cutoff
+        )
+        triggered = bool(live_pass or old_pass)
+        if effective_value is None:
+            basis = 'missing_value'
+        elif live_pass:
+            basis = 'percentile_context'
+        elif old_pass:
+            basis = 'constant_safety_floor'
+        else:
+            basis = 'not_triggered'
+        return {
+            'triggered': triggered,
+            'basis': basis,
+            'capture_ratio': None if effective_value is None else round(effective_value, 4),
+            'capture_percentile': None if percentile is None else round(percentile, 2),
+            'notify_percentile': percentile_cutoff,
+            'support_count': support_count,
+            'window': window,
+            'support_status': 'SUPPORTED' if support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT and percentile is not None else ('MISSING_VALUE' if effective_value is None else 'LOW_SUPPORT'),
+            'live_percentile_triggered': live_pass,
+            'old_constant_shadow': {
+                'threshold': threshold,
+                'old_pass': old_pass,
+                'differs_from_live': old_pass != live_pass,
+            },
+        }
+
+    target_row = _alert_row(
+        'open_position_profit_capture_max',
+        profit_capture,
+        old_target,
+        PC2_POSITION_TARGET_CAPTURE_PERCENTILE,
+        (
+            'openPositionProfitCaptureMax',
+            'open_position_profit_capture_max',
+            'profitCapture',
+            'profit_capture',
+        ),
+    )
+    stop_row = _alert_row(
+        'open_position_loss_capture_max',
+        loss_capture,
+        old_stop,
+        PC2_POSITION_STOP_CAPTURE_PERCENTILE,
+        (
+            'openPositionLossCaptureMax',
+            'open_position_loss_capture_max',
+            'lossCapture',
+            'loss_capture',
+        ),
+    )
+    return {
+        'schema_version': PC2_POSITION_ALERT_CONTEXT_VERSION,
+        'authority': 'percentile_live_with_constant_safety_floor',
+        'behavior_scope': 'position_notification_only',
+        'trade_id': trade.get('id'),
+        'strategy_type': trade.get('strategy_type') or trade.get('type'),
+        'target_near': target_row,
+        'stop_loss_near': stop_row,
     }
 
 
@@ -7621,6 +8011,124 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         'fallback_reason': None if gate_basis == 'percentile' else 'stability_or_history_not_ready',
     }
 
+def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshold):
+    """Width floor is quality context, not an execution impossibility."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    row = row if isinstance(row, dict) else {}
+    observed_width = _percentile_float(observed_width)
+    hard_threshold = _percentile_float(hard_threshold)
+    comparator = '>='
+    hard_pass = _pc2_compare(observed_width, hard_threshold, comparator)
+    history = _history_values(ctx, ('width_menu_median', 'width_menu_best', 'width'), 60)
+    pct_target = 20.0
+    percentile_threshold = _percentile_quantile(history, pct_target)
+    vix_hist = (
+        _numeric_series(ctx.get('vixHistory'))
+        + _history_values(ctx, ('vix', 'VIX'), 60)
+    )[-60:]
+    vix_now = _percentile_float(ctx.get('vix') or row.get('vix'))
+    vix_cell = _percentile_cell(vix_now, vix_hist)
+    stability = _jackknife_threshold_stability(history, pct_target)
+    stability_ratio = stability.get('stability_ratio')
+    stability_bar = vix_cell.get('stability_ratio') if int(vix_cell.get('support_count') or 0) >= 60 else None
+    stability_pass = bool(
+        percentile_threshold is not None
+        and stability_ratio is not None
+        and stability_bar is not None
+        and stability_ratio <= stability_bar
+    )
+    gate_basis = 'percentile' if stability_pass else 'hard_fallback'
+    active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
+    percentile_pass = _pc2_compare(observed_width, percentile_threshold, comparator)
+    active_pass = _pc2_compare(observed_width, active_threshold, comparator)
+    live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
+    return {
+        'version': PC2_GATE_BASIS_VERSION,
+        'constant': const_name,
+        'gate_group': 'width_quality',
+        'gate_name': 'width_too_narrow',
+        'gate_field': 'width',
+        'comparator': comparator,
+        'basis': gate_basis,
+        'gate_basis': gate_basis,
+        'threshold_value': None if active_threshold is None else round(active_threshold, 6),
+        'hard_threshold_value': None if hard_threshold is None else round(hard_threshold, 6),
+        'percentile_threshold_value': None if percentile_threshold is None else round(percentile_threshold, 6),
+        'observed_value': None if observed_width is None else round(observed_width, 6),
+        'passed': active_pass,
+        'hard_passed': hard_pass,
+        'percentile_passed': percentile_pass,
+        'counterfactual_basis': 'hard_fallback' if gate_basis == 'percentile' else ('percentile' if percentile_threshold is not None else None),
+        'counterfactual_available': percentile_threshold is not None,
+        'counterfactual_behavior_change': live_behavior_change,
+        'pct_target': pct_target,
+        'pct_target_source': PC2_BATCH_A_WIDTH_WALL_VERSION,
+        'pct_target_review_flag': 'owner_live_soft_width_quality',
+        'slice_key': _pc2_slice_key(row, 'width_menu_median'),
+        'support_count': len(_numeric_series(history)),
+        'stability_ratio': stability_ratio,
+        'stability_bar': stability_bar,
+        'stability_pass': stability_pass,
+        'switch_basis': gate_basis,
+        'window': 60,
+        'activation_status': 'live_soft_supply_with_constant_fallback',
+        'live_percentile_authority': gate_basis == 'percentile',
+        'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
+        'fallback_reason': None if gate_basis == 'percentile' else 'stability_or_history_not_ready',
+        'live_soft_supply': True,
+    }
+
+PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF = 70.0
+
+def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_threshold, history_keys):
+    """Classify cross-market move significance by relative history, with old constants as fallback."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    observed_pct_num = _percentile_float(observed_pct)
+    observed_abs = abs(observed_pct_num) if observed_pct_num is not None else None
+    fallback_threshold_num = _percentile_float(fallback_threshold)
+    history = []
+    for value in _history_values(ctx, history_keys, 60):
+        num = _percentile_float(value)
+        if num is not None:
+            history.append(abs(num))
+    support = len(history)
+    percentile = _percentile_rank(observed_abs, history) if observed_abs is not None and support >= CONTEXT_PERCENTILE_MIN_SUPPORT else None
+    hard_active = bool(
+        observed_abs is not None
+        and fallback_threshold_num is not None
+        and observed_abs >= fallback_threshold_num
+    )
+    percentile_active = bool(
+        percentile is not None
+        and percentile >= PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF
+    )
+    live_percentile_authority = percentile is not None
+    active = percentile_active if live_percentile_authority else hard_active
+    return {
+        'version': PC2_BATCH_C_CROSS_MARKET_VERSION,
+        'constant': const_name,
+        'basis': 'percentile' if live_percentile_authority else 'hard_fallback',
+        'thresholdMode': 'percentile' if live_percentile_authority else 'hard_fallback',
+        'thresholdSource': 'cross_market_history_percentile' if live_percentile_authority else 'legacy_constant_fallback',
+        'observed_value': None if observed_pct_num is None else round(observed_pct_num, 6),
+        'observed_abs_pct': None if observed_abs is None else round(observed_abs, 6),
+        'threshold': None if live_percentile_authority else fallback_threshold_num,
+        'threshold_value': None if live_percentile_authority else fallback_threshold_num,
+        'hard_threshold_value': fallback_threshold_num,
+        'percentile': None if percentile is None else round(percentile, 2),
+        'percentile_cutoff': PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF,
+        'supportCount': support,
+        'support_count': support,
+        'active': active,
+        'hard_active': hard_active,
+        'percentile_active': percentile_active if live_percentile_authority else None,
+        'livePercentileAuthority': live_percentile_authority,
+        'live_percentile_authority': live_percentile_authority,
+        'live_behavior_change': bool(live_percentile_authority and percentile_active != hard_active),
+        'fallback_reason': None if live_percentile_authority else 'insufficient_cross_market_history',
+        'window': 60,
+    }
+
 def _pc2_gate_basis_summary(gate_rows):
     gate_rows = [g for g in (gate_rows or []) if isinstance(g, dict)]
     if not gate_rows:
@@ -7790,12 +8298,15 @@ def _pc2_stamp_candidate_gate_context(candidates, context_percentiles=None):
         stamped.append(cand)
     return stamped
 
-def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, result=None):
+def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, result=None, open_trades=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     result = result if isinstance(result, dict) else {}
+    open_trades = open_trades if isinstance(open_trades, list) else []
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
     snapshot_latest_poll = _dict_value(ctx.get('snapshot_latest_poll'))
     morning_input = _dict_value(ctx.get('morning_input') or ctx.get('morningInput'))
+    global_direction = _dict_value(ctx.get('globalDirection') or ctx.get('global_direction'))
+    evening_close = _dict_value(ctx.get('eveningClose') or ctx.get('evening_close'))
     bnf_chain = _dict_value(ctx.get('bnfChain') or ctx.get('bnf_chain'))
     nf_chain = _dict_value(ctx.get('nfChain') or ctx.get('nf_chain'))
     snapshot_profiles = _dict_value(ctx.get('snapshot_market_profiles') or ctx.get('market_profiles'))
@@ -7831,6 +8342,32 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
     for cand in candidates or []:
         if isinstance(cand, dict) and (cand.get('type') or cand.get('strategy_type')):
             generated_types.add(cand.get('type') or cand.get('strategy_type'))
+
+    def _position_capture_series(trades, mode):
+        values = []
+        position_live = result.get('position_live') if isinstance(result.get('position_live'), dict) else {}
+        for trade in trades or []:
+            if not isinstance(trade, dict):
+                continue
+            pnl = _percentile_float(trade.get('current_pnl'))
+            if pnl is None:
+                trade_id = trade.get('id')
+                live_row = position_live.get(trade_id) if trade_id is not None else None
+                if isinstance(live_row, dict):
+                    pnl = _percentile_float(live_row.get('current_pnl'))
+            if mode == 'profit':
+                cap = _percentile_float(trade.get('max_profit') or trade.get('maxProfit'))
+                if pnl is not None and cap and cap > 0 and pnl > 0:
+                    ratio = _numeric_ratio(pnl, cap)
+                    if ratio is not None:
+                        values.append(ratio)
+            else:
+                cap = _percentile_float(trade.get('max_loss') or trade.get('maxLoss'))
+                if pnl is not None and cap and cap > 0 and pnl < 0:
+                    ratio = _numeric_ratio(abs(pnl), cap)
+                    if ratio is not None:
+                        values.append(ratio)
+        return values
 
     def _profile_value(profile, *keys):
         return _row_value(profile, keys)
@@ -7907,12 +8444,50 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
     )
     bnf_vwap = _row_value(latest_poll, ('bnfVwap', 'bnfVWAP', 'bnf_vwap')) or _row_value(snapshot_latest_poll, ('bnfVwap', 'bnfVWAP', 'bnf_vwap'))
     nf_vwap = _row_value(latest_poll, ('nfVwap', 'nfVWAP', 'nf_vwap')) or _row_value(snapshot_latest_poll, ('nfVwap', 'nfVWAP', 'nf_vwap'))
-    bnf_abs_spot_sigma = abs(_numeric_ratio(_distance_from_spot(bnf_spot, bnf_vwap), bnf_daily_sigma)) if bnf_vwap is not None else None
-    nf_abs_spot_sigma = abs(_numeric_ratio(_distance_from_spot(nf_spot, nf_vwap), nf_daily_sigma)) if nf_vwap is not None else None
+    bnf_spot_sigma_ratio = _numeric_ratio(_distance_from_spot(bnf_spot, bnf_vwap), bnf_daily_sigma) if bnf_vwap is not None else None
+    nf_spot_sigma_ratio = _numeric_ratio(_distance_from_spot(nf_spot, nf_vwap), nf_daily_sigma) if nf_vwap is not None else None
+    bnf_abs_spot_sigma = abs(bnf_spot_sigma_ratio) if bnf_spot_sigma_ratio is not None else None
+    nf_abs_spot_sigma = abs(nf_spot_sigma_ratio) if nf_spot_sigma_ratio is not None else None
+    if bnf_abs_spot_sigma is None:
+        bnf_abs_spot_sigma = _first_row_value((ctx, ('abs_spot_sigma', 'absSpotSigma')))
+    if nf_abs_spot_sigma is None:
+        nf_abs_spot_sigma = _first_row_value((ctx, ('abs_nf_spot_sigma', 'absNfSpotSigma')))
+    vix_abs_sigma = _first_row_value(
+        (ctx, ('abs_vix_sigma', 'absVixSigma')),
+        (latest_poll, ('absVixSigma', 'abs_vix_sigma')),
+        (snapshot_latest_poll, ('absVixSigma', 'abs_vix_sigma')),
+    )
+    if vix_abs_sigma is None:
+        vix_sigma_raw = _first_row_value(
+            (ctx, ('vixSigma', 'vix_sigma')),
+            (latest_poll, ('vixSigma', 'vix_sigma')),
+            (snapshot_latest_poll, ('vixSigma', 'vix_sigma')),
+        )
+        vix_abs_sigma = abs(vix_sigma_raw) if vix_sigma_raw is not None else None
     day_range = (
         _latest_poll_value(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'))
         or _percentile_float(ctx.get('rangeSigma'))
     )
+    profit_captures = _position_capture_series(open_trades, 'profit')
+    loss_captures = _position_capture_series(open_trades, 'loss')
+
+    def _cross_market_pct(now_value, ref_value):
+        now_num = _percentile_float(now_value)
+        ref_num = _percentile_float(ref_value)
+        if now_num is None or ref_num in (None, 0):
+            return None
+        return ((now_num - ref_num) / abs(ref_num)) * 100.0
+
+    dow_pct_current = _cross_market_pct(global_direction.get('dowNow'), global_direction.get('dowClose'))
+    if dow_pct_current is None:
+        dow_pct_current = _cross_market_pct(global_direction.get('dowClose'), evening_close.get('dow'))
+    crude_pct_current = _cross_market_pct(global_direction.get('crudeNow'), global_direction.get('crudeSettle'))
+    if crude_pct_current is None:
+        crude_pct_current = _cross_market_pct(global_direction.get('crudeSettle'), evening_close.get('crude'))
+    gift_pct_current = _cross_market_pct(global_direction.get('giftNow'), evening_close.get('gift'))
+    if gift_pct_current is None:
+        gift_pct_current = _cross_market_pct(morning_input.get('giftSpot'), evening_close.get('gift'))
+
     current_values = {
         'vix': _percentile_float(ctx.get('vix')) or _latest_poll_value(polls, ('vix', 'VIX')),
         'fii_short_pct': (
@@ -7965,9 +8540,17 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'oi_skew': _numeric_ratio((bnf_put_oi or 0) - (bnf_call_oi or 0), (bnf_put_oi or 0) + (bnf_call_oi or 0)),
         'realized_vs_implied_range_ratio': _numeric_ratio(day_range, 1.0),
         'overnight_gap': _latest_poll_value(polls, ('overnightGap', 'overnight_gap', 'gapSigma', 'gap_sigma')),
+        'dow_pct': dow_pct_current,
+        'crude_pct': crude_pct_current,
+        'gift_pct': gift_pct_current,
         'spot_vs_vwap': _distance_from_spot(bnf_spot, bnf_vwap),
         'abs_spot_sigma': bnf_abs_spot_sigma,
         'abs_nf_spot_sigma': nf_abs_spot_sigma,
+        'abs_vix_sigma': vix_abs_sigma,
+        'open_position_profit_capture_max': max(profit_captures) if profit_captures else None,
+        'open_position_profit_capture_median': _median(profit_captures),
+        'open_position_loss_capture_max': max(loss_captures) if loss_captures else None,
+        'open_position_loss_capture_median': _median(loss_captures),
         'bnf_atm_iv': bnf_atm_iv,
         'nf_atm_iv': nf_atm_iv,
         'bnf_pcr': _profile_value(bnf_profile, 'pcr') or _row_value(bnf_chain, ('pcr',)) or _latest_poll_value(polls, ('bnfPcr',)),
@@ -8086,9 +8669,17 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'oi_skew': _hist('oiSkew', 'oi_skew'),
             'realized_vs_implied_range_ratio': _hist('realizedVsImpliedRangeRatio', 'realized_vs_implied_range_ratio'),
             'overnight_gap': _hist('overnightGap', 'overnight_gap', 'gapSigma', 'gap_sigma'),
+            'dow_pct': _hist('dowPct', 'dow_pct'),
+            'crude_pct': _hist('crudePct', 'crude_pct'),
+            'gift_pct': _hist('giftPct', 'gift_pct'),
             'spot_vs_vwap': _hist('spotVsVwap', 'spot_vs_vwap'),
             'abs_spot_sigma': _hist('absSpotSigma', 'abs_spot_sigma'),
             'abs_nf_spot_sigma': _hist('absNfSpotSigma', 'abs_nf_spot_sigma'),
+            'abs_vix_sigma': _hist('absVixSigma', 'abs_vix_sigma', 'vixSigma', 'vix_sigma'),
+            'open_position_profit_capture_max': _hist('openPositionProfitCaptureMax', 'open_position_profit_capture_max', 'profitCapture', 'profit_capture'),
+            'open_position_profit_capture_median': _hist('openPositionProfitCaptureMedian', 'open_position_profit_capture_median'),
+            'open_position_loss_capture_max': _hist('openPositionLossCaptureMax', 'open_position_loss_capture_max', 'lossCapture', 'loss_capture'),
+            'open_position_loss_capture_median': _hist('openPositionLossCaptureMedian', 'open_position_loss_capture_median'),
             'bnf_atm_iv': _hist('bnfAtmIv', 'bnf_atm_iv'),
             'nf_atm_iv': _hist('nfAtmIv', 'nf_atm_iv'),
             'bnf_pcr': _hist('bnfPcr', 'bnf_pcr'),
@@ -8604,6 +9195,29 @@ def _build3_apply_a8_ev_gate(candidates):
     return survivors, rejected, summary
 
 
+def _build3_effective_gate_reason(a8_summary, lane_summary):
+    """Return only an active hard-gate reason; shadow evidence stays separate."""
+    a8 = a8_summary if isinstance(a8_summary, dict) else {}
+    lane = lane_summary if isinstance(lane_summary, dict) else {}
+    a8_reason = a8.get('a8_gate_reason') or 'NONE'
+    lane_reason = lane.get('lane_gate_reason') or 'NONE'
+    if a8.get('a8_hard_gate_active') and a8_reason != 'NONE':
+        return a8_reason
+    if lane_reason != 'NONE':
+        return lane_reason
+    return 'NONE'
+
+
+def _build3_a8_shadow_evidence_reason(a8_summary):
+    a8 = a8_summary if isinstance(a8_summary, dict) else {}
+    reason = a8.get('a8_gate_reason') or 'NONE'
+    if a8.get('a8_hard_gate_active') or reason == 'NONE':
+        return 'NONE'
+    if _safe_num(a8.get('n_ev_below_floor_released_to_ranking'), 0) <= 0:
+        return 'NONE'
+    return reason
+
+
 def _build3_is_calm_regime(trade_mode, regime, cur_vix):
     mode = str(trade_mode or 'intraday').lower()
     reg = regime if isinstance(regime, dict) else {}
@@ -9027,11 +9641,8 @@ def _build3_make_ab_payload(
     old_id = old_top.get('id') if isinstance(old_top, dict) else None
     new_id = new_top.get('id') if isinstance(new_top, dict) else None
     new_actor_verdict = (new_verdict or {}).get('action') or ('TRADE' if new_top else 'WAIT')
-    gate_reason = 'NONE'
-    if a8_summary.get('a8_gate_reason') != 'NONE':
-        gate_reason = a8_summary.get('a8_gate_reason')
-    elif lane_summary.get('lane_gate_reason') != 'NONE':
-        gate_reason = lane_summary.get('lane_gate_reason')
+    gate_reason = _build3_effective_gate_reason(a8_summary, lane_summary)
+    a8_shadow_evidence_reason = _build3_a8_shadow_evidence_reason(a8_summary)
     return {
         'schema_version': 1,
         'experiment_name': BUILD3_EXPERIMENT_NAME,
@@ -9055,7 +9666,11 @@ def _build3_make_ab_payload(
         'new_actor_verdict': new_actor_verdict,
         'gate_verdict': 'WAIT' if not new_top else 'PASS',
         'gate_reason': gate_reason,
+        'effective_gate_reason': gate_reason,
         'a8_gate_reason': a8_summary.get('a8_gate_reason'),
+        'a8_shadow_evidence_reason': a8_shadow_evidence_reason,
+        'a8_gate_mode': a8_summary.get('a8_gate_mode'),
+        'n_ev_below_floor_released_to_ranking': a8_summary.get('n_ev_below_floor_released_to_ranking'),
         'lane_gate_reason': lane_summary.get('lane_gate_reason'),
         'n_candidates_original': original_count,
         'n_candidates_pre_gate': a8_summary.get('n_candidates_pre_a8'),
@@ -9583,12 +10198,22 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
             ))
         sigma_otm = round(sigma_otm, 2)
 
-    # Minimum width filter — narrow credit directional rejected
+    # Minimum width is a soft opportunity gate: narrow spreads rank lower, but remain visible.
     if is_credit and stype in ('BEAR_CALL', 'BULL_PUT'):
         min_w = _CONST['MIN_WIDTH_BNF'] if is_bnf else _CONST['MIN_WIDTH_NF']
-        if width < min_w:
-            record_rejection('width_too_narrow', 'is_credit directional and width < min_width')
-            return None
+        width_gate = _pc2_width_gate_decision(
+            ctx,
+            {'index': idx, 'strategy_type': stype, 'trade_mode': trade_mode, 'width': width, 'vix': vix},
+            'MIN_WIDTH_BNF' if is_bnf else 'MIN_WIDTH_NF',
+            width,
+            min_w,
+        )
+        if not width_gate.get('passed'):
+            opportunity_gate_failures.append(_opportunity_gate_soft_failure(
+                width_gate,
+                'width_too_narrow',
+                'is_credit directional width below context floor',
+            ))
         if tdte < _CONST['MIN_CREDIT_DTE']:
             record_rejection('credit_dte_below_floor', 'is_credit directional and tdte < MIN_CREDIT_DTE')
             return None
@@ -9693,6 +10318,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         gate for gate in (
             locals().get('min_sigma_gate'),
             locals().get('max_sigma_gate'),
+            locals().get('width_gate'),
             locals().get('credit_gate'),
             locals().get('iv_gate'),
             locals().get('prob_gate'),
@@ -10093,12 +10719,12 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         'sigma_otm_too_close',
                         'iron_condor sell leg sigma below context floor',
                     ))
-                max_sigma_gate = _pc2_live_gate_decision(ctx, ic_sigma_row, 'MAX_SIGMA_OTM', max(call_sigma, put_sigma), max_sigma)
+                max_sigma_gate = _pc2_live_gate_decision(ctx, ic_sigma_row, 'IC_WALL_MAX_SIGMA', max(call_sigma, put_sigma), max_sigma)
                 if not max_sigma_gate.get('passed'):
                     opportunity_gate_failures.append(_opportunity_gate_soft_failure(
                         max_sigma_gate,
-                        'sigma_otm_too_far',
-                        'iron_condor sell leg sigma above context ceiling',
+                        'ic_wall_sigma_too_far',
+                        'iron_condor wall sigma above context ceiling',
                     ))
                 if sell_call not in all_set or buy_call not in all_set or sell_put not in all_set or buy_put not in all_set:
                     _record_multi_leg_rejection(
@@ -11171,7 +11797,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['rejected_candidates'] = all_rejected
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
-        context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result)
+        context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result, open_trades=open_trades)
         _pc2_stamp_candidate_gate_context(all_cands, context_percentiles)
         _pc2_stamp_gate_basis(all_rejected, context_percentiles)
         _apply_context_percentile_live_ranking(all_cands, context_percentiles)
@@ -11397,20 +12023,23 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             watchlist = _build_watchlist_from_ranked(ranked)
             if not ranked:
                 wait_reason = 'All candidates failed BUILD 3 gates.'
-                gate_reason = a8_summary.get('a8_gate_reason')
-                if gate_reason == 'NONE':
-                    gate_reason = lane_summary.get('lane_gate_reason')
+                gate_reason = _build3_effective_gate_reason(a8_summary, lane_summary)
                 if gate_reason == BUILD3_A8_BELOW_FLOOR_REASON:
                     wait_reason = 'BUILD 3 A8 gate: all generated candidates are below the 1.10 EV floor.'
                 elif gate_reason == 'CALM_NF_ONLY_WAIT':
                     wait_reason = 'BUILD 3 calm NF-lane gate: only BNF intraday survived in calm regime.'
+                elif gate_reason == 'NONE':
+                    wait_reason = 'No executable candidate survived the active safety and readiness checks.'
                 verdict = dict(result.get('verdict') or {})
                 old_top = old_ranked[0] if old_ranked else None
                 conflicts = [
                     c for c in list(verdict.get('conflicts') or [])
                     if not str(c).startswith('Execution aligned to top candidate:')
                 ]
-                conflicts.append(f"BUILD 3 forced WAIT: {gate_reason}")
+                if gate_reason != 'NONE':
+                    conflicts.append(f"BUILD 3 forced WAIT: {gate_reason}")
+                else:
+                    conflicts.append('BUILD 3 forced WAIT: no candidate survived active safety/readiness checks')
                 if isinstance(old_top, dict) and old_top.get('type'):
                     conflicts.append(
                         f"Pre-gate top candidate was {old_top.get('type')}/{_strategy_action(old_top.get('type'))}; BUILD 3 returned WAIT"
@@ -11420,7 +12049,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'strategy': None,
                     'direction': 'NEUTRAL',
                     'confidence': 0,
-                    'urgency': f'WAIT — {gate_reason}',
+                    'urgency': f'WAIT — {gate_reason}' if gate_reason != 'NONE' else 'WAIT',
                     'reasoning': wait_reason,
                     'conflicts': conflicts,
                     'execution_aligned': False,
@@ -13140,12 +13769,12 @@ PHASE5_GATE_REGISTRY_META = {
     },
     'width_too_narrow': {
         'source_function': '_build_candidate',
-        'source_ref': 'brain.py:_build_candidate:record_rejection(width_too_narrow)',
-        'gate_reason': 'Credit directional spread width is below construction minimum.',
-        'threshold': 'width >= min_width',
-        'classification': 'SAFETY',
-        'softening_eligible': False,
-        'evidence_bar': 'Not eligible until fill/slippage and payoff integrity are separately proven for narrower widths.',
+        'source_ref': 'brain.py:_build_candidate:_pc2_width_gate_decision(width_too_narrow)',
+        'gate_reason': 'Credit directional spread width is below contextual quality floor.',
+        'threshold': 'width >= context_floor',
+        'classification': 'MARKET_JUDGMENT_SOFT',
+        'softening_eligible': True,
+        'evidence_bar': 'Live-soft: narrow spreads are released to ranking with penalty; zero/invalid width and capital gates remain hard.',
     },
     'credit_dte_below_floor': {
         'source_function': '_build_candidate',
@@ -15779,6 +16408,30 @@ def _load_json_file(path, default):
         return json.load(handle)
 
 
+def _snapshot_candidate_menu_for_evaluation(snap, snap_ctx, errors=None):
+    """Use the richest saved candidate menu for post-close evaluation/reporting."""
+    snap = snap if isinstance(snap, dict) else {}
+    snap_ctx = snap_ctx if isinstance(snap_ctx, dict) else {}
+    if isinstance(snap_ctx.get('snapshot_ranked_candidates_full'), list) and snap_ctx.get('snapshot_ranked_candidates_full'):
+        return snap_ctx.get('snapshot_ranked_candidates_full'), 'snapshot_ranked_candidates_full'
+    if isinstance(snap_ctx.get('snapshot_generated_candidates'), list) and snap_ctx.get('snapshot_generated_candidates'):
+        return snap_ctx.get('snapshot_generated_candidates'), 'snapshot_generated_candidates'
+
+    cands_json = snap.get('top_candidates_json', '[]')
+    generated = _safe_json_field(cands_json, [])
+    if cands_json and isinstance(cands_json, str) and not isinstance(generated, list):
+        if isinstance(errors, list):
+            errors.append({
+                'scope': 'top_candidates_json',
+                'snapshot_id': snap.get('id'),
+                'error': 'top_candidates_json_not_list',
+            })
+        return [], 'top_candidates_json_invalid'
+    if not isinstance(generated, list):
+        return [], 'none'
+    return generated, 'top_candidates_json'
+
+
 def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
     outcomes = []
     errors = []
@@ -15826,19 +16479,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
     elif not isinstance(snap_ctx, dict):
         snap_ctx = {}
 
-    generated = snap_ctx.get('snapshot_generated_candidates')
-    if not isinstance(generated, list) or not generated:
-        cands_json = snap.get('top_candidates_json', '[]')
-        generated = _safe_json_field(cands_json, [])
-        if cands_json and isinstance(cands_json, str) and not isinstance(generated, list):
-            generated = []
-            errors.append({
-                'scope': 'top_candidates_json',
-                'snapshot_id': snap.get('id'),
-                'error': 'top_candidates_json_not_list',
-            })
-        elif not isinstance(generated, list):
-            generated = []
+    generated, generated_source = _snapshot_candidate_menu_for_evaluation(snap, snap_ctx, errors)
 
     seen_ids = set()
     if primary and primary.get('id'):
@@ -15875,6 +16516,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 outcome['marginFallbackValue'] = cand.get('marginFallbackValue')
                 outcome['marginModelVersion'] = cand.get('marginModelVersion')
                 outcome['brainMaxLoss'] = cand.get('brainMaxLoss')
+                outcome['candidate_menu_source'] = generated_source
                 outcomes.append(outcome)
         except Exception as exc:
             errors.append({
@@ -16237,11 +16879,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         if str(gap.get('type') or '').upper() == 'FLAT':
             flat_gap_count += 1
 
-        generated = ctx.get('snapshot_generated_candidates')
-        if not isinstance(generated, list) or not generated:
-            generated = _safe_json_field(snap.get('top_candidates_json', '[]'), [])
-        if not isinstance(generated, list):
-            generated = []
+        generated, generated_source = _snapshot_candidate_menu_for_evaluation(snap, ctx)
         if generated:
             snapshots_with['with_generated'] += 1
         rejected = ctx.get('snapshot_rejected_candidates')
@@ -16367,6 +17005,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                     'brainMaxLoss': cand.get('brainMaxLoss'),
                     'marginQuoteStatus': cand.get('marginQuoteStatus'),
                     'marginQuoteSource': cand.get('marginQuoteSource'),
+                    'candidateMenuSource': generated_source,
                 }
         has_bc = 'BEAR_CALL' in first_pos
         has_bp = 'BULL_PUT' in first_pos
@@ -16882,9 +17521,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         else:
             primary_primary_json_missing_ids.append(sid)
 
-        generated = ctx.get('snapshot_generated_candidates')
-        if not isinstance(generated, list) or not generated:
-            generated = _safe_json_field(snap.get('top_candidates_json', '[]'), [])
+        generated, _generated_source = _snapshot_candidate_menu_for_evaluation(snap, ctx)
         if isinstance(generated, list) and generated:
             primary_generated_ready += 1
         else:
