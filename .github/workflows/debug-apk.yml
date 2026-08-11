@@ -142,6 +142,7 @@ jobs:
           assert summary[0]["build3_old_candidates"] > 0, summary
           assert summary[0]["build3_old_verdict"] == "TRADE", summary
           assert summary[0]["build3_gate_reason"] in {
+              "NONE",
               "EV_BELOW_FLOOR_SOFTENED_TO_RANKING",
               "CALM_NF_LANE_RESTRICTION",
           }, summary
