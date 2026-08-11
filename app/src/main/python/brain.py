@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.68"
+BRAIN_VERSION = "2.5.69"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8010,6 +8010,70 @@ def _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
     }
     return cell
 
+def _pc2_calibrations_for_context_variable(name):
+    matches = []
+    for const_name, meta in PC2_GATE_CALIBRATION.items():
+        if not isinstance(meta, dict):
+            continue
+        if meta.get('context_variable') != name:
+            continue
+        threshold = _percentile_float(_CONST.get(const_name))
+        matches.append({
+            'const_name': const_name,
+            'gate_name': meta.get('gate_name'),
+            'gate_group': meta.get('gate_group'),
+            'field': meta.get('field'),
+            'comparator': meta.get('comparator'),
+            'hard_threshold': None if threshold is None else round(threshold, 6),
+            'pct_target': meta.get('pct_target'),
+            'activation_status': meta.get('activation_status'),
+        })
+    return matches
+
+def _pc2_censor_guard_for_cell(name, cell):
+    calibrations = _pc2_calibrations_for_context_variable(name)
+    if not calibrations:
+        return {}
+    support = int((cell or {}).get('support_count') or 0)
+    min_value = _percentile_float((cell or {}).get('min'))
+    max_value = _percentile_float((cell or {}).get('max'))
+    scale = _percentile_float((cell or {}).get('stability_scale'))
+    hard_thresholds = [
+        c.get('hard_threshold')
+        for c in calibrations
+        if _percentile_float(c.get('hard_threshold')) is not None
+    ]
+    flags = []
+    status = 'OK'
+    if support <= 0:
+        status = 'NO_HISTORY'
+        flags.append('no_history')
+    elif support < CONTEXT_PERCENTILE_MIN_SUPPORT:
+        status = 'LOW_SUPPORT'
+        flags.append('low_support')
+    if support > 0 and min_value is not None and max_value is not None:
+        if min_value == max_value:
+            status = 'LOW_DIVERSITY' if status == 'OK' else status
+            flags.append('single_observed_value')
+        elif scale is not None and scale == 0:
+            status = 'LOW_DIVERSITY' if status == 'OK' else status
+            flags.append('zero_iqr')
+        for threshold in hard_thresholds:
+            threshold = _percentile_float(threshold)
+            if threshold is None:
+                continue
+            if abs(min_value - threshold) <= 1e-9 or abs(max_value - threshold) <= 1e-9:
+                status = 'PINNED_TO_HARD_THRESHOLD'
+                flags.append('history_boundary_matches_hard_threshold')
+                break
+    return {
+        'censor_guard_status': status,
+        'censor_guard_flags': sorted(set(flags)),
+        'censor_guard_scope': 'generated_plus_rejected_candidate_population',
+        'censor_guard_constants': calibrations,
+        'censor_guard_version': 'pc2_censored_calibration_guard_v1',
+    }
+
 def _apply_pc2_stability_bar(windows):
     if not isinstance(windows, dict):
         return None
@@ -8892,9 +8956,16 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         for name in current_values:
             if name.startswith('rejection_stage_count__') or name.startswith('rejection_stage_margin_median__'):
                 window_cells[name] = _percentile_cell(current_values.get(name), _hist(name), min_support=1)
+        for name, cell in list(window_cells.items()):
+            guard = _pc2_censor_guard_for_cell(name, cell)
+            if guard:
+                cell.update(guard)
         windows[str(window)] = window_cells
 
     pc2_stability_bar = _apply_pc2_stability_bar(windows)
+    generated_population_count = _candidate_count(candidates)
+    rejected_population_count = _candidate_count(rejected_candidates)
+    combined_population_count = generated_population_count + rejected_population_count
     variables = {}
     all_names = set(current_values.keys())
     for group_names in C3_CONTEXT_PERCENTILE_VARIABLES.values():
@@ -8902,6 +8973,14 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
     for name in sorted(all_names):
         cells = {str(window): (windows.get(str(window)) or {}).get(name) or {} for window in CONTEXT_PERCENTILE_WINDOWS}
         support_counts = [int((cells[str(window)] or {}).get('support_count') or 0) for window in CONTEXT_PERCENTILE_WINDOWS]
+        censor_statuses = [
+            str((cells[str(window)] or {}).get('censor_guard_status'))
+            for window in CONTEXT_PERCENTILE_WINDOWS
+            if (cells[str(window)] or {}).get('censor_guard_status')
+        ]
+        censor_flags = []
+        for window in CONTEXT_PERCENTILE_WINDOWS:
+            censor_flags.extend((cells[str(window)] or {}).get('censor_guard_flags') or [])
         variables[name] = {
             'value': None if _percentile_float(current_values.get(name)) is None else round(_percentile_float(current_values.get(name)), 4),
             'pct_30': cells.get('30', {}).get('percentile'),
@@ -8922,6 +9001,19 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'history_window_end': history_window_end,
             'history_source': 'live',
             'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
+            'candidate_population_scope': 'generated_plus_rejected_live_memory',
+            'candidate_population_count': combined_population_count,
+            'generated_population_count': generated_population_count,
+            'rejected_population_count': rejected_population_count,
+            'censor_guard_status': (
+                'PINNED_TO_HARD_THRESHOLD' if 'PINNED_TO_HARD_THRESHOLD' in censor_statuses else
+                'LOW_DIVERSITY' if 'LOW_DIVERSITY' in censor_statuses else
+                'LOW_SUPPORT' if 'LOW_SUPPORT' in censor_statuses else
+                'NO_HISTORY' if 'NO_HISTORY' in censor_statuses else
+                'OK' if censor_statuses else None
+            ),
+            'censor_guard_flags': sorted(set(censor_flags)),
+            'censor_guard_constants': _pc2_calibrations_for_context_variable(name),
         }
 
     return {
@@ -8941,6 +9033,16 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'insufficient_support_percentile': None,
             'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
             'outcome_variables': 'prior_completed_sessions_only',
+        },
+        'candidate_population': {
+            'source': 'generated_plus_rejected_live_memory',
+            'censored_calibration_scope': 'generated_candidates_plus_rejected_candidates',
+            'generated_count': generated_population_count,
+            'rejected_count': rejected_population_count,
+            'combined_count': combined_population_count,
+            'generated_input_is_included': generated_population_count > 0,
+            'rejected_input_is_included': rejected_population_count > 0,
+            'guard_version': 'pc2_censored_calibration_guard_v1',
         },
         'variable_catalog': C3_CONTEXT_PERCENTILE_VARIABLES,
         'current_values': {k: (round(v, 4) if v is not None else None) for k, v in current_values.items()},
@@ -9378,7 +9480,7 @@ def _build3_effective_gate_reason(a8_summary, lane_summary):
     lane_reason = lane.get('lane_gate_reason') or 'NONE'
     if a8.get('a8_hard_gate_active') and a8_reason != 'NONE':
         return a8_reason
-    if lane_reason != 'NONE':
+    if lane.get('lane_hard_gate_active') and lane_reason != 'NONE':
         return lane_reason
     return 'NONE'
 
@@ -9416,7 +9518,7 @@ def _build3_apply_calm_nf_lane_gate(candidates, trade_mode, regime, cur_vix):
         survivors = cands
     elif nf_survivors:
         reason = 'CALM_NF_LANE_RESTRICTION' if bnf_intraday else 'NONE'
-        survivors = [c for c in cands if c.get('lane') != 'BNF_intraday']
+        survivors = cands
     elif bnf_intraday:
         reason = 'CALM_BNF_ONLY_FALLBACK'
         survivors = cands
@@ -9425,6 +9527,7 @@ def _build3_apply_calm_nf_lane_gate(candidates, trade_mode, regime, cur_vix):
         survivors = cands
     survivor_obj_ids = {id(c) for c in survivors if isinstance(c, dict)}
     removed = [c for c in cands if isinstance(c, dict) and id(c) not in survivor_obj_ids]
+    shadow_flagged = bnf_intraday if calm and nf_survivors else []
 
     def _count_by(field):
         counts = {}
@@ -9466,15 +9569,21 @@ def _build3_apply_calm_nf_lane_gate(candidates, trade_mode, regime, cur_vix):
         'regime_type': (regime or {}).get('type') if isinstance(regime, dict) else None,
         'vix': cur_vix,
         'n_bnf_removed_by_calm_lane_gate': sum(1 for c in removed if c.get('lane') == 'BNF_intraday'),
+        'n_bnf_flagged_by_calm_lane_gate': len(shadow_flagged),
         'n_removed_by_lane_gate': len(removed),
+        'n_flagged_by_lane_gate': len(shadow_flagged),
         'n_nf_survivors_after_a8': len(nf_survivors),
         'n_bnf_survivors_after_a8': len(bnf_intraday),
         'n_candidates_after_lane_gate': len(survivors),
         'removed_candidate_ids': [c.get('id') for c in removed if c.get('id')][:30],
         'removed_candidates': [_removed_view(c) for c in removed[:30]],
+        'shadow_flagged_candidate_ids': [c.get('id') for c in shadow_flagged if c.get('id')][:30],
+        'shadow_flagged_candidates': [_removed_view(c) for c in shadow_flagged[:30]],
         'removed_by_lane': _count_by('lane'),
         'removed_by_family': _count_by('type'),
         'lane_gate_reason': reason,
+        'lane_hard_gate_active': False,
+        'lane_gate_mode': 'SHADOW_ONLY' if reason != 'NONE' else 'NONE',
         'lane_scope': 'calm_intraday_only',
         'calm_range_sigma_max': BUILD3_CALM_RANGE_SIGMA_MAX,
         'iv_high_threshold': _CONST['IV_HIGH'],
@@ -9507,6 +9616,7 @@ def _build3_candidate_flow_summary(
     lane = lane_summary if isinstance(lane_summary, dict) else {}
     capital_blocked_pre_a8 = sum(1 for c in built if c.get('capitalBlocked'))
     capital_blocked_after_lane_gate = sum(1 for c in gated if c.get('capitalBlocked'))
+    capital_blocked_rank_visible = sum(1 for c in ranked if c.get('capitalBlockedAtRanking') or c.get('capitalBlocked'))
     pre_build3_rank_drop = max(0, len(built) - len(old_ranked_list))
     final_rank_drop = max(0, len(gated) - len(ranked))
     capital_drop_pre_build3 = min(capital_blocked_pre_a8, pre_build3_rank_drop)
@@ -9529,11 +9639,16 @@ def _build3_candidate_flow_summary(
         'a8_released_to_ranking': a8.get('n_ev_below_floor_released_to_ranking', 0),
         'after_a8_count': a8.get('n_candidates_after_a8'),
         'lane_gate_reason': lane.get('lane_gate_reason'),
+        'lane_gate_mode': lane.get('lane_gate_mode'),
+        'lane_hard_gate_active': bool(lane.get('lane_hard_gate_active')),
         'lane_gate_removed_count': lane.get('n_removed_by_lane_gate', 0),
         'lane_gate_removed_bnf_count': lane.get('n_bnf_removed_by_calm_lane_gate', 0),
+        'lane_gate_flagged_count': lane.get('n_flagged_by_lane_gate', 0),
+        'lane_gate_flagged_bnf_count': lane.get('n_bnf_flagged_by_calm_lane_gate', 0),
         'after_lane_gate_count': lane.get('n_candidates_after_lane_gate', len(gated)),
         'capital_blocked_after_lane_gate': capital_blocked_after_lane_gate,
         'dropped_capital_at_final_rank': capital_drop_final,
+        'capital_blocked_rank_visible': capital_blocked_rank_visible,
         'unexplained_drop_at_final_rank': max(0, final_rank_drop - capital_drop_final),
         'ranked_before_persistence': len(ranked),
         'generated_persisted': len(persisted),
@@ -9586,10 +9701,16 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'maxLoss': cand.get('maxLoss'),
             'riskReward': cand.get('riskReward'),
             'premiumEdge': cand.get('premiumEdge'),
+            'premiumEdgePerRisk': cand.get('premiumEdgePerRisk'),
+            'opportunityGatePenaltyPerRisk': cand.get('opportunityGatePenaltyPerRisk'),
+            'adjustedEdgePerRisk': cand.get('adjustedEdgePerRisk'),
+            'rankEdgeScale': cand.get('rankEdgeScale'),
             'ev': cand.get('ev'),
             'evPer1k': cand.get('evPer1k'),
             'estCost': cand.get('estCost'),
             'capitalBlocked': cand.get('capitalBlocked'),
+            'capitalBlockedAtRanking': cand.get('capitalBlockedAtRanking'),
+            'rankSuppressedReason': cand.get('rankSuppressedReason'),
             'probProfit': cand.get('probProfit'),
             'prob_source': cand.get('prob_source') or cand.get('probSource'),
             'prob_status': cand.get('prob_status'),
@@ -9753,19 +9874,34 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         else 0.5
     )
     premium_edge = candidate.get('premiumEdge') if candidate.get('premiumEdge') is not None else float('-inf')
+    max_loss = max(_safe_num(candidate.get('maxLoss'), 0.0), 0.0)
+    premium_edge_per_risk = (
+        premium_edge / max_loss
+        if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge) and max_loss > 0
+        else float('-inf')
+    )
+    opportunity_gate_penalty = _safe_num(candidate.get('opportunityGatePenalty'), 0.0)
+    opportunity_gate_penalty_per_risk = opportunity_gate_penalty / max_loss if max_loss > 0 else 0.0
+    adjusted_edge_per_risk = (
+        premium_edge_per_risk - opportunity_gate_penalty_per_risk
+        if math.isfinite(premium_edge_per_risk)
+        else premium_edge_per_risk
+    )
     context_percentile_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
     context_plus_brain = (candidate.get('contextScore', 0) + candidate.get('brainScore', 0))
     ml_unsure = bool(candidate.get('mlUnsure') or candidate.get('mlAction') == 'UNSURE')
     ml_ood_low_conf = bool(candidate.get('mlOod') and (candidate.get('mlOodConf') or 1.0) < 0.6)
     p_ml_effective = 0.0 if (ml_unsure or ml_ood_low_conf) else (candidate.get('p_ml') or 0.0)
-    premium_edge_sort_component = 'MISSING_LAST' if premium_edge == float('-inf') else -premium_edge
+    edge_per_risk_sort_component = 'MISSING_LAST' if not math.isfinite(adjusted_edge_per_risk) else -adjusted_edge_per_risk
+    raw_premium_edge_tiebreak = 'MISSING_LAST' if premium_edge == float('-inf') else -premium_edge
     sort_tuple = (
+        1 if candidate.get('capitalBlocked') else 0,
         0 if candidate.get('directionSafe', True) else 1,
         0 if candidate.get('varsityTier') == 'PRIMARY' else 1,
         0 if teacher_rank_active else 1,
         -teacher_score,
         -teacher_n,
-        premium_edge_sort_component,
+        edge_per_risk_sort_component,
         -context_percentile_score,
         brain_verdict_alignment,
         -calibration_win_rate,
@@ -9776,22 +9912,28 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         -candidate.get('wallScore', 0),
         -candidate.get('probProfit', 0),
         -p_ml_effective,
+        raw_premium_edge_tiebreak,
     )
     structure_stability = _build3_structure_stability_marker(candidate)
     return {
         'candidate_id': candidate.get('id') or candidate.get('candidate_id'),
         'structure_stability_marker': structure_stability,
-        'rank_method_version': 'build3_rank_v2_premium_edge_first',
+        'rank_method_version': 'build3_rank_v3_scale_free_edge_first',
         'teacher_rank_active': teacher_rank_active,
         'teacher_score': teacher_score,
         'teacher_n': teacher_n,
         'premium_edge_status': 'OK' if candidate.get('premiumEdge') is not None else 'MISSING',
+        'premiumEdgePerRisk': premium_edge_per_risk if math.isfinite(premium_edge_per_risk) else None,
+        'opportunityGatePenaltyPerRisk': opportunity_gate_penalty_per_risk,
+        'adjustedEdgePerRisk': adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None,
+        'rankEdgeScale': 'premium_edge_per_max_loss',
+        'capitalBlockedAtRanking': bool(candidate.get('capitalBlocked')),
         'brain_verdict_alignment': brain_verdict_alignment,
         'calibration_win_rate': calibration_win_rate,
         'contextPlusBrainScore': context_plus_brain,
         'p_ml_effective': p_ml_effective,
         'ml_neutralized': bool(ml_unsure or ml_ood_low_conf),
-        'sort_tuple_fields': 'directionSafe|varsityTier|teacherActive|teacherScore|teacherN|premiumEdge|contextPercentile|brainVerdictAlignment|calibrationWinRate|forceAligned|forceAgainst|contextPlusBrain|gammaRisk|wallScore|probProfit|pMlEffective',
+        'sort_tuple_fields': 'capitalBlocked|directionSafe|varsityTier|teacherActive|teacherScore|teacherN|adjustedEdgePerRisk|contextPercentile|brainVerdictAlignment|calibrationWinRate|forceAligned|forceAgainst|contextPlusBrain|gammaRisk|wallScore|probProfit|pMlEffective|rawPremiumEdgeTieBreak',
         'sort_tuple': sort_tuple,
     }
 
@@ -11340,13 +11482,18 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 
 
 def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=None):
-    """Varsity waterfall ranking. Premium edge outranks raw win-rate once safety gates pass."""
+    """Varsity waterfall ranking. Scale-free premium edge outranks raw win-rate once safety gates pass."""
     cal = calibration or {}
     strat_cal = cal.get('strategy', {})
     stage2a = stage2a or {}
     teacher_live = bool(stage2a.get('ranking_active'))
 
     def sort_key(c):
+        # Executability gate visibility: keep capital-blocked rows in evidence, but rank them last.
+        capital_blocked = 1 if c.get('capitalBlocked') else 0
+        c['capitalBlockedAtRanking'] = bool(c.get('capitalBlocked'))
+        if c.get('capitalBlocked'):
+            c['rankSuppressedReason'] = 'CAPITAL_BLOCKED'
         # 0: Direction safety — F1-against always last
         safe = 0 if c.get('directionSafe', True) else 1
         # 1: Varsity tier
@@ -11382,7 +11529,8 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         gamma = c.get('gammaRisk', 0)
         # 7: Wall score
         wall = c.get('wallScore', 0)
-        # 8: Premium edge — honest EV-like ranking signal after hard gates pass
+        # 8: Premium edge — honest EV-like ranking signal after hard gates pass.
+        # Normalize by maxLoss so NF and BNF compete on return per unit risk, not raw rupees.
         if c.get('premiumEdge') is None:
             c['premium_edge_status'] = 'MISSING'
             premium_edge = float('-inf')
@@ -11390,7 +11538,23 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
             c['premium_edge_status'] = 'OK'
             premium_edge = c.get('premiumEdge')
         opportunity_gate_penalty = _opportunity_gate_penalty(c)
+        max_loss = max(_safe_num(c.get('maxLoss'), 0.0), 0.0)
+        premium_edge_per_risk = (
+            premium_edge / max_loss
+            if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge) and max_loss > 0
+            else float('-inf')
+        )
+        opportunity_gate_penalty_per_risk = opportunity_gate_penalty / max_loss if max_loss > 0 else 0.0
+        adjusted_edge_per_risk = (
+            premium_edge_per_risk - opportunity_gate_penalty_per_risk
+            if math.isfinite(premium_edge_per_risk)
+            else premium_edge_per_risk
+        )
         c['opportunityGatePenalty'] = opportunity_gate_penalty
+        c['premiumEdgePerRisk'] = premium_edge_per_risk if math.isfinite(premium_edge_per_risk) else None
+        c['opportunityGatePenaltyPerRisk'] = opportunity_gate_penalty_per_risk
+        c['adjustedEdgePerRisk'] = adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None
+        c['rankEdgeScale'] = 'premium_edge_per_max_loss'
         c['adjustedPremiumEdge'] = (
             premium_edge - opportunity_gate_penalty
             if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge)
@@ -11408,13 +11572,14 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
             p_ml = 0.0
 
         return (
-            safe, tier,
+            capital_blocked, safe, tier,
             teacher_rank_active, -teacher_score, -teacher_n,
-            -c['adjustedPremiumEdge'], -context_percentile_score, bv, -win_rate,
-            -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml
+            -adjusted_edge_per_risk, -context_percentile_score, bv, -win_rate,
+            -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml,
+            -c['adjustedPremiumEdge']
         )
 
-    ranked = [c for c in candidates if not c.get('capitalBlocked')]
+    ranked = [c for c in candidates if isinstance(c, dict)]
     ranked.sort(key=sort_key)
     for rank, cand in enumerate(ranked, start=1):
         cand['deterministic_rank'] = cand.get('deterministic_rank') or rank
@@ -12018,15 +12183,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 'regime_type': (regime or {}).get('type') if isinstance(regime, dict) else None,
                 'vix': cur_vix,
                 'n_bnf_removed_by_calm_lane_gate': 0,
+                'n_bnf_flagged_by_calm_lane_gate': 0,
                 'n_removed_by_lane_gate': 0,
+                'n_flagged_by_lane_gate': 0,
                 'n_nf_survivors_after_a8': 0,
                 'n_bnf_survivors_after_a8': 0,
                 'n_candidates_after_lane_gate': 0,
                 'removed_candidate_ids': [],
                 'removed_candidates': [],
+                'shadow_flagged_candidate_ids': [],
+                'shadow_flagged_candidates': [],
                 'removed_by_lane': {},
                 'removed_by_family': {},
                 'lane_gate_reason': 'NO_CANDIDATES',
+                'lane_hard_gate_active': False,
+                'lane_gate_mode': 'NONE',
                 'lane_scope': 'calm_intraday_only',
                 'calm_range_sigma_max': BUILD3_CALM_RANGE_SIGMA_MAX,
                 'iv_high_threshold': _CONST['IV_HIGH'],
