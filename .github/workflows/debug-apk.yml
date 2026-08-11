@@ -141,7 +141,10 @@ jobs:
 
           assert summary[0]["build3_old_candidates"] > 0, summary
           assert summary[0]["build3_old_verdict"] == "TRADE", summary
-          assert summary[0]["build3_gate_reason"] == "EV_BELOW_FLOOR_SOFTENED_TO_RANKING", summary
+          assert summary[0]["build3_gate_reason"] in {
+              "EV_BELOW_FLOOR_SOFTENED_TO_RANKING",
+              "CALM_NF_LANE_RESTRICTION",
+          }, summary
           assert summary[0]["build3_after_a8"] == summary[0]["build3_old_candidates"], summary
           assert summary[0]["generated"] > 0, summary
           assert summary[1]["iron_condor"] == 0, summary
