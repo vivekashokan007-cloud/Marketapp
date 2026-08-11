@@ -47,11 +47,20 @@ SLEEP_SEC = float(os.environ.get("C3_SLEEP_SEC") or "0.75")
 WRITE_CHUNK = int(os.environ.get("C3_WRITE_CHUNK") or "120")
 PRE_T_CLEAN_START = date(2026, 7, 29)
 PERCENTILE_WINDOWS = (30, 60)
+CALIBRATION_DAILY_VARIABLES = (
+    "credit_width_ratio_menu_median",
+    "iv_richness_menu_median",
+    "prob_profit_menu_median",
+    "sigma_otm_menu_median",
+)
+CALIBRATION_POPULATION_SCOPE = "generated_plus_rejected_candidate_population"
+CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 ROW_FIELDNAMES = [
     "id", "session_date", "poll_ts", "snapshot_id", "index_key", "lane", "trade_mode",
     "variable_name", "variable_group", "value", "pct_30", "pct_60", "support_count",
     "support_count_30", "support_count_60", "history_window_end", "history_source",
     "pre_t_clean", "schema_version", "recording_version", "source_table", "source_quality",
+    "extra_json",
 ]
 
 
@@ -413,6 +422,11 @@ def _snapshot_rejected(snap: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def _snapshot_rejected_capture_present(snap: dict[str, Any]) -> bool:
+    ctx = _jsonish(snap.get("context_json"), {})
+    return any(key in ctx for key in ("snapshot_rejected_candidates", "rejected_candidates"))
+
+
 def _stage_name(row: dict[str, Any]) -> str:
     return str(row.get("stage") or row.get("rejectionStage") or row.get("rejection_stage") or "unknown").strip() or "unknown"
 
@@ -430,7 +444,11 @@ def _extract_variables(snap: dict[str, Any], candidates: list[dict[str, Any]], o
     bnf_profile = _jsonish(market_profiles.get("bnfProfile") or market_profiles.get("bnf_profile"), {})
     nf_profile = _jsonish(market_profiles.get("nfProfile") or market_profiles.get("nf_profile"), {})
     rejected = _snapshot_rejected(snap)
-    credit = [c for c in candidates if str(c.get("is_credit", c.get("isCredit"))).lower() in {"true", "1", "yes"}]
+    calibration_population = [
+        row for row in list(candidates or []) + list(rejected or [])
+        if isinstance(row, dict)
+    ]
+    credit = [c for c in calibration_population if str(c.get("is_credit", c.get("isCredit"))).lower() in {"true", "1", "yes"}]
     debit = [c for c in candidates if c not in credit]
 
     def menu_values(name: str, rows: list[dict[str, Any]] | None = None) -> list[float | None]:
@@ -492,9 +510,9 @@ def _extract_variables(snap: dict[str, Any], candidates: list[dict[str, Any]], o
             (morning_input, ("fiiShortPct", "fii_short_pct", "fiiShort", "fii_short")),
             (forces, ("fiiShort", "fiiShortPct", "fii_short_pct")),
         ),
-        "iv_richness_menu_median": _median(menu_values("iv_richness")),
+        "iv_richness_menu_median": _median(menu_values("iv_richness", calibration_population)),
         "realized_day_range": _row_value(ctx, "rangeSigma", "dayRangeSigma", "day_range_sigma") or _row_value(summary, "day_range_sigma"),
-        "sigma_otm_menu_median": _median(menu_values("sigma_otm")),
+        "sigma_otm_menu_median": _median(menu_values("sigma_otm", calibration_population)),
         "credit_width_ratio_menu_median": _median(menu_values("credit_width_ratio", credit)),
         "menu_win_rate_prior_sessions_only": prior.get("menu_win_rate"),
         "rejected_sigma_otm_median": _median([_row_value(r, "sigmaOTM", "sigma_otm") for r in rejected]),
@@ -502,7 +520,7 @@ def _extract_variables(snap: dict[str, Any], candidates: list[dict[str, Any]], o
         "premium_edge_menu_best": _best(menu_values("premium_edge")),
         "ev_per_1k_menu_median": _median(menu_values("ev_per_1k")),
         "ev_per_1k_menu_best": _best(menu_values("ev_per_1k")),
-        "prob_profit_menu_median": _median(menu_values("prob_profit")),
+        "prob_profit_menu_median": _median(menu_values("prob_profit", calibration_population)),
         "prob_profit_menu_best": _best(menu_values("prob_profit")),
         "net_premium_menu_median": _median(menu_values("net_premium")),
         "net_premium_menu_best": _best(menu_values("net_premium")),
@@ -655,7 +673,12 @@ def _iter_built_rows(
         session_day = str(snap.get("session_date") or "")
         snap_date = _parse_date(session_day)
         poll_ts = str(snap.get("poll_ts") or "")
-        values = _extract_variables(snap, _snapshot_candidates(snap, by_snapshot_key), outcome_prior)
+        generated_candidates = _snapshot_candidates(snap, by_snapshot_key)
+        rejected_candidates = _snapshot_rejected(snap)
+        values = _extract_variables(snap, generated_candidates, outcome_prior)
+        rejected_capture_present = _snapshot_rejected_capture_present(snap)
+        generated_population_count = sum(isinstance(row, dict) for row in generated_candidates)
+        rejected_population_count = sum(isinstance(row, dict) for row in rejected_candidates)
         variable_names = sorted(set(catalog_names) | set(values.keys()))
         pre_t_clean = bool(snap_date and snap_date >= PRE_T_CLEAN_START)
         for name in variable_names:
@@ -688,7 +711,21 @@ def _iter_built_rows(
                 "recording_version": CONTEXT_PERCENTILES_RECORDING_VERSION,
                 "source_table": "ml_brain_snapshots+ml_generated_candidates+ml_evaluation_outcomes",
                 "source_quality": "PRE_T_CLEAN" if pre_t_clean else "PRE_T_DIRTY",
-                "extra_json": {},
+                "extra_json": {
+                    "candidate_population_scope": (
+                        "generated_plus_rejected_candidate_population"
+                        if rejected_capture_present
+                        else "unverified_generated_population_only"
+                    ),
+                    "calibration_population_version": (
+                        "pc2_generated_rejected_union_v1"
+                        if rejected_capture_present
+                        else "unverified"
+                    ),
+                    "generated_population_count": generated_population_count,
+                    "rejected_population_count": rejected_population_count,
+                    "combined_population_count": generated_population_count + rejected_population_count,
+                },
             }
             row["id"] = _stable_id(row)
             yield row
@@ -696,9 +733,95 @@ def _iter_built_rows(
                 history[name].append(value)
 
 
+def _daily_calibration_rows(poll_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse candidate-population poll evidence into prior-day calibration rows."""
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in poll_rows:
+        name = str(row.get("variable_name") or "")
+        day = str(row.get("session_date") or "")
+        if name not in CALIBRATION_DAILY_VARIABLES or not day:
+            continue
+        if _safe_float(row.get("value")) is not None:
+            grouped[(day, name)].append(row)
+
+    history: dict[str, list[float]] = defaultdict(list)
+    daily_rows: list[dict[str, Any]] = []
+    for day, name in sorted(grouped):
+        contributors = grouped[(day, name)]
+        daily_value = median([float(row["value"]) for row in contributors])
+        extras = [_jsonish(row.get("extra_json"), {}) for row in contributors]
+        provenance_verified = bool(contributors) and all(
+            extra.get("candidate_population_scope") == CALIBRATION_POPULATION_SCOPE
+            and extra.get("calibration_population_version") == CALIBRATION_POPULATION_VERSION
+            for extra in extras
+        )
+        prior_values = history[name]
+        support = {
+            window: len(prior_values[-window:])
+            for window in PERCENTILE_WINDOWS
+        }
+        daily_row = {
+            "session_date": day,
+            "poll_ts": None,
+            "snapshot_id": None,
+            "index_key": "MARKET",
+            "lane": "MARKET",
+            "trade_mode": "MARKET",
+            "variable_name": name,
+            "variable_group": _variable_group(name),
+            "value": round(daily_value, 6),
+            "pct_30": _pct_rank(daily_value, prior_values[-30:]),
+            "pct_60": _pct_rank(daily_value, prior_values[-60:]),
+            "support_count": max(support.values()),
+            "support_count_30": support[30],
+            "support_count_60": support[60],
+            "history_window_end": f"{day}T23:59:59+00:00",
+            "history_source": "backfill",
+            "pre_t_clean": all(bool(row.get("pre_t_clean")) for row in contributors),
+            "schema_version": CONTEXT_PERCENTILES_SCHEMA_VERSION,
+            "recording_version": CONTEXT_PERCENTILES_RECORDING_VERSION,
+            "source_table": "ml_brain_snapshots:daily_candidate_union_aggregate",
+            "source_quality": (
+                "DAILY_CALIBRATION_UNION_VERIFIED"
+                if provenance_verified
+                else "DAILY_CALIBRATION_PROVENANCE_UNVERIFIED"
+            ),
+            "extra_json": {
+                "candidate_population_scope": (
+                    CALIBRATION_POPULATION_SCOPE
+                    if provenance_verified
+                    else "unverified_mixed_or_generated_only_population"
+                ),
+                "calibration_population_version": (
+                    CALIBRATION_POPULATION_VERSION if provenance_verified else "unverified"
+                ),
+                "daily_aggregation": "median_of_poll_union_medians",
+                "contributing_poll_count": len(contributors),
+                "point_in_time_basis": "prior_daily_values_only",
+            },
+        }
+        daily_row["id"] = _stable_id(daily_row)
+        daily_rows.append(daily_row)
+        history[name].append(daily_value)
+    return daily_rows
+
+
+def _iter_rows_with_daily_calibration(
+    snapshots: list[dict[str, Any]],
+    by_snapshot_key: dict[tuple[str, str, str], list[dict[str, Any]]],
+    outcome_prior: dict[str, dict[str, float]],
+):
+    calibration_poll_rows: list[dict[str, Any]] = []
+    for row in _iter_built_rows(snapshots, by_snapshot_key, outcome_prior):
+        if row.get("variable_name") in CALIBRATION_DAILY_VARIABLES and row.get("value") is not None:
+            calibration_poll_rows.append(row)
+        yield row
+    yield from _daily_calibration_rows(calibration_poll_rows)
+
+
 def build_rows(date_from: str, date_to: str) -> list[dict[str, Any]]:
     snapshots, by_snapshot_key, outcome_prior = _load_data(date_from, date_to)
-    rows = list(_iter_built_rows(snapshots, by_snapshot_key, outcome_prior))
+    rows = list(_iter_rows_with_daily_calibration(snapshots, by_snapshot_key, outcome_prior))
     return rows
 
 
@@ -708,7 +831,14 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=ROW_FIELDNAMES)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: row.get(key) for key in ROW_FIELDNAMES})
+            writer.writerow(_csv_row(row))
+
+
+def _csv_row(row: dict[str, Any]) -> dict[str, Any]:
+    out = {key: row.get(key) for key in ROW_FIELDNAMES}
+    if isinstance(out.get("extra_json"), (dict, list)):
+        out["extra_json"] = json.dumps(out["extra_json"], sort_keys=True, separators=(",", ":"))
+    return out
 
 
 def _filter_write_rows(rows: list[dict[str, Any]], write_from: str | None, write_to: str | None) -> list[dict[str, Any]]:
@@ -798,14 +928,14 @@ def stream_write_rows(
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=ROW_FIELDNAMES)
         writer.writeheader()
-        for row in _iter_built_rows(snapshots, by_snapshot_key, outcome_prior):
+        for row in _iter_rows_with_daily_calibration(snapshots, by_snapshot_key, outcome_prior):
             built += 1
             row_day = str(row.get("session_date"))
             by_day[row_day] += 1
             by_var[str(row.get("variable_name"))] += 1
             if row.get("value") is not None:
                 non_null_by_var[str(row.get("variable_name"))] += 1
-            writer.writerow({key: row.get(key) for key in ROW_FIELDNAMES})
+            writer.writerow(_csv_row(row))
 
             row_date = _parse_date(row.get("session_date"))
             selected = row_date is not None and (start is None or row_date >= start) and (end is None or row_date <= end)
@@ -873,7 +1003,7 @@ def stream_write_single_day(
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=ROW_FIELDNAMES)
         writer.writeheader()
-        for row in _iter_built_rows(snapshots, by_snapshot_key, outcome_prior):
+        for row in _iter_rows_with_daily_calibration(snapshots, by_snapshot_key, outcome_prior):
             built_total += 1
             if str(row.get("session_date")) != target_day:
                 continue
@@ -881,7 +1011,7 @@ def stream_write_single_day(
             by_var[str(row.get("variable_name"))] += 1
             if row.get("value") is not None:
                 non_null_by_var[str(row.get("variable_name"))] += 1
-            writer.writerow({key: row.get(key) for key in ROW_FIELDNAMES})
+            writer.writerow(_csv_row(row))
             if not write:
                 continue
             chunk.append(row)

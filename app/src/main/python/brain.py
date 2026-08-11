@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.70"
+BRAIN_VERSION = "2.5.71"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6006,6 +6006,9 @@ CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
+PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
+PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
+PC2_NEUTRALITY_TICK = 0.01
 OPPORTUNITY_GATE_SOFTENING_VERSION = "opportunity_gate_softening_v1"
 
 PC2_GATE_CALIBRATION = {
@@ -7838,6 +7841,30 @@ def _candidate_median(candidates, keys, predicate=None):
             values.append(value)
     return _median(values)
 
+def _pc2_candidate_population(candidates, rejected_candidates):
+    return [
+        row for row in list(candidates or []) + list(rejected_candidates or [])
+        if isinstance(row, dict)
+    ]
+
+def _pc2_population_summary(candidates, keys, predicate=None):
+    values = []
+    for cand in candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        if predicate is not None and not predicate(cand):
+            continue
+        value = _row_value(cand, keys)
+        if value is not None:
+            values.append(value)
+    values = sorted(values)
+    return {
+        'count': len(values),
+        'min': None if not values else round(values[0], 6),
+        'max': None if not values else round(values[-1], 6),
+        'median': _median(values),
+    }
+
 def _candidate_best(candidates, keys, predicate=None, prefer_abs=False):
     values = []
     for cand in candidates or []:
@@ -8069,9 +8096,70 @@ def _pc2_censor_guard_for_cell(name, cell):
     return {
         'censor_guard_status': status,
         'censor_guard_flags': sorted(set(flags)),
-        'censor_guard_scope': 'generated_plus_rejected_candidate_population',
+        'censor_guard_scope': 'daily_scalar_history_requires_union_provenance',
         'censor_guard_constants': calibrations,
-        'censor_guard_version': 'pc2_censored_calibration_guard_v1',
+        'censor_guard_version': PC2_CENSOR_GUARD_VERSION,
+    }
+
+def _pc2_neutrality_proof(hard_threshold, percentile_threshold, tick=PC2_NEUTRALITY_TICK):
+    hard_threshold = _percentile_float(hard_threshold)
+    percentile_threshold = _percentile_float(percentile_threshold)
+    tick = _percentile_float(tick)
+    delta = None
+    passed = False
+    if hard_threshold is not None and percentile_threshold is not None and tick is not None and tick >= 0:
+        delta = abs(percentile_threshold - hard_threshold)
+        passed = delta <= tick + 1e-12
+    return {
+        'neutrality_status': 'PASS' if passed else 'FAIL',
+        'neutrality_pass': passed,
+        'neutrality_tick': tick,
+        'neutrality_delta': None if delta is None else round(delta, 6),
+        'neutrality_version': 'pc2_one_tick_threshold_neutrality_v1',
+    }
+
+def _pc2_history_population_provenance(ctx, meta, window=60):
+    rows = _history_rows_from_ctx(ctx)
+    keys = _pc2_history_keys(meta)
+    accepted_scopes = {
+        'generated_plus_rejected_candidate_population',
+        'generated_plus_rejected_live_memory',
+        'generated_candidates_plus_rejected_candidates',
+    }
+    variable = str((meta or {}).get('context_variable') or '')
+    matched = []
+    for row in rows:
+        if _row_value(row, tuple(f'pct_{key}' for key in keys) + keys) is None:
+            continue
+        scope = (
+            row.get(f'pct_{variable}_population_scope')
+            or row.get(f'{variable}_population_scope')
+            or row.get('candidate_population_scope')
+        )
+        version = (
+            row.get(f'pct_{variable}_population_version')
+            or row.get(f'{variable}_population_version')
+            or row.get('calibration_population_version')
+        )
+        matched.append({
+            'scope': str(scope or ''),
+            'version': str(version or ''),
+        })
+    matched = matched[-window:]
+    verified = bool(matched) and all(
+        item['scope'] in accepted_scopes
+        and item['version'] == PC2_CALIBRATION_POPULATION_VERSION
+        for item in matched
+    )
+    return {
+        'population_provenance_verified': verified,
+        'population_provenance_scope': PC2_CALIBRATION_POPULATION_VERSION if verified else 'unverified_daily_scalar_history',
+        'population_provenance_rows': len(matched),
+        'population_provenance_scope_rows': sum(item['scope'] in accepted_scopes for item in matched),
+        'population_provenance_version_rows': sum(
+            item['version'] == PC2_CALIBRATION_POPULATION_VERSION for item in matched
+        ),
+        'population_provenance_version': 'pc2_history_population_provenance_v1',
     }
 
 def _apply_pc2_stability_bar(windows):
@@ -8194,6 +8282,11 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
     history = _history_values(ctx, _pc2_history_keys(meta), 60)
     pct_target = _percentile_float(meta.get('pct_target'))
     percentile_threshold = _percentile_quantile(history, pct_target)
+    history_cell = _percentile_cell(observed_value, history)
+    censor_guard = _pc2_censor_guard_for_cell(meta.get('context_variable'), history_cell)
+    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
+    neutrality = _pc2_neutrality_proof(hard_threshold, percentile_threshold)
+    provenance = _pc2_history_population_provenance(ctx, meta, 60)
 
     vix_hist = (
         _numeric_series(ctx.get('vixHistory'))
@@ -8210,11 +8303,26 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         and stability_bar is not None
         and stability_ratio <= stability_bar
     )
-    gate_basis = 'percentile' if stability_pass else 'hard_fallback'
+    authority_pass = bool(
+        stability_pass
+        and censor_pass
+        and neutrality.get('neutrality_pass')
+        and provenance.get('population_provenance_verified')
+    )
+    gate_basis = 'percentile' if authority_pass else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     percentile_pass = _pc2_compare(observed_value, percentile_threshold, comparator)
     active_pass = _pc2_compare(observed_value, active_threshold, comparator)
     live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
+    fallback_reasons = []
+    if not stability_pass:
+        fallback_reasons.append('stability_or_history_not_ready')
+    if not censor_pass:
+        fallback_reasons.append('censor_guard_not_clear')
+    if not neutrality.get('neutrality_pass'):
+        fallback_reasons.append('one_tick_neutrality_not_proven')
+    if not provenance.get('population_provenance_verified'):
+        fallback_reasons.append('generated_rejected_union_not_proven')
     return {
         'version': PC2_GATE_BASIS_VERSION,
         'constant': const_name,
@@ -8247,7 +8355,10 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         'activation_status': meta.get('activation_status'),
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        'fallback_reason': None if gate_basis == 'percentile' else 'stability_or_history_not_ready',
+        'fallback_reason': None if gate_basis == 'percentile' else '|'.join(fallback_reasons),
+        **censor_guard,
+        **neutrality,
+        **provenance,
     }
 
 def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshold):
@@ -8559,8 +8670,20 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         or latest_poll.get('t')
         or _current_ist_poll_ts()
     )
-    credit_candidates = [c for c in candidates or [] if isinstance(c, dict) and c.get('isCredit')]
-    debit_candidates = [c for c in candidates or [] if isinstance(c, dict) and not c.get('isCredit')]
+    calibration_population = _pc2_candidate_population(candidates, rejected_candidates)
+    is_credit_candidate = lambda c: bool(c.get('isCredit') or c.get('is_credit'))
+    credit_candidates = [c for c in candidates or [] if isinstance(c, dict) and is_credit_candidate(c)]
+    debit_candidates = [c for c in candidates or [] if isinstance(c, dict) and not is_credit_candidate(c)]
+    calibration_summaries = {
+        'iv_richness_menu_median': _pc2_population_summary(calibration_population, ('ivRichness', 'iv_richness')),
+        'sigma_otm_menu_median': _pc2_population_summary(calibration_population, ('sigmaOTM', 'sigma_otm')),
+        'credit_width_ratio_menu_median': _pc2_population_summary(
+            calibration_population,
+            ('creditWidthRatio', 'credit_width_ratio'),
+            predicate=is_credit_candidate,
+        ),
+        'prob_profit_menu_median': _pc2_population_summary(calibration_population, ('probProfit', 'prob_profit', 'prob')),
+    }
     bnf_spot = (
         _row_value(latest_poll, ('bnfSpot', 'bnf', 'BNF'))
         or _row_value(snapshot_latest_poll, ('bnfSpot', 'bnf_spot', 'bnf', 'BNF'))
@@ -8736,19 +8859,16 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             or _row_value(market_forces, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short'))
             or _latest_poll_value(polls, ('fiiShort', 'fii_short_pct', 'fii_short'))
         ),
-        'iv_richness_menu_median': _candidate_median(candidates, ('ivRichness', 'iv_richness')),
+        'iv_richness_menu_median': calibration_summaries['iv_richness_menu_median']['median'],
         'realized_day_range': day_range,
-        'sigma_otm_menu_median': _candidate_median(candidates, ('sigmaOTM', 'sigma_otm')),
-        'credit_width_ratio_menu_median': _candidate_median(
-            credit_candidates,
-            ('creditWidthRatio', 'credit_width_ratio')
-        ),
+        'sigma_otm_menu_median': calibration_summaries['sigma_otm_menu_median']['median'],
+        'credit_width_ratio_menu_median': calibration_summaries['credit_width_ratio_menu_median']['median'],
         'rejected_sigma_otm_median': _candidate_median(rejected_candidates, ('sigmaOTM', 'sigma_otm')),
         'premium_edge_menu_median': _candidate_median(candidates, ('premiumEdge', 'premium_edge')),
         'premium_edge_menu_best': _candidate_best(candidates, ('premiumEdge', 'premium_edge')),
         'ev_per_1k_menu_median': _candidate_derived_median(candidates, _ev_per_1k),
         'ev_per_1k_menu_best': _candidate_derived_best(candidates, _ev_per_1k),
-        'prob_profit_menu_median': _candidate_median(candidates, ('probProfit', 'prob_profit', 'prob')),
+        'prob_profit_menu_median': calibration_summaries['prob_profit_menu_median']['median'],
         'prob_profit_menu_best': _candidate_best(candidates, ('probProfit', 'prob_profit', 'prob')),
         'net_premium_menu_median': _candidate_median(candidates, ('netPremium', 'net_premium')),
         'net_premium_menu_best': _candidate_best(candidates, ('netPremium', 'net_premium')),
@@ -9002,6 +9122,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'history_source': 'live',
             'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
             'candidate_population_scope': 'generated_plus_rejected_live_memory',
+            'calibration_population_version': PC2_CALIBRATION_POPULATION_VERSION,
             'candidate_population_count': combined_population_count,
             'generated_population_count': generated_population_count,
             'rejected_population_count': rejected_population_count,
@@ -9015,6 +9136,13 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'censor_guard_flags': sorted(set(censor_flags)),
             'censor_guard_constants': _pc2_calibrations_for_context_variable(name),
         }
+        population_summary = calibration_summaries.get(name)
+        if population_summary:
+            variables[name].update({
+                'candidate_population_value_count': population_summary.get('count'),
+                'candidate_population_min': population_summary.get('min'),
+                'candidate_population_max': population_summary.get('max'),
+            })
 
     return {
         'schema_version': CONTEXT_PERCENTILES_SCHEMA_VERSION,
@@ -9029,7 +9157,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'pc2_support_mode': 'jackknife_stability_bar_v1',
             'pc2_stability_bar_source': 'vix_60_window_full_support',
             'pc2_stability_bar': pc2_stability_bar,
-            'pc2_activation_rule': 'percentile_when_calibrated_and_stability_passes_else_hard_fallback',
+            'pc2_activation_rule': 'percentile_only_after_union_provenance_censor_stability_and_one_tick_neutrality_pass',
             'insufficient_support_percentile': None,
             'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
             'outcome_variables': 'prior_completed_sessions_only',
@@ -9042,7 +9170,8 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             'combined_count': combined_population_count,
             'generated_input_is_included': generated_population_count > 0,
             'rejected_input_is_included': rejected_population_count > 0,
-            'guard_version': 'pc2_censored_calibration_guard_v1',
+            'guard_version': PC2_CENSOR_GUARD_VERSION,
+            'calibration_population_version': PC2_CALIBRATION_POPULATION_VERSION,
         },
         'variable_catalog': C3_CONTEXT_PERCENTILE_VARIABLES,
         'current_values': {k: (round(v, 4) if v is not None else None) for k, v in current_values.items()},

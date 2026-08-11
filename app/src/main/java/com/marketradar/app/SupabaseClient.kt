@@ -950,7 +950,7 @@ object SupabaseClient {
             val offset = page * pageSize
             val path =
                 "ml_context_percentile_history" +
-                    "?select=session_date,poll_ts,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60" +
+                    "?select=session_date,poll_ts,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60,extra_json" +
                     "&poll_ts=is.null" +
                     "&order=session_date.desc,history_window_end.desc,variable_name.asc" +
                     "&limit=$pageSize&offset=$offset"
@@ -1002,6 +1002,17 @@ object SupabaseClient {
                 val historyWindowEnd = row.optString("history_window_end", "").trim()
                 if (historyWindowEnd.isNotEmpty()) {
                     dayObj.put("history_window_end", historyWindowEnd)
+                }
+            }
+            val extra = row.optJSONObject("extra_json")
+            if (extra != null) {
+                val populationScope = extra.optString("candidate_population_scope", "").trim()
+                val calibrationVersion = extra.optString("calibration_population_version", "").trim()
+                if (populationScope.isNotEmpty()) {
+                    dayObj.put("pct_${variableName}_population_scope", populationScope)
+                }
+                if (calibrationVersion.isNotEmpty()) {
+                    dayObj.put("calibration_population_version", calibrationVersion)
                 }
             }
             val percentileKey = "pct_$variableName"

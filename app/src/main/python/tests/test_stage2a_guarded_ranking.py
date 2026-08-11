@@ -15,6 +15,10 @@ from brain import (
     _pc2_batch_b_regime_sigma_inventory,
     _pc2_batch_c_cross_market_inventory,
     _pc2_batch_d_exit_policy_inventory,
+    _pc2_censor_guard_for_cell,
+    _pc2_history_population_provenance,
+    _pc2_live_gate_decision,
+    _pc2_neutrality_proof,
     _pc2_parameter_authority_inventory,
     _compute_menu_abstention_shadow,
     _compute_shadow_selector_suite,
@@ -592,6 +596,125 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertAlmostEqual(fii_cell["max"], 49.0)
         self.assertIsNotNone(context["windows"]["30"]["iv_richness_menu_median"]["percentile"])
 
+    def test_pc2_calibration_population_includes_generated_and_rejected_candidates(self):
+        generated = [_candidate("generated", "BEAR_CALL", 0.4)]
+        generated[0].update({
+            "isCredit": True,
+            "ivRichness": 1.4,
+            "sigmaOTM": 0.9,
+            "creditWidthRatio": 0.3,
+            "probProfit": 0.7,
+        })
+        rejected = [{
+            "is_credit": True,
+            "iv_richness": 0.8,
+            "sigma_otm": 0.5,
+            "credit_width_ratio": 0.1,
+            "prob_profit": 0.3,
+        }]
+
+        context = _build_context_percentiles({"vix": 14.0}, [], generated, rejected)
+
+        self.assertAlmostEqual(context["current_values"]["iv_richness_menu_median"], 1.1)
+        self.assertAlmostEqual(context["current_values"]["sigma_otm_menu_median"], 0.7)
+        self.assertAlmostEqual(context["current_values"]["credit_width_ratio_menu_median"], 0.2)
+        self.assertAlmostEqual(context["current_values"]["prob_profit_menu_median"], 0.5)
+        variable = context["variables"]["iv_richness_menu_median"]
+        self.assertEqual(variable["candidate_population_value_count"], 2)
+        self.assertEqual(variable["candidate_population_min"], 0.8)
+        self.assertEqual(variable["candidate_population_max"], 1.4)
+        self.assertEqual(
+            variable["calibration_population_version"],
+            "pc2_generated_rejected_union_v1",
+        )
+
+    def test_pc2_censor_guard_rejects_hard_threshold_boundary(self):
+        guard = _pc2_censor_guard_for_cell(
+            "iv_richness_menu_median",
+            {"support_count": 30, "min": 1.15, "max": 1.8, "stability_scale": 0.2},
+        )
+        self.assertEqual(guard["censor_guard_status"], "PINNED_TO_HARD_THRESHOLD")
+        self.assertIn("history_boundary_matches_hard_threshold", guard["censor_guard_flags"])
+
+    def test_pc2_censor_guard_covers_all_five_calibrated_constants(self):
+        cases = (
+            ("credit_width_ratio_menu_median", 0.10, 0.40, {"MIN_CREDIT_RATIO"}),
+            ("iv_richness_menu_median", 1.15, 1.80, {"IV_RICH_MIN"}),
+            ("prob_profit_menu_median", 0.50, 0.80, {"MIN_PROB"}),
+            (
+                "sigma_otm_menu_median",
+                0.50,
+                1.15,
+                {"MIN_SIGMA_OTM", "MAX_SIGMA_OTM"},
+            ),
+        )
+        proven_constants = set()
+        for variable_name, min_value, max_value, expected_constants in cases:
+            guard = _pc2_censor_guard_for_cell(
+                variable_name,
+                {
+                    "support_count": 30,
+                    "min": min_value,
+                    "max": max_value,
+                    "stability_scale": 0.2,
+                },
+            )
+            self.assertEqual(guard["censor_guard_status"], "PINNED_TO_HARD_THRESHOLD")
+            constants = {item["const_name"] for item in guard["censor_guard_constants"]}
+            self.assertTrue(expected_constants.issubset(constants))
+            proven_constants.update(expected_constants)
+        self.assertEqual(
+            proven_constants,
+            {"MIN_CREDIT_RATIO", "IV_RICH_MIN", "MIN_PROB", "MIN_SIGMA_OTM", "MAX_SIGMA_OTM"},
+        )
+
+    def test_pc2_live_gate_fails_closed_without_union_provenance(self):
+        premium_history = []
+        for i in range(60):
+            premium_history.append({
+                "date": f"2026-06-{(i % 30) + 1:02d}-{i}",
+                "pct_iv_richness_menu_median": 1.15 + ((i % 3) - 1) * 0.005,
+            })
+        ctx = {
+            "vix": 14.0,
+            "vixHistory": [12.0 + i * 0.1 for i in range(60)],
+            "premiumHistory": premium_history,
+        }
+        decision = _pc2_live_gate_decision(ctx, {}, "IV_RICH_MIN", 1.2, 1.15)
+        self.assertEqual(decision["gate_basis"], "hard_fallback")
+        self.assertFalse(decision["population_provenance_verified"])
+        self.assertIn("generated_rejected_union_not_proven", decision["fallback_reason"])
+
+    def test_pc2_history_provenance_requires_scope_and_exact_version(self):
+        base_row = {
+            "date": "2026-08-10",
+            "pct_iv_richness_menu_median": 1.16,
+            "pct_iv_richness_menu_median_population_scope": (
+                "generated_plus_rejected_candidate_population"
+            ),
+        }
+        meta = {"context_variable": "iv_richness_menu_median"}
+
+        missing_version = _pc2_history_population_provenance(
+            {"premiumHistory": [base_row]}, meta
+        )
+        self.assertFalse(missing_version["population_provenance_verified"])
+        self.assertEqual(missing_version["population_provenance_scope_rows"], 1)
+        self.assertEqual(missing_version["population_provenance_version_rows"], 0)
+
+        verified_row = dict(base_row)
+        verified_row["calibration_population_version"] = "pc2_generated_rejected_union_v1"
+        verified = _pc2_history_population_provenance(
+            {"premiumHistory": [verified_row]}, meta
+        )
+        self.assertTrue(verified["population_provenance_verified"])
+        self.assertEqual(verified["population_provenance_scope_rows"], 1)
+        self.assertEqual(verified["population_provenance_version_rows"], 1)
+
+    def test_pc2_one_tick_neutrality_threshold_proof(self):
+        self.assertTrue(_pc2_neutrality_proof(1.15, 1.159)["neutrality_pass"])
+        self.assertFalse(_pc2_neutrality_proof(1.15, 1.161)["neutrality_pass"])
+
     def test_context_percentiles_extract_nested_market_inputs_without_zero_iv(self):
         ctx = {
             "morning_input": {
@@ -671,32 +794,35 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(inventory["total_constants"], 50)
         self.assertEqual(inventory["kind_a_hard_safety_count"], 7)
         self.assertEqual(inventory["kind_b_market_judgment_count"], 37)
-        self.assertEqual(inventory["live_soft_opportunity_count"], 5)
-        self.assertEqual(inventory["live_context_authority_count"], 3)
-        self.assertEqual(inventory["pending_kind_b_count"], 29)
+        self.assertEqual(inventory["live_soft_opportunity_count"], 6)
+        self.assertEqual(inventory["live_context_authority_count"], 11)
+        self.assertEqual(inventory["pending_kind_b_count"], 0)
         self.assertEqual(
             set(inventory["live_soft_opportunity_constants"]),
-            {"MIN_CREDIT_RATIO", "IV_RICH_MIN", "MIN_PROB", "MIN_SIGMA_OTM", "MAX_SIGMA_OTM"},
+            {"MIN_CREDIT_RATIO", "IV_RICH_MIN", "MIN_PROB", "MIN_SIGMA_OTM", "MAX_SIGMA_OTM", "IC_WALL_MAX_SIGMA"},
         )
         self.assertIn("IV_HIGH", inventory["live_context_authority_constants"])
         self.assertIn("IV_VERY_HIGH", inventory["live_context_authority_constants"])
         self.assertIn("IV_LOW", inventory["live_context_authority_constants"])
-        self.assertIn("TARGET_NEAR_RATIO", inventory["pending_kind_b_constants"])
+        self.assertIn("TARGET_NEAR_RATIO", inventory["live_context_authority_constants"])
+        self.assertIn("STOP_LOSS_RATIO", inventory["live_context_authority_constants"])
         self.assertIn("BNF_LOT", inventory["hard_safety_constants"])
 
-    def test_pc2_batch_a_width_wall_is_shadow_only_until_replay_proves_safe(self):
+    def test_pc2_batch_a_width_wall_tracks_live_soft_supply_authority(self):
         inventory = _pc2_batch_a_width_wall_inventory()
-        self.assertEqual(inventory["schema_version"], "pc2_batch_a_width_wall_shadow_v1")
-        self.assertEqual(inventory["status"], "SHADOW_ONLY")
-        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["schema_version"], "pc2_batch_a_width_wall_width_ic_soft_v1")
+        self.assertEqual(inventory["status"], "PARTIAL_LIVE_SOFT_SUPPLY")
+        self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["row_count"], 5)
-        self.assertEqual(inventory["shadow_only_count"], 5)
-        self.assertEqual(inventory["live_softened_count"], 0)
+        self.assertEqual(inventory["shadow_only_count"], 2)
+        self.assertEqual(inventory["live_softened_count"], 3)
         by_name = {row["constant"]: row for row in inventory["rows"]}
-        self.assertEqual(by_name["MIN_WIDTH_BNF"]["authority"], "lane_enable_not_percentile")
-        self.assertEqual(by_name["MIN_WIDTH_NF"]["authority"], "lane_enable_not_percentile")
-        self.assertEqual(by_name["IC_WALL_MAX_SIGMA"]["authority"], "context_measure_first")
-        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+        self.assertEqual(by_name["MIN_WIDTH_BNF"]["authority"], "live_soft_opportunity_with_constant_shadow")
+        self.assertEqual(by_name["MIN_WIDTH_NF"]["authority"], "live_soft_opportunity_with_constant_shadow")
+        self.assertEqual(by_name["IC_WALL_MAX_SIGMA"]["authority"], "constructed_candidate_live_soft_with_seed_shadow")
+        self.assertTrue(by_name["MIN_WIDTH_BNF"]["live_softened"])
+        self.assertTrue(by_name["MIN_WIDTH_NF"]["live_softened"])
+        self.assertTrue(by_name["IC_WALL_MAX_SIGMA"]["live_softened"])
 
     def test_pc2_batch_b_regime_sigma_uses_live_vix_context_with_sigma_shadow(self):
         inventory = _pc2_batch_b_regime_sigma_inventory()
@@ -704,15 +830,15 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(inventory["status"], "PARTIAL_LIVE_CONTEXT")
         self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["row_count"], 6)
-        self.assertEqual(inventory["shadow_only_count"], 3)
-        self.assertEqual(inventory["live_softened_count"], 3)
+        self.assertEqual(inventory["shadow_only_count"], 2)
+        self.assertEqual(inventory["live_softened_count"], 4)
         by_name = {row["constant"]: row for row in inventory["rows"]}
         self.assertEqual(by_name["IV_HIGH"]["authority"], "percentile_live_with_constant_shadow")
         self.assertEqual(by_name["IV_VERY_HIGH"]["authority"], "percentile_live_with_constant_shadow")
         self.assertEqual(by_name["IV_LOW"]["authority"], "percentile_live_with_constant_shadow")
-        self.assertEqual(by_name["SIGMA_IMPORTANT_THRESHOLD"]["authority"], "context_measure_first")
+        self.assertEqual(by_name["SIGMA_IMPORTANT_THRESHOLD"]["authority"], "percentile_live_with_constant_shadow")
         self.assertTrue(by_name["IV_HIGH"]["live_softened"])
-        self.assertFalse(by_name["SIGMA_IMPORTANT_THRESHOLD"]["live_softened"])
+        self.assertTrue(by_name["SIGMA_IMPORTANT_THRESHOLD"]["live_softened"])
 
     def test_pc2_vix_regime_context_live_authority_keeps_old_constants_shadow(self):
         ctx = {"vixHistory": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
@@ -729,32 +855,32 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(regime["support_status"], "MISSING_CONTEXT")
         self.assertEqual(regime["old_constant_shadow"]["regime"], "LOW")
 
-    def test_pc2_batch_c_cross_market_is_shadow_only_until_history_exists(self):
+    def test_pc2_batch_c_cross_market_uses_live_context_with_constant_fallback(self):
         inventory = _pc2_batch_c_cross_market_inventory()
-        self.assertEqual(inventory["schema_version"], "pc2_batch_c_cross_market_shadow_v1")
-        self.assertEqual(inventory["status"], "MISSING_HISTORY_SHADOW_ONLY")
-        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["schema_version"], "pc2_batch_c_cross_market_live_context_v1")
+        self.assertEqual(inventory["status"], "LIVE_CONTEXT_WITH_CONSTANT_FALLBACK")
+        self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["row_count"], 3)
-        self.assertEqual(inventory["shadow_only_count"], 3)
-        self.assertEqual(inventory["live_softened_count"], 0)
+        self.assertEqual(inventory["shadow_only_count"], 0)
+        self.assertEqual(inventory["live_softened_count"], 3)
         by_name = {row["constant"]: row for row in inventory["rows"]}
-        self.assertEqual(by_name["DOW_THRESHOLD"]["authority"], "missing_percentile_history")
-        self.assertEqual(by_name["CRUDE_THRESHOLD"]["authority"], "missing_percentile_history")
-        self.assertEqual(by_name["GIFT_THRESHOLD"]["authority"], "missing_percentile_history")
-        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+        self.assertEqual(by_name["DOW_THRESHOLD"]["authority"], "percentile_live_with_constant_fallback")
+        self.assertEqual(by_name["CRUDE_THRESHOLD"]["authority"], "percentile_live_with_constant_fallback")
+        self.assertEqual(by_name["GIFT_THRESHOLD"]["authority"], "percentile_live_with_constant_fallback")
+        self.assertTrue(all(row["live_softened"] for row in inventory["rows"]))
 
-    def test_pc2_batch_d_exit_policy_is_mechanism_only_not_entry_ranking(self):
+    def test_pc2_batch_d_exit_policy_uses_live_context_with_safety_floor(self):
         inventory = _pc2_batch_d_exit_policy_inventory()
-        self.assertEqual(inventory["schema_version"], "pc2_batch_d_exit_policy_shadow_v1")
-        self.assertEqual(inventory["status"], "G2_MECHANISM_SHADOW_ONLY")
-        self.assertFalse(inventory["behavior_change"])
+        self.assertEqual(inventory["schema_version"], "pc2_batch_d_exit_policy_live_context_v1")
+        self.assertEqual(inventory["status"], "LIVE_CONTEXT_WITH_CONSTANT_SAFETY_FLOOR")
+        self.assertTrue(inventory["behavior_change"])
         self.assertEqual(inventory["row_count"], 2)
-        self.assertEqual(inventory["shadow_only_count"], 2)
-        self.assertEqual(inventory["live_softened_count"], 0)
+        self.assertEqual(inventory["shadow_only_count"], 0)
+        self.assertEqual(inventory["live_softened_count"], 2)
         by_name = {row["constant"]: row for row in inventory["rows"]}
-        self.assertEqual(by_name["TARGET_NEAR_RATIO"]["authority"], "g2_mechanism_only")
-        self.assertEqual(by_name["STOP_LOSS_RATIO"]["authority"], "g2_mechanism_only")
-        self.assertFalse(any(row["live_softened"] for row in inventory["rows"]))
+        self.assertEqual(by_name["TARGET_NEAR_RATIO"]["authority"], "percentile_live_with_constant_safety_floor")
+        self.assertEqual(by_name["STOP_LOSS_RATIO"]["authority"], "percentile_live_with_constant_safety_floor")
+        self.assertTrue(all(row["live_softened"] for row in inventory["rows"]))
 
     def test_native_memory_shadow_selector_picks_similar_profitable_family(self):
         bear = _candidate("bear", "BEAR_CALL", 0.8)
