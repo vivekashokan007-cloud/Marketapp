@@ -3042,12 +3042,13 @@ def _position_alert_body(trade, current_pnl, action_text, quality_note='', pct_o
 
 def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict) -> list:
     alerts = []
+    ctx = ctx or {}
+    result = result or {}
     elapsed = ctx.get('mins_since_open', 0)
     now_ms = ctx.get('now_ms', 0)
-    last_routine_notify = ctx.get('last_routine_dispatch_ms', 0)
-
-    if elapsed < _CONST.get('NOISE_WINDOW', 15):
-        return alerts
+    context_percentiles = result.get('context_percentiles') or ctx.get('context_percentiles')
+    alert_timing_context = _pc2_alert_timing_context(ctx, result)
+    suppress_non_position_alerts = not alert_timing_context.get('non_position_alerts_allowed')
 
     significant_move = ctx.get('significant_move', False)
     entry_window = ctx.get('entry_window_active', False)
@@ -3056,13 +3057,13 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
     abs_vix_sigma = ctx.get('abs_vix_sigma', 0.0)
     sigma_move_context = _pc2_sigma_important_context(
         ctx,
-        (result or {}).get('context_percentiles') or ctx.get('context_percentiles'),
+        context_percentiles,
     )
     significant_move = bool(significant_move or sigma_move_context.get('triggered'))
 
     # WATCHLIST alerts: use entry_window (0.3σ) not significant_move (1.5σ)
     # This allows entry notifications on normal trading days
-    if entry_window or significant_move:
+    if not suppress_non_position_alerts and (entry_window or significant_move):
         for cand in (watchlist or []):
             if not cand.get('_alignmentChanged'):
                 continue
@@ -3075,13 +3076,14 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             buy_strike = cand.get('buyStrike', '')
 
             if aligned == 3 and prev_aligned < 3:
-                if elapsed < _CONST.get('LAST_ENTRY_CUTOFF', 345):
+                if alert_timing_context.get('entry_alerts_allowed'):
                     alerts.append({
                         'key': f"WATCHLIST_ENTRY_{cand_index}_{sell_strike}_{buy_strike}",
                         'category': 'WATCHLIST',
                         'priority': 'entry',
                         'title': '🎯 Entry Window',
                         'body': _entry_alert_body(cand, aligned),
+                        'pc2_alert_timing_context': alert_timing_context,
                     })
             elif prev_aligned == 3 and aligned < 3:
                 alerts.append({
@@ -3090,6 +3092,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'priority': 'important',
                     'title': '⚠️ Window Closing',
                     'body': f"{cand_index} {cand_type} {sell_strike}/{buy_strike} — dropped to {aligned}/3",
+                    'pc2_alert_timing_context': alert_timing_context,
                 })
 
     # POSITION alerts are high-stakes and should not depend on a broad market
@@ -3124,6 +3127,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'priority': 'important',
                 'title': '🧪 Position Data Incomplete',
                 'body': f"{trade_label}: {', '.join(quality_reasons)}. Risk/exit alerts remain active when P&L is computable.",
+                'pc2_alert_timing_context': alert_timing_context,
             })
             if current_pnl is None:
                 continue
@@ -3135,7 +3139,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             max_profit=max_profit,
             max_loss=max_loss,
             ctx=ctx,
-            context_percentiles=(result or {}).get('context_percentiles') or ctx.get('context_percentiles'),
+            context_percentiles=context_percentiles,
         )
 
         if (position_alert_context.get('target_near') or {}).get('triggered'):
@@ -3153,6 +3157,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     pct_of_max=pct_of_max,
                 ),
                 'pc2_exit_policy_context': position_alert_context,
+                'pc2_alert_timing_context': alert_timing_context,
             })
         if (position_alert_context.get('stop_loss_near') or {}).get('triggered'):
             alerts.append({
@@ -3167,6 +3172,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     quality_note=quality_note,
                 ),
                 'pc2_exit_policy_context': position_alert_context,
+                'pc2_alert_timing_context': alert_timing_context,
             })
         if t_aligned is not None and t_aligned <= 1 and current_pnl > 0:
             alerts.append({
@@ -3180,9 +3186,10 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                     'Forces weak while profitable. Take it.',
                     quality_note=quality_note,
                 ),
+                'pc2_alert_timing_context': alert_timing_context,
             })
 
-    if significant_move:
+    if not suppress_non_position_alerts and significant_move:
         if sigma_move_context.get('triggered'):
             live = ctx.get('live', {}) or {}
             bnf_spot = live.get('bnfSpot') or ctx.get('bnfSpot')
@@ -3201,9 +3208,10 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'title': '📊 Significant Move',
                 'body': f"BNF {bnf_str} ({spot_sigma}σ) | NF {nf_str} ({nf_spot_sigma}σ) | VIX {vix_str} ({vix_sigma}σ)",
                 'pc2_sigma_context': sigma_move_context,
+                'pc2_alert_timing_context': alert_timing_context,
             })
 
-    if (now_ms - last_routine_notify) >= _CONST.get('ROUTINE_NOTIFY_MS', 3600000):
+    if alert_timing_context.get('routine_notify_due'):
         live = ctx.get('live', {}) or {}
         bnf_spot = live.get('bnfSpot') or ctx.get('bnfSpot')
         nf_spot = live.get('nfSpot') or ctx.get('nfSpot')
@@ -3221,12 +3229,14 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             top_aligned = top_forces.get('aligned', 0)
             top_type = top.get('type', '')
             body += f" | Top: {top_aligned}/3 {top_type}"
+        routine_notify_ms = _safe_float(alert_timing_context.get('routine_notify_ms')) or _CONST.get('ROUTINE_NOTIFY_MS', 3600000)
         alerts.append({
-            'key': f"ROUTINE_{int(now_ms / _CONST.get('ROUTINE_NOTIFY_MS', 3600000))}",
+            'key': f"ROUTINE_{int(now_ms / routine_notify_ms) if routine_notify_ms else 0}",
             'category': 'ROUTINE',
             'priority': 'routine',
             'title': '📈 Market Update',
             'body': body,
+            'pc2_alert_timing_context': alert_timing_context,
         })
     return alerts
 
@@ -5982,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.67"
+BRAIN_VERSION = "2.5.68"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6328,6 +6338,51 @@ PC2_BATCH_D_EXIT_POLICY_CONSTS = {
     },
 }
 
+PC2_BATCH_E_ALERT_TIMING_VERSION = 'pc2_batch_e_alert_timing_position_safe_v1'
+PC2_BATCH_E_ALERT_TIMING_CONSTS = {
+    'NOISE_WINDOW': {
+        'authority': 'alert_policy_with_position_safety_override',
+        'status': 'POLICY_LIVE_POSITION_SAFE',
+        'rationale': 'startup microstructure noise may suppress non-position chatter, but must not suppress open-position risk/exit alerts',
+    },
+    'LAST_ENTRY_CUTOFF': {
+        'authority': 'session_policy_constant_with_shadow',
+        'status': 'POLICY_CONSTANT',
+        'rationale': 'latest-entry cutoff is a market-session policy boundary, not a market judgment percentile',
+    },
+    'ROUTINE_NOTIFY_MS': {
+        'authority': 'ux_policy_constant_with_shadow',
+        'status': 'POLICY_CONSTANT',
+        'rationale': 'routine notification cadence is UX policy, not a market judgment percentile',
+    },
+}
+
+PC2_LEGACY_UNUSED_SHADOW_CONSTS = (
+    'SIGMA_ENTRY_THRESHOLD',
+    'SIGMA_EXIT_THRESHOLD',
+)
+
+PC2_BATCH_F_SUPPLY_PATTERN_VERSION = 'pc2_batch_f_supply_pattern_authority_v1'
+PC2_BATCH_F_SUPPLY_LADDER_CONSTS = (
+    'BNF_WIDTHS',
+    'NF_WIDTHS',
+)
+PC2_BATCH_F_CANDLE_PATTERN_CONSTS = (
+    'CANDLE_MARUBOZU_SHADOW_PCT',
+    'CANDLE_DOJI_BODY_PCT',
+    'CANDLE_SPINNING_MIN_BODY_PCT',
+    'CANDLE_SPINNING_MAX_BODY_PCT',
+    'CANDLE_SHADOW_RATIO_MIN',
+    'CANDLE_SHADOW_RATIO_MAX',
+    'CANDLE_HAMMER_SHADOW_MIN',
+    'CANDLE_HAMMER_UPPER_MAX_BODY',
+    'CANDLE_HAMMER_UPPER_MAX_RANGE',
+    'CANDLE_ENGULF_BODY_MIN',
+    'CANDLE_PRIOR_TREND_CANDLES',
+    'CANDLE_PRIOR_TREND_THRESHOLD',
+    'CANDLE_GAP_PCT',
+)
+
 
 def _pc2_parameter_authority_inventory():
     """Auditable map of which constants currently have percentile authority."""
@@ -6349,7 +6404,20 @@ def _pc2_parameter_authority_inventory():
         'TARGET_NEAR_RATIO',
         'STOP_LOSS_RATIO',
     ]
-    pending_kind_b = [k for k in kind_b if k not in set(live_soft + live_context_constants)]
+    policy_controlled = list(PC2_BATCH_E_ALERT_TIMING_CONSTS.keys())
+    legacy_unused_shadow = list(PC2_LEGACY_UNUSED_SHADOW_CONSTS)
+    supply_ladder_shadow = list(PC2_BATCH_F_SUPPLY_LADDER_CONSTS)
+    advisory_pattern_shadow = list(PC2_BATCH_F_CANDLE_PATTERN_CONSTS)
+    resolved_kind_b = set(
+        live_soft
+        + live_context_constants
+        + policy_controlled
+        + legacy_unused_shadow
+        + supply_ladder_shadow
+        + advisory_pattern_shadow
+    )
+    resolved_kind_b_constants = [k for k in kind_b if k in resolved_kind_b]
+    pending_kind_b = [k for k in kind_b if k not in resolved_kind_b]
     unclassified = [
         k for k in _CONST
         if k not in set(kind_a + kind_b + structural + calendar)
@@ -6362,14 +6430,25 @@ def _pc2_parameter_authority_inventory():
         'kind_b_market_judgment_count': len(kind_b),
         'live_soft_opportunity_count': len(live_soft),
         'live_context_authority_count': len(live_context_constants),
+        'policy_controlled_count': len(policy_controlled),
+        'legacy_unused_shadow_count': len(legacy_unused_shadow),
+        'supply_ladder_shadow_count': len(supply_ladder_shadow),
+        'advisory_pattern_shadow_count': len(advisory_pattern_shadow),
+        'resolved_kind_b_count': len(resolved_kind_b_constants),
         'pending_kind_b_count': len(pending_kind_b),
         'structural_enum_count': len(structural),
         'market_calendar_count': len(calendar),
         'unclassified': unclassified,
         'hard_safety_constants': kind_a,
+        'kind_b_constants': kind_b,
         'live_soft_opportunity_constants': live_soft,
         'live_context_ranking_variables': list(PC2_LIVE_CONTEXT_RANKING_VARIABLES),
         'live_context_authority_constants': live_context_constants,
+        'policy_controlled_constants': policy_controlled,
+        'legacy_unused_shadow_constants': legacy_unused_shadow,
+        'supply_ladder_shadow_constants': supply_ladder_shadow,
+        'advisory_pattern_shadow_constants': advisory_pattern_shadow,
+        'resolved_kind_b_constants': resolved_kind_b_constants,
         'pending_kind_b_constants': pending_kind_b,
         'structural_enum_constants': structural,
         'market_calendar_constants': calendar,
@@ -6490,6 +6569,102 @@ def _pc2_batch_d_exit_policy_inventory():
         'live_scope': 'position target/stop notification sensitivity',
         'safety_floor': 'legacy target/stop ratios still trigger alerts even when percentile support is weak',
         'rows': rows,
+    }
+
+
+def _pc2_batch_e_alert_timing_inventory():
+    """Batch-E audit map for notification timing constants."""
+    rows = []
+    for key, meta in PC2_BATCH_E_ALERT_TIMING_CONSTS.items():
+        live_position_safe = meta.get('status') == 'POLICY_LIVE_POSITION_SAFE'
+        rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': meta.get('authority'),
+            'status': meta.get('status'),
+            'rationale': meta.get('rationale'),
+            'position_safe_override': live_position_safe,
+            'behavior_change': live_position_safe,
+        })
+    return {
+        'schema_version': PC2_BATCH_E_ALERT_TIMING_VERSION,
+        'status': 'POSITION_SAFE_ALERT_POLICY',
+        'row_count': len(rows),
+        'position_safe_override_count': sum(1 for row in rows if row.get('position_safe_override')),
+        'policy_constant_count': sum(1 for row in rows if row.get('status') == 'POLICY_CONSTANT'),
+        'behavior_change': True,
+        'live_scope': 'open-position data quality, target, stop, and book-profit alerts bypass the startup noise window',
+        'shadow_scope': 'entry cutoff and routine notification cadence remain policy constants, not percentile market gates',
+        'rows': rows,
+    }
+
+
+def _pc2_alert_timing_context(ctx=None, result=None):
+    """Classify alert timing gates without letting them hide position risk."""
+    ctx = ctx or {}
+    elapsed = _safe_float(ctx.get('mins_since_open')) or 0.0
+    now_ms = _safe_float(ctx.get('now_ms')) or 0.0
+    last_routine_notify = _safe_float(ctx.get('last_routine_dispatch_ms')) or 0.0
+    noise_window = _safe_float(_CONST.get('NOISE_WINDOW', 15)) or 15.0
+    last_entry_cutoff = _safe_float(_CONST.get('LAST_ENTRY_CUTOFF', 345)) or 345.0
+    routine_notify_ms = _safe_float(_CONST.get('ROUTINE_NOTIFY_MS', 3600000)) or 3600000.0
+    noise_window_active = elapsed < noise_window
+    non_position_alerts_allowed = not noise_window_active
+    routine_delta_ms = now_ms - last_routine_notify
+    return {
+        'schema_version': PC2_BATCH_E_ALERT_TIMING_VERSION,
+        'status': 'NOISE_WINDOW_POSITION_SAFE' if noise_window_active else 'NORMAL_ALERT_TIMING',
+        'elapsed_minutes': elapsed,
+        'noise_window_minutes': noise_window,
+        'noise_window_active': noise_window_active,
+        'position_alerts_allowed': True,
+        'non_position_alerts_allowed': non_position_alerts_allowed,
+        'entry_alerts_allowed': bool(non_position_alerts_allowed and elapsed < last_entry_cutoff),
+        'routine_notify_due': bool(non_position_alerts_allowed and routine_delta_ms >= routine_notify_ms),
+        'last_entry_cutoff_minutes': last_entry_cutoff,
+        'routine_notify_ms': routine_notify_ms,
+        'routine_delta_ms': routine_delta_ms,
+        'position_safe_override': True,
+        'policy_constants': list(PC2_BATCH_E_ALERT_TIMING_CONSTS.keys()),
+        'behavior_change': True,
+    }
+
+
+def _pc2_batch_f_supply_pattern_inventory():
+    """Batch-F separates supply/advisory constants from hidden hard gates."""
+    supply_rows = []
+    for key in PC2_BATCH_F_SUPPLY_LADDER_CONSTS:
+        supply_rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': 'generation_supply_ladder_shadow',
+            'status': 'SHADOW_ONLY_SUPPLY_LADDER',
+            'rationale': C3_KIND_B_CONSTS.get(key, 'candidate supply ladder'),
+            'behavior_change': False,
+        })
+
+    pattern_rows = []
+    for key in PC2_BATCH_F_CANDLE_PATTERN_CONSTS:
+        pattern_rows.append({
+            'constant': key,
+            'value': _CONST.get(key),
+            'authority': 'advisory_pattern_calibration_shadow',
+            'status': 'ADVISORY_SIGNAL_PENDING_REPLAY',
+            'rationale': C3_KIND_B_CONSTS.get(key, 'pattern threshold; needs replay calibration'),
+            'behavior_change': False,
+        })
+
+    return {
+        'schema_version': PC2_BATCH_F_SUPPLY_PATTERN_VERSION,
+        'status': 'CLASSIFIED_NO_LIVE_BEHAVIOR_CHANGE',
+        'row_count': len(supply_rows) + len(pattern_rows),
+        'supply_ladder_shadow_count': len(supply_rows),
+        'advisory_pattern_shadow_count': len(pattern_rows),
+        'behavior_change': False,
+        'live_scope': 'none',
+        'shadow_scope': 'width ladders remain supply enumeration; candle thresholds remain advisory pattern interpretation pending replay',
+        'supply_ladder_rows': supply_rows,
+        'advisory_pattern_rows': pattern_rows,
     }
 
 
@@ -14782,6 +14957,8 @@ def take_poll_snapshot(result, ctx, polls):
     pc2_batch_b_regime_sigma = _pc2_batch_b_regime_sigma_inventory()
     pc2_batch_c_cross_market = _pc2_batch_c_cross_market_inventory()
     pc2_batch_d_exit_policy = _pc2_batch_d_exit_policy_inventory()
+    pc2_batch_e_alert_timing = _pc2_batch_e_alert_timing_inventory()
+    pc2_batch_f_supply_pattern = _pc2_batch_f_supply_pattern_inventory()
     pc2_vix_regime_context = (
         ctx.get('_pc2_vix_regime_context')
         if isinstance(ctx.get('_pc2_vix_regime_context'), dict)
@@ -14894,6 +15071,8 @@ def take_poll_snapshot(result, ctx, polls):
         'pc2_vix_regime_context': pc2_vix_regime_context,
         'pc2_batch_c_cross_market': pc2_batch_c_cross_market,
         'pc2_batch_d_exit_policy': pc2_batch_d_exit_policy,
+        'pc2_batch_e_alert_timing': pc2_batch_e_alert_timing,
+        'pc2_batch_f_supply_pattern': pc2_batch_f_supply_pattern,
         'shadow_selector_suite': shadow_selector_suite,
         'menu_abstention_shadow': menu_abstention_shadow,
         'build3_lane_gate': build3_lane_gate,
@@ -14936,7 +15115,14 @@ def take_poll_snapshot(result, ctx, polls):
         'c3_const_inventory_unclassified': c3_const_inventory.get('unclassified'),
         'pc2_parameter_authority_status': pc2_parameter_authority.get('status'),
         'pc2_parameter_authority_schema_version': pc2_parameter_authority.get('schema_version'),
+        'pc2_kind_b_market_judgment_count': pc2_parameter_authority.get('kind_b_market_judgment_count'),
+        'pc2_resolved_kind_b_count': pc2_parameter_authority.get('resolved_kind_b_count'),
         'pc2_live_soft_opportunity_count': pc2_parameter_authority.get('live_soft_opportunity_count'),
+        'pc2_live_context_authority_count': pc2_parameter_authority.get('live_context_authority_count'),
+        'pc2_policy_controlled_count': pc2_parameter_authority.get('policy_controlled_count'),
+        'pc2_legacy_unused_shadow_count': pc2_parameter_authority.get('legacy_unused_shadow_count'),
+        'pc2_supply_ladder_shadow_count': pc2_parameter_authority.get('supply_ladder_shadow_count'),
+        'pc2_advisory_pattern_shadow_count': pc2_parameter_authority.get('advisory_pattern_shadow_count'),
         'pc2_pending_kind_b_count': pc2_parameter_authority.get('pending_kind_b_count'),
         'pc2_batch_a_width_wall_status': pc2_batch_a_width_wall.get('status'),
         'pc2_batch_a_width_wall_shadow_count': pc2_batch_a_width_wall.get('shadow_only_count'),
@@ -14951,6 +15137,12 @@ def take_poll_snapshot(result, ctx, polls):
         'pc2_batch_d_exit_policy_status': pc2_batch_d_exit_policy.get('status'),
         'pc2_batch_d_exit_policy_shadow_count': pc2_batch_d_exit_policy.get('shadow_only_count'),
         'pc2_batch_d_exit_policy_live_softened_count': pc2_batch_d_exit_policy.get('live_softened_count'),
+        'pc2_batch_e_alert_timing_status': pc2_batch_e_alert_timing.get('status'),
+        'pc2_batch_e_alert_timing_position_safe_override_count': pc2_batch_e_alert_timing.get('position_safe_override_count'),
+        'pc2_batch_e_alert_timing_policy_constant_count': pc2_batch_e_alert_timing.get('policy_constant_count'),
+        'pc2_batch_f_supply_pattern_status': pc2_batch_f_supply_pattern.get('status'),
+        'pc2_batch_f_supply_ladder_shadow_count': pc2_batch_f_supply_pattern.get('supply_ladder_shadow_count'),
+        'pc2_batch_f_advisory_pattern_shadow_count': pc2_batch_f_supply_pattern.get('advisory_pattern_shadow_count'),
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
         'context_percentiles_status': 'OK' if (result.get('context_percentiles') or {}).get('schema_version') else 'MISSING',
@@ -15003,6 +15195,8 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_vix_regime_context'] = pc2_vix_regime_context
     snapshot_context['snapshot_pc2_batch_c_cross_market'] = pc2_batch_c_cross_market
     snapshot_context['snapshot_pc2_batch_d_exit_policy'] = pc2_batch_d_exit_policy
+    snapshot_context['snapshot_pc2_batch_e_alert_timing'] = pc2_batch_e_alert_timing
+    snapshot_context['snapshot_pc2_batch_f_supply_pattern'] = pc2_batch_f_supply_pattern
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_build3_gate'] = build3_gate
