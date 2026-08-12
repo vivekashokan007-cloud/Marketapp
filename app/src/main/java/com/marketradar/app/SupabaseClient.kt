@@ -669,6 +669,27 @@ object SupabaseClient {
         return normalized
     }
 
+    private fun copyRowsExcluding(
+        rows: JSONArray,
+        excludeKeys: Set<String> = emptySet(),
+        skipRejectedResearch: Boolean = false
+    ): JSONArray {
+        val copied = JSONArray()
+        for (i in 0 until rows.length()) {
+            val src = rows.optJSONObject(i) ?: continue
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
+            if (skipRejectedResearch && role == "rejected") continue
+            val row = JSONObject()
+            val keys = src.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                if (!excludeKeys.contains(key)) row.put(key, src.opt(key))
+            }
+            copied.put(row)
+        }
+        return copied
+    }
+
     private fun canonicalizeRejectedOutcomeRows(rows: JSONArray): JSONArray =
         canonicalizeRows(rows, rejectedOutcomeColumns)
 
@@ -777,7 +798,7 @@ object SupabaseClient {
 
             val selection = src.optJSONObject("rejected_eval_selection")
             if (selection != null) row.put("rejected_eval_selection", selection)
-            row.put("outcome_json", JSONObject(src.toString()))
+            row.put("outcome_json", src)
             row.put("created_at", nowIso)
             rows.put(row)
         }
@@ -1652,54 +1673,6 @@ object SupabaseClient {
         val recommendationRows = buildRecommendationRows(sessionDate, body)
         val rejectedRows = buildRejectedEvaluationRows(sessionDate, body)
 
-        fun stripShadowTeacher(rows: JSONArray): JSONArray {
-            val legacy = JSONArray()
-            for (i in 0 until rows.length()) {
-                val src = rows.optJSONObject(i) ?: continue
-                val row = JSONObject(src.toString())
-                shadowTeacherKeys.forEach { row.remove(it) }
-                legacy.put(row)
-            }
-            return legacy
-        }
-
-        fun stripCanonical(rows: JSONArray): JSONArray {
-            val legacy = JSONArray()
-            for (i in 0 until rows.length()) {
-                val src = rows.optJSONObject(i) ?: continue
-                val row = JSONObject(src.toString())
-                row.remove("canonical_won")
-                legacy.put(row)
-            }
-            return legacy
-        }
-
-        fun stripAttribution(rows: JSONArray): JSONArray {
-            val legacy = JSONArray()
-            for (i in 0 until rows.length()) {
-                val src = rows.optJSONObject(i) ?: continue
-                val row = JSONObject(src.toString())
-                row.remove("session_date")
-                row.remove("lane")
-                row.remove("index_key")
-                row.remove("trade_mode")
-                row.remove("strategy_type")
-                legacy.put(row)
-            }
-            return legacy
-        }
-
-        fun stripRejectedResearch(rows: JSONArray): JSONArray {
-            val legacy = JSONArray()
-            for (i in 0 until rows.length()) {
-                val src = rows.optJSONObject(i) ?: continue
-                val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
-                if (role == "rejected") continue
-                legacy.put(JSONObject(src.toString()))
-            }
-            return legacy
-        }
-
         fun outcomeWritePath(table: String): String {
             return when (table) {
                 "ml_evaluation_outcomes" ->
@@ -1710,39 +1683,17 @@ object SupabaseClient {
             }
         }
 
-        val evaluationRowsNoRejected = stripRejectedResearch(evaluationRows)
-        val evaluationRowsNoShadow = stripShadowTeacher(evaluationRows)
-        val evaluationRowsNoRejectedNoShadow = stripShadowTeacher(evaluationRowsNoRejected)
-        val recommendationRowsNoShadow = stripShadowTeacher(recommendationRows)
-        val evaluationRowsNoCanonical = stripCanonical(evaluationRowsNoShadow)
-        val evaluationRowsNoRejectedNoCanonical = stripCanonical(evaluationRowsNoRejectedNoShadow)
-        val recommendationRowsNoCanonical = stripCanonical(recommendationRowsNoShadow)
-        val evaluationRowsLegacy = stripCanonical(stripAttribution(evaluationRowsNoShadow))
-        val evaluationRowsNoRejectedLegacy = stripCanonical(stripAttribution(evaluationRowsNoRejectedNoShadow))
-        val recommendationRowsLegacy = stripCanonical(stripAttribution(recommendationRowsNoShadow))
+        val shadowTeacherKeySet = shadowTeacherKeys.toSet()
+        val canonicalKeySet = setOf("canonical_won")
+        val attributionKeySet = setOf("session_date", "lane", "index_key", "trade_mode", "strategy_type")
 
         fun postOutcomeRowsWithFallback(
             table: String,
             fullRows: JSONArray,
-            noRejectedRows: JSONArray,
-            noShadowRows: JSONArray,
-            noRejectedNoShadowRows: JSONArray,
-            noCanonicalRows: JSONArray,
-            noRejectedNoCanonicalRows: JSONArray,
-            legacyRows: JSONArray,
-            noRejectedLegacyRows: JSONArray
+            attempts: List<Pair<String, () -> JSONArray>>
         ): OutcomePostResult {
-            val attempts = listOf(
-                "full" to fullRows,
-                "no_rejected_research" to noRejectedRows,
-                "no_shadow" to noShadowRows,
-                "no_rejected_research_no_shadow" to noRejectedNoShadowRows,
-                "no_shadow_no_canonical" to noCanonicalRows,
-                "no_rejected_research_no_shadow_no_canonical" to noRejectedNoCanonicalRows,
-                "legacy" to legacyRows,
-                "no_rejected_research_legacy" to noRejectedLegacyRows
-            )
-            for ((mode, rows) in attempts) {
+            for ((mode, buildRows) in attempts) {
+                val rows = buildRows()
                 if (rows.length() == 0) {
                     if (mode != "full") {
                         LogBuffer.add(
@@ -1768,24 +1719,56 @@ object SupabaseClient {
         val evaluationWriteResult = postOutcomeRowsWithFallback(
             "ml_evaluation_outcomes",
             evaluationRows,
-            evaluationRowsNoRejected,
-            evaluationRowsNoShadow,
-            evaluationRowsNoRejectedNoShadow,
-            evaluationRowsNoCanonical,
-            evaluationRowsNoRejectedNoCanonical,
-            evaluationRowsLegacy,
-            evaluationRowsNoRejectedLegacy
+            listOf(
+                "full" to { evaluationRows },
+                "no_rejected_research" to { copyRowsExcluding(evaluationRows, skipRejectedResearch = true) },
+                "no_shadow" to { copyRowsExcluding(evaluationRows, shadowTeacherKeySet) },
+                "no_rejected_research_no_shadow" to {
+                    copyRowsExcluding(evaluationRows, shadowTeacherKeySet, skipRejectedResearch = true)
+                },
+                "no_shadow_no_canonical" to {
+                    copyRowsExcluding(evaluationRows, shadowTeacherKeySet + canonicalKeySet)
+                },
+                "no_rejected_research_no_shadow_no_canonical" to {
+                    copyRowsExcluding(
+                        evaluationRows,
+                        shadowTeacherKeySet + canonicalKeySet,
+                        skipRejectedResearch = true
+                    )
+                },
+                "legacy" to {
+                    copyRowsExcluding(evaluationRows, shadowTeacherKeySet + canonicalKeySet + attributionKeySet)
+                },
+                "no_rejected_research_legacy" to {
+                    copyRowsExcluding(
+                        evaluationRows,
+                        shadowTeacherKeySet + canonicalKeySet + attributionKeySet,
+                        skipRejectedResearch = true
+                    )
+                }
+            )
         )
         val recommendationWriteResult = postOutcomeRowsWithFallback(
             "ml_recommendation_outcomes",
             recommendationRows,
-            recommendationRows,
-            recommendationRowsNoShadow,
-            recommendationRowsNoShadow,
-            recommendationRowsNoCanonical,
-            recommendationRowsNoCanonical,
-            recommendationRowsLegacy,
-            recommendationRowsLegacy
+            listOf(
+                "full" to { recommendationRows },
+                "no_rejected_research" to { recommendationRows },
+                "no_shadow" to { copyRowsExcluding(recommendationRows, shadowTeacherKeySet) },
+                "no_rejected_research_no_shadow" to { copyRowsExcluding(recommendationRows, shadowTeacherKeySet) },
+                "no_shadow_no_canonical" to {
+                    copyRowsExcluding(recommendationRows, shadowTeacherKeySet + canonicalKeySet)
+                },
+                "no_rejected_research_no_shadow_no_canonical" to {
+                    copyRowsExcluding(recommendationRows, shadowTeacherKeySet + canonicalKeySet)
+                },
+                "legacy" to {
+                    copyRowsExcluding(recommendationRows, shadowTeacherKeySet + canonicalKeySet + attributionKeySet)
+                },
+                "no_rejected_research_legacy" to {
+                    copyRowsExcluding(recommendationRows, shadowTeacherKeySet + canonicalKeySet + attributionKeySet)
+                }
+            )
         )
         var rejectedWriteMode = if (rejectedRows.length() > 0) "separate_table" else "not_applicable"
         var rejectedWriteResult = if (rejectedRows.length() > 0) {
