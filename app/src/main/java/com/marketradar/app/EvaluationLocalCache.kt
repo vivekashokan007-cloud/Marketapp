@@ -338,6 +338,11 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
             compactContext.put("snapshot_build3_flow", it)
         }
+        // This small, immutable frame is the post-close C3 source of truth.
+        // Keep it even when the full context is compacted for local fallback.
+        parseJsonObject(context.opt("c3_finalization_frame"))?.let {
+            compactContext.put("c3_finalization_frame", it)
+        }
 
         val gap = parseJsonObject(context.opt("gap"))
         if (gap != null) {
@@ -418,6 +423,9 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
             compactContext.put("snapshot_build3_flow", it)
+        }
+        parseJsonObject(context.opt("c3_finalization_frame"))?.let {
+            compactContext.put("c3_finalization_frame", it)
         }
         compactContext.put("snapshot_generated_candidates", compactGenerated)
         if (compactRankedFull.length() > 0) {

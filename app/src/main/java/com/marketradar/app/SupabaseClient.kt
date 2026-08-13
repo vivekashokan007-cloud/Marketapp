@@ -285,6 +285,14 @@ object SupabaseClient {
         val rejectedSaveMode: String = "not_attempted"
     )
 
+    data class C3PercentileWriteResult(
+        val success: Boolean,
+        val expectedRows: Int,
+        val alreadyPresentRows: Int,
+        val verifiedRows: Int,
+        val message: String = ""
+    )
+
     private data class OutcomePostResult(
         val success: Boolean,
         val expectedRows: Int,
@@ -1050,6 +1058,159 @@ object SupabaseClient {
             if (out.length() >= maxDays) break
         }
         return out
+    }
+
+    /**
+     * C3 uses only completed sessions before targetDate.  A bounded recent
+     * poll window is sufficient for the 30/60 sample windows and prevents a
+     * post-close job from loading the entire history table on a phone.
+     */
+    fun fetchC3PercentileHistorySeed(targetDate: String, maxPages: Int = 8): JSONObject {
+        val valuesByVariable = LinkedHashMap<String, MutableList<Double>>()
+        val pageSize = 1000
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val path = "ml_context_percentile_history" +
+                "?select=variable_name,value,poll_ts" +
+                "&poll_ts=not.is.null&session_date=lt.$targetDate" +
+                "&history_source=in.(backfill,live)" +
+                "&order=poll_ts.desc,variable_name.asc&limit=$pageSize&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
+            val pageRows = try { JSONArray(raw) } catch (_: Exception) { break }
+            if (pageRows.length() == 0) break
+            for (i in 0 until pageRows.length()) {
+                val row = pageRows.optJSONObject(i) ?: continue
+                val name = row.optString("variable_name", "").trim()
+                if (name.isEmpty() || row.isNull("value")) continue
+                val value = row.optDouble("value", Double.NaN)
+                if (value.isNaN() || value.isInfinite()) continue
+                val values = valuesByVariable.getOrPut(name) { mutableListOf() }
+                if (values.size < 60) values.add(value)
+            }
+            if (pageRows.length() < pageSize) break
+        }
+        return JSONObject().apply {
+            for ((name, newestFirst) in valuesByVariable) {
+                val ordered = JSONArray()
+                newestFirst.asReversed().forEach(ordered::put)
+                put(name, ordered)
+            }
+        }
+    }
+
+    fun fetchC3FinalizationSnapshots(sessionDate: String): JSONArray {
+        return fetchArrayFromTables(
+            listOf(
+                "ml_brain_snapshots?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200",
+                "ml_poll_sequences?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200"
+            )
+        )
+    }
+
+    fun fetchC3OutcomePrior(targetDate: String, maxPages: Int = 20): JSONObject {
+        var pnlSum = 0.0
+        var pnlCount = 0
+        var rSum = 0.0
+        var rCount = 0
+        var successes = 0
+        var successCount = 0
+        val pageSize = 1000
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val path = "ml_evaluation_outcomes?select=managed_pnl,r_multiple,is_success" +
+                "&session_date=lt.$targetDate&label_version=eq.teacher_v1&price_integrity=eq.OK" +
+                "&order=session_date.asc,id.asc&limit=$pageSize&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
+            val rows = try { JSONArray(raw) } catch (_: Exception) { break }
+            for (i in 0 until rows.length()) {
+                val row = rows.optJSONObject(i) ?: continue
+                if (!row.isNull("managed_pnl")) {
+                    val value = row.optDouble("managed_pnl", Double.NaN)
+                    if (!value.isNaN() && !value.isInfinite()) {
+                        pnlSum += value
+                        pnlCount += 1
+                        successCount += 1
+                        if (row.optBoolean("is_success", false)) successes += 1
+                    }
+                }
+                if (!row.isNull("r_multiple")) {
+                    val value = row.optDouble("r_multiple", Double.NaN)
+                    if (!value.isNaN() && !value.isInfinite()) {
+                        rSum += value
+                        rCount += 1
+                    }
+                }
+            }
+            if (rows.length() < pageSize) break
+        }
+        return JSONObject().apply {
+            put("menu_mean_pnl_prior_sessions_only", if (pnlCount > 0) pnlSum / pnlCount else JSONObject.NULL)
+            put("realized_r_prior_sessions_only", if (rCount > 0) rSum / rCount else JSONObject.NULL)
+            put("menu_win_rate_prior_sessions_only", if (successCount > 0) successes * 100.0 / successCount else JSONObject.NULL)
+        }
+    }
+
+    private fun fetchC3ExistingIds(sessionDate: String): Set<String> {
+        val ids = linkedSetOf<String>()
+        val pageSize = 1000
+        for (page in 0 until 10) {
+            val offset = page * pageSize
+            val path = "ml_context_percentile_history?select=id" +
+                "&session_date=eq.$sessionDate&poll_ts=not.is.null&history_source=eq.live" +
+                "&limit=$pageSize&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
+            val rows = try { JSONArray(raw) } catch (_: Exception) { break }
+            for (i in 0 until rows.length()) {
+                rows.optJSONObject(i)?.optString("id", "")?.takeIf { it.isNotBlank() }?.let(ids::add)
+            }
+            if (rows.length() < pageSize) break
+        }
+        return ids
+    }
+
+    /**
+     * Upsert C3 rows in recoverable chunks. Before retrying a failed request we
+     * re-read row IDs, so an acknowledged-but-lost response is never assumed
+     * to be a failed write. A final read verifies every expected stable ID.
+     */
+    fun saveC3PercentileRows(sessionDate: String, body: JSONArray): C3PercentileWriteResult {
+        if (body.length() == 0) return C3PercentileWriteResult(true, 0, 0, 0)
+        val expectedIds = linkedSetOf<String>()
+        for (i in 0 until body.length()) body.optJSONObject(i)?.optString("id", "")?.takeIf { it.isNotBlank() }?.let(expectedIds::add)
+        if (expectedIds.isEmpty()) return C3PercentileWriteResult(false, 0, 0, 0, "C3 rows have no stable IDs")
+        var present = fetchC3ExistingIds(sessionDate)
+        val alreadyPresent = expectedIds.count(present::contains)
+        val pending = JSONArray()
+        for (i in 0 until body.length()) {
+            val row = body.optJSONObject(i) ?: continue
+            if (!present.contains(row.optString("id"))) pending.put(row)
+        }
+        for (chunk in splitJSONArray(pending, 120)) {
+            var writeChunk = chunk
+            var result = postArrayToTableDetailed("ml_context_percentile_history?on_conflict=id", writeChunk)
+            if (!result.success) {
+                // Mandatory reconciliation before retry: the server may have
+                // committed the first request while the client lost its ACK.
+                present = fetchC3ExistingIds(sessionDate)
+                val retry = JSONArray()
+                for (i in 0 until writeChunk.length()) {
+                    val row = writeChunk.optJSONObject(i) ?: continue
+                    if (!present.contains(row.optString("id"))) retry.put(row)
+                }
+                if (retry.length() > 0) result = postArrayToTableDetailed("ml_context_percentile_history?on_conflict=id", retry)
+                if (!result.success) {
+                    return C3PercentileWriteResult(false, expectedIds.size, alreadyPresent, expectedIds.count(fetchC3ExistingIds(sessionDate)::contains), "C3 write failed: ${result.errorBody ?: result.exceptionMessage ?: result.message.orEmpty()}")
+                }
+            }
+        }
+        val verified = expectedIds.count(fetchC3ExistingIds(sessionDate)::contains)
+        return C3PercentileWriteResult(
+            success = verified == expectedIds.size,
+            expectedRows = expectedIds.size,
+            alreadyPresentRows = alreadyPresent,
+            verifiedRows = verified,
+            message = if (verified == expectedIds.size) "C3 rows verified." else "C3 verification incomplete: $verified/${expectedIds.size}"
+        )
     }
     
     /**

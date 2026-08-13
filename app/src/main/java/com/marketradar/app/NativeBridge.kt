@@ -1199,6 +1199,15 @@ class NativeBridge(private val context: Context) {
             status.put("lastEvaluationProducedCount", prefs.getInt("last_evaluation_produced_count", 0))
             val lastEvaluationMessage = prefs.getString("last_evaluation_message", "") ?: ""
             status.put("lastEvaluationMessage", lastEvaluationMessage)
+            status.put("c3FinalizationDate", prefs.getString("c3_finalization_date", "") ?: "")
+            status.put("c3FinalizationPhase", prefs.getString("c3_finalization_phase", "") ?: "")
+            status.put("c3FinalizationMessage", prefs.getString("c3_finalization_message", "") ?: "")
+            status.put("c3FinalizationRunning", prefs.getBoolean("c3_finalization_running", false))
+            status.put("c3FinalizationFrames", prefs.getInt("c3_finalization_frame_count", 0))
+            status.put("c3FinalizationRows", prefs.getInt("c3_finalization_row_count", 0))
+            status.put("c3FinalizationVerifiedRows", prefs.getInt("c3_finalization_verified_rows", 0))
+            status.put("c3FinalizationError", prefs.getString("c3_finalization_last_error", "") ?: "")
+            status.put("c3FinalizationUpdatedAtMs", prefs.getLong("c3_finalization_updated_at_ms", 0L))
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"

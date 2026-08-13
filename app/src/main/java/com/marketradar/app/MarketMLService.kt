@@ -383,6 +383,7 @@ class MarketMLService : Service() {
                 "ACTION_ONLINE_UPDATE" -> "Updating from closed trade"
                 "ACTION_TRAIN_TEMPORAL" -> "Training temporal model"
                 "ACTION_DAY_EVALUATION" -> "Running day evaluation"
+                "ACTION_PERCENTILE_FINALIZE" -> "Finalizing context percentiles"
                 else -> "Working"
             })
             .setSmallIcon(android.R.drawable.ic_menu_manage)
@@ -473,6 +474,20 @@ class MarketMLService : Service() {
                     }
                 }
             }
+            "ACTION_PERCENTILE_FINALIZE" -> {
+                val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
+                scope.launch {
+                    try {
+                        runC3PercentileFinalization(sessionDate)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "C3_FINALIZE_ACTION_FAIL: ${t.message}", t)
+                        updateC3FinalizationState(sessionDate, "FAILED", "C3 finalization failed: ${t.message}", running = false, lastError = t.message)
+                    } finally {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf(startId)
+                    }
+                }
+            }
             "ACTION_EXPORT_BACKTEST" -> {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(startId)
@@ -521,6 +536,42 @@ class MarketMLService : Service() {
         if (persistedCount != null) editor.putInt("last_evaluation_outcome_count", persistedCount)
         if (lastError.isNullOrBlank()) editor.remove("evaluation_last_error") else editor.putString("evaluation_last_error", lastError)
         editor.commit()
+    }
+
+    private fun updateC3FinalizationState(
+        sessionDate: String,
+        phase: String,
+        message: String,
+        frameCount: Int? = null,
+        rowCount: Int? = null,
+        verifiedRows: Int? = null,
+        running: Boolean,
+        lastError: String? = null
+    ) {
+        val editor = prefs.edit()
+            .putString("c3_finalization_date", sessionDate)
+            .putString("c3_finalization_phase", phase)
+            .putString("c3_finalization_message", message)
+            .putLong("c3_finalization_updated_at_ms", System.currentTimeMillis())
+            .putBoolean("c3_finalization_running", running)
+        if (frameCount != null) editor.putInt("c3_finalization_frame_count", frameCount)
+        if (rowCount != null) editor.putInt("c3_finalization_row_count", rowCount)
+        if (verifiedRows != null) editor.putInt("c3_finalization_verified_rows", verifiedRows)
+        if (lastError.isNullOrBlank()) editor.remove("c3_finalization_last_error") else editor.putString("c3_finalization_last_error", lastError)
+        editor.commit()
+    }
+
+    private fun startC3PercentileFinalization(sessionDate: String) {
+        updateC3FinalizationState(sessionDate, "QUEUED", "C3 percentile finalization queued after evaluation.", running = false)
+        try {
+            startForegroundService(Intent(this, MarketMLService::class.java).apply {
+                action = "ACTION_PERCENTILE_FINALIZE"
+                putExtra("session_date", sessionDate)
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "C3_FINALIZE_START_FAIL: ${e.message}", e)
+            updateC3FinalizationState(sessionDate, "FAILED", "C3 finalization could not start: ${e.message}", running = false, lastError = e.message)
+        }
     }
 
     private fun currentCoverageIntegrity(sessionDate: String): String {
@@ -1680,6 +1731,60 @@ class MarketMLService : Service() {
         }
     }
 
+    private suspend fun runC3PercentileFinalization(sessionDate: String) = withContext(Dispatchers.IO) {
+        if (prefs.getString("c3_finalization_date", "") == sessionDate &&
+            prefs.getString("c3_finalization_phase", "") == "DONE"
+        ) {
+            Log.i(TAG, "C3_FINALIZE_SKIP: already verified for $sessionDate")
+            return@withContext
+        }
+        updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
+        val snapshots = SupabaseClient.fetchC3FinalizationSnapshots(sessionDate).let { remote ->
+            if (remote.length() > 0) remote else EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
+        }
+        val frames = org.json.JSONArray()
+        for (i in 0 until snapshots.length()) {
+            val snapshot = snapshots.optJSONObject(i) ?: continue
+            val context = parseJsonObject(snapshot.opt("context_json")) ?: continue
+            val captured = context.optJSONObject("c3_finalization_frame") ?: continue
+            val frame = org.json.JSONObject(captured.toString())
+            frame.put("snapshot_id", snapshot.optString("id", frame.optString("snapshot_id", "")))
+            frame.put("session_date", snapshot.optString("session_date", sessionDate))
+            frame.put("poll_ts", snapshot.optString("poll_ts", frame.optString("poll_ts", "")))
+            if (frame.optString("poll_ts").isNotBlank()) frames.put(frame)
+        }
+        if (frames.length() == 0) {
+            updateC3FinalizationState(
+                sessionDate, "SKIPPED_NO_FRAMES",
+                "No C3 recording frames were captured for $sessionDate. Evaluation remains complete.",
+                frameCount = 0, rowCount = 0, verifiedRows = 0, running = false
+            )
+            Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=${snapshots.length()}")
+            return@withContext
+        }
+
+        updateC3FinalizationState(sessionDate, "BUILDING", "Building C3 rows from ${frames.length()} captured frames...", frameCount = frames.length(), running = true)
+        val historySeed = SupabaseClient.fetchC3PercentileHistorySeed(sessionDate)
+        val outcomePrior = SupabaseClient.fetchC3OutcomePrior(sessionDate)
+        val brain = Python.getInstance().getModule("brain")
+        val raw = withTimeoutOrNull(120_000L) {
+            brain.callAttr("c3_finalize_frames", frames.toString(), historySeed.toString(), outcomePrior.toString()).toString()
+        } ?: throw IllegalStateException("C3 finalization timed out")
+        val result = org.json.JSONObject(raw)
+        if (!result.optBoolean("ok", false)) throw IllegalStateException(result.optString("error", "C3 finalization failed"))
+        val rows = result.optJSONArray("rows") ?: org.json.JSONArray()
+        if (rows.length() == 0) throw IllegalStateException("C3 finalization produced no rows from ${frames.length()} frames")
+        updateC3FinalizationState(sessionDate, "UPLOADING", "Uploading ${rows.length()} C3 rows...", frameCount = frames.length(), rowCount = rows.length(), running = true)
+        val write = SupabaseClient.saveC3PercentileRows(sessionDate, rows)
+        if (!write.success) {
+            updateC3FinalizationState(sessionDate, "FAILED", write.message, frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false, lastError = write.message)
+            Log.e(TAG, "C3_FINALIZE_WRITE_FAIL: date=$sessionDate ${write.message}")
+            return@withContext
+        }
+        updateC3FinalizationState(sessionDate, "DONE", "C3 percentile finalization verified: ${write.verifiedRows}/${write.expectedRows} rows.", frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false)
+        Log.i(TAG, "C3_FINALIZE_DONE: date=$sessionDate frames=${frames.length()} rows=${write.expectedRows} existing=${write.alreadyPresentRows}")
+    }
+
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
     private suspend fun runDayEvaluation(sessionDateOverride: String? = null, forceAnyway: Boolean = false) = withContext(Dispatchers.IO) {
         val sessionDate = sessionDateOverride?.takeIf { it.isNotBlank() } ?: todayIstDate()
@@ -2001,6 +2106,9 @@ class MarketMLService : Service() {
                     null
                 }
             )
+            // C3 is intentionally a separate best-effort job. Its failure is
+            // visible in its own status and never changes evaluation DONE.
+            startC3PercentileFinalization(sessionDate)
             cancelDayEvaluationReminder(this@MarketMLService)
             if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
                 Log.w(

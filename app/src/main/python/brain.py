@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.72"
+BRAIN_VERSION = "2.5.73"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -15547,7 +15547,7 @@ def take_poll_snapshot(result, ctx, polls):
 
     _audit_snapshot_replayability(snapshot_context, ctx)
 
-    return {
+    snapshot_payload = {
         'poll_ts': datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%dT%H:%M:%S%z"),
         'session_date': ctx.get('today_ist'),
         'recommendation_id': rec_id,
@@ -15572,6 +15572,38 @@ def take_poll_snapshot(result, ctx, polls):
         'b1a_nf_rv_to_iv_daily_ratio': b1a_nf.get('rv_to_iv_daily_ratio'),
         'is_labelable': _is_labelable(result, ctx),
     }
+    # The live percentile preview intentionally has a different purpose from
+    # the post-close C3 record. Capture the audited input values now, before
+    # later state or outcome data can leak into this poll's evidence.
+    try:
+        from c3_percentile_finalizer import capture_frame
+        snapshot_context['c3_finalization_frame'] = capture_frame(snapshot_payload)
+        snapshot_payload['context_json'] = json.dumps(snapshot_context)
+    except Exception as exc:
+        snapshot_context['c3_finalization_frame_error'] = str(exc)[:180]
+        snapshot_payload['context_json'] = json.dumps(snapshot_context)
+    return snapshot_payload
+
+
+def c3_finalize_frames(frames, history_seed, outcome_prior):
+    """Pure post-close C3 builder called by MarketMLService.
+
+    Inputs are captured poll frames plus history strictly before the target
+    session. This deliberately does not read evaluation state or Supabase.
+    """
+    try:
+        from c3_percentile_finalizer import finalize_frames
+        parsed_frames = _bridge_json_obj(frames) or []
+        parsed_seed = _bridge_json_obj(history_seed) or {}
+        parsed_prior = _bridge_json_obj(outcome_prior) or {}
+        if not isinstance(parsed_frames, list):
+            return json.dumps({'ok': False, 'error': 'c3_frames_not_array'})
+        if not isinstance(parsed_seed, dict) or not isinstance(parsed_prior, dict):
+            return json.dumps({'ok': False, 'error': 'c3_history_or_outcome_prior_invalid'})
+        rows = finalize_frames(parsed_frames, parsed_seed, parsed_prior, C3_CONTEXT_PERCENTILE_VARIABLES)
+        return json.dumps({'ok': True, 'rows': rows, 'frame_count': len(parsed_frames)})
+    except Exception as exc:
+        return json.dumps({'ok': False, 'error': f'c3_finalization_failed:{exc}'})
 
 
 # ═══════════════════════════════════════════════════════════════
