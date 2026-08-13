@@ -211,6 +211,9 @@ class NativeBridge(private val context: Context) {
             "capitalBlocked", "executionReady", "executionGate", "entryAction", "directionSafe",
             "brainScore", "contextPercentileScore", "p_ml", "mlAction", "mlEdge", "mlRegime",
             "mlUnsure", "mlOodFlag", "deterministic_rank", "teacher_shadow_rank", "stage2a_live_rank",
+            "pc2PaperRank", "pc2PaperPrimaryEligible", "pc2PaperSelectorVersion", "pc2PaperMode",
+            "pc2SupplyWidthSource", "pc2SupplyWidthExpanded", "pc2SupplyLadderVersion",
+            "pc2BatchFCandleScore", "pc2BatchFCandleComponents",
             "reason_code", "reject_reason",
             "rejection_stage", "rejection_reason", "gate_name", "gate_field",
             "gate_basis", "pc2_gate_basis", "gate_basis_summary", "pct_target", "slice_key",
@@ -304,6 +307,12 @@ class NativeBridge(private val context: Context) {
         }
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let { flow ->
             compactContext.put("snapshot_build3_flow", flow)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
+            compactContext.put("snapshot_pc2_paper_primary", policy)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
+            compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)
         }
         val skipReason = context.opt("snapshot_generation_skip_reason")
         if (skipReason != null && skipReason != JSONObject.NULL) {

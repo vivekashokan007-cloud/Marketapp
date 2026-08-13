@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.74"
+BRAIN_VERSION = "2.5.76"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6006,6 +6006,8 @@ CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v1"
+PC2_PAPER_PRIMARY_MODE = "paper"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
@@ -6365,7 +6367,7 @@ PC2_LEGACY_UNUSED_SHADOW_CONSTS = (
     'SIGMA_EXIT_THRESHOLD',
 )
 
-PC2_BATCH_F_SUPPLY_PATTERN_VERSION = 'pc2_batch_f_supply_pattern_authority_v1'
+PC2_BATCH_F_SUPPLY_PATTERN_VERSION = 'pc2_batch_f_supply_pattern_paper_v1'
 PC2_BATCH_F_SUPPLY_LADDER_CONSTS = (
     'BNF_WIDTHS',
     'NF_WIDTHS',
@@ -6385,6 +6387,109 @@ PC2_BATCH_F_CANDLE_PATTERN_CONSTS = (
     'CANDLE_PRIOR_TREND_THRESHOLD',
     'CANDLE_GAP_PCT',
 )
+PC2_BATCH_F_PAPER_EXTRA_WIDTHS = {
+    'BNF': (100, 700, 900, 1200),
+    'NF': (50, 350, 500),
+}
+PC2_BATCH_F_CANDLE_SCORE_CAP = 0.03
+
+
+def _pc2_batch_f_width_ladder(index_key, base_widths, strike_step, execution_mode):
+    """Return a strike-valid paper-only width expansion with provenance."""
+    index_key = str(index_key or 'NF').upper()
+    mode = str(execution_mode or 'paper').strip().lower()
+    step = int(strike_step or 1)
+    baseline = sorted({int(width) for width in base_widths if int(width) > 0 and int(width) % step == 0})
+    extras = []
+    if mode == 'paper':
+        extras = sorted({
+            int(width) for width in PC2_BATCH_F_PAPER_EXTRA_WIDTHS.get(index_key, ())
+            if int(width) > 0 and int(width) % step == 0 and int(width) not in baseline
+        })
+    return {
+        'widths': baseline + extras,
+        'baseline_widths': baseline,
+        'paper_expanded_widths': extras,
+        'paper_active': mode == 'paper',
+        'execution_mode_observed': mode,
+        'strike_step': step,
+        'schema_version': PC2_BATCH_F_SUPPLY_PATTERN_VERSION,
+    }
+
+
+def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
+    """Add bounded 15-minute candle context to paper PC2 ranking evidence.
+
+    Patterns remain soft evidence. They never create a candidate, reject one,
+    bypass a safety gate, or replace the existing PC2 percentile score.
+    """
+    mode = str(execution_mode or 'paper').strip().lower()
+    active = mode == 'paper'
+    candle_data = candle_data if isinstance(candle_data, dict) else {}
+    affected = 0
+
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        poll_key = 'candle_bnf' if str(candidate.get('index') or '').upper() == 'BNF' else 'candle_nf'
+        pattern_rows = (candle_data.get(poll_key) or {}).get('patterns') or []
+        direction = _strategy_direction(candidate.get('type'))
+        score = 0.0
+        components = []
+        cautions = []
+        for pattern in pattern_rows:
+            if not isinstance(pattern, dict) or pattern.get('timeframe') != '15m':
+                continue
+            impact = str(pattern.get('impact') or '').lower()
+            strength = max(0.0, min(5.0, _safe_num(pattern.get('strength'), 0.0)))
+            name = str(pattern.get('pattern') or 'UNKNOWN')
+            if impact == 'caution':
+                cautions.append(name)
+                continue
+            expected_direction = 'BULL' if impact == 'bullish' else 'BEAR' if impact == 'bearish' else None
+            if not active or expected_direction is None or direction not in ('BULL', 'BEAR'):
+                continue
+            contribution = round(0.03 * strength, 4)
+            if direction != expected_direction:
+                contribution *= -1
+            score += contribution
+            components.append({
+                'pattern': name,
+                'impact': impact,
+                'strength': strength,
+                'contribution': round(contribution, 4),
+                'timeframe': '15m',
+            })
+        bounded_score = max(-PC2_BATCH_F_CANDLE_SCORE_CAP, min(PC2_BATCH_F_CANDLE_SCORE_CAP, score)) if active else 0.0
+        base_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
+        candidate['pc2BatchFCandleScore'] = round(bounded_score, 4)
+        candidate['pc2BatchFCandleRawScore'] = round(score, 4)
+        candidate['pc2BatchFCandleComponents'] = components
+        candidate['pc2BatchFCandleCautions'] = cautions
+        candidate['pc2BatchFActive'] = active
+        candidate['pc2BatchFVersion'] = PC2_BATCH_F_SUPPLY_PATTERN_VERSION
+        if active:
+            if not isinstance(candidate.get('contextPercentileComponents'), list):
+                candidate['contextPercentileComponents'] = []
+            candidate['contextPercentileScore'] = round(base_score + bounded_score, 4)
+            candidate['contextPercentileRawScore'] = round(
+                _safe_num(candidate.get('contextPercentileRawScore'), base_score) + bounded_score,
+                4,
+            )
+            candidate['contextPercentileComponents'].extend(components)
+            if bounded_score:
+                affected += 1
+
+    return {
+        'schema_version': PC2_BATCH_F_SUPPLY_PATTERN_VERSION,
+        'mode': 'paper',
+        'active': active,
+        'execution_mode_observed': mode,
+        'candle_score_cap': PC2_BATCH_F_CANDLE_SCORE_CAP,
+        'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
+        'candidates_with_candle_influence': affected,
+        'contract': '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation',
+    }
 
 
 def _pc2_parameter_authority_inventory():
@@ -6409,15 +6514,15 @@ def _pc2_parameter_authority_inventory():
     ]
     policy_controlled = list(PC2_BATCH_E_ALERT_TIMING_CONSTS.keys())
     legacy_unused_shadow = list(PC2_LEGACY_UNUSED_SHADOW_CONSTS)
-    supply_ladder_shadow = list(PC2_BATCH_F_SUPPLY_LADDER_CONSTS)
-    advisory_pattern_shadow = list(PC2_BATCH_F_CANDLE_PATTERN_CONSTS)
+    paper_supply_ladder = list(PC2_BATCH_F_SUPPLY_LADDER_CONSTS)
+    paper_pattern_context = list(PC2_BATCH_F_CANDLE_PATTERN_CONSTS)
     resolved_kind_b = set(
         live_soft
         + live_context_constants
         + policy_controlled
         + legacy_unused_shadow
-        + supply_ladder_shadow
-        + advisory_pattern_shadow
+        + paper_supply_ladder
+        + paper_pattern_context
     )
     resolved_kind_b_constants = [k for k in kind_b if k in resolved_kind_b]
     pending_kind_b = [k for k in kind_b if k not in resolved_kind_b]
@@ -6435,8 +6540,10 @@ def _pc2_parameter_authority_inventory():
         'live_context_authority_count': len(live_context_constants),
         'policy_controlled_count': len(policy_controlled),
         'legacy_unused_shadow_count': len(legacy_unused_shadow),
-        'supply_ladder_shadow_count': len(supply_ladder_shadow),
-        'advisory_pattern_shadow_count': len(advisory_pattern_shadow),
+        'supply_ladder_shadow_count': 0,
+        'advisory_pattern_shadow_count': 0,
+        'paper_supply_ladder_count': len(paper_supply_ladder),
+        'paper_pattern_context_count': len(paper_pattern_context),
         'resolved_kind_b_count': len(resolved_kind_b_constants),
         'pending_kind_b_count': len(pending_kind_b),
         'structural_enum_count': len(structural),
@@ -6449,8 +6556,10 @@ def _pc2_parameter_authority_inventory():
         'live_context_authority_constants': live_context_constants,
         'policy_controlled_constants': policy_controlled,
         'legacy_unused_shadow_constants': legacy_unused_shadow,
-        'supply_ladder_shadow_constants': supply_ladder_shadow,
-        'advisory_pattern_shadow_constants': advisory_pattern_shadow,
+        'supply_ladder_shadow_constants': [],
+        'advisory_pattern_shadow_constants': [],
+        'paper_supply_ladder_constants': paper_supply_ladder,
+        'paper_pattern_context_constants': paper_pattern_context,
         'resolved_kind_b_constants': resolved_kind_b_constants,
         'pending_kind_b_constants': pending_kind_b,
         'structural_enum_constants': structural,
@@ -6634,16 +6743,16 @@ def _pc2_alert_timing_context(ctx=None, result=None):
 
 
 def _pc2_batch_f_supply_pattern_inventory():
-    """Batch-F separates supply/advisory constants from hidden hard gates."""
+    """Batch-F paper authority map for bounded supply and candle context."""
     supply_rows = []
     for key in PC2_BATCH_F_SUPPLY_LADDER_CONSTS:
         supply_rows.append({
             'constant': key,
             'value': _CONST.get(key),
-            'authority': 'generation_supply_ladder_shadow',
-            'status': 'SHADOW_ONLY_SUPPLY_LADDER',
+            'authority': 'paper_generation_supply_ladder',
+            'status': 'PAPER_ACTIVE_SUPPLY_LADDER',
             'rationale': C3_KIND_B_CONSTS.get(key, 'candidate supply ladder'),
-            'behavior_change': False,
+            'behavior_change': True,
         })
 
     pattern_rows = []
@@ -6651,21 +6760,23 @@ def _pc2_batch_f_supply_pattern_inventory():
         pattern_rows.append({
             'constant': key,
             'value': _CONST.get(key),
-            'authority': 'advisory_pattern_calibration_shadow',
-            'status': 'ADVISORY_SIGNAL_PENDING_REPLAY',
+            'authority': 'paper_bounded_context_score',
+            'status': 'PAPER_ACTIVE_BOUNDED_CONTEXT',
             'rationale': C3_KIND_B_CONSTS.get(key, 'pattern threshold; needs replay calibration'),
-            'behavior_change': False,
+            'behavior_change': True,
         })
 
     return {
         'schema_version': PC2_BATCH_F_SUPPLY_PATTERN_VERSION,
-        'status': 'CLASSIFIED_NO_LIVE_BEHAVIOR_CHANGE',
+        'status': 'PAPER_ACTIVE_BOUNDED',
         'row_count': len(supply_rows) + len(pattern_rows),
-        'supply_ladder_shadow_count': len(supply_rows),
-        'advisory_pattern_shadow_count': len(pattern_rows),
-        'behavior_change': False,
-        'live_scope': 'none',
-        'shadow_scope': 'width ladders remain supply enumeration; candle thresholds remain advisory pattern interpretation pending replay',
+        'supply_ladder_shadow_count': 0,
+        'advisory_pattern_shadow_count': 0,
+        'paper_active_supply_ladder_count': len(supply_rows),
+        'paper_active_pattern_count': len(pattern_rows),
+        'behavior_change': True,
+        'live_scope': 'paper-only width expansion and bounded 15m candle context score',
+        'shadow_scope': 'sandbox/live remain unchanged; candle evidence has no hard-veto authority',
         'supply_ladder_rows': supply_rows,
         'advisory_pattern_rows': pattern_rows,
     }
@@ -9871,6 +9982,15 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'gate_basis_summary': cand.get('gate_basis_summary'),
             'premium_edge_status': cand.get('premium_edge_status') or ('OK' if cand.get('premiumEdge') is not None else 'MISSING'),
             'deterministic_rank': cand.get('deterministic_rank'),
+            'pc2PaperRank': cand.get('pc2PaperRank'),
+            'pc2PaperPrimaryEligible': cand.get('pc2PaperPrimaryEligible'),
+            'pc2PaperSelectorVersion': cand.get('pc2PaperSelectorVersion'),
+            'pc2PaperMode': cand.get('pc2PaperMode'),
+            'pc2SupplyWidthSource': cand.get('pc2SupplyWidthSource'),
+            'pc2SupplyWidthExpanded': cand.get('pc2SupplyWidthExpanded'),
+            'pc2SupplyLadderVersion': cand.get('pc2SupplyLadderVersion'),
+            'pc2BatchFCandleScore': cand.get('pc2BatchFCandleScore'),
+            'pc2BatchFCandleComponents': cand.get('pc2BatchFCandleComponents'),
             'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
             'stage2a_live_rank': cand.get('stage2a_live_rank'),
             'rank_diagnostics': cand.get('rank_diagnostics') or _build3_rank_fingerprint(cand),
@@ -10929,12 +11049,25 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         _trace_root['candidates'][index_key] = _cand_trace
         ctx['_active_cand_trace'] = _cand_trace
     lot_size = _CONST['BNF_LOT'] if is_bnf else _CONST['NF_LOT']
-    widths = _CONST['BNF_WIDTHS'] if is_bnf else _CONST['NF_WIDTHS']
+    base_widths = _CONST['BNF_WIDTHS'] if is_bnf else _CONST['NF_WIDTHS']
     atm = chain['atm']
     strikes = chain['strikes']
     all_strikes = [int(k) for k in chain.get('allStrikes', sorted(strikes.keys()))]
     all_set = set(all_strikes)
     step = all_strikes[1] - all_strikes[0] if len(all_strikes) > 1 else (100 if is_bnf else 50)
+    width_plan = _pc2_batch_f_width_ladder(
+        idx,
+        base_widths,
+        step,
+        ctx.get('executionMode') or ctx.get('execution_mode') or 'paper',
+    )
+    widths = width_plan['widths']
+    ctx.setdefault('_pc2_batch_f_width_plans', {})[idx] = width_plan
+    if _cand_trace is not None:
+        _cand_trace['config']['widths'] = list(widths)
+        _cand_trace['config']['baseline_widths'] = list(width_plan['baseline_widths'])
+        _cand_trace['config']['paper_expanded_widths'] = list(width_plan['paper_expanded_widths'])
+        _cand_trace['config']['pc2_batch_f_paper_active'] = width_plan['paper_active']
     cw = chain.get('callWallStrike', 0)
     pw = chain.get('putWallStrike', 0)
     atm_iv = chain.get('atmIv', vix / 100)
@@ -11597,6 +11730,15 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             ib['wallTag'] = _wall_tag(ib['wallScore'], ib['type'])
             candidates.append(ib)
 
+    expanded_widths = set(width_plan['paper_expanded_widths'])
+    for candidate in candidates:
+        candidate['pc2SupplyWidthSource'] = (
+            'paper_expanded_ladder' if candidate.get('width') in expanded_widths else 'baseline_ladder'
+        )
+        candidate['pc2SupplyWidthExpanded'] = candidate.get('width') in expanded_widths
+        candidate['pc2SupplyLadderVersion'] = PC2_BATCH_F_SUPPLY_PATTERN_VERSION
+        candidate['pc2SupplyMode'] = 'paper' if width_plan['paper_active'] else 'baseline'
+
     # TASK 5.5 — Summary Trace
     if _cand_trace is not None:
         _cand_trace['summary'] = {
@@ -11719,6 +11861,98 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
             stage2a=stage2a,
         )
     return ranked
+
+
+def _pc2_paper_primary_sort_key(candidate):
+    """PC2-first ordering for paper research after existing hard construction gates.
+
+    This intentionally does not reuse the deterministic varsity/calibration/force
+    waterfall. PC2 gate outcomes and bounded context score lead; risk-normalized
+    economics only resolve candidates with equivalent percentile evidence.
+    """
+    gate_rows = candidate.get('pc2_gate_basis') if isinstance(candidate.get('pc2_gate_basis'), list) else []
+    relevant_gates = [gate for gate in gate_rows if isinstance(gate, dict)]
+    failed_gate_count = sum(1 for gate in relevant_gates if gate.get('passed') is False)
+    percentile_authority_count = sum(
+        1 for gate in relevant_gates if gate.get('live_percentile_authority') is True
+    )
+    context_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
+    edge_per_risk = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
+    if edge_per_risk is None:
+        edge_per_risk = float('-inf')
+    probability = _safe_num(candidate.get('probProfit'), 0.0)
+    unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
+    return (
+        1 if unsafe else 0,
+        failed_gate_count,
+        -context_score,
+        -percentile_authority_count,
+        -edge_per_risk,
+        -probability,
+        str(candidate.get('id') or ''),
+    )
+
+
+def select_pc2_paper_primary(candidates, execution_mode='paper'):
+    """Return PC2-primary global order plus deterministic comparator evidence.
+
+    PC2 authority is deliberately limited to paper mode. Existing construction,
+    capital, and direction safety gates remain non-negotiable. The caller keeps
+    deterministic ranks on every candidate so post-close analysis can compare
+    the two policies without reconstructing historical rank state.
+    """
+    mode = str(execution_mode or PC2_PAPER_PRIMARY_MODE).strip().lower()
+    ranked = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
+    deterministic_top = ranked[0] if ranked else None
+    active = mode == PC2_PAPER_PRIMARY_MODE
+
+    if active:
+        ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
+    else:
+        ordered = list(ranked)
+
+    for pc2_rank, candidate in enumerate(ordered, start=1):
+        candidate['pc2PaperRank'] = pc2_rank if active else None
+        candidate['pc2PaperPrimaryEligible'] = bool(
+            active and not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
+        )
+        candidate['pc2PaperSelectorVersion'] = PC2_PAPER_PRIMARY_SELECTOR_VERSION
+        candidate['pc2PaperMode'] = PC2_PAPER_PRIMARY_MODE
+
+    eligible = [
+        candidate for candidate in ordered
+        if not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
+    ]
+    pc2_top = eligible[0] if active and eligible else (deterministic_top if not active else None)
+    return ordered, {
+        'schema_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
+        'mode': PC2_PAPER_PRIMARY_MODE,
+        'active': active,
+        'execution_mode_observed': mode,
+        'candidate_count': len(ranked),
+        'eligible_candidate_count': len(eligible),
+        'pc2_primary_candidate_id': pc2_top.get('id') if isinstance(pc2_top, dict) else None,
+        'deterministic_shadow_candidate_id': deterministic_top.get('id') if isinstance(deterministic_top, dict) else None,
+        'changed_from_deterministic': bool(
+            isinstance(pc2_top, dict)
+            and isinstance(deterministic_top, dict)
+            and pc2_top.get('id') != deterministic_top.get('id')
+        ),
+        'hard_safety_contract': [
+            'existing candidate construction gates preserved',
+            'capital-blocked candidates cannot be PC2 primary',
+            'direction-unsafe candidates cannot be PC2 primary',
+            'no eligible paper candidate forces WAIT',
+            'PC2 primary authority is restricted to paper execution mode',
+        ],
+        'ranking_contract': [
+            'pc2 gate failures ascending',
+            'contextPercentileScore descending',
+            'live percentile gate authority count descending',
+            'adjustedEdgePerRisk descending as economic tie-breaker',
+            'probProfit descending as final tie-breaker',
+        ],
+    }
 
 def _strategy_action(strategy_type):
     return 'BUY PREMIUM' if strategy_type in _CONST.get('DEBIT_TYPES', set()) else 'SELL PREMIUM'
@@ -12012,6 +12246,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     # Candlestick pattern detection
     try:
         candle_data = compute_candle_signals(polls, ctx)
+        ctx['pc2_candle_signals'] = candle_data
         for ckey in ('candle_bnf', 'candle_nf'):
             result[ckey] = candle_data[ckey]
             for ins in candle_data[ckey].get('patterns', []):
@@ -12270,6 +12505,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         _pc2_stamp_candidate_gate_context(all_cands, context_percentiles)
         _pc2_stamp_gate_basis(all_rejected, context_percentiles)
         _apply_context_percentile_live_ranking(all_cands, context_percentiles)
+        batch_f_paper_context = _apply_pc2_batch_f_candle_context(
+            all_cands,
+            ctx.get('pc2_candle_signals'),
+            ctx.get('executionMode') or ctx.get('execution_mode') or 'paper',
+        )
+        batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
+        result['pc2_batch_f_paper_context'] = batch_f_paper_context
+        ctx['pc2_batch_f_paper_context'] = batch_f_paper_context
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
         if not all_cands:
@@ -12494,8 +12737,41 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             }
 
             # Watchlist: top 6 + diverse picks per index.
+            # PC2 owns the global paper ordering. The deterministic waterfall
+            # remains on each candidate as the post-close control/comparator.
+            ranked, pc2_paper_primary = select_pc2_paper_primary(
+                ranked,
+                ctx.get('executionMode') or ctx.get('execution_mode') or PC2_PAPER_PRIMARY_MODE,
+            )
+            result['pc2_paper_primary'] = pc2_paper_primary
+            if pc2_paper_primary.get('active'):
+                result['decisionSource'] = 'PC2_PAPER_PRIMARY'
+                result['decision_source'] = result['decisionSource']
+                result['decisionReason'] = 'PC2 percentile policy selected the global paper primary; deterministic rank retained as shadow evidence.'
+                result['decision_reason'] = result['decisionReason']
+
             # Final verdict must match the executable lane shown to the user.
             watchlist = _build_watchlist_from_ranked(ranked)
+            if pc2_paper_primary.get('active') and not pc2_paper_primary.get('pc2_primary_candidate_id'):
+                verdict = dict(result.get('verdict') or {})
+                conflicts = list(verdict.get('conflicts') or [])
+                conflicts.append('PC2 forced WAIT: no capital-safe and direction-safe paper candidate survived.')
+                verdict.update({
+                    'action': 'WAIT',
+                    'strategy': None,
+                    'direction': 'NEUTRAL',
+                    'confidence': 0,
+                    'urgency': 'WAIT - no PC2-safe candidate',
+                    'reasoning': 'PC2 paper selector found no capital-safe and direction-safe candidate.',
+                    'conflicts': conflicts,
+                    'execution_aligned': False,
+                })
+                result['verdict'] = verdict
+                result['decisionSource'] = 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+                result['decision_source'] = result['decisionSource']
+                result['decisionReason'] = verdict['reasoning']
+                result['decision_reason'] = result['decisionReason']
+                watchlist = []
             if not ranked:
                 wait_reason = 'All candidates failed BUILD 3 gates.'
                 gate_reason = _build3_effective_gate_reason(a8_summary, lane_summary)
@@ -12538,6 +12814,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict
                 ranked = _recompute_rankings(final_verdict, gated_cands)
+                ranked, pc2_paper_primary = select_pc2_paper_primary(
+                    ranked,
+                    ctx.get('executionMode') or ctx.get('execution_mode') or PC2_PAPER_PRIMARY_MODE,
+                )
+                result['pc2_paper_primary'] = pc2_paper_primary
                 watchlist = _build_watchlist_from_ranked(ranked)
 
             for c in ranked:
@@ -12570,9 +12851,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     top['decision_source'] = 'TEACHER_ONLY'
                     top['decisionReason'] = 'Teacher expectancy ranking applied in guarded Stage 2A mode'
                     top['decision_reason'] = top['decisionReason']
-            result['decisionSource'] = top.get('decisionSource') or result.get('decisionSource') or 'DEFAULT_BRAIN_MATH'
+            result['decisionSource'] = (
+                'PC2_PAPER_PRIMARY'
+                if (
+                    pc2_paper_primary.get('active')
+                    and pc2_paper_primary.get('pc2_primary_candidate_id')
+                    and (result.get('verdict') or {}).get('action') not in ('WAIT', 'STOP', None)
+                )
+                else top.get('decisionSource') or result.get('decisionSource') or 'DEFAULT_BRAIN_MATH'
+            )
             result['decision_source'] = result['decisionSource']
-            result['decisionReason'] = top.get('decisionReason') or result.get('decisionReason') or 'top decision ranked by deterministic brain rules'
+            result['decisionReason'] = (
+                'PC2 percentile policy selected the global paper primary; deterministic rank retained as shadow evidence.'
+                if result['decisionSource'] == 'PC2_PAPER_PRIMARY'
+                else top.get('decisionReason') or result.get('decisionReason') or 'top decision ranked by deterministic brain rules'
+            )
             result['decision_reason'] = result['decisionReason']
             result['build3_ab'] = _build3_make_ab_payload(
                 ctx=ctx,
@@ -13047,6 +13340,15 @@ def _candidate_view(c):
         'sigmaOTM': c.get('sigmaOTM'),
         'premiumEdge': c.get('premiumEdge'),
         'deterministic_rank': c.get('deterministic_rank'),
+        'pc2PaperRank': c.get('pc2PaperRank'),
+        'pc2PaperPrimaryEligible': c.get('pc2PaperPrimaryEligible'),
+        'pc2PaperSelectorVersion': c.get('pc2PaperSelectorVersion'),
+        'pc2PaperMode': c.get('pc2PaperMode'),
+        'pc2SupplyWidthSource': c.get('pc2SupplyWidthSource'),
+        'pc2SupplyWidthExpanded': c.get('pc2SupplyWidthExpanded'),
+        'pc2SupplyLadderVersion': c.get('pc2SupplyLadderVersion'),
+        'pc2BatchFCandleScore': c.get('pc2BatchFCandleScore'),
+        'pc2BatchFCandleComponents': c.get('pc2BatchFCandleComponents'),
         'teacher_shadow_rank': c.get('teacher_shadow_rank'),
         'stage2a_live_rank': c.get('stage2a_live_rank'),
         'teacher_bucket_key': c.get('teacher_bucket_key'),
@@ -15148,8 +15450,11 @@ def take_poll_snapshot(result, ctx, polls):
     rejected_candidates = result.get('rejected_candidates', [])
     top_5_nf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'NF'][:5]
     top_5_bnf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'BNF'][:5]
-    top_5_cands = (top_5_nf + top_5_bnf)[:10]
+    top_5_cands = [c for c in watchlist if isinstance(c, dict)][:10]
 
+    # The first watchlist entry is now the global PC2 paper primary. Do not
+    # reconstruct a primary by concatenating NF before BNF: that was the
+    # historical routing bug identified in the forensic study.
     top_cand = top_5_cands[0] if top_5_cands else None
     verdict = result.get('verdict', {})
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
@@ -15217,6 +15522,15 @@ def take_poll_snapshot(result, ctx, polls):
             'expiry': top_cand.get('expiry'),
             'width': top_cand.get('width'),
             'deterministic_rank': top_cand.get('deterministic_rank'),
+            'pc2PaperRank': top_cand.get('pc2PaperRank'),
+            'pc2PaperPrimaryEligible': top_cand.get('pc2PaperPrimaryEligible'),
+            'pc2PaperSelectorVersion': top_cand.get('pc2PaperSelectorVersion'),
+            'pc2PaperMode': top_cand.get('pc2PaperMode'),
+            'pc2SupplyWidthSource': top_cand.get('pc2SupplyWidthSource'),
+            'pc2SupplyWidthExpanded': top_cand.get('pc2SupplyWidthExpanded'),
+            'pc2SupplyLadderVersion': top_cand.get('pc2SupplyLadderVersion'),
+            'pc2BatchFCandleScore': top_cand.get('pc2BatchFCandleScore'),
+            'pc2BatchFCandleComponents': top_cand.get('pc2BatchFCandleComponents'),
             'teacher_shadow_rank': top_cand.get('teacher_shadow_rank'),
             'stage2a_live_rank': top_cand.get('stage2a_live_rank'),
             'teacher_bucket_key': top_cand.get('teacher_bucket_key'),
@@ -15443,6 +15757,9 @@ def take_poll_snapshot(result, ctx, polls):
         'pc2_batch_f_supply_pattern_status': pc2_batch_f_supply_pattern.get('status'),
         'pc2_batch_f_supply_ladder_shadow_count': pc2_batch_f_supply_pattern.get('supply_ladder_shadow_count'),
         'pc2_batch_f_advisory_pattern_shadow_count': pc2_batch_f_supply_pattern.get('advisory_pattern_shadow_count'),
+        'pc2_batch_f_paper_supply_ladder_count': pc2_batch_f_supply_pattern.get('paper_active_supply_ladder_count'),
+        'pc2_batch_f_paper_pattern_count': pc2_batch_f_supply_pattern.get('paper_active_pattern_count'),
+        'pc2_batch_f_paper_context': result.get('pc2_batch_f_paper_context') if isinstance(result.get('pc2_batch_f_paper_context'), dict) else {},
         'shadow_selector_suite_status': 'OK' if shadow_selector_suite.get('candidate_count') else 'NO_CANDIDATES',
         'shadow_selector_changed_count': shadow_selector_suite.get('changed_selector_count'),
         'context_percentiles_status': 'OK' if (result.get('context_percentiles') or {}).get('schema_version') else 'MISSING',
@@ -15497,6 +15814,8 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_batch_d_exit_policy'] = pc2_batch_d_exit_policy
     snapshot_context['snapshot_pc2_batch_e_alert_timing'] = pc2_batch_e_alert_timing
     snapshot_context['snapshot_pc2_batch_f_supply_pattern'] = pc2_batch_f_supply_pattern
+    snapshot_context['snapshot_pc2_batch_f_paper_context'] = result.get('pc2_batch_f_paper_context') if isinstance(result.get('pc2_batch_f_paper_context'), dict) else {}
+    snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_build3_gate'] = build3_gate
