@@ -327,6 +327,11 @@ class NativeBridge(private val context: Context) {
         return compact
     }
 
+    private fun writeTeacherResearchBridgeInput(file: File, payload: JSONArray) {
+        file.parentFile?.mkdirs()
+        file.bufferedWriter().use { writer -> writer.write(payload.toString()) }
+    }
+
     private fun compactTeacherResearchOutcomePayload(source: JSONArray): JSONArray {
         val out = JSONArray()
         var rejectedKept = 0
@@ -462,12 +467,14 @@ class NativeBridge(private val context: Context) {
                 Log.i(TAG, "teacher research local rebuild scheduled date=$targetDate")
                 val report = rebuildTeacherResearchReportIfPossible(targetDate)
                 if (report == null) {
+                    teacherResearchLastRebuildKey = ""
                     prefs.edit()
                         .putString("teacher_research_report_status", "FAILED")
                         .putString("teacher_research_report_error", "LOCAL_REPORT_NOT_AVAILABLE")
                         .apply()
                 }
             } catch (t: Throwable) {
+                teacherResearchLastRebuildKey = ""
                 logTeacherResearchThrowable("scheduleTeacherResearchRebuild", t)
                 prefs.edit()
                     .putString("teacher_research_report_status", "FAILED")
@@ -488,14 +495,25 @@ class NativeBridge(private val context: Context) {
             val outcomes = compactTeacherResearchOutcomePayload(readJsonArrayFile(outcomesFile))
             if (compactSnapshots.length() == 0 || outcomes.length() == 0) return null
 
+            val inputDir = File(context.cacheDir, "teacher_research_inputs").apply { mkdirs() }
+            val snapshotsInput = File.createTempFile("${targetDate}_snapshots_", ".json", inputDir)
+            val outcomesInput = File.createTempFile("${targetDate}_outcomes_", ".json", inputDir)
+            writeTeacherResearchBridgeInput(snapshotsInput, compactSnapshots)
+            writeTeacherResearchBridgeInput(outcomesInput, outcomes)
+
             val py = Python.getInstance()
             val brain = py.getModule("brain")
-            val reportRaw = brain.callAttr(
-                "session_teacher_research_report",
-                targetDate,
-                compactSnapshots.toString(),
-                outcomes.toString()
-            ).toString()
+            val reportRaw = try {
+                brain.callAttr(
+                    "session_teacher_research_report",
+                    targetDate,
+                    snapshotsInput.absolutePath,
+                    outcomesInput.absolutePath
+                ).toString()
+            } finally {
+                snapshotsInput.delete()
+                outcomesInput.delete()
+            }
             val report = JSONObject(reportRaw)
             if (!report.optBoolean("ok", false)) return null
 
@@ -528,14 +546,25 @@ class NativeBridge(private val context: Context) {
             }
             if (compactSnapshots.length() <= 0) return null
 
+            val inputDir = File(context.cacheDir, "teacher_research_inputs").apply { mkdirs() }
+            val snapshotsInput = File.createTempFile("${targetDate}_remote_snapshots_", ".json", inputDir)
+            val outcomesInput = File.createTempFile("${targetDate}_remote_outcomes_", ".json", inputDir)
+            writeTeacherResearchBridgeInput(snapshotsInput, compactSnapshots)
+            writeTeacherResearchBridgeInput(outcomesInput, outcomes)
+
             val py = Python.getInstance()
             val brain = py.getModule("brain")
-            val reportRaw = brain.callAttr(
-                "session_teacher_research_report",
-                targetDate,
-                compactSnapshots.toString(),
-                outcomes.toString()
-            ).toString()
+            val reportRaw = try {
+                brain.callAttr(
+                    "session_teacher_research_report",
+                    targetDate,
+                    snapshotsInput.absolutePath,
+                    outcomesInput.absolutePath
+                ).toString()
+            } finally {
+                snapshotsInput.delete()
+                outcomesInput.delete()
+            }
             val report = JSONObject(reportRaw)
             if (!report.optBoolean("ok", false)) return null
 

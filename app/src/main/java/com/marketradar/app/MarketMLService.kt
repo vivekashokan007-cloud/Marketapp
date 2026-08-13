@@ -970,6 +970,11 @@ class MarketMLService : Service() {
         return compact
     }
 
+    private fun writeTeacherResearchBridgeInput(file: File, payload: org.json.JSONArray) {
+        file.parentFile?.mkdirs()
+        file.bufferedWriter().use { writer -> writer.write(payload.toString()) }
+    }
+
     private fun optStringAny(obj: org.json.JSONObject, vararg names: String): String {
         for (name in names) {
             val value = obj.opt(name) ?: continue
@@ -2347,16 +2352,26 @@ class MarketMLService : Service() {
         }
         try {
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
+            val inputDir = File(cacheDir, "teacher_research_inputs").apply { mkdirs() }
+            val snapshotsInput = File.createTempFile("${sessionDate}_snapshots_", ".json", inputDir)
+            val outcomesInput = File.createTempFile("${sessionDate}_outcomes_", ".json", inputDir)
+            writeTeacherResearchBridgeInput(snapshotsInput, compactSnapshots)
+            writeTeacherResearchBridgeInput(outcomesInput, evaluatedOutcomes)
             Log.i(
                 TAG,
-                "TEACHER_RESEARCH_PAYLOAD_READY: session=$sessionDate snapshots=${compactSnapshots.length()} outcomes=${evaluatedOutcomes.length()}"
+                "TEACHER_RESEARCH_PAYLOAD_READY: session=$sessionDate snapshots=${compactSnapshots.length()} outcomes=${evaluatedOutcomes.length()} snapshotBytes=${snapshotsInput.length()} outcomeBytes=${outcomesInput.length()}"
             )
-            val reportRaw = brain.callAttr(
-                "session_teacher_research_report",
-                sessionDate,
-                compactSnapshots.toString(),
-                evaluatedOutcomes.toString()
-            ).toString()
+            val reportRaw = try {
+                brain.callAttr(
+                    "session_teacher_research_report",
+                    sessionDate,
+                    snapshotsInput.absolutePath,
+                    outcomesInput.absolutePath
+                ).toString()
+            } finally {
+                snapshotsInput.delete()
+                outcomesInput.delete()
+            }
             val report = org.json.JSONObject(reportRaw)
             if (!report.optBoolean("ok", false)) {
                 val error = report.optString("error", "unknown")

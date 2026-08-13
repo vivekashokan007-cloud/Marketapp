@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.73"
+BRAIN_VERSION = "2.5.74"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -17298,8 +17298,16 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     outcomes already produced by the evaluator.
     """
     try:
-        snapshots = json.loads(snapshots_json_str) if snapshots_json_str else []
-        outcomes = json.loads(outcomes_json_str) if outcomes_json_str else []
+        def load_input(value):
+            if not value:
+                return []
+            if isinstance(value, str) and _os.path.isfile(value):
+                with open(value, 'r', encoding='utf-8') as handle:
+                    return json.load(handle)
+            return json.loads(value)
+
+        snapshots = load_input(snapshots_json_str)
+        outcomes = load_input(outcomes_json_str)
     except Exception as exc:
         return json.dumps({'ok': False, 'error': str(exc), 'session_date': session_date_str})
     if not isinstance(snapshots, list):
