@@ -188,7 +188,13 @@ def _build_day_rows(day: str, snapshots: list[dict[str, Any]], history: dict[tup
                     "recording_version": "pc2_batch_f_supply_pattern_paper_v1",
                     "source_table": "ml_brain_snapshots",
                     "source_quality": "PRE_T_CLEAN",
-                    "extra_json": {"patterns": (signals.get(candle_key) or {}).get("patterns") or []},
+                    "extra_json": {
+                        "patterns": (signals.get(candle_key) or {}).get("patterns") or [],
+                        "reconstruction_method": "3pt_spot_proxy",
+                        "points_used": 3,
+                        "shadow_reliability": "LOW",
+                        "scoring_contract": "research-only; wick-dependent patterns require true index OHLC validation",
+                    },
                 })
                 history[key].append(value)
     return rows

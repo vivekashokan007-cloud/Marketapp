@@ -5992,7 +5992,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.76"
+BRAIN_VERSION = "2.5.77"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6006,8 +6006,9 @@ CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v1"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v2"
 PC2_PAPER_PRIMARY_MODE = "paper"
+PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
@@ -6427,6 +6428,15 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
     active = mode == 'paper'
     candle_data = candle_data if isinstance(candle_data, dict) else {}
     affected = 0
+    # Historical and live Batch-F candles are reconstructed from spot samples.
+    # Only body-based patterns are admissible for scoring until index OHLC data
+    # validates wick-dependent detections. All patterns remain visible in evidence.
+    body_pattern_names = {
+        'BULLISH_ENGULFING',
+        'BEARISH_ENGULFING',
+        'BULLISH_HARAMI',
+        'BEARISH_HARAMI',
+    }
 
     for candidate in candidates or []:
         if not isinstance(candidate, dict):
@@ -6437,6 +6447,7 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         score = 0.0
         components = []
         cautions = []
+        excluded_patterns = []
         for pattern in pattern_rows:
             if not isinstance(pattern, dict) or pattern.get('timeframe') != '15m':
                 continue
@@ -6445,6 +6456,9 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
             name = str(pattern.get('pattern') or 'UNKNOWN')
             if impact == 'caution':
                 cautions.append(name)
+                continue
+            if name not in body_pattern_names:
+                excluded_patterns.append(name)
                 continue
             expected_direction = 'BULL' if impact == 'bullish' else 'BEAR' if impact == 'bearish' else None
             if not active or expected_direction is None or direction not in ('BULL', 'BEAR'):
@@ -6466,6 +6480,8 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         candidate['pc2BatchFCandleRawScore'] = round(score, 4)
         candidate['pc2BatchFCandleComponents'] = components
         candidate['pc2BatchFCandleCautions'] = cautions
+        candidate['pc2BatchFCandleExcludedPatterns'] = excluded_patterns
+        candidate['pc2BatchFCandleScoringMethod'] = 'body_pattern_proxy_only_v1'
         candidate['pc2BatchFActive'] = active
         candidate['pc2BatchFVersion'] = PC2_BATCH_F_SUPPLY_PATTERN_VERSION
         if active:
@@ -6486,6 +6502,8 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         'active': active,
         'execution_mode_observed': mode,
         'candle_score_cap': PC2_BATCH_F_CANDLE_SCORE_CAP,
+        'candle_scoring_method': 'body_pattern_proxy_only_v1',
+        'excluded_pattern_contract': 'wick-dependent patterns are recorded but excluded from score until true index OHLC validation',
         'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
         'candidates_with_candle_influence': affected,
         'contract': '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation',
@@ -11863,12 +11881,13 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
     return ranked
 
 
-def _pc2_paper_primary_sort_key(candidate):
+def _pc2_paper_primary_sort_components(candidate):
     """PC2-first ordering for paper research after existing hard construction gates.
 
     This intentionally does not reuse the deterministic varsity/calibration/force
-    waterfall. PC2 gate outcomes and bounded context score lead; risk-normalized
-    economics only resolve candidates with equivalent percentile evidence.
+    waterfall. Soft PC2 gate failures contribute through adjustedEdgePerRisk,
+    where their proportional opportunity penalty is already applied. They must
+    not become a second hard gate through lexicographic ordering.
     """
     gate_rows = candidate.get('pc2_gate_basis') if isinstance(candidate.get('pc2_gate_basis'), list) else []
     relevant_gates = [gate for gate in gate_rows if isinstance(gate, dict)]
@@ -11878,22 +11897,59 @@ def _pc2_paper_primary_sort_key(candidate):
     )
     context_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
     edge_per_risk = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
-    if edge_per_risk is None:
-        edge_per_risk = float('-inf')
     probability = _safe_num(candidate.get('probProfit'), 0.0)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
+    return {
+        'selector_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
+        'safety_ineligible': unsafe,
+        'context_percentile_score': round(context_score, 6),
+        'adjusted_edge_per_risk': round(edge_per_risk, 6) if edge_per_risk is not None else None,
+        'prob_profit': round(probability, 6),
+        'candidate_id': str(candidate.get('id') or ''),
+        # Diagnostics only. Neither value participates in ordering.
+        'soft_gate_failure_count': failed_gate_count,
+        'percentile_authority_count': percentile_authority_count,
+        'soft_gate_penalty_contract': 'represented proportionally in adjustedEdgePerRisk; not lexicographic',
+    }
+
+
+def _pc2_paper_primary_sort_key(candidate):
+    """Return the finite, auditable PC2 paper ordering tuple."""
+    components = _pc2_paper_primary_sort_components(candidate)
+    edge_per_risk = components['adjusted_edge_per_risk']
     return (
-        1 if unsafe else 0,
-        failed_gate_count,
-        -context_score,
-        -percentile_authority_count,
-        -edge_per_risk,
-        -probability,
-        str(candidate.get('id') or ''),
+        1 if components['safety_ineligible'] else 0,
+        -components['context_percentile_score'],
+        -(edge_per_risk if edge_per_risk is not None else float('-inf')),
+        -components['prob_profit'],
+        components['candidate_id'],
     )
 
 
-def select_pc2_paper_primary(candidates, execution_mode='paper'):
+def _pc2_paper_control(eligible, control_context=None):
+    """Build a deterministic pseudo-random paper control from the full menu."""
+    eligible_ids = sorted(str(candidate.get('id') or '') for candidate in eligible)
+    seed_payload = {
+        'schema_version': PC2_PAPER_CONTROL_VERSION,
+        'context': control_context if isinstance(control_context, dict) else {},
+        'eligible_candidate_ids': eligible_ids,
+    }
+    seed = hashlib.sha256(
+        json.dumps(seed_payload, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')
+    ).hexdigest()
+    selected_id = eligible_ids[int(seed[:16], 16) % len(eligible_ids)] if eligible_ids else None
+    return {
+        'schema_version': PC2_PAPER_CONTROL_VERSION,
+        'algorithm': 'sha256_mod_sorted_eligible_candidate_ids_v1',
+        'seed_sha256': seed,
+        'eligible_menu_fingerprint': hashlib.sha256('|'.join(eligible_ids).encode('utf-8')).hexdigest(),
+        'eligible_candidate_count': len(eligible_ids),
+        'candidate_id': selected_id,
+        'contract': 'deterministic pseudo-random control for outcome comparison; never affects PC2 selection',
+    }
+
+
+def select_pc2_paper_primary(candidates, execution_mode='paper', control_context=None):
     """Return PC2-primary global order plus deterministic comparator evidence.
 
     PC2 authority is deliberately limited to paper mode. Existing construction,
@@ -11905,6 +11961,17 @@ def select_pc2_paper_primary(candidates, execution_mode='paper'):
     ranked = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
     deterministic_top = ranked[0] if ranked else None
     active = mode == PC2_PAPER_PRIMARY_MODE
+
+    for candidate in ranked:
+        components = _pc2_paper_primary_sort_components(candidate)
+        candidate['pc2PaperSortComponents'] = components
+        candidate['pc2PaperSortKey'] = [
+            components['safety_ineligible'],
+            components['context_percentile_score'],
+            components['adjusted_edge_per_risk'],
+            components['prob_profit'],
+            components['candidate_id'],
+        ]
 
     if active:
         ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
@@ -11923,7 +11990,10 @@ def select_pc2_paper_primary(candidates, execution_mode='paper'):
         candidate for candidate in ordered
         if not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
     ]
+    control = _pc2_paper_control(eligible, control_context)
     pc2_top = eligible[0] if active and eligible else (deterministic_top if not active else None)
+    for candidate in ordered:
+        candidate['pc2PaperRandomControl'] = candidate.get('id') == control['candidate_id']
     return ordered, {
         'schema_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
         'mode': PC2_PAPER_PRIMARY_MODE,
@@ -11933,6 +12003,7 @@ def select_pc2_paper_primary(candidates, execution_mode='paper'):
         'eligible_candidate_count': len(eligible),
         'pc2_primary_candidate_id': pc2_top.get('id') if isinstance(pc2_top, dict) else None,
         'deterministic_shadow_candidate_id': deterministic_top.get('id') if isinstance(deterministic_top, dict) else None,
+        'random_control': control,
         'changed_from_deterministic': bool(
             isinstance(pc2_top, dict)
             and isinstance(deterministic_top, dict)
@@ -11946,11 +12017,11 @@ def select_pc2_paper_primary(candidates, execution_mode='paper'):
             'PC2 primary authority is restricted to paper execution mode',
         ],
         'ranking_contract': [
-            'pc2 gate failures ascending',
+            'existing capital and direction safety eligibility',
             'contextPercentileScore descending',
-            'live percentile gate authority count descending',
-            'adjustedEdgePerRisk descending as economic tie-breaker',
+            'adjustedEdgePerRisk descending, including the existing proportional soft-gate opportunity penalty',
             'probProfit descending as final tie-breaker',
+            'candidate id ascending for deterministic tie resolution',
         ],
     }
 
@@ -12742,6 +12813,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             ranked, pc2_paper_primary = select_pc2_paper_primary(
                 ranked,
                 ctx.get('executionMode') or ctx.get('execution_mode') or PC2_PAPER_PRIMARY_MODE,
+                {
+                    'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                    'poll_count': len(polls),
+                    'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
+                },
             )
             result['pc2_paper_primary'] = pc2_paper_primary
             if pc2_paper_primary.get('active'):
@@ -12817,6 +12893,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 ranked, pc2_paper_primary = select_pc2_paper_primary(
                     ranked,
                     ctx.get('executionMode') or ctx.get('execution_mode') or PC2_PAPER_PRIMARY_MODE,
+                    {
+                        'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                        'poll_count': len(polls),
+                        'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
+                    },
                 )
                 result['pc2_paper_primary'] = pc2_paper_primary
                 watchlist = _build_watchlist_from_ranked(ranked)
@@ -13344,11 +13425,16 @@ def _candidate_view(c):
         'pc2PaperPrimaryEligible': c.get('pc2PaperPrimaryEligible'),
         'pc2PaperSelectorVersion': c.get('pc2PaperSelectorVersion'),
         'pc2PaperMode': c.get('pc2PaperMode'),
+        'pc2PaperSortComponents': c.get('pc2PaperSortComponents'),
+        'pc2PaperSortKey': c.get('pc2PaperSortKey'),
+        'pc2PaperRandomControl': c.get('pc2PaperRandomControl'),
         'pc2SupplyWidthSource': c.get('pc2SupplyWidthSource'),
         'pc2SupplyWidthExpanded': c.get('pc2SupplyWidthExpanded'),
         'pc2SupplyLadderVersion': c.get('pc2SupplyLadderVersion'),
         'pc2BatchFCandleScore': c.get('pc2BatchFCandleScore'),
         'pc2BatchFCandleComponents': c.get('pc2BatchFCandleComponents'),
+        'pc2BatchFCandleExcludedPatterns': c.get('pc2BatchFCandleExcludedPatterns'),
+        'pc2BatchFCandleScoringMethod': c.get('pc2BatchFCandleScoringMethod'),
         'teacher_shadow_rank': c.get('teacher_shadow_rank'),
         'stage2a_live_rank': c.get('stage2a_live_rank'),
         'teacher_bucket_key': c.get('teacher_bucket_key'),

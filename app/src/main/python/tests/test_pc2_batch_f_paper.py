@@ -60,6 +60,24 @@ class Pc2BatchFPaperTest(unittest.TestCase):
         self.assertEqual(candidate["pc2BatchFCandleScore"], 0.0)
         self.assertEqual(candidate["contextPercentileScore"], 0.20)
 
+    def test_wick_dependent_patterns_are_evidence_only_for_spot_proxy_candles(self):
+        candidate = {"id": "bull", "index": "NF", "type": "BULL_CALL", "contextPercentileScore": 0.20}
+        candle_data = {
+            "candle_nf": {
+                "patterns": [
+                    {"pattern": "HAMMER", "impact": "bullish", "strength": 5, "timeframe": "15m"},
+                    {"pattern": "BULLISH_MARUBOZU", "impact": "bullish", "strength": 5, "timeframe": "15m"},
+                ]
+            }
+        }
+
+        summary = _apply_pc2_batch_f_candle_context([candidate], candle_data, "paper")
+
+        self.assertEqual(candidate["pc2BatchFCandleScore"], 0.0)
+        self.assertEqual(candidate["contextPercentileScore"], 0.20)
+        self.assertEqual(candidate["pc2BatchFCandleExcludedPatterns"], ["HAMMER", "BULLISH_MARUBOZU"])
+        self.assertEqual(summary["candle_scoring_method"], "body_pattern_proxy_only_v1")
+
 
 if __name__ == "__main__":
     unittest.main()

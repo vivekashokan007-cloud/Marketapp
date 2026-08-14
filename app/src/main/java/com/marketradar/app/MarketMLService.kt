@@ -821,6 +821,20 @@ class MarketMLService : Service() {
             "deterministic_rank",
             "teacher_shadow_rank",
             "stage2a_live_rank",
+            "pc2PaperRank",
+            "pc2PaperPrimaryEligible",
+            "pc2PaperSelectorVersion",
+            "pc2PaperMode",
+            "pc2PaperSortComponents",
+            "pc2PaperSortKey",
+            "pc2PaperRandomControl",
+            "pc2SupplyWidthSource",
+            "pc2SupplyWidthExpanded",
+            "pc2SupplyLadderVersion",
+            "pc2BatchFCandleScore",
+            "pc2BatchFCandleComponents",
+            "pc2BatchFCandleExcludedPatterns",
+            "pc2BatchFCandleScoringMethod",
             "reason_code",
             "reject_reason",
             "rejection_stage",
@@ -947,6 +961,12 @@ class MarketMLService : Service() {
         }
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let { flow ->
             compactContext.put("snapshot_build3_flow", flow)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
+            compactContext.put("snapshot_pc2_paper_primary", policy)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
+            compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)
         }
         val skipReason = context.opt("snapshot_generation_skip_reason")
         if (skipReason != null && skipReason != org.json.JSONObject.NULL) {
