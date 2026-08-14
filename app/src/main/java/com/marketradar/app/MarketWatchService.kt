@@ -1368,7 +1368,8 @@ class MarketWatchService : Service() {
         poll.put("vix", vix)
         // Sigma Logic (Fix C2: correct daily sigma sqrt(252))
         val dailySigma = bnf * (vix / 100.0) / Math.sqrt(252.0)
-        poll.put("gap_sigma", dailySigma)
+        poll.put("dailySigma", dailySigma)
+        poll.put("daily_sigma", dailySigma)
         
         // Phase E.1 — spotSigma / vixSigma wiring (port-first from app.js L5540-5552)
         // Required by runBrainAnalysis significantMove gate. Without these two fields
@@ -1488,6 +1489,14 @@ class MarketWatchService : Service() {
         val nfOhlc = nfQuote?.optJSONObject("ohlc")
         val bnfPrevClose = bnfOhlc?.optDouble("close", 0.0) ?: 0.0
         val nfPrevClose = nfOhlc?.optDouble("close", 0.0) ?: 0.0
+        val bnfOpen = bnfOhlc?.optDouble("open", 0.0) ?: 0.0
+        val overnightGapSigma = if (bnfPrevClose > 0.0 && bnfOpen > 0.0) {
+            (((bnfOpen - bnfPrevClose) / bnfPrevClose) * 100.0) / 0.5
+        } else {
+            0.0
+        }
+        poll.put("gapSigma", overnightGapSigma)
+        poll.put("gap_sigma", overnightGapSigma)
         poll.put("bnfPrevClose", bnfPrevClose)
         poll.put("nfPrevClose", nfPrevClose)
         poll.put("bnfChange", if (bnfPrevClose > 0) bnf - bnfPrevClose else 0.0)

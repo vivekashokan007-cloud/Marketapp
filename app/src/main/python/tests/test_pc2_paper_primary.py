@@ -13,6 +13,7 @@ def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra)
         "deterministic_rank": deterministic_rank,
         "directionSafe": True,
         "capitalBlocked": False,
+        "entryEligible": True,
         "contextPercentileScore": percentile_score,
         "adjustedEdgePerRisk": edge,
         "probProfit": 0.60,
@@ -57,6 +58,17 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual([row["id"] for row in ordered], ["blocked", "unsafe"])
         self.assertEqual(summary["eligible_candidate_count"], 0)
         self.assertIsNone(summary["pc2_primary_candidate_id"])
+
+    def test_monitor_only_candidate_remains_evidence_but_cannot_be_primary(self):
+        monitor = candidate("monitor", 1, 0.40, 0.30, entryEligible=False)
+        eligible = candidate("eligible", 2, 0.10, 0.05, entryEligible=True)
+
+        ordered, summary = select_pc2_paper_primary([monitor, eligible], "paper")
+
+        self.assertEqual(ordered[0]["id"], "eligible")
+        self.assertEqual(monitor["pc2PaperResearchRank"], 1)
+        self.assertFalse(monitor["pc2PaperPrimaryEligible"])
+        self.assertEqual(summary["pc2_primary_candidate_id"], "eligible")
 
     def test_non_paper_execution_keeps_deterministic_order(self):
         deterministic_top = candidate("deterministic", 1, -0.20, 0.30)

@@ -202,7 +202,8 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(aligned["action"], "SELL PREMIUM")
         self.assertEqual(aligned["strategy"], "IRON_CONDOR")
         self.assertEqual(aligned["direction"], "NEUTRAL")
-        self.assertEqual(aligned["confidence"], 70)
+        self.assertEqual(aligned["confidence"], 42)
+        self.assertEqual(aligned["market_confidence"], 42)
         self.assertEqual(aligned["execution_candidate_id"], "NF-IC-1")
         self.assertTrue(any("Execution aligned" in c for c in aligned["conflicts"]))
 

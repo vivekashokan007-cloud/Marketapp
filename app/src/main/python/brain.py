@@ -23,6 +23,8 @@ BUILD3_RANKED_EVIDENCE_CAP = 200
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
 BUILD3_A8_BELOW_FLOOR_REASON = f"ALL_BELOW_EV_RATIO_FLOOR_{str(BUILD3_EV_FLOOR_MULT).replace('.', '_')}"
+ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v1_positive_ev_ood_fail_closed'
+ENTRY_CONFIDENCE_MIN = 55.0
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -5992,7 +5994,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.77"
+BRAIN_VERSION = "2.5.78"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -9996,6 +9998,11 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'mlRegime': cand.get('mlRegime'),
             'mlUnsure': cand.get('mlUnsure'),
             'mlOodFlag': cand.get('mlOodFlag'),
+            'marketConfidence': cand.get('marketConfidence'),
+            'entryConfidence': cand.get('entryConfidence'),
+            'entryEligible': cand.get('entryEligible'),
+            'entryGate': cand.get('entryGate'),
+            'entryEligibility': cand.get('entryEligibility'),
             'pc2_gate_basis': cand.get('pc2_gate_basis'),
             'gate_basis_summary': cand.get('gate_basis_summary'),
             'premium_edge_status': cand.get('premium_edge_status') or ('OK' if cand.get('premiumEdge') is not None else 'MISSING'),
@@ -11974,22 +11981,31 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ]
 
     if active:
-        ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
+        research_ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
     else:
-        ordered = list(ranked)
+        research_ordered = list(ranked)
 
+    def entry_primary_eligible(candidate):
+        safety_ok = not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
+        if 'entryEligible' in candidate:
+            return bool(safety_ok and candidate.get('entryEligible') is True)
+        return bool(safety_ok)
+
+    eligible = [candidate for candidate in research_ordered if entry_primary_eligible(candidate)]
+    monitor_only = [candidate for candidate in research_ordered if not entry_primary_eligible(candidate)]
+    ordered = eligible + monitor_only if active else research_ordered
+
+    research_rank_by_identity = {
+        id(candidate): research_rank
+        for research_rank, candidate in enumerate(research_ordered, start=1)
+    }
     for pc2_rank, candidate in enumerate(ordered, start=1):
+        candidate['pc2PaperResearchRank'] = research_rank_by_identity.get(id(candidate)) if active else None
         candidate['pc2PaperRank'] = pc2_rank if active else None
-        candidate['pc2PaperPrimaryEligible'] = bool(
-            active and not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
-        )
+        candidate['pc2PaperPrimaryEligible'] = bool(active and entry_primary_eligible(candidate))
         candidate['pc2PaperSelectorVersion'] = PC2_PAPER_PRIMARY_SELECTOR_VERSION
         candidate['pc2PaperMode'] = PC2_PAPER_PRIMARY_MODE
 
-    eligible = [
-        candidate for candidate in ordered
-        if not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
-    ]
     control = _pc2_paper_control(eligible, control_context)
     pc2_top = eligible[0] if active and eligible else (deterministic_top if not active else None)
     for candidate in ordered:
@@ -12013,11 +12029,12 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             'existing candidate construction gates preserved',
             'capital-blocked candidates cannot be PC2 primary',
             'direction-unsafe candidates cannot be PC2 primary',
-            'no eligible paper candidate forces WAIT',
+            'entry-ineligible candidates remain monitor evidence but cannot be PC2 primary',
+            'no entry-eligible paper candidate forces WAIT',
             'PC2 primary authority is restricted to paper execution mode',
         ],
         'ranking_contract': [
-            'existing capital and direction safety eligibility',
+            'entry-eligible candidates precede monitor-only research candidates',
             'contextPercentileScore descending',
             'adjustedEdgePerRisk descending, including the existing proportional soft-gate opportunity penalty',
             'probProfit descending as final tie-breaker',
@@ -12034,6 +12051,99 @@ def _strategy_direction(strategy_type):
     if strategy_type in ('BEAR_CALL', 'BEAR_PUT'):
         return 'BEAR'
     return 'NEUTRAL'
+
+
+def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
+    """Attach a fail-closed, strategy-agnostic entry contract to a candidate.
+
+    Candidates remain available as research evidence when this contract fails.
+    Eligibility is intentionally separate from ranking and market-thesis logic.
+    """
+    if not isinstance(candidate, dict):
+        return candidate
+
+    reasons = []
+    if candidate.get('capitalBlocked'):
+        reasons.append('capital_blocked')
+    if candidate.get('directionSafe') is False:
+        reasons.append('direction_unsafe')
+    if candidate.get('entryAction') == 'BLOCKED' or candidate.get('blocked') is True:
+        reasons.append('candidate_blocked')
+    if candidate.get('executionReady') is False:
+        reasons.append('execution_not_ready')
+
+    premium_edge = candidate.get('premiumEdge')
+    if premium_edge is None:
+        premium_edge = candidate.get('premium_edge')
+    if premium_edge is None:
+        premium_edge = candidate.get('ev')
+    premium_edge = _safe_num(premium_edge, None)
+    if premium_edge is None:
+        reasons.append('expected_value_missing')
+    elif premium_edge <= 0:
+        reasons.append('expected_value_not_positive')
+
+    max_profit = _safe_num(candidate.get('maxProfit'), None)
+    max_loss = _safe_num(candidate.get('maxLoss'), None)
+    if max_profit is None or max_profit <= 0:
+        reasons.append('max_profit_not_positive')
+    if max_loss is None or max_loss <= 0:
+        reasons.append('max_loss_not_positive')
+
+    ml_ood = bool(
+        candidate.get('mlOod')
+        or candidate.get('mlOodFlag')
+        or candidate.get('mlOodBlocked')
+    )
+    if ml_ood:
+        reasons.append('ml_out_of_distribution')
+
+    ml_action = str(candidate.get('mlAction') or '').strip().upper()
+    p_ml = _safe_num(candidate.get('p_ml'), None)
+    if p_ml is None:
+        reasons.append('ml_probability_missing')
+    elif p_ml < 0 or p_ml > 1:
+        reasons.append('ml_probability_invalid')
+    if ml_action in ('BLOCKED', 'SKIP', 'UNSURE'):
+        reasons.append(f'ml_action_{ml_action.lower()}')
+    elif not ml_action:
+        reasons.append('ml_action_missing')
+
+    market_conf = _safe_num(market_confidence, None)
+    if market_conf is None:
+        market_conf = _safe_num(candidate.get('marketConfidence'), None)
+    entry_confidence = None
+    if market_conf is not None and p_ml is not None and 0 <= p_ml <= 1 and not ml_ood:
+        entry_confidence = round(min(max(market_conf, 0.0), p_ml * 100.0), 2)
+    if entry_confidence is None:
+        reasons.append('entry_confidence_unavailable')
+    elif entry_confidence < ENTRY_CONFIDENCE_MIN:
+        reasons.append('entry_confidence_below_minimum')
+
+    reasons = list(dict.fromkeys(reasons))
+    eligible = not reasons
+    candidate['marketConfidence'] = round(market_conf, 2) if market_conf is not None else None
+    candidate['entryConfidence'] = entry_confidence
+    candidate['entryEligible'] = eligible
+    candidate['entryGate'] = 'ENTRY' if eligible else 'MONITOR'
+    candidate['entryEligibility'] = {
+        'schema': 1,
+        'version': ENTRY_ELIGIBILITY_VERSION,
+        'eligible': eligible,
+        'gate': candidate['entryGate'],
+        'reasons': reasons,
+        'market_confidence': candidate['marketConfidence'],
+        'candidate_ml_probability': p_ml,
+        'candidate_ml_action': ml_action or None,
+        'candidate_ml_ood': ml_ood,
+        'premium_edge': premium_edge,
+        'build3_ev_pass': candidate.get('build3EvPass'),
+        'entry_confidence': entry_confidence,
+        'entry_confidence_minimum': ENTRY_CONFIDENCE_MIN,
+        'confidence_contract': 'min(market_confidence, candidate_ml_probability_pct)',
+        'economics_contract': 'premiumEdge must be present and greater than zero',
+    }
+    return candidate
 
 def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):
     """Top-ranked executable list plus per-index diversity picks."""
@@ -12105,7 +12215,7 @@ def _stage2a_apply_live_wait_guard(result, watchlist, stage2a_summary):
     }
     return result
 
-def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
+def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_eligible=False):
     """Make final brain verdict match the executable candidate lane shown to user.
 
     synthesize_verdict() runs before native candidate generation, so it can
@@ -12121,19 +12231,41 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
 
     executable = [
         c for c in (watchlist or [])
-        if isinstance(c, dict) and not c.get('capitalBlocked') and c.get('type')
+        if (
+            isinstance(c, dict)
+            and not c.get('capitalBlocked')
+            and c.get('directionSafe', True)
+            and c.get('type')
+            and (not require_entry_eligible or c.get('entryEligible') is True)
+        )
     ]
     if not executable:
         final = dict(verdict)
+        market_confidence = _safe_num(final.get('market_confidence'), None)
+        if market_confidence is None:
+            market_confidence = _safe_num(final.get('confidence'), 0.0)
+        final['market_thesis'] = {
+            'action': final.get('action'),
+            'strategy': final.get('strategy'),
+            'direction': final.get('direction'),
+            'confidence': market_confidence,
+        }
+        final['market_confidence'] = market_confidence
         final['pre_alignment_action'] = final.get('action')
         final['pre_alignment_strategy'] = final.get('strategy')
         final['action'] = 'WAIT'
         final['strategy'] = None
         final['direction'] = 'NEUTRAL'
         final['confidence'] = 0
+        final['entry_confidence'] = 0
+        final['entry_eligible'] = False
         final['execution_aligned'] = False
         conflicts = list(final.get('conflicts') or [])
-        conflicts.append('No executable candidates - WAIT')
+        conflicts.append(
+            'No entry-eligible candidates - WAIT'
+            if require_entry_eligible
+            else 'No executable candidates - WAIT'
+        )
         final['conflicts'] = conflicts
         return final
 
@@ -12153,18 +12285,18 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     old_strategy = final.get('strategy')
     new_action = _strategy_action(top_type)
     new_direction = _strategy_direction(top_type)
-    aligned = (top.get('forces') or {}).get('aligned', 0)
-    floor = 0
-    if isinstance(aligned, (int, float)):
-        floor = 70 if aligned >= 3 else 45 if aligned >= 2 else 30
-    old_conf = final.get('confidence') or 0
+    market_confidence = _safe_num(final.get('market_confidence'), None)
+    if market_confidence is None:
+        market_confidence = _safe_num(final.get('confidence'), 0.0)
+    entry_confidence = _safe_num(top.get('entryConfidence'), None)
     changed = (
         old_action != new_action
         or old_strategy != top_type
         or final.get('direction') != new_direction
         or final.get('execution_candidate_id') != top.get('id')
         or final.get('execution_candidate_index') != top.get('index')
-        or old_conf < floor
+        or (require_entry_eligible and final.get('entry_confidence') != entry_confidence)
+        or (require_entry_eligible and final.get('entry_eligible') is not True)
     )
     if not changed and final.get('execution_aligned'):
         return verdict
@@ -12174,6 +12306,11 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     final['action'] = new_action
     final['strategy'] = top_type
     final['direction'] = new_direction
+    final['market_confidence'] = market_confidence
+    final['entry_confidence'] = entry_confidence
+    final['entry_eligible'] = bool(top.get('entryEligible')) if require_entry_eligible else None
+    if require_entry_eligible:
+        final['confidence'] = entry_confidence or 0
     final['execution_aligned'] = True
     final['execution_candidate_id'] = top.get('id')
     final['execution_candidate_index'] = top.get('index')
@@ -12184,9 +12321,6 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None):
     if old_action != new_action or old_strategy != top_type:
         conflicts.append(f"Execution aligned to top candidate: {old_strategy or '--'}/{old_action or '--'} -> {top_type}/{new_action}")
         final['conflicts'] = conflicts
-
-    if floor:
-        final['confidence'] = max(final.get('confidence') or 0, floor)
 
     reasoning = final.get('reasoning') or ''
     exec_reason = f"Top executable: {top.get('index', '')} {top_type}"
@@ -12800,6 +12934,15 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 cur_vix,
             )
             ranked = _recompute_rankings(brain_verdict, gated_cands)
+            market_confidence = _safe_num((result.get('verdict') or {}).get('market_confidence'), None)
+            if market_confidence is None:
+                market_confidence = _safe_num((result.get('verdict') or {}).get('confidence'), 0.0)
+            for candidate in ranked:
+                readiness = check_execution_readiness(candidate, result, ctx)
+                candidate['executionReadiness'] = readiness
+                candidate['executionReady'] = readiness.get('ready', False)
+                candidate['executionGate'] = readiness.get('gate', 'WAIT')
+                annotate_candidate_entry_eligibility(candidate, market_confidence)
             result['build3_gate'] = {
                 'experiment_name': BUILD3_EXPERIMENT_NAME,
                 'a8': a8_summary,
@@ -12831,14 +12974,23 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if pc2_paper_primary.get('active') and not pc2_paper_primary.get('pc2_primary_candidate_id'):
                 verdict = dict(result.get('verdict') or {})
                 conflicts = list(verdict.get('conflicts') or [])
-                conflicts.append('PC2 forced WAIT: no capital-safe and direction-safe paper candidate survived.')
+                conflicts.append('PC2 forced WAIT: no entry-eligible paper candidate survived.')
+                verdict['market_thesis'] = {
+                    'action': verdict.get('action'),
+                    'strategy': verdict.get('strategy'),
+                    'direction': verdict.get('direction'),
+                    'confidence': market_confidence,
+                }
                 verdict.update({
+                    'market_confidence': market_confidence,
                     'action': 'WAIT',
                     'strategy': None,
                     'direction': 'NEUTRAL',
                     'confidence': 0,
-                    'urgency': 'WAIT - no PC2-safe candidate',
-                    'reasoning': 'PC2 paper selector found no capital-safe and direction-safe candidate.',
+                    'entry_confidence': 0,
+                    'entry_eligible': False,
+                    'urgency': 'WAIT - no entry-eligible candidate',
+                    'reasoning': 'PC2 paper selector found no candidate that passed entry economics, ML data quality, and confidence checks.',
                     'conflicts': conflicts,
                     'execution_aligned': False,
                 })
@@ -12847,7 +12999,6 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 result['decision_source'] = result['decisionSource']
                 result['decisionReason'] = verdict['reasoning']
                 result['decision_reason'] = result['decisionReason']
-                watchlist = []
             if not ranked:
                 wait_reason = 'All candidates failed BUILD 3 gates.'
                 gate_reason = _build3_effective_gate_reason(a8_summary, lane_summary)
@@ -12907,6 +13058,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
+                annotate_candidate_entry_eligibility(c, market_confidence)
             
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
@@ -12915,7 +13067,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
-            final_verdict = _align_verdict_to_watchlist(result.get('verdict'), result["watchlist"], ctx)
+                annotate_candidate_entry_eligibility(c, market_confidence)
+            final_verdict = _align_verdict_to_watchlist(
+                result.get('verdict'),
+                result["watchlist"],
+                ctx,
+                require_entry_eligible=True,
+            )
             if final_verdict is not result.get('verdict'):
                 result['verdict'] = final_verdict
             if stage2a_live_active:
@@ -13416,6 +13574,11 @@ def _candidate_view(c):
         'mlOodFlag': c.get('mlOodFlag'),
         'mlOodConf': c.get('mlOodConf'),
         'mlOodBlocked': c.get('mlOodBlocked'),
+        'marketConfidence': c.get('marketConfidence'),
+        'entryConfidence': c.get('entryConfidence'),
+        'entryEligible': c.get('entryEligible'),
+        'entryGate': c.get('entryGate'),
+        'entryEligibility': c.get('entryEligibility'),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
         'sigmaOTM': c.get('sigmaOTM'),
@@ -18687,6 +18850,8 @@ class NotificationAgent:
                 continue
             if cand.get('directionSafe') is False:
                 continue
+            if cand.get('entryEligible') is not True:
+                continue
             if not cand.get('type'):
                 continue
             return cand
@@ -18740,7 +18905,10 @@ class NotificationAgent:
     def _contract_base(self, result, ctx, best, verdict):
         action = verdict.get('action', 'WAIT')
         strategy = verdict.get('strategy')
-        confidence = _safe_num(verdict.get('confidence'), 0)
+        confidence = _safe_num(verdict.get('entry_confidence'), None)
+        if confidence is None and isinstance(best, dict) and best.get('entryEligible') is True:
+            confidence = _safe_num(verdict.get('confidence'), 0)
+        confidence = confidence or 0
         teacher_r_score = None
         teacher_bucket_n = None
         teacher_coverage = None
@@ -18827,16 +18995,29 @@ class NotificationAgent:
         body = alert.get('body', '')
         if category == 'WATCHLIST':
             is_entry = key.startswith('WATCHLIST_ENTRY_')
+            if is_entry:
+                return self._build_contract(
+                    base,
+                    decision_type='TRADE',
+                    notify_user=False,
+                    notification_kind='NONE',
+                    title=title,
+                    body=body,
+                    reason_code='LEGACY_ENTRY_ALERT_SUPPRESSED',
+                    reason_text='Legacy watchlist alerts cannot bypass the unified candidate entry-eligibility contract.',
+                    sound_class='routine',
+                    alert_key=key or alert.get('dedupe_bucket'),
+                )
             return self._build_contract(
                 base,
-                decision_type='TRADE' if is_entry else 'WARNING',
+                decision_type='WARNING',
                 notify_user=True,
-                notification_kind='ENTRY' if is_entry else 'UPDATE',
+                notification_kind='UPDATE',
                 title=title,
                 body=body,
                 reason_code=key or 'WATCHLIST_ALERT',
                 reason_text='Watchlist setup crossed a notification threshold.',
-                sound_class='entry' if is_entry else 'warning',
+                sound_class='warning',
                 alert_key=key or alert.get('dedupe_bucket'),
             )
         if category == 'MARKET':
@@ -18867,7 +19048,9 @@ class NotificationAgent:
             )
         return None
 
-    def _entry_contract_diagnostics(self, action, confidence, entry_window_active, best_id):
+    def _entry_contract_diagnostics(self, action, strategy, confidence, entry_window_active, best):
+        best_id = best.get('id') if isinstance(best, dict) else None
+        best_type = best.get('type') if isinstance(best, dict) else None
         stable_action = (
             len(self.verdict_history) >= 2
             and self.verdict_history[-2:] == [action, action]
@@ -18886,9 +19069,9 @@ class NotificationAgent:
             },
             {
                 'name': 'confidence_min',
-                'passed': confidence >= 55,
+                'passed': confidence >= ENTRY_CONFIDENCE_MIN,
                 'observed': round(confidence, 2),
-                'threshold': 55,
+                'threshold': ENTRY_CONFIDENCE_MIN,
             },
             {
                 'name': 'entry_window_active',
@@ -18901,6 +19084,18 @@ class NotificationAgent:
                 'passed': bool(best_id),
                 'observed': best_id,
                 'threshold': 'non-empty candidate id',
+            },
+            {
+                'name': 'candidate_entry_eligible',
+                'passed': bool(isinstance(best, dict) and best.get('entryEligible') is True),
+                'observed': best.get('entryEligible') if isinstance(best, dict) else None,
+                'threshold': True,
+            },
+            {
+                'name': 'strategy_candidate_match',
+                'passed': bool(best_type and strategy and best_type == strategy),
+                'observed': {'verdict_strategy': strategy, 'candidate_strategy': best_type},
+                'threshold': 'exact match',
             },
             {
                 'name': 'two_poll_stability',
@@ -18937,8 +19132,11 @@ class NotificationAgent:
         verdict = result.get('verdict', {}) or {}
         action = verdict.get('action', 'WAIT')
         strategy = verdict.get('strategy')
-        confidence = _safe_num(verdict.get('confidence'), 0)
         best = self._best_executable_candidate(result)
+        confidence = _safe_num(verdict.get('entry_confidence'), None)
+        if confidence is None and isinstance(best, dict) and best.get('entryEligible') is True:
+            confidence = _safe_num(verdict.get('confidence'), 0)
+        confidence = confidence or 0
         best_id = best.get('id') if isinstance(best, dict) else None
         best_type = best.get('type') if isinstance(best, dict) else None
         best_index = best.get('index') if isinstance(best, dict) else None
@@ -18988,9 +19186,10 @@ class NotificationAgent:
             self.best_candidate_history.pop(0)
         entry_contract_diagnostics = self._entry_contract_diagnostics(
             action,
+            strategy,
             confidence,
             ctx.get('entry_window_active', False),
-            best_id,
+            best,
         )
 
         contract = None
@@ -19061,7 +19260,13 @@ class NotificationAgent:
                     reason_code='WAIT_TRANSITION',
                     reason_text='Verdict transitioned to WAIT without stable invalidation yet.',
                 )
-        elif action != 'WAIT' and confidence >= 55 and ctx.get('entry_window_active', False) and best_id:
+        elif (
+            action != 'WAIT'
+            and confidence >= ENTRY_CONFIDENCE_MIN
+            and ctx.get('entry_window_active', False)
+            and best_id
+            and best_type == strategy
+        ):
             stable_action = len(self.verdict_history) >= 2 and self.verdict_history[-2:] == [action, action]
             stable_best = len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [best_id, best_id]
             if stable_action and stable_best:

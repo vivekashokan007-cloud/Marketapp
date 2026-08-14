@@ -24,6 +24,8 @@ def _watchlist_candidate(candidate_id="c1", cand_type="BULL_PUT", index_key="NF"
         "executionReady": True,
         "capitalBlocked": False,
         "directionSafe": True,
+        "entryEligible": True,
+        "entryGate": "ENTRY",
         **extra,
     }
 
@@ -401,7 +403,7 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
 
         self.assertEqual([alert.get("key") for alert in alerts], ["POS_DATA_QUALITY_trade789"])
 
-    def test_watchlist_alert_dispatches_as_entry(self):
+    def test_legacy_watchlist_entry_alert_cannot_bypass_unified_contract(self):
         payload = _call_contract(
             {
                 "verdict": {"action": "WAIT", "strategy": None, "confidence": 0},
@@ -420,9 +422,29 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         )
         contract = payload["brain_notification"]
 
-        self.assertTrue(contract["notify_user"])
+        self.assertFalse(contract["notify_user"])
         self.assertEqual(contract["decision_type"], "TRADE")
-        self.assertEqual(contract["notification_kind"], "ENTRY")
+        self.assertEqual(contract["notification_kind"], "NONE")
+        self.assertEqual(contract["reason_code"], "LEGACY_ENTRY_ALERT_SUPPRESSED")
+
+    def test_entry_ineligible_candidate_never_notifies(self):
+        result = {
+            "verdict": {
+                "action": "SELL PREMIUM",
+                "strategy": "BULL_PUT",
+                "confidence": 90,
+                "entry_confidence": 90,
+            },
+            "watchlist": [_watchlist_candidate(entryEligible=False, premiumEdge=-10)],
+            "alerts": [],
+        }
+
+        _call_contract(result, {"now_ms": 1000, "entry_window_active": True})
+        payload = _call_contract(result, {"now_ms": 2000, "entry_window_active": True})
+        contract = payload["brain_notification"]
+
+        self.assertFalse(contract["notify_user"])
+        self.assertIn("candidate_entry_eligible", contract["entry_contract_diagnostics"]["failed_conditions"])
 
     def test_routine_alert_dispatches_as_update(self):
         payload = _call_contract(

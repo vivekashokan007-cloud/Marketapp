@@ -209,6 +209,7 @@ class NativeBridge(private val context: Context) {
             "sellStrike2", "buyStrike2", "sellType2", "buyType2",
             "netPremium", "maxProfit", "maxLoss", "targetProfit", "stopLoss", "estCost", "isCredit",
             "capitalBlocked", "executionReady", "executionGate", "entryAction", "directionSafe",
+            "marketConfidence", "entryConfidence", "entryEligible", "entryGate", "entryEligibility",
             "brainScore", "contextPercentileScore", "p_ml", "mlAction", "mlEdge", "mlRegime",
             "mlUnsure", "mlOodFlag", "deterministic_rank", "teacher_shadow_rank", "stage2a_live_rank",
             "pc2PaperRank", "pc2PaperPrimaryEligible", "pc2PaperSelectorVersion", "pc2PaperMode",
