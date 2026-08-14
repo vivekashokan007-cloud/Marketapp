@@ -56,6 +56,50 @@ class C3PercentileFinalizerTest(unittest.TestCase):
         self.assertEqual(frame["generated_population_count"], 2)
         self.assertEqual(frame["values"]["iv_richness_menu_median"], 3.0)
 
+    def test_supply_shadow_emits_exact_slice_history_rows(self):
+        snapshot = {
+            "id": 42,
+            "session_date": "2026-08-14",
+            "poll_ts": "2026-08-14T09:20:00+05:30",
+            "context_json": {
+                "snapshot_pc2_supply_quality_shadow": {
+                    "version": "pc2_supply_quality_shadow_v1",
+                    "slices": [
+                        {
+                            "slice_key": "NF|BEAR|intraday",
+                            "index_key": "NF",
+                            "direction": "BEAR",
+                            "trade_mode": "intraday",
+                            "population_scope": "uncapped_generated_plus_rejected_live_memory",
+                            "population_count": 100,
+                            "generated_count": 90,
+                            "rejected_count": 10,
+                            "metrics": {
+                                "credit_width_ratio": {"count": 100, "min": 0.001, "q10": 0.01, "median": 0.05, "max": 0.30},
+                                "sigma_otm": {"count": 100, "median": 3.5},
+                            },
+                        }
+                    ],
+                }
+            },
+        }
+        frame = capture_frame(snapshot)
+        self.assertEqual(len(frame["candidate_slices"]), 1)
+        history_key = "credit_width_ratio_menu_median|NF|BEAR|intraday"
+        rows = finalize_frames(
+            [frame],
+            {history_key: [0.10, 0.20]},
+            {},
+            {"existing": ["credit_width_ratio_menu_median", "sigma_otm_menu_median"]},
+        )
+        sliced = [row for row in rows if row["index_key"] == "NF" and row["variable_name"] == "credit_width_ratio_menu_median"]
+        self.assertEqual(len(sliced), 1)
+        self.assertEqual(sliced[0]["lane"], "BEAR")
+        self.assertEqual(sliced[0]["trade_mode"], "intraday")
+        self.assertEqual(sliced[0]["support_count"], 2)
+        self.assertEqual(sliced[0]["value"], 0.05)
+        self.assertEqual(sliced[0]["extra_json"]["population_count"], 100)
+
 
 if __name__ == "__main__":
     unittest.main()

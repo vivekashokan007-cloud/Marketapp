@@ -650,6 +650,8 @@ class MarketWatchService : Service() {
                 if (premHistory.length() > 0) {
                     prefs.edit().putString("premium_history", premHistory.toString()).apply()
                 }
+                val supplyQualityHistory = SupabaseClient.getPc2SupplyQualityHistory(today)
+                prefs.edit().putString("pc2_supply_quality_history", supplyQualityHistory.toString()).apply()
                 
                 val yesterday = getYesterdayDate()
                 SupabaseClient.getYesterdaySignal(yesterday)?.let {
@@ -663,7 +665,7 @@ class MarketWatchService : Service() {
                     .putLong(APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY, now)
                     .apply()
 
-                val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}, percentileDays=${percentileHistory.length()}"
+                val historyLoadedLog = "HISTORY_LOADED: vixCount=${premHistory.length()}, ivPercentile=${calculateIvPercentile(18.0)}, fiiCount=${extractFiiHistory().length()}, percentileDays=${percentileHistory.length()}, supplySliceRows=${supplyQualityHistory.length()}"
                 Log.d(TAG, historyLoadedLog)
 
                 prefs.edit().putLong("last_bootstrap_time", now).commit()
@@ -2273,6 +2275,10 @@ class MarketWatchService : Service() {
             }
             if (premHist.length() > 0) ctxObj.put("premiumHistory", premHist)
             if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
+            val supplyQualityHistory = JSONArray(prefs.getString("pc2_supply_quality_history", "[]") ?: "[]")
+            if (supplyQualityHistory.length() > 0) {
+                ctxObj.put("pc2SupplyQualityHistory", supplyQualityHistory)
+            }
             val percentileHistoryRows = countPercentileEnrichedHistoryRows(premHist)
             val latestHistoryDay = premHist.optJSONObject(0)?.optString("date")
                 ?: premHist.optJSONObject(0)?.optString("session_date")

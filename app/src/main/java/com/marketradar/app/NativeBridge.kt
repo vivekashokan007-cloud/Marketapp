@@ -317,6 +317,9 @@ class NativeBridge(private val context: Context) {
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
             compactContext.put("snapshot_pc2_composite_shadow", shadow)
         }
+        parseJsonObject(context.opt("snapshot_pc2_supply_quality_shadow"))?.let { shadow ->
+            compactContext.put("snapshot_pc2_supply_quality_shadow", shadow)
+        }
         parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
             compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)
         }

@@ -18,6 +18,12 @@ from typing import Any
 
 WINDOWS = (30, 60)
 FRAME_VERSION = "c3_finalization_frame_v1"
+SUPPLY_SLICE_VARIABLES = {
+    "credit_width_ratio": "credit_width_ratio_menu_median",
+    "credit_to_risk": "credit_to_risk_menu_median",
+    "sigma_otm": "sigma_otm_menu_median",
+    "premium_edge": "premium_edge_menu_median",
+}
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -137,6 +143,7 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
     generated = [row for row in generated if isinstance(row, dict)]
     rejected = [row for row in rejected if isinstance(row, dict)]
     population = generated + rejected
+    supply_shadow = _obj(context.get("snapshot_pc2_supply_quality_shadow"))
     credit = [row for row in population if str(row.get("is_credit", row.get("isCredit", ""))).lower() in {"true", "1", "yes"}]
     debit = [row for row in generated if row not in credit]
     menu = lambda metric, rows=None: [_metric(row, metric) for row in (generated if rows is None else rows)]
@@ -212,6 +219,33 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
         stage = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in stage).strip("_").lower() or "unknown"
         stage_counts[f"rejection_stage_count__{stage}"] += 1.0
     values.update(stage_counts)
+    candidate_slices = []
+    for slice_row in _array(supply_shadow.get("slices")):
+        if not isinstance(slice_row, dict):
+            continue
+        metrics = _obj(slice_row.get("metrics"))
+        slice_values = {}
+        quantiles = {}
+        for metric_name, variable_name in SUPPLY_SLICE_VARIABLES.items():
+            summary = _obj(metrics.get(metric_name))
+            value = _number(summary.get("median"))
+            if value is not None:
+                slice_values[variable_name] = value
+                quantiles[variable_name] = summary
+        if not slice_values:
+            continue
+        candidate_slices.append({
+            "slice_key": slice_row.get("slice_key"),
+            "index_key": str(slice_row.get("index_key") or "UNKNOWN").upper(),
+            "direction": str(slice_row.get("direction") or "UNKNOWN").upper(),
+            "trade_mode": str(slice_row.get("trade_mode") or "UNKNOWN").lower(),
+            "population_scope": slice_row.get("population_scope"),
+            "population_count": int(_number(slice_row.get("population_count")) or 0),
+            "generated_count": int(_number(slice_row.get("generated_count")) or 0),
+            "rejected_count": int(_number(slice_row.get("rejected_count")) or 0),
+            "values": slice_values,
+            "quantiles": quantiles,
+        })
     return {
         "frame_version": FRAME_VERSION,
         "snapshot_id": str(snapshot.get("id") or ""),
@@ -222,6 +256,8 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
         "rejected_population_count": len(rejected),
         "candidate_population_source": candidate_population_source,
         "rejected_capture_present": "snapshot_rejected_candidates" in context or "snapshot_rejected_candidates_full" in context,
+        "candidate_slices": candidate_slices,
+        "supply_shadow_version": supply_shadow.get("version"),
     }
 
 
@@ -237,6 +273,10 @@ def _percentile(value: float | None, history: list[float]) -> float | None:
 def _row_id(row: dict[str, Any]) -> str:
     material = "|".join(str(row.get(key) or "") for key in ("session_date", "poll_ts", "index_key", "lane", "trade_mode", "variable_name", "history_source"))
     return "c3_" + hashlib.sha1(material.encode("utf-8")).hexdigest()
+
+
+def _slice_history_key(variable_name: str, index_key: str, direction: str, trade_mode: str) -> str:
+    return "|".join((variable_name, index_key.upper(), direction.upper(), trade_mode.lower()))
 
 
 def finalize_frames(
@@ -274,4 +314,44 @@ def finalize_frames(
             rows.append(row)
             if value is not None:
                 history[name].append(value)
+        for slice_row in frame.get("candidate_slices") or []:
+            if not isinstance(slice_row, dict):
+                continue
+            index_key = str(slice_row.get("index_key") or "UNKNOWN").upper()
+            direction = str(slice_row.get("direction") or "UNKNOWN").upper()
+            trade_mode = str(slice_row.get("trade_mode") or "UNKNOWN").lower()
+            quantiles = _obj(slice_row.get("quantiles"))
+            for name, raw_value in sorted(_obj(slice_row.get("values")).items()):
+                value = _number(raw_value)
+                history_key = _slice_history_key(name, index_key, direction, trade_mode)
+                support30 = len(history[history_key][-30:])
+                support60 = len(history[history_key][-60:])
+                row = {
+                    "session_date": frame.get("session_date"), "poll_ts": frame.get("poll_ts"), "snapshot_id": frame.get("snapshot_id") or None,
+                    "index_key": index_key, "lane": direction, "trade_mode": trade_mode, "variable_name": name,
+                    "variable_group": "candidate_supply_slice",
+                    "value": round(value, 6) if value is not None else None,
+                    "pct_30": _percentile(value, history[history_key][-30:]),
+                    "pct_60": _percentile(value, history[history_key][-60:]),
+                    "support_count": max(support30, support60), "support_count_30": support30, "support_count_60": support60,
+                    "history_window_end": frame.get("poll_ts"), "history_source": history_source, "pre_t_clean": pre_t_clean,
+                    "schema_version": "context_percentiles_v1", "recording_version": "c3_supply_slice_recording_v1",
+                    "source_table": "ml_brain_snapshots:snapshot_pc2_supply_quality_shadow",
+                    "source_quality": "PRE_T_CLEAN" if pre_t_clean else "PRE_T_DIRTY",
+                    "extra_json": {
+                        "candidate_population_scope": slice_row.get("population_scope") or "uncapped_generated_plus_rejected_live_memory",
+                        "calibration_population_version": "pc2_uncapped_generated_rejected_union_v1",
+                        "supply_shadow_version": frame.get("supply_shadow_version"),
+                        "slice_key": slice_row.get("slice_key"),
+                        "direction": direction,
+                        "population_count": slice_row.get("population_count", 0),
+                        "generated_population_count": slice_row.get("generated_count", 0),
+                        "rejected_population_count": slice_row.get("rejected_count", 0),
+                        "distribution": quantiles.get(name) or {},
+                    },
+                }
+                row["id"] = _row_id(row)
+                rows.append(row)
+                if value is not None:
+                    history[history_key].append(value)
     return rows

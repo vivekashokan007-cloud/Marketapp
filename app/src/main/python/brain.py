@@ -19,6 +19,8 @@ BUILD3_A8_HARD_GATE_ACTIVE = False
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
 BUILD3_GENERATED_CANDIDATE_UI_CAP = 30
 BUILD3_RANKED_EVIDENCE_CAP = 200
+PC2_SUPPLY_QUALITY_SHADOW_VERSION = 'pc2_supply_quality_shadow_v1'
+PC2_SUPPLY_QUALITY_SAMPLE_CAP = 16
 # Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
@@ -5994,7 +5996,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.79"
+BRAIN_VERSION = "2.5.80"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8364,6 +8366,208 @@ def _pc2_slice_key(row, variable_name=None):
         trade_mode = lane.split('_', 1)[1]
     return f"{variable_name or 'unknown'}|{index_key}|{_pc2_direction(row)}|{trade_mode or 'UNKNOWN'}"
 
+def _pc2_supply_history_rows(ctx):
+    source = (ctx or {}).get('pc2SupplyQualityHistory') or (ctx or {}).get('pc2_supply_quality_history') or []
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except Exception:
+            source = []
+    return [row for row in source if isinstance(row, dict)] if isinstance(source, list) else []
+
+def _pc2_credit_to_risk(row):
+    max_profit = _row_value(row or {}, ('maxProfit', 'max_profit'))
+    max_loss = _row_value(row or {}, ('maxLoss', 'max_loss'))
+    if max_profit is None or max_loss is None or max_loss <= 0:
+        return None
+    return max_profit / max_loss
+
+def _pc2_supply_metric_summary(rows, keys=None, derive_fn=None):
+    values = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        value = derive_fn(row) if derive_fn is not None else _row_value(row, keys or ())
+        value = _percentile_float(value)
+        if value is not None:
+            values.append(value)
+    values.sort()
+    return {
+        'count': len(values),
+        'min': None if not values else round(values[0], 6),
+        'q05': None if not values else round(_percentile_quantile(values, 5.0), 6),
+        'q10': None if not values else round(_percentile_quantile(values, 10.0), 6),
+        'q25': None if not values else round(_percentile_quantile(values, 25.0), 6),
+        'median': None if not values else round(_percentile_quantile(values, 50.0), 6),
+        'q75': None if not values else round(_percentile_quantile(values, 75.0), 6),
+        'max': None if not values else round(values[-1], 6),
+    }
+
+def _pc2_supply_history_summary(ctx, index_key, direction, trade_mode, variable_name):
+    dated_values = []
+    for row in _pc2_supply_history_rows(ctx):
+        if str(row.get('variable_name') or '') != variable_name:
+            continue
+        if str(row.get('index_key') or '').upper() != str(index_key or '').upper():
+            continue
+        if str(row.get('lane') or '').upper() != str(direction or '').upper():
+            continue
+        if str(row.get('trade_mode') or '').lower() != str(trade_mode or '').lower():
+            continue
+        value = _percentile_float(row.get('value'))
+        if value is not None:
+            dated_values.append((str(row.get('poll_ts') or row.get('history_window_end') or ''), value))
+    dated_values.sort(key=lambda item: item[0])
+    values = [value for _, value in dated_values]
+    values = values[-60:]
+    return {
+        'support_count': len(values),
+        'min': None if not values else round(min(values), 6),
+        'median': None if not values else round(_percentile_quantile(values, 50.0), 6),
+        'max': None if not values else round(max(values), 6),
+        'history_scope': 'prior_session_poll_level_exact_slice',
+    }
+
+def _pc2_supply_sample_candidate(row):
+    view = _candidate_view(row)
+    view['creditToRisk'] = row.get('creditToRisk')
+    view['generationQualityShadow'] = row.get('generationQualityShadow')
+    return view
+
+def _build_pc2_supply_quality_shadow(candidates, rejected_candidates, ctx):
+    generated = [row for row in candidates or [] if isinstance(row, dict)]
+    rejected = [row for row in rejected_candidates or [] if isinstance(row, dict)]
+    population = [(row, 'generated') for row in generated] + [(row, 'rejected') for row in rejected]
+    by_slice = {}
+    flagged_generated = []
+
+    for row, source in population:
+        is_credit = bool(row.get('isCredit') or row.get('is_credit'))
+        if not is_credit:
+            continue
+        index_key = str(row.get('index') or row.get('index_key') or 'UNKNOWN').upper()
+        direction = _pc2_direction(row)
+        lane = str(row.get('lane') or '')
+        trade_mode = str(row.get('trade_mode') or ('swing' if lane.endswith('_swing') else 'intraday')).lower()
+        slice_key = f'{index_key}|{direction}|{trade_mode}'
+        by_slice.setdefault(slice_key, {'rows': [], 'generated_count': 0, 'rejected_count': 0})
+        by_slice[slice_key]['rows'].append(row)
+        by_slice[slice_key][f'{source}_count'] += 1
+
+        credit_ratio = _row_value(row, ('creditWidthRatio', 'credit_width_ratio'))
+        credit_to_risk = _pc2_credit_to_risk(row)
+        premium_edge = _row_value(row, ('premiumEdge', 'premium_edge'))
+        flags = []
+        if credit_ratio is not None and credit_ratio < float(_CONST['MIN_CREDIT_RATIO']):
+            flags.append('below_existing_credit_ratio_floor')
+        if premium_edge is not None and premium_edge <= 0:
+            flags.append('premium_edge_not_positive')
+        row['creditToRisk'] = None if credit_to_risk is None else round(credit_to_risk, 6)
+        row['generationQualityShadow'] = {
+            'version': PC2_SUPPLY_QUALITY_SHADOW_VERSION,
+            'shadow_only': True,
+            'slice_key': slice_key,
+            'source_population': source,
+            'credit_width_ratio': None if credit_ratio is None else round(credit_ratio, 6),
+            'credit_to_risk': None if credit_to_risk is None else round(credit_to_risk, 6),
+            'quality_flags': flags,
+            'derived_floor_status': 'PENDING_OUTCOME_CALIBRATION',
+            'would_suppress': None,
+            'ranking_changed': False,
+            'entry_eligibility_changed': False,
+        }
+        if source == 'generated' and flags:
+            flagged_generated.append(row)
+
+    slices = []
+    for slice_key in sorted(by_slice):
+        group = by_slice[slice_key]
+        index_key, direction, trade_mode = slice_key.split('|', 2)
+        rows = group['rows']
+        metrics = {
+            'credit_width_ratio': _pc2_supply_metric_summary(rows, ('creditWidthRatio', 'credit_width_ratio')),
+            'credit_to_risk': _pc2_supply_metric_summary(rows, derive_fn=_pc2_credit_to_risk),
+            'sigma_otm': _pc2_supply_metric_summary(rows, ('sigmaOTM', 'sigma_otm')),
+            'premium_edge': _pc2_supply_metric_summary(rows, ('premiumEdge', 'premium_edge')),
+        }
+        slices.append({
+            'slice_key': slice_key,
+            'index_key': index_key,
+            'direction': direction,
+            'trade_mode': trade_mode,
+            'population_scope': 'uncapped_generated_plus_rejected_live_memory',
+            'population_count': len(rows),
+            'generated_count': group['generated_count'],
+            'rejected_count': group['rejected_count'],
+            'metrics': metrics,
+            'history': {
+                'credit_width_ratio_menu_median': _pc2_supply_history_summary(
+                    ctx, index_key, direction, trade_mode, 'credit_width_ratio_menu_median'
+                ),
+                'sigma_otm_menu_median': _pc2_supply_history_summary(
+                    ctx, index_key, direction, trade_mode, 'sigma_otm_menu_median'
+                ),
+                'premium_edge_menu_median': _pc2_supply_history_summary(
+                    ctx, index_key, direction, trade_mode, 'premium_edge_menu_median'
+                ),
+            },
+        })
+
+    session_date = str((ctx or {}).get('today_ist') or (ctx or {}).get('session_date') or '')
+    sampled = sorted(
+        flagged_generated,
+        key=lambda row: hashlib.sha256(f"{session_date}|{row.get('id') or ''}".encode('utf-8')).hexdigest(),
+    )[:PC2_SUPPLY_QUALITY_SAMPLE_CAP]
+    return {
+        'version': PC2_SUPPLY_QUALITY_SHADOW_VERSION,
+        'shadow_only': True,
+        'behavior_change': False,
+        'population_scope': 'uncapped_generated_plus_rejected_live_memory_before_ranking',
+        'generated_count': len(generated),
+        'rejected_count': len(rejected),
+        'combined_count': len(population),
+        'flagged_generated_count': len(flagged_generated),
+        'sample_cap': PC2_SUPPLY_QUALITY_SAMPLE_CAP,
+        'sample_method': 'stable_sha256_session_candidate_id',
+        'sample_candidates': [_pc2_supply_sample_candidate(row) for row in sampled],
+        'slices': slices,
+        'derived_floor': {
+            'status': 'PENDING_OUTCOME_CALIBRATION',
+            'threshold_value': None,
+            'percentile_target': None,
+            'reason': 'No percentile is authorized until sampled outcomes select it out of sample.',
+        },
+    }
+
+def _finalize_pc2_supply_quality_shadow(shadow, ranked):
+    if not isinstance(shadow, dict):
+        return shadow
+    ordered = [row for row in ranked or [] if isinstance(row, dict)]
+    actual_top = ordered[:BUILD3_GENERATED_CANDIDATE_UI_CAP]
+    filtered = [
+        row for row in ordered
+        if not ((row.get('generationQualityShadow') or {}).get('quality_flags'))
+    ][:BUILD3_GENERATED_CANDIDATE_UI_CAP]
+
+    def composition(rows):
+        counts = {}
+        for row in rows:
+            key = f"{row.get('index') or 'UNKNOWN'}|{row.get('type') or 'UNKNOWN'}"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    shadow['menu_counterfactual'] = {
+        'policy': 'exclude_existing_quality_flags_for_measurement_only',
+        'actual_top_count': len(actual_top),
+        'counterfactual_top_count': len(filtered),
+        'actual_composition': composition(actual_top),
+        'counterfactual_composition': composition(filtered),
+        'actual_top_ids': [row.get('id') for row in actual_top],
+        'counterfactual_top_ids': [row.get('id') for row in filtered],
+        'ranking_changed': False,
+    }
+    return shadow
+
 def _pc2_context_cell(context_percentiles, variable_name, window=60):
     if not isinstance(context_percentiles, dict) or not variable_name:
         return {}
@@ -9982,6 +10186,8 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'sigmaOTM': cand.get('sigmaOTM'),
             'ivRichness': cand.get('ivRichness'),
             'creditWidthRatio': cand.get('creditWidthRatio'),
+            'creditToRisk': cand.get('creditToRisk'),
+            'generationQualityShadow': cand.get('generationQualityShadow'),
             'isCredit': cand.get('isCredit'),
             'executionReady': cand.get('executionReady'),
             'executionGate': cand.get('executionGate'),
@@ -12829,6 +13035,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['rejected_candidates'] = all_rejected
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
+        supply_quality_shadow = _build_pc2_supply_quality_shadow(all_cands, all_rejected, ctx)
+        result['pc2_supply_quality_shadow'] = supply_quality_shadow
+        ctx['pc2_supply_quality_shadow'] = supply_quality_shadow
         context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result, open_trades=open_trades)
         _pc2_stamp_candidate_gate_context(all_cands, context_percentiles)
         _pc2_stamp_gate_basis(all_rejected, context_percentiles)
@@ -13255,6 +13464,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 ranked,
                 watchlist=result.get("watchlist") or watchlist,
             )
+            _finalize_pc2_supply_quality_shadow(result.get('pc2_supply_quality_shadow'), ranked)
             result["rejected_candidates"] = all_rejected
             result["build3_flow"] = _build3_candidate_flow_summary(
                 built_candidates=all_cands,
@@ -13712,8 +13922,10 @@ def _candidate_view(c):
         'entryEligibility': c.get('entryEligibility'),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
+        'creditToRisk': c.get('creditToRisk'),
         'sigmaOTM': c.get('sigmaOTM'),
         'premiumEdge': c.get('premiumEdge'),
+        'generationQualityShadow': c.get('generationQualityShadow'),
         'deterministic_rank': c.get('deterministic_rank'),
         'pc2PaperRank': c.get('pc2PaperRank'),
         'pc2PaperResearchRank': c.get('pc2PaperResearchRank'),
@@ -16019,6 +16231,14 @@ def take_poll_snapshot(result, ctx, polls):
         ledger_row = _candidate_leg_ledger(c)
         if ledger_row and ledger_row.get('candidate_id'):
             evaluation_ledger.append(ledger_row)
+    supply_shadow = result.get('pc2_supply_quality_shadow') if isinstance(result.get('pc2_supply_quality_shadow'), dict) else {}
+    evaluation_ids = {row.get('candidate_id') for row in evaluation_ledger if isinstance(row, dict)}
+    for c in supply_shadow.get('sample_candidates') or []:
+        ledger_row = _candidate_leg_ledger(c)
+        if ledger_row and ledger_row.get('candidate_id') and ledger_row.get('candidate_id') not in evaluation_ids:
+            ledger_row['evidence_role'] = 'supply_quality_shadow_sample'
+            evaluation_ledger.append(ledger_row)
+            evaluation_ids.add(ledger_row.get('candidate_id'))
 
     build3_gate = result.get('build3_gate') if isinstance(result.get('build3_gate'), dict) else {}
     build3_lane_gate = build3_gate.get('lane') if isinstance(build3_gate.get('lane'), dict) else {}
@@ -16199,6 +16419,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_batch_f_paper_context'] = result.get('pc2_batch_f_paper_context') if isinstance(result.get('pc2_batch_f_paper_context'), dict) else {}
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
     snapshot_context['snapshot_pc2_composite_shadow'] = result.get('pc2_composite_shadow') if isinstance(result.get('pc2_composite_shadow'), dict) else {}
+    snapshot_context['snapshot_pc2_supply_quality_shadow'] = result.get('pc2_supply_quality_shadow') if isinstance(result.get('pc2_supply_quality_shadow'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_build3_gate'] = build3_gate
@@ -17749,6 +17970,37 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
         except Exception as exc:
             errors.append({
                 'scope': 'secondary',
+                'snapshot_id': snap.get('id'),
+                'candidate_id': cand_id,
+                'error': str(exc),
+            })
+
+    supply_shadow = snap_ctx.get('snapshot_pc2_supply_quality_shadow')
+    supply_sample = supply_shadow.get('sample_candidates') if isinstance(supply_shadow, dict) else []
+    for sample_rank, cand in enumerate(supply_sample or [], start=1):
+        if not isinstance(cand, dict):
+            continue
+        cand_id = cand.get('id')
+        if not cand_id or cand_id in seen_ids:
+            continue
+        seen_ids.add(cand_id)
+        try:
+            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+            if outcome is not None:
+                outcome['role'] = 'supply_shadow'
+                outcome['rank_in_snapshot'] = None
+                outcome['supply_shadow_sample_rank'] = sample_rank
+                outcome['source_record_type'] = 'SUPPLY_QUALITY_SHADOW_SAMPLE'
+                outcome['generation_quality_shadow'] = cand.get('generationQualityShadow')
+                outcome['credit_to_risk'] = cand.get('creditToRisk')
+                outcome['premium_edge'] = cand.get('premiumEdge')
+                outcome['credit_width_ratio'] = cand.get('creditWidthRatio')
+                outcome['sigma_otm'] = cand.get('sigmaOTM')
+                outcome['poll_ts'] = cand.get('poll_ts') or snap.get('poll_ts')
+                outcomes.append(outcome)
+        except Exception as exc:
+            errors.append({
+                'scope': 'supply_shadow',
                 'snapshot_id': snap.get('id'),
                 'candidate_id': cand_id,
                 'error': str(exc),

@@ -353,6 +353,9 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
             compactContext.put("snapshot_pc2_composite_shadow", it)
         }
+        parseJsonObject(context.opt("snapshot_pc2_supply_quality_shadow"))?.let {
+            compactContext.put("snapshot_pc2_supply_quality_shadow", it)
+        }
         // This small, immutable frame is the post-close C3 source of truth.
         // Keep it even when the full context is compacted for local fallback.
         parseJsonObject(context.opt("c3_finalization_frame"))?.let {
@@ -444,6 +447,9 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
             compactContext.put("snapshot_pc2_composite_shadow", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_supply_quality_shadow"))?.let {
+            compactContext.put("snapshot_pc2_supply_quality_shadow", it)
         }
         parseJsonObject(context.opt("c3_finalization_frame"))?.let {
             compactContext.put("c3_finalization_frame", it)

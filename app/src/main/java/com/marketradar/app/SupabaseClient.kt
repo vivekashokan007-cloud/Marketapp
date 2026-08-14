@@ -1061,6 +1061,39 @@ object SupabaseClient {
     }
 
     /**
+     * Reads prior-session C3 candidate-supply slices for shadow analysis.
+     * These poll-level rows are intentionally separate from premiumHistory so
+     * they cannot silently influence the active percentile gates.
+     */
+    fun getPc2SupplyQualityHistory(targetDate: String, maxRows: Int = 2400): JSONArray {
+        if (targetDate.isBlank() || maxRows <= 0) return JSONArray()
+        val pageSize = 1000
+        val maxPages = (maxRows + pageSize - 1) / pageSize
+        val out = JSONArray()
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val limit = minOf(pageSize, maxRows - offset)
+            if (limit <= 0) break
+            val path = "ml_context_percentile_history" +
+                "?select=session_date,poll_ts,index_key,lane,trade_mode,variable_name,value,support_count,history_window_end,history_source,extra_json" +
+                "&poll_ts=not.is.null&session_date=lt.$targetDate&index_key=neq.MARKET" +
+                "&history_source=in.(backfill,live)" +
+                "&order=poll_ts.desc,variable_name.asc&limit=$limit&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
+            val rows = try { JSONArray(raw) } catch (e: Exception) {
+                Log.e(TAG, "Error parsing PC2 supply history page=$page: ${e.message}")
+                break
+            }
+            if (rows.length() == 0) break
+            for (i in 0 until rows.length()) {
+                out.put(rows.optJSONObject(i) ?: continue)
+            }
+            if (rows.length() < limit) break
+        }
+        return out
+    }
+
+    /**
      * C3 uses only completed sessions before targetDate.  A bounded recent
      * poll window is sufficient for the 30/60 sample windows and prevents a
      * post-close job from loading the entire history table on a phone.
@@ -1071,7 +1104,7 @@ object SupabaseClient {
         for (page in 0 until maxPages) {
             val offset = page * pageSize
             val path = "ml_context_percentile_history" +
-                "?select=variable_name,value,poll_ts" +
+                "?select=variable_name,value,poll_ts,index_key,lane,trade_mode" +
                 "&poll_ts=not.is.null&session_date=lt.$targetDate" +
                 "&history_source=in.(backfill,live)" +
                 "&order=poll_ts.desc,variable_name.asc&limit=$pageSize&offset=$offset"
@@ -1082,9 +1115,17 @@ object SupabaseClient {
                 val row = pageRows.optJSONObject(i) ?: continue
                 val name = row.optString("variable_name", "").trim()
                 if (name.isEmpty() || row.isNull("value")) continue
+                val indexKey = row.optString("index_key", "MARKET").trim().uppercase(Locale.US)
+                val historyKey = if (indexKey == "MARKET") {
+                    name
+                } else {
+                    val direction = row.optString("lane", "UNKNOWN").trim().uppercase(Locale.US)
+                    val tradeMode = row.optString("trade_mode", "UNKNOWN").trim().lowercase(Locale.US)
+                    "$name|$indexKey|$direction|$tradeMode"
+                }
                 val value = row.optDouble("value", Double.NaN)
                 if (value.isNaN() || value.isInfinite()) continue
-                val values = valuesByVariable.getOrPut(name) { mutableListOf() }
+                val values = valuesByVariable.getOrPut(historyKey) { mutableListOf() }
                 if (values.size < 60) values.add(value)
             }
             if (pageRows.length() < pageSize) break

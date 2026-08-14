@@ -783,6 +783,8 @@ class MarketMLService : Service() {
             "ev",
             "evPer1k",
             "creditWidthRatio",
+            "creditToRisk",
+            "generationQualityShadow",
             "sigmaOTM",
             "ivRichness",
             "probProfit",
@@ -975,6 +977,14 @@ class MarketMLService : Service() {
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
             compactContext.put("snapshot_pc2_composite_shadow", shadow)
         }
+        parseJsonObject(context.opt("snapshot_pc2_supply_quality_shadow"))?.let { shadow ->
+            val sample = compactTeacherResearchCandidates(
+                parseJsonArray(shadow.opt("sample_candidates")),
+                16
+            )
+            shadow.put("sample_candidates", sample)
+            compactContext.put("snapshot_pc2_supply_quality_shadow", shadow)
+        }
         parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
             compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)
         }
@@ -1070,6 +1080,13 @@ class MarketMLService : Service() {
                     addCandidate(rejected.opt(j))
                 }
             }
+            val supplyShadow = parseJsonObject(context?.opt("snapshot_pc2_supply_quality_shadow"))
+            val supplySample = parseJsonArray(supplyShadow?.opt("sample_candidates"))
+            if (supplySample != null) {
+                for (j in 0 until supplySample.length()) {
+                    addCandidate(supplySample.opt(j))
+                }
+            }
         }
 
         return keys.toList()
@@ -1114,6 +1131,13 @@ class MarketMLService : Service() {
         if (rejected != null) {
             for (j in 0 until rejected.length()) {
                 addCandidate(rejected.opt(j))
+            }
+        }
+        val supplyShadow = parseJsonObject(context?.opt("snapshot_pc2_supply_quality_shadow"))
+        val supplySample = parseJsonArray(supplyShadow?.opt("sample_candidates"))
+        if (supplySample != null) {
+            for (j in 0 until supplySample.length()) {
+                addCandidate(supplySample.opt(j))
             }
         }
     }
