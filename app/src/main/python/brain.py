@@ -6009,6 +6009,10 @@ CONTEXT_PERCENTILE_MIN_SUPPORT = 10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
 PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v2"
+PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
+PC2_COMPOSITE_SHADOW_MODE = "shadow"
+PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
+PC2_COMPOSITE_CONTEXT_WEIGHT = 0.30
 PC2_PAPER_PRIMARY_MODE = "paper"
 PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
@@ -10008,9 +10012,12 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'premium_edge_status': cand.get('premium_edge_status') or ('OK' if cand.get('premiumEdge') is not None else 'MISSING'),
             'deterministic_rank': cand.get('deterministic_rank'),
             'pc2PaperRank': cand.get('pc2PaperRank'),
+            'pc2PaperResearchRank': cand.get('pc2PaperResearchRank'),
             'pc2PaperPrimaryEligible': cand.get('pc2PaperPrimaryEligible'),
             'pc2PaperSelectorVersion': cand.get('pc2PaperSelectorVersion'),
             'pc2PaperMode': cand.get('pc2PaperMode'),
+            'pc2PaperSortComponents': cand.get('pc2PaperSortComponents'),
+            'pc2CompositeShadow': cand.get('pc2CompositeShadow'),
             'pc2SupplyWidthSource': cand.get('pc2SupplyWidthSource'),
             'pc2SupplyWidthExpanded': cand.get('pc2SupplyWidthExpanded'),
             'pc2SupplyLadderVersion': cand.get('pc2SupplyLadderVersion'),
@@ -11933,6 +11940,122 @@ def _pc2_paper_primary_sort_key(candidate):
     )
 
 
+def _pc2_composite_group_key(candidate):
+    """Return the stable reference group for exploratory composite scoring."""
+    index_key = str(candidate.get('index') or 'UNKNOWN').upper()
+    direction = _strategy_direction(candidate.get('type'))
+    dte_bucket = _stage2a_dte_bucket(candidate)
+    return f"{index_key}|{direction}|{dte_bucket}"
+
+
+def _pc2_composite_reference_group(reference, group_key):
+    if not isinstance(reference, dict):
+        return None, None
+    groups = reference.get('groups') if isinstance(reference.get('groups'), dict) else {}
+    for key in (group_key, 'GLOBAL'):
+        group = groups.get(key)
+        if isinstance(group, dict):
+            return group, key
+    return None, None
+
+
+def _pc2_composite_normalize(value, bounds):
+    """Normalize against a frozen historical interval, never the current menu."""
+    value = _safe_num(value, None)
+    if value is None or not isinstance(bounds, dict):
+        return None
+    low = _safe_num(bounds.get('low'), None)
+    high = _safe_num(bounds.get('high'), None)
+    if low is None or high is None or high <= low:
+        return None
+    clipped = min(max(value, low), high)
+    return round((clipped - low) / (high - low), 6)
+
+
+def annotate_pc2_composite_shadow(candidates, reference=None):
+    """Attach a replay-only composite without changing PC2 paper selection.
+
+    The active selector remains untouched until this policy is replay-validated.
+    The two terms are deliberately non-overlapping: adjusted edge per risk is the
+    economics term; percentile context is the market-context term. Probability,
+    width, candle, and regime are excluded here because they already feed one of
+    those terms and would otherwise be double-counted.
+    """
+    rows = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
+    reference_version = reference.get('version') if isinstance(reference, dict) else None
+
+    for candidate in rows:
+        group_key = _pc2_composite_group_key(candidate)
+        group, reference_scope = _pc2_composite_reference_group(reference, group_key)
+        economics_raw = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
+        context_raw = _safe_num(candidate.get('contextPercentileScore'), None)
+        economics_score = _pc2_composite_normalize(
+            economics_raw,
+            group.get('adjusted_edge_per_risk') if isinstance(group, dict) else None,
+        )
+        context_score = _pc2_composite_normalize(
+            context_raw,
+            group.get('context_percentile_score') if isinstance(group, dict) else None,
+        )
+        score = None
+        status = 'REFERENCE_UNAVAILABLE'
+        if economics_score is not None and context_score is not None:
+            score = round(
+                PC2_COMPOSITE_ECONOMICS_WEIGHT * economics_score
+                + PC2_COMPOSITE_CONTEXT_WEIGHT * context_score,
+                6,
+            )
+            status = 'SCORED_EXPLORATORY'
+        candidate['pc2CompositeShadow'] = {
+            'version': PC2_COMPOSITE_SHADOW_VERSION,
+            'mode': PC2_COMPOSITE_SHADOW_MODE,
+            'status': status,
+            'reference_version': reference_version,
+            'reference_group': group_key,
+            'reference_scope': reference_scope,
+            'weights': {
+                'adjusted_edge_per_risk': PC2_COMPOSITE_ECONOMICS_WEIGHT,
+                'context_percentile_score': PC2_COMPOSITE_CONTEXT_WEIGHT,
+            },
+            'raw_terms': {
+                'adjusted_edge_per_risk': economics_raw,
+                'context_percentile_score': context_raw,
+            },
+            'normalized_terms': {
+                'adjusted_edge_per_risk': economics_score,
+                'context_percentile_score': context_score,
+            },
+            'excluded_terms': [
+                'probability_and_ml_probability_are_not_independent_of_economics',
+                'width_candle_regime_are_already_represented_by_context_percentile_score',
+            ],
+            'score': score,
+            'contract': 'shadow only; never changes entry eligibility, paper primary, or notification',
+        }
+
+    scored = [candidate for candidate in rows if candidate.get('pc2CompositeShadow', {}).get('score') is not None]
+    ordered = sorted(
+        scored,
+        key=lambda candidate: (
+            -candidate['pc2CompositeShadow']['score'],
+            -_safe_num(candidate.get('adjustedEdgePerRisk'), float('-inf')),
+            -_safe_num(candidate.get('contextPercentileScore'), float('-inf')),
+            str(candidate.get('id') or ''),
+        ),
+    )
+    for rank, candidate in enumerate(ordered, start=1):
+        candidate['pc2CompositeShadow']['research_rank'] = rank
+
+    return {
+        'version': PC2_COMPOSITE_SHADOW_VERSION,
+        'mode': PC2_COMPOSITE_SHADOW_MODE,
+        'candidate_count': len(rows),
+        'scored_count': len(scored),
+        'reference_version': reference_version,
+        'contract': 'exploratory diagnostics only; active PC2 selector remains unchanged',
+    }
+
+
 def _pc2_paper_control(eligible, control_context=None):
     """Build a deterministic pseudo-random paper control from the full menu."""
     eligible_ids = sorted(str(candidate.get('id') or '') for candidate in eligible)
@@ -12943,6 +13066,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 candidate['executionReady'] = readiness.get('ready', False)
                 candidate['executionGate'] = readiness.get('gate', 'WAIT')
                 annotate_candidate_entry_eligibility(candidate, market_confidence)
+            result['pc2_composite_shadow'] = annotate_pc2_composite_shadow(
+                ranked,
+                ctx.get('pc2CompositeReference') or ctx.get('pc2_composite_reference'),
+            )
             result['build3_gate'] = {
                 'experiment_name': BUILD3_EXPERIMENT_NAME,
                 'a8': a8_summary,
@@ -13068,6 +13195,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
                 annotate_candidate_entry_eligibility(c, market_confidence)
+            result['pc2_composite_shadow'] = annotate_pc2_composite_shadow(
+                ranked,
+                ctx.get('pc2CompositeReference') or ctx.get('pc2_composite_reference'),
+            )
             final_verdict = _align_verdict_to_watchlist(
                 result.get('verdict'),
                 result["watchlist"],
@@ -13585,12 +13716,14 @@ def _candidate_view(c):
         'premiumEdge': c.get('premiumEdge'),
         'deterministic_rank': c.get('deterministic_rank'),
         'pc2PaperRank': c.get('pc2PaperRank'),
+        'pc2PaperResearchRank': c.get('pc2PaperResearchRank'),
         'pc2PaperPrimaryEligible': c.get('pc2PaperPrimaryEligible'),
         'pc2PaperSelectorVersion': c.get('pc2PaperSelectorVersion'),
         'pc2PaperMode': c.get('pc2PaperMode'),
         'pc2PaperSortComponents': c.get('pc2PaperSortComponents'),
         'pc2PaperSortKey': c.get('pc2PaperSortKey'),
         'pc2PaperRandomControl': c.get('pc2PaperRandomControl'),
+        'pc2CompositeShadow': c.get('pc2CompositeShadow'),
         'pc2SupplyWidthSource': c.get('pc2SupplyWidthSource'),
         'pc2SupplyWidthExpanded': c.get('pc2SupplyWidthExpanded'),
         'pc2SupplyLadderVersion': c.get('pc2SupplyLadderVersion'),
@@ -16065,6 +16198,7 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_batch_f_supply_pattern'] = pc2_batch_f_supply_pattern
     snapshot_context['snapshot_pc2_batch_f_paper_context'] = result.get('pc2_batch_f_paper_context') if isinstance(result.get('pc2_batch_f_paper_context'), dict) else {}
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
+    snapshot_context['snapshot_pc2_composite_shadow'] = result.get('pc2_composite_shadow') if isinstance(result.get('pc2_composite_shadow'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
     snapshot_context['snapshot_menu_abstention_shadow'] = menu_abstention_shadow
     snapshot_context['snapshot_build3_gate'] = build3_gate

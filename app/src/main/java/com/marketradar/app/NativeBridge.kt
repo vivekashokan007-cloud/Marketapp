@@ -212,8 +212,8 @@ class NativeBridge(private val context: Context) {
             "marketConfidence", "entryConfidence", "entryEligible", "entryGate", "entryEligibility",
             "brainScore", "contextPercentileScore", "p_ml", "mlAction", "mlEdge", "mlRegime",
             "mlUnsure", "mlOodFlag", "deterministic_rank", "teacher_shadow_rank", "stage2a_live_rank",
-            "pc2PaperRank", "pc2PaperPrimaryEligible", "pc2PaperSelectorVersion", "pc2PaperMode",
-            "pc2PaperSortComponents", "pc2PaperSortKey", "pc2PaperRandomControl",
+            "pc2PaperRank", "pc2PaperResearchRank", "pc2PaperPrimaryEligible", "pc2PaperSelectorVersion", "pc2PaperMode",
+            "pc2PaperSortComponents", "pc2PaperSortKey", "pc2PaperRandomControl", "pc2CompositeShadow",
             "pc2SupplyWidthSource", "pc2SupplyWidthExpanded", "pc2SupplyLadderVersion",
             "pc2BatchFCandleScore", "pc2BatchFCandleComponents", "pc2BatchFCandleExcludedPatterns",
             "pc2BatchFCandleScoringMethod",
@@ -313,6 +313,9 @@ class NativeBridge(private val context: Context) {
         }
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
             compactContext.put("snapshot_pc2_paper_primary", policy)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
+            compactContext.put("snapshot_pc2_composite_shadow", shadow)
         }
         parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
             compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)

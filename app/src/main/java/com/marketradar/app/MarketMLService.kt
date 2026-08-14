@@ -827,12 +827,14 @@ class MarketMLService : Service() {
             "teacher_shadow_rank",
             "stage2a_live_rank",
             "pc2PaperRank",
+            "pc2PaperResearchRank",
             "pc2PaperPrimaryEligible",
             "pc2PaperSelectorVersion",
             "pc2PaperMode",
             "pc2PaperSortComponents",
             "pc2PaperSortKey",
             "pc2PaperRandomControl",
+            "pc2CompositeShadow",
             "pc2SupplyWidthSource",
             "pc2SupplyWidthExpanded",
             "pc2SupplyLadderVersion",
@@ -970,6 +972,9 @@ class MarketMLService : Service() {
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
             compactContext.put("snapshot_pc2_paper_primary", policy)
         }
+        parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
+            compactContext.put("snapshot_pc2_composite_shadow", shadow)
+        }
         parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let { batchF ->
             compactContext.put("snapshot_pc2_batch_f_paper_context", batchF)
         }
@@ -1048,7 +1053,8 @@ class MarketMLService : Service() {
             addCandidate(snap.opt("primary_candidate_json"))
 
             val context = parseJsonObject(snap.opt("context_json"))
-            val generated = parseJsonArray(context?.opt("snapshot_generated_candidates"))
+            val generated = parseJsonArray(context?.opt("snapshot_ranked_candidates_full"))
+                ?: parseJsonArray(context?.opt("snapshot_generated_candidates"))
                 ?: parseJsonArray(snap.opt("top_candidates_json"))
 
             if (generated != null) {
@@ -1094,7 +1100,8 @@ class MarketMLService : Service() {
         addCandidate(snapshot.opt("primary_candidate_json"))
 
         val context = parseJsonObject(snapshot.opt("context_json"))
-        val generated = parseJsonArray(context?.opt("snapshot_generated_candidates"))
+        val generated = parseJsonArray(context?.opt("snapshot_ranked_candidates_full"))
+            ?: parseJsonArray(context?.opt("snapshot_generated_candidates"))
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
         if (generated != null) {
             for (j in 0 until generated.length()) {

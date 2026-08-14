@@ -130,7 +130,9 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
     nf_profile = _obj(profiles.get("nfProfile") or profiles.get("nf_profile"))
     bnf_chain = _obj(context.get("bnfChain") or context.get("bnf_chain"))
     nf_chain = _obj(context.get("nfChain") or context.get("nf_chain"))
-    generated = _array(context.get("snapshot_generated_candidates"))
+    ranked_full = _array(context.get("snapshot_ranked_candidates_full"))
+    generated = ranked_full or _array(context.get("snapshot_generated_candidates"))
+    candidate_population_source = "snapshot_ranked_candidates_full" if ranked_full else "snapshot_generated_candidates"
     rejected = _array(context.get("snapshot_rejected_candidates") or context.get("snapshot_rejected_candidates_full"))
     generated = [row for row in generated if isinstance(row, dict)]
     rejected = [row for row in rejected if isinstance(row, dict)]
@@ -218,6 +220,7 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
         "values": {name: (round(value, 6) if value is not None else None) for name, value in values.items()},
         "generated_population_count": len(generated),
         "rejected_population_count": len(rejected),
+        "candidate_population_source": candidate_population_source,
         "rejected_capture_present": "snapshot_rejected_candidates" in context or "snapshot_rejected_candidates_full" in context,
     }
 

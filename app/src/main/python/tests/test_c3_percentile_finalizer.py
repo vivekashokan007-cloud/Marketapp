@@ -37,6 +37,25 @@ class C3PercentileFinalizerTest(unittest.TestCase):
         self.assertEqual(frame["rejected_population_count"], 1)
         self.assertEqual(frame["values"]["iv_richness_menu_median"], 2.0)
 
+    def test_capture_frame_prefers_ranked_full_candidate_evidence(self):
+        snapshot = {
+            "session_date": "2026-08-13",
+            "poll_ts": "2026-08-13T09:15:00+05:30",
+            "context_json": {
+                "snapshot_generated_candidates": [{"id": "ui-only", "ivRichness": 1.0}],
+                "snapshot_ranked_candidates_full": [
+                    {"id": "ranked-one", "ivRichness": 2.0},
+                    {"id": "ranked-two", "ivRichness": 4.0},
+                ],
+            },
+        }
+
+        frame = capture_frame(snapshot)
+
+        self.assertEqual(frame["candidate_population_source"], "snapshot_ranked_candidates_full")
+        self.assertEqual(frame["generated_population_count"], 2)
+        self.assertEqual(frame["values"]["iv_richness_menu_median"], 3.0)
+
 
 if __name__ == "__main__":
     unittest.main()

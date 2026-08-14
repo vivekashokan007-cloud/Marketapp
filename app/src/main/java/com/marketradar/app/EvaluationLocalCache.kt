@@ -242,6 +242,10 @@ object EvaluationLocalCache {
             "entryEligible",
             "entryGate",
             "entryEligibility",
+            "pc2PaperRank",
+            "pc2PaperResearchRank",
+            "pc2PaperSortComponents",
+            "pc2CompositeShadow",
             "netPremium",
             "entry_credit",
             "max_profit",
@@ -343,6 +347,12 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
             compactContext.put("snapshot_build3_flow", it)
         }
+        parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
+            compactContext.put("snapshot_pc2_paper_primary", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
+            compactContext.put("snapshot_pc2_composite_shadow", it)
+        }
         // This small, immutable frame is the post-close C3 source of truth.
         // Keep it even when the full context is compacted for local fallback.
         parseJsonObject(context.opt("c3_finalization_frame"))?.let {
@@ -428,6 +438,12 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
             compactContext.put("snapshot_build3_flow", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
+            compactContext.put("snapshot_pc2_paper_primary", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
+            compactContext.put("snapshot_pc2_composite_shadow", it)
         }
         parseJsonObject(context.opt("c3_finalization_frame"))?.let {
             compactContext.put("c3_finalization_frame", it)
