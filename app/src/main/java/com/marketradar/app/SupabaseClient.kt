@@ -568,8 +568,13 @@ object SupabaseClient {
         val rows = JSONArray()
         for (i in 0 until body.length()) {
             val src = body.optJSONObject(i) ?: continue
-            val role = src.optString("role", "secondary").trim().lowercase(Locale.US)
-            if (role == "rejected") continue
+            val role = src.optString("role", "secondary")
+                .trim()
+                .lowercase(Locale.US)
+                .ifBlank { "secondary" }
+            // The production teacher table intentionally permits only these
+            // roles. Experimental samples remain in recommendation outcomes.
+            if (role != "primary" && role != "secondary") continue
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
             row.put("session_date", src.opt("session_date"))
@@ -578,7 +583,7 @@ object SupabaseClient {
             row.put("index_key", src.opt("index_key"))
             row.put("trade_mode", src.opt("trade_mode"))
             row.put("strategy_type", src.opt("strategy_type"))
-            row.put("role", role.ifBlank { "secondary" })
+            row.put("role", role)
             row.put("sim_pnl_h2", src.opt("sim_pnl_h2"))
             if (!src.isNull("outcome_h2")) row.put("outcome_h2", src.opt("outcome_h2"))
             if (!src.isNull("canonical_won")) row.put("canonical_won", src.opt("canonical_won"))
