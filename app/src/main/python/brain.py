@@ -21,6 +21,11 @@ BUILD3_GENERATED_CANDIDATE_UI_CAP = 30
 BUILD3_RANKED_EVIDENCE_CAP = 200
 PC2_SUPPLY_QUALITY_SHADOW_VERSION = 'pc2_supply_quality_shadow_v1'
 PC2_SUPPLY_QUALITY_SAMPLE_CAP = 16
+PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION = 'pc2_directional_generation_shadow_v1'
+PC2_DIRECTIONAL_GENERATION_SAMPLE_CAP = 8
+PC2_DIRECTIONAL_SIGMA_MULTIPLIERS = (0.5, 0.75, 1.0, 1.25, 1.5)
+PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS = 150.0
+PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR = 1
 # Legacy display EV deliberately applies a 0.65 profit haircut from the pre-D4
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
@@ -5996,7 +6001,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.81"
+BRAIN_VERSION = "2.5.82"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8432,16 +8437,54 @@ def _pc2_supply_sample_candidate(row):
     view = _candidate_view(row)
     view['creditToRisk'] = row.get('creditToRisk')
     view['generationQualityShadow'] = row.get('generationQualityShadow')
+    view['directionalGenerationShadow'] = row.get('directionalGenerationShadow')
     return view
 
-def _build_pc2_supply_quality_shadow(candidates, rejected_candidates, ctx):
+def _build_pc2_supply_quality_shadow(candidates, rejected_candidates, ctx, directional_generation_shadow=None):
     generated = [row for row in candidates or [] if isinstance(row, dict)]
     rejected = [row for row in rejected_candidates or [] if isinstance(row, dict)]
     population = [(row, 'generated') for row in generated] + [(row, 'rejected') for row in rejected]
+    directional_generation_shadow = (
+        directional_generation_shadow
+        if isinstance(directional_generation_shadow, dict)
+        else (ctx or {}).get('_pc2_directional_generation_shadow_internal') or {}
+    )
+    legacy_pair_keys = set(directional_generation_shadow.get('legacy_pair_keys') or [])
+    counterfactual_pair_keys = set(directional_generation_shadow.get('counterfactual_pair_keys') or [])
+    sigma_only_candidates = [
+        row for row in directional_generation_shadow.get('sigma_only_candidates') or []
+        if isinstance(row, dict)
+    ]
     by_slice = {}
     flagged_generated = []
+    point_only_generated = []
+    retained_generated = []
 
     for row, source in population:
+        stype = str(row.get('type') or row.get('strategy_type') or '').upper()
+        pair_key = _directional_pair_key(
+            str(row.get('index') or row.get('index_key') or 'UNKNOWN').upper(),
+            stype,
+            row.get('width'),
+            {'sell': row.get('sellStrike'), 'buy': row.get('buyStrike')},
+        )
+        if pair_key and pair_key in legacy_pair_keys:
+            would_be_generated = pair_key in counterfactual_pair_keys
+            membership = 'retained' if would_be_generated else 'point_only'
+            if source == 'generated':
+                row['directionalGenerationShadow'] = {
+                    'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+                    'shadow_only': True,
+                    'membership': membership,
+                    'would_be_generated': would_be_generated,
+                    'ranking_changed': False,
+                    'entry_eligibility_changed': False,
+                }
+                if membership == 'point_only':
+                    point_only_generated.append(row)
+                else:
+                    retained_generated.append(row)
+
         is_credit = bool(row.get('isCredit') or row.get('is_credit'))
         if not is_credit:
             continue
@@ -8514,22 +8557,116 @@ def _build_pc2_supply_quality_shadow(candidates, rejected_candidates, ctx):
         })
 
     session_date = str((ctx or {}).get('today_ist') or (ctx or {}).get('session_date') or '')
-    sampled = sorted(
+
+    def stable_sample(rows, cap, excluded_ids=None):
+        excluded_ids = excluded_ids or set()
+        unique = {}
+        for row in rows or []:
+            candidate_id = row.get('id') if isinstance(row, dict) else None
+            if not candidate_id or candidate_id in excluded_ids:
+                continue
+            unique.setdefault(candidate_id, row)
+        return sorted(
+            unique.values(),
+            key=lambda row: hashlib.sha256(
+                f"{session_date}|{row.get('id') or ''}".encode('utf-8')
+            ).hexdigest(),
+        )[:max(0, cap)]
+
+    sigma_only_sample_cap = PC2_DIRECTIONAL_GENERATION_SAMPLE_CAP // 2
+    directional_sample = stable_sample(sigma_only_candidates, sigma_only_sample_cap)
+    sampled_ids = {row.get('id') for row in directional_sample}
+    directional_sample.extend(stable_sample(
+        point_only_generated,
+        PC2_DIRECTIONAL_GENERATION_SAMPLE_CAP - len(directional_sample),
+        sampled_ids,
+    ))
+    sampled_ids = {row.get('id') for row in directional_sample}
+    sampled = list(directional_sample)
+    sampled.extend(stable_sample(
         flagged_generated,
-        key=lambda row: hashlib.sha256(f"{session_date}|{row.get('id') or ''}".encode('utf-8')).hexdigest(),
-    )[:PC2_SUPPLY_QUALITY_SAMPLE_CAP]
+        PC2_SUPPLY_QUALITY_SAMPLE_CAP - len(sampled),
+        sampled_ids,
+    ))
+
+    directional_slices = [
+        row for row in directional_generation_shadow.get('slices') or []
+        if isinstance(row, dict)
+    ]
+    directional_counterfactual = {
+        'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+        'shadow_only': True,
+        'behavior_change': False,
+        'policy': 'sigma_scaled_directional_pairs_with_bounded_credit_walls',
+        'multipliers': list(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS),
+        'scope': ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'],
+        'legacy_pair_count': sum(row.get('legacy_pair_count', 0) for row in directional_slices),
+        'sigma_pair_count': sum(row.get('sigma_pair_count', 0) for row in directional_slices),
+        'retained_pair_count': sum(row.get('retained_pair_count', 0) for row in directional_slices),
+        'point_only_pair_count': sum(row.get('point_only_pair_count', 0) for row in directional_slices),
+        'sigma_only_pair_count': sum(row.get('sigma_only_pair_count', 0) for row in directional_slices),
+        'generated_candidate_membership': {
+            'retained': len(retained_generated),
+            'point_only': len(point_only_generated),
+            'sigma_only_built': len(sigma_only_candidates),
+        },
+        'sample_cap': PC2_DIRECTIONAL_GENERATION_SAMPLE_CAP,
+        'sample_count': len(directional_sample),
+        'uncapped_measurement': {
+            'scope': 'all_in_memory_pairs_at_get_strike_pairs_return',
+            'quantiles_scope': 'per_slice_legacy_and_sigma_pair_sets',
+            'slices': directional_slices,
+        },
+        'status': directional_generation_shadow.get('status', 'complete'),
+        'latency_ms': directional_generation_shadow.get('latency_ms', 0.0),
+        'latency_budget_ms': directional_generation_shadow.get(
+            'latency_budget_ms', PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS
+        ),
+        'latency_budget_exceeded': bool(directional_generation_shadow.get('aborted')),
+        'fail_open': True,
+        'errors': list(directional_generation_shadow.get('errors') or []),
+        'slices': directional_slices,
+        'ranking_changed': False,
+        'entry_eligibility_changed': False,
+    }
+    total_legacy_pairs = directional_counterfactual['legacy_pair_count']
+    sigma_unavailable_slices = sum(
+        1 for row in directional_slices if row.get('sigma_status') == 'sigma_unavailable'
+    )
+    auto_disable_reasons = []
+    if directional_counterfactual['latency_budget_exceeded']:
+        auto_disable_reasons.append('latency_budget_exceeded')
+    if total_legacy_pairs < PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR:
+        auto_disable_reasons.append('supply_below_floor')
+    if directional_slices and sigma_unavailable_slices == len(directional_slices):
+        auto_disable_reasons.append('sigma_unavailable_all_slices')
+    directional_counterfactual['safety'] = {
+        'auto_disable_recommended': bool(auto_disable_reasons),
+        'auto_disable_reasons': auto_disable_reasons,
+        'supply_floor': PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR,
+        'sigma_unavailable_slice_count': sigma_unavailable_slices,
+        'fallback_when_sigma_unavailable': 'legacy_point_walk',
+        'point_only_without_replacement_count': max(
+            0,
+            directional_counterfactual['point_only_pair_count']
+            - directional_counterfactual['sigma_only_pair_count'],
+        ),
+    }
     return {
         'version': PC2_SUPPLY_QUALITY_SHADOW_VERSION,
         'shadow_only': True,
         'behavior_change': False,
         'population_scope': 'uncapped_generated_plus_rejected_live_memory_before_ranking',
         'generated_count': len(generated),
+        'generated_count_semantics': 'uncapped_in_memory_generated_before_ranked_evidence_and_persistence_caps',
+        'ranked_evidence_count': None,
         'rejected_count': len(rejected),
         'combined_count': len(population),
         'flagged_generated_count': len(flagged_generated),
         'sample_cap': PC2_SUPPLY_QUALITY_SAMPLE_CAP,
         'sample_method': 'stable_sha256_session_candidate_id',
         'sample_candidates': [_pc2_supply_sample_candidate(row) for row in sampled],
+        'directional_generation_counterfactual': directional_counterfactual,
         'slices': slices,
         'derived_floor': {
             'status': 'PENDING_OUTCOME_CALIBRATION',
@@ -9634,6 +9771,112 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
     return candidates
 
 # ─── STRIKE PAIR GENERATION ───
+
+def _directional_pair_key(index_key, stype, width, pair):
+    if not isinstance(pair, dict):
+        return None
+    sell = _percentile_float(pair.get('sell'))
+    buy = _percentile_float(pair.get('buy'))
+    width_value = _percentile_float(width)
+    if sell is None or buy is None or width_value is None:
+        return None
+    return f'{index_key}|{stype}|{width_value:g}|{sell:g}|{buy:g}'
+
+def _get_sigma_directional_pairs(stype, atm, width, step, all_strikes, spot, vix, cw, pw):
+    """Build a measurement-only directional pair set in volatility units."""
+    daily_sigma = _daily_sigma(spot, vix)
+    if daily_sigma is None or daily_sigma <= 0 or step <= 0:
+        return [], {
+            'status': 'sigma_unavailable',
+            'daily_sigma': daily_sigma,
+            'multipliers': list(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS),
+            'fallback': 'legacy_point_walk',
+        }
+
+    all_set = set(all_strikes)
+    pairs = []
+    seen = set()
+
+    def append_pair(sell, buy, sell_type, buy_type, source):
+        pair_key = (sell, buy, sell_type, buy_type)
+        if pair_key in seen or sell not in all_set or buy not in all_set:
+            return
+        seen.add(pair_key)
+        pairs.append({
+            'sell': sell,
+            'buy': buy,
+            'sellType': sell_type,
+            'buyType': buy_type,
+            'shadowSource': source,
+        })
+
+    for multiplier in PC2_DIRECTIONAL_SIGMA_MULTIPLIERS:
+        distance = round(daily_sigma * multiplier / step) * step
+        if distance <= 0:
+            continue
+        if stype == 'BEAR_CALL':
+            sell = atm + distance
+            append_pair(sell, sell + width, 'CE', 'CE', f'sigma_{multiplier:g}')
+        elif stype == 'BULL_PUT':
+            sell = atm - distance
+            append_pair(sell, sell - width, 'PE', 'PE', f'sigma_{multiplier:g}')
+        elif stype == 'BEAR_PUT':
+            buy = atm - distance
+            append_pair(buy - width, buy, 'PE', 'PE', f'sigma_{multiplier:g}')
+        elif stype == 'BULL_CALL':
+            buy = atm + distance
+            append_pair(buy + width, buy, 'CE', 'CE', f'sigma_{multiplier:g}')
+
+    max_sigma = max(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS)
+    wall_candidates = []
+    if stype == 'BEAR_CALL' and cw and cw > atm:
+        wall_candidates.extend((cw, cw - step))
+    elif stype == 'BULL_PUT' and pw and pw < atm:
+        wall_candidates.extend((pw, pw + step))
+    for sell in wall_candidates:
+        if (stype == 'BEAR_CALL' and sell <= atm) or (stype == 'BULL_PUT' and sell >= atm):
+            continue
+        wall_sigma = _sigma_otm_value(sell, spot, daily_sigma)
+        if wall_sigma is None or _sigma_above_max(wall_sigma, max_sigma):
+            continue
+        if stype == 'BEAR_CALL':
+            append_pair(sell, sell + width, 'CE', 'CE', 'bounded_wall')
+        else:
+            append_pair(sell, sell - width, 'PE', 'PE', 'bounded_wall')
+
+    return pairs, {
+        'status': 'ready',
+        'daily_sigma': round(daily_sigma, 6),
+        'multipliers': list(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS),
+        'wall_policy': 'include_only_at_or_below_max_shadow_sigma',
+        'max_wall_sigma': max_sigma,
+    }
+
+def _pc2_directional_pair_summary(pairs, stype, spot, daily_sigma):
+    """Summarize the complete in-memory pair set without persisting its rows."""
+    rows = []
+    sigma = _percentile_float(daily_sigma)
+    if sigma is None or sigma <= 0:
+        return {
+            'pair_count': len(pairs or []),
+            'point_distance': _pc2_supply_metric_summary([]),
+            'sigma_otm': _pc2_supply_metric_summary([]),
+        }
+    for pair in pairs or []:
+        if not isinstance(pair, dict):
+            continue
+        anchor = pair.get('sell') if stype in ('BEAR_CALL', 'BULL_PUT') else pair.get('buy')
+        anchor = _percentile_float(anchor)
+        if anchor is None:
+            continue
+        distance = abs(anchor - _percentile_float(spot))
+        sigma_otm = _sigma_otm_value(anchor, spot, sigma)
+        rows.append({'point_distance': distance, 'sigma_otm': sigma_otm})
+    return {
+        'pair_count': len(pairs or []),
+        'point_distance': _pc2_supply_metric_summary(rows, ('point_distance',)),
+        'sigma_otm': _pc2_supply_metric_summary(rows, ('sigma_otm',)),
+    }
 
 def _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw):
     pairs = []
@@ -11363,10 +11606,130 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         }
 
     # ═══ 1. DIRECTIONAL 2-LEG SPREADS ═══
+    directional_generation_shadow = ctx.setdefault('_pc2_directional_generation_shadow_internal', {
+        'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+        'shadow_only': True,
+        'behavior_change': False,
+        'fail_open': True,
+        'latency_budget_ms': PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS,
+        'latency_ms': 0.0,
+        'aborted': False,
+        'errors': [],
+        'legacy_pair_keys': set(),
+        'counterfactual_pair_keys': set(),
+        'sigma_only_candidates': [],
+        'slices': [],
+    })
+    shadow_started = time.perf_counter()
     dir_types = [t for t in ['BEAR_CALL', 'BULL_PUT', 'BEAR_PUT', 'BULL_CALL'] if t in allowed_types]
     for stype in dir_types:
         for width in widths:
             pairs = _get_strike_pairs(stype, atm, width, step, all_strikes, spot, is_bnf, cw, pw)
+            shadow_pairs = []
+            shadow_meta = {
+                'status': 'shadow_disabled',
+                'daily_sigma': None,
+                'multipliers': list(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS),
+            }
+            if not directional_generation_shadow.get('aborted'):
+                elapsed_ms = (time.perf_counter() - shadow_started) * 1000.0
+                if elapsed_ms >= PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS:
+                    directional_generation_shadow['aborted'] = True
+                    directional_generation_shadow['errors'].append({
+                        'code': 'latency_budget_exceeded',
+                        'stage': 'directional_pair_generation',
+                        'elapsed_ms': round(elapsed_ms, 3),
+                    })
+                else:
+                    try:
+                        shadow_pairs, shadow_meta = _get_sigma_directional_pairs(
+                            stype, atm, width, step, all_strikes, spot, vix, cw, pw
+                        )
+                    except Exception as exc:
+                        directional_generation_shadow['errors'].append({
+                            'code': 'shadow_pair_generation_failed',
+                            'stage': 'directional_pair_generation',
+                            'strategy_type': stype,
+                            'width': width,
+                            'message': str(exc)[:240],
+                        })
+                        shadow_pairs = []
+                        shadow_meta = {
+                            'status': 'shadow_error',
+                            'daily_sigma': None,
+                            'multipliers': list(PC2_DIRECTIONAL_SIGMA_MULTIPLIERS),
+                        }
+            legacy_keys = {
+                key for key in (
+                    _directional_pair_key(idx, stype, width, pair) for pair in pairs
+                ) if key
+            }
+            counterfactual_keys = {
+                key for key in (
+                    _directional_pair_key(idx, stype, width, pair) for pair in shadow_pairs
+                ) if key
+            }
+            directional_generation_shadow['legacy_pair_keys'].update(legacy_keys)
+            directional_generation_shadow['counterfactual_pair_keys'].update(counterfactual_keys)
+            directional_generation_shadow['slices'].append({
+                'slice_key': f'{idx}|{stype}|{trade_mode}|W{width}',
+                'index_key': idx,
+                'strategy_type': stype,
+                'direction': _pc2_direction({'strategy_type': stype}),
+                'trade_mode': trade_mode,
+                'width': width,
+                'legacy_pair_count': len(legacy_keys),
+                'sigma_pair_count': len(counterfactual_keys),
+                'retained_pair_count': len(legacy_keys & counterfactual_keys),
+                'point_only_pair_count': len(legacy_keys - counterfactual_keys),
+                'sigma_only_pair_count': len(counterfactual_keys - legacy_keys),
+                'sigma_status': shadow_meta.get('status'),
+                'daily_sigma': shadow_meta.get('daily_sigma'),
+                'multipliers': shadow_meta.get('multipliers'),
+                'wall_policy': shadow_meta.get('wall_policy'),
+                'max_wall_sigma': shadow_meta.get('max_wall_sigma'),
+                'legacy_metrics': _pc2_directional_pair_summary(
+                    pairs, stype, spot, _daily_sigma(spot, vix)
+                ),
+                'sigma_metrics': _pc2_directional_pair_summary(
+                    shadow_pairs, stype, spot, shadow_meta.get('daily_sigma')
+                ),
+            })
+
+            if counterfactual_keys - legacy_keys:
+                shadow_ctx = dict(ctx)
+                shadow_ctx['_trace'] = None
+                shadow_ctx['_active_cand_trace'] = None
+                shadow_ctx['_rejected_candidates'] = []
+                for pair in shadow_pairs:
+                    pair_key = _directional_pair_key(idx, stype, width, pair)
+                    if not pair_key or pair_key in legacy_keys:
+                        continue
+                    try:
+                        shadow_candidate = _build_candidate(
+                            stype, pair, strikes, spot, lot_size, width, T, tdte, vol,
+                            expiry, is_bnf, vix, trade_mode, shadow_ctx, atm
+                        )
+                    except Exception as exc:
+                        directional_generation_shadow['errors'].append({
+                            'code': 'shadow_candidate_build_failed',
+                            'stage': 'directional_candidate_build',
+                            'strategy_type': stype,
+                            'width': width,
+                            'message': str(exc)[:240],
+                        })
+                        shadow_candidate = None
+                    if not shadow_candidate:
+                        continue
+                    shadow_candidate['directionalGenerationShadow'] = {
+                        'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+                        'shadow_only': True,
+                        'membership': 'sigma_only',
+                        'would_be_generated': True,
+                        'ranking_changed': False,
+                        'entry_eligibility_changed': False,
+                    }
+                    directional_generation_shadow['sigma_only_candidates'].append(shadow_candidate)
             for pair in pairs:
                 cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx, atm)
                 if not cand: continue
@@ -11394,6 +11757,17 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                     cand['capitalBlocked'] = True
 
                 candidates.append(cand)
+
+    directional_generation_shadow['latency_ms'] = round(
+        (time.perf_counter() - shadow_started) * 1000.0, 3
+    )
+    directional_generation_shadow['latency_budget_exceeded'] = bool(
+        directional_generation_shadow.get('aborted')
+    )
+    directional_generation_shadow['status'] = (
+        'aborted_fail_open' if directional_generation_shadow.get('aborted')
+        else ('degraded_fail_open' if directional_generation_shadow.get('errors') else 'complete')
+    )
 
     def _record_multi_leg_rejection(
         *,
@@ -12982,6 +13356,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         all_cands = []
         all_rejected = []
         generation_skip_reasons = []
+        ctx['_pc2_directional_generation_shadow_internal'] = {
+            'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+            'shadow_only': True,
+            'behavior_change': False,
+            'fail_open': True,
+            'latency_budget_ms': PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS,
+            'latency_ms': 0.0,
+            'aborted': False,
+            'errors': [],
+            'legacy_pair_keys': set(),
+            'counterfactual_pair_keys': set(),
+            'sigma_only_candidates': [],
+            'slices': [],
+        }
 
         def _record_generation_skip(index_key, chain_key, reason_code, detail):
             generation_skip_reasons.append({
@@ -13035,7 +13423,40 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['rejected_candidates'] = all_rejected
         result['generation_skip_reasons'] = generation_skip_reasons
         result['generation_skip_reason'] = generation_skip_reasons[0] if generation_skip_reasons else None
-        supply_quality_shadow = _build_pc2_supply_quality_shadow(all_cands, all_rejected, ctx)
+        try:
+            supply_quality_shadow = _build_pc2_supply_quality_shadow(all_cands, all_rejected, ctx)
+        except Exception as exc:
+            # Shadow telemetry is fail-open: a measurement error must never suppress
+            # candidates, alter ranking, or break the live poll result.
+            directional_shadow = ctx.get('_pc2_directional_generation_shadow_internal') or {}
+            errors = list(directional_shadow.get('errors') or [])
+            errors.append({
+                'code': 'supply_shadow_build_failed',
+                'stage': 'supply_quality_shadow',
+                'message': str(exc)[:240],
+            })
+            directional_shadow['errors'] = errors
+            directional_shadow['status'] = 'degraded_fail_open'
+            supply_quality_shadow = {
+                'version': PC2_SUPPLY_QUALITY_SHADOW_VERSION,
+                'shadow_only': True,
+                'behavior_change': False,
+                'fail_open': True,
+                'status': 'degraded_fail_open',
+                'error_count': len(errors),
+                'errors': errors,
+                'population_scope': 'unavailable_shadow_only',
+                'generated_count': len(all_cands),
+                'rejected_count': len(all_rejected),
+                'combined_count': len(all_cands) + len(all_rejected),
+                'sample_candidates': [],
+                'slices': [],
+                'derived_floor': {
+                    'status': 'PENDING_OUTCOME_CALIBRATION',
+                    'threshold_value': None,
+                    'percentile_target': None,
+                },
+            }
         result['pc2_supply_quality_shadow'] = supply_quality_shadow
         ctx['pc2_supply_quality_shadow'] = supply_quality_shadow
         context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result, open_trades=open_trades)
@@ -17990,8 +18411,14 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 outcome['role'] = 'supply_shadow'
                 outcome['rank_in_snapshot'] = None
                 outcome['supply_shadow_sample_rank'] = sample_rank
-                outcome['source_record_type'] = 'SUPPLY_QUALITY_SHADOW_SAMPLE'
+                directional_shadow = cand.get('directionalGenerationShadow')
+                outcome['source_record_type'] = (
+                    'DIRECTIONAL_GENERATION_SHADOW_SAMPLE'
+                    if isinstance(directional_shadow, dict)
+                    else 'SUPPLY_QUALITY_SHADOW_SAMPLE'
+                )
                 outcome['generation_quality_shadow'] = cand.get('generationQualityShadow')
+                outcome['directional_generation_shadow'] = directional_shadow
                 outcome['credit_to_risk'] = cand.get('creditToRisk')
                 outcome['premium_edge'] = cand.get('premiumEdge')
                 outcome['credit_width_ratio'] = cand.get('creditWidthRatio')

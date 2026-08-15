@@ -3178,6 +3178,9 @@ class MarketWatchService : Service() {
         } else {
             candidateCounts.opt("generated")
         }
+        // Compatibility field: generated_count is the ranked-evidence count here,
+        // not the uncapped in-memory generator population. The Python shadow payload
+        // carries the explicit generated_count_semantics/ranked_evidence_count labels.
         val generationSkip = factPack.optJSONObject("generation_skip_reason")
         val generationSkipSummary = generationSkip?.optString("detail")
             ?: factPack.optString("generation_skip_reason", "")

@@ -45,6 +45,7 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertIn("session_date=lt.$targetDate&index_key=neq.MARKET", supabase)
         self.assertIn("snapshot_pc2_supply_quality_shadow", ml_service)
         self.assertIn("sample_candidates", ml_service)
+        self.assertIn("directionalGenerationShadow", ml_service)
 
     def test_experimental_outcome_roles_cannot_abort_teacher_persistence(self):
         with open(SUPABASE_PATH, "r", encoding="utf-8") as handle:

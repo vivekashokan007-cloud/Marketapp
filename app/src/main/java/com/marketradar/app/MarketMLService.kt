@@ -785,6 +785,7 @@ class MarketMLService : Service() {
             "creditWidthRatio",
             "creditToRisk",
             "generationQualityShadow",
+            "directionalGenerationShadow",
             "sigmaOTM",
             "ivRichness",
             "probProfit",
