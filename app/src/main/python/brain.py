@@ -6004,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.86"
+BRAIN_VERSION = "2.5.87"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6015,8 +6015,8 @@ REJECTED_EVAL_PER_STAGE_CAP = 4
 CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
 CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
-PC2_AUTHORITY_POLICY_VERSION = 'pc2_authority_policy_v1'
-PC2_AUTHORITY_PROMOTION_MANIFEST = {
+PC2_AUTHORITY_POLICY_VERSION = 'pc2_authority_policy_v2'
+PC2_AUTHORITY_PATH_INVENTORY = {
     'live_percentile_paths': (
         'economic_gate_thresholds',
         'width_quality_supply',
@@ -6033,14 +6033,31 @@ PC2_AUTHORITY_PROMOTION_MANIFEST = {
         'post_close_outcome_evaluation',
     ),
 }
+PC2_PROMOTION_REGISTRY_VERSION = 'pc2_promotion_registry_v1'
+PC2_PROMOTION_SLICE_SCHEMA = 'pc2_slice_v1'
+PC2_PROMOTION_MIN_SESSION_COUNT = 30
+# Release-bundled policy only. Remote database rows can never grant authority.
+# No behavior-changing parameter promotion is approved in this release.
+PC2_PROMOTION_RECORDS = {}
 PC2_AUTHORITY_POLICY = {
     'version': PC2_AUTHORITY_POLICY_VERSION,
     'minimum_support': 30,
     'maximum_stability_ratio': 0.10,
-    'previous_values': {'minimum_support': 30, 'maximum_stability_ratio': 0.10},
-    'changed_in_version': '2.5.86',
+    'previous_values': {
+        'minimum_support': 10,
+        'maximum_stability_ratio': 'vix_derived_bar_no_constant',
+    },
+    'changed_in_version': '2.5.84',
+    'policy_object_introduced_in_version': '2.5.86',
+    'status': 'PROVISIONAL_DECLARED_POLICY',
+    'scope': 'paper_research_authority_only',
+    'not_derived': True,
     'contract': 'paper-only percentile authority; hard safety and notification guards remain separate',
-    'promotion_manifest': PC2_AUTHORITY_PROMOTION_MANIFEST,
+    'path_inventory': PC2_AUTHORITY_PATH_INVENTORY,
+    'promotion_registry_version': PC2_PROMOTION_REGISTRY_VERSION,
+    'promotion_slice_schema': PC2_PROMOTION_SLICE_SCHEMA,
+    'promotion_minimum_session_count': PC2_PROMOTION_MIN_SESSION_COUNT,
+    'promotion_record_count': len(PC2_PROMOTION_RECORDS),
 }
 CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
@@ -6056,9 +6073,9 @@ PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
-PC2_AUTHORITY_STATE_FALLBACK = 'FALLBACK'
-PC2_AUTHORITY_STATE_ACTIVE_NEUTRAL = 'ACTIVE_NEUTRAL'
-PC2_AUTHORITY_STATE_ACTIVE_CHANGED = 'ACTIVE_CHANGED'
+PC2_AUTHORITY_STATE_SHADOW = 'SHADOW'
+PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL = 'BEHAVIOR_NEUTRAL'
+PC2_AUTHORITY_STATE_BEHAVIOR_CHANGING_PAPER = 'BEHAVIOR_CHANGING_PAPER'
 OPPORTUNITY_GATE_SOFTENING_VERSION = "opportunity_gate_softening_v1"
 PC2_SOFT_OPPORTUNITY_STAGES = frozenset({
     'credit_prob_below_floor',
@@ -8501,6 +8518,107 @@ def _pc2_authority_metadata(variable_name, gate_meta=None):
     return metadata
 
 
+def _pc2_promotion_records(records=None):
+    records = PC2_PROMOTION_RECORDS if records is None else records
+    if isinstance(records, dict):
+        rows = []
+        for record_id, record in records.items():
+            if isinstance(record, dict):
+                item = dict(record)
+                item.setdefault('promotion_id', str(record_id))
+                rows.append(item)
+        return rows
+    return [dict(record) for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+
+
+def _pc2_validate_promotion_record(
+    *,
+    constant,
+    slice_key,
+    execution_mode,
+    session_date,
+    expected_direction,
+    regime_bucket=None,
+    records=None,
+):
+    """Validate an immutable release-bundled paper promotion record."""
+    required_text = (
+        'promotion_id',
+        'promotion_version',
+        'constant',
+        'slice_key',
+        'slice_schema',
+        'study_artifact_id',
+        'data_cutoff',
+        'expected_direction',
+        'owner_approval_id',
+        'owner_approval_date',
+    )
+    session_day = _parse_yyyy_mm_dd(session_date)
+    execution_mode = str(execution_mode or '').strip().lower()
+    candidates = [
+        record for record in _pc2_promotion_records(records)
+        if str(record.get('constant') or '') == str(constant or '')
+        and str(record.get('slice_key') or '') == str(slice_key or '')
+    ]
+    if not candidates:
+        return {'promotion_valid': False, 'promotion_reason': 'promotion_record_missing'}
+    for record in candidates:
+        missing = [key for key in required_text if not str(record.get(key) or '').strip()]
+        if missing:
+            continue
+        allowed_mode = str(record.get('allowed_execution_mode') or '').strip().lower()
+        if execution_mode != 'paper' or allowed_mode != 'paper':
+            continue
+        if str(record.get('slice_schema') or '') != PC2_PROMOTION_SLICE_SCHEMA:
+            continue
+        valid_from = _parse_yyyy_mm_dd(record.get('valid_from'))
+        valid_until = _parse_yyyy_mm_dd(record.get('valid_until'))
+        data_cutoff = _parse_yyyy_mm_dd(record.get('data_cutoff'))
+        approval_date = _parse_yyyy_mm_dd(record.get('owner_approval_date'))
+        if not all((session_day, valid_from, valid_until, data_cutoff, approval_date)):
+            continue
+        if not (valid_from <= session_day <= valid_until):
+            continue
+        if data_cutoff > approval_date or approval_date > valid_from:
+            continue
+        record_direction = str(record.get('expected_direction') or '').lower()
+        if record_direction not in ('tighten', 'loosen') or record_direction != expected_direction:
+            continue
+        try:
+            study_session_count = int(record.get('study_session_count'))
+            minimum_session_count = int(record.get('minimum_session_count'))
+        except (TypeError, ValueError):
+            continue
+        if minimum_session_count < PC2_PROMOTION_MIN_SESSION_COUNT or study_session_count < minimum_session_count:
+            continue
+        if not all(record.get(key) is True for key in ('holdout_pass', 'effect_pass', 'robustness_pass')):
+            continue
+        allowed_regimes = record.get('allowed_regime_buckets')
+        if allowed_regimes:
+            allowed_regimes = {str(item) for item in allowed_regimes if item is not None}
+            if str(regime_bucket or '') not in allowed_regimes:
+                continue
+        return {
+            'promotion_valid': True,
+            'promotion_reason': 'exact_release_bundled_paper_promotion',
+            'promotion_id': record.get('promotion_id'),
+            'promotion_version': record.get('promotion_version'),
+            'promotion_valid_until': str(record.get('valid_until')),
+            'promotion_study_artifact_id': record.get('study_artifact_id'),
+            'promotion_expected_direction': record_direction,
+            'promotion_study_session_count': study_session_count,
+        }
+    return {'promotion_valid': False, 'promotion_reason': 'promotion_record_invalid_or_out_of_scope'}
+
+
+def _pc2_authority_allows_percentile(decision):
+    return isinstance(decision, dict) and decision.get('authority_state') in (
+        PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL,
+        PC2_AUTHORITY_STATE_BEHAVIOR_CHANGING_PAPER,
+    )
+
+
 def _resolve_pc2_parameter_authority(
     ctx,
     *,
@@ -8509,6 +8627,15 @@ def _resolve_pc2_parameter_authority(
     history,
     gate_meta=None,
     stability_target=None,
+    constant=None,
+    slice_key=None,
+    execution_mode='paper',
+    hard_threshold=None,
+    percentile_threshold=None,
+    regime_bucket=None,
+    session_date=None,
+    authority_kind='parameter_threshold',
+    promotion_records=None,
     hard_outcome=None,
     percentile_outcome=None,
 ):
@@ -8552,15 +8679,52 @@ def _resolve_pc2_parameter_authority(
         and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
     )
     censor_pass = censor_guard.get('censor_guard_status') == 'OK'
-    authority_ready = bool(
+    data_authority_ready = bool(
         stability_pass and censor_pass and provenance.get('population_provenance_verified')
     )
-    if not authority_ready:
-        authority_state = PC2_AUTHORITY_STATE_FALLBACK
-    elif hard_outcome is not None and percentile_outcome is not None and hard_outcome != percentile_outcome:
-        authority_state = PC2_AUTHORITY_STATE_ACTIVE_CHANGED
+    neutrality = _pc2_neutrality_proof(hard_threshold, percentile_threshold)
+    counterfactual_behavior_differs = bool(
+        hard_outcome is not None
+        and percentile_outcome is not None
+        and hard_outcome != percentile_outcome
+    )
+    comparator = str((gate_meta or {}).get('comparator') or '>=')
+    hard_threshold_num = _percentile_float(hard_threshold)
+    percentile_threshold_num = _percentile_float(percentile_threshold)
+    expected_direction = None
+    if hard_threshold_num is not None and percentile_threshold_num is not None:
+        if comparator == '>=':
+            expected_direction = 'tighten' if percentile_threshold_num > hard_threshold_num else 'loosen'
+        else:
+            expected_direction = 'tighten' if percentile_threshold_num < hard_threshold_num else 'loosen'
+    promotion = {'promotion_valid': False, 'promotion_reason': 'promotion_not_evaluated'}
+    if not data_authority_ready:
+        authority_state = PC2_AUTHORITY_STATE_SHADOW
+    elif authority_kind == 'ranking_context':
+        authority_state = PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL
+        neutrality = {
+            **neutrality,
+            'neutrality_status': 'NOT_APPLICABLE',
+            'neutrality_pass': True,
+            'neutrality_scope': 'ranking_context_no_threshold_substitution',
+        }
+    elif neutrality.get('neutrality_pass'):
+        authority_state = PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL
     else:
-        authority_state = PC2_AUTHORITY_STATE_ACTIVE_NEUTRAL
+        promotion = _pc2_validate_promotion_record(
+            constant=constant,
+            slice_key=slice_key,
+            execution_mode=execution_mode,
+            session_date=session_date,
+            expected_direction=expected_direction,
+            regime_bucket=regime_bucket,
+            records=promotion_records,
+        )
+        authority_state = (
+            PC2_AUTHORITY_STATE_BEHAVIOR_CHANGING_PAPER
+            if promotion.get('promotion_valid')
+            else PC2_AUTHORITY_STATE_SHADOW
+        )
     fallback_reasons = []
     if not stability_pass:
         fallback_reasons.append('stability_or_history_not_ready')
@@ -8568,19 +8732,43 @@ def _resolve_pc2_parameter_authority(
         fallback_reasons.append('censor_guard_not_clear')
     if not provenance.get('population_provenance_verified'):
         fallback_reasons.append('generated_rejected_union_not_proven')
+    if data_authority_ready and authority_state == PC2_AUTHORITY_STATE_SHADOW:
+        fallback_reasons.append(promotion.get('promotion_reason') or 'promotion_required_for_behavior_change')
+    authority_ready = _pc2_authority_allows_percentile({'authority_state': authority_state})
     decision = {
         **cell,
         'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
+        'promotion_registry_version': PC2_PROMOTION_REGISTRY_VERSION,
+        'authority_kind': authority_kind,
+        'constant': constant,
+        'context_variable': variable_name,
+        'slice_key': slice_key,
+        'execution_mode': str(execution_mode or '').lower(),
         'authority_state': authority_state,
         'authority_state_reason': None if authority_ready else '|'.join(fallback_reasons),
         'authority_ready': authority_ready,
+        'data_authority_ready': data_authority_ready,
         'live_percentile_authority': authority_ready,
+        'counterfactual_behavior_differs': counterfactual_behavior_differs,
+        'counterfactual_behavior_change': counterfactual_behavior_differs,
+        'live_behavior_change': bool(
+            authority_ready
+            and counterfactual_behavior_differs
+        ),
+        'hard_threshold_value': _percentile_float(hard_threshold),
+        'percentile_threshold_value': _percentile_float(percentile_threshold),
+        'threshold_change_direction': expected_direction,
+        'observed_value': observed_value,
+        'hard_passed': hard_outcome,
+        'percentile_passed': percentile_outcome,
         'support_count': support,
         'stability_ratio': stability_ratio,
         'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
         'stability_pass': stability_pass,
         'provenance_policy': provenance_policy,
         'fallback_reason': None if authority_ready else '|'.join(fallback_reasons),
+        **neutrality,
+        **promotion,
         **censor_guard,
         **provenance,
     }
@@ -8589,10 +8777,35 @@ def _resolve_pc2_parameter_authority(
         if isinstance(decisions, list):
             decisions.append({
                 'variable_name': variable_name,
+                'constant': constant,
+                'context_variable': variable_name,
+                'slice_key': slice_key,
+                'authority_kind': authority_kind,
+                'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
                 'authority_state': authority_state,
                 'provenance_policy': provenance_policy,
                 'support_count': support,
                 'stability_ratio': stability_ratio,
+                'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
+                'stability_pass': stability_pass,
+                'diversity_pass': decision.get('diversity_pass'),
+                'diversity_status': decision.get('diversity_status'),
+                'censor_guard_status': decision.get('censor_guard_status'),
+                'censor_guard_flags': decision.get('censor_guard_flags'),
+                'population_provenance_verified': decision.get('population_provenance_verified'),
+                'population_provenance_scope': decision.get('population_provenance_scope'),
+                'population_provenance_version': decision.get('population_provenance_version'),
+                'neutrality_tick': decision.get('neutrality_tick'),
+                'neutrality_delta': decision.get('neutrality_delta'),
+                'neutrality_pass': decision.get('neutrality_pass'),
+                'hard_threshold_value': decision.get('hard_threshold_value'),
+                'percentile_threshold_value': decision.get('percentile_threshold_value'),
+                'observed_value': observed_value,
+                'hard_passed': hard_outcome,
+                'percentile_passed': percentile_outcome,
+                'counterfactual_behavior_differs': counterfactual_behavior_differs,
+                'promotion_id': decision.get('promotion_id'),
+                'promotion_valid_until': decision.get('promotion_valid_until'),
                 'fallback_reason': decision['fallback_reason'],
             })
     return decision
@@ -9036,6 +9249,17 @@ def _pc2_compare(value, threshold, comparator):
         return None
     return value >= threshold if str(comparator) == '>=' else value <= threshold
 
+
+def _pc2_authority_runtime(ctx, row):
+    ctx = ctx if isinstance(ctx, dict) else {}
+    row = row if isinstance(row, dict) else {}
+    return {
+        'execution_mode': row.get('execution_mode') or ctx.get('executionMode') or ctx.get('execution_mode') or 'paper',
+        'session_date': ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate'),
+        'regime_bucket': row.get('regime_bucket') or ctx.get('regime_bucket') or ctx.get('regimeBucket'),
+    }
+
+
 def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold, context_percentiles=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     row = row if isinstance(row, dict) else {}
@@ -9058,8 +9282,8 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
     history = _history_values(ctx, _pc2_history_keys(meta), 60)
     pct_target = _percentile_float(meta.get('pct_target'))
     percentile_threshold = _percentile_quantile(history, pct_target)
-    neutrality = _pc2_neutrality_proof(hard_threshold, percentile_threshold)
     percentile_pass = _pc2_compare(observed_value, percentile_threshold, comparator)
+    slice_key = _pc2_slice_key(row, meta.get('context_variable'))
     authority = _resolve_pc2_parameter_authority(
         ctx,
         variable_name=meta.get('context_variable'),
@@ -9067,10 +9291,15 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         history=history,
         gate_meta=meta,
         stability_target=pct_target,
+        constant=const_name,
+        slice_key=slice_key,
+        hard_threshold=hard_threshold,
+        percentile_threshold=percentile_threshold,
+        **_pc2_authority_runtime(ctx, row),
         hard_outcome=hard_pass,
         percentile_outcome=percentile_pass,
     )
-    authority_pass = authority.get('authority_ready') and percentile_threshold is not None
+    authority_pass = _pc2_authority_allows_percentile(authority) and percentile_threshold is not None
     gate_basis = 'percentile' if authority_pass else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     active_pass = _pc2_compare(observed_value, active_threshold, comparator)
@@ -9097,7 +9326,7 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         'pct_target': meta.get('pct_target'),
         'pct_target_source': 'pc2_batch2_calibration_v1',
         'pct_target_review_flag': meta.get('review_flag'),
-        'slice_key': _pc2_slice_key(row, meta.get('context_variable')),
+        'slice_key': slice_key,
         'support_count': authority.get('support_count'),
         'stability_ratio': authority.get('stability_ratio'),
         'stability_bar': authority.get('stability_bar'),
@@ -9107,9 +9336,8 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         'activation_status': meta.get('activation_status'),
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        **neutrality,
         **authority,
-        'authority_state': authority.get('authority_state') if gate_basis == 'percentile' else PC2_AUTHORITY_STATE_FALLBACK,
+        'authority_state': authority.get('authority_state'),
         'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
         'fallback_reason': None if gate_basis == 'percentile' else authority.get('fallback_reason'),
     }
@@ -9126,16 +9354,22 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
     pct_target = 20.0
     percentile_threshold = _percentile_quantile(history, pct_target)
     percentile_pass = _pc2_compare(observed_width, percentile_threshold, comparator)
+    slice_key = _pc2_slice_key(row, 'width_menu_median')
     authority = _resolve_pc2_parameter_authority(
         ctx,
         variable_name='width_menu_median',
         observed_value=observed_width,
         history=history,
         stability_target=pct_target,
+        constant=const_name,
+        slice_key=slice_key,
+        hard_threshold=hard_threshold,
+        percentile_threshold=percentile_threshold,
+        **_pc2_authority_runtime(ctx, row),
         hard_outcome=hard_pass,
         percentile_outcome=percentile_pass,
     )
-    gate_basis = 'percentile' if authority.get('authority_ready') and percentile_threshold is not None else 'hard_fallback'
+    gate_basis = 'percentile' if _pc2_authority_allows_percentile(authority) and percentile_threshold is not None else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     active_pass = _pc2_compare(observed_width, active_threshold, comparator)
     live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
@@ -9161,7 +9395,7 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         'pct_target': pct_target,
         'pct_target_source': PC2_BATCH_A_WIDTH_WALL_VERSION,
         'pct_target_review_flag': 'owner_live_soft_width_quality',
-        'slice_key': _pc2_slice_key(row, 'width_menu_median'),
+        'slice_key': slice_key,
         'support_count': authority.get('support_count', 0),
         'stability_ratio': authority.get('stability_ratio'),
         'stability_bar': authority.get('stability_bar'),
@@ -9175,7 +9409,7 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         **authority,
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        'authority_state': authority.get('authority_state') if gate_basis == 'percentile' else PC2_AUTHORITY_STATE_FALLBACK,
+        'authority_state': authority.get('authority_state'),
         'fallback_reason': None if gate_basis == 'percentile' else authority.get('fallback_reason'),
     }
 
@@ -9197,21 +9431,26 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         and fallback_threshold_num is not None
         and observed_abs >= fallback_threshold_num
     )
-    percentile_active = bool(
-        _percentile_rank(observed_abs, history) is not None
-        and _percentile_rank(observed_abs, history) >= PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF
-    )
+    percentile_threshold = _percentile_quantile(history, PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF)
+    percentile_active = bool(observed_abs is not None and percentile_threshold is not None and observed_abs >= percentile_threshold)
+    variable_name = str(history_keys[0] if history_keys else const_name)
+    slice_key = _pc2_slice_key({}, variable_name)
     authority = _resolve_pc2_parameter_authority(
         ctx,
-        variable_name=str(history_keys[0] if history_keys else const_name),
+        variable_name=variable_name,
         observed_value=observed_abs,
         history=history,
         stability_target=PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF,
+        constant=const_name,
+        slice_key=slice_key,
+        hard_threshold=fallback_threshold_num,
+        percentile_threshold=percentile_threshold,
+        **_pc2_authority_runtime(ctx, {}),
         hard_outcome=hard_active,
         percentile_outcome=percentile_active,
     )
     support = int(authority.get('support_count') or 0)
-    percentile = authority.get('percentile') if authority.get('authority_ready') else None
+    percentile = authority.get('percentile') if _pc2_authority_allows_percentile(authority) else None
     live_percentile_authority = percentile is not None
     active = percentile_active if live_percentile_authority else hard_active
     fallback_reason = authority.get('fallback_reason')
@@ -9245,7 +9484,7 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         'livePercentileAuthority': live_percentile_authority,
         'live_percentile_authority': live_percentile_authority,
         'live_behavior_change': bool(live_percentile_authority and percentile_active != hard_active),
-        'authority_state': authority.get('authority_state') if live_percentile_authority else PC2_AUTHORITY_STATE_FALLBACK,
+        'authority_state': authority.get('authority_state'),
         'fallback_reason': None if live_percentile_authority else fallback_reason,
     }
 
@@ -9957,11 +10196,12 @@ def _pc2_ranking_percentile_authority(ctx, variable_name, value):
         variable_name=variable_name,
         observed_value=value,
         history=history,
+        authority_kind='ranking_context',
     )
     authority['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX
-    authority['live_ranking_authority'] = authority.get('authority_ready')
+    authority['live_ranking_authority'] = _pc2_authority_allows_percentile(authority)
     authority['authority_status'] = (
-        'ACTIVE' if authority.get('authority_ready') else 'FALLBACK_ZERO'
+        'ACTIVE' if authority.get('live_ranking_authority') else 'FALLBACK_ZERO'
     )
     return authority
 

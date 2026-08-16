@@ -94,6 +94,11 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             observed_value=45,
             history=history,
             stability_target=70.0,
+            constant="TEST_CONSTANT",
+            slice_key="vix|UNKNOWN|UNKNOWN|UNKNOWN",
+            hard_threshold=40.0,
+            percentile_threshold=40.005,
+            session_date="2026-08-16",
             hard_outcome=True,
             percentile_outcome=True,
         )
@@ -103,6 +108,32 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             observed_value=45,
             history=history,
             stability_target=70.0,
+            constant="TEST_CONSTANT",
+            slice_key="vix|UNKNOWN|UNKNOWN|UNKNOWN",
+            hard_threshold=50.0,
+            percentile_threshold=40.0,
+            execution_mode="paper",
+            session_date="2026-08-16",
+            promotion_records=[{
+                "promotion_id": "test-paper-promotion",
+                "promotion_version": "v1",
+                "constant": "TEST_CONSTANT",
+                "slice_key": "vix|UNKNOWN|UNKNOWN|UNKNOWN",
+                "slice_schema": "pc2_slice_v1",
+                "allowed_execution_mode": "paper",
+                "valid_from": "2026-08-16",
+                "valid_until": "2026-08-31",
+                "study_artifact_id": "test-holdout-report",
+                "study_session_count": 60,
+                "minimum_session_count": 30,
+                "data_cutoff": "2026-08-14",
+                "expected_direction": "loosen",
+                "holdout_pass": True,
+                "effect_pass": True,
+                "robustness_pass": True,
+                "owner_approval_id": "test-owner-approval",
+                "owner_approval_date": "2026-08-15",
+            }],
             hard_outcome=False,
             percentile_outcome=True,
         )
@@ -112,13 +143,68 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             observed_value=45,
             history=[10] * 60,
             stability_target=70.0,
+            hard_threshold=50.0,
+            percentile_threshold=40.0,
             hard_outcome=False,
             percentile_outcome=True,
         )
-        self.assertEqual(neutral["authority_state"], "ACTIVE_NEUTRAL")
-        self.assertEqual(changed["authority_state"], "ACTIVE_CHANGED")
-        self.assertEqual(fallback["authority_state"], "FALLBACK")
+        self.assertEqual(neutral["authority_state"], "BEHAVIOR_NEUTRAL")
+        self.assertEqual(changed["authority_state"], "BEHAVIOR_CHANGING_PAPER")
+        self.assertEqual(fallback["authority_state"], "SHADOW")
+        self.assertTrue(changed["promotion_valid"])
         self.assertFalse(fallback["authority_ready"])
+
+    def test_pc2_behavior_change_requires_exact_valid_paper_promotion(self):
+        valid = {
+            "promotion_id": "test-paper-promotion",
+            "promotion_version": "v1",
+            "constant": "TEST_CONSTANT",
+            "slice_key": "vix|UNKNOWN|UNKNOWN|UNKNOWN",
+            "slice_schema": "pc2_slice_v1",
+            "allowed_execution_mode": "paper",
+            "valid_from": "2026-08-16",
+            "valid_until": "2026-08-31",
+            "study_artifact_id": "test-holdout-report",
+            "study_session_count": 60,
+            "minimum_session_count": 30,
+            "data_cutoff": "2026-08-14",
+            "expected_direction": "loosen",
+            "holdout_pass": True,
+            "effect_pass": True,
+            "robustness_pass": True,
+            "owner_approval_id": "test-owner-approval",
+            "owner_approval_date": "2026-08-15",
+        }
+        cases = {
+            "missing": [],
+            "expired": [{**valid, "valid_until": "2026-08-15"}],
+            "wrong_slice": [{**valid, "slice_key": "vix|NF|BEAR|intraday"}],
+            "nonpaper": [{**valid, "allowed_execution_mode": "live"}],
+            "failed_holdout": [{**valid, "holdout_pass": False}],
+            "wrong_direction": [{**valid, "expected_direction": "tighten"}],
+            "too_few_sessions": [{**valid, "study_session_count": 29}],
+        }
+        for label, records in cases.items():
+            with self.subTest(label=label):
+                decision = _resolve_pc2_parameter_authority(
+                    {},
+                    variable_name="vix",
+                    observed_value=45,
+                    history=list(range(1, 61)),
+                    stability_target=70.0,
+                    constant="TEST_CONSTANT",
+                    slice_key="vix|UNKNOWN|UNKNOWN|UNKNOWN",
+                    hard_threshold=50.0,
+                    percentile_threshold=40.0,
+                    execution_mode="paper",
+                    session_date="2026-08-16",
+                    promotion_records=records,
+                    hard_outcome=False,
+                    percentile_outcome=True,
+                )
+                self.assertEqual(decision["authority_state"], "SHADOW")
+                self.assertFalse(decision["authority_ready"])
+                self.assertFalse(decision["live_behavior_change"])
 
     def test_all_live_pc2_paths_call_shared_authority_resolver(self):
         import brain
@@ -132,6 +218,8 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             "_pc2_ranking_percentile_authority",
         }
         found = {}
+        gated = {}
+        forbidden_ready_reads = {}
         for node in tree.body:
             if not isinstance(node, ast.FunctionDef) or node.name not in required_paths:
                 continue
@@ -141,7 +229,24 @@ class TestStage2AGuardedRanking(unittest.TestCase):
                 and child.func.id == "_resolve_pc2_parameter_authority"
                 for child in ast.walk(node)
             )
+            gated[node.name] = any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "_pc2_authority_allows_percentile"
+                for child in ast.walk(node)
+            )
+            forbidden_ready_reads[node.name] = any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "get"
+                and child.args
+                and isinstance(child.args[0], ast.Constant)
+                and child.args[0].value == "authority_ready"
+                for child in ast.walk(node)
+            )
         self.assertEqual(found, {name: True for name in required_paths})
+        self.assertEqual(gated, {name: True for name in required_paths})
+        self.assertEqual(forbidden_ready_reads, {name: False for name in required_paths})
 
     def test_unseen_bucket_abstains(self):
         self.table_path = _write_teacher_table(
@@ -809,7 +914,7 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertFalse(decision["population_provenance_verified"])
         self.assertIn("generated_rejected_union_not_proven", decision["fallback_reason"])
 
-    def test_pc2_live_gate_uses_its_own_stability_and_not_one_tick_neutrality(self):
+    def test_pc2_live_gate_stays_shadow_when_stable_threshold_is_not_neutral(self):
         history = []
         for i in range(60):
             history.append({
@@ -826,10 +931,12 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             1.15,
         )
 
-        self.assertEqual(decision["gate_basis"], "percentile")
+        self.assertEqual(decision["gate_basis"], "hard_fallback")
         self.assertTrue(decision["stability_pass"])
         self.assertFalse(decision["neutrality_pass"])
         self.assertTrue(decision["population_provenance_verified"])
+        self.assertEqual(decision["authority_state"], "SHADOW")
+        self.assertIn("promotion_record_missing", decision["fallback_reason"])
 
     def test_pc2_history_provenance_requires_scope_and_exact_version(self):
         base_row = {
