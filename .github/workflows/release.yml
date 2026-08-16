@@ -43,6 +43,12 @@ jobs:
           base64 -d keystore.base64 > keystore.jks
           rm keystore.base64
 
+      - name: Run complete Python safety suite
+        run: |
+          python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py
+          PYTHONPATH=app/src/main/python python -m unittest discover \
+            -s app/src/main/python/tests -p 'test_*.py'
+
       - name: Unit tests (safety guards)
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 

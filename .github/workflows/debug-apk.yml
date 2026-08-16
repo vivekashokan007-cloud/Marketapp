@@ -53,6 +53,8 @@ jobs:
           python -m py_compile app/src/main/python/brain.py app/src/main/python/ml_temporal.py
           PYTHONPATH=app/src/main/python python app/src/main/python/tests/test_gate3_structural_counts.py
           PYTHONPATH=app/src/main/python python app/src/main/python/tests/test_gate5_trace_smoke.py
+          PYTHONPATH=app/src/main/python python -m unittest discover \
+            -s app/src/main/python/tests -p 'test_*.py'
 
       - name: Install Android SDK 35
         run: |

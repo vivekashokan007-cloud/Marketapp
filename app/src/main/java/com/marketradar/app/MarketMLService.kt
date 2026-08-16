@@ -1194,11 +1194,29 @@ class MarketMLService : Service() {
         chainFile.delete()
         File("${chainFile.absolutePath}.tmp").delete()
         val snapshotLegKeys = linkedSetOf<SupabaseClient.EvaluationLegKey>()
+        var authorityReplayEligible = 0
+        var authorityReplaySaved = 0
+
+        fun replayAuthorityTelemetry(snapshot: org.json.JSONObject) {
+            val context = snapshot.optJSONObject("context_json") ?: try {
+                org.json.JSONObject(snapshot.optString("context_json", ""))
+            } catch (_: Exception) {
+                null
+            }
+            val decisions = context?.optJSONArray("snapshot_pc2_authority_decisions")
+            if (decisions == null || decisions.length() == 0) return
+            authorityReplayEligible += 1
+            if (SupabaseClient.savePc2AuthorityDecisions(snapshot)) {
+                authorityReplaySaved += 1
+            }
+        }
+
         val snapshotResult = SupabaseClient.fetchEvaluationSnapshots(
             sessionDate,
             snapshotsFile,
             onRow = { snap ->
                 collectEvaluationLegKeysFromSnapshot(snap, snapshotLegKeys)
+                replayAuthorityTelemetry(snap)
             },
             maxPages = 80
         )
@@ -1224,7 +1242,17 @@ class MarketMLService : Service() {
                 LogBuffer.add('W', TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
                 snapshotsJsonArray = localSnapshots
                 snapshotLegKeys.addAll(extractEvaluationLegKeys(snapshotsJsonArray))
+                for (index in 0 until localSnapshots.length()) {
+                    localSnapshots.optJSONObject(index)?.let { replayAuthorityTelemetry(it) }
+                }
             }
+        }
+
+        if (authorityReplayEligible > 0) {
+            val level = if (authorityReplaySaved == authorityReplayEligible) 'I' else 'W'
+            val message = "PC2_AUTHORITY_POST_CLOSE_REPLAY: date=$sessionDate saved=$authorityReplaySaved/$authorityReplayEligible"
+            LogBuffer.add(level, TAG, message)
+            if (level == 'I') Log.i(TAG, message) else Log.w(TAG, message)
         }
 
         val snapshotCount = if (snapshotResult.count > 0) snapshotResult.count else snapshotsJsonArray.length()

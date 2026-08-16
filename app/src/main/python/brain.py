@@ -6004,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.87"
+BRAIN_VERSION = "2.5.88"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6016,6 +6016,7 @@ CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
 CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 PC2_AUTHORITY_POLICY_VERSION = 'pc2_authority_policy_v2'
+PC2_AUTHORITY_DIAGNOSTICS_VERSION = 'pc2_authority_diagnostics_v1'
 PC2_AUTHORITY_PATH_INVENTORY = {
     'live_percentile_paths': (
         'economic_gate_thresholds',
@@ -6058,6 +6059,7 @@ PC2_AUTHORITY_POLICY = {
     'promotion_slice_schema': PC2_PROMOTION_SLICE_SCHEMA,
     'promotion_minimum_session_count': PC2_PROMOTION_MIN_SESSION_COUNT,
     'promotion_record_count': len(PC2_PROMOTION_RECORDS),
+    'authority_diagnostics_version': PC2_AUTHORITY_DIAGNOSTICS_VERSION,
 }
 CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
@@ -8645,6 +8647,21 @@ def _resolve_pc2_parameter_authority(
     domain comparison and receive only whether percentile evidence is allowed to
     replace the hard fallback, together with an explicit behavior state.
     """
+    authority_kind = str(authority_kind or '').strip()
+    execution_mode = str(execution_mode or '').strip().lower()
+    input_contract_reasons = []
+    if authority_kind not in ('parameter_threshold', 'ranking_context'):
+        input_contract_reasons.append('authority_kind_invalid')
+    if execution_mode != 'paper':
+        input_contract_reasons.append('execution_mode_not_paper')
+    if not str(variable_name or '').strip():
+        input_contract_reasons.append('variable_name_missing')
+    if not str(constant or '').strip():
+        input_contract_reasons.append('constant_missing')
+    if not str(slice_key or '').strip():
+        input_contract_reasons.append('slice_key_missing')
+    input_contract_valid = not input_contract_reasons
+
     observed_value = _percentile_float(observed_value)
     numeric_history = _numeric_series(history)
     cell = _percentile_cell(observed_value, numeric_history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
@@ -8698,7 +8715,9 @@ def _resolve_pc2_parameter_authority(
         else:
             expected_direction = 'tighten' if percentile_threshold_num < hard_threshold_num else 'loosen'
     promotion = {'promotion_valid': False, 'promotion_reason': 'promotion_not_evaluated'}
-    if not data_authority_ready:
+    if not input_contract_valid:
+        authority_state = PC2_AUTHORITY_STATE_SHADOW
+    elif not data_authority_ready:
         authority_state = PC2_AUTHORITY_STATE_SHADOW
     elif authority_kind == 'ranking_context':
         authority_state = PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL
@@ -8725,27 +8744,40 @@ def _resolve_pc2_parameter_authority(
             if promotion.get('promotion_valid')
             else PC2_AUTHORITY_STATE_SHADOW
         )
-    fallback_reasons = []
+    fallback_reasons = list(input_contract_reasons)
     if not stability_pass:
         fallback_reasons.append('stability_or_history_not_ready')
     if not censor_pass:
         fallback_reasons.append('censor_guard_not_clear')
     if not provenance.get('population_provenance_verified'):
         fallback_reasons.append('generated_rejected_union_not_proven')
-    if data_authority_ready and authority_state == PC2_AUTHORITY_STATE_SHADOW:
+    if input_contract_valid and data_authority_ready and authority_state == PC2_AUTHORITY_STATE_SHADOW:
         fallback_reasons.append(promotion.get('promotion_reason') or 'promotion_required_for_behavior_change')
     authority_ready = _pc2_authority_allows_percentile({'authority_state': authority_state})
+    if authority_state == PC2_AUTHORITY_STATE_BEHAVIOR_CHANGING_PAPER:
+        authority_state_reason = promotion.get('promotion_reason') or 'promotion_record_valid'
+    elif authority_state == PC2_AUTHORITY_STATE_BEHAVIOR_NEUTRAL:
+        authority_state_reason = (
+            'ranking_context_data_checks_passed'
+            if authority_kind == 'ranking_context'
+            else 'neutrality_proof_passed'
+        )
+    else:
+        authority_state_reason = '|'.join(fallback_reasons) or 'authority_contract_not_ready'
     decision = {
         **cell,
         'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
+        'authority_diagnostics_version': PC2_AUTHORITY_DIAGNOSTICS_VERSION,
         'promotion_registry_version': PC2_PROMOTION_REGISTRY_VERSION,
         'authority_kind': authority_kind,
         'constant': constant,
         'context_variable': variable_name,
         'slice_key': slice_key,
-        'execution_mode': str(execution_mode or '').lower(),
+        'execution_mode': execution_mode,
         'authority_state': authority_state,
-        'authority_state_reason': None if authority_ready else '|'.join(fallback_reasons),
+        'authority_state_reason': authority_state_reason,
+        'input_contract_valid': input_contract_valid,
+        'input_contract_reasons': input_contract_reasons,
         'authority_ready': authority_ready,
         'data_authority_ready': data_authority_ready,
         'live_percentile_authority': authority_ready,
@@ -8782,7 +8814,11 @@ def _resolve_pc2_parameter_authority(
                 'slice_key': slice_key,
                 'authority_kind': authority_kind,
                 'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
+                'authority_diagnostics_version': PC2_AUTHORITY_DIAGNOSTICS_VERSION,
                 'authority_state': authority_state,
+                'authority_state_reason': authority_state_reason,
+                'input_contract_valid': input_contract_valid,
+                'input_contract_reasons': input_contract_reasons,
                 'provenance_policy': provenance_policy,
                 'support_count': support,
                 'stability_ratio': stability_ratio,
@@ -10196,6 +10232,9 @@ def _pc2_ranking_percentile_authority(ctx, variable_name, value):
         variable_name=variable_name,
         observed_value=value,
         history=history,
+        constant=f'RANKING_CONTEXT::{variable_name}',
+        slice_key=_pc2_slice_key({}, variable_name),
+        **_pc2_authority_runtime(ctx, {}),
         authority_kind='ranking_context',
     )
     authority['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX

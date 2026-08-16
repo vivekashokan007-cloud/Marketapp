@@ -1412,7 +1412,11 @@ object SupabaseClient {
      * never interfere with live snapshot/candidate capture.
      */
     fun savePc2AuthorityDecisions(snapshot: JSONObject): Boolean {
-        val context = snapshot.optJSONObject("context_json") ?: return true
+        val context = snapshot.optJSONObject("context_json") ?: try {
+            JSONObject(snapshot.optString("context_json", ""))
+        } catch (_: Exception) {
+            return true
+        }
         val decisions = context.optJSONArray("snapshot_pc2_authority_decisions") ?: return true
         if (decisions.length() == 0) return true
 
@@ -1421,6 +1425,10 @@ object SupabaseClient {
         val pollTs = snapshot.optString("poll_ts", "").trim()
         val brainVersion = context.optString("snapshot_brain_version", "unknown").trim()
         val policyVersion = policy.optString("version", "pc2_authority_policy_v1").trim()
+        val policyDiagnosticsVersion = policy.optString(
+            "authority_diagnostics_version",
+            "pc2_authority_diagnostics_v1"
+        ).trim()
         if (sessionDate.isEmpty() || pollTs.isEmpty()) return false
 
         val rows = JSONArray()
@@ -1428,9 +1436,13 @@ object SupabaseClient {
             val decision = decisions.optJSONObject(index) ?: continue
             val variableName = decision.optString("variable_name", "").trim()
             if (variableName.isEmpty()) continue
+            val diagnosticsVersion = decision.optString(
+                "authority_diagnostics_version",
+                policyDiagnosticsVersion
+            ).trim().ifEmpty { "pc2_authority_diagnostics_v1" }
             rows.put(
                 JSONObject()
-                    .put("id", "$pollTs|$policyVersion|$index")
+                    .put("id", "$pollTs|$policyVersion|$diagnosticsVersion|$index")
                     .put("session_date", sessionDate)
                     .put("poll_ts", pollTs)
                     .put("decision_index", index)
@@ -1440,6 +1452,8 @@ object SupabaseClient {
                     .put("slice_key", decision.opt("slice_key"))
                     .put("authority_kind", decision.opt("authority_kind"))
                     .put("authority_state", decision.optString("authority_state", "SHADOW"))
+                    .put("authority_state_reason", decision.optString("authority_state_reason", "authority_contract_not_ready"))
+                    .put("authority_diagnostics_version", diagnosticsVersion)
                     .put("provenance_policy", decision.optString("provenance_policy", "unknown"))
                     .put("support_count", decision.optInt("support_count", 0))
                     .put("stability_ratio", decision.opt("stability_ratio"))
