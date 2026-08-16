@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import brain
 
 
-HIGH_CTX = {"vixHistory": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
-LOW_CTX = {"vixHistory": [14, 15, 16, 17, 18, 19, 20, 21, 22, 23]}
+HIGH_CTX = {"vixHistory": [10 + i * 0.4 for i in range(30)]}
+LOW_CTX = {"vixHistory": [14 + i * 0.4 for i in range(30)]}
 
 # No context means neutral, not hidden absolute-threshold fallback.
 assert brain._assess_force3('BULL_CALL', 22.0, None) == 1, \
@@ -33,10 +33,12 @@ assert brain._assess_force3('BULL_CALL', 14.0, None, LOW_CTX) == 1, \
 assert brain._assess_force3('BEAR_CALL', 14.0, None, LOW_CTX) == -1, \
     "FAIL: percentile LOW + credit should return -1"
 
-# IV percentile remains a valid fallback when VIX history is unavailable.
-assert brain._assess_force3('BEAR_PUT', 18.0, 90, {}) == 1, \
+# IV percentile is a fallback only when its own support and stability are explicit.
+IV_HIGH_CTX = {"ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
+IV_LOW_CTX = {"ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
+assert brain._assess_force3('BEAR_PUT', 18.0, 90, IV_HIGH_CTX) == 1, \
     "FAIL: IV percentile 90 should create VERY_HIGH debit support"
-assert brain._assess_force3('BULL_CALL', 18.0, 20, {}) == 1, \
+assert brain._assess_force3('BULL_CALL', 18.0, 20, IV_LOW_CTX) == 1, \
     "FAIL: IV percentile 20 should create LOW debit support"
 
 result = brain._get_forces('BULL_CALL', {'bias': 'NEUTRAL', 'strength': ''}, 22.0, None, None, HIGH_CTX)

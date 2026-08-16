@@ -7,7 +7,12 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from brain import PHASE5_GATE_REGISTRY_META, _compute_phase5_gate_registry, take_poll_snapshot
+from brain import (
+    PC2_SOFT_OPPORTUNITY_STAGES,
+    PHASE5_GATE_REGISTRY_META,
+    _compute_phase5_gate_registry,
+    take_poll_snapshot,
+)
 
 
 class TestPhase5GateRegistry(unittest.TestCase):
@@ -130,7 +135,7 @@ class TestPhase5GateRegistry(unittest.TestCase):
         keyword = set(re.findall(r"stage=['\"]([^'\"]+)['\"]", source))
         literal = {"ev_below_floor"}
         pseudo = {"a8_bypassed_missing_inputs"}
-        extracted = positional | keyword | literal | pseudo
+        extracted = positional | keyword | literal | pseudo | set(PC2_SOFT_OPPORTUNITY_STAGES)
 
         self.assertEqual(extracted, set(PHASE5_GATE_REGISTRY_META.keys()))
         for meta in PHASE5_GATE_REGISTRY_META.values():

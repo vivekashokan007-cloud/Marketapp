@@ -17,9 +17,14 @@ from brain import (
     _pc2_batch_d_exit_policy_inventory,
     _pc2_censor_guard_for_cell,
     _pc2_history_population_provenance,
+    _pc2_width_gate_decision,
+    _pc2_cross_market_move_context,
     _pc2_live_gate_decision,
     _pc2_neutrality_proof,
+    _pc2_position_alert_context,
     _pc2_parameter_authority_inventory,
+    _pc2_sigma_important_context,
+    _percentile_cell,
     _compute_menu_abstention_shadow,
     _compute_shadow_selector_suite,
     _evaluate_snapshot_outcomes,
@@ -528,8 +533,10 @@ class TestStage2AGuardedRanking(unittest.TestCase):
                     "date": f"2026-07-{i + 1:02d}",
                     "vix": 10 + i * 0.1,
                     "fii_short_pct": 20 + i,
-                    "iv_richness": 0.2 + i * 0.01,
-                    "credit_width_ratio": 0.10 + i * 0.005,
+                    "pct_iv_richness_menu_median": 0.2 + i * 0.01,
+                    "pct_credit_width_ratio_menu_median": 0.10 + i * 0.005,
+                    "candidate_population_scope": "generated_plus_rejected_candidate_population",
+                    "calibration_population_version": "pc2_generated_rejected_union_v1",
                 }
             )
         ctx = {
@@ -539,7 +546,7 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         }
         polls = [{"time": "10:00", "vix": 16.0, "dayRangeSigma": 1.1}]
         context = _build_context_percentiles(ctx, polls, candidates, [])
-        _apply_context_percentile_live_ranking(candidates, context)
+        _apply_context_percentile_live_ranking(candidates, context, ctx)
 
         self.assertEqual(context["schema_version"], "context_percentiles_v1")
         self.assertEqual(context["recording_version"], "c3_percentile_recording_v1")
@@ -551,7 +558,8 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertIn("premium_edge_menu_median", context["variables"])
         self.assertIn("rejected_sigma_otm_median", context["variables"])
         self.assertGreater(candidates[0]["contextPercentileScore"], 0)
-        self.assertIn("bear_support_extreme_fii_short_percentile", candidates[0]["contextPercentileSignals"])
+        self.assertIn("candidate_iv_richness_percentile_active", candidates[0]["contextPercentileSignals"])
+        self.assertIn("fii_short_percentile_active", candidates[0]["contextPercentileSignals"])
         self.assertIn("contextPercentileComponents", candidates[0])
         self.assertTrue(any(
             item.get("variable") == "fii_short_pct"
@@ -559,6 +567,29 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         ))
         self.assertIn("contextPercentileInputs", candidates[0])
         self.assertLessEqual(abs(candidates[0]["contextPercentileScore"]), 0.35)
+
+    def test_context_ranking_fails_closed_without_verified_population_history(self):
+        candidates = [_candidate("credit", "BEAR_CALL", 0.4)]
+        candidates[0].update({"isCredit": True, "ivRichness": 0.9, "creditWidthRatio": 0.35})
+        history = [
+            {
+                "date": f"2026-07-{i + 1:02d}",
+                "pct_iv_richness_menu_median": 0.2 + i * 0.01,
+                "pct_credit_width_ratio_menu_median": 0.10 + i * 0.005,
+            }
+            for i in range(30)
+        ]
+        ctx = {"premiumHistory": history}
+        context = _build_context_percentiles(ctx, [], candidates, [])
+
+        _apply_context_percentile_live_ranking(candidates, context, ctx)
+
+        self.assertEqual(candidates[0]["contextPercentileScore"], 0.0)
+        self.assertFalse(candidates[0]["contextPercentileLiveRanking"])
+        self.assertEqual(
+            candidates[0]["contextPercentileAuthority"]["iv_richness_current_population"]["authority_status"],
+            "FALLBACK_ZERO",
+        )
 
     def test_context_percentile_history_prefers_namespaced_overlay_keys(self):
         candidates = [_candidate("credit", "BEAR_CALL", 0.4)]
@@ -604,6 +635,7 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             "sigmaOTM": 0.9,
             "creditWidthRatio": 0.3,
             "probProfit": 0.7,
+            "width": 300.0,
         })
         rejected = [{
             "is_credit": True,
@@ -611,6 +643,7 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             "sigma_otm": 0.5,
             "credit_width_ratio": 0.1,
             "prob_profit": 0.3,
+            "width": 900.0,
         }]
 
         context = _build_context_percentiles({"vix": 14.0}, [], generated, rejected)
@@ -619,6 +652,8 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertAlmostEqual(context["current_values"]["sigma_otm_menu_median"], 0.7)
         self.assertAlmostEqual(context["current_values"]["credit_width_ratio_menu_median"], 0.2)
         self.assertAlmostEqual(context["current_values"]["prob_profit_menu_median"], 0.5)
+        self.assertAlmostEqual(context["current_values"]["width_menu_median"], 600.0)
+        self.assertAlmostEqual(context["current_values"]["width_menu_best"], 900.0)
         variable = context["variables"]["iv_richness_menu_median"]
         self.assertEqual(variable["candidate_population_value_count"], 2)
         self.assertEqual(variable["candidate_population_min"], 0.8)
@@ -684,6 +719,28 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(decision["gate_basis"], "hard_fallback")
         self.assertFalse(decision["population_provenance_verified"])
         self.assertIn("generated_rejected_union_not_proven", decision["fallback_reason"])
+
+    def test_pc2_live_gate_uses_its_own_stability_and_not_one_tick_neutrality(self):
+        history = []
+        for i in range(60):
+            history.append({
+                "date": f"history-{i:02d}",
+                "pct_iv_richness_menu_median": 0.80 + i * 0.015,
+                "candidate_population_scope": "generated_plus_rejected_candidate_population",
+                "calibration_population_version": "pc2_generated_rejected_union_v1",
+            })
+        decision = _pc2_live_gate_decision(
+            {"premiumHistory": history},
+            {},
+            "IV_RICH_MIN",
+            1.0,
+            1.15,
+        )
+
+        self.assertEqual(decision["gate_basis"], "percentile")
+        self.assertTrue(decision["stability_pass"])
+        self.assertFalse(decision["neutrality_pass"])
+        self.assertTrue(decision["population_provenance_verified"])
 
     def test_pc2_history_provenance_requires_scope_and_exact_version(self):
         base_row = {
@@ -775,6 +832,17 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(variables["bear_score"]["value"], 0.5)
         self.assertEqual(variables["signal_independence_score"]["value"], 60)
 
+    def test_context_percentiles_preserve_valid_zero_range(self):
+        context = _build_context_percentiles(
+            {"rangeSigma": 1.25},
+            [{"time": "10:00", "dayRangeSigma": 0.0}],
+            [],
+            [],
+        )
+
+        self.assertEqual(context["current_values"]["realized_day_range"], 0.0)
+        self.assertEqual(context["current_values"]["realized_vs_implied_range_ratio"], 0.0)
+
     def test_c3_const_inventory_covers_existing_consts_without_behavior_change(self):
         inventory = _c3_const_inventory()
         self.assertEqual(inventory["schema_version"], "c3_const_inventory_v1")
@@ -841,18 +909,48 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertTrue(by_name["SIGMA_IMPORTANT_THRESHOLD"]["live_softened"])
 
     def test_pc2_vix_regime_context_live_authority_keeps_old_constants_shadow(self):
-        ctx = {"vixHistory": [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]}
+        ctx = {"vixHistory": [10 + i * 0.4 for i in range(30)]}
         regime = _pc2_vix_regime_context(ctx, 22, None)
         self.assertEqual(regime["regime"], "VERY_HIGH")
         self.assertEqual(regime["basis"], "vix_percentile")
         self.assertEqual(regime["old_constant_shadow"]["regime"], "HIGH")
         self.assertTrue(regime["old_constant_shadow"]["differs_from_live"])
 
+    def test_pc2_vix_regime_low_support_is_neutral(self):
+        regime = _pc2_vix_regime_context({"vixHistory": [12]}, 22, None)
+        self.assertEqual(regime["regime"], "NORMAL")
+        self.assertEqual(regime["basis"], "neutral_unsupported_context")
+        self.assertEqual(regime["support_status"], "LOW_SUPPORT")
+        self.assertIsNone(regime["evidence_percentile"])
+
+    def test_pc2_vix_regime_does_not_double_count_premium_history(self):
+        premium_history = [
+            {"date": f"2026-07-{day:02d}", "vix": 10.0 + day * 0.1}
+            for day in range(1, 16)
+        ]
+        ctx = {
+            "premiumHistory": premium_history,
+            "vixHistory": [row["vix"] for row in premium_history],
+        }
+        regime = _pc2_vix_regime_context(ctx, 20.0, None)
+
+        self.assertEqual(regime["support_count"], 15)
+        self.assertEqual(regime["support_status"], "LOW_SUPPORT")
+        self.assertEqual(regime["regime"], "NORMAL")
+
+    def test_pc2_vix_regime_fails_closed_for_zero_diversity_history(self):
+        regime = _pc2_vix_regime_context({"vixHistory": [12.0] * 30}, 12.0001, None)
+
+        self.assertEqual(regime["support_count"], 30)
+        self.assertEqual(regime["support_status"], "UNSTABLE")
+        self.assertEqual(regime["regime"], "NORMAL")
+        self.assertFalse(regime["stability_pass"])
+
     def test_pc2_vix_regime_context_missing_history_is_neutral_not_constant_fallback(self):
         regime = _pc2_vix_regime_context({}, 14, None)
         self.assertEqual(regime["regime"], "NORMAL")
-        self.assertEqual(regime["basis"], "neutral_missing_context")
-        self.assertEqual(regime["support_status"], "MISSING_CONTEXT")
+        self.assertEqual(regime["basis"], "neutral_unsupported_context")
+        self.assertEqual(regime["support_status"], "LOW_SUPPORT")
         self.assertEqual(regime["old_constant_shadow"]["regime"], "LOW")
 
     def test_pc2_batch_c_cross_market_uses_live_context_with_constant_fallback(self):
@@ -868,6 +966,94 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(by_name["CRUDE_THRESHOLD"]["authority"], "percentile_live_with_constant_fallback")
         self.assertEqual(by_name["GIFT_THRESHOLD"]["authority"], "percentile_live_with_constant_fallback")
         self.assertTrue(all(row["live_softened"] for row in inventory["rows"]))
+
+    def test_pc2_width_gate_falls_back_when_history_has_zero_diversity(self):
+        history = [
+            {
+                "date": f"2026-07-{i + 1:02d}",
+                "pct_width_menu_median": 500.0,
+                "candidate_population_scope": "generated_plus_rejected_candidate_population",
+                "calibration_population_version": "pc2_generated_rejected_union_v1",
+            }
+            for i in range(30)
+        ]
+        decision = _pc2_width_gate_decision(
+            {"premiumHistory": history}, {}, "MIN_WIDTH_BNF", 400.0, 200.0
+        )
+
+        self.assertEqual(decision["gate_basis"], "hard_fallback")
+        self.assertTrue(decision["hard_passed"])
+        self.assertTrue(decision["passed"])
+        self.assertFalse(decision["diversity_pass"])
+
+    def test_pc2_cross_market_falls_back_when_history_has_zero_diversity(self):
+        decision = _pc2_cross_market_move_context(
+            {"premiumHistory": [
+                {"date": f"2026-07-{i + 1:02d}", "pct_dow_pct": 0.2}
+                for i in range(30)
+            ]},
+            "DOW_THRESHOLD", 0.3, 0.5, ("dow_pct",)
+        )
+
+        self.assertEqual(decision["basis"], "hard_fallback")
+        self.assertFalse(decision["active"])
+        self.assertFalse(decision["diversity_pass"])
+        self.assertEqual(decision["fallback_reason"], "zero_diversity_cross_market_history")
+
+    def test_pc2_sigma_notification_falls_back_for_zero_diversity_history(self):
+        context = _pc2_sigma_important_context(
+            {
+                "absSpotSigma": 0.8,
+                "premiumHistory": [
+                    {"date": f"2026-07-{i + 1:02d}", "absSpotSigma": 0.5}
+                    for i in range(30)
+                ],
+            },
+            {},
+        )
+
+        bnf = context["variables"][0]
+        self.assertFalse(context["triggered"])
+        self.assertEqual(context["basis"], "unsupported_percentile_context_no_trigger")
+        self.assertEqual(bnf["support_status"], "LOW_DIVERSITY")
+        self.assertFalse(bnf["live_percentile_triggered"])
+        self.assertFalse(bnf["diversity_pass"])
+
+    def test_pc2_sigma_notification_reports_selected_60_day_context_window(self):
+        history = [0.1 + i * 0.03 for i in range(60)]
+        cell = _percentile_cell(2.0, history)
+        context = _pc2_sigma_important_context(
+            {},
+            {
+                "current_values": {"abs_spot_sigma": 2.0},
+                "windows": {"60": {"abs_spot_sigma": cell}},
+            },
+        )
+
+        bnf = context["variables"][0]
+        self.assertTrue(bnf["live_percentile_triggered"])
+        self.assertEqual(bnf["window"], 60)
+        self.assertEqual(bnf["evidence_source"], "context_percentiles")
+
+    def test_pc2_position_target_falls_back_for_zero_diversity_history(self):
+        context = _pc2_position_alert_context(
+            current_pnl=70,
+            max_profit=100,
+            max_loss=1000,
+            ctx={
+                "premiumHistory": [
+                    {"date": f"2026-07-{i + 1:02d}", "openPositionProfitCaptureMax": 0.2}
+                    for i in range(30)
+                ],
+            },
+            context_percentiles={},
+        )
+
+        target = context["target_near"]
+        self.assertFalse(target["triggered"])
+        self.assertEqual(target["support_status"], "LOW_DIVERSITY")
+        self.assertFalse(target["live_percentile_triggered"])
+        self.assertFalse(target["old_constant_shadow"]["old_pass"])
 
     def test_pc2_batch_d_exit_policy_uses_live_context_with_safety_floor(self):
         inventory = _pc2_batch_d_exit_policy_inventory()

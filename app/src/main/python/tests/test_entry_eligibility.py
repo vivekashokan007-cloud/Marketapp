@@ -52,6 +52,30 @@ class EntryEligibilityTests(unittest.TestCase):
         self.assertFalse(row["entryEligible"])
         self.assertIn("ml_out_of_distribution", row["entryEligibility"]["reasons"])
 
+    def test_pc2_quality_failure_remains_visible_but_does_not_independently_block_entry(self):
+        row = annotate_candidate_entry_eligibility(
+            candidate(
+                opportunityGateFailures=[
+                    {"stage": "iv_not_rich", "severity": 0.25},
+                    {"stage": "sigma_otm_too_far", "severity": 0.10},
+                ]
+            ),
+            80,
+        )
+
+        self.assertTrue(row["entryEligible"])
+        self.assertEqual(row["entryGate"], "ENTRY")
+        self.assertNotIn("pc2_quality_gate_failed", row["entryEligibility"]["reasons"])
+        self.assertEqual(row["entryEligibility"]["pc2_quality_failure_count"], 2)
+        self.assertEqual(
+            row["entryEligibility"]["pc2_quality_failure_stages"],
+            ["iv_not_rich", "sigma_otm_too_far"],
+        )
+        self.assertEqual(
+            row["entryEligibility"]["pc2_quality_contract"],
+            "quality gate failures remain soft ranking evidence and never independently block entry",
+        )
+
     def test_force_count_does_not_manufacture_confidence(self):
         row = annotate_candidate_entry_eligibility(candidate(), 42)
         verdict = {

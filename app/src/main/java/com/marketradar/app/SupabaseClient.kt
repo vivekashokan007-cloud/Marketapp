@@ -29,6 +29,10 @@ object SupabaseClient {
     private const val EVALUATION_SNAPSHOT_PAGE_SIZE = 1
     private const val EVALUATION_CHAIN_EXACT_MAX_PAGES = 200
     private const val EVALUATION_CHAIN_RECENT_FALLBACK_MAX_PAGES = 30
+    private const val PC2_CALIBRATION_POPULATION_SCOPE = "generated_plus_rejected_candidate_population"
+    private const val PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
+    private const val PC2_SUPPLY_POPULATION_SCOPE = "uncapped_generated_plus_rejected_live_memory"
+    private const val PC2_SUPPLY_POPULATION_VERSION = "pc2_uncapped_generated_rejected_union_v1"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -959,6 +963,13 @@ object SupabaseClient {
      * same history_source label, so the reader must pin grain structurally.
      */
     fun getContextPercentileDailyHistory(maxDays: Int = 60): JSONArray {
+        fun isVerifiedDailyCalibrationRow(row: JSONObject): Boolean {
+            if (row.optString("source_quality", "").trim() != "DAILY_CALIBRATION_UNION_VERIFIED") return false
+            val extra = row.optJSONObject("extra_json") ?: return false
+            return extra.optString("candidate_population_scope", "").trim() == PC2_CALIBRATION_POPULATION_SCOPE &&
+                extra.optString("calibration_population_version", "").trim() == PC2_CALIBRATION_POPULATION_VERSION
+        }
+
         fun sourceRank(row: JSONObject): Int {
             return when (row.optString("history_source", "").trim().lowercase(Locale.US)) {
                 "live" -> 2
@@ -986,6 +997,7 @@ object SupabaseClient {
                 "ml_context_percentile_history" +
                     "?select=session_date,poll_ts,variable_name,value,history_window_end,history_source,pre_t_clean,source_table,source_quality,support_count,support_count_30,support_count_60,extra_json" +
                     "&poll_ts=is.null" +
+                    "&source_quality=eq.DAILY_CALIBRATION_UNION_VERIFIED" +
                     "&order=session_date.desc,history_window_end.desc,variable_name.asc" +
                     "&limit=$pageSize&offset=$offset"
             val request = getBaseRequest(path).get().build()
@@ -1008,6 +1020,7 @@ object SupabaseClient {
         val selectedByDayVariable = LinkedHashMap<String, JSONObject>()
         for (i in 0 until allRows.length()) {
             val row = allRows.optJSONObject(i) ?: continue
+            if (!isVerifiedDailyCalibrationRow(row)) continue
             val sessionDate = row.optString("session_date", "").trim()
             val variableName = row.optString("variable_name", "").trim()
             if (sessionDate.isEmpty() || variableName.isEmpty()) continue
@@ -1046,6 +1059,7 @@ object SupabaseClient {
                     dayObj.put("pct_${variableName}_population_scope", populationScope)
                 }
                 if (calibrationVersion.isNotEmpty()) {
+                    dayObj.put("pct_${variableName}_population_version", calibrationVersion)
                     dayObj.put("calibration_population_version", calibrationVersion)
                 }
             }
@@ -1104,20 +1118,41 @@ object SupabaseClient {
      * post-close job from loading the entire history table on a phone.
      */
     fun fetchC3PercentileHistorySeed(targetDate: String, maxPages: Int = 8): JSONObject {
+        fun isVerifiedC3SeedRow(row: JSONObject): Boolean {
+            val extra = row.optJSONObject("extra_json") ?: return false
+            val indexKey = row.optString("index_key", "MARKET").trim().uppercase(Locale.US)
+            val expectedScope = if (indexKey == "MARKET") {
+                PC2_CALIBRATION_POPULATION_SCOPE
+            } else {
+                PC2_SUPPLY_POPULATION_SCOPE
+            }
+            val expectedVersion = if (indexKey == "MARKET") {
+                PC2_CALIBRATION_POPULATION_VERSION
+            } else {
+                PC2_SUPPLY_POPULATION_VERSION
+            }
+            return extra.optString("candidate_population_scope", "").trim() == expectedScope &&
+                extra.optString("calibration_population_version", "").trim() == expectedVersion
+        }
+
         val valuesByVariable = LinkedHashMap<String, MutableList<Double>>()
+        val dailyValuesByVariable = LinkedHashMap<String, MutableList<Double>>()
+        val dailySeen = linkedSetOf<String>()
         val pageSize = 1000
         for (page in 0 until maxPages) {
             val offset = page * pageSize
             val path = "ml_context_percentile_history" +
-                "?select=variable_name,value,poll_ts,index_key,lane,trade_mode" +
+                "?select=variable_name,value,poll_ts,index_key,lane,trade_mode,source_quality,extra_json" +
                 "&poll_ts=not.is.null&session_date=lt.$targetDate" +
                 "&history_source=in.(backfill,live)" +
+                "&source_quality=eq.PRE_T_CLEAN" +
                 "&order=poll_ts.desc,variable_name.asc&limit=$pageSize&offset=$offset"
             val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
             val pageRows = try { JSONArray(raw) } catch (_: Exception) { break }
             if (pageRows.length() == 0) break
             for (i in 0 until pageRows.length()) {
                 val row = pageRows.optJSONObject(i) ?: continue
+                if (!isVerifiedC3SeedRow(row)) continue
                 val name = row.optString("variable_name", "").trim()
                 if (name.isEmpty() || row.isNull("value")) continue
                 val indexKey = row.optString("index_key", "MARKET").trim().uppercase(Locale.US)
@@ -1135,11 +1170,41 @@ object SupabaseClient {
             }
             if (pageRows.length() < pageSize) break
         }
+        for (page in 0 until maxPages) {
+            val offset = page * pageSize
+            val path = "ml_context_percentile_history" +
+                "?select=session_date,variable_name,value,history_source,index_key,source_quality,extra_json" +
+                "&poll_ts=is.null&session_date=lt.$targetDate" +
+                "&history_source=in.(backfill,live)" +
+                "&source_quality=eq.DAILY_CALIBRATION_UNION_VERIFIED" +
+                "&order=session_date.desc,history_source.desc,variable_name.asc&limit=$pageSize&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
+            val pageRows = try { JSONArray(raw) } catch (_: Exception) { break }
+            if (pageRows.length() == 0) break
+            for (i in 0 until pageRows.length()) {
+                val row = pageRows.optJSONObject(i) ?: continue
+                if (!isVerifiedC3SeedRow(row)) continue
+                val day = row.optString("session_date", "").trim()
+                val name = row.optString("variable_name", "").trim()
+                val dedupeKey = "$day|$name"
+                if (day.isEmpty() || name.isEmpty() || row.isNull("value") || !dailySeen.add(dedupeKey)) continue
+                val value = row.optDouble("value", Double.NaN)
+                if (value.isNaN() || value.isInfinite()) continue
+                val values = dailyValuesByVariable.getOrPut(name) { mutableListOf() }
+                if (values.size < 60) values.add(value)
+            }
+            if (pageRows.length() < pageSize) break
+        }
         return JSONObject().apply {
             for ((name, newestFirst) in valuesByVariable) {
                 val ordered = JSONArray()
                 newestFirst.asReversed().forEach(ordered::put)
                 put(name, ordered)
+            }
+            for ((name, newestFirst) in dailyValuesByVariable) {
+                val ordered = JSONArray()
+                newestFirst.asReversed().forEach(ordered::put)
+                put("daily::$name", ordered)
             }
         }
     }
@@ -1199,17 +1264,20 @@ object SupabaseClient {
     private fun fetchC3ExistingIds(sessionDate: String): Set<String> {
         val ids = linkedSetOf<String>()
         val pageSize = 1000
-        for (page in 0 until 10) {
+        var page = 0
+        while (true) {
             val offset = page * pageSize
             val path = "ml_context_percentile_history?select=id" +
-                "&session_date=eq.$sessionDate&poll_ts=not.is.null&history_source=eq.live" +
-                "&limit=$pageSize&offset=$offset"
+                "&session_date=eq.$sessionDate&history_source=eq.live" +
+                "&order=id.asc&limit=$pageSize&offset=$offset"
             val raw = fetchSync(getBaseRequest(path).get().build()) ?: break
             val rows = try { JSONArray(raw) } catch (_: Exception) { break }
+            val before = ids.size
             for (i in 0 until rows.length()) {
                 rows.optJSONObject(i)?.optString("id", "")?.takeIf { it.isNotBlank() }?.let(ids::add)
             }
-            if (rows.length() < pageSize) break
+            if (rows.length() < pageSize || ids.size == before) break
+            page += 1
         }
         return ids
     }

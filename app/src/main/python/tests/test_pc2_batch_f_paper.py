@@ -60,6 +60,29 @@ class Pc2BatchFPaperTest(unittest.TestCase):
         self.assertEqual(candidate["pc2BatchFCandleScore"], 0.0)
         self.assertEqual(candidate["contextPercentileScore"], 0.20)
 
+    def test_candle_context_reclamps_the_final_context_score(self):
+        candidate = {
+            "id": "bull",
+            "index": "NF",
+            "type": "BULL_CALL",
+            "contextPercentileScore": 0.34,
+            "contextPercentileRawScore": 0.34,
+        }
+        candle_data = {
+            "candle_nf": {
+                "patterns": [
+                    {"pattern": "BULLISH_ENGULFING", "impact": "bullish", "strength": 5, "timeframe": "15m"}
+                ]
+            }
+        }
+
+        _apply_pc2_batch_f_candle_context([candidate], candle_data, "paper")
+
+        self.assertEqual(candidate["contextPercentileRawScore"], 0.37)
+        self.assertEqual(candidate["contextPercentileScore"], 0.35)
+        self.assertTrue(candidate["contextPercentileClamp"]["applied"])
+        self.assertEqual(candidate["contextPercentileClamp"]["stage"], "post_batch_f_candle")
+
     def test_wick_dependent_patterns_are_evidence_only_for_spot_proxy_candles(self):
         candidate = {"id": "bull", "index": "NF", "type": "BULL_CALL", "contextPercentileScore": 0.20}
         candle_data = {

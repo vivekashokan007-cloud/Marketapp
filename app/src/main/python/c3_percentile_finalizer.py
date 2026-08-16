@@ -24,6 +24,16 @@ SUPPLY_SLICE_VARIABLES = {
     "sigma_otm": "sigma_otm_menu_median",
     "premium_edge": "premium_edge_menu_median",
 }
+DAILY_CALIBRATION_VARIABLES = (
+    "credit_width_ratio_menu_median",
+    "iv_richness_menu_median",
+    "prob_profit_menu_median",
+    "realized_day_range",
+    "sigma_otm_menu_median",
+    "width_menu_median",
+)
+CALIBRATION_POPULATION_SCOPE = "generated_plus_rejected_candidate_population"
+CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -139,14 +149,40 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
     ranked_full = _array(context.get("snapshot_ranked_candidates_full"))
     generated = ranked_full or _array(context.get("snapshot_generated_candidates"))
     candidate_population_source = "snapshot_ranked_candidates_full" if ranked_full else "snapshot_generated_candidates"
-    rejected = _array(context.get("snapshot_rejected_candidates") or context.get("snapshot_rejected_candidates_full"))
+    # The compact rejected list is UI evidence only. Calibration must use the
+    # uncapped population whenever it is available, including an intentionally
+    # empty full list.
+    has_rejected_full = "snapshot_rejected_candidates_full" in context
+    rejected = _array(
+        context.get("snapshot_rejected_candidates_full")
+        if has_rejected_full
+        else context.get("snapshot_rejected_candidates")
+    )
     generated = [row for row in generated if isinstance(row, dict)]
     rejected = [row for row in rejected if isinstance(row, dict)]
     population = generated + rejected
+    build3_flow = _obj(context.get("snapshot_build3_flow"))
+    if candidate_population_source == "snapshot_ranked_candidates_full":
+        generated_capture_complete = (
+            _number(build3_flow.get("truncated_at_ranked_evidence")) == 0
+            if "truncated_at_ranked_evidence" in build3_flow
+            else False
+        )
+    else:
+        generated_capture_complete = (
+            _number(build3_flow.get("truncated_at_persistence")) == 0
+            if "truncated_at_persistence" in build3_flow
+            else False
+        )
+    rejected_capture_present = "snapshot_rejected_candidates" in context or has_rejected_full
+    rejected_capture_complete = has_rejected_full
+    candidate_population_verified = bool(generated_capture_complete and rejected_capture_complete)
     supply_shadow = _obj(context.get("snapshot_pc2_supply_quality_shadow"))
     credit = [row for row in population if str(row.get("is_credit", row.get("isCredit", ""))).lower() in {"true", "1", "yes"}]
-    debit = [row for row in generated if row not in credit]
-    menu = lambda metric, rows=None: [_metric(row, metric) for row in (generated if rows is None else rows)]
+    debit = [row for row in population if row not in credit]
+    # Every candidate-dependent value written by this finalizer is labelled as
+    # generated-plus-rejected. Keep the value source identical to that label.
+    menu = lambda metric, rows=None: [_metric(row, metric) for row in (population if rows is None else rows)]
 
     bnf_spot = _first((context, ("bnfSpot", "bnf_spot", "bnf")), (latest, ("bnfSpot", "bnf_spot", "bnf", "BNF")), (summary, ("bnf_spot", "bnf")))
     nf_spot = _first((context, ("nfSpot", "nf_spot", "nf")), (latest, ("nfSpot", "nf_spot", "nf", "NF")), (summary, ("nf_spot", "nf")))
@@ -194,7 +230,8 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
         "call_wall_distance": _first((context, ("callWallDistance", "call_wall_distance"))) or distance(bnf_call_wall, bnf_spot),
         "put_wall_distance": _first((context, ("putWallDistance", "put_wall_distance"))) or distance(bnf_put_wall, bnf_spot),
         "total_call_oi": bnf_call_oi, "total_put_oi": bnf_put_oi, "oi_skew": _ratio((bnf_put_oi or 0.0) - (bnf_call_oi or 0.0), (bnf_put_oi or 0.0) + (bnf_call_oi or 0.0)),
-        "realized_vs_implied_range_ratio": _ratio(_first((context, ("rangeSigma", "dayRangeSigma"))), bnf_daily_sigma), "overnight_gap": _first((context, ("gapSigma", "overnight_gap"))),
+        # rangeSigma/dayRangeSigma is already expressed in daily implied-sigma units.
+        "realized_vs_implied_range_ratio": _first((context, ("rangeSigma", "dayRangeSigma"))), "overnight_gap": _first((context, ("gapSigma", "overnight_gap"))),
         "spot_vs_vwap": _first((context, ("spotVsVwap", "spot_vs_vwap"))), "abs_spot_sigma": _first((context, ("absSpotSigma", "abs_spot_sigma"))), "abs_nf_spot_sigma": _first((context, ("absNfSpotSigma", "abs_nf_spot_sigma"))),
         "bnf_atm_iv": bnf_atm_iv, "nf_atm_iv": nf_atm_iv, "bnf_pcr": bnf_pcr, "nf_pcr": nf_pcr,
         "bnf_near_atm_pcr": _first((context, ("bnfNearAtmPcr", "bnf_near_atm_pcr"))), "nf_near_atm_pcr": _first((context, ("nfNearAtmPcr", "nf_near_atm_pcr"))),
@@ -255,7 +292,10 @@ def capture_frame(snapshot: dict[str, Any]) -> dict[str, Any]:
         "generated_population_count": len(generated),
         "rejected_population_count": len(rejected),
         "candidate_population_source": candidate_population_source,
-        "rejected_capture_present": "snapshot_rejected_candidates" in context or "snapshot_rejected_candidates_full" in context,
+        "generated_capture_complete": generated_capture_complete,
+        "rejected_capture_present": rejected_capture_present,
+        "rejected_capture_complete": rejected_capture_complete,
+        "candidate_population_verified": candidate_population_verified,
         "candidate_slices": candidate_slices,
         "supply_shadow_version": supply_shadow.get("version"),
     }
@@ -283,10 +323,14 @@ def finalize_frames(
     frames: list[dict[str, Any]], history_seed: dict[str, list[float]], outcome_prior: dict[str, float | None], catalog: dict[str, list[str]],
     *, history_source: str = "live", pre_t_clean: bool = True,
 ) -> list[dict[str, Any]]:
-    """Build poll-level C3 rows; seed contains only sessions before this one."""
+    """Build poll and daily C3 rows from history strictly before this session."""
     history: dict[str, list[float]] = defaultdict(list)
+    daily_history: dict[str, list[float]] = defaultdict(list)
     for name, values in (history_seed or {}).items():
-        history[name].extend(value for value in values if _number(value) is not None)
+        target = daily_history if str(name).startswith("daily::") else history
+        clean_name = str(name)[7:] if str(name).startswith("daily::") else name
+        if isinstance(values, list):
+            target[clean_name].extend(value for value in values if _number(value) is not None)
     group_by_name = {name: group for group, names in catalog.items() for name in names}
     catalog_names = set(group_by_name)
     rows: list[dict[str, Any]] = []
@@ -308,7 +352,7 @@ def finalize_frames(
                 "history_window_end": frame.get("poll_ts"), "history_source": history_source, "pre_t_clean": pre_t_clean,
                 "schema_version": "context_percentiles_v1", "recording_version": "c3_percentile_recording_v1",
                 "source_table": "ml_brain_snapshots:c3_finalization_frame", "source_quality": "PRE_T_CLEAN" if pre_t_clean else "PRE_T_DIRTY",
-                "extra_json": {"candidate_population_scope": "generated_plus_rejected_candidate_population" if frame.get("rejected_capture_present") else "unverified_generated_population_only", "calibration_population_version": "pc2_generated_rejected_union_v1" if frame.get("rejected_capture_present") else "unverified", "generated_population_count": frame.get("generated_population_count", 0), "rejected_population_count": frame.get("rejected_population_count", 0)},
+                "extra_json": {"candidate_population_scope": CALIBRATION_POPULATION_SCOPE if frame.get("candidate_population_verified") else "unverified_incomplete_candidate_population", "calibration_population_version": CALIBRATION_POPULATION_VERSION if frame.get("candidate_population_verified") else "unverified", "generated_population_count": frame.get("generated_population_count", 0), "rejected_population_count": frame.get("rejected_population_count", 0), "generated_capture_complete": bool(frame.get("generated_capture_complete"))},
             }
             row["id"] = _row_id(row)
             rows.append(row)
@@ -354,4 +398,61 @@ def finalize_frames(
                 rows.append(row)
                 if value is not None:
                     history[history_key].append(value)
+    poll_rows_by_day_name: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        name = str(row.get("variable_name") or "")
+        day = str(row.get("session_date") or "")
+        if (
+            row.get("poll_ts")
+            and row.get("index_key") == "MARKET"
+            and name in DAILY_CALIBRATION_VARIABLES
+            and day
+            and _number(row.get("value")) is not None
+        ):
+            poll_rows_by_day_name[(day, name)].append(row)
+
+    for day, name in sorted(poll_rows_by_day_name):
+        contributors = poll_rows_by_day_name[(day, name)]
+        daily_value = float(median([float(row["value"]) for row in contributors]))
+        provenance_verified = all(
+            _obj(row.get("extra_json")).get("candidate_population_scope") == CALIBRATION_POPULATION_SCOPE
+            and _obj(row.get("extra_json")).get("calibration_population_version") == CALIBRATION_POPULATION_VERSION
+            for row in contributors
+        )
+        prior_values = daily_history[name]
+        support30 = len(prior_values[-30:])
+        support60 = len(prior_values[-60:])
+        daily_row = {
+            "session_date": day,
+            "poll_ts": None,
+            "snapshot_id": None,
+            "index_key": "MARKET",
+            "lane": "MARKET",
+            "trade_mode": "MARKET",
+            "variable_name": name,
+            "variable_group": group_by_name.get(name, "uncatalogued"),
+            "value": round(daily_value, 6),
+            "pct_30": _percentile(daily_value, prior_values[-30:]),
+            "pct_60": _percentile(daily_value, prior_values[-60:]),
+            "support_count": max(support30, support60),
+            "support_count_30": support30,
+            "support_count_60": support60,
+            "history_window_end": max(str(row.get("poll_ts") or "") for row in contributors),
+            "history_source": history_source,
+            "pre_t_clean": all(bool(row.get("pre_t_clean")) for row in contributors),
+            "schema_version": "context_percentiles_v1",
+            "recording_version": "c3_daily_calibration_v1",
+            "source_table": "ml_brain_snapshots:c3_daily_candidate_union_aggregate",
+            "source_quality": "DAILY_CALIBRATION_UNION_VERIFIED" if provenance_verified else "DAILY_CALIBRATION_PROVENANCE_UNVERIFIED",
+            "extra_json": {
+                "candidate_population_scope": CALIBRATION_POPULATION_SCOPE if provenance_verified else "unverified_incomplete_candidate_population",
+                "calibration_population_version": CALIBRATION_POPULATION_VERSION if provenance_verified else "unverified",
+                "daily_aggregation": "median_of_poll_union_medians",
+                "contributing_poll_count": len(contributors),
+                "point_in_time_basis": "prior_daily_values_only",
+            },
+        }
+        daily_row["id"] = _row_id(daily_row)
+        rows.append(daily_row)
+        daily_history[name].append(daily_value)
     return rows

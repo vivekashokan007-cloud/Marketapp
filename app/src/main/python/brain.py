@@ -6001,7 +6001,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.82"
+BRAIN_VERSION = "2.5.84"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6012,10 +6012,11 @@ REJECTED_EVAL_PER_STAGE_CAP = 4
 CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
 CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
-CONTEXT_PERCENTILE_MIN_SUPPORT = 10
+CONTEXT_PERCENTILE_MIN_SUPPORT = 30
+CONTEXT_PERCENTILE_STABILITY_MAX = 0.10
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v2"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v3"
 PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
 PC2_COMPOSITE_SHADOW_MODE = "shadow"
 PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
@@ -6026,6 +6027,15 @@ PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
 OPPORTUNITY_GATE_SOFTENING_VERSION = "opportunity_gate_softening_v1"
+PC2_SOFT_OPPORTUNITY_STAGES = frozenset({
+    'credit_prob_below_floor',
+    'credit_ratio_below_floor',
+    'iv_not_rich',
+    'prob_below_floor',
+    'sigma_otm_too_close',
+    'sigma_otm_too_far',
+    'width_too_narrow',
+})
 
 PC2_GATE_CALIBRATION = {
     'MIN_CREDIT_RATIO': {
@@ -6500,11 +6510,19 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         if active:
             if not isinstance(candidate.get('contextPercentileComponents'), list):
                 candidate['contextPercentileComponents'] = []
-            candidate['contextPercentileScore'] = round(base_score + bounded_score, 4)
-            candidate['contextPercentileRawScore'] = round(
-                _safe_num(candidate.get('contextPercentileRawScore'), base_score) + bounded_score,
-                4,
+            combined_raw_score = _safe_num(candidate.get('contextPercentileRawScore'), base_score) + bounded_score
+            combined_score = max(
+                -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+                min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, combined_raw_score),
             )
+            candidate['contextPercentileScore'] = round(combined_score, 4)
+            candidate['contextPercentileRawScore'] = round(combined_raw_score, 4)
+            candidate['contextPercentileClamp'] = {
+                'min': -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+                'max': CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+                'applied': round(combined_raw_score, 4) != round(combined_score, 4),
+                'stage': 'post_batch_f_candle',
+            }
             candidate['contextPercentileComponents'].extend(components)
             if bounded_score:
                 affected += 1
@@ -7033,16 +7051,41 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     vix_value = _percentile_float(vix if vix is not None else ctx.get('vix'))
     iv_pct = _percentile_float(iv_pctl if iv_pctl is not None else ctx.get('ivPercentile'))
-    vix_hist = (
-        _numeric_series(ctx.get('vixHistory'))
-        + _history_values(ctx, ('vix', 'VIX'), 60)
-    )[-60:]
-    vix_pct = _percentile_rank(vix_value, vix_hist) if vix_value is not None and vix_hist else None
-    support = len(vix_hist)
-    evidence_pct = vix_pct if vix_pct is not None else iv_pct
-    support_status = 'SUPPORTED' if support >= CONTEXT_PERCENTILE_MIN_SUPPORT else 'LOW_SUPPORT'
-    if evidence_pct is None:
+    vix_hist = _vix_history_values(ctx, 60)
+    vix_cell = _percentile_cell(vix_value, vix_hist, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    support = int(vix_cell.get('support_count') or 0)
+    stability_ratio = _percentile_float(vix_cell.get('stability_ratio'))
+    vix_authority = bool(
+        vix_cell.get('percentile') is not None
+        and support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+        and vix_cell.get('diversity_pass')
+        and stability_ratio is not None
+        and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    )
+    vix_pct = vix_cell.get('percentile') if vix_authority else None
+    iv_support = int(
+        ctx.get('ivPercentileSupportCount')
+        or ctx.get('iv_percentile_support_count')
+        or 0
+    )
+    iv_stability_pass = bool(
+        ctx.get('ivPercentileStabilityPass')
+        or ctx.get('iv_percentile_stability_pass')
+    )
+    iv_authority = bool(
+        iv_pct is not None
+        and iv_support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+        and iv_stability_pass
+    )
+    evidence_pct = vix_pct if vix_authority else (iv_pct if iv_authority else None)
+    if vix_authority or iv_authority:
+        support_status = 'SUPPORTED'
+    elif vix_value is None and iv_pct is None:
         support_status = 'MISSING_CONTEXT'
+    elif support < CONTEXT_PERCENTILE_MIN_SUPPORT and iv_support < CONTEXT_PERCENTILE_MIN_SUPPORT:
+        support_status = 'LOW_SUPPORT'
+    else:
+        support_status = 'UNSTABLE'
 
     if evidence_pct is None:
         regime = 'NORMAL'
@@ -7066,9 +7109,14 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     )
     return {
         'schema_version': PC2_VIX_REGIME_CONTEXT_VERSION,
-        'authority': 'percentile_live_with_constant_shadow',
+        'authority': 'percentile_live_only_when_supported_stable_with_constant_shadow',
         'regime': regime,
-        'basis': 'vix_percentile' if vix_pct is not None else ('iv_percentile' if iv_pct is not None else 'neutral_missing_context'),
+        'basis': (
+            'vix_percentile' if vix_authority else
+            'iv_percentile' if iv_authority else
+            'neutral_missing_context' if support_status == 'MISSING_CONTEXT' else
+            'neutral_unsupported_context'
+        ),
         'vix': None if vix_value is None else round(vix_value, 4),
         'vix_percentile': vix_pct,
         'iv_percentile': iv_pct,
@@ -7076,6 +7124,11 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
         'support_count': support,
         'support_status': support_status,
         'low_support_warning': support_status != 'SUPPORTED',
+        'stability_ratio': stability_ratio,
+        'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
+        'stability_pass': vix_authority,
+        'iv_percentile_support_count': iv_support,
+        'iv_percentile_stability_pass': iv_stability_pass,
         'old_constant_shadow': {
             'schema_version': 'pc2_vix_constant_shadow_v1',
             'regime': old_regime,
@@ -7156,33 +7209,28 @@ def _pc2_sigma_important_context(ctx=None, context_percentiles=None):
         if value is not None:
             value = abs(value)
 
-        percentile = _percentile_float(source_cell.get('percentile'))
-        support_count = int(source_cell.get('support_count') or 0)
-        window = 60 if source_cell is cell_60 else 30
-
-        if (percentile is None or support_count < CONTEXT_PERCENTILE_MIN_SUPPORT) and value is not None:
-            history = [
-                abs(converted)
-                for x in _history_values(ctx, spec['history_keys'], 60)
-                for converted in [_percentile_float(x)]
-                if converted is not None
-            ]
-            if len(history) >= CONTEXT_PERCENTILE_MIN_SUPPORT:
-                percentile = _percentile_rank(value, history)
-                support_count = len(history)
-                window = 60
-
-        support_status = 'SUPPORTED' if support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT and percentile is not None else 'LOW_SUPPORT'
-        if value is None:
-            support_status = 'MISSING_VALUE'
-        elif percentile is None:
-            support_status = 'MISSING_CONTEXT'
+        history = [
+            abs(converted)
+            for x in _history_values(ctx, spec['history_keys'], 60)
+            for converted in [_percentile_float(x)]
+            if converted is not None
+        ]
+        evidence = _pc2_notification_percentile_evidence(
+            value,
+            source_cell,
+            history,
+            source_window=60 if source_cell is cell_60 else 30,
+        )
+        percentile = evidence['percentile']
+        support_count = evidence['support_count']
+        window = evidence['window']
+        support_status = evidence['support_status']
 
         old_pass = bool(value is not None and old_threshold is not None and value > old_threshold)
         live_pass = bool(
             value is not None
             and percentile is not None
-            and support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT
+            and evidence['live_percentile_authority']
             and percentile >= PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE
         )
         fallback_pass = bool(support_status != 'SUPPORTED' and old_pass)
@@ -7206,6 +7254,11 @@ def _pc2_sigma_important_context(ctx=None, context_percentiles=None):
             'window': window,
             'support_count': support_count,
             'support_status': support_status,
+            'diversity_pass': evidence['diversity_pass'],
+            'diversity_status': evidence['diversity_status'],
+            'stability_ratio': evidence['stability_ratio'],
+            'stability_pass': evidence['stability_pass'],
+            'evidence_source': evidence['evidence_source'],
             'notify_percentile': PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE,
             'live_percentile_triggered': live_pass,
             'fallback_triggered': fallback_pass,
@@ -7224,6 +7277,8 @@ def _pc2_sigma_important_context(ctx=None, context_percentiles=None):
         if fallback_triggered else
         'percentile_context_no_trigger'
         if supported_variables > 0 else
+        'unsupported_percentile_context_no_trigger'
+        if any(row.get('support_status') in ('LOW_SUPPORT', 'LOW_DIVERSITY', 'UNSTABLE') for row in rows) else
         'missing_context_no_trigger'
     )
 
@@ -7287,30 +7342,27 @@ def _pc2_position_alert_context(
             effective_value = current_value
         else:
             effective_value = cell_value
-        percentile = _percentile_float(source_cell.get('percentile'))
-        support_count = int(source_cell.get('support_count') or 0)
-        window = 60 if source_cell is cell_60 else 30
-
-        if (
-            (percentile is None or support_count < CONTEXT_PERCENTILE_MIN_SUPPORT)
-            and effective_value is not None
-        ):
-            history = [
-                converted
-                for x in _history_values(ctx, history_keys, 60)
-                for converted in [_percentile_float(x)]
-                if converted is not None
-            ]
-            if len(history) >= CONTEXT_PERCENTILE_MIN_SUPPORT:
-                percentile = _percentile_rank(effective_value, history)
-                support_count = len(history)
-                window = 60
+        history = [
+            converted
+            for x in _history_values(ctx, history_keys, 60)
+            for converted in [_percentile_float(x)]
+            if converted is not None
+        ]
+        evidence = _pc2_notification_percentile_evidence(
+            effective_value,
+            source_cell,
+            history,
+            source_window=60 if source_cell is cell_60 else 30,
+        )
+        percentile = evidence['percentile']
+        support_count = evidence['support_count']
+        window = evidence['window']
 
         old_pass = bool(effective_value is not None and threshold is not None and effective_value >= threshold)
         live_pass = bool(
             effective_value is not None
             and percentile is not None
-            and support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT
+            and evidence['live_percentile_authority']
             and percentile >= percentile_cutoff
         )
         triggered = bool(live_pass or old_pass)
@@ -7330,7 +7382,12 @@ def _pc2_position_alert_context(
             'notify_percentile': percentile_cutoff,
             'support_count': support_count,
             'window': window,
-            'support_status': 'SUPPORTED' if support_count >= CONTEXT_PERCENTILE_MIN_SUPPORT and percentile is not None else ('MISSING_VALUE' if effective_value is None else 'LOW_SUPPORT'),
+            'support_status': evidence['support_status'],
+            'diversity_pass': evidence['diversity_pass'],
+            'diversity_status': evidence['diversity_status'],
+            'stability_ratio': evidence['stability_ratio'],
+            'stability_pass': evidence['stability_pass'],
+            'evidence_source': evidence['evidence_source'],
             'live_percentile_triggered': live_pass,
             'old_constant_shadow': {
                 'threshold': threshold,
@@ -7953,6 +8010,14 @@ def _history_values(ctx, key_options, window):
             values.append(value)
     return values[-window:]
 
+
+def _vix_history_values(ctx, window):
+    """Return one prior-session VIX series without counting the same days twice."""
+    explicit = _numeric_series(ctx.get('vixHistory') if isinstance(ctx, dict) else None)
+    if explicit:
+        return explicit[-window:]
+    return _history_values(ctx, ('vix', 'VIX'), window)
+
 def _earlier_poll_values(polls, key_options, window):
     source = polls[:-1] if isinstance(polls, list) and len(polls) > 1 else []
     values = []
@@ -8160,12 +8225,29 @@ def _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
     support = len(vals)
     pct = _percentile_rank(value, vals) if support >= min_support else None
     stability = _jackknife_threshold_stability(vals, pct)
+    minimum = min(vals) if vals else None
+    maximum = max(vals) if vals else None
+    scale = stability.get('stability_scale')
+    diversity_pass = bool(
+        support > 1
+        and minimum is not None
+        and maximum is not None
+        and minimum != maximum
+        and scale is not None
+        and scale > 0
+    )
+    diversity_status = (
+        'NO_HISTORY' if not vals else
+        'SINGLE_VALUE' if minimum == maximum else
+        'ZERO_IQR' if scale in (None, 0) else
+        'DIVERSE'
+    )
     cell = {
         'value': None if _percentile_float(value) is None else round(_percentile_float(value), 4),
         'percentile': pct,
         'support_count': support,
-        'min': round(min(vals), 4) if vals else None,
-        'max': round(max(vals), 4) if vals else None,
+        'min': round(minimum, 4) if minimum is not None else None,
+        'max': round(maximum, 4) if maximum is not None else None,
         'insufficient_support': support < min_support,
         'support_mode': 'legacy_min_support_with_pc2_jackknife_metadata',
         'stability_ratio': stability.get('stability_ratio'),
@@ -8173,11 +8255,69 @@ def _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
         'stability_scale': stability.get('stability_scale'),
         'jackknife_n': stability.get('jackknife_n'),
         'stability_method': stability.get('stability_method'),
+        'diversity_pass': diversity_pass,
+        'diversity_status': diversity_status,
         'bar': None,
         'stability_pass': False,
         'switch_basis': 'hard_fallback',
     }
     return cell
+
+
+def _pc2_notification_percentile_evidence(value, source_cell, fallback_history, source_window=30):
+    """Return notification percentile evidence only when it is distributionally valid.
+
+    Notifications can influence entry attention and position exits, so a flat
+    history must never be treated as a 100th-percentile market event.
+    """
+    value = _percentile_float(value)
+    source = dict(source_cell) if isinstance(source_cell, dict) else {}
+    percentile = _percentile_float(source.get('percentile'))
+    support = int(source.get('support_count') or 0)
+    window = int(source_window or 30)
+    evidence_source = 'context_percentiles'
+
+    if (percentile is None or support < CONTEXT_PERCENTILE_MIN_SUPPORT) and value is not None:
+        source = _percentile_cell(value, fallback_history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+        percentile = _percentile_float(source.get('percentile'))
+        support = int(source.get('support_count') or 0)
+        window = 60
+        evidence_source = 'premium_history'
+
+    diversity_pass = bool(source.get('diversity_pass'))
+    stability_ratio = _percentile_float(source.get('stability_ratio'))
+    stability_pass = bool(
+        support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+        and diversity_pass
+        and stability_ratio is not None
+        and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    )
+    authority = bool(value is not None and percentile is not None and stability_pass)
+    if value is None:
+        support_status = 'MISSING_VALUE'
+    elif percentile is None:
+        support_status = 'MISSING_CONTEXT'
+    elif support < CONTEXT_PERCENTILE_MIN_SUPPORT:
+        support_status = 'LOW_SUPPORT'
+    elif not diversity_pass:
+        support_status = 'LOW_DIVERSITY'
+    elif not stability_pass:
+        support_status = 'UNSTABLE'
+    else:
+        support_status = 'SUPPORTED'
+    return {
+        'percentile': percentile,
+        'support_count': support,
+        'window': window,
+        'support_status': support_status,
+        'diversity_pass': diversity_pass,
+        'diversity_status': source.get('diversity_status'),
+        'stability_ratio': stability_ratio,
+        'stability_pass': stability_pass,
+        'live_percentile_authority': authority,
+        'evidence_source': evidence_source,
+    }
+
 
 def _pc2_calibrations_for_context_variable(name):
     matches = []
@@ -8307,10 +8447,7 @@ def _pc2_history_population_provenance(ctx, meta, window=60):
 def _apply_pc2_stability_bar(windows):
     if not isinstance(windows, dict):
         return None
-    vix_cell = (windows.get('60') or {}).get('vix') or {}
-    bar = _percentile_float(vix_cell.get('stability_ratio'))
-    if bar is None or int(vix_cell.get('support_count') or 0) < 60:
-        bar = None
+    bar = CONTEXT_PERCENTILE_STABILITY_MAX
     for window_cells in windows.values():
         if not isinstance(window_cells, dict):
             continue
@@ -8318,10 +8455,20 @@ def _apply_pc2_stability_bar(windows):
             if not isinstance(cell, dict):
                 continue
             ratio = _percentile_float(cell.get('stability_ratio'))
-            cell['bar'] = None if bar is None else round(bar, 6)
-            cell['stability_pass'] = bool(bar is not None and ratio is not None and ratio <= bar)
-            cell['switch_basis'] = 'percentile_pending_calibration' if cell['stability_pass'] and not cell.get('insufficient_support') else 'hard_fallback'
-    return None if bar is None else round(bar, 6)
+            support = int(cell.get('support_count') or 0)
+            cell['bar'] = round(bar, 6)
+            cell['stability_pass'] = bool(
+                support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+                and cell.get('diversity_pass')
+                and ratio is not None
+                and ratio <= bar
+            )
+            cell['switch_basis'] = (
+                'percentile_pending_calibration'
+                if cell['stability_pass'] and not cell.get('insufficient_support')
+                else 'hard_fallback'
+            )
+    return round(bar, 6)
 
 def _latest_poll_value(polls, key_options):
     latest = polls[-1] if isinstance(polls, list) and polls else {}
@@ -8763,26 +8910,18 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
     censor_pass = censor_guard.get('censor_guard_status') == 'OK'
     neutrality = _pc2_neutrality_proof(hard_threshold, percentile_threshold)
     provenance = _pc2_history_population_provenance(ctx, meta, 60)
-
-    vix_hist = (
-        _numeric_series(ctx.get('vixHistory'))
-        + _history_values(ctx, ('vix', 'VIX'), 60)
-    )[-60:]
-    vix_now = _percentile_float(ctx.get('vix') or row.get('vix'))
-    vix_cell = _percentile_cell(vix_now, vix_hist)
     stability = _jackknife_threshold_stability(history, pct_target)
     stability_ratio = stability.get('stability_ratio')
-    stability_bar = vix_cell.get('stability_ratio') if int(vix_cell.get('support_count') or 0) >= 60 else None
+    stability_bar = CONTEXT_PERCENTILE_STABILITY_MAX
     stability_pass = bool(
         percentile_threshold is not None
+        and len(_numeric_series(history)) >= CONTEXT_PERCENTILE_MIN_SUPPORT
         and stability_ratio is not None
-        and stability_bar is not None
         and stability_ratio <= stability_bar
     )
     authority_pass = bool(
         stability_pass
         and censor_pass
-        and neutrality.get('neutrality_pass')
         and provenance.get('population_provenance_verified')
     )
     gate_basis = 'percentile' if authority_pass else 'hard_fallback'
@@ -8795,8 +8934,6 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         fallback_reasons.append('stability_or_history_not_ready')
     if not censor_pass:
         fallback_reasons.append('censor_guard_not_clear')
-    if not neutrality.get('neutrality_pass'):
-        fallback_reasons.append('one_tick_neutrality_not_proven')
     if not provenance.get('population_provenance_verified'):
         fallback_reasons.append('generated_rejected_union_not_proven')
     return {
@@ -8848,22 +8985,21 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
     history = _history_values(ctx, ('width_menu_median', 'width_menu_best', 'width'), 60)
     pct_target = 20.0
     percentile_threshold = _percentile_quantile(history, pct_target)
-    vix_hist = (
-        _numeric_series(ctx.get('vixHistory'))
-        + _history_values(ctx, ('vix', 'VIX'), 60)
-    )[-60:]
-    vix_now = _percentile_float(ctx.get('vix') or row.get('vix'))
-    vix_cell = _percentile_cell(vix_now, vix_hist)
-    stability = _jackknife_threshold_stability(history, pct_target)
-    stability_ratio = stability.get('stability_ratio')
-    stability_bar = vix_cell.get('stability_ratio') if int(vix_cell.get('support_count') or 0) >= 60 else None
+    cell = _percentile_cell(observed_width, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    stability_ratio = cell.get('stability_ratio')
+    stability_bar = CONTEXT_PERCENTILE_STABILITY_MAX
     stability_pass = bool(
         percentile_threshold is not None
+        and cell.get('diversity_pass')
         and stability_ratio is not None
-        and stability_bar is not None
         and stability_ratio <= stability_bar
     )
-    gate_basis = 'percentile' if stability_pass else 'hard_fallback'
+    provenance = _pc2_history_population_provenance(
+        ctx,
+        {'context_variable': 'width_menu_median'},
+        60,
+    )
+    gate_basis = 'percentile' if stability_pass and provenance.get('population_provenance_verified') else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     percentile_pass = _pc2_compare(observed_width, percentile_threshold, comparator)
     active_pass = _pc2_compare(observed_width, active_threshold, comparator)
@@ -8891,17 +9027,25 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         'pct_target_source': PC2_BATCH_A_WIDTH_WALL_VERSION,
         'pct_target_review_flag': 'owner_live_soft_width_quality',
         'slice_key': _pc2_slice_key(row, 'width_menu_median'),
-        'support_count': len(_numeric_series(history)),
+        'support_count': cell.get('support_count', 0),
         'stability_ratio': stability_ratio,
         'stability_bar': stability_bar,
         'stability_pass': stability_pass,
+        'diversity_pass': cell.get('diversity_pass'),
+        'diversity_status': cell.get('diversity_status'),
         'switch_basis': gate_basis,
         'window': 60,
         'activation_status': 'live_soft_supply_with_constant_fallback',
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        'fallback_reason': None if gate_basis == 'percentile' else 'stability_or_history_not_ready',
+        'fallback_reason': (
+            None if gate_basis == 'percentile' else
+            'generated_rejected_union_not_proven'
+            if not provenance.get('population_provenance_verified') else
+            'stability_or_history_not_ready'
+        ),
         'live_soft_supply': True,
+        **provenance,
     }
 
 PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF = 70.0
@@ -8917,8 +9061,16 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         num = _percentile_float(value)
         if num is not None:
             history.append(abs(num))
-    support = len(history)
-    percentile = _percentile_rank(observed_abs, history) if observed_abs is not None and support >= CONTEXT_PERCENTILE_MIN_SUPPORT else None
+    cell = _percentile_cell(observed_abs, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    support = int(cell.get('support_count') or 0)
+    stability_ratio = _percentile_float(cell.get('stability_ratio'))
+    stability_pass = bool(
+        cell.get('percentile') is not None
+        and cell.get('diversity_pass')
+        and stability_ratio is not None
+        and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    )
+    percentile = cell.get('percentile') if stability_pass else None
     hard_active = bool(
         observed_abs is not None
         and fallback_threshold_num is not None
@@ -8945,13 +9097,23 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         'percentile_cutoff': PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF,
         'supportCount': support,
         'support_count': support,
+        'stability_ratio': stability_ratio,
+        'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
+        'stability_pass': stability_pass,
+        'diversity_pass': cell.get('diversity_pass'),
+        'diversity_status': cell.get('diversity_status'),
         'active': active,
         'hard_active': hard_active,
         'percentile_active': percentile_active if live_percentile_authority else None,
         'livePercentileAuthority': live_percentile_authority,
         'live_percentile_authority': live_percentile_authority,
         'live_behavior_change': bool(live_percentile_authority and percentile_active != hard_active),
-        'fallback_reason': None if live_percentile_authority else 'insufficient_cross_market_history',
+        'fallback_reason': (
+            None if live_percentile_authority else
+            'zero_diversity_cross_market_history'
+            if not cell.get('diversity_pass') and support >= CONTEXT_PERCENTILE_MIN_SUPPORT else
+            'insufficient_cross_market_history'
+        ),
         'window': 60,
     }
 
@@ -9148,8 +9310,8 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
     )
     calibration_population = _pc2_candidate_population(candidates, rejected_candidates)
     is_credit_candidate = lambda c: bool(c.get('isCredit') or c.get('is_credit'))
-    credit_candidates = [c for c in candidates or [] if isinstance(c, dict) and is_credit_candidate(c)]
-    debit_candidates = [c for c in candidates or [] if isinstance(c, dict) and not is_credit_candidate(c)]
+    credit_candidates = [c for c in calibration_population if is_credit_candidate(c)]
+    debit_candidates = [c for c in calibration_population if not is_credit_candidate(c)]
     calibration_summaries = {
         'iv_richness_menu_median': _pc2_population_summary(calibration_population, ('ivRichness', 'iv_richness')),
         'sigma_otm_menu_median': _pc2_population_summary(calibration_population, ('sigmaOTM', 'sigma_otm')),
@@ -9302,9 +9464,9 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             (snapshot_latest_poll, ('vixSigma', 'vix_sigma')),
         )
         vix_abs_sigma = abs(vix_sigma_raw) if vix_sigma_raw is not None else None
-    day_range = (
-        _latest_poll_value(polls, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma'))
-        or _percentile_float(ctx.get('rangeSigma'))
+    day_range = _first_row_value(
+        (latest_poll, ('dayRangeSigma', 'day_range_sigma', 'rangeSigma', 'range_sigma')),
+        (ctx, ('rangeSigma', 'dayRangeSigma', 'day_range_sigma')),
     )
     profit_captures = _position_capture_series(open_trades, 'profit')
     loss_captures = _position_capture_series(open_trades, 'loss')
@@ -9327,41 +9489,43 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         gift_pct_current = _cross_market_pct(morning_input.get('giftSpot'), evening_close.get('gift'))
 
     current_values = {
-        'vix': _percentile_float(ctx.get('vix')) or _latest_poll_value(polls, ('vix', 'VIX')),
-        'fii_short_pct': (
-            _percentile_float(ctx.get('fiiShort'))
-            or _percentile_float(ctx.get('fii_short_pct'))
-            or _row_value(morning_input, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short'))
-            or _row_value(market_forces, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short'))
-            or _latest_poll_value(polls, ('fiiShort', 'fii_short_pct', 'fii_short'))
+        'vix': _first_row_value(
+            (ctx, ('vix', 'VIX')),
+            (latest_poll, ('vix', 'VIX')),
+        ),
+        'fii_short_pct': _first_row_value(
+            (ctx, ('fiiShort', 'fii_short_pct', 'fii_short')),
+            (morning_input, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short')),
+            (market_forces, ('fiiShortPct', 'fii_short_pct', 'fiiShort', 'fii_short')),
+            (latest_poll, ('fiiShort', 'fii_short_pct', 'fii_short')),
         ),
         'iv_richness_menu_median': calibration_summaries['iv_richness_menu_median']['median'],
         'realized_day_range': day_range,
         'sigma_otm_menu_median': calibration_summaries['sigma_otm_menu_median']['median'],
         'credit_width_ratio_menu_median': calibration_summaries['credit_width_ratio_menu_median']['median'],
         'rejected_sigma_otm_median': _candidate_median(rejected_candidates, ('sigmaOTM', 'sigma_otm')),
-        'premium_edge_menu_median': _candidate_median(candidates, ('premiumEdge', 'premium_edge')),
-        'premium_edge_menu_best': _candidate_best(candidates, ('premiumEdge', 'premium_edge')),
-        'ev_per_1k_menu_median': _candidate_derived_median(candidates, _ev_per_1k),
-        'ev_per_1k_menu_best': _candidate_derived_best(candidates, _ev_per_1k),
+        'premium_edge_menu_median': _candidate_median(calibration_population, ('premiumEdge', 'premium_edge')),
+        'premium_edge_menu_best': _candidate_best(calibration_population, ('premiumEdge', 'premium_edge')),
+        'ev_per_1k_menu_median': _candidate_derived_median(calibration_population, _ev_per_1k),
+        'ev_per_1k_menu_best': _candidate_derived_best(calibration_population, _ev_per_1k),
         'prob_profit_menu_median': calibration_summaries['prob_profit_menu_median']['median'],
-        'prob_profit_menu_best': _candidate_best(candidates, ('probProfit', 'prob_profit', 'prob')),
-        'net_premium_menu_median': _candidate_median(candidates, ('netPremium', 'net_premium')),
-        'net_premium_menu_best': _candidate_best(candidates, ('netPremium', 'net_premium')),
-        'max_profit_menu_median': _candidate_median(candidates, ('maxProfit', 'max_profit')),
-        'max_profit_menu_best': _candidate_best(candidates, ('maxProfit', 'max_profit')),
-        'max_loss_menu_median': _candidate_median(candidates, ('maxLoss', 'max_loss')),
-        'max_loss_menu_best': _candidate_best(candidates, ('maxLoss', 'max_loss')),
-        'risk_reward_menu_median': _candidate_median(candidates, ('riskReward', 'risk_reward')),
-        'risk_reward_menu_best': _candidate_best(candidates, ('riskReward', 'risk_reward')),
-        'width_menu_median': _candidate_median(candidates, ('width',)),
-        'width_menu_best': _candidate_best(candidates, ('width',)),
+        'prob_profit_menu_best': _candidate_best(calibration_population, ('probProfit', 'prob_profit', 'prob')),
+        'net_premium_menu_median': _candidate_median(calibration_population, ('netPremium', 'net_premium')),
+        'net_premium_menu_best': _candidate_best(calibration_population, ('netPremium', 'net_premium')),
+        'max_profit_menu_median': _candidate_median(calibration_population, ('maxProfit', 'max_profit')),
+        'max_profit_menu_best': _candidate_best(calibration_population, ('maxProfit', 'max_profit')),
+        'max_loss_menu_median': _candidate_median(calibration_population, ('maxLoss', 'max_loss')),
+        'max_loss_menu_best': _candidate_best(calibration_population, ('maxLoss', 'max_loss')),
+        'risk_reward_menu_median': _candidate_median(calibration_population, ('riskReward', 'risk_reward')),
+        'risk_reward_menu_best': _candidate_best(calibration_population, ('riskReward', 'risk_reward')),
+        'width_menu_median': _candidate_median(calibration_population, ('width',)),
+        'width_menu_best': _candidate_best(calibration_population, ('width',)),
         'debit_breakeven_sigma_menu_median': _candidate_median(debit_candidates, ('debitBreakevenSigma', 'debit_breakeven_sigma')),
         'debit_breakeven_sigma_menu_best': _candidate_best(debit_candidates, ('debitBreakevenSigma', 'debit_breakeven_sigma')),
-        'theta_friction_minutes_menu_median': _candidate_derived_median(candidates, _theta_friction_from_candidate),
-        'theta_friction_minutes_menu_best': _candidate_derived_best(candidates, _theta_friction_from_candidate),
-        'net_theta_menu_median': _candidate_median(candidates, ('netTheta', 'net_theta')),
-        'net_theta_menu_best': _candidate_best(candidates, ('netTheta', 'net_theta'), prefer_abs=True),
+        'theta_friction_minutes_menu_median': _candidate_derived_median(calibration_population, _theta_friction_from_candidate),
+        'theta_friction_minutes_menu_best': _candidate_derived_best(calibration_population, _theta_friction_from_candidate),
+        'net_theta_menu_median': _candidate_median(calibration_population, ('netTheta', 'net_theta')),
+        'net_theta_menu_best': _candidate_best(calibration_population, ('netTheta', 'net_theta'), prefer_abs=True),
         'atm_iv': bnf_atm_iv or nf_atm_iv,
         'iv_percentile': _percentile_float(ctx.get('ivPercentile')) or _latest_poll_value(polls, ('ivPercentile', 'iv_percentile')),
         'daily_sigma': bnf_daily_sigma or nf_daily_sigma,
@@ -9442,8 +9606,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             return _history_values(ctx, keys, window)
 
         vix_hist = (
-            _numeric_series(ctx.get('vixHistory'))[-window:]
-            + _history_values(ctx, ('vix', 'VIX'), window)
+            _vix_history_values(ctx, window)
             + _earlier_poll_values(polls, ('vix', 'VIX'), window)
         )[-window:]
         fii_short_hist = (
@@ -9630,10 +9793,10 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'pre_T_clean': bool(ctx.get('pre_T_clean', False)),
         'support_policy': {
             'minimum_support': CONTEXT_PERCENTILE_MIN_SUPPORT,
-            'pc2_support_mode': 'jackknife_stability_bar_v1',
-            'pc2_stability_bar_source': 'vix_60_window_full_support',
+            'pc2_support_mode': 'per_variable_jackknife_stability_v2',
+            'pc2_stability_bar_source': 'fixed_methodological_maximum',
             'pc2_stability_bar': pc2_stability_bar,
-            'pc2_activation_rule': 'percentile_only_after_union_provenance_censor_stability_and_one_tick_neutrality_pass',
+            'pc2_activation_rule': 'ranking_percentile_only_after_support_stability_censor_and_population_provenance_pass',
             'insufficient_support_percentile': None,
             'input_variables': 'prior_sessions_plus_earlier_same_session_polls',
             'outcome_variables': 'prior_completed_sessions_only',
@@ -9655,9 +9818,74 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'windows': windows,
     }
 
-def _apply_context_percentile_live_ranking(candidates, context_percentiles):
+def _pc2_ranking_percentile_authority(ctx, variable_name, value, require_population_provenance):
+    history = _history_values(ctx, (variable_name,), 60)
+    cell = _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    cell.update(_pc2_censor_guard_for_cell(variable_name, cell))
+    ratio = _percentile_float(cell.get('stability_ratio'))
+    support = int(cell.get('support_count') or 0)
+    stability_pass = bool(
+        support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+        and cell.get('diversity_pass')
+        and ratio is not None
+        and ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    )
+    provenance = {
+        'population_provenance_verified': True,
+        'population_provenance_scope': 'not_required_for_market_scalar',
+    }
+    if require_population_provenance:
+        provenance = _pc2_history_population_provenance(
+            ctx,
+            {'context_variable': variable_name},
+            60,
+        )
+    authority = bool(
+        cell.get('percentile') is not None
+        and stability_pass
+        and cell.get('censor_guard_status', 'OK') == 'OK'
+        and provenance.get('population_provenance_verified')
+    )
+    cell.update(provenance)
+    cell['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX
+    cell['stability_pass'] = stability_pass
+    cell['live_ranking_authority'] = authority
+    cell['authority_status'] = 'ACTIVE' if authority else 'FALLBACK_ZERO'
+    return cell
+
+
+def _pc2_current_population_percentile(value, population, keys, predicate=None):
+    """Cross-sectional percentile for the current uncapped candidate union.
+
+    Candidate-level values are not comparable with a history of menu medians.
+    This is an explicit current-menu ranking input, not a regime switch.
+    """
+    rows = [row for row in (population or []) if isinstance(row, dict)]
+    if predicate is not None:
+        rows = [row for row in rows if predicate(row)]
+    values = [_row_value(row, keys) for row in rows]
+    values = [item for item in values if item is not None]
+    percentile = _percentile_rank(value, values) if value is not None and len(values) >= 2 else None
+    return {
+        'percentile': percentile,
+        'support_count': len(values),
+        'live_ranking_authority': percentile is not None,
+        'authority_status': 'ACTIVE' if percentile is not None else 'FALLBACK_ZERO',
+        'comparison_basis': 'current_uncapped_candidate_population',
+        'population_scope': 'generated_plus_rejected_current_menu',
+        'population_value_count': len(values),
+    }
+
+
+def _apply_context_percentile_live_ranking(candidates, context_percentiles, ctx=None, candidate_population=None):
     if not isinstance(context_percentiles, dict):
         return candidates
+    ctx = ctx if isinstance(ctx, dict) else {}
+    population = candidate_population if isinstance(candidate_population, list) else candidates
+    credit_population = [
+        row for row in population
+        if isinstance(row, dict) and bool(row.get('isCredit') or row.get('is_credit'))
+    ]
     for cand in candidates or []:
         if not isinstance(cand, dict):
             continue
@@ -9668,15 +9896,50 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
         stype = cand.get('type')
         is_bear = stype in _CONST['DIR_BEAR']
         is_bull = stype in _CONST['DIR_BULL']
-        iv_pct = _context_percentile_value(context_percentiles, 30, 'iv_richness_menu_median')
-        credit_width_pct = _context_percentile_value(context_percentiles, 30, 'credit_width_ratio_menu_median')
-        range_pct = _context_percentile_value(context_percentiles, 30, 'realized_day_range')
-        vix_pct = _context_percentile_value(context_percentiles, 30, 'vix')
-        fii_short_pct = _context_percentile_value(context_percentiles, 30, 'fii_short_pct')
+        authority_cells = {
+            'iv_richness_current_population': _pc2_current_population_percentile(
+                _row_value(cand, ('ivRichness', 'iv_richness')),
+                population,
+                ('ivRichness', 'iv_richness'),
+            ),
+            'credit_width_ratio_current_credit_population': _pc2_current_population_percentile(
+                _row_value(cand, ('creditWidthRatio', 'credit_width_ratio')),
+                credit_population,
+                ('creditWidthRatio', 'credit_width_ratio'),
+            ),
+            'realized_day_range': _pc2_ranking_percentile_authority(
+                ctx,
+                'realized_day_range',
+                (context_percentiles.get('current_values') or {}).get('realized_day_range'),
+                True,
+            ),
+            'vix': _pc2_ranking_percentile_authority(
+                ctx,
+                'vix',
+                (context_percentiles.get('current_values') or {}).get('vix'),
+                False,
+            ),
+            'fii_short_pct': _pc2_ranking_percentile_authority(
+                ctx,
+                'fii_short_pct',
+                (context_percentiles.get('current_values') or {}).get('fii_short_pct'),
+                False,
+            ),
+        }
+
+        def _active_pct(name):
+            cell = authority_cells.get(name) or {}
+            return cell.get('percentile') if cell.get('live_ranking_authority') else None
+
+        iv_pct = _active_pct('iv_richness_current_population')
+        credit_width_pct = _active_pct('credit_width_ratio_current_credit_population')
+        range_pct = _active_pct('realized_day_range')
+        vix_pct = _active_pct('vix')
+        fii_short_pct = _active_pct('fii_short_pct')
 
         raw_inputs = {
-            'iv_richness_menu_median': iv_pct,
-            'credit_width_ratio_menu_median': credit_width_pct,
+            'iv_richness_current_population': iv_pct,
+            'credit_width_ratio_current_credit_population': credit_width_pct,
             'realized_day_range': range_pct,
             'vix': vix_pct,
             'fii_short_pct': fii_short_pct,
@@ -9694,64 +9957,32 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
             })
 
         if iv_pct is not None:
-            if is_credit and iv_pct < 25:
-                score -= 0.25
-                _add_component('iv_richness_menu_median', iv_pct, -0.25, 'credit iv pct < 25')
-                signals.append('credit_penalty_low_iv_richness_percentile')
-            elif is_credit and iv_pct >= 70:
-                score += 0.20
-                _add_component('iv_richness_menu_median', iv_pct, 0.20, 'credit iv pct >= 70')
-                signals.append('credit_support_high_iv_richness_percentile')
-            elif not is_credit and iv_pct < 25:
-                score += 0.10
-                _add_component('iv_richness_menu_median', iv_pct, 0.10, 'debit iv pct < 25')
-                signals.append('debit_support_low_iv_richness_percentile')
+            contribution = ((iv_pct - 50.0) / 50.0) * (0.14 if is_credit else -0.07)
+            score += contribution
+            _add_component('iv_richness_current_population', iv_pct, round(contribution, 4), 'continuous current-menu candidate iv percentile')
+            signals.append('candidate_iv_richness_percentile_active')
         if credit_width_pct is not None and is_credit:
-            if credit_width_pct < 25:
-                score -= 0.20
-                _add_component('credit_width_ratio_menu_median', credit_width_pct, -0.20, 'credit width pct < 25')
-                signals.append('credit_penalty_low_credit_width_percentile')
-            elif credit_width_pct >= 70:
-                score += 0.15
-                _add_component('credit_width_ratio_menu_median', credit_width_pct, 0.15, 'credit width pct >= 70')
-                signals.append('credit_support_high_credit_width_percentile')
+            contribution = ((credit_width_pct - 50.0) / 50.0) * 0.12
+            score += contribution
+            _add_component('credit_width_ratio_current_credit_population', credit_width_pct, round(contribution, 4), 'continuous current-menu candidate credit-width percentile')
+            signals.append('candidate_credit_width_percentile_active')
         if range_pct is not None and not is_credit:
-            if range_pct >= 70:
-                score += 0.12
-                _add_component('realized_day_range', range_pct, 0.12, 'debit range pct >= 70')
-                signals.append('debit_support_high_range_percentile')
-            elif range_pct < 25:
-                score -= 0.08
-                _add_component('realized_day_range', range_pct, -0.08, 'debit range pct < 25')
-                signals.append('debit_penalty_low_range_percentile')
+            contribution = ((range_pct - 50.0) / 50.0) * 0.05
+            score += contribution
+            _add_component('realized_day_range', range_pct, round(contribution, 4), 'continuous debit range percentile')
+            signals.append('realized_range_percentile_active')
         if vix_pct is not None:
-            if is_credit and vix_pct >= 70:
-                score += 0.08
-                _add_component('vix', vix_pct, 0.08, 'credit vix pct >= 70')
-                signals.append('credit_support_high_vix_percentile')
-            elif not is_credit and vix_pct < 25:
-                score += 0.05
-                _add_component('vix', vix_pct, 0.05, 'debit vix pct < 25')
-                signals.append('debit_support_low_vix_percentile')
+            contribution = ((vix_pct - 50.0) / 50.0) * (0.04 if is_credit else -0.04)
+            score += contribution
+            _add_component('vix', vix_pct, round(contribution, 4), 'continuous market vix percentile')
+            signals.append('vix_percentile_active')
         if fii_short_pct is not None:
-            if fii_short_pct >= 80:
-                if is_bear:
-                    score += 0.10
-                    _add_component('fii_short_pct', fii_short_pct, 0.10, 'bear fii short pct >= 80')
-                    signals.append('bear_support_extreme_fii_short_percentile')
-                elif is_bull:
-                    score -= 0.10
-                    _add_component('fii_short_pct', fii_short_pct, -0.10, 'bull fii short pct >= 80')
-                    signals.append('bull_penalty_extreme_fii_short_percentile')
-            elif fii_short_pct <= 20:
-                if is_bull:
-                    score += 0.10
-                    _add_component('fii_short_pct', fii_short_pct, 0.10, 'bull fii short pct <= 20')
-                    signals.append('bull_support_low_fii_short_percentile')
-                elif is_bear:
-                    score -= 0.10
-                    _add_component('fii_short_pct', fii_short_pct, -0.10, 'bear fii short pct <= 20')
-                    signals.append('bear_penalty_low_fii_short_percentile')
+            direction_sign = 1.0 if is_bear else (-1.0 if is_bull else 0.0)
+            contribution = ((fii_short_pct - 50.0) / 50.0) * 0.05 * direction_sign
+            score += contribution
+            _add_component('fii_short_pct', fii_short_pct, round(contribution, 4), 'continuous directional fii-short percentile')
+            if direction_sign:
+                signals.append('fii_short_percentile_active')
 
         raw_score = score
         score = max(-CONTEXT_PERCENTILE_MAX_RANKING_ABS, min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, score))
@@ -9759,6 +9990,7 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
         cand['contextPercentileSignals'] = signals
         cand['contextPercentileInputs'] = raw_inputs
         cand['contextPercentileComponents'] = components
+        cand['contextPercentileAuthority'] = authority_cells
         cand['contextPercentileRawScore'] = round(raw_score, 4)
         cand['contextPercentileClamp'] = {
             'min': -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
@@ -9767,7 +9999,7 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles):
         }
         cand['contextPercentileSchemaVersion'] = CONTEXT_PERCENTILES_SCHEMA_VERSION
         cand['contextPercentileRecordingVersion'] = CONTEXT_PERCENTILES_RECORDING_VERSION
-        cand['contextPercentileLiveRanking'] = True
+        cand['contextPercentileLiveRanking'] = bool(components)
     return candidates
 
 # ─── STRIKE PAIR GENERATION ───
@@ -12476,12 +12708,11 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
 
 
 def _pc2_paper_primary_sort_components(candidate):
-    """PC2-first ordering for paper research after existing hard construction gates.
+    """Bounded PC2 ordering for paper research after hard construction gates.
 
-    This intentionally does not reuse the deterministic varsity/calibration/force
-    waterfall. Soft PC2 gate failures contribute through adjustedEdgePerRisk,
-    where their proportional opportunity penalty is already applied. They must
-    not become a second hard gate through lexicographic ordering.
+    Economics and verified percentile context are combined before ordering. This
+    prevents either a tiny context delta or an unbounded raw economics value from
+    becoming a disguised lexicographic gate.
     """
     gate_rows = candidate.get('pc2_gate_basis') if isinstance(candidate.get('pc2_gate_basis'), list) else []
     relevant_gates = [gate for gate in gate_rows if isinstance(gate, dict)]
@@ -12491,6 +12722,8 @@ def _pc2_paper_primary_sort_components(candidate):
     )
     context_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
     edge_per_risk = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
+    economics_percentile = _safe_num(candidate.get('pc2PaperEconomicsPercentile'), None)
+    composite_score = _safe_num(candidate.get('pc2PaperCompositeScore'), None)
     probability = _safe_num(candidate.get('probProfit'), 0.0)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
@@ -12498,6 +12731,8 @@ def _pc2_paper_primary_sort_components(candidate):
         'safety_ineligible': unsafe,
         'context_percentile_score': round(context_score, 6),
         'adjusted_edge_per_risk': round(edge_per_risk, 6) if edge_per_risk is not None else None,
+        'economics_percentile': round(economics_percentile, 6) if economics_percentile is not None else None,
+        'composite_score': round(composite_score, 6) if composite_score is not None else None,
         'prob_profit': round(probability, 6),
         'candidate_id': str(candidate.get('id') or ''),
         # Diagnostics only. Neither value participates in ordering.
@@ -12511,10 +12746,12 @@ def _pc2_paper_primary_sort_key(candidate):
     """Return the finite, auditable PC2 paper ordering tuple."""
     components = _pc2_paper_primary_sort_components(candidate)
     edge_per_risk = components['adjusted_edge_per_risk']
+    composite_score = components['composite_score']
     return (
         1 if components['safety_ineligible'] else 0,
-        -components['context_percentile_score'],
+        -(composite_score if composite_score is not None else float('-inf')),
         -(edge_per_risk if edge_per_risk is not None else float('-inf')),
+        -components['context_percentile_score'],
         -components['prob_profit'],
         components['candidate_id'],
     )
@@ -12672,6 +12909,56 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
     deterministic_top = ranked[0] if ranked else None
     active = mode == PC2_PAPER_PRIMARY_MODE
 
+    def entry_primary_eligible(candidate):
+        safety_ok = not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
+        if 'entryEligible' in candidate:
+            return bool(safety_ok and candidate.get('entryEligible') is True)
+        return bool(safety_ok)
+
+    def economics_reference_key(candidate):
+        """Keep candidate economics comparable only within index and direction."""
+        index_key = str(candidate.get('index') or 'UNKNOWN').strip().upper()
+        direction = str(candidate.get('direction') or '').strip().upper()
+        if direction not in {'BULL', 'BEAR', 'NEUTRAL'}:
+            direction = _strategy_direction(candidate.get('type') or candidate.get('strategy_type'))
+        return f'{index_key}|{direction}'
+
+    # The normalization reference set must be identical to the set that can
+    # become primary. Monitor-only evidence cannot alter an entry decision.
+    safe_rows = [candidate for candidate in ranked if entry_primary_eligible(candidate)]
+    economics_values_by_group = {}
+    for safe_candidate in safe_rows:
+        edge = _safe_num(safe_candidate.get('adjustedEdgePerRisk'), None)
+        if edge is not None:
+            economics_values_by_group.setdefault(economics_reference_key(safe_candidate), []).append(edge)
+    for candidate in ranked:
+        edge = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
+        economics_group = economics_reference_key(candidate)
+        economics_values = economics_values_by_group.get(economics_group, [])
+        economics_pct = _percentile_rank(edge, economics_values) if edge is not None else None
+        context_raw = max(
+            -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
+            min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, _safe_num(candidate.get('contextPercentileScore'), 0.0)),
+        )
+        context_normalized = (
+            (context_raw / CONTEXT_PERCENTILE_MAX_RANKING_ABS + 1.0) / 2.0
+            if CONTEXT_PERCENTILE_MAX_RANKING_ABS > 0
+            else 0.5
+        )
+        candidate['pc2PaperEconomicsPercentile'] = economics_pct
+        candidate['pc2PaperEconomicsReferenceGroup'] = economics_group
+        candidate['pc2PaperEconomicsReferenceCount'] = len(economics_values)
+        candidate['pc2PaperContextNormalized'] = round(context_normalized, 6)
+        candidate['pc2PaperCompositeScore'] = (
+            round(
+                PC2_COMPOSITE_ECONOMICS_WEIGHT * (economics_pct / 100.0)
+                + PC2_COMPOSITE_CONTEXT_WEIGHT * context_normalized,
+                6,
+            )
+            if economics_pct is not None
+            else None
+        )
+
     for candidate in ranked:
         components = _pc2_paper_primary_sort_components(candidate)
         candidate['pc2PaperSortComponents'] = components
@@ -12679,6 +12966,8 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             components['safety_ineligible'],
             components['context_percentile_score'],
             components['adjusted_edge_per_risk'],
+            components['economics_percentile'],
+            components['composite_score'],
             components['prob_profit'],
             components['candidate_id'],
         ]
@@ -12687,12 +12976,6 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         research_ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
     else:
         research_ordered = list(ranked)
-
-    def entry_primary_eligible(candidate):
-        safety_ok = not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
-        if 'entryEligible' in candidate:
-            return bool(safety_ok and candidate.get('entryEligible') is True)
-        return bool(safety_ok)
 
     eligible = [candidate for candidate in research_ordered if entry_primary_eligible(candidate)]
     monitor_only = [candidate for candidate in research_ordered if not entry_primary_eligible(candidate)]
@@ -12738,8 +13021,9 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ],
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
-            'contextPercentileScore descending',
-            'adjustedEdgePerRisk descending, including the existing proportional soft-gate opportunity penalty',
+            'bounded composite: 70% per-index/per-direction adjustedEdgePerRisk percentile and 30% verified context percentile score',
+            'adjustedEdgePerRisk descending as the first tie-breaker',
+            'contextPercentileScore descending as the second tie-breaker',
             'probProfit descending as final tie-breaker',
             'candidate id ascending for deterministic tie resolution',
         ],
@@ -12775,6 +13059,13 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
     if candidate.get('executionReady') is False:
         reasons.append('execution_not_ready')
 
+    pc2_quality_failures = candidate.get('opportunityGateFailures')
+    if not isinstance(pc2_quality_failures, list):
+        pc2_quality_failures = candidate.get('softGateFailures')
+    pc2_quality_failures = [
+        failure for failure in (pc2_quality_failures or [])
+        if isinstance(failure, dict)
+    ]
     premium_edge = candidate.get('premiumEdge')
     if premium_edge is None:
         premium_edge = candidate.get('premium_edge')
@@ -12845,6 +13136,12 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
         'entry_confidence_minimum': ENTRY_CONFIDENCE_MIN,
         'confidence_contract': 'min(market_confidence, candidate_ml_probability_pct)',
         'economics_contract': 'premiumEdge must be present and greater than zero',
+        'pc2_quality_failure_count': len(pc2_quality_failures),
+        'pc2_quality_failure_stages': sorted({
+            str(failure.get('stage') or failure.get('gate_name') or failure.get('constant') or 'unknown')
+            for failure in pc2_quality_failures
+        }),
+        'pc2_quality_contract': 'quality gate failures remain soft ranking evidence and never independently block entry',
     }
     return candidate
 
@@ -13462,7 +13759,12 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         context_percentiles = _build_context_percentiles(ctx, polls, all_cands, all_rejected, result, open_trades=open_trades)
         _pc2_stamp_candidate_gate_context(all_cands, context_percentiles)
         _pc2_stamp_gate_basis(all_rejected, context_percentiles)
-        _apply_context_percentile_live_ranking(all_cands, context_percentiles)
+        _apply_context_percentile_live_ranking(
+            all_cands,
+            context_percentiles,
+            ctx,
+            candidate_population=all_cands + all_rejected,
+        )
         batch_f_paper_context = _apply_pc2_batch_f_candle_context(
             all_cands,
             ctx.get('pc2_candle_signals'),

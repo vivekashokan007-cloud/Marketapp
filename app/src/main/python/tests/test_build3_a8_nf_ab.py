@@ -111,7 +111,7 @@ def test_ranking_missing_premium_edge_loses_to_edge_candidate():
     assert with_edge["premium_edge_status"] == "OK"
 
 
-def test_calm_regime_with_nf_survivor_removes_bnf_intraday():
+def test_calm_regime_with_nf_survivor_keeps_bnf_as_shadow_evidence():
     brain = load_brain()
     regime = {"type": "range", "sigma": 0.20}
     survivors, summary = brain._build3_apply_calm_nf_lane_gate(
@@ -123,13 +123,14 @@ def test_calm_regime_with_nf_survivor_removes_bnf_intraday():
         regime,
         12,
     )
-    assert [c["id"] for c in survivors] == ["nf"]
+    assert [c["id"] for c in survivors] == ["nf", "bnf"]
     assert summary["lane_gate_reason"] == "CALM_NF_LANE_RESTRICTION"
-    assert summary["n_bnf_removed_by_calm_lane_gate"] == 1
-    assert summary["n_removed_by_lane_gate"] == 1
-    assert summary["removed_candidate_ids"] == ["bnf"]
-    assert summary["removed_candidates"][0]["id"] == "bnf"
-    assert summary["removed_by_lane"] == {"BNF_intraday": 1}
+    assert summary["lane_hard_gate_active"] is False
+    assert summary["lane_gate_mode"] == "SHADOW_ONLY"
+    assert summary["n_bnf_removed_by_calm_lane_gate"] == 0
+    assert summary["n_bnf_flagged_by_calm_lane_gate"] == 1
+    assert summary["n_removed_by_lane_gate"] == 0
+    assert summary["shadow_flagged_candidate_ids"] == ["bnf"]
 
 
 def test_calm_regime_with_only_bnf_falls_back_to_bnf():
@@ -196,11 +197,11 @@ def test_ranked_candidate_evidence_extends_beyond_ui_cap():
     assert len(evidence) == 40
     assert evidence[0]["rank"] == 1
     assert evidence[0]["watchlist_rank"] == 1
-    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v2_premium_edge_first"
+    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v3_scale_free_edge_first"
     assert evidence[0]["rank_diagnostics"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["structure_hold_index_source"] == "unavailable_at_ranker_scope"
-    assert evidence[0]["rank_diagnostics"]["sort_tuple_fields"].startswith("directionSafe|varsityTier")
+    assert evidence[0]["rank_diagnostics"]["sort_tuple_fields"].startswith("capitalBlocked|directionSafe|varsityTier")
     assert evidence[0]["varsityTier"] == "PRIMARY"
     assert evidence[0]["forceAligned"] == 1
     assert evidence[0]["forceAgainst"] == 0

@@ -55,6 +55,33 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertIn('if (role == "rejected") continue', supabase)
         self.assertIn('row.put("role", role)', supabase)
 
+    def test_daily_percentile_history_preserves_variable_provenance_and_is_verified(self):
+        with open(SUPABASE_PATH, "r", encoding="utf-8") as handle:
+            supabase = handle.read()
+
+        self.assertIn('put("daily::$name", ordered)', supabase)
+        self.assertIn('dayObj.put("pct_${variableName}_population_scope", populationScope)', supabase)
+        self.assertIn('dayObj.put("pct_${variableName}_population_version", calibrationVersion)', supabase)
+        self.assertIn('&session_date=eq.$sessionDate&history_source=eq.live', supabase)
+        self.assertNotIn('&session_date=eq.$sessionDate&poll_ts=not.is.null&history_source=eq.live', supabase)
+
+    def test_c3_history_seed_accepts_only_clean_provenance_verified_rows(self):
+        with open(SUPABASE_PATH, "r", encoding="utf-8") as handle:
+            supabase = handle.read()
+
+        self.assertIn('&source_quality=eq.PRE_T_CLEAN', supabase)
+        self.assertIn('&source_quality=eq.DAILY_CALIBRATION_UNION_VERIFIED', supabase)
+        self.assertIn('fun isVerifiedC3SeedRow(row: JSONObject)', supabase)
+        self.assertIn('PC2_CALIBRATION_POPULATION_VERSION', supabase)
+
+    def test_c3_existing_id_verification_is_complete_and_deterministically_ordered(self):
+        with open(SUPABASE_PATH, "r", encoding="utf-8") as handle:
+            supabase = handle.read()
+
+        self.assertIn('&order=id.asc&limit=$pageSize&offset=$offset', supabase)
+        self.assertIn('while (true)', supabase)
+        self.assertNotIn('for (page in 0 until 10)', supabase)
+
 
 if __name__ == "__main__":
     unittest.main()

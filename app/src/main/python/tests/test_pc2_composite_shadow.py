@@ -62,7 +62,7 @@ class Pc2CompositeShadowTest(unittest.TestCase):
         self.assertEqual(row["pc2CompositeShadow"]["status"], "REFERENCE_UNAVAILABLE")
         self.assertIsNone(row["pc2CompositeShadow"]["score"])
 
-    def test_composite_annotation_never_changes_live_pc2_paper_selection(self):
+    def test_live_bounded_composite_and_shadow_both_prioritize_economics(self):
         economics = candidate("economics", 0.30, -0.20)
         context = candidate("context", 0.10, 0.25)
 
@@ -70,8 +70,8 @@ class Pc2CompositeShadowTest(unittest.TestCase):
         ordered, summary = select_pc2_paper_primary([economics, context], "paper")
 
         self.assertEqual(economics["pc2CompositeShadow"]["research_rank"], 1)
-        self.assertEqual(ordered[0]["id"], "context")
-        self.assertEqual(summary["pc2_primary_candidate_id"], "context")
+        self.assertEqual(ordered[0]["id"], "economics")
+        self.assertEqual(summary["pc2_primary_candidate_id"], "economics")
 
 
 if __name__ == "__main__":

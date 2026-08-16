@@ -283,6 +283,35 @@ def _discover_session_days(date_from: str, date_to: str) -> list[str]:
     return days
 
 
+def _load_snapshots_for_day(day: str) -> list[dict[str, Any]]:
+    light_rows = _paged(
+        "ml_brain_snapshots",
+        "id,poll_ts",
+        {"session_date": f"eq.{day}"},
+        "poll_ts.asc,id.asc",
+    )
+    ids = [str(row.get("id") or "").strip() for row in light_rows if str(row.get("id") or "").strip()]
+    if not ids:
+        return []
+    select = "id,session_date,poll_ts,recommendation_id,confidence,context_json,verdict_json,market_forces_json,poll_summary_json"
+    by_id: dict[str, dict[str, Any]] = {}
+    chunk_size = max(1, min(5, PAGE_SIZE))
+    for i in range(0, len(ids), chunk_size):
+        chunk_ids = ids[i:i + chunk_size]
+        rows = _request_json(
+            "ml_brain_snapshots",
+            {
+                "select": select,
+                "id": f"in.({','.join(chunk_ids)})",
+            },
+            timeout=180,
+        )
+        for row in rows:
+            by_id[str(row.get("id") or "")] = row
+        time.sleep(SLEEP_SEC)
+    return [by_id[row_id] for row_id in ids if row_id in by_id]
+
+
 def _post_rows(table: str, rows: list[dict[str, Any]], attempts: int = 3) -> None:
     if not rows:
         return
@@ -318,6 +347,21 @@ def _post_rows(table: str, rows: list[dict[str, Any]], attempts: int = 3) -> Non
         time.sleep(sleep_for)
     if last_error:
         raise last_error
+
+
+def _history_unique_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    return (
+        str(row.get("session_date") or ""),
+        str(row.get("poll_ts") or ""),
+        str(row.get("index_key") or ""),
+        str(row.get("lane") or ""),
+        str(row.get("variable_name") or ""),
+        str(row.get("history_source") or ""),
+    )
+
+
+def _is_poll_level_row(row: dict[str, Any]) -> bool:
+    return bool(str(row.get("poll_ts") or "").strip())
 
 
 def _pct_rank(value: float | None, history: list[float]) -> float | None:
@@ -619,7 +663,7 @@ def _load_data(date_from: str, date_to: str) -> tuple[list[dict[str, Any]], dict
     for day in _date_span(date_from, date_to):
         day_filter = {"session_date": f"eq.{day}"}
         print(f"[c3-backfill] reading snapshots day={day}", flush=True)
-        snapshots.extend(_paged("ml_brain_snapshots", snap_select, day_filter, "poll_ts.asc,id.asc"))
+        snapshots.extend(_load_snapshots_for_day(day))
         print(f"[c3-backfill] reading candidates day={day}", flush=True)
         candidates.extend(_paged("ml_generated_candidates", cand_select, day_filter, "snapshot_poll_ts.asc,id.asc"))
         print(f"[c3-backfill] reading outcomes day={day}", flush=True)
@@ -662,12 +706,76 @@ def _load_data(date_from: str, date_to: str) -> tuple[list[dict[str, Any]], dict
     return snapshots, by_snapshot_key, outcome_prior
 
 
+def _load_poll_history_seed(target_day: str, *, seed_from: str | None = None, max_values: int = 60) -> dict[str, list[float]]:
+    catalog_names = sorted({name for names in C3_CONTEXT_PERCENTILE_VARIABLES.values() for name in names})
+    wanted = set(catalog_names)
+    if seed_from:
+        by_var: dict[str, list[float]] = {}
+        for idx, name in enumerate(sorted(wanted), start=1):
+            if idx == 1 or idx % 10 == 0 or idx == len(wanted):
+                print(f"[c3-backfill] seed variable {idx}/{len(wanted)} target={target_day}", flush=True)
+            rows = _request_json(
+                "ml_context_percentile_history",
+                {
+                    "select": "session_date,poll_ts,variable_name,value",
+                    "history_source": "eq.backfill",
+                    "poll_ts": "not.is.null",
+                    "session_date": [f"gte.{seed_from}", f"lt.{target_day}"],
+                    "variable_name": f"eq.{name}",
+                    "order": "session_date.desc,poll_ts.desc",
+                    "limit": str(max_values),
+                },
+            )
+            values: list[float] = []
+            for row in reversed(rows):
+                value = _safe_float(row.get("value"))
+                if value is not None:
+                    values.append(value)
+            if values:
+                by_var[name] = values
+            time.sleep(SLEEP_SEC)
+        return dict(by_var)
+
+    by_var_desc: dict[str, list[float]] = defaultdict(list)
+    offset = 0
+    page_size = max(PAGE_SIZE, 200)
+    while True:
+        page = _request_json(
+            "ml_context_percentile_history",
+            {
+                "select": "session_date,poll_ts,variable_name,value",
+                "history_source": "eq.backfill",
+                "poll_ts": "not.is.null",
+                "session_date": [f"gte.{seed_from}", f"lt.{target_day}"] if seed_from else f"lt.{target_day}",
+                "order": "session_date.desc,poll_ts.desc",
+                "limit": str(page_size),
+                "offset": str(offset),
+            },
+        )
+        for row in page:
+            name = str(row.get("variable_name") or "")
+            if name not in wanted or len(by_var_desc[name]) >= max_values:
+                continue
+            value = _safe_float(row.get("value"))
+            if value is not None:
+                by_var_desc[name].append(value)
+        if len(page) < page_size or all(len(by_var_desc[name]) >= max_values for name in wanted):
+            break
+        offset += page_size
+        time.sleep(SLEEP_SEC)
+    return {name: list(reversed(values)) for name, values in by_var_desc.items()}
+
+
 def _iter_built_rows(
     snapshots: list[dict[str, Any]],
     by_snapshot_key: dict[tuple[str, str, str], list[dict[str, Any]]],
     outcome_prior: dict[str, dict[str, float]],
+    history_seed: dict[str, list[float]] | None = None,
 ):
     history: dict[str, list[float]] = defaultdict(list)
+    if history_seed:
+        for name, values in history_seed.items():
+            history[name].extend(v for v in values if math.isfinite(v))
     catalog_names = sorted({name for names in C3_CONTEXT_PERCENTILE_VARIABLES.values() for name in names})
     for snap in snapshots:
         session_day = str(snap.get("session_date") or "")
@@ -910,6 +1018,7 @@ def stream_write_rows(
     write_to: str | None,
     limit: int | None = None,
     skip_write_count: int = 0,
+    poll_level_only: bool = False,
 ) -> tuple[int, int, Path, Path]:
     snapshots, by_snapshot_key, outcome_prior = _load_data(date_from, date_to)
     csv_path = OUT_DIR / f"context_percentile_rows_{date_from}_to_{date_to}.csv"
@@ -920,6 +1029,8 @@ def stream_write_rows(
     built = 0
     written = 0
     selected_seen = 0
+    duplicate_skipped = 0
+    seen_write_keys: set[tuple[str, str, str, str, str, str]] = set()
     chunk: list[dict[str, Any]] = []
     by_day: dict[str, int] = defaultdict(int)
     by_var: dict[str, int] = defaultdict(int)
@@ -941,6 +1052,13 @@ def stream_write_rows(
             selected = row_date is not None and (start is None or row_date >= start) and (end is None or row_date <= end)
             if not selected:
                 continue
+            if poll_level_only and not _is_poll_level_row(row):
+                continue
+            unique_key = _history_unique_key(row)
+            if unique_key in seen_write_keys:
+                duplicate_skipped += 1
+                continue
+            seen_write_keys.add(unique_key)
             selected_seen += 1
             if selected_seen <= skip_write_count:
                 continue
@@ -970,6 +1088,8 @@ def stream_write_rows(
         f"- Rows built: `{built}`.",
         "- Supabase write: `YES`.",
         f"- Rows selected for write: `{written}`.",
+        f"- Duplicate generated rows skipped before write: `{duplicate_skipped}`.",
+        f"- Poll-level-only write: `{'YES' if poll_level_only else 'NO'}`.",
         f"- Sessions: `{min(by_day) if by_day else ''}` to `{max(by_day) if by_day else ''}`.",
         f"- Trading days represented: `{len(by_day)}`.",
         f"- Variables represented: `{len(by_var)}`.",
@@ -988,14 +1108,21 @@ def stream_write_single_day(
     target_day: str,
     *,
     write: bool,
+    poll_level_only: bool,
+    seed_existing_history: bool,
+    seed_from: str | None,
 ) -> tuple[int, int, int, Path, Path]:
-    snapshots, by_snapshot_key, outcome_prior = _load_data(anchor_from, target_day)
+    load_from = target_day if seed_existing_history else anchor_from
+    snapshots, by_snapshot_key, outcome_prior = _load_data(load_from, target_day)
+    history_seed = _load_poll_history_seed(target_day, seed_from=seed_from) if seed_existing_history else None
     csv_path = OUT_DIR / f"context_percentile_rows_{target_day}.csv"
     report_path = OUT_DIR / f"C3_CONTEXT_PERCENTILE_BACKFILL_{target_day}.md"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     built_total = 0
     selected_rows = 0
     written = 0
+    duplicate_skipped = 0
+    seen_write_keys: set[tuple[str, str, str, str, str, str]] = set()
     chunk: list[dict[str, Any]] = []
     by_var: dict[str, int] = defaultdict(int)
     non_null_by_var: dict[str, int] = defaultdict(int)
@@ -1003,10 +1130,18 @@ def stream_write_single_day(
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=ROW_FIELDNAMES)
         writer.writeheader()
-        for row in _iter_rows_with_daily_calibration(snapshots, by_snapshot_key, outcome_prior):
+        row_iter = _iter_built_rows(snapshots, by_snapshot_key, outcome_prior, history_seed=history_seed) if poll_level_only else _iter_rows_with_daily_calibration(snapshots, by_snapshot_key, outcome_prior)
+        for row in row_iter:
             built_total += 1
             if str(row.get("session_date")) != target_day:
                 continue
+            if poll_level_only and not _is_poll_level_row(row):
+                continue
+            unique_key = _history_unique_key(row)
+            if unique_key in seen_write_keys:
+                duplicate_skipped += 1
+                continue
+            seen_write_keys.add(unique_key)
             selected_rows += 1
             by_var[str(row.get("variable_name"))] += 1
             if row.get("value") is not None:
@@ -1036,11 +1171,16 @@ def stream_write_single_day(
         "# C.3 Context Percentile Day Report",
         "",
         f"- Anchor start: `{anchor_from}`.",
+        f"- Existing history seed: `{'YES' if seed_existing_history else 'NO'}`.",
+        f"- Existing history seed from: `{seed_from or ''}`.",
+        f"- Raw load start: `{load_from}`.",
         f"- Session day: `{target_day}`.",
         f"- Built rows seen for percentile history: `{built_total}`.",
         f"- Session rows selected: `{selected_rows}`.",
         f"- Supabase write: `{'YES' if write else 'NO'}`.",
         f"- Rows written: `{written}`.",
+        f"- Duplicate generated rows skipped before write: `{duplicate_skipped}`.",
+        f"- Poll-level-only write: `{'YES' if poll_level_only else 'NO'}`.",
         f"- Variables represented: `{len(by_var)}`.",
         "- Point-in-time rule: this day uses prior days plus earlier same-day polls only.",
         "",
@@ -1059,6 +1199,9 @@ def day_by_day_write(
     write: bool,
     progress_path: Path,
     reset_progress: bool,
+    poll_level_only: bool,
+    seed_existing_history: bool,
+    seed_from: str | None,
 ) -> tuple[int, int]:
     if reset_progress and progress_path.exists():
         progress_path.unlink()
@@ -1075,6 +1218,9 @@ def day_by_day_write(
             anchor_from,
             day,
             write=write,
+            poll_level_only=poll_level_only,
+            seed_existing_history=seed_existing_history,
+            seed_from=seed_from,
         )
         if write:
             _mark_progress_day(
@@ -1110,6 +1256,9 @@ def main() -> int:
     parser.add_argument("--reset-progress", action="store_true")
     parser.add_argument("--stream-write", action="store_true")
     parser.add_argument("--skip-write-count", type=int, default=0)
+    parser.add_argument("--poll-level-only", action="store_true")
+    parser.add_argument("--seed-existing-history", action="store_true")
+    parser.add_argument("--seed-from", default=os.environ.get("C3_SEED_FROM"))
     args = parser.parse_args()
 
     if args.day_by_day and args.stream_write:
@@ -1124,6 +1273,9 @@ def main() -> int:
             write=args.write,
             progress_path=Path(args.progress_path),
             reset_progress=args.reset_progress,
+            poll_level_only=args.poll_level_only,
+            seed_existing_history=args.seed_existing_history,
+            seed_from=args.seed_from,
         )
         print(
             f"[c3-backfill] day_by_day_complete anchor_from={anchor_from} days_processed={done_days} total_written={total_written} progress={args.progress_path} write={args.write}",
@@ -1139,6 +1291,7 @@ def main() -> int:
             args.write_to,
             args.write_limit or None,
             args.skip_write_count,
+            args.poll_level_only,
         )
         print(f"[c3-backfill] rows={built} write_rows={written} csv={csv_path} report={report_path} write=True stream=True")
         return 0
