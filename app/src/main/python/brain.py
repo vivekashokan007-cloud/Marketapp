@@ -6004,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.85"
+BRAIN_VERSION = "2.5.86"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6015,8 +6015,35 @@ REJECTED_EVAL_PER_STAGE_CAP = 4
 CONTEXT_PERCENTILES_SCHEMA_VERSION = "context_percentiles_v1"
 CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
-CONTEXT_PERCENTILE_MIN_SUPPORT = 30
-CONTEXT_PERCENTILE_STABILITY_MAX = 0.10
+PC2_AUTHORITY_POLICY_VERSION = 'pc2_authority_policy_v1'
+PC2_AUTHORITY_PROMOTION_MANIFEST = {
+    'live_percentile_paths': (
+        'economic_gate_thresholds',
+        'width_quality_supply',
+        'cross_market_significance',
+        'context_percentile_ranking',
+    ),
+    'hard_safety_paths_unchanged': (
+        'capital_limit',
+        'execution_readiness',
+        'notification_state_change',
+    ),
+    'research_only_paths_unchanged': (
+        'teacher_shadow_review',
+        'post_close_outcome_evaluation',
+    ),
+}
+PC2_AUTHORITY_POLICY = {
+    'version': PC2_AUTHORITY_POLICY_VERSION,
+    'minimum_support': 30,
+    'maximum_stability_ratio': 0.10,
+    'previous_values': {'minimum_support': 30, 'maximum_stability_ratio': 0.10},
+    'changed_in_version': '2.5.86',
+    'contract': 'paper-only percentile authority; hard safety and notification guards remain separate',
+    'promotion_manifest': PC2_AUTHORITY_PROMOTION_MANIFEST,
+}
+CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
+CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
 PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v3"
@@ -6029,6 +6056,9 @@ PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
+PC2_AUTHORITY_STATE_FALLBACK = 'FALLBACK'
+PC2_AUTHORITY_STATE_ACTIVE_NEUTRAL = 'ACTIVE_NEUTRAL'
+PC2_AUTHORITY_STATE_ACTIVE_CHANGED = 'ACTIVE_CHANGED'
 OPPORTUNITY_GATE_SOFTENING_VERSION = "opportunity_gate_softening_v1"
 PC2_SOFT_OPPORTUNITY_STAGES = frozenset({
     'credit_prob_below_floor',
@@ -6107,6 +6137,19 @@ PC2_GATE_CALIBRATION = {
         'activation_status': 'live_soft_constructed_ic_only_after_stability_pass',
         'review_flag': 'constructed_ic_only_wall_seed_shadow',
     },
+}
+
+# Provenance is a property of the measured variable, never a caller choice.
+# Candidate-population variables require the generated+rejected union; market
+# scalars are complete observations and therefore use their own history.
+PC2_VARIABLE_AUTHORITY_METADATA = {
+    'realized_day_range': {'provenance_policy': 'market_scalar_not_required'},
+    'vix': {'provenance_policy': 'market_scalar_not_required'},
+    'fii_short_pct': {'provenance_policy': 'market_scalar_not_required'},
+    'width_menu_median': {'provenance_policy': 'candidate_union_required'},
+    'dow_pct': {'provenance_policy': 'market_scalar_not_required'},
+    'crude_pct': {'provenance_policy': 'market_scalar_not_required'},
+    'gift_pct': {'provenance_policy': 'market_scalar_not_required'},
 }
 
 PC2_REJECTION_STAGE_TO_CONST = {
@@ -8448,6 +8491,112 @@ def _pc2_history_population_provenance(ctx, meta, window=60):
         'population_provenance_version': 'pc2_history_population_provenance_v1',
     }
 
+
+def _pc2_authority_metadata(variable_name, gate_meta=None):
+    """Return the explicit provenance contract for one authority variable."""
+    metadata = dict(PC2_VARIABLE_AUTHORITY_METADATA.get(str(variable_name or ''), {}))
+    if isinstance(gate_meta, dict):
+        metadata.update({key: value for key, value in gate_meta.items() if key == 'provenance_policy'})
+    metadata.setdefault('provenance_policy', 'candidate_union_required')
+    return metadata
+
+
+def _resolve_pc2_parameter_authority(
+    ctx,
+    *,
+    variable_name,
+    observed_value,
+    history,
+    gate_meta=None,
+    stability_target=None,
+    hard_outcome=None,
+    percentile_outcome=None,
+):
+    """Resolve every PC2 authority promotion through one auditable contract.
+
+    The resolver does not invent a threshold or an action. Callers provide their
+    domain comparison and receive only whether percentile evidence is allowed to
+    replace the hard fallback, together with an explicit behavior state.
+    """
+    observed_value = _percentile_float(observed_value)
+    numeric_history = _numeric_series(history)
+    cell = _percentile_cell(observed_value, numeric_history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    if stability_target is not None:
+        stability = _jackknife_threshold_stability(numeric_history, stability_target)
+        cell.update(stability)
+    censor_guard = _pc2_censor_guard_for_cell(variable_name, cell)
+    metadata = _pc2_authority_metadata(variable_name, gate_meta)
+    provenance_policy = metadata['provenance_policy']
+    if provenance_policy == 'candidate_union_required':
+        provenance = _pc2_history_population_provenance(
+            ctx if isinstance(ctx, dict) else {},
+            {'context_variable': variable_name},
+            60,
+        )
+    else:
+        provenance = {
+            'population_provenance_verified': True,
+            'population_provenance_scope': 'not_required_for_market_scalar',
+            'population_provenance_rows': len(numeric_history),
+            'population_provenance_scope_rows': len(numeric_history),
+            'population_provenance_version_rows': len(numeric_history),
+            'population_provenance_version': 'pc2_history_population_provenance_v1',
+        }
+    stability_ratio = _percentile_float(cell.get('stability_ratio'))
+    support = int(cell.get('support_count') or 0)
+    stability_pass = bool(
+        observed_value is not None
+        and support >= CONTEXT_PERCENTILE_MIN_SUPPORT
+        and cell.get('diversity_pass')
+        and stability_ratio is not None
+        and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    )
+    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
+    authority_ready = bool(
+        stability_pass and censor_pass and provenance.get('population_provenance_verified')
+    )
+    if not authority_ready:
+        authority_state = PC2_AUTHORITY_STATE_FALLBACK
+    elif hard_outcome is not None and percentile_outcome is not None and hard_outcome != percentile_outcome:
+        authority_state = PC2_AUTHORITY_STATE_ACTIVE_CHANGED
+    else:
+        authority_state = PC2_AUTHORITY_STATE_ACTIVE_NEUTRAL
+    fallback_reasons = []
+    if not stability_pass:
+        fallback_reasons.append('stability_or_history_not_ready')
+    if not censor_pass:
+        fallback_reasons.append('censor_guard_not_clear')
+    if not provenance.get('population_provenance_verified'):
+        fallback_reasons.append('generated_rejected_union_not_proven')
+    decision = {
+        **cell,
+        'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
+        'authority_state': authority_state,
+        'authority_state_reason': None if authority_ready else '|'.join(fallback_reasons),
+        'authority_ready': authority_ready,
+        'live_percentile_authority': authority_ready,
+        'support_count': support,
+        'stability_ratio': stability_ratio,
+        'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
+        'stability_pass': stability_pass,
+        'provenance_policy': provenance_policy,
+        'fallback_reason': None if authority_ready else '|'.join(fallback_reasons),
+        **censor_guard,
+        **provenance,
+    }
+    if isinstance(ctx, dict):
+        decisions = ctx.setdefault('_pc2_authority_decisions', [])
+        if isinstance(decisions, list):
+            decisions.append({
+                'variable_name': variable_name,
+                'authority_state': authority_state,
+                'provenance_policy': provenance_policy,
+                'support_count': support,
+                'stability_ratio': stability_ratio,
+                'fallback_reason': decision['fallback_reason'],
+            })
+    return decision
+
 def _apply_pc2_stability_bar(windows):
     if not isinstance(windows, dict):
         return None
@@ -8909,37 +9058,23 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
     history = _history_values(ctx, _pc2_history_keys(meta), 60)
     pct_target = _percentile_float(meta.get('pct_target'))
     percentile_threshold = _percentile_quantile(history, pct_target)
-    history_cell = _percentile_cell(observed_value, history)
-    censor_guard = _pc2_censor_guard_for_cell(meta.get('context_variable'), history_cell)
-    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
     neutrality = _pc2_neutrality_proof(hard_threshold, percentile_threshold)
-    provenance = _pc2_history_population_provenance(ctx, meta, 60)
-    stability = _jackknife_threshold_stability(history, pct_target)
-    stability_ratio = stability.get('stability_ratio')
-    stability_bar = CONTEXT_PERCENTILE_STABILITY_MAX
-    stability_pass = bool(
-        percentile_threshold is not None
-        and len(_numeric_series(history)) >= CONTEXT_PERCENTILE_MIN_SUPPORT
-        and stability_ratio is not None
-        and stability_ratio <= stability_bar
+    percentile_pass = _pc2_compare(observed_value, percentile_threshold, comparator)
+    authority = _resolve_pc2_parameter_authority(
+        ctx,
+        variable_name=meta.get('context_variable'),
+        observed_value=observed_value,
+        history=history,
+        gate_meta=meta,
+        stability_target=pct_target,
+        hard_outcome=hard_pass,
+        percentile_outcome=percentile_pass,
     )
-    authority_pass = bool(
-        stability_pass
-        and censor_pass
-        and provenance.get('population_provenance_verified')
-    )
+    authority_pass = authority.get('authority_ready') and percentile_threshold is not None
     gate_basis = 'percentile' if authority_pass else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
-    percentile_pass = _pc2_compare(observed_value, percentile_threshold, comparator)
     active_pass = _pc2_compare(observed_value, active_threshold, comparator)
     live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
-    fallback_reasons = []
-    if not stability_pass:
-        fallback_reasons.append('stability_or_history_not_ready')
-    if not censor_pass:
-        fallback_reasons.append('censor_guard_not_clear')
-    if not provenance.get('population_provenance_verified'):
-        fallback_reasons.append('generated_rejected_union_not_proven')
     return {
         'version': PC2_GATE_BASIS_VERSION,
         'constant': const_name,
@@ -8963,19 +9098,20 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         'pct_target_source': 'pc2_batch2_calibration_v1',
         'pct_target_review_flag': meta.get('review_flag'),
         'slice_key': _pc2_slice_key(row, meta.get('context_variable')),
-        'support_count': len(_numeric_series(history)),
-        'stability_ratio': stability_ratio,
-        'stability_bar': stability_bar,
-        'stability_pass': stability_pass,
+        'support_count': authority.get('support_count'),
+        'stability_ratio': authority.get('stability_ratio'),
+        'stability_bar': authority.get('stability_bar'),
+        'stability_pass': authority.get('stability_pass'),
         'switch_basis': gate_basis,
         'window': 60,
         'activation_status': meta.get('activation_status'),
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        'fallback_reason': None if gate_basis == 'percentile' else '|'.join(fallback_reasons),
-        **censor_guard,
         **neutrality,
-        **provenance,
+        **authority,
+        'authority_state': authority.get('authority_state') if gate_basis == 'percentile' else PC2_AUTHORITY_STATE_FALLBACK,
+        'authority_policy_version': PC2_AUTHORITY_POLICY_VERSION,
+        'fallback_reason': None if gate_basis == 'percentile' else authority.get('fallback_reason'),
     }
 
 def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshold):
@@ -8989,27 +9125,18 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
     history = _history_values(ctx, ('width_menu_median', 'width_menu_best', 'width'), 60)
     pct_target = 20.0
     percentile_threshold = _percentile_quantile(history, pct_target)
-    cell = _percentile_cell(observed_width, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
-    censor_guard = _pc2_censor_guard_for_cell('width_menu_median', cell)
-    stability_ratio = cell.get('stability_ratio')
-    stability_bar = CONTEXT_PERCENTILE_STABILITY_MAX
-    stability_pass = bool(
-        percentile_threshold is not None
-        and cell.get('diversity_pass')
-        and stability_ratio is not None
-        and stability_ratio <= stability_bar
-    )
-    provenance = _pc2_history_population_provenance(
-        ctx,
-        {'context_variable': 'width_menu_median'},
-        60,
-    )
-    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
-    gate_basis = 'percentile' if (
-        stability_pass and censor_pass and provenance.get('population_provenance_verified')
-    ) else 'hard_fallback'
-    active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     percentile_pass = _pc2_compare(observed_width, percentile_threshold, comparator)
+    authority = _resolve_pc2_parameter_authority(
+        ctx,
+        variable_name='width_menu_median',
+        observed_value=observed_width,
+        history=history,
+        stability_target=pct_target,
+        hard_outcome=hard_pass,
+        percentile_outcome=percentile_pass,
+    )
+    gate_basis = 'percentile' if authority.get('authority_ready') and percentile_threshold is not None else 'hard_fallback'
+    active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     active_pass = _pc2_compare(observed_width, active_threshold, comparator)
     live_behavior_change = bool(percentile_pass is not None and hard_pass is not None and percentile_pass != hard_pass)
     return {
@@ -9035,28 +9162,21 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         'pct_target_source': PC2_BATCH_A_WIDTH_WALL_VERSION,
         'pct_target_review_flag': 'owner_live_soft_width_quality',
         'slice_key': _pc2_slice_key(row, 'width_menu_median'),
-        'support_count': cell.get('support_count', 0),
-        'stability_ratio': stability_ratio,
-        'stability_bar': stability_bar,
-        'stability_pass': stability_pass,
-        'diversity_pass': cell.get('diversity_pass'),
-        'diversity_status': cell.get('diversity_status'),
+        'support_count': authority.get('support_count', 0),
+        'stability_ratio': authority.get('stability_ratio'),
+        'stability_bar': authority.get('stability_bar'),
+        'stability_pass': authority.get('stability_pass'),
+        'diversity_pass': authority.get('diversity_pass'),
+        'diversity_status': authority.get('diversity_status'),
         'switch_basis': gate_basis,
         'window': 60,
         'activation_status': 'live_soft_supply_with_constant_fallback',
+        'live_soft_supply': True,
+        **authority,
         'live_percentile_authority': gate_basis == 'percentile',
         'live_behavior_change': live_behavior_change if gate_basis == 'percentile' else False,
-        'fallback_reason': (
-            None if gate_basis == 'percentile' else
-            'generated_rejected_union_not_proven'
-            if not provenance.get('population_provenance_verified') else
-            'censor_guard_not_clear'
-            if not censor_pass else
-            'stability_or_history_not_ready'
-        ),
-        'live_soft_supply': True,
-        **censor_guard,
-        **provenance,
+        'authority_state': authority.get('authority_state') if gate_basis == 'percentile' else PC2_AUTHORITY_STATE_FALLBACK,
+        'fallback_reason': None if gate_basis == 'percentile' else authority.get('fallback_reason'),
     }
 
 PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF = 70.0
@@ -9072,29 +9192,31 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         num = _percentile_float(value)
         if num is not None:
             history.append(abs(num))
-    cell = _percentile_cell(observed_abs, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
-    censor_guard = _pc2_censor_guard_for_cell(const_name, cell)
-    support = int(cell.get('support_count') or 0)
-    stability_ratio = _percentile_float(cell.get('stability_ratio'))
-    stability_pass = bool(
-        cell.get('percentile') is not None
-        and cell.get('diversity_pass')
-        and stability_ratio is not None
-        and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
-    )
-    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
-    percentile = cell.get('percentile') if stability_pass and censor_pass else None
     hard_active = bool(
         observed_abs is not None
         and fallback_threshold_num is not None
         and observed_abs >= fallback_threshold_num
     )
     percentile_active = bool(
-        percentile is not None
-        and percentile >= PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF
+        _percentile_rank(observed_abs, history) is not None
+        and _percentile_rank(observed_abs, history) >= PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF
     )
+    authority = _resolve_pc2_parameter_authority(
+        ctx,
+        variable_name=str(history_keys[0] if history_keys else const_name),
+        observed_value=observed_abs,
+        history=history,
+        stability_target=PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF,
+        hard_outcome=hard_active,
+        percentile_outcome=percentile_active,
+    )
+    support = int(authority.get('support_count') or 0)
+    percentile = authority.get('percentile') if authority.get('authority_ready') else None
     live_percentile_authority = percentile is not None
     active = percentile_active if live_percentile_authority else hard_active
+    fallback_reason = authority.get('fallback_reason')
+    if not live_percentile_authority and not authority.get('diversity_pass') and support >= CONTEXT_PERCENTILE_MIN_SUPPORT:
+        fallback_reason = 'zero_diversity_cross_market_history'
     return {
         'version': PC2_BATCH_C_CROSS_MARKET_VERSION,
         'constant': const_name,
@@ -9110,29 +9232,21 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         'percentile_cutoff': PC2_CROSS_MARKET_MOVE_PERCENTILE_CUTOFF,
         'supportCount': support,
         'support_count': support,
-        'stability_ratio': stability_ratio,
+        'stability_ratio': authority.get('stability_ratio'),
         'stability_bar': CONTEXT_PERCENTILE_STABILITY_MAX,
-        'stability_pass': stability_pass,
-        'diversity_pass': cell.get('diversity_pass'),
-        'diversity_status': cell.get('diversity_status'),
+        'stability_pass': authority.get('stability_pass'),
+        'diversity_pass': authority.get('diversity_pass'),
+        'diversity_status': authority.get('diversity_status'),
         'active': active,
         'hard_active': hard_active,
         'percentile_active': percentile_active if live_percentile_authority else None,
+        'window': 60,
+        **authority,
         'livePercentileAuthority': live_percentile_authority,
         'live_percentile_authority': live_percentile_authority,
         'live_behavior_change': bool(live_percentile_authority and percentile_active != hard_active),
-        'population_provenance_verified': True,
-        'population_provenance_scope': 'not_required_for_market_scalar',
-        'fallback_reason': (
-            None if live_percentile_authority else
-            'zero_diversity_cross_market_history'
-            if not cell.get('diversity_pass') and support >= CONTEXT_PERCENTILE_MIN_SUPPORT else
-            'censor_guard_not_clear'
-            if not censor_pass else
-            'insufficient_cross_market_history'
-        ),
-        'window': 60,
-        **censor_guard,
+        'authority_state': authority.get('authority_state') if live_percentile_authority else PC2_AUTHORITY_STATE_FALLBACK,
+        'fallback_reason': None if live_percentile_authority else fallback_reason,
     }
 
 def _pc2_gate_basis_summary(gate_rows):
@@ -9836,40 +9950,20 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'windows': windows,
     }
 
-def _pc2_ranking_percentile_authority(ctx, variable_name, value, require_population_provenance):
+def _pc2_ranking_percentile_authority(ctx, variable_name, value):
     history = _history_values(ctx, (variable_name,), 60)
-    cell = _percentile_cell(value, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
-    cell.update(_pc2_censor_guard_for_cell(variable_name, cell))
-    ratio = _percentile_float(cell.get('stability_ratio'))
-    support = int(cell.get('support_count') or 0)
-    stability_pass = bool(
-        support >= CONTEXT_PERCENTILE_MIN_SUPPORT
-        and cell.get('diversity_pass')
-        and ratio is not None
-        and ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
+    authority = _resolve_pc2_parameter_authority(
+        ctx,
+        variable_name=variable_name,
+        observed_value=value,
+        history=history,
     )
-    provenance = {
-        'population_provenance_verified': True,
-        'population_provenance_scope': 'not_required_for_market_scalar',
-    }
-    if require_population_provenance:
-        provenance = _pc2_history_population_provenance(
-            ctx,
-            {'context_variable': variable_name},
-            60,
-        )
-    authority = bool(
-        cell.get('percentile') is not None
-        and stability_pass
-        and cell.get('censor_guard_status', 'OK') == 'OK'
-        and provenance.get('population_provenance_verified')
+    authority['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX
+    authority['live_ranking_authority'] = authority.get('authority_ready')
+    authority['authority_status'] = (
+        'ACTIVE' if authority.get('authority_ready') else 'FALLBACK_ZERO'
     )
-    cell.update(provenance)
-    cell['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX
-    cell['stability_pass'] = stability_pass
-    cell['live_ranking_authority'] = authority
-    cell['authority_status'] = 'ACTIVE' if authority else 'FALLBACK_ZERO'
-    return cell
+    return authority
 
 
 def _pc2_current_population_percentile(value, population, keys, predicate=None):
@@ -9929,19 +10023,16 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles, ctx=
                 ctx,
                 'realized_day_range',
                 (context_percentiles.get('current_values') or {}).get('realized_day_range'),
-                True,
             ),
             'vix': _pc2_ranking_percentile_authority(
                 ctx,
                 'vix',
                 (context_percentiles.get('current_values') or {}).get('vix'),
-                False,
             ),
             'fii_short_pct': _pc2_ranking_percentile_authority(
                 ctx,
                 'fii_short_pct',
                 (context_percentiles.get('current_values') or {}).get('fii_short_pct'),
-                False,
             ),
         }
 
@@ -13850,6 +13941,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
         result['pc2_batch_f_paper_context'] = batch_f_paper_context
         ctx['pc2_batch_f_paper_context'] = batch_f_paper_context
+        result['pc2_authority_decisions'] = list(ctx.get('_pc2_authority_decisions') or [])[-128:]
+        result['pc2_authority_policy'] = dict(PC2_AUTHORITY_POLICY)
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
         if not all_cands:
@@ -17222,6 +17315,8 @@ def take_poll_snapshot(result, ctx, polls):
     snapshot_context['snapshot_pc2_batch_f_supply_pattern'] = pc2_batch_f_supply_pattern
     snapshot_context['snapshot_pc2_batch_f_paper_context'] = result.get('pc2_batch_f_paper_context') if isinstance(result.get('pc2_batch_f_paper_context'), dict) else {}
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
+    snapshot_context['snapshot_pc2_authority_decisions'] = result.get('pc2_authority_decisions') if isinstance(result.get('pc2_authority_decisions'), list) else []
+    snapshot_context['snapshot_pc2_authority_policy'] = result.get('pc2_authority_policy') if isinstance(result.get('pc2_authority_policy'), dict) else {}
     snapshot_context['snapshot_pc2_composite_shadow'] = result.get('pc2_composite_shadow') if isinstance(result.get('pc2_composite_shadow'), dict) else {}
     snapshot_context['snapshot_pc2_supply_quality_shadow'] = result.get('pc2_supply_quality_shadow') if isinstance(result.get('pc2_supply_quality_shadow'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite

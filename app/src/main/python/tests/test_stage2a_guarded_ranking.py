@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import tempfile
@@ -17,6 +18,7 @@ from brain import (
     _pc2_batch_d_exit_policy_inventory,
     _pc2_censor_guard_for_cell,
     _pc2_history_population_provenance,
+    _resolve_pc2_parameter_authority,
     _pc2_width_gate_decision,
     _pc2_cross_market_move_context,
     _pc2_live_gate_decision,
@@ -83,6 +85,63 @@ class TestStage2AGuardedRanking(unittest.TestCase):
             path = getattr(self, attr, None)
             if path and os.path.exists(path):
                 os.unlink(path)
+
+    def test_pc2_authority_resolver_emits_three_explicit_states(self):
+        history = list(range(1, 61))
+        neutral = _resolve_pc2_parameter_authority(
+            {},
+            variable_name="vix",
+            observed_value=45,
+            history=history,
+            stability_target=70.0,
+            hard_outcome=True,
+            percentile_outcome=True,
+        )
+        changed = _resolve_pc2_parameter_authority(
+            {},
+            variable_name="vix",
+            observed_value=45,
+            history=history,
+            stability_target=70.0,
+            hard_outcome=False,
+            percentile_outcome=True,
+        )
+        fallback = _resolve_pc2_parameter_authority(
+            {},
+            variable_name="vix",
+            observed_value=45,
+            history=[10] * 60,
+            stability_target=70.0,
+            hard_outcome=False,
+            percentile_outcome=True,
+        )
+        self.assertEqual(neutral["authority_state"], "ACTIVE_NEUTRAL")
+        self.assertEqual(changed["authority_state"], "ACTIVE_CHANGED")
+        self.assertEqual(fallback["authority_state"], "FALLBACK")
+        self.assertFalse(fallback["authority_ready"])
+
+    def test_all_live_pc2_paths_call_shared_authority_resolver(self):
+        import brain
+
+        with open(brain.__file__, "r", encoding="utf-8") as source_file:
+            tree = ast.parse(source_file.read())
+        required_paths = {
+            "_pc2_live_gate_decision",
+            "_pc2_width_gate_decision",
+            "_pc2_cross_market_move_context",
+            "_pc2_ranking_percentile_authority",
+        }
+        found = {}
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef) or node.name not in required_paths:
+                continue
+            found[node.name] = any(
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Name)
+                and child.func.id == "_resolve_pc2_parameter_authority"
+                for child in ast.walk(node)
+            )
+        self.assertEqual(found, {name: True for name in required_paths})
 
     def test_unseen_bucket_abstains(self):
         self.table_path = _write_teacher_table(

@@ -2611,6 +2611,12 @@ class MarketWatchService : Service() {
                                     "ML_BRAIN_SNAPSHOT_SAVE: saved=$snapshotSaved date=$snapshotSessionDate pollTs=${snapObj.optString("poll_ts")}"
                                 )
                                 if (snapshotSaved) {
+                                    val authorityTelemetrySaved = SupabaseClient.savePc2AuthorityDecisions(snapObj)
+                                    LogBuffer.add(
+                                        if (authorityTelemetrySaved) 'I' else 'W',
+                                        TAG,
+                                        "PC2_AUTHORITY_TELEMETRY_SAVE: saved=$authorityTelemetrySaved pollTs=${snapObj.optString("poll_ts")}"
+                                    )
                                     try {
                                         val factPack = resultObj.optJSONObject("elephant_fact_pack")
                                         if (factPack != null) {

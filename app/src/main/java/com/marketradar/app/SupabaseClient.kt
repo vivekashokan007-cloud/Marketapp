@@ -1407,6 +1407,57 @@ object SupabaseClient {
     }
 
     /**
+     * Persist the normalized PC2 authority decisions captured with one brain
+     * snapshot. This is telemetry only: a missing table or failed write must
+     * never interfere with live snapshot/candidate capture.
+     */
+    fun savePc2AuthorityDecisions(snapshot: JSONObject): Boolean {
+        val context = snapshot.optJSONObject("context_json") ?: return true
+        val decisions = context.optJSONArray("snapshot_pc2_authority_decisions") ?: return true
+        if (decisions.length() == 0) return true
+
+        val policy = context.optJSONObject("snapshot_pc2_authority_policy") ?: JSONObject()
+        val sessionDate = snapshot.optString("session_date", "").trim()
+        val pollTs = snapshot.optString("poll_ts", "").trim()
+        val brainVersion = context.optString("snapshot_brain_version", "unknown").trim()
+        val policyVersion = policy.optString("version", "pc2_authority_policy_v1").trim()
+        if (sessionDate.isEmpty() || pollTs.isEmpty()) return false
+
+        val rows = JSONArray()
+        for (index in 0 until decisions.length()) {
+            val decision = decisions.optJSONObject(index) ?: continue
+            val variableName = decision.optString("variable_name", "").trim()
+            if (variableName.isEmpty()) continue
+            rows.put(
+                JSONObject()
+                    .put("id", "$pollTs|$policyVersion|$index")
+                    .put("session_date", sessionDate)
+                    .put("poll_ts", pollTs)
+                    .put("decision_index", index)
+                    .put("variable_name", variableName)
+                    .put("authority_state", decision.optString("authority_state", "FALLBACK"))
+                    .put("provenance_policy", decision.optString("provenance_policy", "unknown"))
+                    .put("support_count", decision.optInt("support_count", 0))
+                    .put("stability_ratio", decision.opt("stability_ratio"))
+                    .put("fallback_reason", decision.opt("fallback_reason"))
+                    .put("brain_version", brainVersion)
+                    .put("policy_version", policyVersion)
+                    .put("policy_json", policy)
+                    .put("decision_json", decision)
+            )
+        }
+        if (rows.length() == 0) return true
+        val result = postArrayToTableDetailed(
+            "ml_pc2_authority_decisions?on_conflict=id",
+            rows
+        )
+        if (!result.success) {
+            Log.w(TAG, "PC2_AUTHORITY_TELEMETRY_SAVE_FAIL: ${result.errorBody ?: result.exceptionMessage ?: result.message.orEmpty()}")
+        }
+        return result.success
+    }
+
+    /**
      * Best-effort compact candidate persistence for offline ML evaluation breadth.
      *
      * The table may not exist yet in every environment; fail closed without
