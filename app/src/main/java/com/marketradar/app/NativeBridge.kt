@@ -1138,11 +1138,12 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getStage2AGuardMode(): String {
-        val stored = prefs.getString(PREF_STAGE2A_MODE, "shadow") ?: "shadow"
+        val stored = prefs.getString(PREF_STAGE2A_MODE, "paper") ?: "paper"
         return when (stored.trim().lowercase(Locale.US)) {
             "off" -> "off"
             "live" -> "live"
-            else -> "shadow"
+            "shadow" -> "shadow"
+            else -> "paper"
         }
     }
 
@@ -1151,7 +1152,8 @@ class NativeBridge(private val context: Context) {
         val normalized = when (mode.trim().lowercase(Locale.US)) {
             "off" -> "off"
             "live" -> "live"
-            else -> "shadow"
+            "shadow" -> "shadow"
+            else -> "paper"
         }
         return prefs.edit().putString(PREF_STAGE2A_MODE, normalized).commit()
     }

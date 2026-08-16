@@ -9,8 +9,10 @@ _TEMPORAL_CHECKED = False
 _TEMPORAL_MODEL_PATH = '/data/data/com.marketradar.app/files/temporal_model.json'
 _TEMPORAL_MIN_VAL_ACC = 0.60
 _STAGE2A_TABLE_CACHE = {'path': None, 'table': None, 'error': None}
-_STAGE2A_DEFAULT_MODE = 'shadow'
+_STAGE2A_DEFAULT_MODE = 'paper'
 _STAGE2A_MIN_PRIOR_BUCKET_N = 5
+_STAGE2A_PAPER_WEIGHT = 0.10
+_STAGE2A_PAPER_R_CLIP = 0.50
 TEACHER_CONFIG_VERSION = 'tc_2026_07_A'
 TEACHER_TIME_BASIS_DAYS = 252.0
 BUILD3_EXPERIMENT_NAME = 'week1_a8_nf_calm_gate'
@@ -21,8 +23,9 @@ BUILD3_GENERATED_CANDIDATE_UI_CAP = 30
 BUILD3_RANKED_EVIDENCE_CAP = 200
 PC2_SUPPLY_QUALITY_SHADOW_VERSION = 'pc2_supply_quality_shadow_v1'
 PC2_SUPPLY_QUALITY_SAMPLE_CAP = 16
-PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION = 'pc2_directional_generation_shadow_v1'
+PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION = 'pc2_directional_generation_paper_v1'
 PC2_DIRECTIONAL_GENERATION_SAMPLE_CAP = 8
+PC2_DIRECTIONAL_PAPER_CANDIDATE_CAP = 8
 PC2_DIRECTIONAL_SIGMA_MULTIPLIERS = (0.5, 0.75, 1.0, 1.25, 1.5)
 PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS = 150.0
 PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR = 1
@@ -104,7 +107,7 @@ def _ml_score(candidate_dict):
 
 def _stage2a_normalize_mode(raw_mode):
     mode = str(raw_mode or _STAGE2A_DEFAULT_MODE).strip().lower()
-    if mode in ('live', 'shadow', 'off'):
+    if mode in ('paper', 'live', 'shadow', 'off'):
         return mode
     return _STAGE2A_DEFAULT_MODE
 
@@ -258,7 +261,7 @@ def _stage2a_annotate_candidates(candidates, ctx):
             if bucket is None:
                 coverage = 'unseen'
                 summary['unseen_count'] += 1
-            elif teacher_n < min_prior:
+            elif teacher_n < min_prior or bool(bucket.get('low_confidence')):
                 coverage = 'thin'
                 summary['thin_count'] += 1
             elif teacher_r is not None and teacher_r > 0:
@@ -6001,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.84"
+BRAIN_VERSION = "2.5.85"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -8341,8 +8344,6 @@ def _pc2_calibrations_for_context_variable(name):
 
 def _pc2_censor_guard_for_cell(name, cell):
     calibrations = _pc2_calibrations_for_context_variable(name)
-    if not calibrations:
-        return {}
     support = int((cell or {}).get('support_count') or 0)
     min_value = _percentile_float((cell or {}).get('min'))
     max_value = _percentile_float((cell or {}).get('max'))
@@ -8378,7 +8379,10 @@ def _pc2_censor_guard_for_cell(name, cell):
     return {
         'censor_guard_status': status,
         'censor_guard_flags': sorted(set(flags)),
-        'censor_guard_scope': 'daily_scalar_history_requires_union_provenance',
+        'censor_guard_scope': (
+            'candidate_population_requires_union_provenance'
+            if calibrations else 'history_diversity_guard'
+        ),
         'censor_guard_constants': calibrations,
         'censor_guard_version': PC2_CENSOR_GUARD_VERSION,
     }
@@ -8986,6 +8990,7 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
     pct_target = 20.0
     percentile_threshold = _percentile_quantile(history, pct_target)
     cell = _percentile_cell(observed_width, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    censor_guard = _pc2_censor_guard_for_cell('width_menu_median', cell)
     stability_ratio = cell.get('stability_ratio')
     stability_bar = CONTEXT_PERCENTILE_STABILITY_MAX
     stability_pass = bool(
@@ -8999,7 +9004,10 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         {'context_variable': 'width_menu_median'},
         60,
     )
-    gate_basis = 'percentile' if stability_pass and provenance.get('population_provenance_verified') else 'hard_fallback'
+    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
+    gate_basis = 'percentile' if (
+        stability_pass and censor_pass and provenance.get('population_provenance_verified')
+    ) else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
     percentile_pass = _pc2_compare(observed_width, percentile_threshold, comparator)
     active_pass = _pc2_compare(observed_width, active_threshold, comparator)
@@ -9042,9 +9050,12 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
             None if gate_basis == 'percentile' else
             'generated_rejected_union_not_proven'
             if not provenance.get('population_provenance_verified') else
+            'censor_guard_not_clear'
+            if not censor_pass else
             'stability_or_history_not_ready'
         ),
         'live_soft_supply': True,
+        **censor_guard,
         **provenance,
     }
 
@@ -9062,6 +9073,7 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         if num is not None:
             history.append(abs(num))
     cell = _percentile_cell(observed_abs, history, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
+    censor_guard = _pc2_censor_guard_for_cell(const_name, cell)
     support = int(cell.get('support_count') or 0)
     stability_ratio = _percentile_float(cell.get('stability_ratio'))
     stability_pass = bool(
@@ -9070,7 +9082,8 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         and stability_ratio is not None
         and stability_ratio <= CONTEXT_PERCENTILE_STABILITY_MAX
     )
-    percentile = cell.get('percentile') if stability_pass else None
+    censor_pass = censor_guard.get('censor_guard_status') == 'OK'
+    percentile = cell.get('percentile') if stability_pass and censor_pass else None
     hard_active = bool(
         observed_abs is not None
         and fallback_threshold_num is not None
@@ -9108,13 +9121,18 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         'livePercentileAuthority': live_percentile_authority,
         'live_percentile_authority': live_percentile_authority,
         'live_behavior_change': bool(live_percentile_authority and percentile_active != hard_active),
+        'population_provenance_verified': True,
+        'population_provenance_scope': 'not_required_for_market_scalar',
         'fallback_reason': (
             None if live_percentile_authority else
             'zero_diversity_cross_market_history'
             if not cell.get('diversity_pass') and support >= CONTEXT_PERCENTILE_MIN_SUPPORT else
+            'censor_guard_not_clear'
+            if not censor_pass else
             'insufficient_cross_market_history'
         ),
         'window': 60,
+        **censor_guard,
     }
 
 def _pc2_gate_basis_summary(gate_rows):
@@ -11838,10 +11856,12 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         }
 
     # ═══ 1. DIRECTIONAL 2-LEG SPREADS ═══
+    directional_paper_mode = str(ctx.get('executionMode') or ctx.get('execution_mode') or 'paper').lower() == 'paper'
     directional_generation_shadow = ctx.setdefault('_pc2_directional_generation_shadow_internal', {
         'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
-        'shadow_only': True,
-        'behavior_change': False,
+        'shadow_only': not directional_paper_mode,
+        'behavior_change': directional_paper_mode,
+        'paper_active': directional_paper_mode,
         'fail_open': True,
         'latency_budget_ms': PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS,
         'latency_ms': 0.0,
@@ -11850,6 +11870,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         'legacy_pair_keys': set(),
         'counterfactual_pair_keys': set(),
         'sigma_only_candidates': [],
+        'paper_candidate_count': 0,
         'slices': [],
     })
     shadow_started = time.perf_counter()
@@ -11928,6 +11949,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 ),
             })
 
+            paper_directional_active = directional_paper_mode
             if counterfactual_keys - legacy_keys:
                 shadow_ctx = dict(ctx)
                 shadow_ctx['_trace'] = None
@@ -11955,13 +11977,47 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                         continue
                     shadow_candidate['directionalGenerationShadow'] = {
                         'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
-                        'shadow_only': True,
+                        'shadow_only': False,
                         'membership': 'sigma_only',
-                        'would_be_generated': True,
-                        'ranking_changed': False,
-                        'entry_eligibility_changed': False,
+                        'would_be_generated': False,
+                        'ranking_changed': paper_directional_active,
+                        'entry_eligibility_changed': paper_directional_active,
                     }
                     directional_generation_shadow['sigma_only_candidates'].append(shadow_candidate)
+                    if (
+                        paper_directional_active
+                        and directional_generation_shadow['paper_candidate_count'] < PC2_DIRECTIONAL_PAPER_CANDIDATE_CAP
+                    ):
+                        # Sigma-only candidates must cross the exact same safety
+                        # and construction enrichment path as legacy pairs.
+                        if stype in _CONST['DEBIT_TYPES']:
+                            trade_sigma = _sigma_days(spot, vix, trading_tdte)
+                            if trade_sigma is None or trade_sigma <= 0:
+                                continue
+                            if stype in ('BULL_CALL', 'BEAR_PUT') and width > trade_sigma * 1.2:
+                                continue
+                        shadow_candidate['forces'] = _get_forces(stype, bias, vix, iv_pctl, regime, ctx)
+                        shadow_candidate['varsityTier'] = 'PRIMARY' if stype in varsity['primary'] else 'ALLOWED'
+                        shadow_candidate['wallScore'] = _compute_wall_score(shadow_candidate, chain, is_bnf)
+                        shadow_candidate['wallTag'] = _wall_tag(shadow_candidate['wallScore'], shadow_candidate['type'])
+                        shadow_candidate['gammaRisk'] = _compute_gamma_risk(shadow_candidate, spot, tdte)
+                        shadow_candidate['gammaTag'] = _gamma_tag(shadow_candidate['gammaRisk'])
+                        shadow_candidate['contextScore'] = _compute_context_score(shadow_candidate, spot, tdte, vix, ctx)
+                        shadow_candidate['directionSafe'] = shadow_candidate['forces']['f1'] >= 0
+                        shadow_candidate['capitalBlocked'] = bool(
+                            trade_mode == 'swing'
+                            and shadow_candidate['isCredit']
+                            and shadow_candidate['gammaRisk'] >= 0.7
+                        )
+                        shadow_candidate['directionalGenerationPaper'] = {
+                            'version': PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION,
+                            'mode': 'paper',
+                            'membership': 'sigma_only',
+                            'candidate_cap': PC2_DIRECTIONAL_PAPER_CANDIDATE_CAP,
+                            'same_safety_pipeline_as_legacy': True,
+                        }
+                        candidates.append(shadow_candidate)
+                        directional_generation_shadow['paper_candidate_count'] += 1
             for pair in pairs:
                 cand = _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, expiry, is_bnf, vix, trade_mode, ctx, atm)
                 if not cand: continue
@@ -12724,6 +12780,7 @@ def _pc2_paper_primary_sort_components(candidate):
     edge_per_risk = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
     economics_percentile = _safe_num(candidate.get('pc2PaperEconomicsPercentile'), None)
     composite_score = _safe_num(candidate.get('pc2PaperCompositeScore'), None)
+    teacher_modifier = _safe_num(candidate.get('pc2PaperTeacherModifier'), 0.0)
     probability = _safe_num(candidate.get('probProfit'), 0.0)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
@@ -12733,6 +12790,7 @@ def _pc2_paper_primary_sort_components(candidate):
         'adjusted_edge_per_risk': round(edge_per_risk, 6) if edge_per_risk is not None else None,
         'economics_percentile': round(economics_percentile, 6) if economics_percentile is not None else None,
         'composite_score': round(composite_score, 6) if composite_score is not None else None,
+        'teacher_modifier': round(teacher_modifier, 6),
         'prob_profit': round(probability, 6),
         'candidate_id': str(candidate.get('id') or ''),
         # Diagnostics only. Neither value participates in ordering.
@@ -12949,13 +13007,30 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         candidate['pc2PaperEconomicsReferenceGroup'] = economics_group
         candidate['pc2PaperEconomicsReferenceCount'] = len(economics_values)
         candidate['pc2PaperContextNormalized'] = round(context_normalized, 6)
-        candidate['pc2PaperCompositeScore'] = (
-            round(
-                PC2_COMPOSITE_ECONOMICS_WEIGHT * (economics_pct / 100.0)
-                + PC2_COMPOSITE_CONTEXT_WEIGHT * context_normalized,
-                6,
+        teacher_coverage = str(candidate.get('teacher_coverage') or '')
+        teacher_r = _safe_num(candidate.get('teacher_r_score'), None)
+        teacher_supported = teacher_coverage in ('covered_positive', 'covered_negative') and teacher_r is not None
+        teacher_modifier = 0.0
+        if teacher_supported:
+            teacher_modifier = max(
+                -_STAGE2A_PAPER_WEIGHT,
+                min(
+                    _STAGE2A_PAPER_WEIGHT,
+                    (teacher_r / _STAGE2A_PAPER_R_CLIP) * _STAGE2A_PAPER_WEIGHT,
+                ),
             )
+        candidate['pc2PaperTeacherCoverage'] = teacher_coverage or 'unavailable'
+        candidate['pc2PaperTeacherSupported'] = teacher_supported
+        candidate['pc2PaperTeacherModifier'] = round(teacher_modifier, 6)
+        base_composite = (
+            PC2_COMPOSITE_ECONOMICS_WEIGHT * (economics_pct / 100.0)
+            + PC2_COMPOSITE_CONTEXT_WEIGHT * context_normalized
             if economics_pct is not None
+            else None
+        )
+        candidate['pc2PaperCompositeScore'] = (
+            round(base_composite + teacher_modifier, 6)
+            if base_composite is not None
             else None
         )
 
@@ -13022,6 +13097,8 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
             'bounded composite: 70% per-index/per-direction adjustedEdgePerRisk percentile and 30% verified context percentile score',
+            'covered Stage 2A teacher expectancy applies only as a capped plus or minus 0.10 paper ranking modifier',
+            'unseen, low-confidence, or unsupported teacher buckets are neutral',
             'adjustedEdgePerRisk descending as the first tie-breaker',
             'contextPercentileScore descending as the second tie-breaker',
             'probProfit descending as final tie-breaker',
@@ -13868,9 +13945,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             brain_verdict = result.get('verdict')
             stage2a_summary = _stage2a_annotate_candidates(all_cands, ctx)
             stage2a_shadow_active = stage2a_summary.get('mode') in ('shadow', 'live') and stage2a_summary.get('table_ready')
+            stage2a_paper_active = stage2a_summary.get('mode') == 'paper' and stage2a_summary.get('table_ready')
             stage2a_live_active = False
+            stage2a_summary['paper_ranking_active'] = bool(stage2a_paper_active)
             stage2a_summary['build3_teacher_first_active'] = False
-            stage2a_summary['build3_teacher_first_reason'] = 'removed_from_week1_build3'
+            stage2a_summary['build3_teacher_first_reason'] = (
+                'bounded_pc2_paper_modifier' if stage2a_paper_active else 'teacher_table_unavailable_or_not_paper_mode'
+            )
 
             def _recompute_rankings(verdict_obj, candidate_pool=None):
                 pool = candidate_pool if candidate_pool is not None else all_cands

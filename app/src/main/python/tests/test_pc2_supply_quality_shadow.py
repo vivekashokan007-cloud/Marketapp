@@ -252,7 +252,7 @@ class Pc2SupplyQualityShadowTest(unittest.TestCase):
             "uncapped_in_memory_generated_before_ranked_evidence_and_persistence_caps",
         )
 
-    def test_shadow_pair_failure_is_fail_open_and_live_generation_survives(self):
+    def test_sigma_pair_failure_is_fail_open_and_legacy_generation_survives(self):
         kwargs = {
             "chain": directional_chain(),
             "spot": 53600,
@@ -274,7 +274,8 @@ class Pc2SupplyQualityShadowTest(unittest.TestCase):
         shadow = ctx["_pc2_directional_generation_shadow_internal"]
         self.assertTrue(shadow["fail_open"])
         self.assertTrue(any(row["code"] == "shadow_pair_generation_failed" for row in shadow["errors"]))
-        self.assertFalse(shadow["behavior_change"])
+        self.assertTrue(shadow["behavior_change"])
+        self.assertEqual(shadow["paper_candidate_count"], 0)
 
     def test_post_close_evaluator_includes_shadow_sample(self):
         candidate = credit_candidate("sample", 0.01, -100)

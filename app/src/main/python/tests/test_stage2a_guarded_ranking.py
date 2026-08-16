@@ -198,6 +198,36 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(summary["positive_count"], 1)
         self.assertEqual(ranked[0]["id"], "bear")
 
+    def test_low_confidence_teacher_bucket_is_not_ranking_eligible(self):
+        self.table_path = _write_teacher_table(
+            [
+                {
+                    "strategy_type": "BEAR_CALL",
+                    "regime_bucket": "VIX_NORMAL",
+                    "vix_bucket": "VIX_16_18",
+                    "dte_bucket": "DTE_1",
+                    "n": 20,
+                    "avg_r": 0.45,
+                    "success_rate_pct": 70.0,
+                    "low_confidence": True,
+                }
+            ]
+        )
+        candidates = [_candidate("bear", "BEAR_CALL", 0.4)]
+        summary = _stage2a_annotate_candidates(
+            candidates,
+            {
+                "stage2a_mode": "paper",
+                "stage2a_teacher_table_path": self.table_path,
+                "stage2a_min_prior_bucket_n": 5,
+                "vix": 17.4,
+            },
+        )
+
+        self.assertTrue(summary["table_ready"])
+        self.assertEqual(candidates[0]["teacher_coverage"], "thin")
+        self.assertFalse(candidates[0]["teacher_ranking_eligible"])
+
     def test_teacher_research_report_aggregates_stage2a_shadow(self):
         snapshots = [
             {

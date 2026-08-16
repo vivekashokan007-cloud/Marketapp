@@ -2302,10 +2302,11 @@ class MarketWatchService : Service() {
             val authToken = (prefs.getString("auth_token", "") ?: "").trim()
             val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
             val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
-            val stage2aMode = when ((prefs.getString("stage2a_guard_mode", "shadow") ?: "shadow").trim().lowercase(Locale.US)) {
+            val stage2aMode = when ((prefs.getString("stage2a_guard_mode", "paper") ?: "paper").trim().lowercase(Locale.US)) {
                 "off" -> "off"
                 "live" -> "live"
-                else -> "shadow"
+                "shadow" -> "shadow"
+                else -> "paper"
             }
             val stage2aTeacherTablePath = File(filesDir, "teacher_table_stage2a.json").absolutePath
             val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)

@@ -147,6 +147,31 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(ordered[0]["id"], "stronger-context")
         self.assertEqual(mature["pc2PaperSortComponents"]["percentile_authority_count"], 4)
 
+    def test_covered_teacher_expectancy_is_bounded_but_can_break_a_close_tie(self):
+        neutral = candidate("neutral", 1, 0.0, 0.20)
+        supported = candidate(
+            "supported", 2, 0.0, 0.20,
+            teacher_coverage="covered_positive", teacher_r_score=0.50,
+        )
+
+        ordered, summary = select_pc2_paper_primary([neutral, supported], "paper")
+
+        self.assertEqual(ordered[0]["id"], "supported")
+        self.assertEqual(supported["pc2PaperTeacherModifier"], 0.10)
+        self.assertEqual(neutral["pc2PaperTeacherModifier"], 0.0)
+        self.assertIn("capped plus or minus 0.10", summary["ranking_contract"][2])
+
+    def test_unseen_or_low_confidence_teacher_evidence_is_neutral(self):
+        baseline = candidate("baseline", 1, 0.0, 0.20)
+        unseen = candidate("unseen", 2, 0.0, 0.20, teacher_coverage="unseen", teacher_r_score=9.0)
+        thin = candidate("thin", 3, 0.0, 0.20, teacher_coverage="thin", teacher_r_score=9.0)
+
+        ordered, _ = select_pc2_paper_primary([baseline, unseen, thin], "paper")
+
+        self.assertEqual([row["id"] for row in ordered], ["baseline", "thin", "unseen"])
+        self.assertEqual(unseen["pc2PaperTeacherModifier"], 0.0)
+        self.assertEqual(thin["pc2PaperTeacherModifier"], 0.0)
+
     def test_control_is_reproducible_and_never_changes_primary_selection(self):
         rows = [
             candidate("one", 1, 0.10, 0.10),
