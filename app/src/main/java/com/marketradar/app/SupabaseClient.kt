@@ -346,10 +346,15 @@ object SupabaseClient {
         val endIso: String
     )
 
-    private fun postArrayToTableDetailed(table: String, body: JSONArray): ArrayPostResult {
+    private fun postArrayToTableDetailed(
+        table: String,
+        body: JSONArray,
+        preferHeader: String = "resolution=merge-duplicates",
+        logFailures: Boolean = true
+    ): ArrayPostResult {
         if (body.length() == 0) return ArrayPostResult(success = true, table = table)
         val request = getBaseRequest(table)
-            .header("Prefer", "resolution=merge-duplicates")
+            .header("Prefer", preferHeader)
             .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
             .build()
         return try {
@@ -358,8 +363,10 @@ object SupabaseClient {
                     ArrayPostResult(success = true, table = table, code = response.code, message = response.message)
                 } else {
                     val err = response.body?.string() ?: ""
-                    Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
-                    LogBuffer.add('E', TAG, "POST_ARRAY_FAILED: table=$table status=${response.code} message=${response.message} body=${err.take(700)}")
+                    if (logFailures) {
+                        Log.e(TAG, "Post failed ($table): ${response.code} ${response.message} | $err")
+                        LogBuffer.add('E', TAG, "POST_ARRAY_FAILED: table=$table status=${response.code} message=${response.message} body=${err.take(700)}")
+                    }
                     ArrayPostResult(
                         success = false,
                         table = table,
@@ -371,7 +378,9 @@ object SupabaseClient {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Post exception ($table): ${e.message}")
-            LogBuffer.add('E', TAG, "POST_ARRAY_EXCEPTION: table=$table error=${e.message}")
+            if (logFailures) {
+                LogBuffer.add('E', TAG, "POST_ARRAY_EXCEPTION: table=$table error=${e.message}")
+            }
             ArrayPostResult(success = false, table = table, exceptionMessage = e.message)
         }
     }
@@ -1459,9 +1468,19 @@ object SupabaseClient {
         }
         if (rows.length() == 0) return true
         val result = postArrayToTableDetailed(
-            "ml_pc2_authority_decisions?on_conflict=id",
-            rows
+            "ml_pc2_authority_decisions?on_conflict=poll_ts,policy_version,authority_diagnostics_version,decision_index",
+            rows,
+            preferHeader = "resolution=ignore-duplicates,return=minimal",
+            logFailures = false
         )
+        if (!result.success && result.code == 409 && (result.errorBody ?: "").contains("duplicate", ignoreCase = true)) {
+            LogBuffer.add(
+                'W',
+                TAG,
+                "PC2_AUTHORITY_TELEMETRY_DUPLICATE: treated_as_saved rows=${rows.length()} pollTs=$pollTs"
+            )
+            return true
+        }
         if (!result.success) {
             Log.w(TAG, "PC2_AUTHORITY_TELEMETRY_SAVE_FAIL: ${result.errorBody ?: result.exceptionMessage ?: result.message.orEmpty()}")
         }
