@@ -2598,13 +2598,11 @@ class MarketWatchService : Service() {
                                     catch (_: Exception) { /* leave as-is — don't drop the row */ }
                                 }
                             }
-                            val rawSnapshotBytes = rawSnapObj.toString().toByteArray(Charsets.UTF_8).size
                             val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
-                            val compactSnapshotBytes = snapObj.toString().toByteArray(Charsets.UTF_8).size
                             LogBuffer.add(
                                 'I',
                                 TAG,
-                                "ML_SNAPSHOT_PERSISTENCE_COMPACT: rawBytes=$rawSnapshotBytes compactBytes=$compactSnapshotBytes"
+                                "ML_SNAPSHOT_PERSISTENCE_COMPACT: completed=true"
                             )
                             val snapshotSessionDate = snapObj.optString(
                                 "session_date",

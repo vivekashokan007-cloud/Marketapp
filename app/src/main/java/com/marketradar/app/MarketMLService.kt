@@ -1221,7 +1221,7 @@ class MarketMLService : Service() {
             maxPages = 80
         )
 
-        var snapshotsJsonArray = org.json.JSONArray()
+        var preparedSnapshotCount = if (snapshotResult.complete) snapshotResult.count else 0
         if (!snapshotResult.complete || snapshotResult.count == 0) {
             if (snapshotResult.count > 0) {
                 Log.w(
@@ -1236,15 +1236,17 @@ class MarketMLService : Service() {
                 snapshotsFile.delete()
                 snapshotLegKeys.clear()
             }
-            val localSnapshots = EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
-            if (localSnapshots.length() > 0) {
-                Log.w(TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
-                LogBuffer.add('W', TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=${localSnapshots.length()}")
-                snapshotsJsonArray = localSnapshots
-                snapshotLegKeys.addAll(extractEvaluationLegKeys(snapshotsJsonArray))
-                for (index in 0 until localSnapshots.length()) {
-                    localSnapshots.optJSONObject(index)?.let { replayAuthorityTelemetry(it) }
-                }
+            preparedSnapshotCount = EvaluationLocalCache.streamBrainSnapshotsToJsonArrayFile(
+                this@MarketMLService,
+                sessionDate,
+                snapshotsFile
+            ) { snapshot ->
+                collectEvaluationLegKeysFromSnapshot(snapshot, snapshotLegKeys)
+                replayAuthorityTelemetry(snapshot)
+            }
+            if (preparedSnapshotCount > 0) {
+                Log.w(TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=$preparedSnapshotCount")
+                LogBuffer.add('W', TAG, "EVAL_SNAPSHOT_LOCAL_FALLBACK: date=$sessionDate rows=$preparedSnapshotCount")
             }
         }
 
@@ -1255,7 +1257,7 @@ class MarketMLService : Service() {
             if (level == 'I') Log.i(TAG, message) else Log.w(TAG, message)
         }
 
-        val snapshotCount = if (snapshotResult.count > 0) snapshotResult.count else snapshotsJsonArray.length()
+        val snapshotCount = preparedSnapshotCount
         val legKeys = snapshotLegKeys.toList()
         val emptyReason = if (snapshotCount > 0 && legKeys.isEmpty()) {
             "EVAL_NO_LEGKEYS: no candidate option legs found across ${snapshotCount} snapshots."
@@ -1279,9 +1281,6 @@ class MarketMLService : Service() {
             completedSnapshots = 0,
             running = true
         )
-        if (!snapshotsFile.exists() || snapshotsFile.length() == 0L) {
-            writeJsonArrayFileStreamed(snapshotsFile, snapshotsJsonArray)
-        }
         Log.i(
             TAG,
             "EVAL_SNAPSHOTS_WRITE_DONE: snapshots=${snapshotCount} bytes=${snapshotsFile.length()} date=$sessionDate"
@@ -1829,19 +1828,24 @@ class MarketMLService : Service() {
             return@withContext
         }
         updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
-        val snapshots = SupabaseClient.fetchC3FinalizationSnapshots(sessionDate).let { remote ->
-            if (remote.length() > 0) remote else EvaluationLocalCache.readBrainSnapshots(this@MarketMLService, sessionDate)
-        }
         val frames = org.json.JSONArray()
-        for (i in 0 until snapshots.length()) {
-            val snapshot = snapshots.optJSONObject(i) ?: continue
-            val context = parseJsonObject(snapshot.opt("context_json")) ?: continue
-            val captured = context.optJSONObject("c3_finalization_frame") ?: continue
+        fun captureFrame(snapshot: org.json.JSONObject) {
+            val context = parseJsonObject(snapshot.opt("context_json")) ?: return
+            val captured = context.optJSONObject("c3_finalization_frame") ?: return
             val frame = org.json.JSONObject(captured.toString())
             frame.put("snapshot_id", snapshot.optString("id", frame.optString("snapshot_id", "")))
             frame.put("session_date", snapshot.optString("session_date", sessionDate))
             frame.put("poll_ts", snapshot.optString("poll_ts", frame.optString("poll_ts", "")))
             if (frame.optString("poll_ts").isNotBlank()) frames.put(frame)
+        }
+        val remoteSnapshots = SupabaseClient.fetchC3FinalizationSnapshots(sessionDate)
+        val snapshotCount = if (remoteSnapshots.length() > 0) {
+            for (i in 0 until remoteSnapshots.length()) {
+                remoteSnapshots.optJSONObject(i)?.let(::captureFrame)
+            }
+            remoteSnapshots.length()
+        } else {
+            EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, ::captureFrame)
         }
         if (frames.length() == 0) {
             updateC3FinalizationState(
@@ -1849,7 +1853,7 @@ class MarketMLService : Service() {
                 "No C3 recording frames were captured for $sessionDate. Evaluation remains complete.",
                 frameCount = 0, rowCount = 0, verifiedRows = 0, running = false
             )
-            Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=${snapshots.length()}")
+            Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=$snapshotCount")
             return@withContext
         }
 

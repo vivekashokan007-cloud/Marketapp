@@ -6004,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.89"
+BRAIN_VERSION = "2.5.90"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -14749,6 +14749,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         result['elephant_fact_pack_error'] = str(e)
 
+    # The full objects have already served live ranking and fact-pack creation.
+    # Return evaluator-grade projections across the Android bridge so a normal
+    # poll cannot retain several megabytes of repeated PC2 distributions.
+    result['ranked_candidates_full'] = [
+        _candidate_view(c) for c in (result.get('ranked_candidates_full') or [])
+        if isinstance(c, dict)
+    ]
+    result['rejected_candidates'] = [
+        view for view in (
+            _full_rejected_candidate_view(c) for c in (result.get('rejected_candidates') or [])
+            if isinstance(c, dict)
+        ) if view is not None
+    ]
+
     out_str, _ = _safe_json(result)
     return out_str
 
@@ -15028,7 +15042,47 @@ def _compute_signal_independence(result, ctx):
     }
 
 
+def _compact_snapshot_leg(raw):
+    if not isinstance(raw, dict):
+        return None
+    keys = (
+        'action', 'option_type', 'strike', 'ltp', 'bid', 'ask',
+        'expiry', 'instrument_key', 'leg_schema_version',
+    )
+    return {key: raw.get(key) for key in keys if raw.get(key) is not None}
+
+
+def _compact_pc2_gate_basis(raw, limit=12):
+    """Keep gate decisions, not the repeated percentile distributions behind them."""
+    if not isinstance(raw, list):
+        return []
+    keys = (
+        'gate_name', 'gate_field', 'gate_basis', 'passed',
+        'live_percentile_authority', 'pct_target', 'slice_key',
+        'basis_support_count', 'basis_stability_ratio',
+        'basis_stability_bar', 'basis_stability_pass',
+        'observed_value', 'threshold_value', 'margin', 'margin_pct',
+    )
+    out = []
+    for row in raw[:max(0, int(limit))]:
+        if not isinstance(row, dict):
+            continue
+        out.append({key: row.get(key) for key in keys if row.get(key) is not None})
+    return out
+
+
+def _compact_snapshot_object(raw, keys):
+    if not isinstance(raw, dict):
+        return None
+    out = {key: raw.get(key) for key in keys if raw.get(key) is not None}
+    return out or None
+
+
 def _candidate_view(c):
+    compact_legs = [
+        leg for leg in (_compact_snapshot_leg(row) for row in (c.get('legs') or []))
+        if leg
+    ]
     return {
         'id': c.get('id'),
         'type': c.get('type'),
@@ -15038,7 +15092,7 @@ def _candidate_view(c):
         'width': c.get('width'),
         'tDTE': c.get('tDTE'),
         'expiry': c.get('expiry'),
-        'legs': c.get('legs'),
+        'legs': compact_legs,
         'legCount': c.get('legCount', len(c.get('legs') or [])),
         'leg_schema_version': c.get('leg_schema_version'),
         'candidate_schema_version': c.get('candidate_schema_version'),
@@ -15076,11 +15130,7 @@ def _candidate_view(c):
         'directionSafe': c.get('directionSafe'),
         'brainScore': c.get('brainScore'),
         'contextPercentileScore': c.get('contextPercentileScore'),
-        'contextPercentileSignals': c.get('contextPercentileSignals'),
-        'contextPercentileInputs': c.get('contextPercentileInputs'),
-        'contextPercentileComponents': c.get('contextPercentileComponents'),
         'contextPercentileRawScore': c.get('contextPercentileRawScore'),
-        'contextPercentileClamp': c.get('contextPercentileClamp'),
         'contextPercentileSchemaVersion': c.get('contextPercentileSchemaVersion'),
         'contextPercentileRecordingVersion': c.get('contextPercentileRecordingVersion'),
         'contextPercentileLiveRanking': c.get('contextPercentileLiveRanking'),
@@ -15095,13 +15145,15 @@ def _candidate_view(c):
         'entryConfidence': c.get('entryConfidence'),
         'entryEligible': c.get('entryEligible'),
         'entryGate': c.get('entryGate'),
-        'entryEligibility': c.get('entryEligibility'),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
         'creditToRisk': c.get('creditToRisk'),
         'sigmaOTM': c.get('sigmaOTM'),
         'premiumEdge': c.get('premiumEdge'),
-        'generationQualityShadow': c.get('generationQualityShadow'),
+        'generationQualityShadow': _compact_snapshot_object(
+            c.get('generationQualityShadow'),
+            ('quality_flags', 'would_suppress', 'credit_to_risk', 'premium_edge'),
+        ),
         'deterministic_rank': c.get('deterministic_rank'),
         'pc2PaperRank': c.get('pc2PaperRank'),
         'pc2PaperResearchRank': c.get('pc2PaperResearchRank'),
@@ -15109,9 +15161,10 @@ def _candidate_view(c):
         'pc2PaperSelectorVersion': c.get('pc2PaperSelectorVersion'),
         'pc2PaperMode': c.get('pc2PaperMode'),
         'pc2PaperSortComponents': c.get('pc2PaperSortComponents'),
-        'pc2PaperSortKey': c.get('pc2PaperSortKey'),
-        'pc2PaperRandomControl': c.get('pc2PaperRandomControl'),
-        'pc2CompositeShadow': c.get('pc2CompositeShadow'),
+        'pc2CompositeShadow': _compact_snapshot_object(
+            c.get('pc2CompositeShadow'),
+            ('score', 'raw_score', 'context_score', 'economics_percentile', 'teacher_modifier', 'version'),
+        ),
         'pc2SupplyWidthSource': c.get('pc2SupplyWidthSource'),
         'pc2SupplyWidthExpanded': c.get('pc2SupplyWidthExpanded'),
         'pc2SupplyLadderVersion': c.get('pc2SupplyLadderVersion'),
@@ -15119,6 +15172,8 @@ def _candidate_view(c):
         'pc2BatchFCandleComponents': c.get('pc2BatchFCandleComponents'),
         'pc2BatchFCandleExcludedPatterns': c.get('pc2BatchFCandleExcludedPatterns'),
         'pc2BatchFCandleScoringMethod': c.get('pc2BatchFCandleScoringMethod'),
+        'pc2_gate_basis': _compact_pc2_gate_basis(c.get('pc2_gate_basis')),
+        'gate_basis_summary': c.get('gate_basis_summary'),
         'teacher_shadow_rank': c.get('teacher_shadow_rank'),
         'stage2a_live_rank': c.get('stage2a_live_rank'),
         'teacher_bucket_key': c.get('teacher_bucket_key'),
@@ -15147,7 +15202,6 @@ def _candidate_view(c):
         'marginQuotedAt': c.get('marginQuotedAt'),
         'marginRequestUrl': c.get('marginRequestUrl'),
         'marginQuoteError': c.get('marginQuoteError'),
-        'marginQuote': c.get('marginQuote'),
     }
 
 
@@ -16818,7 +16872,8 @@ def _full_rejected_candidate_view(row):
         'gate_name': row.get('gate_name'),
         'gate_field': row.get('gate_field'),
         'gate_basis': row.get('gate_basis'),
-        'pc2_gate_basis': row.get('pc2_gate_basis'),
+        'pc2_gate_basis': _compact_pc2_gate_basis(row.get('pc2_gate_basis')),
+        'gate_basis_summary': row.get('gate_basis_summary'),
         'pct_target': row.get('pct_target'),
         'slice_key': row.get('slice_key'),
         'basis_support_count': row.get('basis_support_count'),
@@ -16866,7 +16921,10 @@ def _full_rejected_candidate_view(row):
         'buy_put': row.get('buy_put'),
         'call_credit': row.get('call_credit'),
         'put_credit': row.get('put_credit'),
-        'legs': row.get('legs') or [],
+        'legs': [
+            leg for leg in (_compact_snapshot_leg(item) for item in (row.get('legs') or []))
+            if leg
+        ],
     }
 
 
@@ -17216,6 +17274,7 @@ def _compact_android_snapshot_context(snapshot_context):
     object_keys = (
         'effective_bias',
         'snapshot_rejected_candidate_stats',
+        'snapshot_rejected_candidate_selection',
         'snapshot_phase3_expected_r_shadow',
         'snapshot_phase4_ev_ladder_shadow',
         'snapshot_phase5_gate_registry',
@@ -17271,6 +17330,43 @@ def _compact_android_snapshot_context(snapshot_context):
     gap = source.get('gap')
     if isinstance(gap, dict) and gap.get('type') is not None:
         compact['gap'] = {'type': gap.get('type')}
+
+    # Leave headroom for the primary/top-candidate and verdict fields which sit
+    # outside context_json. These diagnostics are useful but redundant with the
+    # compact ranked menu and separately persisted PC2 telemetry.
+    context_byte_cap = 1_350_000
+    context_payload_target = context_byte_cap - 1024
+    encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
+    removed = []
+    if encoded_bytes > context_payload_target:
+        removable = (
+            'snapshot_phase3_expected_r_shadow',
+            'snapshot_phase4_ev_ladder_shadow',
+            'snapshot_phase5_gate_registry',
+            'snapshot_shadow_selector_suite',
+            'snapshot_menu_abstention_shadow',
+            'snapshot_pc2_supply_quality_shadow',
+            'snapshot_pc2_composite_shadow',
+            'snapshot_evaluation_legs',
+        )
+        for key in removable:
+            if key not in compact:
+                continue
+            compact.pop(key, None)
+            removed.append(key)
+            encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
+            if encoded_bytes <= context_payload_target:
+                break
+    compaction_meta = {
+        'schema_version': 'android_compact_v2',
+        'context_bytes': encoded_bytes,
+        'context_byte_cap': context_byte_cap,
+        'removed': removed,
+    }
+    compact['snapshot_android_compaction'] = compaction_meta
+    compaction_meta['context_bytes'] = len(
+        json.dumps(compact, separators=(',', ':')).encode('utf-8')
+    )
     return compact
 
 
@@ -17401,7 +17497,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         for c in ranked_candidates_full:
             if not isinstance(c, dict):
                 continue
-            clean_ranked_full.append(c)
+            clean_ranked_full.append(_candidate_view(c))
     phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(research_candidates, rejected_candidates)
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(research_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, research_candidates)
@@ -17428,9 +17524,10 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         top_cand,
     )
     clean_rejected, rejected_stats = _compact_rejected_candidates(rejected_candidates)
+    selected_rejected, rejected_selection = _select_rejected_candidates_for_eval(rejected_candidates)
     clean_rejected_full = []
-    if isinstance(rejected_candidates, list):
-        for c in rejected_candidates:
+    if isinstance(selected_rejected, list):
+        for c in selected_rejected:
             clean = _full_rejected_candidate_view(c)
             if clean is not None:
                 clean_rejected_full.append(clean)
@@ -17467,7 +17564,11 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'lane': cand.get('lane'),
             'expiry': cand.get('expiry'),
             'trade_mode': ctx.get('tradeMode') or ctx.get('trade_mode'),
-            'legs': cand.get('legs') or legs,
+            'legs': [
+                leg for leg in (
+                    _compact_snapshot_leg(item) for item in (cand.get('legs') or legs)
+                ) if leg
+            ],
             'leg_schema_version': cand.get('leg_schema_version'),
             'candidate_schema_version': cand.get('candidate_schema_version'),
         }
@@ -17676,6 +17777,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['context_percentiles'] = result.get('context_percentiles') or {}
     snapshot_context['snapshot_rejected_candidates'] = clean_rejected
     snapshot_context['snapshot_rejected_candidates_full'] = clean_rejected_full
+    snapshot_context['snapshot_rejected_candidate_selection'] = rejected_selection
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
     snapshot_context['snapshot_brain_notification'] = result.get('brain_notification') if isinstance(result.get('brain_notification'), dict) else {}
     snapshot_context['snapshot_watchlist'] = clean_cands
@@ -17755,13 +17857,14 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     if str(persistence_mode or '').strip().lower() == 'android_compact_v1':
         snapshot_context = _compact_android_snapshot_context(snapshot_context)
 
-    snapshot_payload['primary_candidate_json'] = json.dumps(primary)
-    snapshot_payload['top_candidates_json'] = json.dumps(clean_cands)
-    snapshot_payload['context_json'] = json.dumps(snapshot_context)
-    snapshot_payload['verdict_json'] = json.dumps(verdict)
-    snapshot_payload['market_forces_json'] = json.dumps(market_forces)
-    snapshot_payload['poll_summary_json'] = json.dumps(poll_summary)
-    snapshot_payload['b1a_intraday_rv_json'] = json.dumps(b1a_intraday_rv)
+    compact_json = lambda value: json.dumps(value, separators=(',', ':'))
+    snapshot_payload['primary_candidate_json'] = compact_json(primary)
+    snapshot_payload['top_candidates_json'] = compact_json(clean_cands)
+    snapshot_payload['context_json'] = compact_json(snapshot_context)
+    snapshot_payload['verdict_json'] = compact_json(verdict)
+    snapshot_payload['market_forces_json'] = compact_json(market_forces)
+    snapshot_payload['poll_summary_json'] = compact_json(poll_summary)
+    snapshot_payload['b1a_intraday_rv_json'] = compact_json(b1a_intraday_rv)
     return snapshot_payload
 
 
@@ -19310,7 +19413,12 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
         rejected_source = 'snapshot_rejected_candidates'
         rejected = snap_ctx.get(rejected_source)
     if isinstance(rejected, list) and rejected:
-        rejected_eval, rejected_selection = _select_rejected_candidates_for_eval(rejected)
+        preselection = snap_ctx.get('snapshot_rejected_candidate_selection')
+        if isinstance(preselection, dict) and preselection.get('selected') == len(rejected):
+            rejected_eval = rejected
+            rejected_selection = preselection
+        else:
+            rejected_eval, rejected_selection = _select_rejected_candidates_for_eval(rejected)
         if rejected_selection.get('total', 0) > 0 and not rejected_eval:
             errors.append({
                 'scope': 'rejected_candidate_selection',

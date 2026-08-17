@@ -97,11 +97,15 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
             cache = handle.read()
 
         self.assertIn("compactBrainSnapshotForPersistence(rawSnapObj)", service)
+        snapshot_persist_body = service.split("val rawSnapObj = JSONObject(snapResult)", 1)[1]
+        snapshot_persist_body = snapshot_persist_body.split("val snapshotSessionDate", 1)[0]
+        self.assertNotIn("rawSnapObj.toString()", snapshot_persist_body)
         self.assertIn('"android_compact_v1"', service)
         self.assertIn('listOf("ml_brain_snapshots")', supabase)
         self.assertNotIn('val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")', supabase)
         self.assertIn('"snapshot_pc2_authority_policy"', cache)
         self.assertIn('"snapshot_pc2_authority_decisions"', cache)
+        self.assertIn('"snapshot_android_compaction"', cache)
         self.assertIn('"snapshot_evaluation_legs"', cache)
         self.assertIn('"context_percentiles"', cache)
         self.assertIn('"verdict_json"', cache)
@@ -113,6 +117,15 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertIn('"sellType"', cache)
         self.assertIn('"legs"', cache)
         self.assertIn('if (rejectedFull != null) "snapshot_rejected_candidates_full"', cache)
+        self.assertIn('"snapshot_rejected_candidate_selection"', cache)
+        self.assertIn("MAX_COMPACT_SNAPSHOT_BYTES", cache)
+        self.assertNotIn('"contextPercentileInputs",', cache)
+        append_body = cache.split("fun appendBrainSnapshot", 1)[1]
+        append_body = append_body.split("fun readBrainSnapshots", 1)[0]
+        self.assertIn("loadFullSnapshotIndex(file)", append_body)
+        self.assertNotIn("loadSnapshotState(file)", append_body)
+        self.assertNotIn("snapshot.toString()", append_body)
+        self.assertIn("rewriteFullSnapshotFile", cache)
         persistence_compactor = cache.split("private fun compactBrainSnapshot(snapshot: JSONObject)", 1)[1]
         persistence_compactor = persistence_compactor.split("fun compactBrainSnapshotForPersistence", 1)[0]
         self.assertNotIn('"brain_version"', persistence_compactor)
@@ -141,6 +154,26 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertIn("ACTIVITY_CREATE", activity)
         self.assertIn("ACTIVITY_DESTROY", activity)
         self.assertIn("if (!webStateRestored)", activity)
+
+    def test_post_close_local_snapshot_fallback_is_streamed(self):
+        with open(ML_SERVICE_PATH, "r", encoding="utf-8") as handle:
+            ml_service = handle.read()
+        with open(LOCAL_CACHE_PATH, "r", encoding="utf-8") as handle:
+            cache = handle.read()
+
+        prepare_body = ml_service.split("private suspend fun ensureEvaluationInputFiles", 1)[1]
+        prepare_body = prepare_body.split("private fun updateEvaluationProgress", 1)[0]
+        self.assertIn("streamBrainSnapshotsToJsonArrayFile", prepare_body)
+        self.assertNotIn("readBrainSnapshots", prepare_body)
+        self.assertIn("val snapshotCount = preparedSnapshotCount", prepare_body)
+
+        c3_body = ml_service.split("private suspend fun runC3PercentileFinalization", 1)[1]
+        c3_body = c3_body.split("private fun updateC3FinalizationState", 1)[0]
+        self.assertIn("forEachBrainSnapshot", c3_body)
+        self.assertNotIn("readBrainSnapshots", c3_body)
+
+        self.assertIn("fun forEachBrainSnapshot", cache)
+        self.assertIn("fun streamBrainSnapshotsToJsonArrayFile", cache)
 
 
 if __name__ == "__main__":
