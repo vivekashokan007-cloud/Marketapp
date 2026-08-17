@@ -16,6 +16,7 @@ import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import java.io.File
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -58,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     private var lastNativeSyncElapsedMs = 0L
     private var isManualRefresh = false
     private var lastLoadFailedMainFrame = false
+    private var webViewRendererGone = false
     private val client = OkHttpClient()
 
     private val pollReceiver = object : BroadcastReceiver() {
@@ -96,6 +98,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LogBuffer.add(
+            'I',
+            "MainActivity",
+            "ACTIVITY_CREATE: restored=${savedInstanceState != null} taskId=$taskId"
+        )
         // Request notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -204,6 +211,29 @@ class MainActivity : AppCompatActivity() {
                         loadingOverlay.visibility = View.GONE
                         errorView.visibility = View.VISIBLE
                     }
+                }
+
+                override fun onRenderProcessGone(
+                    view: WebView?,
+                    detail: RenderProcessGoneDetail?
+                ): Boolean {
+                    val didCrash = detail?.didCrash() ?: false
+                    val priority = detail?.rendererPriorityAtExit() ?: -1
+                    LogBuffer.add(
+                        'E',
+                        "MainActivity",
+                        "WEBVIEW_RENDERER_GONE: didCrash=$didCrash priority=$priority activityFinishing=$isFinishing"
+                    )
+                    persistCurrentWebUrl(view?.url)
+                    webViewRendererGone = true
+                    view?.let { deadView ->
+                        (deadView.parent as? ViewGroup)?.removeView(deadView)
+                        deadView.destroy()
+                    }
+                    if (!isFinishing && !isDestroyed) {
+                        recreate()
+                    }
+                    return true
                 }
             }
 
@@ -421,11 +451,11 @@ class MainActivity : AppCompatActivity() {
         MarketMLService.cancelNightlyTraining(this)
 
         // Restore WebView state on rotation/process restart, otherwise load fresh
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState)
-        } else {
+        val webStateRestored = savedInstanceState != null && webView.restoreState(savedInstanceState) != null
+        if (!webStateRestored) {
             webView.loadUrl(restoredWebUrl())
         }
+        LogBuffer.add('I', "MainActivity", "WEBVIEW_STATE: restored=$webStateRestored url=${webView.url.orEmpty()}")
 
         handleIntent(intent)
 
@@ -609,16 +639,19 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_SAVE_STATE: url=${webView.url.orEmpty()}")
     }
 
     override fun onPause() {
         super.onPause()
         // Do NOT call webView.onPause() — we want JS to keep running in background
         persistCurrentWebUrl(webView.url)
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()}")
     }
 
     override fun onResume() {
         super.onResume()
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_RESUME: url=${webView.url.orEmpty()}")
         webView.onResume() // resume if system paused it
         webView.resumeTimers()
         
@@ -649,11 +682,24 @@ class MainActivity : AppCompatActivity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        LogBuffer.add('I', "MainActivity", "TRIM_MEMORY: level=$level")
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            EvaluationLocalCache.releaseMemory()
+        }
         if (!::webView.isInitialized) return
         if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
             webView.clearCache(false)
-            LogBuffer.add('I', "MainActivity", "TRIM_MEMORY: level=$level cleared_webview_cache")
+            LogBuffer.add('I', "MainActivity", "TRIM_MEMORY_ACTION: level=$level cleared_webview_cache")
         }
+    }
+
+    override fun onStop() {
+        LogBuffer.add(
+            'I',
+            "MainActivity",
+            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing"
+        )
+        super.onStop()
     }
 
     private fun showVersionDialog() {
@@ -737,11 +783,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        LogBuffer.add(
+            'I',
+            "MainActivity",
+            "ACTIVITY_DESTROY: changingConfig=$isChangingConfigurations finishing=$isFinishing"
+        )
         unregisterReceiver(pollReceiver)
         if (::webView.isInitialized) {
             persistCurrentWebUrl(webView.url)
         }
-        webView.destroy()
+        if (!webViewRendererGone) webView.destroy()
         super.onDestroy()
     }
 }

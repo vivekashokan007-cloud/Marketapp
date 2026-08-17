@@ -130,6 +130,39 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
         self.assertIsNone(outcome['sim_pnl_h2'])
         self.assertIsNone(outcome['canonical_won'])
 
+    def test_teacher_uses_compact_candidate_leg_quotes_when_entry_chain_is_omitted(self):
+        snapshot = self._base_snapshot()
+        snapshot['context_json'] = json.dumps({'vix': 15.2})
+        candidate = self._base_candidate()
+        candidate['legs'] = [
+            {
+                'strike': 57000,
+                'option_type': 'PE',
+                'side': 'sell',
+                'entry_ltp': 45.0,
+                'bid': 45.0,
+                'ask': 46.0,
+            },
+            {
+                'strike': 56800,
+                'type': 'PE',
+                'side': 'buy',
+                'entry_ltp': 5.0,
+                'bid': 4.0,
+                'ask': 5.0,
+            },
+        ]
+        rows = [
+            self._row('2026-06-15T10:05:00+05:30', 57000, 'PE', 20.0),
+            self._row('2026-06-15T10:05:00+05:30', 56800, 'PE', 5.0),
+        ]
+
+        outcome = _eval_single_candidate(rows, snapshot, candidate, _teacher_default_config())
+
+        self.assertIsNotNone(outcome)
+        self.assertEqual(outcome['exit_reason'], 'TP')
+        self.assertAlmostEqual(outcome['managed_gross_pnl'], 750.0, places=2)
+
     def test_teacher_sl_can_fire_before_short_strike_breach_and_preserves_gap_through_r(self):
         rows = [
             self._row('2026-06-15T10:05:00+05:30', 57000, 'PE', 150.0, underlying_spot=56950),

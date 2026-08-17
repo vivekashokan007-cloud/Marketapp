@@ -6004,7 +6004,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.88"
+BRAIN_VERSION = "2.5.89"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -17204,7 +17204,77 @@ def _compute_b1b_historical_multi_horizon_rv(polls):
     }
 
 
-def take_poll_snapshot(result, ctx, polls):
+def _compact_android_snapshot_context(snapshot_context):
+    """Drop live-only bulk while retaining replay, PC2, and C3 evidence."""
+    source = snapshot_context if isinstance(snapshot_context, dict) else {}
+    compact = {}
+    scalar_keys = (
+        'vix', 'bnfSpot', 'nfSpot', 'significant_move',
+        'bias_net', 'morningBias', 'snapshot_generation_skip_reason',
+        'snapshot_brain_version', 'snapshot_supply_state',
+    )
+    object_keys = (
+        'effective_bias',
+        'snapshot_rejected_candidate_stats',
+        'snapshot_phase3_expected_r_shadow',
+        'snapshot_phase4_ev_ladder_shadow',
+        'snapshot_phase5_gate_registry',
+        'snapshot_c3_const_inventory',
+        'snapshot_build3_gate',
+        'snapshot_build3_lane_gate',
+        'snapshot_build3_flow',
+        'snapshot_pc2_parameter_authority',
+        'snapshot_pc2_batch_a_width_wall',
+        'snapshot_pc2_batch_b_regime_sigma',
+        'snapshot_pc2_vix_regime_context',
+        'snapshot_pc2_batch_c_cross_market',
+        'snapshot_pc2_batch_d_exit_policy',
+        'snapshot_pc2_batch_e_alert_timing',
+        'snapshot_pc2_batch_f_supply_pattern',
+        'snapshot_pc2_paper_primary',
+        'snapshot_pc2_composite_shadow',
+        'snapshot_pc2_supply_quality_shadow',
+        'snapshot_pc2_batch_f_paper_context',
+        'snapshot_pc2_authority_policy',
+        'snapshot_shadow_selector_suite',
+        'snapshot_menu_abstention_shadow',
+        'snapshot_brain_notification',
+        'snapshot_latest_poll',
+        'signal_independence',
+        'candidate_generation_trace',
+        'context_percentiles',
+        'c3_finalization_frame',
+    )
+    array_keys = (
+        'snapshot_generation_skip_reasons',
+        'snapshot_generated_candidates',
+        'snapshot_ranked_candidates_full',
+        'snapshot_pc2_authority_decisions',
+        'snapshot_supply_states',
+        'snapshot_evaluation_legs',
+    )
+    for key in scalar_keys:
+        if source.get(key) is not None:
+            compact[key] = source.get(key)
+    for key in object_keys:
+        if isinstance(source.get(key), dict):
+            compact[key] = source.get(key)
+    for key in array_keys:
+        if isinstance(source.get(key), list):
+            compact[key] = source.get(key)
+
+    if isinstance(source.get('snapshot_rejected_candidates_full'), list):
+        compact['snapshot_rejected_candidates_full'] = source.get('snapshot_rejected_candidates_full')
+    elif isinstance(source.get('snapshot_rejected_candidates'), list):
+        compact['snapshot_rejected_candidates'] = source.get('snapshot_rejected_candidates')
+
+    gap = source.get('gap')
+    if isinstance(gap, dict) and gap.get('type') is not None:
+        compact['gap'] = {'type': gap.get('type')}
+    return compact
+
+
+def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
     top_candidates_json   = top watchlist candidates kept for compatibility.
@@ -17661,13 +17731,13 @@ def take_poll_snapshot(result, ctx, polls):
         'dominant_lane': verdict.get('dominant_lane'),
         'dominant_count': verdict.get('dominant_count'),
         'execution_aligned': verdict.get('execution_aligned'),
-        'primary_candidate_json': json.dumps(primary),
-        'top_candidates_json': json.dumps(clean_cands),
-        'context_json': json.dumps(snapshot_context),
-        'verdict_json': json.dumps(verdict),
-        'market_forces_json': json.dumps(market_forces),
-        'poll_summary_json': json.dumps(poll_summary),
-        'b1a_intraday_rv_json': json.dumps(b1a_intraday_rv),
+        'primary_candidate_json': primary,
+        'top_candidates_json': clean_cands,
+        'context_json': snapshot_context,
+        'verdict_json': verdict,
+        'market_forces_json': market_forces,
+        'poll_summary_json': poll_summary,
+        'b1a_intraday_rv_json': b1a_intraday_rv,
         'b1a_rv_status': b1a_intraday_rv.get('status'),
         'b1a_bnf_rv_to_iv_daily_ratio': b1a_bnf.get('rv_to_iv_daily_ratio'),
         'b1a_nf_rv_to_iv_daily_ratio': b1a_nf.get('rv_to_iv_daily_ratio'),
@@ -17679,10 +17749,19 @@ def take_poll_snapshot(result, ctx, polls):
     try:
         from c3_percentile_finalizer import capture_frame
         snapshot_context['c3_finalization_frame'] = capture_frame(snapshot_payload)
-        snapshot_payload['context_json'] = json.dumps(snapshot_context)
     except Exception as exc:
         snapshot_context['c3_finalization_frame_error'] = str(exc)[:180]
-        snapshot_payload['context_json'] = json.dumps(snapshot_context)
+
+    if str(persistence_mode or '').strip().lower() == 'android_compact_v1':
+        snapshot_context = _compact_android_snapshot_context(snapshot_context)
+
+    snapshot_payload['primary_candidate_json'] = json.dumps(primary)
+    snapshot_payload['top_candidates_json'] = json.dumps(clean_cands)
+    snapshot_payload['context_json'] = json.dumps(snapshot_context)
+    snapshot_payload['verdict_json'] = json.dumps(verdict)
+    snapshot_payload['market_forces_json'] = json.dumps(market_forces)
+    snapshot_payload['poll_summary_json'] = json.dumps(poll_summary)
+    snapshot_payload['b1a_intraday_rv_json'] = json.dumps(b1a_intraday_rv)
     return snapshot_payload
 
 
@@ -17995,11 +18074,46 @@ def _entry_snapshot_point(snap, cand):
                 leg_payload = maybe
                 break
         if not isinstance(leg_payload, dict):
-            return {}
+            point = {}
+            break
         point[label] = _float_or_none(leg_payload.get('ltp'))
         point[f'{label}_bid'] = _float_or_none(leg_payload.get('bid'))
         point[f'{label}_ask'] = _float_or_none(leg_payload.get('ask'))
-    return point
+    if point:
+        return point
+
+    # Compact Android snapshots intentionally omit the multi-megabyte option
+    # chain. Candidate leg records retain the exact entry quote needed by the
+    # managed teacher, so retries remain evaluator-grade after compaction.
+    candidate_legs = cand.get('legs') if isinstance(cand.get('legs'), list) else []
+    compact_point = {}
+    for label, strike, option_type in leg_specs:
+        expected_action = 'SELL' if label.startswith('sell') else 'BUY'
+        leg_payload = next((
+            leg for leg in candidate_legs
+            if isinstance(leg, dict)
+            and str(leg.get('action') or leg.get('side') or '').upper() == expected_action
+            and _normalize_option_type(
+                leg.get('option_type') or leg.get('optionType') or leg.get('type')
+            ) == _normalize_option_type(option_type)
+            and _strike_matches(leg.get('strike'), strike)
+        ), None)
+        if isinstance(leg_payload, dict):
+            compact_point[label] = _float_or_none(
+                leg_payload.get('ltp')
+                if leg_payload.get('ltp') is not None
+                else leg_payload.get('entry_ltp')
+            )
+            compact_point[f'{label}_bid'] = _float_or_none(leg_payload.get('bid'))
+            compact_point[f'{label}_ask'] = _float_or_none(leg_payload.get('ask'))
+            continue
+
+        ltp_key = f'{label}LTP'
+        ltp = _float_or_none(cand.get(ltp_key))
+        if ltp is None:
+            return {}
+        compact_point[label] = ltp
+    return compact_point
 
 
 def _teacher_candidate_leg_specs(cand):

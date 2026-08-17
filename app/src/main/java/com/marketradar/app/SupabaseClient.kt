@@ -1212,8 +1212,7 @@ object SupabaseClient {
     fun fetchC3FinalizationSnapshots(sessionDate: String): JSONArray {
         return fetchArrayFromTables(
             listOf(
-                "ml_brain_snapshots?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200",
-                "ml_poll_sequences?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200"
+                "ml_brain_snapshots?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200"
             )
         )
     }
@@ -1349,61 +1348,27 @@ object SupabaseClient {
      * Requires ALTER TABLE ml_brain_snapshots ADD COLUMN top_candidates_json JSONB;
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
-        val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")
-        val fullResult = postToFirstWorkingTableDetailed(tables, body.toString())
-        if (fullResult.success) return true
-
-        // Older schemas may not yet have the expanded context columns. Keep
-        // capture alive with the original minimum payload rather than dropping
-        // the whole poll snapshot.
-        val minimal = JSONObject()
-        listOf(
-            "poll_ts",
-            "session_date",
-            "recommendation_id",
-            "action",
-            "strategy",
-            "confidence",
-            "primary_candidate_json",
-            "top_candidates_json",
-            "context_json",
-            "verdict_json",
-            "market_forces_json",
-            "poll_summary_json",
-            "is_labelable"
-        ).forEach { key ->
-            if (body.has(key)) minimal.put(key, body.get(key))
-        }
-        val minimalResult = postToFirstWorkingTableDetailed(tables, minimal.toString())
-        if (!minimalResult.success) {
+        val payload = body.toString()
+        val result = postToFirstWorkingTableDetailed(listOf("ml_brain_snapshots"), payload)
+        if (!result.success) {
             val details = buildString {
-                append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: fullTable=")
-                append(fullResult.table ?: "unknown")
-                append(" fullCode=")
-                append(fullResult.code ?: -1)
-                append(" fullMessage=")
-                append(fullResult.message ?: fullResult.exceptionMessage ?: "")
-                if (!fullResult.errorBody.isNullOrBlank()) {
-                    append(" fullBody=")
-                    append(fullResult.errorBody.take(800))
-                }
-                append(" minimalTable=")
-                append(minimalResult.table ?: "unknown")
-                append(" minimalCode=")
-                append(minimalResult.code ?: -1)
-                append(" minimalMessage=")
-                append(minimalResult.message ?: minimalResult.exceptionMessage ?: "")
-                if (!minimalResult.errorBody.isNullOrBlank()) {
-                    append(" minimalBody=")
-                    append(minimalResult.errorBody.take(800))
+                append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: table=")
+                append(result.table ?: "ml_brain_snapshots")
+                append(" code=")
+                append(result.code ?: -1)
+                append(" message=")
+                append(result.message ?: result.exceptionMessage ?: "")
+                if (!result.errorBody.isNullOrBlank()) {
+                    append(" body=")
+                    append(result.errorBody.take(800))
                 }
                 append(" payloadBytes=")
-                append(body.toString().toByteArray().size)
+                append(payload.toByteArray().size)
             }
             LogBuffer.add('E', TAG, details)
             Log.e(TAG, details)
         }
-        return minimalResult.success
+        return result.success
     }
 
     /**
@@ -1570,8 +1535,7 @@ object SupabaseClient {
     fun fetchBrainSnapshots(date: String): JSONArray {
         val exact = fetchArrayFromTables(
             listOf(
-                "ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc",
-                "ml_poll_sequences?session_date=eq.$date&order=poll_ts.desc"
+                "ml_brain_snapshots?session_date=eq.$date&order=poll_ts.desc"
             )
         )
         if (exact.length() > 0) return exact
@@ -1581,8 +1545,7 @@ object SupabaseClient {
         // look empty and causes day evaluation to skip.
         val recent = fetchArrayFromTables(
             listOf(
-                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=500",
-                "ml_poll_sequences?select=*&order=poll_ts.desc&limit=500"
+                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=500"
             )
         )
         return filterRowsByIstSessionDate(recent, date)
@@ -1597,9 +1560,7 @@ object SupabaseClient {
         val select = "id,poll_ts,primary_candidate_json,context_json,top_candidates_json,is_labelable,session_date"
         val sources = listOf(
             "ml_brain_snapshots?session_date=eq.$date&select=$select&order=poll_ts.desc" to false,
-            "ml_poll_sequences?session_date=eq.$date&select=$select&order=poll_ts.desc" to false,
-            "ml_brain_snapshots?select=$select&order=poll_ts.desc" to true,
-            "ml_poll_sequences?select=$select&order=poll_ts.desc" to true
+            "ml_brain_snapshots?select=$select&order=poll_ts.desc" to true
         )
 
         for ((basePath, requiresDateFallbackFilter) in sources) {
@@ -2609,8 +2570,7 @@ object SupabaseClient {
     fun fetchRecentBrainSnapshots(limit: Int = 200): JSONArray {
         return fetchArrayFromTables(
             listOf(
-                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=$limit",
-                "ml_poll_sequences?select=*&order=poll_ts.desc&limit=$limit"
+                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=$limit"
             )
         )
     }

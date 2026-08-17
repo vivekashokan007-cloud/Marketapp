@@ -17,11 +17,10 @@ object EvaluationLocalCache {
     private const val RETENTION_DAYS = 45L
     private const val MAX_ROWS_PER_SESSION = 90
     private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
-    private const val MAX_SUMMARY_BYTES_PER_SESSION = 512L * 1024L
-    // Local fallback snapshots do not need the full raw poll payload. Keep enough
-    // compact evaluator-grade evidence for post-close replay without letting the
-    // phone accumulate tens of MB during the live session.
-    private const val MAX_BYTES_PER_SESSION = 16L * 1024L * 1024L
+    private const val MAX_SUMMARY_BYTES_PER_SESSION = 4L * 1024L * 1024L
+    // Keep a full trading session of compact evaluator-grade evidence without
+    // retaining the much larger raw Python payloads.
+    private const val MAX_BYTES_PER_SESSION = 96L * 1024L * 1024L
 
     private data class SnapshotFileState(
         val rows: LinkedHashMap<String, String>,
@@ -227,27 +226,91 @@ object EvaluationLocalCache {
             "strategy",
             "strategy_type",
             "index",
+            "index_key",
             "mode",
             "trade_mode",
             "lane",
             "role",
+            "expiry",
+            "tDTE",
+            "dte",
+            "legCount",
+            "legs",
+            "leg_schema_version",
+            "candidate_schema_version",
+            "poll_ts",
             "score",
             "probability",
             "probProfit",
+            "prob_source",
+            "probSource",
+            "prob_status",
+            "trueProb",
             "expected_r",
             "ev",
             "premiumEdge",
+            "riskReward",
+            "build3ExpectedWin",
+            "build3ExpectedLoss",
+            "build3EvFloor",
+            "build3EvFloorMult",
+            "build3EvPass",
             "marketConfidence",
             "entryConfidence",
             "entryEligible",
             "entryGate",
             "entryEligibility",
+            "executionReady",
+            "executionGate",
+            "entryAction",
+            "directionSafe",
+            "brainScore",
+            "contextPercentileScore",
+            "contextPercentileSignals",
+            "contextPercentileInputs",
+            "contextPercentileComponents",
+            "contextPercentileRawScore",
+            "contextPercentileClamp",
+            "contextPercentileSchemaVersion",
+            "contextPercentileRecordingVersion",
+            "contextPercentileLiveRanking",
+            "p_ml",
+            "mlAction",
+            "mlEdge",
+            "mlOod",
+            "mlOodFlag",
+            "mlOodConf",
+            "mlOodBlocked",
+            "mlRegime",
+            "mlUnsure",
             "pc2PaperRank",
             "pc2PaperResearchRank",
+            "pc2PaperPrimaryEligible",
+            "pc2PaperSelectorVersion",
+            "pc2PaperMode",
             "pc2PaperSortComponents",
+            "pc2PaperSortKey",
+            "pc2PaperRandomControl",
             "pc2CompositeShadow",
+            "pc2SupplyWidthSource",
+            "pc2SupplyWidthExpanded",
+            "pc2SupplyLadderVersion",
+            "pc2BatchFCandleScore",
+            "pc2BatchFCandleComponents",
+            "pc2BatchFCandleExcludedPatterns",
+            "pc2BatchFCandleScoringMethod",
+            "teacher_shadow_rank",
+            "stage2a_live_rank",
+            "teacher_bucket_key",
+            "teacher_bucket_n",
+            "teacher_r_score",
+            "teacher_success_rate_pct",
+            "teacher_coverage",
+            "teacher_recommendable",
+            "generationQualityShadow",
             "netPremium",
             "entry_credit",
+            "estCost",
             "max_profit",
             "maxProfit",
             "max_loss",
@@ -261,10 +324,73 @@ object EvaluationLocalCache {
             "sellStrike2",
             "buy_strike2",
             "buyStrike2",
+            "sell_type",
+            "sellType",
+            "buy_type",
+            "buyType",
+            "sell_type2",
+            "sellType2",
+            "buy_type2",
+            "buyType2",
+            "sellLTP",
+            "buyLTP",
+            "sellLTP2",
+            "buyLTP2",
+            "isCredit",
+            "is_credit",
+            "lotSize",
             "sigmaOTM",
             "ivRichness",
             "creditWidthRatio",
-            "rank"
+            "rank",
+            "deterministic_rank",
+            "varsityTier",
+            "targetProfit",
+            "stopLoss",
+            "marginRequired",
+            "marginForSizing",
+            "marginSource",
+            "marginFallbackUsed",
+            "marginFallbackValue",
+            "marginFallbackReason",
+            "marginModelVersion",
+            "brainMaxLoss",
+            "marginSizingBehavior",
+            "marginQuoteStatus",
+            "marginQuoteSource",
+            "marginQuotedAt",
+            "realMargin",
+            "upstoxRequiredMargin",
+            "upstoxFinalMargin",
+            "upstoxSpanMargin",
+            "upstoxExposureMargin",
+            "upstoxNetBuyPremium",
+            "rejection_stage",
+            "rejection_reason",
+            "reason_code",
+            "reject_reason",
+            "gate_name",
+            "gate_field",
+            "gate_basis",
+            "pc2_gate_basis",
+            "gate_basis_summary",
+            "pct_target",
+            "slice_key",
+            "basis_support_count",
+            "basis_stability_ratio",
+            "basis_stability_bar",
+            "basis_stability_pass",
+            "counterfactual_basis",
+            "observed_value",
+            "threshold_value",
+            "margin",
+            "margin_pct",
+            "marginRequestUrl",
+            "marginQuoteError",
+            "expected_win",
+            "expected_loss",
+            "ev_floor",
+            "ev_ratio"
         )
         for (key in keys) {
             val value = src.opt(key)
@@ -282,25 +408,85 @@ object EvaluationLocalCache {
         return out
     }
 
+    private fun compactSummaryCandidate(raw: Any?): JSONObject? {
+        val src = parseJsonObject(raw) ?: return null
+        val out = JSONObject()
+        val keys = arrayOf(
+            "candidate_id",
+            "id",
+            "type",
+            "strategy",
+            "strategy_type",
+            "index",
+            "index_key",
+            "mode",
+            "trade_mode",
+            "lane",
+            "expiry",
+            "tDTE",
+            "legCount",
+            "legs",
+            "leg_schema_version",
+            "candidate_schema_version",
+            "rank",
+            "pc2PaperRank",
+            "pc2PaperResearchRank",
+            "entryEligible",
+            "entryConfidence",
+            "entryGate",
+            "premiumEdge",
+            "expected_r",
+            "ev",
+            "probProfit",
+            "netPremium",
+            "maxProfit",
+            "maxLoss",
+            "width",
+            "sellStrike",
+            "buyStrike",
+            "sellStrike2",
+            "buyStrike2",
+            "sellType",
+            "buyType",
+            "sellType2",
+            "buyType2",
+            "sellLTP",
+            "buyLTP",
+            "sellLTP2",
+            "buyLTP2",
+            "isCredit",
+            "is_credit",
+            "lotSize"
+        )
+        for (key in keys) {
+            val value = src.opt(key)
+            if (value != null && value != JSONObject.NULL) out.put(key, value)
+        }
+        return if (out.length() > 0) out else null
+    }
+
+    private fun compactSummaryCandidates(raw: Any?, limit: Int): JSONArray {
+        val source = parseJsonArray(raw) ?: return JSONArray()
+        val out = JSONArray()
+        for (i in 0 until minOf(source.length(), limit)) {
+            compactSummaryCandidate(source.opt(i))?.let(out::put)
+        }
+        return out
+    }
+
     private fun compactBrainSnapshot(snapshot: JSONObject): JSONObject {
         val compact = JSONObject()
         val scalarKeys = arrayOf(
-            "id",
             "recommendation_id",
             "session_date",
             "poll_ts",
             "action",
             "strategy",
-            "direction",
             "confidence",
             "is_labelable",
-            "brain_version",
-            "app_version",
-            "pre_alignment_action",
-            "pre_alignment_strategy",
-            "dominant_lane",
-            "dominant_count",
-            "execution_aligned"
+            "b1a_rv_status",
+            "b1a_bnf_rv_to_iv_daily_ratio",
+            "b1a_nf_rv_to_iv_daily_ratio"
         )
         for (key in scalarKeys) {
             val value = snapshot.opt(key)
@@ -308,7 +494,15 @@ object EvaluationLocalCache {
         }
 
         compactCandidate(snapshot.opt("primary_candidate_json"))?.let {
-            compact.put("primary_candidate_json", it.toString())
+            compact.put("primary_candidate_json", it)
+        }
+        arrayOf(
+            "verdict_json",
+            "market_forces_json",
+            "poll_summary_json",
+            "b1a_intraday_rv_json"
+        ).forEach { key ->
+            parseJsonObject(snapshot.opt(key))?.let { compact.put(key, it) }
         }
 
         val context = parseJsonObject(snapshot.opt("context_json")) ?: JSONObject()
@@ -316,7 +510,8 @@ object EvaluationLocalCache {
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
         val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
-        val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
+        val rejectedFull = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
+        val rejected = rejectedFull
             ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
 
         val compactContext = JSONObject()
@@ -325,7 +520,10 @@ object EvaluationLocalCache {
             "bnfSpot",
             "nfSpot",
             "significant_move",
-            "snapshot_generation_skip_reason"
+            "bias_net",
+            "morningBias",
+            "snapshot_generation_skip_reason",
+            "snapshot_supply_state"
         )
         for (key in contextKeys) {
             val value = context.opt(key)
@@ -337,6 +535,30 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_rejected_candidate_stats"))?.let {
             compactContext.put("snapshot_rejected_candidate_stats", it)
+        }
+        arrayOf(
+            "effective_bias",
+            "snapshot_phase3_expected_r_shadow",
+            "snapshot_phase4_ev_ladder_shadow",
+            "snapshot_phase5_gate_registry",
+            "snapshot_c3_const_inventory",
+            "snapshot_pc2_parameter_authority",
+            "snapshot_pc2_batch_a_width_wall",
+            "snapshot_pc2_batch_b_regime_sigma",
+            "snapshot_pc2_vix_regime_context",
+            "snapshot_pc2_batch_c_cross_market",
+            "snapshot_pc2_batch_d_exit_policy",
+            "snapshot_pc2_batch_e_alert_timing",
+            "snapshot_pc2_batch_f_supply_pattern",
+            "snapshot_shadow_selector_suite",
+            "snapshot_menu_abstention_shadow",
+            "snapshot_brain_notification",
+            "snapshot_latest_poll",
+            "signal_independence",
+            "candidate_generation_trace",
+            "context_percentiles"
+        ).forEach { key ->
+            parseJsonObject(context.opt(key))?.let { compactContext.put(key, it) }
         }
         parseJsonObject(context.opt("snapshot_build3_gate"))?.let {
             compactContext.put("snapshot_build3_gate", it)
@@ -355,6 +577,27 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_pc2_supply_quality_shadow"))?.let {
             compactContext.put("snapshot_pc2_supply_quality_shadow", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_batch_f_paper_context"))?.let {
+            compactContext.put("snapshot_pc2_batch_f_paper_context", it)
+        }
+        parseJsonObject(context.opt("snapshot_pc2_authority_policy"))?.let {
+            compactContext.put("snapshot_pc2_authority_policy", it)
+        }
+        parseJsonArray(context.opt("snapshot_pc2_authority_decisions"))?.let {
+            if (it.length() > 0) compactContext.put("snapshot_pc2_authority_decisions", it)
+        }
+        arrayOf(
+            "snapshot_supply_states",
+            "snapshot_evaluation_legs"
+        ).forEach { key ->
+            parseJsonArray(context.opt(key))?.let {
+                if (it.length() > 0) compactContext.put(key, it)
+            }
+        }
+        val snapshotBrainVersion = context.opt("snapshot_brain_version")
+        if (snapshotBrainVersion != null && snapshotBrainVersion != JSONObject.NULL) {
+            compactContext.put("snapshot_brain_version", snapshotBrainVersion)
         }
         // This small, immutable frame is the post-close C3 source of truth.
         // Keep it even when the full context is compacted for local fallback.
@@ -379,12 +622,26 @@ object EvaluationLocalCache {
             compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
         }
         if (compactRejected.length() > 0) {
-            compactContext.put("snapshot_rejected_candidates", compactRejected)
+            compactContext.put(
+                if (rejectedFull != null) "snapshot_rejected_candidates_full"
+                else "snapshot_rejected_candidates",
+                compactRejected
+            )
         }
 
-        compact.put("context_json", compactContext.toString())
-        compact.put("top_candidates_json", compactGenerated.toString())
+        compact.put("context_json", compactContext)
+        compact.put("top_candidates_json", compactGenerated)
         return compact
+    }
+
+    fun compactBrainSnapshotForPersistence(snapshot: JSONObject): JSONObject {
+        return compactBrainSnapshot(snapshot)
+    }
+
+    @Synchronized
+    fun releaseMemory() {
+        snapshotStateByPath.clear()
+        LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_MEMORY_RELEASED")
     }
 
     private fun compactSnapshotSummary(snapshot: JSONObject): JSONObject {
@@ -398,14 +655,25 @@ object EvaluationLocalCache {
             "confidence",
             "is_labelable",
             "brain_version",
-            "app_version"
+            "app_version",
+            "b1a_rv_status",
+            "b1a_bnf_rv_to_iv_daily_ratio",
+            "b1a_nf_rv_to_iv_daily_ratio"
         )
         for (key in scalarKeys) {
             val value = snapshot.opt(key)
             if (value != null && value != JSONObject.NULL) compact.put(key, value)
         }
         compactCandidate(snapshot.opt("primary_candidate_json"))?.let {
-            compact.put("primary_candidate_json", it.toString())
+            compact.put("primary_candidate_json", it)
+        }
+        arrayOf(
+            "verdict_json",
+            "market_forces_json",
+            "poll_summary_json",
+            "b1a_intraday_rv_json"
+        ).forEach { key ->
+            parseJsonObject(snapshot.opt(key))?.let { compact.put(key, it) }
         }
 
         val context = parseJsonObject(snapshot.opt("context_json")) ?: JSONObject()
@@ -413,8 +681,8 @@ object EvaluationLocalCache {
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
         val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
-        val compactGenerated = compactCandidates(generated, 12)
-        val compactRankedFull = compactCandidates(rankedFull, 50)
+        val compactGenerated = compactSummaryCandidates(generated, 5)
+        val compactRankedFull = compactSummaryCandidates(rankedFull, 12)
         val compactContext = JSONObject()
         val contextKeys = arrayOf(
             "vix",
@@ -458,8 +726,8 @@ object EvaluationLocalCache {
         if (compactRankedFull.length() > 0) {
             compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
         }
-        compact.put("context_json", compactContext.toString())
-        compact.put("top_candidates_json", compactGenerated.toString())
+        compact.put("context_json", compactContext)
+        compact.put("top_candidates_json", compactGenerated)
         return compact
     }
 

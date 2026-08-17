@@ -4,7 +4,12 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain import PC2_PAPER_PRIMARY_SELECTOR_VERSION, select_pc2_paper_primary, take_poll_snapshot
+from brain import (
+    PC2_PAPER_PRIMARY_SELECTOR_VERSION,
+    _compact_android_snapshot_context,
+    select_pc2_paper_primary,
+    take_poll_snapshot,
+)
 
 
 def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra):
@@ -208,6 +213,76 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(primary["id"], "bnf-primary")
         self.assertEqual(context["snapshot_pc2_paper_primary"]["pc2_primary_candidate_id"], "bnf-primary")
         self.assertIn("random_control", context["snapshot_pc2_paper_primary"])
+
+    def test_android_snapshot_mode_drops_chain_bulk_but_keeps_complete_research_evidence(self):
+        primary = candidate(
+            "bnf-primary", 1, 0.25, 0.30,
+            index="BNF", type="BEAR_CALL", expiry="2026-08-25",
+            sellStrike=58000, sellType="CE", buyStrike=58500, buyType="CE",
+            lotSize=30, netPremium=100.0, maxProfit=3000.0, maxLoss=12000.0,
+            legs=[
+                {"action": "SELL", "strike": 58000, "option_type": "CE", "ltp": 200.0},
+                {"action": "BUY", "strike": 58500, "option_type": "CE", "ltp": 100.0},
+            ],
+        )
+        result = {
+            "watchlist": [primary],
+            "generated_candidates": [primary],
+            "ranked_candidates_full": [primary],
+            "rejected_candidates": [{
+                "candidate_id": "rejected-1",
+                "type": "BEAR_CALL",
+                "index": "BNF",
+                "expiry": "2026-08-25",
+                "rejection_stage": "ev_below_floor",
+            }],
+            "verdict": {"action": "WAIT", "strategy": "BEAR_CALL", "direction": "BEAR", "confidence": 0},
+        }
+        context_input = {
+            "today_ist": "2026-08-17",
+            "vix": 11.6,
+            "bnfChain": {"strikes": {str(i): {"CE": {"ltp": i}} for i in range(1000)}},
+        }
+
+        snapshot = take_poll_snapshot(result, context_input, [], "android_compact_v1")
+        context = __import__("json").loads(snapshot["context_json"])
+
+        self.assertNotIn("bnfChain", context)
+        self.assertIn("snapshot_generated_candidates", context)
+        self.assertIn("snapshot_ranked_candidates_full", context)
+        self.assertIn("snapshot_rejected_candidates_full", context)
+        self.assertIn("c3_finalization_frame", context)
+        self.assertLess(len(snapshot["context_json"]), 100_000)
+
+    def test_android_snapshot_compaction_keeps_pc2_and_teacher_forensic_contract(self):
+        compact = _compact_android_snapshot_context({
+            "bnfChain": {"strikes": {"57000": {"CE": {"ltp": 100}}}},
+            "effective_bias": {"bias": "MILD_BEAR"},
+            "snapshot_phase3_expected_r_shadow": {"version": "p3"},
+            "snapshot_pc2_parameter_authority": {"version": "authority"},
+            "snapshot_pc2_batch_a_width_wall": {"mode": "ACTIVE"},
+            "snapshot_pc2_batch_f_supply_pattern": {"mode": "ACTIVE"},
+            "snapshot_shadow_selector_suite": {"selected": "candidate-1"},
+            "snapshot_menu_abstention_shadow": {"action": "ABSTAIN"},
+            "context_percentiles": {"schema_version": "pc2"},
+            "candidate_generation_trace": {"accepted_count": 30},
+            "snapshot_evaluation_legs": [{"candidate_id": "candidate-1", "legs": []}],
+        })
+
+        self.assertNotIn("bnfChain", compact)
+        for key in (
+            "effective_bias",
+            "snapshot_phase3_expected_r_shadow",
+            "snapshot_pc2_parameter_authority",
+            "snapshot_pc2_batch_a_width_wall",
+            "snapshot_pc2_batch_f_supply_pattern",
+            "snapshot_shadow_selector_suite",
+            "snapshot_menu_abstention_shadow",
+            "context_percentiles",
+            "candidate_generation_trace",
+            "snapshot_evaluation_legs",
+        ):
+            self.assertIn(key, compact)
 
 
 if __name__ == "__main__":
