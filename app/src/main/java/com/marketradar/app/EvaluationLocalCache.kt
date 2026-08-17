@@ -15,13 +15,16 @@ object EvaluationLocalCache {
     private const val TAG = "EvaluationLocalCache"
     private const val DIR_NAME = "evaluation_local_cache"
     private const val RETENTION_DAYS = 45L
-    private const val MAX_ROWS_PER_SESSION = 90
+    private const val MAX_ROWS_PER_SESSION = 60
+    private const val TARGET_ROWS_PER_SESSION = 36
     private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
     private const val MAX_SUMMARY_BYTES_PER_SESSION = 4L * 1024L * 1024L
     private const val MAX_COMPACT_SNAPSHOT_BYTES = 2L * 1024L * 1024L
-    // Keep a full trading session of compact evaluator-grade evidence without
-    // retaining the much larger raw Python payloads.
-    private const val MAX_BYTES_PER_SESSION = 96L * 1024L * 1024L
+    // Cloud snapshots are the durable evidence path. Keep local full snapshots
+    // as a bounded recent cache, and trim with hysteresis so polling does not
+    // rewrite a near-100 MiB file every few minutes after the cap is reached.
+    private const val MAX_BYTES_PER_SESSION = 64L * 1024L * 1024L
+    private const val TARGET_BYTES_PER_SESSION = 48L * 1024L * 1024L
 
     private data class SnapshotFileState(
         val rows: LinkedHashMap<String, String>,
@@ -234,8 +237,11 @@ object EvaluationLocalCache {
     }
 
     private fun trimFullSnapshotIndex(index: FullSnapshotIndex): Boolean {
+        if (index.rows.size <= MAX_ROWS_PER_SESSION && index.totalBytes <= MAX_BYTES_PER_SESSION) {
+            return false
+        }
         var trimmed = false
-        while (index.rows.size > MAX_ROWS_PER_SESSION || index.totalBytes > MAX_BYTES_PER_SESSION) {
+        while (index.rows.size > TARGET_ROWS_PER_SESSION || index.totalBytes > TARGET_BYTES_PER_SESSION) {
             val oldest = index.rows.entries.firstOrNull() ?: break
             index.rows.remove(oldest.key)
             index.totalBytes = (index.totalBytes - oldest.value).coerceAtLeast(0L)
@@ -937,7 +943,7 @@ object EvaluationLocalCache {
                     LogBuffer.add(
                         'I',
                         TAG,
-                        "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${index.rows.size} bytes=${index.totalBytes} rowCap=$MAX_ROWS_PER_SESSION byteCap=$MAX_BYTES_PER_SESSION"
+                        "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${index.rows.size} bytes=${index.totalBytes} rowCap=$MAX_ROWS_PER_SESSION rowTarget=$TARGET_ROWS_PER_SESSION byteCap=$MAX_BYTES_PER_SESSION byteTarget=$TARGET_BYTES_PER_SESSION"
                     )
                 } else {
                     LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT_ONCE: file=${file.name} rows=${index.rows.size}")
