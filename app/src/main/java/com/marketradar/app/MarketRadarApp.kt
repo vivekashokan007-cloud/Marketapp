@@ -1,6 +1,11 @@
 package com.marketradar.app
 
 import android.app.Application
+import android.app.ActivityManager
+import android.content.ComponentCallbacks2
+import android.content.Context
+import android.os.Build
+import android.os.Debug
 import android.util.Log
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
@@ -11,6 +16,10 @@ import kotlinx.coroutines.*
 import java.util.concurrent.TimeUnit
 
 class MarketRadarApp : Application() {
+    companion object {
+        val PROCESS_START_UUID: String = java.util.UUID.randomUUID().toString()
+    }
+
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -28,7 +37,10 @@ class MarketRadarApp : Application() {
                 }
             }
             prefs.edit().putLong("last_process_start_ms", now).commit()
-            Log.i("MarketRadarApp", "onCreate starting")
+            val pid = android.os.Process.myPid()
+            Log.i("MarketRadarApp", "onCreate starting pid=$pid startUuid=$PROCESS_START_UUID")
+            LogBuffer.add('I', "MarketRadarApp", "APP_PROCESS_START: pid=$pid startUuid=$PROCESS_START_UUID heap=${heapLine()}")
+            logHistoricalExitReasons()
             
             // Initialize Python
             if (!Python.isStarted()) {
@@ -75,6 +87,36 @@ class MarketRadarApp : Application() {
         } catch (e: Exception) {
             Log.e("MarketRadarApp", "onCreate FAILED: ${e.message}", e)
             throw e
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        LogBuffer.add('W', "MarketRadarApp", "APP_TRIM_MEMORY: level=$level pid=${android.os.Process.myPid()} startUuid=$PROCESS_START_UUID heap=${heapLine()}")
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
+            EvaluationLocalCache.releaseMemory()
+        }
+    }
+
+    private fun heapLine(): String {
+        val rt = Runtime.getRuntime()
+        val used = rt.totalMemory() - rt.freeMemory()
+        return "javaUsed=$used javaMax=${rt.maxMemory()} nativeUsed=${Debug.getNativeHeapAllocatedSize()}"
+    }
+
+    private fun logHistoricalExitReasons() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.getHistoricalProcessExitReasons(packageName, 0, 5).forEachIndexed { idx, info ->
+                LogBuffer.add(
+                    'I',
+                    "MarketRadarApp",
+                    "APP_EXIT_REASON[$idx]: reason=${info.reason} status=${info.status} importance=${info.importance} pss=${info.pss} rss=${info.rss} time=${info.timestamp}"
+                )
+            }
+        } catch (e: Exception) {
+            LogBuffer.add('W', "MarketRadarApp", "APP_EXIT_REASON_READ_FAIL: ${e.message}")
         }
     }
 }

@@ -71,7 +71,7 @@ class MainActivity : AppCompatActivity() {
 
             webView.post {
                 if (data != null) {
-                    // Full brain result + spots + candidates from Chaquopy — pass to syncFromNative
+                    // Legacy data-bearing tick path; current service ticks usually trigger native pull sync.
                     val escaped = data
                         .replace("\\", "\\\\")
                         .replace("'", "\\'")
@@ -101,7 +101,7 @@ class MainActivity : AppCompatActivity() {
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_CREATE: restored=${savedInstanceState != null} taskId=$taskId"
+            "ACTIVITY_CREATE: restored=${savedInstanceState != null} taskId=$taskId pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
         // Request notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -149,6 +149,11 @@ class MainActivity : AppCompatActivity() {
 
         // ── 1. WebView & Refresh — fills remaining space ──────────────────
         webView = WebView(this).apply {
+            LogBuffer.add(
+                'I',
+                "MainActivity",
+                "WEBVIEW_CREATE: hostPid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID} rendererPid=unavailable_public_api"
+            )
             layoutParams = LayoutParams(MATCH_PARENT, MATCH_PARENT)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -222,7 +227,7 @@ class MainActivity : AppCompatActivity() {
                     LogBuffer.add(
                         'E',
                         "MainActivity",
-                        "WEBVIEW_RENDERER_GONE: didCrash=$didCrash priority=$priority activityFinishing=$isFinishing"
+                        "WEBVIEW_RENDERER_GONE: didCrash=$didCrash priority=$priority activityFinishing=$isFinishing pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
                     )
                     persistCurrentWebUrl(view?.url)
                     webViewRendererGone = true
@@ -541,7 +546,7 @@ class MainActivity : AppCompatActivity() {
                 window.NativeBridge = {
                     isNative: function() { return true; },
                     startMarketService: function() { AndroidBridge.startMarketService(); },
-                    stopMarketService: function() { AndroidBridge.stopMarketService(); },
+                    stopMarketService: function() { AndroidBridge.userStopMarketService(); },
                     sendNotification: function(title, body, type) { AndroidBridge.sendNotification(title, body, type); },
                     
                     // Data Push
@@ -639,19 +644,18 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         webView.saveState(outState)
-        LogBuffer.add('I', "MainActivity", "ACTIVITY_SAVE_STATE: url=${webView.url.orEmpty()}")
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_SAVE_STATE: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
     }
 
     override fun onPause() {
         super.onPause()
-        // Do NOT call webView.onPause() — we want JS to keep running in background
         persistCurrentWebUrl(webView.url)
-        LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()}")
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
     }
 
     override fun onResume() {
         super.onResume()
-        LogBuffer.add('I', "MainActivity", "ACTIVITY_RESUME: url=${webView.url.orEmpty()}")
+        LogBuffer.add('I', "MainActivity", "ACTIVITY_RESUME: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
         webView.onResume() // resume if system paused it
         webView.resumeTimers()
         
@@ -682,7 +686,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        LogBuffer.add('I', "MainActivity", "TRIM_MEMORY: level=$level")
+        LogBuffer.add('I', "MainActivity", "TRIM_MEMORY: level=$level pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
         if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
             EvaluationLocalCache.releaseMemory()
         }
@@ -697,8 +701,13 @@ class MainActivity : AppCompatActivity() {
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing"
+            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
+        if (::webView.isInitialized) {
+            webView.onPause()
+            webView.pauseTimers()
+            LogBuffer.add('I', "MainActivity", "WEBVIEW_PAUSED_ON_STOP")
+        }
         super.onStop()
     }
 

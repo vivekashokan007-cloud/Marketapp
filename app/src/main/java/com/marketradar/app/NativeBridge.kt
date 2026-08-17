@@ -658,7 +658,25 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun stopMarketService() {
+        stopMarketServiceInternal(explicitUserStop = false)
+    }
+
+    @JavascriptInterface
+    fun userStopMarketService() {
+        stopMarketServiceInternal(explicitUserStop = true)
+    }
+
+    private fun stopMarketServiceInternal(explicitUserStop: Boolean) {
         try {
+            // NB1: Use stopService() instead of startService("STOP") to avoid background runtime exceptions
+            val intent = Intent(context, MarketWatchService::class.java)
+            Log.i(TAG, "stopMarketService request")
+            LogBuffer.add('I', TAG, "stopMarketService request")
+            val running = prefs.getBoolean("service_running", false)
+            if (running && !explicitUserStop) {
+                LogBuffer.add('W', TAG, "stopMarketService ignored: healthy service adopted by recreated WebView")
+                return
+            }
             val now = System.currentTimeMillis()
             val lastStopReq = prefs.getLong("last_stop_req_ms", 0L)
             val sinceLastReq = if (lastStopReq > 0L) now - lastStopReq else Long.MAX_VALUE
@@ -668,10 +686,6 @@ class NativeBridge(private val context: Context) {
                 return
             }
             prefs.edit().putLong("last_stop_req_ms", now).commit()
-            // NB1: Use stopService() instead of startService("STOP") to avoid background runtime exceptions
-            val intent = Intent(context, MarketWatchService::class.java)
-            Log.i(TAG, "stopMarketService request")
-            LogBuffer.add('I', TAG, "stopMarketService request")
             context.stopService(intent)
             
             // Explicitly update running flag for immediate UI response
@@ -731,9 +745,8 @@ class NativeBridge(private val context: Context) {
         if (normalized == last) return
         prefs.edit()
             .putString("morning_baseline", normalized)
-            .remove("brain_result")
-            .remove("candidates")
             .putString("last_poll_date", todayIstDate())
+            .also { BrainResultStore.clear(context, it) }
             .commit()
     }
 
@@ -795,9 +808,8 @@ class NativeBridge(private val context: Context) {
                 .putString("global_direction", globalDirection.toString())
                 .putString("expiry_bnf", bnfExpiry)
                 .putString("expiry_nf", nfExpiry)
-                .remove("brain_result")
-                .remove("candidates")
                 .putString("last_poll_date", todayIstDate())
+                .also { BrainResultStore.clear(context, it) }
                 .commit()
             bridgeOk()
         } catch (e: Exception) {
@@ -1119,7 +1131,7 @@ class NativeBridge(private val context: Context) {
     fun getBrainResult(): String {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "null"
-        return prefs.getString("brain_result", "null") ?: "null"
+        return BrainResultStore.readBrainResult(context, prefs)
     }
 
     @JavascriptInterface
@@ -1267,7 +1279,7 @@ class NativeBridge(private val context: Context) {
     fun getCandidates(): String {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "[]"
-        return prefs.getString("candidates", "[]") ?: "[]"
+        return BrainResultStore.readCandidates(context, prefs)
     }
 
     private fun isServiceRunning(): Boolean {
@@ -1506,7 +1518,7 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getExecutionInfraStatus(): String {
         return try {
-            val brainRaw = prefs.getString("brain_result", "null") ?: "null"
+            val brainRaw = BrainResultStore.readBrainResult(context, prefs)
             val brainResult = try { JSONObject(brainRaw) } catch (e: Exception) { JSONObject() }
             val keyStats = extractInstrumentKeyStats(brainResult)
 
@@ -2081,8 +2093,8 @@ class NativeBridge(private val context: Context) {
             prefs.getString("latest_poll", "null") != "null" ||
             prefs.contains("last_poll_time"))
         val hasStaleDerivedState = !effectiveBaselineIsToday && lastPollDate != today && (
-            prefs.getString("brain_result", "null") != "null" ||
-            prefs.getString("candidates", "[]") != "[]" ||
+            BrainResultStore.hasBrainResult(context, prefs) ||
+            BrainResultStore.readCandidates(context, prefs) != "[]" ||
             prefs.getBoolean("service_running", false)
         )
         if (!hasStalePollState && !hasStaleDerivedState && !hasStaleMorningState) return
@@ -2099,9 +2111,7 @@ class NativeBridge(private val context: Context) {
                 .putString("last_poll_date", today)
         }
         if (hasStaleDerivedState) {
-            editor
-                .remove("brain_result")
-                .remove("candidates")
+            BrainResultStore.clear(context, editor)
                 .putBoolean("service_running", false)
         }
         if (hasStaleMorningState && !effectiveBaselineIsToday) {
@@ -2117,8 +2127,6 @@ class NativeBridge(private val context: Context) {
 
     private fun clearDerivedSessionStateForToday() {
         prefs.edit()
-            .remove("brain_result")
-            .remove("candidates")
             .remove("poll_history")
             .remove("poll_count")
             .remove("latest_poll")
@@ -2126,6 +2134,7 @@ class NativeBridge(private val context: Context) {
             .remove("last_poll_dispatch_slot")
             .remove("last_successful_poll_slot")
             .putString("last_poll_date", todayIstDate())
+            .also { BrainResultStore.clear(context, it) }
             .commit()
     }
 

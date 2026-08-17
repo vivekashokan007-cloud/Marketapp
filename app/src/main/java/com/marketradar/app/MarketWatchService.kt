@@ -2472,6 +2472,7 @@ class MarketWatchService : Service() {
             ctxObj.put("snapshot_strike_oi_json", strikeOiJson)
 
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
+            LogBuffer.add('I', TAG, "POLL_HEAP_BEFORE_BRAIN: ${heapLine()}")
             val result = runBlocking {
                 withTimeoutOrNull(10_000L) {
                     brain.callAttr("analyze",
@@ -2779,7 +2780,7 @@ class MarketWatchService : Service() {
                     LogBuffer.add(
                         'D',
                         TAG,
-                        "BRAIN_RESULT: len=${resultObj.toString().length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} generatedBNF=$generatedBnf generatedNF=$generatedNf watchlistBNF=$watchlistBnf watchlistNF=$watchlistNf statsTotal=$statsTotal statsRejected=$statsRejected statsByBNF=${statsByIndex?.optInt("BNF", -1)} statsByNF=${statsByIndex?.optInt("NF", -1)} candidateTrace=${resultObj.has("candidateTrace")}"
+                        "BRAIN_RESULT: len=${result.length} keys=${resultKeys.joinToString("|")} generated=${generated?.length() ?: 0} watchlist=${watchlist?.length() ?: 0} generatedBNF=$generatedBnf generatedNF=$generatedNf watchlistBNF=$watchlistBnf watchlistNF=$watchlistNf statsTotal=$statsTotal statsRejected=$statsRejected statsByBNF=${statsByIndex?.optInt("BNF", -1)} statsByNF=${statsByIndex?.optInt("NF", -1)} candidateTrace=${resultObj.has("candidateTrace")}"
                     )
                 } catch(e: Exception) {
                     Log.w("BRAIN_RESULT_PARSE", "Failed to parse candidate details: ${e.message}")
@@ -2822,13 +2823,11 @@ class MarketWatchService : Service() {
                 // WS19: resultObj was mutated with ML scoring, 'result' string was NOT.
                 // Save resultObj to ensure ML-scored data persists in getBrainResult()
                 val finalBrainString = resultObj.toString()
-                prefs.edit().putString("brain_result", finalBrainString).commit()
                 
                 val candidates = resultObj.optJSONArray("generated_candidates")
                     ?: resultObj.optJSONArray("candidates")
-                if (candidates != null) {
-                    prefs.edit().putString("candidates", candidates.toString()).commit()
-                }
+                BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
+                LogBuffer.add('I', TAG, "POLL_HEAP_AFTER_PERSISTENCE: ${heapLine()}")
                 Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
                 
                 // Phase E: Persist routine alert timestamp if routine alert was fired
@@ -4560,6 +4559,12 @@ class MarketWatchService : Service() {
         } catch (_: Exception) {
             0
         }
+    }
+
+    private fun heapLine(): String {
+        val rt = Runtime.getRuntime()
+        val used = rt.totalMemory() - rt.freeMemory()
+        return "pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID} javaUsed=$used javaMax=${rt.maxMemory()} nativeUsed=${Debug.getNativeHeapAllocatedSize()}"
     }
 }
 

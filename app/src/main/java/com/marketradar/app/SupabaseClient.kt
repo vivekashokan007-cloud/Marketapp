@@ -1349,7 +1349,15 @@ object SupabaseClient {
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
         val payload = body.toString()
-        val result = postToFirstWorkingTableDetailed(listOf("ml_brain_snapshots"), payload)
+        val result = postToFirstWorkingTableDetailed(
+            listOf("ml_brain_snapshots"),
+            payload,
+            preferHeader = "return=minimal"
+        )
+        if (!result.success && result.code == 409 && (result.errorBody ?: "").contains("duplicate", ignoreCase = true)) {
+            LogBuffer.add('W', TAG, "ML_BRAIN_SNAPSHOT_DUPLICATE_INSERT: treated_as_saved payloadChars=${payload.length}")
+            return true
+        }
         if (!result.success) {
             val details = buildString {
                 append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: table=")
@@ -1362,8 +1370,8 @@ object SupabaseClient {
                     append(" body=")
                     append(result.errorBody.take(800))
                 }
-                append(" payloadBytes=")
-                append(payload.toByteArray().size)
+                append(" payloadChars=")
+                append(payload.length)
             }
             LogBuffer.add('E', TAG, details)
             Log.e(TAG, details)
