@@ -33,8 +33,9 @@ PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR = 1
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
 BUILD3_A8_BELOW_FLOOR_REASON = f"ALL_BELOW_EV_RATIO_FLOOR_{str(BUILD3_EV_FLOOR_MULT).replace('.', '_')}"
-ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v1_positive_ev_ood_fail_closed'
+ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v2_net_positive_ev_ood_fail_closed'
 ENTRY_CONFIDENCE_MIN = 55.0
+NET_ECONOMICS_VERSION = 'net_economics_v1_teacher_round_trip_friction'
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -6004,7 +6005,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.93"
+BRAIN_VERSION = "2.5.94"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -10674,13 +10675,218 @@ def _candidate_margin_fields_from(row, index_key=None, max_loss=None):
     return fields
 
 
+def _candidate_decision_friction(candidate):
+    """Estimate round-trip cost using the same model as the managed teacher.
+
+    This deliberately falls back to the compact candidate leg quotes when the
+    full chain is unavailable, matching post-close teacher behavior.
+    """
+    cand = candidate if isinstance(candidate, dict) else {}
+    try:
+        cfg = _teacher_default_config()
+        snap = {
+            'poll_ts': cand.get('poll_ts') or _current_ist_poll_ts(),
+            'context_json': {},
+        }
+        point = _entry_snapshot_point(snap, cand)
+        if not point:
+            return {
+                'total': None,
+                'status': 'UNAVAILABLE',
+                'reason': 'entry_quote_point_unavailable',
+                'version': NET_ECONOMICS_VERSION,
+            }
+        trade_dt = _parse_iso_ts(snap['poll_ts']) or datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, cfg)
+        breakdown['status'] = 'OK'
+        breakdown['version'] = NET_ECONOMICS_VERSION
+        return breakdown
+    except Exception as exc:
+        return {
+            'total': None,
+            'status': 'ERROR',
+            'reason': str(exc)[:160],
+            'version': NET_ECONOMICS_VERSION,
+        }
+
+
+def _net_probability_2leg(candidate, strikes, spot, T, vol, friction_cost):
+    cand = candidate if isinstance(candidate, dict) else {}
+    friction = _safe_num(friction_cost, None)
+    lot_size = _safe_num(cand.get('lotSize'), None)
+    net_prem = _safe_num(cand.get('netPremium'), None)
+    if friction is None or lot_size is None or lot_size <= 0 or net_prem is None:
+        return None
+    try:
+        friction_points = friction / lot_size
+        if cand.get('isCredit'):
+            effective_credit = max(net_prem - friction_points, 0.0)
+            sell_strike = _safe_num(cand.get('sellStrike'), None)
+            sell_type = cand.get('sellType')
+            if sell_strike is None:
+                return None
+            be = sell_strike + effective_credit if sell_type == 'CE' else sell_strike - effective_credit
+            return round(max(0.0, min(1.0, 1 - abs(_chain_delta(strikes, be, sell_type, spot, T, vol)))), 3)
+        effective_debit = net_prem + friction_points
+        buy_strike = _safe_num(cand.get('buyStrike'), None)
+        buy_type = cand.get('buyType')
+        if buy_strike is None:
+            return None
+        be = buy_strike + effective_debit if buy_type == 'CE' else buy_strike - effective_debit
+        return round(max(0.0, min(1.0, abs(_chain_delta(strikes, be, buy_type, spot, T, vol)))), 3)
+    except Exception:
+        return None
+
+
+def _net_probability_range(candidate, spot, T, vol, friction_cost):
+    cand = candidate if isinstance(candidate, dict) else {}
+    friction = _safe_num(friction_cost, None)
+    lot_size = _safe_num(cand.get('lotSize'), None)
+    net_prem = _safe_num(cand.get('netPremium'), None)
+    if friction is None or lot_size is None or lot_size <= 0 or net_prem is None:
+        return None
+    try:
+        effective_credit = max(net_prem - (friction / lot_size), 0.0)
+        stype = str(cand.get('type') or '').upper()
+        if stype == 'IRON_BUTTERFLY':
+            center = _safe_num(cand.get('sellStrike'), None)
+            if center is None:
+                return None
+            lower_be = center - effective_credit
+            upper_be = center + effective_credit
+        else:
+            sell_call = _safe_num(cand.get('sellStrike'), None)
+            sell_put = _safe_num(cand.get('sellStrike2'), None)
+            if sell_call is None or sell_put is None:
+                return None
+            lower_be = sell_put - effective_credit
+            upper_be = sell_call + effective_credit
+        prob_above = 1 - abs(_bs_delta(spot, lower_be, T, vol, 'PE'))
+        prob_below = 1 - abs(_bs_delta(spot, upper_be, T, vol, 'CE'))
+        return round(max(0.0, min(1.0, prob_above + prob_below - 1)), 3)
+    except Exception:
+        return None
+
+
+def _apply_net_economics(candidate, net_prob_profit=None, friction_breakdown=None):
+    cand = candidate if isinstance(candidate, dict) else {}
+    friction_breakdown = friction_breakdown if isinstance(friction_breakdown, dict) else _candidate_decision_friction(cand)
+    friction = _safe_num(friction_breakdown.get('total'), None)
+    gross_max_profit = _safe_num(cand.get('maxProfit'), None)
+    gross_max_loss = _safe_num(cand.get('maxLoss'), None)
+    gross_prob = _safe_num(cand.get('probProfit'), None)
+    gross_edge = _safe_num(cand.get('premiumEdge'), None)
+
+    cand['netEconomicsVersion'] = NET_ECONOMICS_VERSION
+    cand['grossMaxProfit'] = cand.get('grossMaxProfit', gross_max_profit)
+    cand['grossMaxLoss'] = cand.get('grossMaxLoss', gross_max_loss)
+    cand['grossPremiumEdge'] = cand.get('grossPremiumEdge', gross_edge)
+    cand['grossProbProfit'] = cand.get('grossProbProfit', gross_prob)
+    cand['grossTargetProfit'] = cand.get('grossTargetProfit', cand.get('targetProfit'))
+    cand['grossStopLoss'] = cand.get('grossStopLoss', cand.get('stopLoss'))
+    cand['frictionCost'] = friction
+    cand['frictionCostStatus'] = friction_breakdown.get('status') or ('OK' if friction is not None else 'UNAVAILABLE')
+    cand['frictionCostBreakdown'] = {
+        key: friction_breakdown.get(key)
+        for key in ('total', 'brokerage', 'exchange', 'gst', 'stt', 'stamp', 'sebi', 'ipft', 'slippage', 'missing_spread_labels', 'version', 'status')
+        if friction_breakdown.get(key) is not None
+    }
+
+    if friction is None or gross_max_profit is None or gross_max_loss is None or gross_prob is None:
+        cand['netEconomicsStatus'] = 'FRICTION_OR_GROSS_INPUT_UNAVAILABLE'
+        return cand
+
+    net_profit = max(gross_max_profit - friction, 0.0)
+    net_loss = gross_max_loss + friction
+    prob = _safe_num(net_prob_profit, None)
+    if prob is None:
+        prob = gross_prob
+        cand['netProbProfitStatus'] = 'GROSS_PROB_FALLBACK'
+    else:
+        cand['netProbProfitStatus'] = 'FRICTION_ADJUSTED_BREAKEVEN'
+    net_edge = round(prob * net_profit - (1 - prob) * net_loss)
+    net_target = round(net_profit * 0.5)
+    net_stop = round(net_loss * (0.6 if cand.get('isCredit') else 0.5))
+    cand.update({
+        'netEconomicsStatus': 'OK',
+        'netMaxProfitAfterFriction': round(net_profit, 2),
+        'netMaxLossAfterFriction': round(net_loss, 2),
+        'netProbProfit': round(prob, 3),
+        'netPremiumEdge': net_edge,
+        'netTargetProfit': net_target,
+        'netStopLoss': net_stop,
+        'netRiskReward': f"1:{net_profit/net_loss:.2f}" if net_loss > 0 else '--',
+        'frictionToGrossTargetRatio': round(friction / (gross_max_profit * 0.5), 4) if gross_max_profit > 0 else None,
+        'frictionToGrossMaxProfitRatio': round(friction / gross_max_profit, 4) if gross_max_profit > 0 else None,
+        'decisionEconomicsBasis': 'NET_AFTER_TEACHER_FRICTION',
+    })
+    # Keep teacher-facing gross maxProfit/maxLoss untouched. Target/stop are
+    # display/position guidance, so align them with the objective now used for entry.
+    cand['targetProfit'] = net_target
+    cand['stopLoss'] = net_stop
+    return cand
+
+
+def _candidate_rank_edge(candidate):
+    cand = candidate if isinstance(candidate, dict) else {}
+    net_expected = cand.get('netEconomicsVersion') is not None or cand.get('decisionEconomicsBasis') == 'NET_AFTER_TEACHER_FRICTION'
+    net_edge = _safe_num(cand.get('netPremiumEdge'), None)
+    net_loss = _safe_num(cand.get('netMaxLossAfterFriction'), None)
+    net_prob = _safe_num(cand.get('netProbProfit'), None)
+    if net_edge is not None and net_loss is not None and net_loss > 0:
+        return {
+            'edge': net_edge,
+            'max_loss': net_loss,
+            'prob': net_prob if net_prob is not None else _safe_num(cand.get('probProfit'), 0.0),
+            'status': 'OK_NET',
+            'scale': 'net_premium_edge_per_net_max_loss',
+            'basis': 'NET_AFTER_TEACHER_FRICTION',
+        }
+    if net_expected:
+        return {
+            'edge': float('-inf'),
+            'max_loss': float('inf'),
+            'prob': 0.0,
+            'status': 'MISSING_NET',
+            'scale': 'net_premium_edge_per_net_max_loss',
+            'basis': 'NET_UNAVAILABLE_FAIL_CLOSED',
+        }
+    gross_edge = _safe_num(cand.get('premiumEdge'), None)
+    gross_loss = _safe_num(cand.get('maxLoss'), None)
+    return {
+        'edge': gross_edge if gross_edge is not None else float('-inf'),
+        'max_loss': max(gross_loss or 0.0, 0.0),
+        'prob': _safe_num(cand.get('probProfit'), 0.0),
+        'status': 'OK' if gross_edge is not None else 'MISSING',
+        'scale': 'premium_edge_per_max_loss',
+        'basis': 'GROSS_COMPAT_FALLBACK',
+    }
+
+
 def _build3_candidate_ev(candidate):
     c = candidate if isinstance(candidate, dict) else {}
     # NOTE: A8 consumes payload-rounded probProfit (3dp); premiumEdge uses raw prob.
     # Known precision split - do not harmonize without a measured decision.
-    prob = _safe_num(c.get('probProfit'), None)
-    max_profit = _safe_num(c.get('maxProfit'), None)
-    max_loss = _safe_num(c.get('maxLoss'), None)
+    net_expected = c.get('netEconomicsVersion') is not None or c.get('decisionEconomicsBasis') == 'NET_AFTER_TEACHER_FRICTION'
+    prob = _safe_num(c.get('netProbProfit'), None)
+    max_profit = _safe_num(c.get('netMaxProfitAfterFriction'), None)
+    max_loss = _safe_num(c.get('netMaxLossAfterFriction'), None)
+    basis = 'NET_AFTER_TEACHER_FRICTION'
+    if prob is None or max_profit is None or max_loss is None:
+        if net_expected:
+            return {
+                'expected_win': None,
+                'expected_loss': None,
+                'ev_floor': None,
+                'ev_ratio': None,
+                'passes': False,
+                'missing': True,
+                'basis': 'NET_UNAVAILABLE_FAIL_CLOSED',
+            }
+        prob = _safe_num(c.get('probProfit'), None)
+        max_profit = _safe_num(c.get('maxProfit'), None)
+        max_loss = _safe_num(c.get('maxLoss'), None)
+        basis = 'GROSS_COMPAT_FALLBACK'
     if prob is None or max_profit is None or max_loss is None:
         return {
             'expected_win': None,
@@ -10689,6 +10895,7 @@ def _build3_candidate_ev(candidate):
             'ev_ratio': None,
             'passes': True,
             'missing': True,
+            'basis': basis,
         }
     expected_win = prob * max_profit
     expected_loss = (1 - prob) * max_loss
@@ -10701,6 +10908,7 @@ def _build3_candidate_ev(candidate):
         'ev_ratio': ev_ratio,
         'passes': expected_win >= ev_floor,
         'missing': False,
+        'basis': basis,
     }
 
 
@@ -10729,6 +10937,12 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'prob_status': c.get('prob_status'),
         'trueProb': c.get('trueProb'),
         'premiumEdge': c.get('premiumEdge'),
+        'netPremiumEdge': c.get('netPremiumEdge'),
+        'netMaxProfitAfterFriction': c.get('netMaxProfitAfterFriction'),
+        'netMaxLossAfterFriction': c.get('netMaxLossAfterFriction'),
+        'netProbProfit': c.get('netProbProfit'),
+        'frictionCost': c.get('frictionCost'),
+        'decisionEconomicsBasis': c.get('decisionEconomicsBasis'),
         'tDTE': c.get('tDTE'),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
@@ -10756,6 +10970,7 @@ def _build3_rejection_from_candidate(candidate, metrics, reason=None):
         'a8_ev_ratio': None if metrics.get('ev_ratio') is None else round(metrics.get('ev_ratio'), 4),
         'a8_pass': bool(metrics.get('passes')),
         'a8_hard_gate_active': BUILD3_A8_HARD_GATE_ACTIVE,
+        'a8_economics_basis': metrics.get('basis'),
         'a8_softened_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
         'candidate_released_to_ranking': not BUILD3_A8_HARD_GATE_ACTIVE,
         'ev_floor_mult': BUILD3_EV_FLOOR_MULT,
@@ -11223,8 +11438,9 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         if strategy_stats.get('total', 0) >= 3
         else 0.5
     )
-    premium_edge = candidate.get('premiumEdge') if candidate.get('premiumEdge') is not None else float('-inf')
-    max_loss = max(_safe_num(candidate.get('maxLoss'), 0.0), 0.0)
+    rank_edge = _candidate_rank_edge(candidate)
+    premium_edge = rank_edge['edge']
+    max_loss = max(_safe_num(rank_edge.get('max_loss'), 0.0), 0.0)
     premium_edge_per_risk = (
         premium_edge / max_loss
         if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge) and max_loss > 0
@@ -11260,7 +11476,7 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         -context_plus_brain,
         candidate.get('gammaRisk', 0),
         -candidate.get('wallScore', 0),
-        -candidate.get('probProfit', 0),
+        -_safe_num(rank_edge.get('prob'), 0.0),
         -p_ml_effective,
         raw_premium_edge_tiebreak,
     )
@@ -11268,15 +11484,16 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
     return {
         'candidate_id': candidate.get('id') or candidate.get('candidate_id'),
         'structure_stability_marker': structure_stability,
-        'rank_method_version': 'build3_rank_v3_scale_free_edge_first',
+        'rank_method_version': 'build3_rank_v4_net_scale_free_edge_first',
         'teacher_rank_active': teacher_rank_active,
         'teacher_score': teacher_score,
         'teacher_n': teacher_n,
-        'premium_edge_status': 'OK' if candidate.get('premiumEdge') is not None else 'MISSING',
+        'premium_edge_status': rank_edge['status'],
         'premiumEdgePerRisk': premium_edge_per_risk if math.isfinite(premium_edge_per_risk) else None,
         'opportunityGatePenaltyPerRisk': opportunity_gate_penalty_per_risk,
         'adjustedEdgePerRisk': adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None,
-        'rankEdgeScale': 'premium_edge_per_max_loss',
+        'rankEdgeScale': rank_edge['scale'],
+        'rankEconomicsBasis': rank_edge['basis'],
         'capitalBlockedAtRanking': bool(candidate.get('capitalBlocked')),
         'brain_verdict_alignment': brain_verdict_alignment,
         'calibration_win_rate': calibration_win_rate,
@@ -11533,6 +11750,15 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
                 'max_loss': cand.get('maxLoss'),
                 'risk_reward': cand.get('riskReward'),
                 'premium_edge': cand.get('premiumEdge'),
+                'gross_premium_edge': cand.get('grossPremiumEdge'),
+                'net_premium_edge': cand.get('netPremiumEdge'),
+                'net_max_profit_after_friction': cand.get('netMaxProfitAfterFriction'),
+                'net_max_loss_after_friction': cand.get('netMaxLossAfterFriction'),
+                'net_prob_profit': cand.get('netProbProfit'),
+                'friction_cost': cand.get('frictionCost'),
+                'friction_cost_status': cand.get('frictionCostStatus'),
+                'friction_to_gross_target_ratio': cand.get('frictionToGrossTargetRatio'),
+                'decision_economics_basis': cand.get('decisionEconomicsBasis'),
                 'ev_per_1k': cand.get('evPer1k'),
                 'est_cost': cand.get('estCost'),
                 'capital_blocked': cand.get('capitalBlocked'),
@@ -11966,8 +12192,8 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
     sell_delta = sell_data.get('delta', 0) or 0
     buy_delta  = buy_data.get('delta', 0) or 0
     net_delta  = round((sell_delta - buy_delta) if is_credit else (buy_delta - sell_delta), 4)
-    # netMaxProfit: same as maxProfit for spreads (legs already netted)
-    net_max_profit = round(max_profit)
+    # Spread legs are already netted, but this is not brokerage/friction-adjusted.
+    spread_net_max_profit = round(max_profit)
     # upstoxPop: Upstox's own P(profit) from option_greeks.pop for sell leg
     upstox_pop = sell_data.get('pop')
     sell_instrument_key = (sell_data.get('instrument_key') or sell_data.get('instrumentKey') or '').strip()
@@ -11992,7 +12218,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         )
         if isinstance(gate, dict) and gate.get('version') == PC2_GATE_BASIS_VERSION
     ]
-    return {
+    cand = {
         'id': cid, 'type': stype, 'width': width, 'legs': [
         _build_leg_record(pair['buy'], pair['buyType'], 'BUY', expiry, buy_data, atm),
         _build_leg_record(pair['sell'], pair['sellType'], 'SELL', expiry, sell_data, atm),
@@ -12026,7 +12252,7 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'estCost':       est_cost,
         'estCostPct':    est_cost_pct,
         'netDelta':      net_delta,
-        'netMaxProfit':  net_max_profit,
+        'spreadNetMaxProfit': spread_net_max_profit,
         'upstoxPop':     upstox_pop,
         'sellInstrumentKey': sell_instrument_key or None,
         'buyInstrumentKey': buy_instrument_key or None,
@@ -12057,6 +12283,9 @@ def _build_candidate(stype, pair, strikes, spot, lot_size, width, T, tdte, vol, 
         'beUpper': round(pair['sell'] + net_prem) if (is_credit and pair['sellType'] == 'CE') else (round(pair['buy'] + net_prem) if (not is_credit and pair['buyType'] == 'CE') else None),
         'beLower': round(pair['sell'] - net_prem) if (is_credit and pair['sellType'] == 'PE') else (round(pair['buy'] - net_prem) if (not is_credit and pair['buyType'] == 'PE') else None),
     }
+    friction_breakdown = _candidate_decision_friction(cand)
+    net_prob = _net_probability_2leg(cand, strikes, spot, T, vol, friction_breakdown.get('total'))
+    return _apply_net_economics(cand, net_prob_profit=net_prob, friction_breakdown=friction_breakdown)
 
 def check_execution_readiness(candidate, current_result, ctx):
     """Phase 12A readiness contract.
@@ -12809,6 +13038,9 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
                 fii_hist = _fresh_history_rows(ctx, ctx.get('fiiHistory', []), max_days=7)
                 yv = fii_hist[0].get('vix') if fii_hist else None
                 ic['contextScore'] = -0.15 if (yv and vix - yv < -0.5) else 0
+                ic_friction = _candidate_decision_friction(ic)
+                ic_net_prob = _net_probability_range(ic, spot, T, vol, ic_friction.get('total'))
+                _apply_net_economics(ic, net_prob_profit=ic_net_prob, friction_breakdown=ic_friction)
                 candidates.append(ic)
 
     # ═══ 3. IRON BUTTERFLY (intraday only, usually blocked) ═══
@@ -12998,6 +13230,9 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
             }
             ib['gammaTag'] = _gamma_tag(ib['gammaRisk'])
             ib['wallTag'] = _wall_tag(ib['wallScore'], ib['type'])
+            ib_friction = _candidate_decision_friction(ib)
+            ib_net_prob = _net_probability_range(ib, spot, T, vol, ib_friction.get('total'))
+            _apply_net_economics(ib, net_prob_profit=ib_net_prob, friction_breakdown=ib_friction)
             candidates.append(ib)
 
     expanded_widths = set(width_plan['paper_expanded_widths'])
@@ -13072,14 +13307,11 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         wall = c.get('wallScore', 0)
         # 8: Premium edge — honest EV-like ranking signal after hard gates pass.
         # Normalize by maxLoss so NF and BNF compete on return per unit risk, not raw rupees.
-        if c.get('premiumEdge') is None:
-            c['premium_edge_status'] = 'MISSING'
-            premium_edge = float('-inf')
-        else:
-            c['premium_edge_status'] = 'OK'
-            premium_edge = c.get('premiumEdge')
+        rank_edge = _candidate_rank_edge(c)
+        premium_edge = rank_edge['edge']
+        c['premium_edge_status'] = rank_edge['status']
         opportunity_gate_penalty = _opportunity_gate_penalty(c)
-        max_loss = max(_safe_num(c.get('maxLoss'), 0.0), 0.0)
+        max_loss = max(_safe_num(rank_edge.get('max_loss'), 0.0), 0.0)
         premium_edge_per_risk = (
             premium_edge / max_loss
             if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge) and max_loss > 0
@@ -13095,7 +13327,8 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         c['premiumEdgePerRisk'] = premium_edge_per_risk if math.isfinite(premium_edge_per_risk) else None
         c['opportunityGatePenaltyPerRisk'] = opportunity_gate_penalty_per_risk
         c['adjustedEdgePerRisk'] = adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None
-        c['rankEdgeScale'] = 'premium_edge_per_max_loss'
+        c['rankEdgeScale'] = rank_edge['scale']
+        c['rankEconomicsBasis'] = rank_edge['basis']
         c['adjustedPremiumEdge'] = (
             premium_edge - opportunity_gate_penalty
             if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge)
@@ -13104,7 +13337,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         # 9: Live percentile context. Bounded modifier only; never a hard gate.
         context_percentile_score = _safe_num(c.get('contextPercentileScore'), 0.0)
         # 10: Probability
-        prob = c.get('probProfit', 0)
+        prob = _safe_num(rank_edge.get('prob'), 0.0)
         # 11: ML score — tiebreaker. Neutralised when OOD/UNSURE.
         p_ml = c.get('p_ml') or 0.0
         if c.get('mlUnsure') or c.get('mlAction') == 'UNSURE':
@@ -13151,7 +13384,8 @@ def _pc2_paper_primary_sort_components(candidate):
     economics_percentile = _safe_num(candidate.get('pc2PaperEconomicsPercentile'), None)
     composite_score = _safe_num(candidate.get('pc2PaperCompositeScore'), None)
     teacher_modifier = _safe_num(candidate.get('pc2PaperTeacherModifier'), 0.0)
-    probability = _safe_num(candidate.get('probProfit'), 0.0)
+    rank_edge = _candidate_rank_edge(candidate)
+    probability = _safe_num(rank_edge.get('prob'), 0.0)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
         'selector_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
@@ -13162,6 +13396,10 @@ def _pc2_paper_primary_sort_components(candidate):
         'composite_score': round(composite_score, 6) if composite_score is not None else None,
         'teacher_modifier': round(teacher_modifier, 6),
         'prob_profit': round(probability, 6),
+        'rank_economics_basis': rank_edge.get('basis'),
+        'rank_edge_scale': rank_edge.get('scale'),
+        'net_premium_edge': candidate.get('netPremiumEdge'),
+        'friction_cost': candidate.get('frictionCost'),
         'candidate_id': str(candidate.get('id') or ''),
         # Diagnostics only. Neither value participates in ordering.
         'soft_gate_failure_count': failed_gate_count,
@@ -13513,10 +13751,16 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
         failure for failure in (pc2_quality_failures or [])
         if isinstance(failure, dict)
     ]
-    premium_edge = candidate.get('premiumEdge')
+    rank_edge = _candidate_rank_edge(candidate)
+    net_expected = candidate.get('netEconomicsVersion') is not None or candidate.get('decisionEconomicsBasis') == 'NET_AFTER_TEACHER_FRICTION'
+    premium_edge = candidate.get('netPremiumEdge')
     if premium_edge is None:
+        premium_edge = candidate.get('net_premium_edge')
+    if premium_edge is None and not net_expected:
+        premium_edge = candidate.get('premiumEdge')
+    if premium_edge is None and not net_expected:
         premium_edge = candidate.get('premium_edge')
-    if premium_edge is None:
+    if premium_edge is None and not net_expected:
         premium_edge = candidate.get('ev')
     premium_edge = _safe_num(premium_edge, None)
     if premium_edge is None:
@@ -13524,8 +13768,12 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
     elif premium_edge <= 0:
         reasons.append('expected_value_not_positive')
 
-    max_profit = _safe_num(candidate.get('maxProfit'), None)
-    max_loss = _safe_num(candidate.get('maxLoss'), None)
+    max_profit = _safe_num(candidate.get('netMaxProfitAfterFriction'), None)
+    if max_profit is None and not net_expected:
+        max_profit = _safe_num(candidate.get('maxProfit'), None)
+    max_loss = _safe_num(candidate.get('netMaxLossAfterFriction'), None)
+    if max_loss is None and not net_expected:
+        max_loss = _safe_num(candidate.get('maxLoss'), None)
     if max_profit is None or max_profit <= 0:
         reasons.append('max_profit_not_positive')
     if max_loss is None or max_loss <= 0:
@@ -13578,11 +13826,15 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
         'candidate_ml_action': ml_action or None,
         'candidate_ml_ood': ml_ood,
         'premium_edge': premium_edge,
+        'net_premium_edge': candidate.get('netPremiumEdge'),
+        'gross_premium_edge': candidate.get('grossPremiumEdge') if candidate.get('grossPremiumEdge') is not None else candidate.get('premiumEdge'),
+        'friction_cost': candidate.get('frictionCost'),
+        'rank_economics_basis': rank_edge.get('basis'),
         'build3_ev_pass': candidate.get('build3EvPass'),
         'entry_confidence': entry_confidence,
         'entry_confidence_minimum': ENTRY_CONFIDENCE_MIN,
         'confidence_contract': 'min(market_confidence, candidate_ml_probability_pct)',
-        'economics_contract': 'premiumEdge must be present and greater than zero',
+        'economics_contract': 'netPremiumEdge must be present and greater than zero after teacher friction; gross premiumEdge is evidence only',
         'pc2_quality_failure_count': len(pc2_quality_failures),
         'pc2_quality_failure_stages': sorted({
             str(failure.get('stage') or failure.get('gate_name') or failure.get('constant') or 'unknown')
@@ -15150,6 +15402,27 @@ def _candidate_view(c):
         'creditToRisk': c.get('creditToRisk'),
         'sigmaOTM': c.get('sigmaOTM'),
         'premiumEdge': c.get('premiumEdge'),
+        **(_compact_snapshot_object(c, (
+            'grossMaxProfit',
+            'grossMaxLoss',
+            'grossPremiumEdge',
+            'grossProbProfit',
+            'netEconomicsVersion',
+            'netEconomicsStatus',
+            'netMaxProfitAfterFriction',
+            'netMaxLossAfterFriction',
+            'netProbProfit',
+            'netProbProfitStatus',
+            'netPremiumEdge',
+            'netTargetProfit',
+            'netStopLoss',
+            'netRiskReward',
+            'frictionCost',
+            'frictionCostStatus',
+            'frictionToGrossTargetRatio',
+            'decisionEconomicsBasis',
+            'rankEconomicsBasis',
+        )) or {}),
         'generationQualityShadow': _compact_snapshot_object(
             c.get('generationQualityShadow'),
             ('quality_flags', 'would_suppress', 'credit_to_risk', 'premium_edge'),
@@ -15243,6 +15516,12 @@ def _shadow_selector_brief(cand, selector, score=None, reason=None, current_top=
         'tDTE': cand.get('tDTE'),
         'isCredit': cand.get('isCredit'),
         'premiumEdge': cand.get('premiumEdge'),
+        'netPremiumEdge': cand.get('netPremiumEdge'),
+        'netMaxProfitAfterFriction': cand.get('netMaxProfitAfterFriction'),
+        'netMaxLossAfterFriction': cand.get('netMaxLossAfterFriction'),
+        'netProbProfit': cand.get('netProbProfit'),
+        'frictionCost': cand.get('frictionCost'),
+        'decisionEconomicsBasis': cand.get('decisionEconomicsBasis'),
         'creditWidthRatio': cand.get('creditWidthRatio'),
         'probProfit': cand.get('probProfit'),
         'p_ml': cand.get('p_ml'),
@@ -15275,12 +15554,20 @@ def _compute_managed_proxy_v0_score(cand):
         return None
     if cand.get('capitalBlocked'):
         return None
-    max_loss = _shadow_num(cand.get('maxLoss'))
+    max_loss = _shadow_num(cand.get('netMaxLossAfterFriction'))
+    if max_loss is None:
+        max_loss = _shadow_num(cand.get('maxLoss'))
     if max_loss is None or max_loss <= 0:
         return None
-    max_profit = _shadow_num(cand.get('maxProfit'), 0.0) or 0.0
-    prob = _shadow_num(cand.get('probProfit'), 0.0) or 0.0
-    premium_edge = _shadow_num(cand.get('premiumEdge'), 0.0) or 0.0
+    max_profit = _shadow_num(cand.get('netMaxProfitAfterFriction'), None)
+    if max_profit is None:
+        max_profit = _shadow_num(cand.get('maxProfit'), 0.0) or 0.0
+    prob = _shadow_num(cand.get('netProbProfit'), None)
+    if prob is None:
+        prob = _shadow_num(cand.get('probProfit'), 0.0) or 0.0
+    premium_edge = _shadow_num(cand.get('netPremiumEdge'), None)
+    if premium_edge is None:
+        premium_edge = _shadow_num(cand.get('premiumEdge'), 0.0) or 0.0
     p_ml = _shadow_num(cand.get('p_ml'), 0.0) or 0.0
     credit_ratio = _shadow_num(cand.get('creditWidthRatio'), 0.0) or 0.0
     sigma = _shadow_num(cand.get('sigmaOTM'))
@@ -15326,8 +15613,8 @@ def _native_memory_feature(row, ctx=None):
                 return value
         return None
 
-    max_profit = _shadow_num(first('maxProfit', 'max_profit'), 0.0) or 0.0
-    max_loss = _shadow_num(first('maxLoss', 'max_loss'), 0.0) or 0.0
+    max_profit = _shadow_num(first('netMaxProfitAfterFriction', 'net_max_profit_after_friction', 'maxProfit', 'max_profit'), 0.0) or 0.0
+    max_loss = _shadow_num(first('netMaxLossAfterFriction', 'net_max_loss_after_friction', 'maxLoss', 'max_loss'), 0.0) or 0.0
     rr = max_profit / max_loss if max_loss > 0 else None
     vix = _shadow_num(first('vix', 'VIX'), None)
     if vix is None:
@@ -15340,9 +15627,9 @@ def _native_memory_feature(row, ctx=None):
         'width': _shadow_num(first('width')),
         'tDTE': _shadow_num(first('tDTE', 'tdte', 'dte')),
         'vix': vix,
-        'premiumEdge': _shadow_num(first('premiumEdge', 'premium_edge')),
+        'premiumEdge': _shadow_num(first('netPremiumEdge', 'net_premium_edge', 'premiumEdge', 'premium_edge')),
         'creditWidthRatio': _shadow_num(first('creditWidthRatio', 'credit_width_ratio')),
-        'probProfit': _shadow_num(first('probProfit', 'prob_profit')),
+        'probProfit': _shadow_num(first('netProbProfit', 'net_prob_profit', 'probProfit', 'prob_profit')),
         'p_ml': _shadow_num(first('p_ml', 'ml_probability')),
         'sigmaOTM': _shadow_num(first('sigmaOTM', 'sigma_otm')),
         'debitBreakevenSigma': _shadow_num(first('debitBreakevenSigma', 'debit_breakeven_sigma')),
@@ -15553,14 +15840,22 @@ def _compute_shadow_selector_suite(candidates, current_top=None, ctx=None):
             'existing_live_candidate_order',
             current_top,
         ),
-        best_by('K1_premium_edge_rank', lambda c: _shadow_num(c.get('premiumEdge')), 'highest_premiumEdge'),
+        best_by(
+            'K1_net_premium_edge_rank',
+            lambda c: _shadow_num(c.get('netPremiumEdge'), _shadow_num(c.get('premiumEdge'))),
+            'highest_netPremiumEdge_with_gross_fallback',
+        ),
         best_by(
             'K2_credit_width_ratio_rank',
             lambda c: _shadow_num(c.get('creditWidthRatio')),
             'highest_creditWidthRatio_among_credit_candidates',
             lambda c: bool(c.get('isCredit')),
         ),
-        best_by('K3_prob_profit_rank', lambda c: _shadow_num(c.get('probProfit')), 'highest_probProfit'),
+        best_by(
+            'K3_net_prob_profit_rank',
+            lambda c: _shadow_num(c.get('netProbProfit'), _shadow_num(c.get('probProfit'))),
+            'highest_netProbProfit_with_gross_fallback',
+        ),
         managed,
         best_by(
             'K5_model_advisory_if_available',

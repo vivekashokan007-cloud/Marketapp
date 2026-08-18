@@ -197,7 +197,7 @@ def test_ranked_candidate_evidence_extends_beyond_ui_cap():
     assert len(evidence) == 40
     assert evidence[0]["rank"] == 1
     assert evidence[0]["watchlist_rank"] == 1
-    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v3_scale_free_edge_first"
+    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v4_net_scale_free_edge_first"
     assert evidence[0]["rank_diagnostics"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["structure_hold_index_source"] == "unavailable_at_ranker_scope"
@@ -209,6 +209,7 @@ def test_ranked_candidate_evidence_extends_beyond_ui_cap():
     assert evidence[0]["gammaRisk"] == 0.1
     assert evidence[0]["wallScore"] == 0
     assert evidence[0]["premium_edge_status"] == "OK"
+    assert evidence[0]["rank_diagnostics"]["rankEconomicsBasis"] == "GROSS_COMPAT_FALLBACK"
     assert evidence[31]["rank"] == 32
     assert evidence[31]["candidate_id"] == "c31"
 
