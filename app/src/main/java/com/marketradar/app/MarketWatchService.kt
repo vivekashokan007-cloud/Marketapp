@@ -2600,10 +2600,15 @@ class MarketWatchService : Service() {
                                 }
                             }
                             val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
+                            val contextBytes = snapObj.opt("context_json")
+                                ?.toString()?.toByteArray(Charsets.UTF_8)?.size ?: 0
+                            val topCandidateBytes = snapObj.opt("top_candidates_json")
+                                ?.toString()?.toByteArray(Charsets.UTF_8)?.size ?: 0
+                            val totalApproxBytes = snapObj.toString().toByteArray(Charsets.UTF_8).size
                             LogBuffer.add(
                                 'I',
                                 TAG,
-                                "ML_SNAPSHOT_PERSISTENCE_COMPACT: completed=true"
+                                "ML_SNAPSHOT_PERSISTENCE_COMPACT: completed=true contextBytes=$contextBytes topCandidatesBytes=$topCandidateBytes totalApproxBytes=$totalApproxBytes"
                             )
                             val snapshotSessionDate = snapObj.optString(
                                 "session_date",
@@ -3267,6 +3272,8 @@ class MarketWatchService : Service() {
         val recommendationId = snapObj.opt("recommendation_id")
         val qualityTag = factPack.optString("quality_tag", "qualitative_prompt_v2")
         val decisionSource = factPack.optString("decision_source", "")
+        val appVersion = factPack.optString("app_version", BuildConfig.VERSION_NAME)
+        val brainVersion = factPack.optString("brain_version", "")
         val signalIndependence = factPack.optJSONObject("signal_independence") ?: JSONObject()
 
         fun JSONObject.putIfValue(key: String, value: Any?) {
@@ -3283,6 +3290,8 @@ class MarketWatchService : Service() {
             "recommendation_id",
             "quality_tag",
             "decision_source",
+            "app_version",
+            "brain_version",
             "candidate_id",
             "lane",
             "index_key",
@@ -3332,6 +3341,8 @@ class MarketWatchService : Service() {
             row.putIfValue("recommendation_id", recommendationId)
             row.putIfValue("quality_tag", qualityTag)
             row.putIfValue("decision_source", decisionSource)
+            row.putIfValue("app_version", candidate.optString("app_version", appVersion))
+            row.putIfValue("brain_version", candidate.optString("brain_version", brainVersion))
             row.putIfValue("candidate_id", candidate.opt("candidate_id"))
             row.putIfValue("lane", candidate.optString("lane"))
             row.putIfValue("index_key", candidate.optString("index"))
@@ -3414,12 +3425,16 @@ class MarketWatchService : Service() {
         val recommendationId = snapObj.opt("recommendation_id")
         val qualityTag = factPack.optString("quality_tag", "qualitative_prompt_v2")
         val decisionSource = factPack.optString("decision_source", "")
+        val appVersion = factPack.optString("app_version", BuildConfig.VERSION_NAME)
+        val brainVersion = factPack.optString("brain_version", "")
         val stableKeys = listOf(
             "snapshot_poll_ts",
             "session_date",
             "recommendation_id",
             "quality_tag",
             "decision_source",
+            "app_version",
+            "brain_version",
             "candidate_id",
             "lane",
             "index_key",
@@ -3498,6 +3513,8 @@ class MarketWatchService : Service() {
             row.putIfValue("recommendation_id", recommendationId)
             row.putIfValue("quality_tag", qualityTag)
             row.putIfValue("decision_source", if (decisionSource.isBlank()) "REJECTED_CANDIDATE" else decisionSource)
+            row.putIfValue("app_version", appVersion)
+            row.putIfValue("brain_version", brainVersion)
             row.putIfValue("candidate_id", syntheticRejectedId(candidate, i))
             row.putIfValue("lane", candidate.optString("lane"))
             row.putIfValue("index_key", candidate.optString("index"))

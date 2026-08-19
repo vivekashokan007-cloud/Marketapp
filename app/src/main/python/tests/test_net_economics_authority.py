@@ -53,6 +53,51 @@ def test_ranker_prefers_positive_net_edge_over_higher_gross_edge():
     assert ranked[0]["rankEdgeScale"] == "net_premium_edge_per_net_max_loss"
 
 
+def test_ranker_prefers_net_economics_before_varsity_and_teacher_heuristics():
+    brain = load_brain()
+    legacy_favorite = candidate("legacy_favorite", gross_edge=500, net_edge=50)
+    legacy_favorite.update({
+        "varsityTier": "PRIMARY",
+        "teacher_ranking_eligible": True,
+        "teacher_r_score": 0.90,
+        "teacher_bucket_n": 100,
+    })
+    economics_favorite = candidate("economics_favorite", gross_edge=200, net_edge=200)
+    economics_favorite.update({
+        "varsityTier": "SECONDARY",
+        "teacher_ranking_eligible": False,
+    })
+
+    ranked = brain.rank_candidates(
+        [legacy_favorite, economics_favorite],
+        stage2a={"ranking_active": True},
+    )
+
+    assert [row["id"] for row in ranked] == ["economics_favorite", "legacy_favorite"]
+    assert ranked[0]["rank_diagnostics"]["sort_tuple_fields"].startswith(
+        "capitalBlocked|directionSafe|netPremiumEdge"
+    )
+
+
+def test_ranker_uses_raw_net_edge_before_edge_per_risk():
+    brain = load_brain()
+    raw_edge_winner = candidate("raw_edge_winner", gross_edge=300, net_edge=200)
+    raw_edge_winner.update({
+        "maxLoss": 19000,
+        "netMaxLossAfterFriction": 20000,
+    })
+    ratio_winner = candidate("ratio_winner", gross_edge=250, net_edge=150)
+    ratio_winner.update({
+        "maxLoss": 900,
+        "netMaxLossAfterFriction": 1000,
+    })
+
+    ranked = brain.rank_candidates([ratio_winner, raw_edge_winner])
+
+    assert [row["id"] for row in ranked] == ["raw_edge_winner", "ratio_winner"]
+    assert ranked[0]["adjustedEdgePerRisk"] < ranked[1]["adjustedEdgePerRisk"]
+
+
 def test_entry_eligibility_fails_gross_positive_but_net_negative():
     brain = load_brain()
     row = brain.annotate_candidate_entry_eligibility(
@@ -133,3 +178,24 @@ def test_apply_net_economics_preserves_teacher_gross_fields():
     assert row["netMaxLossAfterFriction"] == 9350
     assert row["targetProfit"] == 325
     assert row["decisionEconomicsBasis"] == "NET_AFTER_TEACHER_FRICTION"
+
+
+def test_elephant_fact_pack_stamps_candidate_and_payload_versions():
+    brain = load_brain()
+    row = candidate("versioned", gross_edge=100, net_edge=100)
+    result = {
+        "ranked_candidates_full": [row],
+        "watchlist": [row],
+        "verdict": {"action": "WAIT", "confidence": 0},
+    }
+
+    fact_pack = brain.build_elephant_fact_pack(
+        result,
+        {"today_ist": "2026-08-18", "tradeMode": "intraday"},
+        [],
+        {},
+        [],
+    )
+
+    assert fact_pack["app_version"] == brain.BRAIN_VERSION
+    assert fact_pack["brain_version"] == brain.BRAIN_VERSION

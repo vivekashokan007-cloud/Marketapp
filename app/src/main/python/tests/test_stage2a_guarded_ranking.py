@@ -319,7 +319,7 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         self.assertEqual(guarded["verdict"]["action"], "WAIT")
         self.assertEqual(guarded["decision_source"], "TEACHER_ONLY")
 
-    def test_live_ranking_prefers_positive_teacher_bucket(self):
+    def test_live_ranking_keeps_teacher_bounded_behind_economics(self):
         self.positive_path = _write_teacher_table(
             [
                 {
@@ -360,7 +360,11 @@ class TestStage2AGuardedRanking(unittest.TestCase):
         )
         ranked = rank_candidates(candidates, {}, None, stage2a={"ranking_active": True})
         self.assertEqual(summary["positive_count"], 1)
-        self.assertEqual(ranked[0]["id"], "bear")
+        self.assertEqual(ranked[0]["id"], "bull")
+
+        candidates[0]["premiumEdge"] = 0.4
+        ranked_tie = rank_candidates(candidates, {}, None, stage2a={"ranking_active": True})
+        self.assertEqual(ranked_tie[0]["id"], "bear")
 
     def test_low_confidence_teacher_bucket_is_not_ranking_eligible(self):
         self.table_path = _write_teacher_table(

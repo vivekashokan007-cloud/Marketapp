@@ -95,6 +95,82 @@ class EntryEligibilityTests(unittest.TestCase):
         self.assertEqual(aligned["confidence"], 0)
         self.assertEqual(aligned["market_confidence"], 42)
 
+    def test_neutral_range_structure_uses_strategy_market_fit_not_directional_confidence(self):
+        row = annotate_candidate_entry_eligibility(
+            candidate(type="IRON_CONDOR", p_ml=0.99, mlAction="TAKE"),
+            0,
+            {
+                "type": "range",
+                "sigma": 0.20,
+                "trend_pct": 0.10,
+                "direction": 1,
+                "nf_direction": 1,
+            },
+        )
+
+        self.assertTrue(row["entryEligible"])
+        self.assertEqual(row["entryConfidence"], 86.0)
+        self.assertEqual(row["marketConfidence"], 0.0)
+        self.assertEqual(row["strategyMarketFitConfidence"], 86.0)
+        self.assertEqual(row["entryEligibility"]["strategy_direction"], "NEUTRAL")
+        self.assertNotIn(
+            "entry_confidence_below_minimum",
+            row["entryEligibility"]["reasons"],
+        )
+
+    def test_neutral_structure_in_persistent_high_sigma_trend_is_monitor_only(self):
+        row = annotate_candidate_entry_eligibility(
+            candidate(type="IRON_BUTTERFLY", p_ml=0.99, mlAction="TAKE"),
+            90,
+            {
+                "type": "trend",
+                "sigma": 0.80,
+                "trend_pct": 0.90,
+                "direction": 4,
+                "nf_direction": 4,
+            },
+        )
+
+        self.assertFalse(row["entryEligible"])
+        self.assertEqual(row["entryConfidence"], 29.0)
+        self.assertIn("entry_confidence_below_minimum", row["entryEligibility"]["reasons"])
+
+    def test_neutral_structure_without_regime_evidence_fails_closed(self):
+        row = annotate_candidate_entry_eligibility(
+            candidate(type="IRON_CONDOR", p_ml=0.99, mlAction="TAKE"),
+            90,
+        )
+
+        self.assertFalse(row["entryEligible"])
+        self.assertIn("strategy_market_fit_unavailable", row["entryEligibility"]["reasons"])
+
+    def test_unknown_strategy_direction_fails_closed(self):
+        row = annotate_candidate_entry_eligibility(
+            candidate(type="UNKNOWN_STRUCTURE", p_ml=0.99, mlAction="TAKE"),
+            90,
+        )
+
+        self.assertFalse(row["entryEligible"])
+        self.assertIn("strategy_direction_unknown", row["entryEligibility"]["reasons"])
+
+    def test_directional_structure_still_requires_market_confidence(self):
+        row = annotate_candidate_entry_eligibility(candidate(p_ml=0.99, mlAction="TAKE"), 42)
+
+        self.assertFalse(row["entryEligible"])
+        self.assertEqual(row["entryConfidence"], 42.0)
+        self.assertIn(
+            "entry_confidence_below_minimum",
+            row["entryEligibility"]["reasons"],
+        )
+
+    def test_wait_zeroing_preserves_a_separate_market_confidence_value(self):
+        brain_path = os.path.join(os.path.dirname(__file__), "..", "brain.py")
+        with open(brain_path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        self.assertIn("market_confidence = confidence\n    if action == 'WAIT'", source)
+        self.assertIn('"confidence": confidence, "market_confidence": market_confidence,', source)
+
     def test_entry_eligible_candidate_aligns_with_candidate_confidence(self):
         row = annotate_candidate_entry_eligibility(candidate(p_ml=0.72), 68)
         verdict = {

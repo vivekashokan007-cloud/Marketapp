@@ -33,9 +33,22 @@ PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR = 1
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
 BUILD3_A8_BELOW_FLOOR_REASON = f"ALL_BELOW_EV_RATIO_FLOOR_{str(BUILD3_EV_FLOOR_MULT).replace('.', '_')}"
-ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v2_net_positive_ev_ood_fail_closed'
+ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v4_market_fit_confidence'
 ENTRY_CONFIDENCE_MIN = 55.0
+DECISION_GATE_VERSION = 'decision_gate_v1'
+DECISION_GATE_ACTIONABLE = 'ACTIONABLE'
+DECISION_GATE_PRELIMINARY_WAIT = 'PRELIMINARY_WAIT'
+DECISION_GATE_HARD_WAIT = 'HARD_WAIT'
+DECISION_GATE_STOP = 'STOP'
 NET_ECONOMICS_VERSION = 'net_economics_v1_teacher_round_trip_friction'
+
+
+def _decision_gate(state, reason):
+    return {
+        'version': DECISION_GATE_VERSION,
+        'state': state,
+        'reason': reason,
+    }
 
 def _ml_load_if_needed():
     global _ML_ENGINE
@@ -4706,8 +4719,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # b93: STRADDLE VETO — Premium is King
     _, straddle_chg, straddle_expanding = straddle_velocity(polls)
     
-    # Strategy selection
+    # Strategy selection. WAIT authority is classified so a preliminary market
+    # thesis cannot silently veto a fully eligible PC2 paper candidate.
     conflicts = []
+    decision_gate = _decision_gate(DECISION_GATE_ACTIONABLE, 'market_thesis_actionable')
     if rtype == 'range':
         action = 'SELL PREMIUM'
         # Straddle expanding in range = market makers pricing in breakout — don't sell
@@ -4715,6 +4730,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             conflicts.append(f"Straddle expanding +₹{straddle_chg:.0f} — breakout priced in")
             action = 'WAIT'
             strategy = None
+            decision_gate = _decision_gate(
+                DECISION_GATE_HARD_WAIT,
+                'straddle_expansion_breakout_risk',
+            )
         # BR57: IB on dte<=1 depends on correct DTE from ctx.
         elif vix_z >= 0.5 and dte is not None and dte <= 1:
             strategy = 'IRON_BUTTERFLY'
@@ -4733,10 +4752,18 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     else:
         if rtype == 'choppy' or cautions >= 3:
             action, strategy = 'WAIT', None
+            decision_gate = _decision_gate(
+                DECISION_GATE_HARD_WAIT,
+                'choppy_or_caution_risk',
+            )
         elif vix_z >= 0.5:
             action, strategy = 'SELL PREMIUM', 'IRON_CONDOR'
         else:
             action, strategy = 'WAIT', None
+            decision_gate = _decision_gate(
+                DECISION_GATE_PRELIMINARY_WAIT,
+                'no_preliminary_strategy',
+            )
     # TASK 5.3 — strategy selection snapshot (captures outcome of 1730-1759 block)
     if ctx.get('_trace') is not None:
         ctx['_trace']['verdict']['strategy_selection'] = {
@@ -4762,6 +4789,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             vetoed_strategy = strategy
             strategy = None
             action = 'WAIT'
+            decision_gate = _decision_gate(
+                DECISION_GATE_PRELIMINARY_WAIT,
+                'legacy_calibration_veto_pending_pc2_candidate_review',
+            )
         elif n >= 5 and rate < 0.3:
             confidence -= 20
             # TASK 5.3 (F6)
@@ -4868,6 +4899,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             conflicts.append(f"Fallback: {original_strategy} → {best_alt} (available + proven)")
             strategy = best_alt
             action = alt_action
+            decision_gate = _decision_gate(
+                DECISION_GATE_ACTIONABLE,
+                'legacy_fallback_strategy_actionable',
+            )
             # Restore some confidence — we found a viable alternative
             _conf_before = confidence
             confidence = max(confidence, 30)
@@ -5032,6 +5067,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     # Daily P&L gate
     if ctx.get('dailyPnl', 0) < -2000:
         action, strategy, urgency = 'STOP', None, 'DONE FOR TODAY'
+        decision_gate = _decision_gate(DECISION_GATE_STOP, 'daily_loss_limit')
         _conf_before_pnl = confidence
         confidence = 0
         # TASK 5.3 (F21)
@@ -5061,6 +5097,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             'running': confidence,
         })
 
+    # Preserve the evidence score separately from the user-facing decision.
+    # A preliminary WAIT must not turn that score into an implicit zero-valued
+    # veto when PC2 subsequently evaluates generated candidates.
+    market_confidence = confidence
     if action == 'WAIT' or action == 'STOP':
         _conf_pre_zero = confidence
         confidence = 0
@@ -5097,7 +5137,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     return {
         "action": action, "strategy": strategy, "direction": direction,
-        "confidence": confidence, "urgency": urgency,
+        "confidence": confidence, "market_confidence": market_confidence,
+        "decision_gate": decision_gate,
+        "urgency": urgency,
         "reasoning": " · ".join(reasons[:8]),
         "conflicts": conflicts, "bull": round(bull, 2), "bear": round(bear, 2)
     }
@@ -6066,7 +6108,7 @@ CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v3"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v4"
 PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
 PC2_COMPOSITE_SHADOW_MODE = "shadow"
 PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
@@ -11297,10 +11339,15 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'deterministic_rank': cand.get('deterministic_rank'),
             'pc2PaperRank': cand.get('pc2PaperRank'),
             'pc2PaperResearchRank': cand.get('pc2PaperResearchRank'),
+            'pc2PaperResearchEligible': cand.get('pc2PaperResearchEligible'),
             'pc2PaperPrimaryEligible': cand.get('pc2PaperPrimaryEligible'),
+            'pc2PaperEntryEconomicsPercentile': cand.get('pc2PaperEntryEconomicsPercentile'),
+            'pc2PaperEntryCompositeScore': cand.get('pc2PaperEntryCompositeScore'),
             'pc2PaperSelectorVersion': cand.get('pc2PaperSelectorVersion'),
             'pc2PaperMode': cand.get('pc2PaperMode'),
             'pc2PaperSortComponents': cand.get('pc2PaperSortComponents'),
+            'pc2PaperResearchSortComponents': cand.get('pc2PaperResearchSortComponents'),
+            'pc2PaperEntrySortComponents': cand.get('pc2PaperEntrySortComponents'),
             'pc2CompositeShadow': cand.get('pc2CompositeShadow'),
             'pc2SupplyWidthSource': cand.get('pc2SupplyWidthSource'),
             'pc2SupplyWidthExpanded': cand.get('pc2SupplyWidthExpanded'),
@@ -11453,22 +11500,29 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         if math.isfinite(premium_edge_per_risk)
         else premium_edge_per_risk
     )
+    adjusted_premium_edge = (
+        premium_edge - opportunity_gate_penalty
+        if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge)
+        else premium_edge
+    )
     context_percentile_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
     context_plus_brain = (candidate.get('contextScore', 0) + candidate.get('brainScore', 0))
     ml_unsure = bool(candidate.get('mlUnsure') or candidate.get('mlAction') == 'UNSURE')
     ml_ood_low_conf = bool(candidate.get('mlOod') and (candidate.get('mlOodConf') or 1.0) < 0.6)
     p_ml_effective = 0.0 if (ml_unsure or ml_ood_low_conf) else (candidate.get('p_ml') or 0.0)
-    edge_per_risk_sort_component = 'MISSING_LAST' if not math.isfinite(adjusted_edge_per_risk) else -adjusted_edge_per_risk
-    raw_premium_edge_tiebreak = 'MISSING_LAST' if premium_edge == float('-inf') else -premium_edge
+    raw_premium_edge_sort_component = 'MISSING_LAST' if premium_edge == float('-inf') else -premium_edge
+    edge_per_risk_tiebreak = 'MISSING_LAST' if not math.isfinite(adjusted_edge_per_risk) else -adjusted_edge_per_risk
+    adjusted_premium_edge_tiebreak = 'MISSING_LAST' if adjusted_premium_edge == float('-inf') else -adjusted_premium_edge
     sort_tuple = (
         1 if candidate.get('capitalBlocked') else 0,
         0 if candidate.get('directionSafe', True) else 1,
+        raw_premium_edge_sort_component,
         0 if candidate.get('varsityTier') == 'PRIMARY' else 1,
         0 if teacher_rank_active else 1,
         -teacher_score,
         -teacher_n,
-        edge_per_risk_sort_component,
         -context_percentile_score,
+        edge_per_risk_tiebreak,
         brain_verdict_alignment,
         -calibration_win_rate,
         -forces.get('aligned', 0),
@@ -11478,13 +11532,13 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         -candidate.get('wallScore', 0),
         -_safe_num(rank_edge.get('prob'), 0.0),
         -p_ml_effective,
-        raw_premium_edge_tiebreak,
+        adjusted_premium_edge_tiebreak,
     )
     structure_stability = _build3_structure_stability_marker(candidate)
     return {
         'candidate_id': candidate.get('id') or candidate.get('candidate_id'),
         'structure_stability_marker': structure_stability,
-        'rank_method_version': 'build3_rank_v4_net_scale_free_edge_first',
+        'rank_method_version': 'build3_rank_v6_safety_then_raw_net_economics',
         'teacher_rank_active': teacher_rank_active,
         'teacher_score': teacher_score,
         'teacher_n': teacher_n,
@@ -11492,6 +11546,7 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         'premiumEdgePerRisk': premium_edge_per_risk if math.isfinite(premium_edge_per_risk) else None,
         'opportunityGatePenaltyPerRisk': opportunity_gate_penalty_per_risk,
         'adjustedEdgePerRisk': adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None,
+        'adjustedPremiumEdge': adjusted_premium_edge if math.isfinite(adjusted_premium_edge) else None,
         'rankEdgeScale': rank_edge['scale'],
         'rankEconomicsBasis': rank_edge['basis'],
         'capitalBlockedAtRanking': bool(candidate.get('capitalBlocked')),
@@ -11500,7 +11555,7 @@ def _build3_rank_fingerprint(candidate, calibration=None, brain_verdict=None, st
         'contextPlusBrainScore': context_plus_brain,
         'p_ml_effective': p_ml_effective,
         'ml_neutralized': bool(ml_unsure or ml_ood_low_conf),
-        'sort_tuple_fields': 'capitalBlocked|directionSafe|varsityTier|teacherActive|teacherScore|teacherN|adjustedEdgePerRisk|contextPercentile|brainVerdictAlignment|calibrationWinRate|forceAligned|forceAgainst|contextPlusBrain|gammaRisk|wallScore|probProfit|pMlEffective|rawPremiumEdgeTieBreak',
+        'sort_tuple_fields': 'capitalBlocked|directionSafe|netPremiumEdge|varsityTier|teacherActive|teacherScore|teacherN|contextPercentile|adjustedEdgePerRisk|brainVerdictAlignment|calibrationWinRate|forceAligned|forceAgainst|contextPlusBrain|gammaRisk|wallScore|probProfit|pMlEffective|adjustedPremiumEdgeTieBreak',
         'sort_tuple': sort_tuple,
     }
 
@@ -11808,6 +11863,8 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
 
     return {
         'schema_version': 1,
+        'app_version': BRAIN_VERSION,
+        'brain_version': BRAIN_VERSION,
         'observe_only': True,
         'quality_tag': 'qualitative_prompt_v2',
         'poll_timestamp': poll_ts,
@@ -13258,7 +13315,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
 
 
 def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=None):
-    """Varsity waterfall ranking. Scale-free premium edge outranks raw win-rate once safety gates pass."""
+    """Safety-first ranking with net economics ahead of legacy heuristics."""
     cal = calibration or {}
     strat_cal = cal.get('strategy', {})
     stage2a = stage2a or {}
@@ -13272,7 +13329,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
             c['rankSuppressedReason'] = 'CAPITAL_BLOCKED'
         # 0: Direction safety — F1-against always last
         safe = 0 if c.get('directionSafe', True) else 1
-        # 1: Varsity tier
+        # 1: Varsity tier (used after net economics)
         tier = 0 if c.get('varsityTier') == 'PRIMARY' else 1
         teacher_rank_active = 1
         teacher_score = 0.0
@@ -13305,8 +13362,10 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         gamma = c.get('gammaRisk', 0)
         # 7: Wall score
         wall = c.get('wallScore', 0)
-        # 8: Premium edge — honest EV-like ranking signal after hard gates pass.
-        # Normalize by maxLoss so NF and BNF compete on return per unit risk, not raw rupees.
+        # Net premium edge is the first ordering authority after hard safety.
+        # The historical replay rejects edge-per-risk as primary authority: it
+        # over-promotes tiny-credit structures. Keep the scale-free value as
+        # evidence/tiebreaker, not as the first economic objective.
         rank_edge = _candidate_rank_edge(c)
         premium_edge = rank_edge['edge']
         c['premium_edge_status'] = rank_edge['status']
@@ -13346,9 +13405,9 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
             p_ml = 0.0
 
         return (
-            capital_blocked, safe, tier,
+            capital_blocked, safe, -premium_edge, tier,
             teacher_rank_active, -teacher_score, -teacher_n,
-            -adjusted_edge_per_risk, -context_percentile_score, bv, -win_rate,
+            -context_percentile_score, -adjusted_edge_per_risk, bv, -win_rate,
             -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml,
             -c['adjustedPremiumEdge']
         )
@@ -13366,7 +13425,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
     return ranked
 
 
-def _pc2_paper_primary_sort_components(candidate):
+def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
     """Bounded PC2 ordering for paper research after hard construction gates.
 
     Economics and verified percentile context are combined before ordering. This
@@ -13381,14 +13440,24 @@ def _pc2_paper_primary_sort_components(candidate):
     )
     context_score = _safe_num(candidate.get('contextPercentileScore'), 0.0)
     edge_per_risk = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
-    economics_percentile = _safe_num(candidate.get('pc2PaperEconomicsPercentile'), None)
-    composite_score = _safe_num(candidate.get('pc2PaperCompositeScore'), None)
+    entry_scope = score_scope == 'entry'
+    economics_percentile = _safe_num(
+        candidate.get('pc2PaperEntryEconomicsPercentile')
+        if entry_scope else candidate.get('pc2PaperEconomicsPercentile'),
+        None,
+    )
+    composite_score = _safe_num(
+        candidate.get('pc2PaperEntryCompositeScore')
+        if entry_scope else candidate.get('pc2PaperCompositeScore'),
+        None,
+    )
     teacher_modifier = _safe_num(candidate.get('pc2PaperTeacherModifier'), 0.0)
     rank_edge = _candidate_rank_edge(candidate)
     probability = _safe_num(rank_edge.get('prob'), 0.0)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
         'selector_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
+        'score_scope': 'entry' if entry_scope else 'research',
         'safety_ineligible': unsafe,
         'context_percentile_score': round(context_score, 6),
         'adjusted_edge_per_risk': round(edge_per_risk, 6) if edge_per_risk is not None else None,
@@ -13408,9 +13477,9 @@ def _pc2_paper_primary_sort_components(candidate):
     }
 
 
-def _pc2_paper_primary_sort_key(candidate):
+def _pc2_paper_primary_sort_key(candidate, score_scope='research'):
     """Return the finite, auditable PC2 paper ordering tuple."""
-    components = _pc2_paper_primary_sort_components(candidate)
+    components = _pc2_paper_primary_sort_components(candidate, score_scope)
     edge_per_risk = components['adjusted_edge_per_risk']
     composite_score = components['composite_score']
     return (
@@ -13575,11 +13644,16 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
     deterministic_top = ranked[0] if ranked else None
     active = mode == PC2_PAPER_PRIMARY_MODE
 
+    def research_safe(candidate):
+        return bool(
+            not candidate.get('capitalBlocked')
+            and candidate.get('directionSafe', True)
+        )
+
     def entry_primary_eligible(candidate):
-        safety_ok = not candidate.get('capitalBlocked') and candidate.get('directionSafe', True)
         if 'entryEligible' in candidate:
-            return bool(safety_ok and candidate.get('entryEligible') is True)
-        return bool(safety_ok)
+            return bool(research_safe(candidate) and candidate.get('entryEligible') is True)
+        return research_safe(candidate)
 
     def economics_reference_key(candidate):
         """Keep candidate economics comparable only within index and direction."""
@@ -13589,19 +13663,46 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             direction = _strategy_direction(candidate.get('type') or candidate.get('strategy_type'))
         return f'{index_key}|{direction}'
 
-    # The normalization reference set must be identical to the set that can
-    # become primary. Monitor-only evidence cannot alter an entry decision.
-    safe_rows = [candidate for candidate in ranked if entry_primary_eligible(candidate)]
-    economics_values_by_group = {}
-    for safe_candidate in safe_rows:
-        edge = _safe_num(safe_candidate.get('adjustedEdgePerRisk'), None)
+    # Research ranking and entry authority are separate contracts. Every
+    # construction-safe candidate with valid economics belongs to the research
+    # population, including monitor-only rows. Entry eligibility is applied
+    # later and remains the sole authority for paper entry/notifications.
+    research_rows = [
+        candidate for candidate in ranked
+        if research_safe(candidate)
+        and _safe_num(candidate.get('adjustedEdgePerRisk'), None) is not None
+    ]
+    research_economics_by_group = {}
+    for research_candidate in research_rows:
+        edge = _safe_num(research_candidate.get('adjustedEdgePerRisk'), None)
+        research_economics_by_group.setdefault(
+            economics_reference_key(research_candidate), []
+        ).append(edge)
+    entry_rows = [candidate for candidate in ranked if entry_primary_eligible(candidate)]
+    entry_economics_by_group = {}
+    for entry_candidate in entry_rows:
+        edge = _safe_num(entry_candidate.get('adjustedEdgePerRisk'), None)
         if edge is not None:
-            economics_values_by_group.setdefault(economics_reference_key(safe_candidate), []).append(edge)
+            entry_economics_by_group.setdefault(
+                economics_reference_key(entry_candidate), []
+            ).append(edge)
     for candidate in ranked:
         edge = _safe_num(candidate.get('adjustedEdgePerRisk'), None)
         economics_group = economics_reference_key(candidate)
-        economics_values = economics_values_by_group.get(economics_group, [])
-        economics_pct = _percentile_rank(edge, economics_values) if edge is not None else None
+        economics_values = research_economics_by_group.get(economics_group, [])
+        entry_economics_values = entry_economics_by_group.get(economics_group, [])
+        research_eligible = bool(research_safe(candidate) and edge is not None)
+        entry_eligible = entry_primary_eligible(candidate)
+        economics_pct = (
+            _percentile_rank(edge, economics_values)
+            if research_eligible and economics_values
+            else None
+        )
+        entry_economics_pct = (
+            _percentile_rank(edge, entry_economics_values)
+            if entry_eligible and edge is not None and entry_economics_values
+            else None
+        )
         context_raw = max(
             -CONTEXT_PERCENTILE_MAX_RANKING_ABS,
             min(CONTEXT_PERCENTILE_MAX_RANKING_ABS, _safe_num(candidate.get('contextPercentileScore'), 0.0)),
@@ -13614,6 +13715,9 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         candidate['pc2PaperEconomicsPercentile'] = economics_pct
         candidate['pc2PaperEconomicsReferenceGroup'] = economics_group
         candidate['pc2PaperEconomicsReferenceCount'] = len(economics_values)
+        candidate['pc2PaperResearchEligible'] = research_eligible
+        candidate['pc2PaperEntryEconomicsPercentile'] = entry_economics_pct
+        candidate['pc2PaperEntryEconomicsReferenceCount'] = len(entry_economics_values)
         candidate['pc2PaperContextNormalized'] = round(context_normalized, 6)
         teacher_coverage = str(candidate.get('teacher_coverage') or '')
         teacher_r = _safe_num(candidate.get('teacher_r_score'), None)
@@ -13641,9 +13745,24 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             if base_composite is not None
             else None
         )
+        entry_base_composite = (
+            PC2_COMPOSITE_ECONOMICS_WEIGHT * (entry_economics_pct / 100.0)
+            + PC2_COMPOSITE_CONTEXT_WEIGHT * context_normalized
+            if entry_economics_pct is not None
+            else None
+        )
+        candidate['pc2PaperEntryCompositeScore'] = (
+            round(entry_base_composite + teacher_modifier, 6)
+            if entry_base_composite is not None
+            else None
+        )
 
     for candidate in ranked:
-        components = _pc2_paper_primary_sort_components(candidate)
+        research_components = _pc2_paper_primary_sort_components(candidate, 'research')
+        entry_components = _pc2_paper_primary_sort_components(candidate, 'entry')
+        components = entry_components if entry_primary_eligible(candidate) else research_components
+        candidate['pc2PaperResearchSortComponents'] = research_components
+        candidate['pc2PaperEntrySortComponents'] = entry_components
         candidate['pc2PaperSortComponents'] = components
         candidate['pc2PaperSortKey'] = [
             components['safety_ineligible'],
@@ -13656,11 +13775,17 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ]
 
     if active:
-        research_ordered = sorted(ranked, key=_pc2_paper_primary_sort_key)
+        research_ordered = sorted(
+            ranked,
+            key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'research'),
+        )
     else:
         research_ordered = list(ranked)
 
-    eligible = [candidate for candidate in research_ordered if entry_primary_eligible(candidate)]
+    eligible = sorted(
+        (candidate for candidate in ranked if entry_primary_eligible(candidate)),
+        key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'entry'),
+    ) if active else [candidate for candidate in ranked if entry_primary_eligible(candidate)]
     monitor_only = [candidate for candidate in research_ordered if not entry_primary_eligible(candidate)]
     ordered = eligible + monitor_only if active else research_ordered
 
@@ -13677,6 +13802,13 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
 
     control = _pc2_paper_control(eligible, control_context)
     pc2_top = eligible[0] if active and eligible else (deterministic_top if not active else None)
+    research_top = next(
+        (
+            candidate for candidate in research_ordered
+            if candidate.get('pc2PaperResearchEligible') is True
+        ),
+        None,
+    ) if active else deterministic_top
     for candidate in ordered:
         candidate['pc2PaperRandomControl'] = candidate.get('id') == control['candidate_id']
     return ordered, {
@@ -13685,7 +13817,9 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         'active': active,
         'execution_mode_observed': mode,
         'candidate_count': len(ranked),
+        'research_candidate_count': len(research_rows),
         'eligible_candidate_count': len(eligible),
+        'pc2_research_candidate_id': research_top.get('id') if isinstance(research_top, dict) else None,
         'pc2_primary_candidate_id': pc2_top.get('id') if isinstance(pc2_top, dict) else None,
         'deterministic_shadow_candidate_id': deterministic_top.get('id') if isinstance(deterministic_top, dict) else None,
         'random_control': control,
@@ -13696,6 +13830,7 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ),
         'hard_safety_contract': [
             'existing candidate construction gates preserved',
+            'research ranking includes capital-safe and direction-safe monitor evidence with valid economics',
             'capital-blocked candidates cannot be PC2 primary',
             'direction-unsafe candidates cannot be PC2 primary',
             'entry-ineligible candidates remain monitor evidence but cannot be PC2 primary',
@@ -13704,6 +13839,7 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ],
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
+            'research normalization uses every capital-safe and direction-safe candidate with valid economics',
             'bounded composite: 70% per-index/per-direction adjustedEdgePerRisk percentile and 30% verified context percentile score',
             'covered Stage 2A teacher expectancy applies only as a capped plus or minus 0.10 paper ranking modifier',
             'unseen, low-confidence, or unsupported teacher buckets are neutral',
@@ -13722,10 +13858,49 @@ def _strategy_direction(strategy_type):
         return 'BULL'
     if strategy_type in ('BEAR_CALL', 'BEAR_PUT'):
         return 'BEAR'
-    return 'NEUTRAL'
+    if strategy_type in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        return 'NEUTRAL'
+    return None
 
 
-def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
+def _neutral_structure_market_fit(regime):
+    """Continuous range suitability for direction-neutral structures.
+
+    This is evidence, not a categorical regime gate. Sigma, persistence, and
+    cross-index agreement all reduce confidence gradually as conditions become
+    less suitable for a bounded neutral structure.
+    """
+    if not isinstance(regime, dict) or regime.get('type') == 'unknown':
+        return None, None
+    sigma = _safe_num(regime.get('sigma'), None)
+    trend_pct = _safe_num(regime.get('trend_pct'), None)
+    if sigma is None or trend_pct is None:
+        return None, None
+    sigma = max(0.0, sigma)
+    trend_pct = max(0.0, min(1.0, trend_pct))
+    sigma_fit = max(0.0, min(100.0, 100.0 * (1.0 - sigma)))
+    persistence_fit = max(0.0, min(100.0, 100.0 * (1.0 - trend_pct)))
+
+    direction = _safe_num(regime.get('direction'), None)
+    nf_direction = _safe_num(regime.get('nf_direction'), None)
+    if direction is None or nf_direction is None:
+        cross_index_fit = 70.0
+    else:
+        cross_index_fit = max(0.0, min(100.0, 100.0 - abs(direction - nf_direction) * 15.0))
+
+    fit = 0.55 * sigma_fit + 0.30 * persistence_fit + 0.15 * cross_index_fit
+    components = {
+        'regime_type': regime.get('type'),
+        'sigma': round(sigma, 4),
+        'trend_persistence': round(trend_pct, 4),
+        'sigma_fit': round(sigma_fit, 2),
+        'persistence_fit': round(persistence_fit, 2),
+        'cross_index_fit': round(cross_index_fit, 2),
+    }
+    return round(max(0.0, min(100.0, fit)), 2), components
+
+
+def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regime=None):
     """Attach a fail-closed, strategy-agnostic entry contract to a candidate.
 
     Candidates remain available as research evidence when this contract fails.
@@ -13801,9 +13976,22 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
     market_conf = _safe_num(market_confidence, None)
     if market_conf is None:
         market_conf = _safe_num(candidate.get('marketConfidence'), None)
+    strategy_direction = _strategy_direction(candidate.get('type') or candidate.get('strategy_type'))
     entry_confidence = None
-    if market_conf is not None and p_ml is not None and 0 <= p_ml <= 1 and not ml_ood:
-        entry_confidence = round(min(max(market_conf, 0.0), p_ml * 100.0), 2)
+    market_fit_confidence = None
+    market_fit_components = None
+    if p_ml is not None and 0 <= p_ml <= 1 and not ml_ood:
+        if strategy_direction == 'NEUTRAL':
+            market_fit_confidence, market_fit_components = _neutral_structure_market_fit(regime)
+            if market_fit_confidence is not None:
+                entry_confidence = round(min(market_fit_confidence, p_ml * 100.0), 2)
+        elif market_conf is not None:
+            market_fit_confidence = round(max(0.0, min(100.0, market_conf)), 2)
+            entry_confidence = round(min(max(market_conf, 0.0), p_ml * 100.0), 2)
+    if strategy_direction is None:
+        reasons.append('strategy_direction_unknown')
+    if strategy_direction == 'NEUTRAL' and market_fit_confidence is None:
+        reasons.append('strategy_market_fit_unavailable')
     if entry_confidence is None:
         reasons.append('entry_confidence_unavailable')
     elif entry_confidence < ENTRY_CONFIDENCE_MIN:
@@ -13812,6 +14000,8 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
     reasons = list(dict.fromkeys(reasons))
     eligible = not reasons
     candidate['marketConfidence'] = round(market_conf, 2) if market_conf is not None else None
+    candidate['strategyMarketFitConfidence'] = market_fit_confidence
+    candidate['strategyMarketFitComponents'] = market_fit_components
     candidate['entryConfidence'] = entry_confidence
     candidate['entryEligible'] = eligible
     candidate['entryGate'] = 'ENTRY' if eligible else 'MONITOR'
@@ -13833,7 +14023,13 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None):
         'build3_ev_pass': candidate.get('build3EvPass'),
         'entry_confidence': entry_confidence,
         'entry_confidence_minimum': ENTRY_CONFIDENCE_MIN,
-        'confidence_contract': 'min(market_confidence, candidate_ml_probability_pct)',
+        'strategy_direction': strategy_direction,
+        'strategy_market_fit_confidence': market_fit_confidence,
+        'strategy_market_fit_components': market_fit_components,
+        'confidence_contract': (
+            'min(strategy_market_fit_confidence, candidate_ml_probability_pct) for neutral structures; '
+            'min(market_confidence, candidate_ml_probability_pct) for directional structures'
+        ),
         'economics_contract': 'netPremiumEdge must be present and greater than zero after teacher friction; gross premiumEdge is evidence only',
         'pc2_quality_failure_count': len(pc2_quality_failures),
         'pc2_quality_failure_stages': sorted({
@@ -13902,6 +14098,10 @@ def _stage2a_apply_live_wait_guard(result, watchlist, stage2a_summary):
         'conflicts': conflicts,
         'decision_source': 'TEACHER_ONLY',
         'decisionSource': 'TEACHER_ONLY',
+        'decision_gate': _decision_gate(
+            DECISION_GATE_HARD_WAIT,
+            'stage2a_teacher_expectancy_guard',
+        ),
     })
     result['verdict'] = verdict
     result['decisionSource'] = 'TEACHER_ONLY'
@@ -13912,6 +14112,107 @@ def _stage2a_apply_live_wait_guard(result, watchlist, stage2a_summary):
         'triggered': True,
         'reason': stage2a_summary.get('hard_wait_reason'),
     }
+    return result
+
+
+def _finalize_pc2_paper_verdict(result, ranked, pc2_summary, ctx=None):
+    """Grant the exact eligible PC2 primary paper authority over preliminary WAIT."""
+    if not isinstance(result, dict) or not isinstance(pc2_summary, dict):
+        return result
+    if not pc2_summary.get('active'):
+        return result
+
+    verdict = dict(result.get('verdict') or {})
+    gate = verdict.get('decision_gate') if isinstance(verdict.get('decision_gate'), dict) else {}
+    gate_state = gate.get('state')
+    if verdict.get('action') == 'STOP' or gate_state == DECISION_GATE_STOP:
+        return result
+    if gate_state == DECISION_GATE_HARD_WAIT:
+        return result
+
+    primary_id = pc2_summary.get('pc2_primary_candidate_id')
+    primary = next(
+        (
+            row for row in (ranked or [])
+            if isinstance(row, dict) and row.get('id') == primary_id
+        ),
+        None,
+    )
+    if not primary_id or not isinstance(primary, dict) or primary.get('entryEligible') is not True:
+        verdict.update({
+            'action': 'WAIT',
+            'strategy': None,
+            'direction': 'NEUTRAL',
+            'confidence': 0,
+            'entry_confidence': 0,
+            'entry_eligible': False,
+            'execution_aligned': False,
+            'decision_gate': _decision_gate(
+                DECISION_GATE_HARD_WAIT,
+                'pc2_no_entry_eligible_candidate',
+            ),
+        })
+        result['verdict'] = verdict
+        result['decisionSource'] = 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+        result['decision_source'] = result['decisionSource']
+        return result
+
+    # Missing gate metadata is fail-closed unless the market verdict was
+    # already actionable. New snapshots always carry an explicit gate.
+    if gate_state not in (DECISION_GATE_ACTIONABLE, DECISION_GATE_PRELIMINARY_WAIT):
+        return result
+
+    old_action = verdict.get('action')
+    old_strategy = verdict.get('strategy')
+    strategy_type = primary.get('type') or primary.get('strategy_type')
+    strategy_direction = _strategy_direction(strategy_type)
+    if strategy_direction is None:
+        verdict.update({
+            'action': 'WAIT',
+            'strategy': None,
+            'direction': 'NEUTRAL',
+            'confidence': 0,
+            'entry_confidence': 0,
+            'entry_eligible': False,
+            'execution_aligned': False,
+            'decision_gate': _decision_gate(
+                DECISION_GATE_HARD_WAIT,
+                'pc2_primary_strategy_unknown',
+            ),
+        })
+        result['verdict'] = verdict
+        result['decisionSource'] = 'PC2_PAPER_INVALID_PRIMARY'
+        result['decision_source'] = result['decisionSource']
+        return result
+    entry_confidence = _safe_num(primary.get('entryConfidence'), 0.0)
+    verdict.update({
+        'pre_alignment_action': old_action,
+        'pre_alignment_strategy': old_strategy,
+        'action': _strategy_action(strategy_type),
+        'strategy': strategy_type,
+        'direction': strategy_direction,
+        'confidence': entry_confidence,
+        'entry_confidence': entry_confidence,
+        'entry_eligible': True,
+        'execution_aligned': True,
+        'execution_candidate_id': primary.get('id'),
+        'execution_candidate_index': primary.get('index'),
+        'decision_gate': _decision_gate(
+            DECISION_GATE_ACTIONABLE,
+            'pc2_entry_eligible_primary',
+        ),
+    })
+    conflicts = list(verdict.get('conflicts') or [])
+    if old_action in ('WAIT', None):
+        conflicts.append(
+            f"PC2 resolved preliminary WAIT to exact primary: {strategy_type}/{_strategy_action(strategy_type)}"
+        )
+    verdict['conflicts'] = conflicts
+    result['verdict'] = verdict
+    result['decisionSource'] = 'PC2_PAPER_PRIMARY'
+    result['decision_source'] = result['decisionSource']
+    result['decisionReason'] = 'PC2 entry-eligible primary finalized the paper decision after all safety and confidence checks.'
+    result['decision_reason'] = result['decisionReason']
     return result
 
 def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_eligible=False):
@@ -14702,7 +15003,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 candidate['executionReadiness'] = readiness
                 candidate['executionReady'] = readiness.get('ready', False)
                 candidate['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(candidate, market_confidence)
+                annotate_candidate_entry_eligibility(candidate, market_confidence, regime)
             result['pc2_composite_shadow'] = annotate_pc2_composite_shadow(
                 ranked,
                 ctx.get('pc2CompositeReference') or ctx.get('pc2_composite_reference'),
@@ -14757,6 +15058,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'reasoning': 'PC2 paper selector found no candidate that passed entry economics, ML data quality, and confidence checks.',
                     'conflicts': conflicts,
                     'execution_aligned': False,
+                    'decision_gate': _decision_gate(
+                        DECISION_GATE_HARD_WAIT,
+                        'pc2_no_entry_eligible_candidate',
+                    ),
                 })
                 result['verdict'] = verdict
                 result['decisionSource'] = 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
@@ -14795,6 +15100,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'reasoning': wait_reason,
                     'conflicts': conflicts,
                     'execution_aligned': False,
+                    'decision_gate': _decision_gate(
+                        DECISION_GATE_HARD_WAIT,
+                        'build3_no_surviving_candidate',
+                    ),
                 })
                 result['verdict'] = verdict
                 result['decisionSource'] = 'BUILD3_GATE'
@@ -14822,7 +15131,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(c, market_confidence)
+                annotate_candidate_entry_eligibility(c, market_confidence, regime)
             
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
@@ -14831,10 +15140,32 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(c, market_confidence)
+                annotate_candidate_entry_eligibility(c, market_confidence, regime)
+
+            # Eligibility can change after verdict alignment and the final
+            # readiness pass. Recompute PC2 authority from that final state so
+            # its primary id, ordering, and persisted evidence cannot be stale.
+            ranked, pc2_paper_primary = select_pc2_paper_primary(
+                ranked,
+                ctx.get('executionMode') or ctx.get('execution_mode') or PC2_PAPER_PRIMARY_MODE,
+                {
+                    'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                    'poll_count': len(polls),
+                    'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
+                },
+            )
+            result['pc2_paper_primary'] = pc2_paper_primary
+            watchlist = _build_watchlist_from_ranked(ranked)
+            result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
             result['pc2_composite_shadow'] = annotate_pc2_composite_shadow(
                 ranked,
                 ctx.get('pc2CompositeReference') or ctx.get('pc2_composite_reference'),
+            )
+            result = _finalize_pc2_paper_verdict(
+                result,
+                ranked,
+                pc2_paper_primary,
+                ctx,
             )
             final_verdict = _align_verdict_to_watchlist(
                 result.get('verdict'),
@@ -15394,6 +15725,18 @@ def _candidate_view(c):
         'mlOodConf': c.get('mlOodConf'),
         'mlOodBlocked': c.get('mlOodBlocked'),
         'marketConfidence': c.get('marketConfidence'),
+        'strategyMarketFitConfidence': c.get('strategyMarketFitConfidence'),
+        'strategyMarketFitComponents': _compact_snapshot_object(
+            c.get('strategyMarketFitComponents'),
+            (
+                'regime_type',
+                'sigma',
+                'trend_persistence',
+                'sigma_fit',
+                'persistence_fit',
+                'cross_index_fit',
+            ),
+        ),
         'entryConfidence': c.get('entryConfidence'),
         'entryEligible': c.get('entryEligible'),
         'entryGate': c.get('entryGate'),
@@ -15430,7 +15773,10 @@ def _candidate_view(c):
         'deterministic_rank': c.get('deterministic_rank'),
         'pc2PaperRank': c.get('pc2PaperRank'),
         'pc2PaperResearchRank': c.get('pc2PaperResearchRank'),
+        'pc2PaperResearchEligible': c.get('pc2PaperResearchEligible'),
         'pc2PaperPrimaryEligible': c.get('pc2PaperPrimaryEligible'),
+        'pc2PaperEntryEconomicsPercentile': c.get('pc2PaperEntryEconomicsPercentile'),
+        'pc2PaperEntryCompositeScore': c.get('pc2PaperEntryCompositeScore'),
         'pc2PaperSelectorVersion': c.get('pc2PaperSelectorVersion'),
         'pc2PaperMode': c.get('pc2PaperMode'),
         'pc2PaperSortComponents': c.get('pc2PaperSortComponents'),
@@ -17633,6 +17979,27 @@ def _compact_android_snapshot_context(snapshot_context):
     context_payload_target = context_byte_cap - 1024
     encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
     removed = []
+    generated = compact.get('snapshot_generated_candidates')
+    ranked_full = compact.get('snapshot_ranked_candidates_full')
+    if isinstance(generated, list) and generated and isinstance(ranked_full, list) and ranked_full:
+        def _candidate_identity(row):
+            if not isinstance(row, dict):
+                return None
+            return row.get('id') or row.get('candidate_id')
+
+        generated_ids = [_candidate_identity(row) for row in generated]
+        ranked_ids = {_candidate_identity(row) for row in ranked_full}
+        generated_is_ranked_subset = (
+            all(candidate_id is not None for candidate_id in generated_ids)
+            and set(generated_ids).issubset(ranked_ids)
+        )
+        if generated_is_ranked_subset:
+            # The ranked menu contains the same final-authority rows. Always
+            # remove the duplicate before crossing the Android bridge.
+            compact.pop('snapshot_generated_candidates', None)
+            removed.append('snapshot_generated_candidates:deduplicated_to_ranked_full')
+            encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
+
     if encoded_bytes > context_payload_target:
         removable = (
             'snapshot_phase3_expected_r_shadow',
@@ -17653,7 +18020,7 @@ def _compact_android_snapshot_context(snapshot_context):
             if encoded_bytes <= context_payload_target:
                 break
     compaction_meta = {
-        'schema_version': 'android_compact_v2',
+        'schema_version': 'android_compact_v3',
         'context_bytes': encoded_bytes,
         'context_byte_cap': context_byte_cap,
         'removed': removed,

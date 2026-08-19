@@ -197,11 +197,11 @@ def test_ranked_candidate_evidence_extends_beyond_ui_cap():
     assert len(evidence) == 40
     assert evidence[0]["rank"] == 1
     assert evidence[0]["watchlist_rank"] == 1
-    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v4_net_scale_free_edge_first"
+    assert evidence[0]["rank_diagnostics"]["rank_method_version"] == "build3_rank_v6_safety_then_raw_net_economics"
     assert evidence[0]["rank_diagnostics"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["candidate_id"] == "c0"
     assert evidence[0]["rank_diagnostics"]["structure_stability_marker"]["structure_hold_index_source"] == "unavailable_at_ranker_scope"
-    assert evidence[0]["rank_diagnostics"]["sort_tuple_fields"].startswith("capitalBlocked|directionSafe|varsityTier")
+    assert evidence[0]["rank_diagnostics"]["sort_tuple_fields"].startswith("capitalBlocked|directionSafe|netPremiumEdge")
     assert evidence[0]["varsityTier"] == "PRIMARY"
     assert evidence[0]["forceAligned"] == 1
     assert evidence[0]["forceAgainst"] == 0

@@ -143,6 +143,8 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertLess(snapshot_save, authority_save)
         self.assertLess(authority_save, success_gate)
         self.assertLess(generated_save, success_gate)
+        self.assertIn('"app_version"', service)
+        self.assertIn('"brain_version"', service)
 
     def test_webview_recreation_is_diagnosable_and_recovers(self):
         with open(MAIN_ACTIVITY_PATH, "r", encoding="utf-8") as handle:

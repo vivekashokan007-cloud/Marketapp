@@ -43,6 +43,19 @@ class SnapshotPayloadCompactionTests(unittest.TestCase):
             "gate_basis_summary": {"total": 40, "passed": 20},
             "contextPercentileInputs": {"history": list(range(1000))},
             "entryEligibility": {"reasons": ["x" * 1000] * 20},
+            "strategyMarketFitConfidence": 84.5,
+            "strategyMarketFitComponents": {
+                "regime_type": "range",
+                "sigma": 0.2,
+                "trend_persistence": 0.1,
+                "sigma_fit": 80.0,
+                "persistence_fit": 90.0,
+                "cross_index_fit": 100.0,
+                "large_history": list(range(1000)),
+            },
+            "pc2PaperSortComponents": {"score_scope": "entry", "composite_score": 0.8},
+            "pc2PaperResearchSortComponents": {"large": list(range(1000))},
+            "pc2PaperEntrySortComponents": {"large": list(range(1000))},
             "legs": [
                 {
                     "action": action,
@@ -66,6 +79,11 @@ class SnapshotPayloadCompactionTests(unittest.TestCase):
 
         self.assertNotIn("contextPercentileInputs", compact)
         self.assertNotIn("entryEligibility", compact)
+        self.assertEqual(compact["strategyMarketFitConfidence"], 84.5)
+        self.assertNotIn("large_history", compact["strategyMarketFitComponents"])
+        self.assertIn("pc2PaperSortComponents", compact)
+        self.assertNotIn("pc2PaperResearchSortComponents", compact)
+        self.assertNotIn("pc2PaperEntrySortComponents", compact)
         self.assertNotIn("marginQuote", compact)
         self.assertEqual(len(compact["pc2_gate_basis"]), 12)
         self.assertNotIn("distribution", compact["pc2_gate_basis"][0])
@@ -130,6 +148,11 @@ class SnapshotPayloadCompactionTests(unittest.TestCase):
 
         self.assertLess(snapshot_bytes, 2 * 1024 * 1024)
         self.assertEqual(len(context["snapshot_ranked_candidates_full"]), 200)
+        self.assertNotIn("snapshot_generated_candidates", context)
+        self.assertIn(
+            "snapshot_generated_candidates:deduplicated_to_ranked_full",
+            context["snapshot_android_compaction"]["removed"],
+        )
         self.assertLessEqual(
             len(context["snapshot_rejected_candidates_full"]),
             brain.REJECTED_EVAL_CANDIDATE_CAP,

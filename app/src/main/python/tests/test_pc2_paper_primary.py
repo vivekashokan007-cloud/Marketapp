@@ -5,8 +5,13 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from brain import (
+    DECISION_GATE_ACTIONABLE,
+    DECISION_GATE_HARD_WAIT,
+    DECISION_GATE_PRELIMINARY_WAIT,
     PC2_PAPER_PRIMARY_SELECTOR_VERSION,
     _compact_android_snapshot_context,
+    _decision_gate,
+    _finalize_pc2_paper_verdict,
     select_pc2_paper_primary,
     take_poll_snapshot,
 )
@@ -29,6 +34,95 @@ def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra)
 
 
 class Pc2PaperPrimaryTest(unittest.TestCase):
+    def test_entry_eligible_primary_resolves_preliminary_wait(self):
+        primary = candidate(
+            "primary", 1, 0.20, 0.30,
+            type="BEAR_CALL", index="BNF", entryConfidence=71.0,
+        )
+        ranked, summary = select_pc2_paper_primary([primary], "paper")
+        result = {
+            "verdict": {
+                "action": "WAIT",
+                "strategy": None,
+                "direction": "BEAR",
+                "confidence": 0,
+                "decision_gate": _decision_gate(
+                    DECISION_GATE_PRELIMINARY_WAIT,
+                    "no_preliminary_strategy",
+                ),
+            }
+        }
+
+        finalized = _finalize_pc2_paper_verdict(result, ranked, summary)
+
+        self.assertEqual(finalized["verdict"]["action"], "SELL PREMIUM")
+        self.assertEqual(finalized["verdict"]["strategy"], "BEAR_CALL")
+        self.assertEqual(finalized["verdict"]["confidence"], 71.0)
+        self.assertEqual(finalized["verdict"]["decision_gate"]["state"], DECISION_GATE_ACTIONABLE)
+        self.assertEqual(finalized["decisionSource"], "PC2_PAPER_PRIMARY")
+
+    def test_hard_wait_is_not_overridden_by_pc2_primary(self):
+        primary = candidate(
+            "primary", 1, 0.20, 0.30,
+            type="IRON_CONDOR", index="BNF", entryConfidence=80.0,
+        )
+        ranked, summary = select_pc2_paper_primary([primary], "paper")
+        result = {
+            "verdict": {
+                "action": "WAIT",
+                "strategy": None,
+                "confidence": 0,
+                "decision_gate": _decision_gate(
+                    DECISION_GATE_HARD_WAIT,
+                    "straddle_expansion_breakout_risk",
+                ),
+            }
+        }
+
+        finalized = _finalize_pc2_paper_verdict(result, ranked, summary)
+
+        self.assertEqual(finalized["verdict"]["action"], "WAIT")
+        self.assertEqual(finalized["verdict"]["decision_gate"]["reason"], "straddle_expansion_breakout_risk")
+        self.assertNotIn("decisionSource", finalized)
+
+    def test_no_entry_eligible_primary_becomes_explicit_hard_wait(self):
+        monitor = candidate(
+            "monitor", 1, 0.20, 0.30,
+            type="BEAR_CALL", index="BNF", entryEligible=False,
+        )
+        ranked, summary = select_pc2_paper_primary([monitor], "paper")
+        result = {
+            "verdict": {
+                "action": "WAIT",
+                "strategy": None,
+                "confidence": 0,
+                "decision_gate": _decision_gate(
+                    DECISION_GATE_PRELIMINARY_WAIT,
+                    "no_preliminary_strategy",
+                ),
+            }
+        }
+
+        finalized = _finalize_pc2_paper_verdict(result, ranked, summary)
+
+        self.assertEqual(finalized["verdict"]["action"], "WAIT")
+        self.assertEqual(finalized["verdict"]["decision_gate"]["state"], DECISION_GATE_HARD_WAIT)
+        self.assertEqual(finalized["decisionSource"], "PC2_PAPER_NO_ELIGIBLE_CANDIDATE")
+
+    def test_live_flow_refreshes_pc2_after_final_entry_eligibility(self):
+        brain_path = os.path.join(os.path.dirname(__file__), "..", "brain.py")
+        with open(brain_path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        final_eligibility = source.index(
+            "# Eligibility can change after verdict alignment and the final"
+        )
+        final_selector = source.index("ranked, pc2_paper_primary = select_pc2_paper_primary(", final_eligibility)
+        final_entry_alignment = source.index("require_entry_eligible=True", final_selector)
+
+        self.assertLess(final_eligibility, final_selector)
+        self.assertLess(final_selector, final_entry_alignment)
+
     def test_bounded_composite_does_not_let_context_erase_better_economics(self):
         deterministic_top = candidate("deterministic", 1, -0.20, 0.30)
         pc2_top = candidate("pc2", 2, 0.25, 0.10)
@@ -79,7 +173,7 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertFalse(monitor["pc2PaperPrimaryEligible"])
         self.assertEqual(summary["pc2_primary_candidate_id"], "eligible")
 
-    def test_monitor_only_candidate_cannot_change_eligible_normalization_or_winner(self):
+    def test_monitor_only_candidate_participates_in_research_normalization_but_not_entry(self):
         first = candidate("first", 1, 0.20, 0.10)
         second = candidate("second", 2, -0.35, 0.20)
         ordered_without_monitor, _ = select_pc2_paper_primary([first, second], "paper")
@@ -93,14 +187,55 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
 
         self.assertEqual(ordered_without_monitor[0]["id"], "second")
         self.assertEqual(ordered_with_monitor[0]["id"], "second")
-        self.assertEqual(
+        self.assertNotEqual(
             first["pc2PaperEconomicsPercentile"],
             first_with_monitor["pc2PaperEconomicsPercentile"],
         )
-        self.assertEqual(
+        self.assertNotEqual(
             second["pc2PaperEconomicsPercentile"],
             second_with_monitor["pc2PaperEconomicsPercentile"],
         )
+        self.assertEqual(
+            first["pc2PaperEntryEconomicsPercentile"],
+            first_with_monitor["pc2PaperEntryEconomicsPercentile"],
+        )
+        self.assertEqual(
+            second["pc2PaperEntryEconomicsPercentile"],
+            second_with_monitor["pc2PaperEntryEconomicsPercentile"],
+        )
+        self.assertEqual(first_with_monitor["pc2PaperEconomicsReferenceCount"], 3)
+        self.assertEqual(first_with_monitor["pc2PaperEntryEconomicsReferenceCount"], 2)
+        self.assertTrue(monitor["pc2PaperResearchEligible"])
+        self.assertFalse(monitor["pc2PaperPrimaryEligible"])
+
+    def test_wait_menu_still_has_meaningful_pc2_research_winner(self):
+        weaker = candidate("weaker", 1, -0.10, 0.05, entryEligible=False)
+        stronger = candidate("stronger", 2, 0.20, 0.30, entryEligible=False)
+
+        ordered, summary = select_pc2_paper_primary([weaker, stronger], "paper")
+
+        self.assertEqual(summary["eligible_candidate_count"], 0)
+        self.assertIsNone(summary["pc2_primary_candidate_id"])
+        self.assertEqual(summary["research_candidate_count"], 2)
+        self.assertEqual(summary["pc2_research_candidate_id"], "stronger")
+        self.assertEqual(stronger["pc2PaperResearchRank"], 1)
+        self.assertIsNotNone(stronger["pc2PaperEconomicsPercentile"])
+        self.assertEqual([row["id"] for row in ordered], ["stronger", "weaker"])
+
+    def test_unsafe_candidates_are_excluded_from_research_reference_population(self):
+        safe = candidate("safe", 1, 0.0, 0.10, index="NF", type="BEAR_CALL")
+        blocked = candidate(
+            "blocked", 2, 0.0, 99.0,
+            index="NF", type="BEAR_CALL", capitalBlocked=True,
+        )
+
+        _, summary = select_pc2_paper_primary([safe, blocked], "paper")
+
+        self.assertEqual(summary["research_candidate_count"], 1)
+        self.assertEqual(safe["pc2PaperEconomicsReferenceCount"], 1)
+        self.assertTrue(safe["pc2PaperResearchEligible"])
+        self.assertFalse(blocked["pc2PaperResearchEligible"])
+        self.assertIsNone(blocked["pc2PaperEconomicsPercentile"])
 
     def test_economics_percentile_is_normalized_per_index_and_direction(self):
         nf_lower = candidate("nf-lower", 1, 0.0, 0.10, index="NF", type="BEAR_CALL")
@@ -164,7 +299,10 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(ordered[0]["id"], "supported")
         self.assertEqual(supported["pc2PaperTeacherModifier"], 0.10)
         self.assertEqual(neutral["pc2PaperTeacherModifier"], 0.0)
-        self.assertIn("capped plus or minus 0.10", summary["ranking_contract"][2])
+        self.assertTrue(any(
+            "capped plus or minus 0.10" in rule
+            for rule in summary["ranking_contract"]
+        ))
 
     def test_unseen_or_low_confidence_teacher_evidence_is_neutral(self):
         baseline = candidate("baseline", 1, 0.0, 0.20)
@@ -248,8 +386,12 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         context = __import__("json").loads(snapshot["context_json"])
 
         self.assertNotIn("bnfChain", context)
-        self.assertIn("snapshot_generated_candidates", context)
+        self.assertNotIn("snapshot_generated_candidates", context)
         self.assertIn("snapshot_ranked_candidates_full", context)
+        self.assertIn(
+            "snapshot_generated_candidates:deduplicated_to_ranked_full",
+            context["snapshot_android_compaction"]["removed"],
+        )
         self.assertIn("snapshot_rejected_candidates_full", context)
         self.assertIn("c3_finalization_frame", context)
         self.assertLess(len(snapshot["context_json"]), 100_000)
