@@ -340,11 +340,12 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         self.assertIn("POS_STOP_trade123", keys)
         stop = next(alert for alert in alerts if alert.get("key") == "POS_STOP_trade123")
         self.assertIn("Mark degraded", stop.get("body", ""))
+        self.assertIn("Context coverage limited", stop.get("body", ""))
         self.assertIn("58400/--", stop.get("body", ""))
         self.assertIn("80% of max loss", stop.get("body", ""))
         self.assertIn("Max loss ₹1,000", stop.get("body", ""))
 
-    def test_low_ci_position_mark_does_not_suppress_book_alert(self):
+    def test_low_ci_context_only_does_not_emit_data_quality_alert(self):
         alerts = evaluate_alerts(
             open_trades=[
                 {
@@ -371,8 +372,11 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         )
 
         keys = [alert.get("key") for alert in alerts]
-        self.assertIn("POS_DATA_QUALITY_trade456", keys)
+        self.assertNotIn("POS_DATA_QUALITY_trade456", keys)
         self.assertIn("POS_BOOK_trade456", keys)
+        book = next(alert for alert in alerts if alert.get("key") == "POS_BOOK_trade456")
+        self.assertIn("Context coverage limited", book.get("body", ""))
+        self.assertIn("CI signals 45%", book.get("body", ""))
 
     def test_missing_position_pnl_remains_data_quality_only(self):
         alerts = evaluate_alerts(

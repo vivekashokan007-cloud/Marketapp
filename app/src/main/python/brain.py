@@ -3140,19 +3140,25 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         completeness = ci_meta.get('signal_completeness_pct')
         degraded_live_mark = bool(quality and quality != 'full')
         low_ci_completeness = completeness is not None and completeness < 60
-        quality_reasons = []
+        mark_reasons = []
+        context_reasons = []
         if degraded_live_mark:
-            quality_reasons.append(f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}")
+            mark_reasons.append(f"quotes {trade.get('legs_quoted', 0)}/{trade.get('legs_required', 0)}")
         if low_ci_completeness:
-            quality_reasons.append(f"CI signals {completeness}%")
-        quality_note = f" Mark degraded: {', '.join(quality_reasons)}." if quality_reasons else ''
-        if quality_reasons:
+            context_reasons.append(f"CI signals {completeness}%")
+        quality_note = ''
+        if mark_reasons:
+            quality_note += f" Mark degraded: {', '.join(mark_reasons)}."
+        if context_reasons:
+            quality_note += f" Context coverage limited: {', '.join(context_reasons)}."
+        if mark_reasons:
+            alert_reasons = mark_reasons + context_reasons
             alerts.append({
                 'key': f"POS_DATA_QUALITY_{t_id}",
                 'category': 'POSITION',
                 'priority': 'important',
                 'title': '🧪 Position Data Incomplete',
-                'body': f"{trade_label}: {', '.join(quality_reasons)}. Risk/exit alerts remain active when P&L is computable.",
+                'body': f"{trade_label}: {', '.join(alert_reasons)}. Risk/exit alerts remain active when P&L is computable.",
                 'pc2_alert_timing_context': alert_timing_context,
             })
             if current_pnl is None:
@@ -5259,7 +5265,8 @@ def position_verdict(trade, insights, regime, ctx):
         if control_data_degraded:
             warning_bits.append(f"CI signals {ci_completeness}%")
         guarded = dict(verdict)
-        guarded['data_quality_warning'] = "Incomplete live data: " + "; ".join(warning_bits)
+        warning_prefix = "Incomplete live data" if position_data_degraded else "Context signal coverage limited"
+        guarded['data_quality_warning'] = warning_prefix + ": " + "; ".join(warning_bits)
         guarded['reason'] = f"{guarded['data_quality_warning']}. {guarded.get('reason', '')}"
         return guarded
 
@@ -5672,7 +5679,7 @@ def position_verdict(trade, insights, regime, ctx):
                 'delta': 35, 'running_danger': danger,
                 'inputs': {'has_past_wall_insight': True},
             })
-        reasons.append("Sell past OI wall — no protection")
+        reasons.append("Sell past OI wall — OI-wall support absent")
         _past_wall_matched = True
     # TASK 5.4 (Past Wall Skip)
     if ctx.get('_trace') is not None and _pos_trace is not None and not _past_wall_matched:
@@ -5715,6 +5722,31 @@ def position_verdict(trade, insights, regime, ctx):
 
     # ═══ EXIT — compound danger high ═══
     if danger >= 60:
+        context_only_danger = (
+            control_data_degraded
+            and not position_data_degraded
+            and not _be_matched
+            and not _phase_matched
+            and not _loss_matched
+            and (_mom_matched or _past_wall_matched)
+        )
+        if context_only_danger:
+            _final_verdict = {
+                "action": "HOLD",
+                "urgency": "MONITOR",
+                "reason": (
+                    f"Context signal coverage limited: CI signals {ci_completeness}%. "
+                    f"Context-only danger {danger}/100; no hard exit emitted. "
+                    f"{'. '.join(reasons[:3])}"
+                ),
+                "data_quality_warning": f"Context signal coverage limited: CI signals {ci_completeness}%",
+            }
+            if ctx.get('_trace') is not None and _pos_trace is not None:
+                _pos_trace['decision_path'].append('context_only_danger_low_ci_fail_closed')
+                _pos_trace['danger_final'] = danger
+                _pos_trace['final'] = dict(_final_verdict)
+                _pos_trace['structural_exits']['context_only_low_ci_blocked'] = True
+            return _final_verdict
         urgency = 'NOW' if danger >= 80 else 'SOON'
         # TASK 5.4 (decision_path)
         if ctx.get('_trace') is not None and _pos_trace is not None:
@@ -6047,7 +6079,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.96"
+BRAIN_VERSION = "2.5.97"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12

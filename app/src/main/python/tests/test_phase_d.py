@@ -461,6 +461,88 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(verdict["position_exit_audit"]["exit_allowed"], False)
         self.assertEqual(verdict["position_exit_audit"]["book_allowed"], False)
 
+    def test_d1_23e_low_ci_context_only_danger_does_not_emit_exit(self):
+        trade = {
+            "id": "M4",
+            "index_key": "BNF",
+            "strategy_type": "IRON_BUTTERFLY",
+            "current_pnl": -11,
+            "valuation_quality": "full",
+            "legs_required": 4,
+            "legs_quoted": 4,
+            "max_profit": 12000,
+            "max_loss": 9000,
+            "is_credit": True,
+            "controlIndexMeta": {"signal_completeness_pct": 45},
+        }
+        insights = [
+            {"label": "Spot approaching sell strike"},
+            {"label": "Past the wall"},
+        ]
+
+        verdict = brain.position_verdict(trade, insights, "MILD", {"bnfDTE": 6, "_trace": {"positions": {}}})
+
+        self.assertEqual(verdict["action"], "HOLD")
+        self.assertEqual(verdict["urgency"], "MONITOR")
+        self.assertIn("Context signal coverage limited", verdict["reason"])
+        self.assertIn("Context-only danger 65/100", verdict["reason"])
+        self.assertNotIn("Incomplete live data", verdict["reason"])
+        self.assertNotIn("no protection", verdict["reason"])
+
+    def test_d1_23f_full_ci_context_danger_can_emit_exit(self):
+        trade = {
+            "id": "M5",
+            "index_key": "BNF",
+            "strategy_type": "IRON_BUTTERFLY",
+            "current_pnl": -11,
+            "valuation_quality": "full",
+            "legs_required": 4,
+            "legs_quoted": 4,
+            "max_profit": 12000,
+            "max_loss": 9000,
+            "is_credit": True,
+            "controlIndexMeta": {"signal_completeness_pct": 100},
+        }
+        insights = [
+            {"label": "Spot approaching sell strike"},
+            {"label": "Past the wall"},
+        ]
+
+        verdict = brain.position_verdict(trade, insights, "MILD", {"bnfDTE": 6, "_trace": {"positions": {}}})
+
+        self.assertEqual(verdict["action"], "EXIT")
+        self.assertEqual(verdict["urgency"], "SOON")
+        self.assertIn("Danger 65/100", verdict["reason"])
+        self.assertIn("OI-wall support absent", verdict["reason"])
+        self.assertNotIn("no protection", verdict["reason"])
+
+    def test_d1_23g_partial_quote_context_danger_reports_mark_degraded(self):
+        trade = {
+            "id": "M6",
+            "index_key": "BNF",
+            "strategy_type": "IRON_BUTTERFLY",
+            "current_pnl": -11,
+            "valuation_quality": "partial",
+            "legs_required": 4,
+            "legs_quoted": 3,
+            "max_profit": 12000,
+            "max_loss": 9000,
+            "is_credit": True,
+            "controlIndexMeta": {"signal_completeness_pct": 45},
+        }
+        insights = [
+            {"label": "Spot approaching sell strike"},
+            {"label": "Past the wall"},
+        ]
+
+        verdict = brain.position_verdict(trade, insights, "MILD", {"bnfDTE": 6, "_trace": {"positions": {}}})
+
+        self.assertEqual(verdict["action"], "EXIT")
+        self.assertEqual(verdict["urgency"], "SOON")
+        self.assertIn("Incomplete live data", verdict["reason"])
+        self.assertIn("mark partial (3/4 quoted)", verdict["reason"])
+        self.assertIn("CI signals 45%", verdict["reason"])
+
     def test_d1_24_entry_premium_zero(self):
         trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 0, "lot_size": 30, "is_credit": True}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
