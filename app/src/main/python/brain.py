@@ -6079,7 +6079,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.97"
+BRAIN_VERSION = "2.5.98"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -20171,6 +20171,18 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                     outcome['marginFallbackValue'] = cand.get('marginFallbackValue')
                     outcome['marginModelVersion'] = cand.get('marginModelVersion')
                     outcome['brainMaxLoss'] = cand.get('brainMaxLoss')
+                    # DIRECTIVE_REJ_PERSIST.1: tDTE/expiry/strikes were computed upstream
+                    # (record_rejection + _build3_rejection_from_candidate both carry them)
+                    # but silently dropped at this copy boundary, blocking DTE-vs-gate
+                    # attribution. Additive only; no ranking/decision logic touched.
+                    outcome['tDTE'] = cand.get('tDTE')
+                    outcome['expiry'] = cand.get('expiry')
+                    outcome['sellStrike'] = cand.get('sellStrike')
+                    outcome['sellType'] = cand.get('sellType')
+                    outcome['buyStrike'] = cand.get('buyStrike')
+                    outcome['buyType'] = cand.get('buyType')
+                    outcome['legs'] = cand.get('legs')
+                    outcome['ivRichness'] = cand.get('ivRichness')
                     outcomes.append(outcome)
             except Exception as exc:
                 errors.append({
