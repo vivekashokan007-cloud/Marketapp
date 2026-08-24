@@ -18,6 +18,11 @@ from brain import (
 
 
 def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra):
+    # v5: the paper selector's primary economic authority is absolute net edge.
+    # `edge` remains the adjustedEdgePerRisk economic param (still computed as a
+    # persisted diagnostic); by default we let net edge track it so each test's
+    # "better economics wins" intent is preserved under the new authority. Tests
+    # that need to separate the two axes override netPremiumEdge explicitly.
     row = {
         "id": candidate_id,
         "deterministic_rank": deterministic_rank,
@@ -26,6 +31,10 @@ def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra)
         "entryEligible": True,
         "contextPercentileScore": percentile_score,
         "adjustedEdgePerRisk": edge,
+        "netEconomicsVersion": "pc2_test_v1",
+        "netPremiumEdge": edge,
+        "netMaxLossAfterFriction": 10000.0,
+        "netProbProfit": 0.60,
         "probProfit": 0.60,
         "pc2_gate_basis": [],
     }
@@ -249,7 +258,9 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(bnf_raw_outlier["pc2PaperEconomicsReferenceGroup"], "BNF|BEAR")
         self.assertEqual(bnf_raw_outlier["pc2PaperEconomicsReferenceCount"], 1)
         self.assertGreater(nf_higher["pc2PaperEconomicsPercentile"], bnf_raw_outlier["pc2PaperEconomicsPercentile"])
-        self.assertEqual(ordered[0]["id"], "nf-higher")
+        # v5: the per-index/direction economics percentile remains a computed DIAGNOSTIC,
+        # but it no longer orders the menu (net edge does), so no ordering assertion here.
+        self.assertIsNotNone(ordered)
 
     def test_non_paper_execution_keeps_deterministic_order(self):
         deterministic_top = candidate("deterministic", 1, -0.20, 0.30)
@@ -287,7 +298,10 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(ordered[0]["id"], "stronger-context")
         self.assertEqual(mature["pc2PaperSortComponents"]["percentile_authority_count"], 4)
 
-    def test_covered_teacher_expectancy_is_bounded_but_can_break_a_close_tie(self):
+    def test_covered_teacher_expectancy_is_bounded_evidence_not_ordering_authority(self):
+        # v5: the capped +/-0.10 Stage 2A teacher modifier is still COMPUTED and persisted
+        # as evidence, but it lives inside the (now demoted) composite and no longer reorders
+        # the menu. With equal net edge the menu falls through to context/prob/id, not teacher.
         neutral = candidate("neutral", 1, 0.0, 0.20)
         supported = candidate(
             "supported", 2, 0.0, 0.20,
@@ -296,9 +310,12 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
 
         ordered, summary = select_pc2_paper_primary([neutral, supported], "paper")
 
-        self.assertEqual(ordered[0]["id"], "supported")
+        # modifier is still computed as evidence
         self.assertEqual(supported["pc2PaperTeacherModifier"], 0.10)
         self.assertEqual(neutral["pc2PaperTeacherModifier"], 0.0)
+        # but it does NOT break the tie under v5 (equal net edge -> deterministic id order)
+        self.assertEqual(ordered[0]["id"], "neutral")
+        # contract still documents the modifier, now explicitly as evidence-only
         self.assertTrue(any(
             "capped plus or minus 0.10" in rule
             for rule in summary["ranking_contract"]
@@ -425,6 +442,44 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
             "snapshot_evaluation_legs",
         ):
             self.assertIn(key, compact)
+
+
+    # ---- v5 regression: edge-per-risk demoted, absolute net edge is authority ----
+    def test_v5_selects_absolute_net_edge_over_edge_per_risk(self):
+        # big_abs: large absolute net edge, small ratio (0.05). small_abs: tiny net edge,
+        # huge ratio (0.20). Pre-v5 the edge-per-risk key picked small_abs; v5 must pick big_abs.
+        big_abs = candidate("big-abs", 1, 0.0, 0.05,
+                            netPremiumEdge=2000.0, netMaxLossAfterFriction=40000.0)
+        small_abs = candidate("small-abs", 2, 0.0, 0.20,
+                             netPremiumEdge=400.0, netMaxLossAfterFriction=2000.0)
+
+        ordered, summary = select_pc2_paper_primary([small_abs, big_abs], "paper")
+
+        self.assertEqual(ordered[0]["id"], "big-abs")
+        self.assertEqual(summary["pc2_primary_candidate_id"], "big-abs")
+        self.assertEqual(summary["schema_version"], "pc2_paper_primary_v5")
+        # edge-per-risk is still COMPUTED as a diagnostic, just not authority
+        self.assertAlmostEqual(big_abs["pc2PaperSortComponents"]["adjusted_edge_per_risk"], 0.05)
+        self.assertAlmostEqual(small_abs["pc2PaperSortComponents"]["adjusted_edge_per_risk"], 0.20)
+        self.assertEqual(big_abs["pc2PaperSortComponents"]["rank_edge_value"], 2000.0)
+
+    def test_v5_missing_net_economics_fails_closed_sorts_last(self):
+        has_net = candidate("has-net", 1, 0.0, 0.05, netPremiumEdge=100.0,
+                            netMaxLossAfterFriction=5000.0)
+        missing_net = candidate("missing-net", 2, 0.90, 0.90)
+        # strip all net + gross economics so rank-edge is unavailable -> fail closed
+        for k in ("netEconomicsVersion", "netPremiumEdge", "netMaxLossAfterFriction",
+                  "netProbProfit", "premiumEdge", "ev", "adjustedEdgePerRisk"):
+            missing_net.pop(k, None)
+        missing_net["adjustedEdgePerRisk"] = 0.90  # keep it research-eligible
+
+        ordered, summary = select_pc2_paper_primary([missing_net, has_net], "paper")
+
+        # missing-net has far better context (0.90) and ratio (0.90), but no net edge
+        # -> it must sort LAST behind the modest has-net candidate.
+        self.assertEqual(ordered[0]["id"], "has-net")
+        self.assertIsNone(missing_net["pc2PaperSortComponents"]["rank_edge_value"])
+        self.assertEqual(has_net["pc2PaperSortComponents"]["rank_edge_value"], 100.0)
 
 
 if __name__ == "__main__":

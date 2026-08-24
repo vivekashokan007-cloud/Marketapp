@@ -6140,7 +6140,7 @@ CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v4"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v5"
 PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
 PC2_COMPOSITE_SHADOW_MODE = "shadow"
 PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
@@ -13486,6 +13486,14 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
     teacher_modifier = _safe_num(candidate.get('pc2PaperTeacherModifier'), 0.0)
     rank_edge = _candidate_rank_edge(candidate)
     probability = _safe_num(rank_edge.get('prob'), 0.0)
+    # v5 primary economic authority: absolute net edge (netPremiumEdge via rank-edge),
+    # fail-closed to None when net economics are missing so such candidates sort last.
+    _rank_edge_raw = rank_edge.get('edge')
+    rank_edge_value = (
+        _rank_edge_raw
+        if isinstance(_rank_edge_raw, (int, float)) and math.isfinite(_rank_edge_raw)
+        else None
+    )
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
         'selector_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
@@ -13500,9 +13508,12 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
         'rank_economics_basis': rank_edge.get('basis'),
         'rank_edge_scale': rank_edge.get('scale'),
         'net_premium_edge': candidate.get('netPremiumEdge'),
+        'rank_edge_value': round(rank_edge_value, 6) if rank_edge_value is not None else None,
         'friction_cost': candidate.get('frictionCost'),
         'candidate_id': str(candidate.get('id') or ''),
-        # Diagnostics only. Neither value participates in ordering.
+        # Diagnostics only — retained as evidence, NOT ordering authority under v5.
+        # (adjusted_edge_per_risk / composite_score / economics_percentile / teacher_modifier
+        #  are computed and persisted for ongoing A/B, but the sort key keys on net edge.)
         'soft_gate_failure_count': failed_gate_count,
         'percentile_authority_count': percentile_authority_count,
         'soft_gate_penalty_contract': 'represented proportionally in adjustedEdgePerRisk; not lexicographic',
@@ -13510,14 +13521,27 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
 
 
 def _pc2_paper_primary_sort_key(candidate, score_scope='research'):
-    """Return the finite, auditable PC2 paper ordering tuple."""
+    """Return the finite, auditable PC2 paper ordering tuple.
+
+    v5 — PRIMARY ECONOMIC AUTHORITY IS ABSOLUTE NET EDGE (netPremiumEdge via
+    _candidate_rank_edge), the same objective the deterministic rank uses.
+    Historical replay over 808 outcome-joined menus scored edge-per-risk as the
+    primary key at -0.17R (net-era -0.28R) — the worst objective measured — while
+    absolute net edge scored best of the simple objectives. The bounded composite,
+    adjusted_edge_per_risk, economics_percentile and teacher_modifier remain COMPUTED
+    and PERSISTED in the components as evidence, but no longer order the menu.
+    Candidates missing net economics fail closed (rank_edge_value None -> sort last).
+    """
     components = _pc2_paper_primary_sort_components(candidate, score_scope)
-    edge_per_risk = components['adjusted_edge_per_risk']
-    composite_score = components['composite_score']
+    net_edge = components['rank_edge_value']
+    net_edge_key = (
+        -net_edge
+        if isinstance(net_edge, (int, float)) and math.isfinite(net_edge)
+        else float('inf')
+    )
     return (
         1 if components['safety_ineligible'] else 0,
-        -(composite_score if composite_score is not None else float('-inf')),
-        -(edge_per_risk if edge_per_risk is not None else float('-inf')),
+        net_edge_key,
         -components['context_percentile_score'],
         -components['prob_profit'],
         components['candidate_id'],
@@ -13798,10 +13822,8 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         candidate['pc2PaperSortComponents'] = components
         candidate['pc2PaperSortKey'] = [
             components['safety_ineligible'],
+            components['rank_edge_value'],
             components['context_percentile_score'],
-            components['adjusted_edge_per_risk'],
-            components['economics_percentile'],
-            components['composite_score'],
             components['prob_profit'],
             components['candidate_id'],
         ]
@@ -13872,13 +13894,12 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
             'research normalization uses every capital-safe and direction-safe candidate with valid economics',
-            'bounded composite: 70% per-index/per-direction adjustedEdgePerRisk percentile and 30% verified context percentile score',
-            'covered Stage 2A teacher expectancy applies only as a capped plus or minus 0.10 paper ranking modifier',
-            'unseen, low-confidence, or unsupported teacher buckets are neutral',
-            'adjustedEdgePerRisk descending as the first tie-breaker',
-            'contextPercentileScore descending as the second tie-breaker',
-            'probProfit descending as final tie-breaker',
+            'v5 PRIMARY AUTHORITY: absolute net edge (netPremiumEdge via rank-edge), descending; fail-closed when net economics are missing',
+            'contextPercentileScore descending as the first tie-breaker',
+            'probProfit descending as the second tie-breaker',
             'candidate id ascending for deterministic tie resolution',
+            'EVIDENCE ONLY (computed and persisted, NOT ordering authority): bounded composite (70% edge-per-risk percentile + 30% context), adjustedEdgePerRisk, economics percentile, and the capped plus or minus 0.10 Stage 2A teacher modifier',
+            'edge-per-risk was demoted from authority after historical replay scored it the worst objective (-0.17R; net-era -0.28R)',
         ],
     }
 

@@ -12,6 +12,9 @@ from brain import (
 
 
 def candidate(candidate_id, edge, context):
+    # v5: paper ordering keys on absolute net edge; let net edge track the `edge`
+    # economic param so this file's ordering test reflects the new authority.
+    # (adjustedEdgePerRisk stays set — it still feeds the shadow composite under test.)
     return {
         "id": candidate_id,
         "index": "NF",
@@ -22,6 +25,10 @@ def candidate(candidate_id, edge, context):
         "entryEligible": True,
         "adjustedEdgePerRisk": edge,
         "contextPercentileScore": context,
+        "netEconomicsVersion": "pc2_test_v1",
+        "netPremiumEdge": edge,
+        "netMaxLossAfterFriction": 10000.0,
+        "netProbProfit": 0.60,
         "probProfit": 0.60,
     }
 
