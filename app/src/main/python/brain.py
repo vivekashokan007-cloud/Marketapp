@@ -6079,7 +6079,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.5.99"
+BRAIN_VERSION = "2.6.0"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -10901,6 +10901,55 @@ def _apply_net_economics(candidate, net_prob_profit=None, friction_breakdown=Non
     return cand
 
 
+SIGMA_DISTANCE_PENALTY_VERSION = 'sigma_distance_penalty_v1'
+SIGMA_PENALTY_HALFLIFE = 0.5      # each 0.5 sigma beyond the ceiling halves effective edge
+SIGMA_PENALTY_FLOOR = 0.05        # never de-rate to zero: keep ordering well-defined
+
+
+def _sigma_distance_penalty(candidate):
+    """Bounded, continuous de-rating for short strikes far beyond the context ceiling.
+
+    EVIDENCE (2026-08-24 study, 425 historical sessions + 21 live sessions):
+    credit candidates with sigmaOTM above MAX_SIGMA_OTM won only 5.7% of the time and
+    were negative on 9 of 10 sessions, yet made up ~84% of generated supply and were
+    repeatedly promoted to primary (brain picks averaged 2.1-2.6 sigma versus 0.1-0.9
+    sigma for the best-outcome candidates).
+
+    This is deliberately NOT a hard gate — it is a proportional ranking de-rate that
+    decays smoothly with sigma excess, so a genuinely strong far-OTM candidate can still
+    win. Candidates with no sigma reading (4-leg / debit families) are UNAFFECTED
+    (factor 1.0) so absence of a signal is never treated as a fault.
+    """
+    cand = candidate if isinstance(candidate, dict) else {}
+    sigma = _safe_num(cand.get('sigmaOTM'), None)
+    if sigma is None:
+        return 1.0, None
+    ceiling = _percentile_float(_CONST.get('MAX_SIGMA_OTM'))
+    if ceiling is None or ceiling <= 0:
+        return 1.0, None
+    if sigma <= ceiling:
+        return 1.0, 0.0
+    excess = sigma - ceiling
+    factor = 0.5 ** (excess / SIGMA_PENALTY_HALFLIFE)
+    return max(SIGMA_PENALTY_FLOOR, min(1.0, factor)), round(excess, 4)
+
+
+def _apply_sigma_distance_penalty(edge_value, factor):
+    """Monotone de-rate that pushes far-OTM candidates DOWN whatever the edge sign.
+
+    Positive edge shrinks toward zero; negative edge is amplified away from zero. Both
+    directions move the candidate down the ordering, and the function is continuous at
+    factor == 1.0 (no penalty).
+    """
+    if edge_value is None or factor is None:
+        return edge_value
+    if not isinstance(edge_value, (int, float)) or not math.isfinite(edge_value):
+        return edge_value
+    if factor >= 1.0:
+        return edge_value
+    return edge_value * factor if edge_value > 0 else edge_value * (2.0 - factor)
+
+
 def _candidate_rank_edge(candidate):
     cand = candidate if isinstance(candidate, dict) else {}
     net_expected = cand.get('netEconomicsVersion') is not None or cand.get('decisionEconomicsBasis') == 'NET_AFTER_TEACHER_FRICTION'
@@ -10962,14 +11011,17 @@ def _build3_candidate_ev(candidate):
         max_loss = _safe_num(c.get('maxLoss'), None)
         basis = 'GROSS_COMPAT_FALLBACK'
     if prob is None or max_profit is None or max_loss is None:
+        # M3.3 FIX: previously returned passes=True here, so a legacy candidate carrying
+        # NO economics at all sailed through the EV gate. Aligned to the fail-closed
+        # posture used everywhere else: absent economics can never pass.
         return {
             'expected_win': None,
             'expected_loss': None,
             'ev_floor': None,
             'ev_ratio': None,
-            'passes': True,
+            'passes': False,
             'missing': True,
-            'basis': basis,
+            'basis': 'ECONOMICS_UNAVAILABLE_FAIL_CLOSED',
         }
     expected_win = prob * max_profit
     expected_loss = (1 - prob) * max_loss
@@ -12390,6 +12442,18 @@ def check_execution_readiness(candidate, current_result, ctx):
     sell_key = str(candidate.get('sellInstrumentKey') or '').strip()
     buy_key = str(candidate.get('buyInstrumentKey') or '').strip()
     has_instrument_keys = bool(sell_key and buy_key)
+    # M2.2 FIX: a 4-leg structure must have ALL FOUR legs addressable before it can be
+    # reported READY. Previously only the first pair was validated, so an IRON_CONDOR /
+    # IRON_BUTTERFLY with no instrument keys on legs 3 and 4 returned ready=True — the
+    # execution-side analogue of the FOUR_LEG_STRUCTURE_MISSING_STRIKE2 recording defect.
+    stype_ready = str(candidate.get('type') or candidate.get('strategy_type') or '').upper()
+    is_four_leg = stype_ready in ('IRON_CONDOR', 'IRON_BUTTERFLY')
+    missing_second_pair = False
+    if is_four_leg:
+        sell_key2 = str(candidate.get('sellInstrumentKey2') or '').strip()
+        buy_key2 = str(candidate.get('buyInstrumentKey2') or '').strip()
+        missing_second_pair = not (sell_key2 and buy_key2)
+        has_instrument_keys = bool(has_instrument_keys and not missing_second_pair)
 
     token_ready = bool(ctx.get('authTokenReady'))
     if not token_ready:
@@ -12400,7 +12464,13 @@ def check_execution_readiness(candidate, current_result, ctx):
     mins = now_ist.hour * 60 + now_ist.minute
     is_weekday = now_ist.weekday() < 5
     in_hours = (9 * 60 + 15) <= mins <= (15 * 60 + 30)
-    not_holiday = now_ist.strftime('%Y-%m-%d') not in _CONST.get('NSE_HOLIDAYS', [])
+    # M1.1 FIX: the holiday list is a hand-maintained calendar year. Once the clock rolls
+    # past its coverage every day silently reads as a trading day. Fail closed on an
+    # uncovered year rather than assume the market is open.
+    _holidays = _CONST.get('NSE_HOLIDAYS', []) or []
+    _covered_years = {str(h)[:4] for h in _holidays}
+    _holiday_calendar_covers_today = now_ist.strftime('%Y') in _covered_years
+    not_holiday = now_ist.strftime('%Y-%m-%d') not in _holidays
     market_hours_ok = is_weekday and in_hours and not_holiday
 
     proxy_url = str(ctx.get('orderProxyUrl') or '').strip()
@@ -12409,7 +12479,9 @@ def check_execution_readiness(candidate, current_result, ctx):
 
     reasons = []
     if not has_instrument_keys:
-        reasons.append('instrument keys missing')
+        reasons.append(
+            'four_leg_instrument_keys_missing' if missing_second_pair else 'instrument keys missing'
+        )
     if mode in ('sandbox', 'live') and not token_ready:
         reasons.append('token not ready')
     if mode == 'sandbox' and not sandbox_enabled:
@@ -12418,6 +12490,8 @@ def check_execution_readiness(candidate, current_result, ctx):
         reasons.append('proxy not configured')
     if mode in ('sandbox', 'live') and not market_hours_ok:
         reasons.append('outside NSE market hours')
+    if mode in ('sandbox', 'live') and not _holiday_calendar_covers_today:
+        reasons.append('nse_holiday_calendar_not_current')
 
     ready = len(reasons) == 0
     return {
@@ -12427,6 +12501,8 @@ def check_execution_readiness(candidate, current_result, ctx):
         'reasons': reasons,
         'checks': {
             'hasInstrumentKeys': has_instrument_keys,
+            'isFourLeg': is_four_leg,
+            'hasSecondLegPairKeys': (not missing_second_pair) if is_four_leg else None,
             'tokenReady': token_ready,
             'sandboxEnabled': sandbox_enabled,
             'proxyReady': proxy_ready,
@@ -12467,7 +12543,22 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
         }
         _trace_root['candidates'][index_key] = _cand_trace
         ctx['_active_cand_trace'] = _cand_trace
-    lot_size = _CONST['BNF_LOT'] if is_bnf else _CONST['NF_LOT']
+    # M1.1 FIX: prefer the lot size reported by the live option chain over the hard-coded
+    # constant. NSE revises F&O lot sizes periodically; a revision silently rescaled every
+    # P&L, margin and candidate until someone remembered to edit the constant. The constant
+    # is now only a fallback, and the source is stamped so evidence can be filtered.
+    _const_lot = _CONST['BNF_LOT'] if is_bnf else _CONST['NF_LOT']
+    _chain_lot = _safe_num(chain.get('lotSize') or chain.get('lot_size'), None)
+    if _chain_lot is not None and _chain_lot > 0:
+        lot_size = int(_chain_lot)
+        lot_size_source = 'CHAIN_METADATA'
+    else:
+        lot_size = _const_lot
+        lot_size_source = 'CONSTANT_FALLBACK'
+    ctx['_lot_size_source'] = lot_size_source
+    if lot_size != _const_lot:
+        _append_supply_state(ctx, 'LOT_SIZE_DRIFT', idx,
+                             f'chain lot {lot_size} != constant {_const_lot}')
     base_widths = _CONST['BNF_WIDTHS'] if is_bnf else _CONST['NF_WIDTHS']
     atm = chain['atm']
     strikes = chain['strikes']
@@ -13494,6 +13585,10 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
         if isinstance(_rank_edge_raw, (int, float)) and math.isfinite(_rank_edge_raw)
         else None
     )
+    # v6: bounded far-OTM de-rate applied to the ordering value only. The raw net edge is
+    # preserved alongside it as evidence so the A/B stays reconstructible.
+    sigma_penalty_factor, sigma_excess = _sigma_distance_penalty(candidate)
+    rank_edge_effective = _apply_sigma_distance_penalty(rank_edge_value, sigma_penalty_factor)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
         'selector_version': PC2_PAPER_PRIMARY_SELECTOR_VERSION,
@@ -13509,6 +13604,11 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
         'rank_edge_scale': rank_edge.get('scale'),
         'net_premium_edge': candidate.get('netPremiumEdge'),
         'rank_edge_value': round(rank_edge_value, 6) if rank_edge_value is not None else None,
+        'rank_edge_effective': round(rank_edge_effective, 6) if rank_edge_effective is not None else None,
+        'sigma_otm': _safe_num(candidate.get('sigmaOTM'), None),
+        'sigma_penalty_factor': round(sigma_penalty_factor, 6),
+        'sigma_excess_over_ceiling': sigma_excess,
+        'sigma_penalty_version': SIGMA_DISTANCE_PENALTY_VERSION,
         'friction_cost': candidate.get('frictionCost'),
         'candidate_id': str(candidate.get('id') or ''),
         # Diagnostics only — retained as evidence, NOT ordering authority under v5.
@@ -13533,7 +13633,7 @@ def _pc2_paper_primary_sort_key(candidate, score_scope='research'):
     Candidates missing net economics fail closed (rank_edge_value None -> sort last).
     """
     components = _pc2_paper_primary_sort_components(candidate, score_scope)
-    net_edge = components['rank_edge_value']
+    net_edge = components['rank_edge_effective']
     net_edge_key = (
         -net_edge
         if isinstance(net_edge, (int, float)) and math.isfinite(net_edge)
@@ -13822,11 +13922,13 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         candidate['pc2PaperSortComponents'] = components
         candidate['pc2PaperSortKey'] = [
             components['safety_ineligible'],
-            components['rank_edge_value'],
+            components['rank_edge_effective'],
             components['context_percentile_score'],
             components['prob_profit'],
             components['candidate_id'],
         ]
+        candidate['sigmaPenaltyFactor'] = components['sigma_penalty_factor']
+        candidate['rankEdgeEffective'] = components['rank_edge_effective']
 
     if active:
         research_ordered = sorted(

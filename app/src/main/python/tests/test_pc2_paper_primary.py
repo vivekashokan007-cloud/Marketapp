@@ -482,5 +482,66 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(has_net["pc2PaperSortComponents"]["rank_edge_value"], 100.0)
 
 
+class AuditFixesTest(unittest.TestCase):
+    """Regressions for the 2026-08-24 audit batch (M2.2, M3.3, M1.1, sigma de-rate)."""
+
+    def test_m2_2_four_leg_requires_all_four_instrument_keys(self):
+        from brain import check_execution_readiness
+        ic = {"type": "IRON_CONDOR", "index": "BNF",
+              "sellInstrumentKey": "K1", "buyInstrumentKey": "K2",
+              "sellInstrumentKey2": None, "buyInstrumentKey2": None}
+        res = check_execution_readiness(ic, {}, {"executionMode": "paper"})
+        self.assertFalse(res["ready"])
+        self.assertEqual(res["gate"], "WAIT")
+        self.assertIn("four_leg_instrument_keys_missing", res["reasons"])
+        self.assertFalse(res["checks"]["hasSecondLegPairKeys"])
+
+        ic_ok = dict(ic, sellInstrumentKey2="K3", buyInstrumentKey2="K4")
+        res_ok = check_execution_readiness(ic_ok, {}, {"executionMode": "paper"})
+        self.assertTrue(res_ok["ready"])
+        self.assertTrue(res_ok["checks"]["hasSecondLegPairKeys"])
+
+    def test_m2_2_two_leg_unaffected(self):
+        from brain import check_execution_readiness
+        bc = {"type": "BEAR_CALL", "sellInstrumentKey": "K1", "buyInstrumentKey": "K2"}
+        res = check_execution_readiness(bc, {}, {"executionMode": "paper"})
+        self.assertTrue(res["ready"])
+        self.assertIsNone(res["checks"]["hasSecondLegPairKeys"])
+
+    def test_m3_3_missing_economics_now_fails_closed(self):
+        from brain import _build3_candidate_ev
+        ev = _build3_candidate_ev({"type": "BEAR_CALL"})
+        self.assertFalse(ev["passes"])
+        self.assertTrue(ev["missing"])
+        self.assertEqual(ev["basis"], "ECONOMICS_UNAVAILABLE_FAIL_CLOSED")
+
+    def test_sigma_penalty_derates_far_otm_but_never_vetoes(self):
+        from brain import _sigma_distance_penalty, _apply_sigma_distance_penalty
+        near_f, near_x = _sigma_distance_penalty({"sigmaOTM": 0.6})
+        far_f, far_x = _sigma_distance_penalty({"sigmaOTM": 2.15})
+        none_f, none_x = _sigma_distance_penalty({})
+        self.assertEqual(near_f, 1.0)          # inside ceiling -> untouched
+        self.assertEqual(near_x, 0.0)
+        self.assertLess(far_f, 1.0)            # beyond ceiling -> de-rated
+        self.assertGreater(far_f, 0.0)         # but never zeroed / vetoed
+        self.assertAlmostEqual(far_x, 1.0, places=4)
+        self.assertEqual(none_f, 1.0)          # no sigma reading -> unaffected
+        self.assertIsNone(none_x)
+        # monotone in both edge signs: penalty always pushes a candidate DOWN
+        self.assertLess(_apply_sigma_distance_penalty(1000.0, far_f), 1000.0)
+        self.assertLess(_apply_sigma_distance_penalty(-1000.0, far_f), -1000.0)
+
+    def test_sigma_penalty_changes_selection_away_from_far_otm(self):
+        near = candidate("near", 1, 0.0, 0.10, netPremiumEdge=1000.0, sigmaOTM=0.6)
+        far = candidate("far", 2, 0.0, 0.10, netPremiumEdge=1400.0, sigmaOTM=2.65)
+        ordered, summary = select_pc2_paper_primary([far, near], "paper")
+        # far has the bigger raw edge but sits 1.5 sigma beyond the ceiling
+        self.assertEqual(ordered[0]["id"], "near")
+        self.assertEqual(summary["pc2_primary_candidate_id"], "near")
+        self.assertEqual(far["pc2PaperSortComponents"]["rank_edge_value"], 1400.0)
+        self.assertLess(far["pc2PaperSortComponents"]["rank_edge_effective"], 1400.0)
+        self.assertEqual(near["pc2PaperSortComponents"]["sigma_penalty_factor"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
