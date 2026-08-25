@@ -6079,7 +6079,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.0"
+BRAIN_VERSION = "2.6.1"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -18292,6 +18292,16 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'teacher_success_rate_pct': top_cand.get('teacher_success_rate_pct'),
             'teacher_coverage': top_cand.get('teacher_coverage'),
             'teacher_recommendable': top_cand.get('teacher_recommendable'),
+            # v2.6.1 P1: persist selector sort-components and entry-eligibility so the v5
+            # net-edge authority and the far-OTM sigma de-rate become auditable from Supabase.
+            # pc2PaperSortComponents carries rank_edge_value / rank_edge_effective /
+            # sigma_penalty_factor / sigma_excess_over_ceiling / sigma_otm / rank_economics_basis;
+            # entryEligibility carries the gate reasons list plus net/gross edge and friction.
+            # Both are already stamped upstream (brain.py:13922 and :14163) — this only stops
+            # the primary_candidate_json whitelist from silently dropping them, so today's
+            # observability trap (documented in PROJECT_KNOWLEDGE 2026-08-25 §C) cannot recur.
+            'pc2PaperSortComponents': top_cand.get('pc2PaperSortComponents'),
+            'entryEligibility': top_cand.get('entryEligibility'),
         }
 
     # Clean top-5 candidates for secondary research only
