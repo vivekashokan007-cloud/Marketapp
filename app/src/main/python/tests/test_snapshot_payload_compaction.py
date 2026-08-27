@@ -42,7 +42,28 @@ class SnapshotPayloadCompactionTests(unittest.TestCase):
             "pc2_gate_basis": gates,
             "gate_basis_summary": {"total": 40, "passed": 20},
             "contextPercentileInputs": {"history": list(range(1000))},
-            "entryEligibility": {"reasons": ["x" * 1000] * 20},
+            "entryEligibility": {
+                "schema": "pc2_entry_v1",
+                "version": 1,
+                "eligible": False,
+                "gate": "monitor_only",
+                "entry_confidence": 0.24,
+                "entry_confidence_minimum": 0.65,
+                "premium_edge": -0.12,
+                "net_premium_edge": -0.08,
+                "gross_premium_edge": 0.02,
+                "reasons": [f"reason-{i}-" + ("x" * 220) for i in range(20)],
+                "pc2_quality_failure_stages": [f"stage-{i}-" + ("y" * 160) for i in range(20)],
+                "strategy_market_fit_components": {
+                    "regime_type": "range",
+                    "sigma": 0.2,
+                    "trend_persistence": 0.1,
+                    "sigma_fit": 80.0,
+                    "persistence_fit": 90.0,
+                    "cross_index_fit": 100.0,
+                    "large_history": list(range(1000)),
+                },
+            },
             "strategyMarketFitConfidence": 84.5,
             "strategyMarketFitComponents": {
                 "regime_type": "range",
@@ -78,9 +99,20 @@ class SnapshotPayloadCompactionTests(unittest.TestCase):
         compact = brain._candidate_view(self._candidate(1))
 
         self.assertNotIn("contextPercentileInputs", compact)
-        self.assertNotIn("entryEligibility", compact)
+        self.assertIn("entryEligibility", compact)
         self.assertEqual(compact["strategyMarketFitConfidence"], 84.5)
         self.assertNotIn("large_history", compact["strategyMarketFitComponents"])
+        self.assertEqual(len(compact["entryEligibility"]["reasons"]), 12)
+        self.assertLessEqual(max(len(row) for row in compact["entryEligibility"]["reasons"]), 160)
+        self.assertEqual(len(compact["entryEligibility"]["pc2_quality_failure_stages"]), 16)
+        self.assertLessEqual(
+            max(len(row) for row in compact["entryEligibility"]["pc2_quality_failure_stages"]),
+            120,
+        )
+        self.assertNotIn(
+            "large_history",
+            compact["entryEligibility"]["strategy_market_fit_components"],
+        )
         self.assertIn("pc2PaperSortComponents", compact)
         self.assertNotIn("pc2PaperResearchSortComponents", compact)
         self.assertNotIn("pc2PaperEntrySortComponents", compact)

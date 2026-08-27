@@ -30,6 +30,7 @@ import com.chaquo.python.PyObject
 import com.marketradar.app.util.LogBuffer
 import kotlinx.coroutines.*
 import java.io.File
+import java.io.RandomAccessFile
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
@@ -136,8 +137,8 @@ class MarketMLService : Service() {
     companion object {
         private const val TAG = "MarketMLService"
         private const val EVENING_EVAL_TIMEOUT_MS = 45 * 60 * 1000L
-        private const val EVAL_BATCH_SIZE = 12
-        private const val EVAL_BATCH_TIMEOUT_MS = 120_000L
+        private const val EVAL_BATCH_SIZE = 4
+        private const val EVAL_BATCH_TIMEOUT_MS = 180_000L
         private const val MONTHLY_RETRAIN_GATE_ROWS = 500
         private const val RETRAIN_DISABLED_REASON = "Retrain paused until canonical won-label unification is completed."
         private const val TEACHER_RESEARCH_GENERATED_CANDIDATE_CAP = 20
@@ -650,13 +651,89 @@ class MarketMLService : Service() {
         }
     }
 
-    private fun appendJsonArrayFile(file: File, rows: org.json.JSONArray): Int {
-        val merged = readJsonArrayFile(file)
-        for (i in 0 until rows.length()) {
-            rows.optJSONObject(i)?.let(merged::put)
+    private fun countJsonArrayFile(file: File): Int {
+        if (!file.exists() || file.length() == 0L) return 0
+        return try {
+            file.reader().buffered().use { source ->
+                JsonReader(source).use { reader ->
+                    if (reader.peek() != JsonToken.BEGIN_ARRAY) {
+                        0
+                    } else {
+                        var count = 0
+                        reader.beginArray()
+                        while (reader.hasNext()) {
+                            reader.skipValue()
+                            count += 1
+                        }
+                        reader.endArray()
+                        count
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "EVAL_COUNT_JSON_FALLBACK: file=${file.name} bytes=${file.length()} error=${t.message}")
+            readJsonArrayFile(file).length()
         }
-        writeJsonArrayFile(file, merged)
-        return merged.length()
+    }
+
+    private fun appendJsonArrayFile(file: File, rows: org.json.JSONArray, existingCountHint: Int = -1): Int {
+        val encodedRows = ArrayList<String>(rows.length())
+        for (i in 0 until rows.length()) {
+            rows.optJSONObject(i)?.let { encodedRows += it.toString() }
+        }
+        val existingCount = if (existingCountHint >= 0) existingCountHint else countJsonArrayFile(file)
+        if (encodedRows.isEmpty()) return existingCount
+
+        file.parentFile?.mkdirs()
+        if (!file.exists() || file.length() == 0L || existingCount <= 0) {
+            file.bufferedWriter().use { writer ->
+                writer.write("[")
+                writer.write(encodedRows.joinToString(","))
+                writer.write("]")
+            }
+            return encodedRows.size
+        }
+
+        return try {
+            RandomAccessFile(file, "rw").use { raf ->
+                var pos = raf.length() - 1L
+                var last = -1
+                while (pos >= 0L) {
+                    raf.seek(pos)
+                    last = raf.read()
+                    if (!last.toChar().isWhitespace()) break
+                    pos -= 1L
+                }
+                if (pos < 0L || last.toChar() != ']') {
+                    throw IllegalStateException("outcomes JSON array is missing closing bracket")
+                }
+                raf.setLength(pos)
+                raf.seek(pos)
+                raf.write(",".toByteArray(Charsets.UTF_8))
+                raf.write(encodedRows.joinToString(",").toByteArray(Charsets.UTF_8))
+                raf.write("]".toByteArray(Charsets.UTF_8))
+            }
+            existingCount + encodedRows.size
+        } catch (t: Throwable) {
+            Log.w(TAG, "EVAL_APPEND_JSON_FALLBACK: file=${file.name} existing=$existingCount add=${encodedRows.size} bytes=${file.length()} error=${t.message}")
+            val merged = readJsonArrayFile(file)
+            for (row in encodedRows) {
+                try {
+                    merged.put(org.json.JSONObject(row))
+                } catch (_: Exception) {
+                }
+            }
+            writeJsonArrayFileStreamed(file, merged)
+            merged.length()
+        }
+    }
+
+    private fun evalHeapLine(): String {
+        val runtime = Runtime.getRuntime()
+        val javaUsed = runtime.totalMemory() - runtime.freeMemory()
+        val javaMax = runtime.maxMemory()
+        val nativeUsed = android.os.Debug.getNativeHeapAllocatedSize()
+        return "javaUsed=$javaUsed javaMax=$javaMax nativeUsed=$nativeUsed"
     }
 
     private fun parseJsonObject(value: Any?): org.json.JSONObject? {
@@ -1920,6 +1997,11 @@ class MarketMLService : Service() {
             val preparedInputs = ensureEvaluationInputFiles(sessionDate)
             val snapshotsFile = preparedInputs.snapshotsFile
             val chainFile = preparedInputs.chainFile
+            Log.i(
+                TAG,
+                "EVAL_INPUT_FILES_READY: date=$sessionDate snapshots=${preparedInputs.snapshotCount} " +
+                    "snapshotsBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()} ${evalHeapLine()}"
+            )
             val coverageIntegrity = currentCoverageIntegrity(sessionDate).uppercase(Locale.US)
             val coverageIntegrityIssue = currentCoverageIntegrityIssue(sessionDate).ifBlank { "UNKNOWN_INTEGRITY_ISSUE" }
             if (coverageIntegrity == "INTEGRITY_BROKEN" && !forceAnyway) {
@@ -1963,6 +2045,11 @@ class MarketMLService : Service() {
             }
             totalSnapshots = prepareJson.optInt("snapshot_count", 0)
             producedCount = 0
+            Log.i(
+                TAG,
+                "EVAL_PREPARED: date=$sessionDate totalSnapshots=$totalSnapshots " +
+                    "outputsBytes=${outputsFile.length()} ${evalHeapLine()}"
+            )
 
             if (totalSnapshots == 0) {
                 val pollCount = prefs.getInt("poll_count", 0)
@@ -2005,11 +2092,16 @@ class MarketMLService : Service() {
                 producedCount = 0
             } else {
                 completedSnapshots = prefs.getInt("evaluation_completed_snapshots", 0).coerceIn(0, totalSnapshots)
-                producedCount = readJsonArrayFile(outputsFile).length()
+                producedCount = countJsonArrayFile(outputsFile)
                 if (completedSnapshots > 0 && producedCount == 0) {
                     completedSnapshots = 0
                 }
             }
+            Log.i(
+                TAG,
+                "EVAL_RESUME_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
+                    "produced=$producedCount outputBytes=${outputsFile.length()} ${evalHeapLine()}"
+            )
 
             updateEvaluationJobState(
                 sessionDate = sessionDate,
@@ -2054,8 +2146,15 @@ class MarketMLService : Service() {
                 }
 
                 val batchOutcomes = batchJson.optJSONArray("outcomes") ?: org.json.JSONArray()
-                producedCount = appendJsonArrayFile(outputsFile, batchOutcomes)
+                val beforeBytes = outputsFile.length()
+                producedCount = appendJsonArrayFile(outputsFile, batchOutcomes, producedCount)
                 completedSnapshots = batchJson.optInt("end", completedSnapshots).coerceIn(completedSnapshots, totalSnapshots)
+                Log.i(
+                    TAG,
+                    "EVAL_BATCH_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
+                        "batchRows=${batchOutcomes.length()} produced=$producedCount " +
+                        "bytes=$beforeBytes->${outputsFile.length()} ${evalHeapLine()}"
+                )
 
                 val batchErrorCount = batchJson.optInt("error_count", 0)
                 val batchErrors = batchJson.optJSONArray("errors") ?: org.json.JSONArray()
@@ -2084,6 +2183,11 @@ class MarketMLService : Service() {
                 )
             }
 
+            Log.i(
+                TAG,
+                "EVAL_LOCAL_COMPLETE: date=$sessionDate produced=$producedCount " +
+                    "outputBytes=${outputsFile.length()} ${evalHeapLine()}"
+            )
             val evaluatedOutcomes = readJsonArrayFile(outputsFile)
             if (evaluatedOutcomes.length() > 0) {
                 val exitCounts = linkedMapOf<String, Int>()

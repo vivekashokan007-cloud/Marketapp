@@ -305,6 +305,21 @@ object EvaluationLocalCache {
         return if (out.length() > 0) out else null
     }
 
+    private fun compactStringArray(raw: Any?, limit: Int, maxChars: Int): JSONArray {
+        val source = parseJsonArray(raw) ?: return JSONArray()
+        val out = JSONArray()
+        for (i in 0 until minOf(source.length(), limit)) {
+            val value = source.opt(i)
+            if (value == null || value == JSONObject.NULL) continue
+            var text = value.toString()
+            if (maxChars > 0 && text.length > maxChars) {
+                text = text.substring(0, maxChars)
+            }
+            out.put(text)
+        }
+        return out
+    }
+
     private fun compactLegs(raw: Any?): JSONArray {
         val source = parseJsonArray(raw) ?: return JSONArray()
         val keys = arrayOf(
@@ -331,6 +346,62 @@ object EvaluationLocalCache {
             compactObject(source.opt(i), keys)?.let(out::put)
         }
         return out
+    }
+
+    private fun compactStrategyMarketFitComponents(raw: Any?): JSONObject? {
+        return compactObject(
+            raw,
+            arrayOf(
+                "regime_type",
+                "sigma",
+                "trend_persistence",
+                "sigma_fit",
+                "persistence_fit",
+                "cross_index_fit"
+            )
+        )
+    }
+
+    private fun compactEntryEligibility(raw: Any?): JSONObject? {
+        val out = compactObject(
+            raw,
+            arrayOf(
+                "schema",
+                "version",
+                "eligible",
+                "gate",
+                "market_confidence",
+                "candidate_ml_probability",
+                "candidate_ml_action",
+                "candidate_ml_ood",
+                "premium_edge",
+                "net_premium_edge",
+                "gross_premium_edge",
+                "friction_cost",
+                "rank_economics_basis",
+                "build3_ev_pass",
+                "entry_confidence",
+                "entry_confidence_minimum",
+                "strategy_direction",
+                "strategy_market_fit_confidence",
+                "confidence_contract",
+                "economics_contract",
+                "pc2_quality_failure_count",
+                "pc2_quality_contract"
+            )
+        ) ?: JSONObject()
+        val src = parseJsonObject(raw) ?: return null
+        val reasons = compactStringArray(src.opt("reasons"), limit = 12, maxChars = 160)
+        if (reasons.length() > 0) out.put("reasons", reasons)
+        val failureStages = compactStringArray(
+            src.opt("pc2_quality_failure_stages"),
+            limit = 16,
+            maxChars = 120
+        )
+        if (failureStages.length() > 0) out.put("pc2_quality_failure_stages", failureStages)
+        compactStrategyMarketFitComponents(src.opt("strategy_market_fit_components"))
+            ?.let { out.put("strategy_market_fit_components", it) }
+        return if (out.length() > 0) out else null
     }
 
     private fun compactCandidate(raw: Any?): JSONObject? {
@@ -372,6 +443,7 @@ object EvaluationLocalCache {
             "build3EvFloorMult",
             "build3EvPass",
             "marketConfidence",
+            "strategyMarketFitConfidence",
             "entryConfidence",
             "entryEligible",
             "entryGate",
@@ -514,6 +586,10 @@ object EvaluationLocalCache {
             src.opt("pc2CompositeShadow"),
             arrayOf("score", "raw_score", "context_score", "economics_percentile", "teacher_modifier", "version")
         )?.let { out.put("pc2CompositeShadow", it) }
+        compactStrategyMarketFitComponents(src.opt("strategyMarketFitComponents"))
+            ?.let { out.put("strategyMarketFitComponents", it) }
+        compactEntryEligibility(src.opt("entryEligibility"))
+            ?.let { out.put("entryEligibility", it) }
         return if (out.length() > 0) out else null
     }
 

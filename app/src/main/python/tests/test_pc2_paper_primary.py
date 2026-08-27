@@ -18,7 +18,7 @@ from brain import (
 
 
 def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra):
-    # v5: the paper selector's primary economic authority is absolute net edge.
+    # v6: the paper selector's primary economic authority is positive absolute net edge.
     # `edge` remains the adjustedEdgePerRisk economic param (still computed as a
     # persisted diagnostic); by default we let net edge track it so each test's
     # "better economics wins" intent is preserved under the new authority. Tests
@@ -444,10 +444,10 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
             self.assertIn(key, compact)
 
 
-    # ---- v5 regression: edge-per-risk demoted, absolute net edge is authority ----
-    def test_v5_selects_absolute_net_edge_over_edge_per_risk(self):
+    # ---- v6 regression: edge-per-risk demoted, positive absolute net edge is authority ----
+    def test_v6_selects_absolute_net_edge_over_edge_per_risk(self):
         # big_abs: large absolute net edge, small ratio (0.05). small_abs: tiny net edge,
-        # huge ratio (0.20). Pre-v5 the edge-per-risk key picked small_abs; v5 must pick big_abs.
+        # huge ratio (0.20). Pre-v5 the edge-per-risk key picked small_abs; v6 must pick big_abs.
         big_abs = candidate("big-abs", 1, 0.0, 0.05,
                             netPremiumEdge=2000.0, netMaxLossAfterFriction=40000.0)
         small_abs = candidate("small-abs", 2, 0.0, 0.20,
@@ -457,13 +457,13 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
 
         self.assertEqual(ordered[0]["id"], "big-abs")
         self.assertEqual(summary["pc2_primary_candidate_id"], "big-abs")
-        self.assertEqual(summary["schema_version"], "pc2_paper_primary_v5")
+        self.assertEqual(summary["schema_version"], PC2_PAPER_PRIMARY_SELECTOR_VERSION)
         # edge-per-risk is still COMPUTED as a diagnostic, just not authority
         self.assertAlmostEqual(big_abs["pc2PaperSortComponents"]["adjusted_edge_per_risk"], 0.05)
         self.assertAlmostEqual(small_abs["pc2PaperSortComponents"]["adjusted_edge_per_risk"], 0.20)
         self.assertEqual(big_abs["pc2PaperSortComponents"]["rank_edge_value"], 2000.0)
 
-    def test_v5_missing_net_economics_fails_closed_sorts_last(self):
+    def test_v6_missing_net_economics_fails_closed_sorts_last(self):
         has_net = candidate("has-net", 1, 0.0, 0.05, netPremiumEdge=100.0,
                             netMaxLossAfterFriction=5000.0)
         missing_net = candidate("missing-net", 2, 0.90, 0.90)
@@ -480,6 +480,55 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(ordered[0]["id"], "has-net")
         self.assertIsNone(missing_net["pc2PaperSortComponents"]["rank_edge_value"])
         self.assertEqual(has_net["pc2PaperSortComponents"]["rank_edge_value"], 100.0)
+
+    def test_candidate_n_abstains_when_best_effective_net_edge_is_not_positive(self):
+        least_bad = candidate(
+            "least-bad", 1, 0.10, -10.0,
+            type="IRON_BUTTERFLY", index="NF", netPremiumEdge=-10.0,
+        )
+        worse = candidate(
+            "worse", 2, 0.30, -50.0,
+            type="BEAR_CALL", index="BNF", netPremiumEdge=-50.0,
+        )
+
+        ordered, summary = select_pc2_paper_primary([worse, least_bad], "paper")
+
+        self.assertEqual(ordered[0]["id"], "least-bad")
+        self.assertTrue(summary["menu_abstention"])
+        self.assertEqual(summary["menu_abstention_reason"], "pc2_menu_no_positive_effective_edge")
+        self.assertEqual(summary["eligible_candidate_count_before_menu_abstention"], 2)
+        self.assertEqual(summary["eligible_candidate_count"], 0)
+        self.assertEqual(summary["entry_candidate_count"], 2)
+        self.assertIsNone(summary["pc2_primary_candidate_id"])
+        self.assertTrue(all(not row["pc2PaperPrimaryEligible"] for row in ordered))
+        self.assertTrue(all(row["pc2PaperMenuAbstention"] for row in ordered))
+        self.assertLessEqual(summary["best_entry_rank_edge_effective"], 0)
+
+    def test_candidate_n_abstention_finalizes_specific_hard_wait(self):
+        least_bad = candidate(
+            "least-bad", 1, 0.10, -10.0,
+            type="IRON_BUTTERFLY", index="NF", netPremiumEdge=-10.0,
+        )
+        ranked, summary = select_pc2_paper_primary([least_bad], "paper")
+        result = {
+            "verdict": {
+                "action": "WAIT",
+                "strategy": None,
+                "confidence": 0,
+                "decision_gate": _decision_gate(
+                    DECISION_GATE_PRELIMINARY_WAIT,
+                    "no_preliminary_strategy",
+                ),
+            }
+        }
+
+        finalized = _finalize_pc2_paper_verdict(result, ranked, summary)
+
+        self.assertEqual(finalized["verdict"]["action"], "WAIT")
+        self.assertEqual(finalized["verdict"]["decision_gate"]["state"], DECISION_GATE_HARD_WAIT)
+        self.assertEqual(finalized["verdict"]["decision_gate"]["reason"], "pc2_menu_no_positive_effective_edge")
+        self.assertEqual(finalized["decisionSource"], "PC2_PAPER_MENU_ABSTENTION")
+        self.assertIn("positive effective net edge", finalized["verdict"]["reasoning"])
 
 
 class AuditFixesTest(unittest.TestCase):

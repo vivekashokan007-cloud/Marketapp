@@ -6079,7 +6079,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.1"
+BRAIN_VERSION = "2.6.2"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6140,7 +6140,7 @@ CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v5"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v6"
 PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
 PC2_COMPOSITE_SHADOW_MODE = "shadow"
 PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
@@ -6148,6 +6148,7 @@ PC2_COMPOSITE_CONTEXT_WEIGHT = 0.30
 PC2_PAPER_PRIMARY_MODE = "paper"
 PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
+PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON = "pc2_menu_no_positive_effective_edge"
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
 PC2_AUTHORITY_STATE_SHADOW = 'SHADOW'
@@ -13938,11 +13939,33 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
     else:
         research_ordered = list(ranked)
 
-    eligible = sorted(
+    eligible_before_abstention = sorted(
         (candidate for candidate in ranked if entry_primary_eligible(candidate)),
         key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'entry'),
     ) if active else [candidate for candidate in ranked if entry_primary_eligible(candidate)]
-    monitor_only = [candidate for candidate in research_ordered if not entry_primary_eligible(candidate)]
+    entry_effective_edges = [
+        _safe_num((candidate.get('pc2PaperEntrySortComponents') or {}).get('rank_edge_effective'), None)
+        for candidate in eligible_before_abstention
+    ]
+    entry_effective_edges = [
+        edge for edge in entry_effective_edges
+        if edge is not None and math.isfinite(edge)
+    ]
+    best_entry_rank_edge_effective = max(entry_effective_edges) if entry_effective_edges else None
+    menu_abstention = bool(
+        active
+        and eligible_before_abstention
+        and (
+            best_entry_rank_edge_effective is None
+            or best_entry_rank_edge_effective <= 0
+        )
+    )
+    eligible = [] if menu_abstention else eligible_before_abstention
+    primary_ids = {id(candidate) for candidate in eligible}
+    monitor_only = [
+        candidate for candidate in research_ordered
+        if id(candidate) not in primary_ids
+    ]
     ordered = eligible + monitor_only if active else research_ordered
 
     research_rank_by_identity = {
@@ -13952,7 +13975,13 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
     for pc2_rank, candidate in enumerate(ordered, start=1):
         candidate['pc2PaperResearchRank'] = research_rank_by_identity.get(id(candidate)) if active else None
         candidate['pc2PaperRank'] = pc2_rank if active else None
-        candidate['pc2PaperPrimaryEligible'] = bool(active and entry_primary_eligible(candidate))
+        candidate['pc2PaperPrimaryEligible'] = bool(active and not menu_abstention and entry_primary_eligible(candidate))
+        candidate['pc2PaperMenuAbstention'] = bool(menu_abstention)
+        candidate['pc2PaperMenuAbstentionReason'] = (
+            PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON
+            if menu_abstention
+            else None
+        )
         candidate['pc2PaperSelectorVersion'] = PC2_PAPER_PRIMARY_SELECTOR_VERSION
         candidate['pc2PaperMode'] = PC2_PAPER_PRIMARY_MODE
 
@@ -13974,7 +14003,20 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         'execution_mode_observed': mode,
         'candidate_count': len(ranked),
         'research_candidate_count': len(research_rows),
+        'entry_candidate_count': len(entry_rows),
+        'eligible_candidate_count_before_menu_abstention': len(eligible_before_abstention),
         'eligible_candidate_count': len(eligible),
+        'best_entry_rank_edge_effective': (
+            round(best_entry_rank_edge_effective, 6)
+            if best_entry_rank_edge_effective is not None
+            else None
+        ),
+        'menu_abstention': bool(menu_abstention),
+        'menu_abstention_reason': (
+            PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON
+            if menu_abstention
+            else None
+        ),
         'pc2_research_candidate_id': research_top.get('id') if isinstance(research_top, dict) else None,
         'pc2_primary_candidate_id': pc2_top.get('id') if isinstance(pc2_top, dict) else None,
         'deterministic_shadow_candidate_id': deterministic_top.get('id') if isinstance(deterministic_top, dict) else None,
@@ -13991,12 +14033,14 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             'direction-unsafe candidates cannot be PC2 primary',
             'entry-ineligible candidates remain monitor evidence but cannot be PC2 primary',
             'no entry-eligible paper candidate forces WAIT',
+            'menu with no positive effective net edge forces WAIT even when candidates are otherwise entry-eligible',
             'PC2 primary authority is restricted to paper execution mode',
         ],
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
             'research normalization uses every capital-safe and direction-safe candidate with valid economics',
-            'v5 PRIMARY AUTHORITY: absolute net edge (netPremiumEdge via rank-edge), descending; fail-closed when net economics are missing',
+            'v6 PRIMARY AUTHORITY: absolute net edge after sigma/fraction/de-rate (rank_edge_effective), descending; fail-closed when net economics are missing',
+            'Candidate N no-trade gate: max(rank_edge_effective) must be positive before PC2 may nominate a paper primary',
             'contextPercentileScore descending as the first tie-breaker',
             'probProfit descending as the second tie-breaker',
             'candidate id ascending for deterministic tie resolution',
@@ -14294,6 +14338,22 @@ def _finalize_pc2_paper_verdict(result, ranked, pc2_summary, ctx=None):
         None,
     )
     if not primary_id or not isinstance(primary, dict) or primary.get('entryEligible') is not True:
+        menu_abstention = bool(pc2_summary.get('menu_abstention'))
+        wait_reason = (
+            PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON
+            if menu_abstention
+            else 'pc2_no_entry_eligible_candidate'
+        )
+        decision_source = (
+            'PC2_PAPER_MENU_ABSTENTION'
+            if menu_abstention
+            else 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+        )
+        reasoning = (
+            'PC2 paper selector found entry-eligible candidates, but none had positive effective net edge after de-rates.'
+            if menu_abstention
+            else 'PC2 paper selector found no candidate that passed entry economics, ML data quality, and confidence checks.'
+        )
         verdict.update({
             'action': 'WAIT',
             'strategy': None,
@@ -14301,15 +14361,19 @@ def _finalize_pc2_paper_verdict(result, ranked, pc2_summary, ctx=None):
             'confidence': 0,
             'entry_confidence': 0,
             'entry_eligible': False,
+            'urgency': 'WAIT - no positive entry edge' if menu_abstention else 'WAIT - no entry-eligible candidate',
+            'reasoning': reasoning,
             'execution_aligned': False,
             'decision_gate': _decision_gate(
                 DECISION_GATE_HARD_WAIT,
-                'pc2_no_entry_eligible_candidate',
+                wait_reason,
             ),
         })
         result['verdict'] = verdict
-        result['decisionSource'] = 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+        result['decisionSource'] = decision_source
         result['decision_source'] = result['decisionSource']
+        result['decisionReason'] = reasoning
+        result['decision_reason'] = result['decisionReason']
         return result
 
     # Missing gate metadata is fail-closed unless the market verdict was
@@ -15194,7 +15258,27 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if pc2_paper_primary.get('active') and not pc2_paper_primary.get('pc2_primary_candidate_id'):
                 verdict = dict(result.get('verdict') or {})
                 conflicts = list(verdict.get('conflicts') or [])
-                conflicts.append('PC2 forced WAIT: no entry-eligible paper candidate survived.')
+                menu_abstention = bool(pc2_paper_primary.get('menu_abstention'))
+                wait_reason = (
+                    PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON
+                    if menu_abstention
+                    else 'pc2_no_entry_eligible_candidate'
+                )
+                decision_source = (
+                    'PC2_PAPER_MENU_ABSTENTION'
+                    if menu_abstention
+                    else 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+                )
+                reasoning = (
+                    'PC2 paper selector found entry-eligible candidates, but none had positive effective net edge after de-rates.'
+                    if menu_abstention
+                    else 'PC2 paper selector found no candidate that passed entry economics, ML data quality, and confidence checks.'
+                )
+                conflicts.append(
+                    'PC2 forced WAIT: no entry-eligible candidate had positive effective net edge.'
+                    if menu_abstention
+                    else 'PC2 forced WAIT: no entry-eligible paper candidate survived.'
+                )
                 verdict['market_thesis'] = {
                     'action': verdict.get('action'),
                     'strategy': verdict.get('strategy'),
@@ -15209,17 +15293,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'confidence': 0,
                     'entry_confidence': 0,
                     'entry_eligible': False,
-                    'urgency': 'WAIT - no entry-eligible candidate',
-                    'reasoning': 'PC2 paper selector found no candidate that passed entry economics, ML data quality, and confidence checks.',
+                    'urgency': 'WAIT - no positive entry edge' if menu_abstention else 'WAIT - no entry-eligible candidate',
+                    'reasoning': reasoning,
                     'conflicts': conflicts,
                     'execution_aligned': False,
                     'decision_gate': _decision_gate(
                         DECISION_GATE_HARD_WAIT,
-                        'pc2_no_entry_eligible_candidate',
+                        wait_reason,
                     ),
                 })
                 result['verdict'] = verdict
-                result['decisionSource'] = 'PC2_PAPER_NO_ELIGIBLE_CANDIDATE'
+                result['decisionSource'] = decision_source
                 result['decision_source'] = result['decisionSource']
                 result['decisionReason'] = verdict['reasoning']
                 result['decision_reason'] = result['decisionReason']
@@ -15816,6 +15900,113 @@ def _compact_snapshot_object(raw, keys):
     return out or None
 
 
+def _compact_snapshot_strings(raw, limit=12, max_chars=160):
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for value in raw[:max(0, int(limit))]:
+        if value is None:
+            continue
+        text = str(value)
+        if max_chars > 0 and len(text) > max_chars:
+            text = text[:max_chars]
+        out.append(text)
+    return out
+
+
+def _compact_entry_eligibility(raw):
+    if not isinstance(raw, dict):
+        return None
+    out = _compact_snapshot_object(raw, (
+        'schema',
+        'version',
+        'eligible',
+        'gate',
+        'market_confidence',
+        'candidate_ml_probability',
+        'candidate_ml_action',
+        'candidate_ml_ood',
+        'premium_edge',
+        'net_premium_edge',
+        'gross_premium_edge',
+        'friction_cost',
+        'rank_economics_basis',
+        'build3_ev_pass',
+        'entry_confidence',
+        'entry_confidence_minimum',
+        'strategy_direction',
+        'strategy_market_fit_confidence',
+        'confidence_contract',
+        'economics_contract',
+        'pc2_quality_failure_count',
+        'pc2_quality_contract',
+    )) or {}
+    reasons = _compact_snapshot_strings(raw.get('reasons'), limit=12, max_chars=160)
+    if reasons:
+        out['reasons'] = reasons
+    failure_stages = _compact_snapshot_strings(
+        raw.get('pc2_quality_failure_stages'),
+        limit=16,
+        max_chars=120,
+    )
+    if failure_stages:
+        out['pc2_quality_failure_stages'] = failure_stages
+    strategy_components = _compact_snapshot_object(
+        raw.get('strategy_market_fit_components'),
+        (
+            'regime_type',
+            'sigma',
+            'trend_persistence',
+            'sigma_fit',
+            'persistence_fit',
+            'cross_index_fit',
+        ),
+    )
+    if strategy_components:
+        out['strategy_market_fit_components'] = strategy_components
+    return out or None
+
+
+def _compact_entry_eligibility_android(raw):
+    if not isinstance(raw, dict):
+        return None
+    out = _compact_snapshot_object(raw, (
+        'schema',
+        'version',
+        'eligible',
+        'gate',
+        'entry_confidence',
+        'entry_confidence_minimum',
+        'strategy_direction',
+        'confidence_contract',
+        'economics_contract',
+        'pc2_quality_failure_count',
+        'pc2_quality_contract',
+    )) or {}
+    reasons = _compact_snapshot_strings(raw.get('reasons'), limit=6, max_chars=120)
+    if reasons:
+        out['reasons'] = reasons
+    failure_stages = _compact_snapshot_strings(
+        raw.get('pc2_quality_failure_stages'),
+        limit=8,
+        max_chars=80,
+    )
+    if failure_stages:
+        out['pc2_quality_failure_stages'] = failure_stages
+    strategy_components = _compact_snapshot_object(
+        raw.get('strategy_market_fit_components'),
+        (
+            'regime_type',
+            'sigma_fit',
+            'persistence_fit',
+            'cross_index_fit',
+        ),
+    )
+    if strategy_components:
+        out['strategy_market_fit_components'] = strategy_components
+    return out or None
+
+
 def _candidate_view(c):
     compact_legs = [
         leg for leg in (_compact_snapshot_leg(row) for row in (c.get('legs') or []))
@@ -15895,6 +16086,7 @@ def _candidate_view(c):
         'entryConfidence': c.get('entryConfidence'),
         'entryEligible': c.get('entryEligible'),
         'entryGate': c.get('entryGate'),
+        'entryEligibility': _compact_entry_eligibility(c.get('entryEligibility')),
         'ivRichness': c.get('ivRichness'),
         'creditWidthRatio': c.get('creditWidthRatio'),
         'creditToRisk': c.get('creditToRisk'),
@@ -15977,6 +16169,31 @@ def _candidate_view(c):
         'marginRequestUrl': c.get('marginRequestUrl'),
         'marginQuoteError': c.get('marginQuoteError'),
     }
+
+
+def _candidate_android_snapshot_view(raw):
+    candidate = _candidate_view(raw)
+    candidate['entryEligibility'] = _compact_entry_eligibility_android(
+        raw.get('entryEligibility')
+    )
+    candidate['pc2_gate_basis'] = _compact_snapshot_strings(
+        raw.get('pc2_gate_basis'),
+        limit=6,
+        max_chars=120,
+    )
+    sort_components = raw.get('pc2PaperSortComponents')
+    if isinstance(sort_components, dict):
+        candidate['pc2PaperSortComponents'] = _compact_snapshot_object(
+            sort_components,
+            (
+                'score_scope',
+                'composite_score',
+                'economics_percentile',
+                'quality_percentile',
+                'teacher_modifier',
+            ),
+        )
+    return candidate
 
 
 def _shadow_num(value, default=None):
@@ -18117,6 +18334,13 @@ def _compact_android_snapshot_context(snapshot_context):
     for key in array_keys:
         if isinstance(source.get(key), list):
             compact[key] = source.get(key)
+
+    ranked_full = compact.get('snapshot_ranked_candidates_full')
+    if isinstance(ranked_full, list) and ranked_full:
+        compact['snapshot_ranked_candidates_full'] = [
+            _candidate_android_snapshot_view(row) if isinstance(row, dict) else row
+            for row in ranked_full
+        ]
 
     if isinstance(source.get('snapshot_rejected_candidates_full'), list):
         compact['snapshot_rejected_candidates_full'] = source.get('snapshot_rejected_candidates_full')
