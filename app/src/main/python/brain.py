@@ -6080,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.3"
+BRAIN_VERSION = "2.6.4"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6150,6 +6150,8 @@ PC2_PAPER_PRIMARY_MODE = "paper"
 PC2_PAPER_CONTROL_VERSION = "pc2_paper_control_v1"
 PC2_CALIBRATION_POPULATION_VERSION = "pc2_generated_rejected_union_v1"
 PC2_MENU_NO_POSITIVE_EFFECTIVE_EDGE_REASON = "pc2_menu_no_positive_effective_edge"
+NET_RANK_EDGE_SCALE = 'net_premium_edge_absolute_rupees_after_executable_friction'
+GROSS_RANK_EDGE_SCALE = 'gross_premium_edge_absolute_rupees_legacy_fallback'
 PC2_CENSOR_GUARD_VERSION = "pc2_censored_calibration_guard_v2"
 PC2_NEUTRALITY_TICK = 0.01
 PC2_AUTHORITY_STATE_SHADOW = 'SHADOW'
@@ -10992,7 +10994,7 @@ def _candidate_rank_edge(candidate):
             'max_loss': net_loss,
             'prob': net_prob if net_prob is not None else _safe_num(cand.get('probProfit'), 0.0),
             'status': 'OK_NET',
-            'scale': 'net_premium_edge_per_net_max_loss',
+            'scale': NET_RANK_EDGE_SCALE,
             'basis': 'NET_AFTER_TEACHER_FRICTION',
         }
     if net_expected:
@@ -11001,7 +11003,7 @@ def _candidate_rank_edge(candidate):
             'max_loss': float('inf'),
             'prob': 0.0,
             'status': 'MISSING_NET',
-            'scale': 'net_premium_edge_per_net_max_loss',
+            'scale': NET_RANK_EDGE_SCALE,
             'basis': 'NET_UNAVAILABLE_FAIL_CLOSED',
         }
     gross_edge = _safe_num(cand.get('premiumEdge'), None)
@@ -11011,7 +11013,7 @@ def _candidate_rank_edge(candidate):
         'max_loss': max(gross_loss or 0.0, 0.0),
         'prob': _safe_num(cand.get('probProfit'), 0.0),
         'status': 'OK' if gross_edge is not None else 'MISSING',
-        'scale': 'premium_edge_per_max_loss',
+        'scale': GROSS_RANK_EDGE_SCALE,
         'basis': 'GROSS_COMPAT_FALLBACK',
     }
 
@@ -18557,8 +18559,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'teacher_success_rate_pct': top_cand.get('teacher_success_rate_pct'),
             'teacher_coverage': top_cand.get('teacher_coverage'),
             'teacher_recommendable': top_cand.get('teacher_recommendable'),
-            # v2.6.1 P1: persist selector sort-components and entry-eligibility so the v5
-            # net-edge authority and the far-OTM sigma de-rate become auditable from Supabase.
+            # Persist selector sort-components and entry-eligibility so the active PC2
+            # net-edge authority and the far-OTM sigma de-rate remain auditable from Supabase.
             # pc2PaperSortComponents carries rank_edge_value / rank_edge_effective /
             # sigma_penalty_factor / sigma_excess_over_ceiling / sigma_otm / rank_economics_basis;
             # entryEligibility carries the gate reasons list plus net/gross edge and friction.

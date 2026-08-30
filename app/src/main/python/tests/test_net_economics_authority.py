@@ -50,7 +50,21 @@ def test_ranker_prefers_positive_net_edge_over_higher_gross_edge():
 
     assert [row["id"] for row in ranked] == ["net_winner", "gross_only_winner"]
     assert ranked[0]["rankEconomicsBasis"] == "NET_AFTER_TEACHER_FRICTION"
-    assert ranked[0]["rankEdgeScale"] == "net_premium_edge_per_net_max_loss"
+    assert ranked[0]["rankEdgeScale"] == brain.NET_RANK_EDGE_SCALE
+
+
+def test_rank_edge_scale_documents_gross_fallback_absolute_rupees():
+    brain = load_brain()
+    row = candidate("gross_fallback", gross_edge=42, net_edge=100)
+    row.pop("netPremiumEdge")
+    row.pop("netMaxLossAfterFriction")
+    row.pop("netProbProfit")
+
+    ranked_edge = brain._candidate_rank_edge(row)
+
+    assert ranked_edge["edge"] == 42
+    assert ranked_edge["scale"] == brain.GROSS_RANK_EDGE_SCALE
+    assert ranked_edge["basis"] == "GROSS_COMPAT_FALLBACK"
 
 
 def test_ranker_prefers_net_economics_before_varsity_and_teacher_heuristics():

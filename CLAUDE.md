@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.0 · `versionCode` 431 · **Updated**: August 25, 2026 (post god-mode audit of `brain.py`, 12/12 findings execution-verified; see `brain_audit/AUDIT_FINAL_VERIFIED.md`)
+> **Version**: 2.6.4 · `versionCode` 435 · **Updated**: August 30, 2026 (rank-edge telemetry truth + resumable net-objective research tooling; brain/PWA/Kotlin versions synchronized)
 
 ## Project overview
 
@@ -98,12 +98,12 @@ Supabase tables: `trades_v2` (113 cols live, verified 2026-08-25 — earlier doc
 
 Three channels — `urgent` (HIGH + vibrate), `important` (DEFAULT), `routine` (LOW). Tapping routes into the right WebView tab via `openTab` extra handled in `MainActivity.handleIntent()`.
 
-### Candidate selection — PC2 paper primary selector (v5, brain.py)
+### Candidate selection — PC2 paper primary selector (v6, brain.py)
 
 This is the live ranking authority for which single candidate becomes the "primary" recommendation. It replaced a fixed hard-constant gate waterfall by design: the percentile/lexicographic-tuple architecture exists because a dynamic market cannot be safely handled with static thresholds. Sort key, in order (`_pc2_paper_primary_sort_key`):
 
 1. `safety_ineligible` (0/1) — direction-unsafe or capital-blocked candidates always sort last.
-2. `rank_edge_effective` — **absolute net premium edge, after the far-OTM sigma de-rate** (see below). This is the primary economic authority as of v5 (`PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v5"`), replacing `adjustedEdgePerRisk`/composite score as tie-breaker-only signals. This was an explicit empirical decision, not a stylistic one: on a realistic top-2-picks/day basis (21 trading days, leave-one-day-out), net-edge selection beat edge-per-risk selection (which measured worst, -0.17R to -0.28R) and beat a look-ahead-contaminated "adaptive percentile" variant that only looked positive because its reference window could see future data — rebuilt causally (prior sessions only), it dropped to -0.0504.
+2. `rank_edge_effective` — **absolute net premium edge, after the far-OTM sigma de-rate** (see below). This is the primary economic authority as of v6 (`PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v6"`), replacing `adjustedEdgePerRisk`/composite score as tie-breaker-only signals. This was an explicit empirical decision, not a stylistic one: on a realistic top-2-picks/day basis (21 trading days, leave-one-day-out), net-edge selection beat edge-per-risk selection (which measured worst, -0.17R to -0.28R) and beat a look-ahead-contaminated "adaptive percentile" variant that only looked positive because its reference window could see future data — rebuilt causally (prior sessions only), it dropped to -0.0504. Telemetry note: `rankEdgeScale` now explicitly says this is absolute rupees after executable friction, not a per-risk ratio; gross fallback is labeled separately.
 3. `context_percentile_score` (descending) — evidence-only signal now, not ordering authority.
 4. `prob_profit` (descending).
 5. `candidate_id` — deterministic tie-break.
@@ -123,6 +123,16 @@ Full findings register: `brain_audit/AUDIT_FINDINGS.md` (raw findings) and `brai
 - **M2.2 — four-leg execution readiness.** `check_execution_readiness()` previously only validated the first leg pair's instrument keys for Iron Condor / Iron Butterfly candidates, so a 4-leg structure missing its second (protective) leg's keys could pass readiness. Now checks `sellInstrumentKey2`/`buyInstrumentKey2` are present whenever `type` is `IRON_CONDOR`/`IRON_BUTTERFLY`, with a new `four_leg_instrument_keys_missing` reason code. Also added a fail-closed holiday-calendar-coverage check (`nse_holiday_calendar_not_current`) so sandbox/live mode refuses readiness if `NSE_HOLIDAYS` doesn't cover the current year.
 - **M3.3 — EV gate fails closed, not open.** `_build3_candidate_ev()` previously returned `passes=True` when a candidate had no economics data at all (nothing to evaluate against). It now returns `passes=False, missing=True, basis='ECONOMICS_UNAVAILABLE_FAIL_CLOSED'` — absence of evidence is no longer treated as evidence of safety.
 - **M1.1 — lot size sourced from live chain metadata, not just the hardcoded constant.** `generate_candidates()` now prefers `chain['lotSize']`/`chain['lot_size']` when present and positive, falling back to the `NF_LOT`/`BNF_LOT` constants only when chain metadata is absent. A drift between the two is now logged (`LOT_SIZE_DRIFT` supply-state event) rather than silently ignored.
+
+### Quote/friction fail-closed shipped in v2.6.3; telemetry contract corrected in v2.6.4
+
+Release commit `751c289` fixed the executable quote contract that was still allowing some entry/teacher paths to reason from missing prices, zero-filled bid/ask values, or LTP-derived display mids. This is code-complete and pushed; production behavior still needs one full phone-update plus post-close cycle before treating it as field-verified.
+
+- **Android quote bridge:** `MarketWatchService.optionQuote()` now preserves missing bid/ask as JSON `null` in the chain payload, full ML slice, and strike resolver. `optionMid()` can still use LTP for display-only mid price, but executable economics no longer inherit that fallback.
+- **Python entry economics:** candidate net economics require executable prices: short entry bid, long entry ask, short close ask, and long close bid. Missing executable quotes now return `QUOTE_INCOMPLETE`, add entry reasons such as `quote_incomplete` / `friction_unavailable`, mark `NET_UNAVAILABLE_FAIL_CLOSED`, and prevent ranking/entry from silently using zero or LTP.
+- **Teacher managed outcome:** `_teacher_candidate_leg_specs()` now accepts camelCase, snake_case, and compact `legs` payloads; `_normalize_teacher_quote_point()` maps compact leg arrays into explicit quote fields. `_managed_teacher_outcome()` drops candidates/points when the friction path is incomplete and uses net max-loss after friction for stop-loss thresholding.
+- **Version markers:** `ENTRY_ELIGIBILITY_VERSION = entry_eligibility_v5_quote_friction_fail_closed`; `NET_ECONOMICS_VERSION = net_economics_v2_executable_quote_contract`; `TEACHER_FRICTION_VERSION = teacher_friction_v2_executable_bid_ask_charges`; `BRAIN_VERSION = "2.6.4"`; `NET_RANK_EDGE_SCALE = net_premium_edge_absolute_rupees_after_executable_friction`.
+- **Validation before push:** `python -m py_compile app/src/main/python/brain.py`, `git diff --check`, and a zero-default bid/ask scan passed. Pytest remains unavailable in this environment.
 
 ### Still open / deferred (deliberate scope boundary)
 
@@ -147,15 +157,16 @@ These were scoped but explicitly NOT implemented — they require a build (multi
 
 > **READ THIS BEFORE JUDGING WHETHER THE SELECTOR WORKS.** `primary_candidate_json` is built at `brain.py:18251` as a **hand-written field whitelist that does NOT include** `netPremiumEdge`, `netEconomicsVersion`, `sigmaPenaltyFactor`, `rankEdgeEffective`, or `sigmaOTM`. Those fields read as `null` in Supabase **even when they were computed correctly**. The same fields are also lost from `top_candidates_json` in the brain→Kotlin bridge round-trip. The surviving source of truth is `top_candidates_json → pc2PaperSortComponents` (`rank_edge_value`, `rank_edge_effective`, `sigma_penalty_factor`, `rank_economics_basis`). On 2026-08-25 this cost a full investigation: the v5 net-edge authority and sigma de-rate were wrongly declared "inert in production" from these nulls, then proven working — `rank_edge_value` differed from gross `premiumEdge` on 318/318 rows by exactly the friction amount, and 145/145 over-ceiling candidates matched `0.5^((σ−1.15)/0.5)` exactly. Persisting these fields is the open **P1** fix; until it lands, never judge the selector from `primary_candidate_json`.
 
-Items fixed by the v2.6.0 audit (M2.2, M3.3, M1.1, the sigma de-rate, the v5 selector) have been removed from this list — see "Audit fixes shipped in v2.6.0" above. Remaining live gaps, not yet re-verified since the audit:
+Items fixed by the v2.6.0 audit (M2.2, M3.3, M1.1, the sigma de-rate, the v6 selector) have been removed from this list — see "Audit fixes shipped in v2.6.0" above. The v2.6.3 executable quote/friction fix is also closed at code level; v2.6.4 corrects the rank-edge telemetry label and adds resumable research tooling. Remaining live gaps:
 
 1. **Teacher research artifact is still unreliable** — canonical persisted inputs can exist while the derived `teacher_research_<date>.json` view still fails to materialize or reload.
 2. **Evaluation completion is still too coupled to derived artifacts** — snapshots + evaluation outcomes should remain canonical completion evidence; teacher/report views should stay recomputable.
 3. **Local evaluation cache is best-effort only** — it should assist recovery, but never become the sole source of truth for post-close evaluation.
 4. **§C four-leg recording corruption (historical, closed)** — `trades_v2` rows from the 2026-03-30→04-16 window contain corrupted 4-leg IC/IB recordings. Root-caused to the pre-migration PWA-embedded-brain era; the current Android/Chaquopy `brain.py` path builds correct 4-leg structures (confirmed by execution). Do not "fix" old rows without re-confirming this scope — it is a closed fossil, not a live defect.
 5. **Multi-session evaluator, `MIN_SIGMA_OTM` near-money tuning, and IC/IB-overnight unblock** — see "Still open / deferred" above; deliberately not implemented pending Phase 1 evidence and explicit sign-off.
-6. **P1 — selector observability (open, highest priority).** Persist `netPremiumEdge`, `rankEdgeEffective`, `sigmaPenaltyFactor`, `rankEconomicsBasis` into `primary_candidate_json` (`brain.py:18251`), plus `entryEligibility.reasons` — currently unserialized, so the *reason* a candidate was gated (e.g. `expected_value_not_positive`, `brain.py:14098`) cannot be confirmed from stored data, only inferred from code. Without this, neither the v5 A/B nor `brain_audit/CHECK_family_allocation.sql` can measure the shipped selector.
+6. **P1 — selector observability (open, highest priority).** Persist `netPremiumEdge`, `rankEdgeEffective`, `sigmaPenaltyFactor`, `rankEconomicsBasis` into `primary_candidate_json` (`brain.py:18251`), plus `entryEligibility.reasons` — currently unserialized, so the *reason* a candidate was gated (e.g. `expected_value_not_positive`, `brain.py:14098`) cannot be confirmed from stored data, only inferred from code. v2.6.3 improves quote/friction reason metadata at candidate level, but this whitelist persistence gap is not closed until stored production rows prove those fields survive.
 7. **Teacher coverage collapsed to 100% `unseen` from 2026-08-11.** `_stage2a_annotate_candidates` (`brain.py:221`) does an exact 4-tuple bucket lookup `(strategy_type, regime_bucket, vix_bucket, dte_bucket)`; any miss → `unseen`. VIX fell below 12 around 08-11 and the teacher table has no `VIX_LT_12` history, so every live candidate now maps to an empty bucket (`teacher_bucket_n=0`). This is a hard VIX-band gate that fails to zero rather than degrading — the pattern the percentile architecture exists to avoid. Impact is bounded (under v5 the teacher signal is evidence-only, not ordering authority) but a nearest-covered-band fallback is worth building. **Note:** net economics do NOT depend on teacher coverage — `_apply_net_economics` (`brain.py:10845`) computes from gross economics + friction regardless.
+8. **Production verification after v2.6.4 is pending.** Confirm the phone reports v2.6.4/b435, the PWA/app/brain versions match, `rankEdgeScale` uses absolute-rupee wording, and generated candidates with incomplete executable bid/ask fail closed with `quote_incomplete` / `NET_UNAVAILABLE_FAIL_CLOSED` instead of zero-filled or LTP-based economics.
 
 ### Sigma de-rate — verified behavior and known blind spots (2026-08-25)
 
@@ -165,7 +176,7 @@ Execution-verified against live data: the de-rate fires exactly as coded (formul
 - **On an all-negative-EV menu it barely reorders.** On 2026-08-25 it changed the #1 pick in only 2 of 34 snapshots. Its intended effect — demoting far-OTM candidates when *positive* edges compete — cannot manifest when nothing on the menu is positive.
 - **It affects ranking only, never generation.** Sole call site is `_pc2_paper_primary_sort_components` (`brain.py:13590`). Any change in *which candidates get generated* has another cause (e.g. 0-DTE expiry days generate only neutral structures at ~¼ normal volume).
 
-GitHub Actions/CI status for this repo could not be verified from the auditing session (separate sandbox API restriction, distinct from the git-push path) — confirm the signed-release workflow succeeded and that the phone reports v2.6.0/b431 before trusting new production data rows as v2.6.0 evidence.
+GitHub Actions/CI status for this repo could not be verified from the auditing session (separate sandbox API restriction, distinct from the git-push path) — confirm the signed-release workflow succeeded and that the phone reports v2.6.4/b435 before trusting new production data rows as v2.6.4 evidence.
 
 ## Typical tasks and where to touch
 
