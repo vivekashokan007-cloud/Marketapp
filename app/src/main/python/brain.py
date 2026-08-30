@@ -33,14 +33,15 @@ PC2_DIRECTIONAL_SHADOW_SUPPLY_FLOOR = 1
 # Gemini display convention. It is not the A8 EV-ratio gate or premiumEdge.
 DISPLAY_EV_PROFIT_HAIRCUT = 0.65
 BUILD3_A8_BELOW_FLOOR_REASON = f"ALL_BELOW_EV_RATIO_FLOOR_{str(BUILD3_EV_FLOOR_MULT).replace('.', '_')}"
-ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v4_market_fit_confidence'
+ENTRY_ELIGIBILITY_VERSION = 'entry_eligibility_v5_quote_friction_fail_closed'
 ENTRY_CONFIDENCE_MIN = 55.0
 DECISION_GATE_VERSION = 'decision_gate_v1'
 DECISION_GATE_ACTIONABLE = 'ACTIONABLE'
 DECISION_GATE_PRELIMINARY_WAIT = 'PRELIMINARY_WAIT'
 DECISION_GATE_HARD_WAIT = 'HARD_WAIT'
 DECISION_GATE_STOP = 'STOP'
-NET_ECONOMICS_VERSION = 'net_economics_v1_teacher_round_trip_friction'
+NET_ECONOMICS_VERSION = 'net_economics_v2_executable_quote_contract'
+TEACHER_FRICTION_VERSION = 'teacher_friction_v2_executable_bid_ask_charges'
 
 
 def _decision_gate(state, reason):
@@ -6079,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.2"
+BRAIN_VERSION = "2.6.3"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -10773,8 +10774,17 @@ def _candidate_decision_friction(candidate):
             }
         trade_dt = _parse_iso_ts(snap['poll_ts']) or datetime.now(timezone(timedelta(hours=5, minutes=30)))
         breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, cfg)
-        breakdown['status'] = 'OK'
-        breakdown['version'] = NET_ECONOMICS_VERSION
+        if not isinstance(breakdown, dict):
+            return {
+                'total': None,
+                'status': 'UNAVAILABLE',
+                'reason': 'friction_breakdown_unavailable',
+                'version': NET_ECONOMICS_VERSION,
+            }
+        if breakdown.get('status') is None:
+            breakdown['status'] = 'OK' if _safe_num(breakdown.get('total'), None) is not None else 'UNAVAILABLE'
+        breakdown['net_economics_version'] = NET_ECONOMICS_VERSION
+        breakdown['version'] = breakdown.get('version') or NET_ECONOMICS_VERSION
         return breakdown
     except Exception as exc:
         return {
@@ -10863,12 +10873,31 @@ def _apply_net_economics(candidate, net_prob_profit=None, friction_breakdown=Non
     cand['frictionCostStatus'] = friction_breakdown.get('status') or ('OK' if friction is not None else 'UNAVAILABLE')
     cand['frictionCostBreakdown'] = {
         key: friction_breakdown.get(key)
-        for key in ('total', 'brokerage', 'exchange', 'gst', 'stt', 'stamp', 'sebi', 'ipft', 'slippage', 'missing_spread_labels', 'version', 'status')
+        for key in (
+            'total', 'brokerage', 'exchange', 'gst', 'stt', 'stamp', 'sebi', 'ipft',
+            'slippage', 'missing_spread_labels', 'missing_quote_labels',
+            'missing_entry_quote_labels', 'missing_close_quote_labels',
+            'spread_evidence_points', 'quote_contract', 'slippage_basis',
+            'version', 'net_economics_version', 'status', 'reason',
+        )
         if friction_breakdown.get(key) is not None
     }
 
-    if friction is None or gross_max_profit is None or gross_max_loss is None or gross_prob is None:
-        cand['netEconomicsStatus'] = 'FRICTION_OR_GROSS_INPUT_UNAVAILABLE'
+    friction_status = str(cand.get('frictionCostStatus') or '').strip().upper()
+    if friction_status != 'OK' or friction is None:
+        cand['netEconomicsStatus'] = friction_status or 'FRICTION_UNAVAILABLE'
+        cand['decisionEconomicsBasis'] = 'NET_UNAVAILABLE_FAIL_CLOSED'
+        cand['netMaxProfitAfterFriction'] = None
+        cand['netMaxLossAfterFriction'] = None
+        cand['netPremiumEdge'] = None
+        cand['netTargetProfit'] = None
+        cand['netStopLoss'] = None
+        cand['netRiskReward'] = None
+        return cand
+
+    if gross_max_profit is None or gross_max_loss is None or gross_prob is None:
+        cand['netEconomicsStatus'] = 'GROSS_INPUT_UNAVAILABLE'
+        cand['decisionEconomicsBasis'] = 'NET_UNAVAILABLE_FAIL_CLOSED'
         return cand
 
     net_profit = max(gross_max_profit - friction, 0.0)
@@ -14127,6 +14156,15 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regi
     ]
     rank_edge = _candidate_rank_edge(candidate)
     net_expected = candidate.get('netEconomicsVersion') is not None or candidate.get('decisionEconomicsBasis') == 'NET_AFTER_TEACHER_FRICTION'
+    friction_status = str(candidate.get('frictionCostStatus') or '').strip().upper()
+    if net_expected:
+        if friction_status and friction_status != 'OK':
+            if friction_status == 'QUOTE_INCOMPLETE':
+                reasons.append('quote_incomplete')
+            else:
+                reasons.append('friction_unavailable')
+        elif _safe_num(candidate.get('frictionCost'), None) is None:
+            reasons.append('friction_unavailable')
     premium_edge = candidate.get('netPremiumEdge')
     if premium_edge is None:
         premium_edge = candidate.get('net_premium_edge')
@@ -14218,6 +14256,9 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regi
         'net_premium_edge': candidate.get('netPremiumEdge'),
         'gross_premium_edge': candidate.get('grossPremiumEdge') if candidate.get('grossPremiumEdge') is not None else candidate.get('premiumEdge'),
         'friction_cost': candidate.get('frictionCost'),
+        'friction_cost_status': candidate.get('frictionCostStatus'),
+        'friction_missing_quote_labels': (candidate.get('frictionCostBreakdown') or {}).get('missing_quote_labels') if isinstance(candidate.get('frictionCostBreakdown'), dict) else None,
+        'friction_quote_contract': (candidate.get('frictionCostBreakdown') or {}).get('quote_contract') if isinstance(candidate.get('frictionCostBreakdown'), dict) else None,
         'rank_economics_basis': rank_edge.get('basis'),
         'build3_ev_pass': candidate.get('build3EvPass'),
         'entry_confidence': entry_confidence,
@@ -19206,15 +19247,7 @@ def _entry_snapshot_point(snap, cand):
     chain_key = 'nfChain' if str(index_key).upper() == 'NF' else 'bnfChain'
     chain = ctx.get(chain_key) if isinstance(ctx.get(chain_key), dict) else {}
     strikes = chain.get('strikes') if isinstance(chain.get('strikes'), dict) else {}
-    leg_specs = [
-        ('sell', cand.get('sellStrike'), cand.get('sellType')),
-        ('buy', cand.get('buyStrike'), cand.get('buyType')),
-    ]
-    if cand.get('sellStrike2') is not None:
-        leg_specs.extend([
-            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
-            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
-        ])
+    leg_specs = _teacher_candidate_leg_specs(cand)
     point = {}
     for label, strike, option_type in leg_specs:
         leg_payload = None
@@ -19271,16 +19304,102 @@ def _entry_snapshot_point(snap, cand):
 
 
 def _teacher_candidate_leg_specs(cand):
+    def _first_present(*keys):
+        for key in keys:
+            val = cand.get(key)
+            if val is not None:
+                return val
+        return None
+
+    sell_strike = _first_present('sellStrike', 'sell_strike', 'sell_call')
+    buy_strike = _first_present('buyStrike', 'buy_strike', 'buy_call')
+    sell_type = _first_present('sellType', 'sell_type')
+    buy_type = _first_present('buyType', 'buy_type')
+    sell2_strike = _first_present('sellStrike2', 'sell_strike2', 'sell_put')
+    buy2_strike = _first_present('buyStrike2', 'buy_strike2', 'buy_put')
+    sell2_type = _first_present('sellType2', 'sell_type2')
+    buy2_type = _first_present('buyType2', 'buy_type2')
+    stype = str(cand.get('type') or cand.get('strategy_type') or '').upper()
+
+    if stype in ('IRON_CONDOR', 'IRON_BUTTERFLY'):
+        sell_type = sell_type or 'CE'
+        buy_type = buy_type or 'CE'
+        sell2_type = sell2_type or 'PE'
+        buy2_type = buy2_type or 'PE'
+
+    legs = cand.get('legs') if isinstance(cand.get('legs'), list) else []
+    if (sell_strike is None or buy_strike is None or (stype in ('IRON_CONDOR', 'IRON_BUTTERFLY') and sell2_strike is None)) and legs:
+        sells = [
+            leg for leg in legs
+            if isinstance(leg, dict)
+            and str(leg.get('action') or leg.get('side') or '').upper() == 'SELL'
+        ]
+        buys = [
+            leg for leg in legs
+            if isinstance(leg, dict)
+            and str(leg.get('action') or leg.get('side') or '').upper() == 'BUY'
+        ]
+        if sell_strike is None and sells:
+            sell_strike = sells[0].get('strike')
+            sell_type = sell_type or sells[0].get('option_type') or sells[0].get('optionType') or sells[0].get('type')
+        if buy_strike is None and buys:
+            buy_strike = buys[0].get('strike')
+            buy_type = buy_type or buys[0].get('option_type') or buys[0].get('optionType') or buys[0].get('type')
+        if sell2_strike is None and len(sells) > 1:
+            sell2_strike = sells[1].get('strike')
+            sell2_type = sell2_type or sells[1].get('option_type') or sells[1].get('optionType') or sells[1].get('type')
+        if buy2_strike is None and len(buys) > 1:
+            buy2_strike = buys[1].get('strike')
+            buy2_type = buy2_type or buys[1].get('option_type') or buys[1].get('optionType') or buys[1].get('type')
+
     leg_specs = [
-        ('sell', cand.get('sellStrike'), cand.get('sellType')),
-        ('buy', cand.get('buyStrike'), cand.get('buyType')),
+        ('sell', sell_strike, sell_type),
+        ('buy', buy_strike, buy_type),
     ]
-    if cand.get('sellStrike2') is not None:
+    if sell2_strike is not None:
         leg_specs.extend([
-            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
-            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
+            ('sell2', sell2_strike, sell2_type),
+            ('buy2', buy2_strike, buy2_type),
         ])
     return leg_specs
+
+
+def _normalize_teacher_quote_point(point, cand):
+    if not isinstance(point, dict):
+        return {}
+    normalized = dict(point)
+    candidate_legs = normalized.get('legs') if isinstance(normalized.get('legs'), list) else []
+    if not candidate_legs:
+        return normalized
+
+    for label, strike, option_type in _teacher_candidate_leg_specs(cand):
+        has_quote = (
+            _float_or_none(normalized.get(label)) is not None
+            or _float_or_none(normalized.get(f'{label}_bid')) is not None
+            or _float_or_none(normalized.get(f'{label}_ask')) is not None
+        )
+        if has_quote:
+            continue
+        expected_action = 'SELL' if label.startswith('sell') else 'BUY'
+        leg_payload = next((
+            leg for leg in candidate_legs
+            if isinstance(leg, dict)
+            and str(leg.get('action') or leg.get('side') or '').upper() == expected_action
+            and _normalize_option_type(
+                leg.get('option_type') or leg.get('optionType') or leg.get('type')
+            ) == _normalize_option_type(option_type)
+            and _strike_matches(leg.get('strike'), strike)
+        ), None)
+        if not isinstance(leg_payload, dict):
+            continue
+        normalized[label] = _float_or_none(
+            leg_payload.get('ltp')
+            if leg_payload.get('ltp') is not None
+            else leg_payload.get('entry_ltp')
+        )
+        normalized[f'{label}_bid'] = _float_or_none(leg_payload.get('bid'))
+        normalized[f'{label}_ask'] = _float_or_none(leg_payload.get('ask'))
+    return normalized
 
 
 def _teacher_candidate_is_credit(cand):
@@ -19667,6 +19786,7 @@ def _teacher_execution_basis(snap, cand, point, entry_point=None):
     is_credit = _teacher_candidate_is_credit(cand)
     lot_size = _candidate_lot_size(cand)
     entry_point = entry_point if isinstance(entry_point, dict) else _entry_snapshot_point(snap, cand)
+    point = _normalize_teacher_quote_point(point, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
     short_entry_points = 0.0
     long_entry_points = 0.0
@@ -19743,41 +19863,78 @@ def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
     rates = _teacher_option_charge_rates(trade_dt, config)
     lot_size = _candidate_lot_size(cand)
     entry_point = _entry_snapshot_point(snap, cand)
+    point = _normalize_teacher_quote_point(point, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
     leg_count = len(leg_specs)
+    strict_quotes = bool(config.get('require_executable_quotes', True))
+    allow_ltp_fallback = bool(config.get('allow_ltp_quote_fallback', False))
     entry_turnover = 0.0
     close_turnover = 0.0
     short_sell_premium = 0.0
     buy_side_premium = 0.0
-    slippage = 0.0
-    missing_spread_labels = []
+    missing_quote_labels = []
+    missing_entry_quote_labels = []
+    missing_close_quote_labels = []
+    spread_evidence = []
+
+    def _exec_px(src, label, quote_side, allow_fallback=False):
+        px = _float_or_none(src.get(f'{label}_{quote_side}'))
+        if px is not None and px > 0:
+            return px
+        if allow_fallback:
+            ltp = _float_or_none(src.get(label))
+            if ltp is not None and ltp > 0:
+                return ltp
+        return None
+
     for label, _, _ in leg_specs:
         is_short = label.startswith('sell')
         bid = _float_or_none(point.get(f'{label}_bid'))
         ask = _float_or_none(point.get(f'{label}_ask'))
-        spread_points = None
-        if bid is not None and ask is not None and ask >= bid:
-            spread_points = ask - bid
-        else:
-            spread_points = rates['slippage_fallback_points']
-            missing_spread_labels.append(label)
-        slippage += (spread_points / 2.0) * lot_size
-        if is_short:
-            entry_px = _float_or_none(entry_point.get(f'{label}_bid')) or _float_or_none(entry_point.get(label))
-        else:
-            entry_px = _float_or_none(entry_point.get(f'{label}_ask')) or _float_or_none(entry_point.get(label))
-        entry_px = max(entry_px or 0.0, 0.0)
+        if bid is not None and ask is not None and bid > 0 and ask >= bid:
+            spread_evidence.append(round(ask - bid, 4))
+
+        entry_side = 'bid' if is_short else 'ask'
+        close_side = 'ask' if is_short else 'bid'
+        entry_px = _exec_px(entry_point, label, entry_side, allow_ltp_fallback)
+        close_px = _exec_px(point, label, close_side, allow_ltp_fallback)
+        if entry_px is None:
+            missing_entry_quote_labels.append(f'{label}_{entry_side}')
+        if close_px is None:
+            missing_close_quote_labels.append(f'{label}_{close_side}')
+        if strict_quotes and (entry_px is None or close_px is None):
+            missing_quote_labels.append(label)
+            continue
+        if entry_px is None or close_px is None:
+            missing_quote_labels.append(label)
+            continue
+
         entry_turnover += entry_px * lot_size
         if is_short:
             short_sell_premium += entry_px * lot_size
-            ask_px = _float_or_none(point.get(f'{label}_ask')) or _float_or_none(point.get(label)) or 0.0
-            close_turnover += max(ask_px, 0.0) * lot_size
-            buy_side_premium += max(ask_px, 0.0) * lot_size
+            close_turnover += close_px * lot_size
+            buy_side_premium += close_px * lot_size
         else:
-            bid_px = _float_or_none(point.get(f'{label}_bid')) or _float_or_none(point.get(label)) or 0.0
-            close_turnover += max(bid_px, 0.0) * lot_size
+            close_turnover += close_px * lot_size
             buy_side_premium += entry_px * lot_size
-    slippage *= 2.0
+    if missing_quote_labels:
+        return {
+            'total': None,
+            'status': 'QUOTE_INCOMPLETE',
+            'reason': 'missing_executable_bid_ask_quote',
+            'version': TEACHER_FRICTION_VERSION,
+            'lot_size': lot_size,
+            'leg_count': leg_count,
+            'missing_quote_labels': list(dict.fromkeys(missing_quote_labels)),
+            'missing_entry_quote_labels': list(dict.fromkeys(missing_entry_quote_labels)),
+            'missing_close_quote_labels': list(dict.fromkeys(missing_close_quote_labels)),
+            'missing_spread_labels': list(dict.fromkeys(missing_quote_labels)),
+            'quote_contract': 'entry_short_bid_entry_long_ask_close_short_ask_close_long_bid',
+        }
+
+    # Bid/ask executable prices already include spread friction. Adding another
+    # half-spread slippage term double-counts the same cost and distorts edge.
+    slippage = 0.0
     brokerage = rates['brokerage_per_order'] * leg_count * 2.0
     exchange = (entry_turnover + close_turnover) * rates['exchange_rate']
     ipft = (entry_turnover + close_turnover) * rates['ipft_rate']
@@ -19800,7 +19957,13 @@ def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
         'close_turnover': round(close_turnover, 2),
         'buy_side_premium': round(buy_side_premium, 2),
         'short_sell_premium': round(short_sell_premium, 2),
-        'missing_spread_labels': missing_spread_labels,
+        'missing_spread_labels': [],
+        'missing_quote_labels': [],
+        'spread_evidence_points': spread_evidence,
+        'status': 'OK',
+        'version': TEACHER_FRICTION_VERSION,
+        'quote_contract': 'EXECUTABLE_BID_ASK_NO_ZERO_OR_LTP_DEFAULT',
+        'slippage_basis': 'NONE_EXECUTABLE_QUOTES_ALREADY_INCLUDE_SPREAD',
         'rates': {
             'stt_rate': rates['stt_rate'],
             'exchange_rate': rates['exchange_rate'],
@@ -19962,6 +20125,21 @@ def compute_live_friction(trade, quotes=None, config=None, charges_only=False):
             point[f'{label}_ask'] = px
     trade_dt = _parse_iso_ts(payload.get('entry_date') or payload.get('entryDate') or payload.get('created_at') or '')
     breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, cfg)
+    status = str(breakdown.get('status') or '').strip().upper()
+    if status != 'OK' or _float_or_none(breakdown.get('total')) is None:
+        return {
+            'friction_cost': None,
+            'friction_version': 'G2_charges_only_backfill' if charges_only else 'G2_v1',
+            'friction_reason': breakdown.get('reason') or status or 'FRICTION_UNAVAILABLE',
+            'friction_status': status or 'UNAVAILABLE',
+            'missing_quote_labels': breakdown.get('missing_quote_labels'),
+            'missing_entry_quote_labels': breakdown.get('missing_entry_quote_labels'),
+            'missing_close_quote_labels': breakdown.get('missing_close_quote_labels'),
+            'rates_version': cfg.get('config_version', TEACHER_CONFIG_VERSION),
+            'lot_size': lot_size,
+            'leg_count': len(leg_specs),
+            'breakdown': breakdown,
+        }
     basis = 'UNKNOWN_HISTORICAL' if charges_only else (
         'LIVE_BID_ASK' if not breakdown.get('missing_spread_labels') else 'FALLBACK'
     )
@@ -19969,6 +20147,7 @@ def compute_live_friction(trade, quotes=None, config=None, charges_only=False):
         'friction_cost': breakdown.get('total'),
         'friction_version': 'G2_charges_only_backfill' if charges_only else 'G2_v1',
         'friction_reason': None,
+        'friction_status': 'OK',
         'slippage_basis': basis,
         'rates_version': cfg.get('config_version', TEACHER_CONFIG_VERSION),
         'lot_size': lot_size,
@@ -20123,18 +20302,22 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         return None
     trade_dt = _parse_iso_ts(snap.get('poll_ts', ''))
     entry_cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, path_points[0], config)
-    net_max_profit_at_entry = round(max(max_profit - float(entry_cost_breakdown.get('total') or 0.0), 0.0), 2)
+    entry_cost = _float_or_none(entry_cost_breakdown.get('total'))
+    if str(entry_cost_breakdown.get('status') or '').upper() != 'OK' or entry_cost is None:
+        return None
+    net_max_profit_at_entry = round(max(max_profit - entry_cost, 0.0), 2)
+    net_max_loss_at_entry = round((max_loss or 0.0) + entry_cost, 2) if max_loss is not None and max_loss > 0 else None
     tp_threshold = round(net_max_profit_at_entry * float(config.get('tp_capture_pct', 0.50) or 0.50), 2)
     sl_loss_multiple = float(config.get('sl_loss_multiple', 0.60) or 0.60)
     if is_credit:
-        if max_loss is not None and max_loss > 0:
-            risk_at_entry = round(max_loss * sl_loss_multiple, 2)
+        if net_max_loss_at_entry is not None and net_max_loss_at_entry > 0:
+            risk_at_entry = round(net_max_loss_at_entry * sl_loss_multiple, 2)
         else:
             risk_at_entry = round(max_profit * sl_loss_multiple, 2)
     else:
-        risk_at_entry = round(first_basis.get('entry_basis_currency') or 0.0, 2)
+        risk_at_entry = round((first_basis.get('entry_basis_currency') or 0.0) + entry_cost, 2)
         if risk_at_entry <= 0 and max_loss is not None and max_loss > 0:
-            risk_at_entry = round(max_loss, 2)
+            risk_at_entry = round(max_loss + entry_cost, 2)
     if risk_at_entry <= 0:
         return None
 
@@ -20153,7 +20336,9 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         if gross_pnl is None:
             continue
         cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, config)
-        round_trip_cost = cost_breakdown['total']
+        round_trip_cost = _float_or_none(cost_breakdown.get('total'))
+        if str(cost_breakdown.get('status') or '').upper() != 'OK' or round_trip_cost is None:
+            continue
         net_pnl = round(gross_pnl - round_trip_cost, 2)
         if peak_pnl is None or net_pnl > peak_pnl:
             peak_pnl = net_pnl
@@ -20182,6 +20367,9 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         managed_gross_pnl = gross_pnl
         friction_cost = round_trip_cost
         managed_pnl = net_pnl
+
+    if managed_pnl is None or friction_cost is None or managed_gross_pnl is None:
+        return None
 
     entry_vix = _resolve_entry_vix(snap)
     regime_bucket = _teacher_regime_bucket(entry_vix, config)
@@ -20223,11 +20411,13 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         'teacher_config_version': config.get('config_version', TEACHER_CONFIG_VERSION),
         'tp_threshold': round(tp_threshold, 2),
         'net_max_profit_at_entry': round(net_max_profit_at_entry, 2),
+        'net_max_loss_at_entry': round(net_max_loss_at_entry, 2) if net_max_loss_at_entry is not None else None,
         'sl_threshold': round(risk_at_entry, 2),
         'option_time_basis': config.get('option_time_basis', 'trading_252'),
         'teacher_time_basis_days': config.get('teacher_time_basis_days', TEACHER_TIME_BASIS_DAYS),
         'tp_threshold_basis': config.get('tp_threshold_basis', 'net_pnl_vs_net_max_profit'),
-        'sl_threshold_basis': config.get('sl_threshold_basis', 'net_pnl_vs_0.6_max_loss_no_breach_gate'),
+        'sl_threshold_basis': 'net_pnl_vs_0.6_net_max_loss_after_executable_friction',
+        'friction_contract_version': entry_cost_breakdown.get('version'),
         'break_even_win_rate_pct': break_even,
     }
 

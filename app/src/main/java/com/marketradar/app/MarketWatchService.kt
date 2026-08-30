@@ -1186,15 +1186,25 @@ class MarketWatchService : Service() {
         return if (ltp > 0.0) ltp else md.optDouble("last_price", 0.0)
     }
 
+    private fun optionQuote(md: JSONObject?, key: String): Double? {
+        if (md == null || !md.has(key) || md.isNull(key)) return null
+        val value = when (val raw = md.opt(key)) {
+            is Number -> raw.toDouble()
+            is String -> raw.trim().toDoubleOrNull()
+            else -> null
+        }
+        return value?.takeIf { it.isFinite() && it > 0.0 }
+    }
+
     private fun optionMid(md: JSONObject?): Double {
         if (md == null) return 0.0
-        val bid = md.optDouble("bid_price", 0.0)
-        val ask = md.optDouble("ask_price", 0.0)
-        return if (bid > 0.0 && ask > 0.0) {
+        val bid = optionQuote(md, "bid_price")
+        val ask = optionQuote(md, "ask_price")
+        return if (bid != null && ask != null) {
             (bid + ask) / 2.0
         } else {
             val ltp = optionLtp(md)
-            if (ltp > 0.0) ltp else Math.max(bid, ask)
+            if (ltp > 0.0) ltp else Math.max(bid ?: 0.0, ask ?: 0.0)
         }
     }
 
@@ -1965,11 +1975,11 @@ class MarketWatchService : Service() {
                 val strikeObj = JSONObject()
                 strikeObj.put("CE", JSONObject().apply {
                     val md = callMd
-                    val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
-                    val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    val bid = optionQuote(md, "bid_price")
+                    val ask = optionQuote(md, "ask_price")
                     put("ltp", optionLtp(md))
-                    put("bid", bid)
-                    put("ask", ask)
+                    putNullableFiniteNumber("bid", bid)
+                    putNullableFiniteNumber("ask", ask)
                     put("mid", optionMid(md))
                     put("oi", callOI)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
@@ -1989,11 +1999,11 @@ class MarketWatchService : Service() {
                 })
                 strikeObj.put("PE", JSONObject().apply {
                     val md = putMd
-                    val bid = md?.optDouble("bid_price", 0.0) ?: 0.0
-                    val ask = md?.optDouble("ask_price", 0.0) ?: 0.0
+                    val bid = optionQuote(md, "bid_price")
+                    val ask = optionQuote(md, "ask_price")
                     put("ltp", optionLtp(md))
-                    put("bid", bid)
-                    put("ask", ask)
+                    putNullableFiniteNumber("bid", bid)
+                    putNullableFiniteNumber("ask", ask)
                     put("mid", optionMid(md))
                     put("oi", putOI)
                     put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
@@ -2921,8 +2931,8 @@ class MarketWatchService : Service() {
                     put("strike", strike)
                     put("option_type", optionType)
                     put("ltp", ltp)
-                    put("bid", md.optDouble("bid_price", 0.0))
-                    put("ask", md.optDouble("ask_price", 0.0))
+                    putNullableFiniteNumber("bid", optionQuote(md, "bid_price"))
+                    putNullableFiniteNumber("ask", optionQuote(md, "ask_price"))
                 })
             }
         }
@@ -2962,8 +2972,8 @@ class MarketWatchService : Service() {
             return JSONObject().apply {
                 put("index", indexKey)
                 put("ltp", ltp)
-                put("bid", md.optDouble("bid_price", 0.0))
-                put("ask", md.optDouble("ask_price", 0.0))
+                putNullableFiniteNumber("bid", optionQuote(md, "bid_price"))
+                putNullableFiniteNumber("ask", optionQuote(md, "ask_price"))
             }
         }
         return null
