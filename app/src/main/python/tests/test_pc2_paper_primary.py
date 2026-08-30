@@ -349,7 +349,21 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         self.assertEqual(sum(row["pc2PaperRandomControl"] for row in ordered_two), 1)
 
     def test_snapshot_uses_global_watchlist_primary_not_nf_first(self):
-        bnf_primary = candidate("bnf-primary", 2, 0.25, 0.30, index="BNF", type="BEAR_CALL")
+        bnf_primary = candidate(
+            "bnf-primary", 2, 0.25, 0.30, index="BNF", type="BEAR_CALL",
+            netPremiumEdge=0.30,
+            netEconomicsVersion="pc2_test_v1",
+            netEconomicsStatus="OK",
+            netMaxLossAfterFriction=10000.0,
+            netMaxProfitAfterFriction=1000.0,
+            netProbProfit=0.60,
+            frictionCost=12.5,
+            frictionCostStatus="OK",
+            rankEdgeScale="absolute_rupees",
+            sigmaOTM=1.4,
+            entryConfidence=0.88,
+            entryEligibility={"eligible": True, "reasons": [], "net_premium_edge": 0.30},
+        )
         nf_secondary = candidate("nf-secondary", 1, 0.10, 0.20, index="NF", type="BULL_PUT")
         ordered, policy = select_pc2_paper_primary([nf_secondary, bnf_primary], "paper")
         result = {
@@ -366,6 +380,20 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
         context = __import__("json").loads(snapshot["context_json"])
 
         self.assertEqual(primary["id"], "bnf-primary")
+        self.assertAlmostEqual(primary["netPremiumEdge"], 0.30)
+        self.assertEqual(primary["netEconomicsVersion"], "pc2_test_v1")
+        self.assertEqual(primary["netEconomicsStatus"], "OK")
+        self.assertEqual(primary["frictionCost"], 12.5)
+        self.assertEqual(primary["frictionCostStatus"], "OK")
+        self.assertEqual(primary["rankEdgeScale"], "absolute_rupees")
+        self.assertIn("rankEdgeEffective", primary)
+        self.assertIn("rankEconomicsBasis", primary)
+        self.assertEqual(primary["sigmaOTM"], 1.4)
+        self.assertIn("sigmaPenaltyFactor", primary)
+        self.assertIn("sigmaExcessOverCeiling", primary)
+        self.assertIn("entryEligibility", primary)
+        self.assertEqual(primary["entryEligibility"]["reasons"], [])
+        self.assertIn("pc2PaperSortComponents", primary)
         self.assertEqual(context["snapshot_pc2_paper_primary"]["pc2_primary_candidate_id"], "bnf-primary")
         self.assertIn("random_control", context["snapshot_pc2_paper_primary"])
 

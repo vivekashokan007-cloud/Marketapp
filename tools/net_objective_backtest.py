@@ -53,6 +53,11 @@ SEGMENTS = {
 
 
 SELL_PREMIUM = {"BEAR_CALL", "BULL_PUT", "IRON_BUTTERFLY", "IRON_CONDOR"}
+FRICTION_INPUT_SOURCE = "persisted ml_evaluation_outcomes.friction_cost"
+FRICTION_VERSION_CAVEAT = (
+    "Uses persisted outcome friction_cost and historical generated premium_edge; "
+    "it does not recompute the exact production netPremiumEdge path from executable bid/ask quotes."
+)
 
 
 def _json_cache_path(cache_dir: Path, table: str, session_date: str) -> Path:
@@ -137,6 +142,45 @@ def enrich_net_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if managed_gross is not None and friction is not None:
             new["realized_net_from_gross_minus_friction"] = managed_gross - friction
         out.append(new)
+    return out
+
+
+def predicted_vs_realized_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        predicted = number(row.get("net_edge_proxy"))
+        realized = number(row.get("managed_pnl"))
+        risk = number(row.get("risk_at_entry"))
+        if predicted is None or realized is None:
+            continue
+        sign_agree = (predicted > 0 and realized > 0) or (predicted <= 0 and realized <= 0)
+        out.append({
+            "session_date": row.get("session_date"),
+            "snapshot_id": row.get("snapshot_id"),
+            "candidate_id": row.get("candidate_id"),
+            "role": row.get("role"),
+            "strategy_type": row.get("strategy_type"),
+            "index_key": row.get("index_key"),
+            "lane": row.get("lane"),
+            "generated_rank": row.get("generated_rank"),
+            "generated_join_status": row.get("generated_join_status"),
+            "predicted_net_edge_proxy": round_opt(predicted, 2),
+            "predicted_net_edge_proxy_r": round_opt(predicted / risk if risk else None),
+            "realized_managed_pnl": round_opt(realized, 2),
+            "realized_net_r": round_opt(realized / risk if risk else None),
+            "prediction_error": round_opt(realized - predicted, 2),
+            "abs_prediction_error": round_opt(abs(realized - predicted), 2),
+            "sign_agree": sign_agree,
+            "premium_edge": round_opt(number(row.get("premium_edge")), 2),
+            "friction_cost": round_opt(number(row.get("friction_cost")), 2),
+            "friction_input_source": FRICTION_INPUT_SOURCE,
+            "friction_version_caveat": FRICTION_VERSION_CAVEAT,
+            "label_version": row.get("label_version"),
+            "teacher_config_version": row.get("teacher_config_version"),
+            "entry_eligible": row.get("entry_eligible"),
+            "ml_action": row.get("ml_action"),
+            "p_ml": row.get("p_ml"),
+        })
     return out
 
 
@@ -441,10 +485,12 @@ def main() -> None:
     ][:10]
     keep = {(str(row["filter"]), str(row["policy"])) for row in [*top_deployable[:8], *top_oracle[:5]]}
     by_day = summarize_by_day(decisions, keep)
+    prediction_rows = predicted_vs_realized_rows(enriched)
 
     write_csv(out / "net_objective_decision_ledger.csv", decisions)
     write_csv(out / "net_objective_policy_leaderboard.csv", leaderboard)
     write_csv(out / "net_objective_policy_by_day.csv", by_day)
+    write_csv(out / "net_objective_predicted_vs_realized.csv", prediction_rows)
     write_csv(out / "net_objective_exclusions.csv", exclusions)
     (out / "manifest.json").write_text(json.dumps({
         "study": "net_objective_backtest_v2_resumable",
@@ -468,7 +514,11 @@ def main() -> None:
         "menus_considered": len(by_snapshot),
         "menus_excluded": len(exclusions),
         "decision_rows": len(decisions),
+        "prediction_rows": len(prediction_rows),
         "net_proxy": "net_edge_proxy = premium_edge - friction_cost",
+        "friction_input_source": FRICTION_INPUT_SOURCE,
+        "friction_version_caveat": FRICTION_VERSION_CAVEAT,
+        "production_replay_exactness": "proxy_not_exact_replay",
         "caveat": "Historical generated rows do not contain production netPremiumEdge; this is a proxy backtest, not exact production replay.",
     }, indent=2) + "\n", encoding="utf-8")
 
@@ -495,7 +545,9 @@ def main() -> None:
         f"- Strict outcome rows: `{len(strict_rows)}`.",
         f"- Menus considered: `{len(by_snapshot)}`.",
         f"- Menus excluded: `{len(exclusions)}`.",
+        f"- Predicted-vs-realized rows: `{len(prediction_rows)}`.",
         f"- Net proxy: `net_edge_proxy = premium_edge - friction_cost`.",
+        f"- Friction input source: `{FRICTION_INPUT_SOURCE}`.",
         "",
         "## Deployable Proxy Leaders",
         "",
@@ -512,12 +564,14 @@ def main() -> None:
         "- `net_objective_policy_leaderboard.csv`: segment-level performance.",
         "- `net_objective_decision_ledger.csv`: every selector decision per snapshot.",
         "- `net_objective_policy_by_day.csv`: day-level results for leading policies.",
+        "- `net_objective_predicted_vs_realized.csv`: prediction-vs-outcome error rows with friction provenance.",
         "- `manifest.json`: counts and assumptions.",
         "- `.cache/...`: optional per-table/day raw Supabase cache when `--resume` or `--force-refresh` is used.",
         "",
         "## Caveat",
         "",
-        "This is a historical proxy because older rows do not persist the exact production net fields added in v2.5.94.",
+        "This is a historical proxy because older rows do not persist the exact production net fields added in v2.5.94. Use it to compare selector behavior, not as an exact quote replay.",
+        FRICTION_VERSION_CAVEAT,
     ]
     (out / "README.md").write_text("\n".join(readme) + "\n", encoding="utf-8")
     print(out)

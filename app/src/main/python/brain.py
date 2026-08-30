@@ -6080,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.4"
+BRAIN_VERSION = "2.6.5"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -18517,6 +18517,10 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     # Clean primary candidate (surfaced recommendation — the ML truth target)
     primary = {}
     if top_cand:
+        pc2_sort_components = top_cand.get('pc2PaperSortComponents')
+        if not isinstance(pc2_sort_components, dict):
+            pc2_sort_components = {}
+
         primary = {
             'id': top_cand.get('id'),
             'type': top_cand.get('type'),
@@ -18541,6 +18545,23 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'lotSize': top_cand.get('lotSize'),
             'expiry': top_cand.get('expiry'),
             'width': top_cand.get('width'),
+            'premiumEdge': top_cand.get('premiumEdge'),
+            'netPremiumEdge': top_cand.get('netPremiumEdge'),
+            'netEconomicsVersion': top_cand.get('netEconomicsVersion'),
+            'netEconomicsStatus': top_cand.get('netEconomicsStatus'),
+            'netMaxLossAfterFriction': top_cand.get('netMaxLossAfterFriction'),
+            'netMaxProfitAfterFriction': top_cand.get('netMaxProfitAfterFriction'),
+            'netProbProfit': top_cand.get('netProbProfit'),
+            'frictionCost': top_cand.get('frictionCost'),
+            'frictionCostStatus': top_cand.get('frictionCostStatus'),
+            'rankEdgeScale': top_cand.get('rankEdgeScale'),
+            'rankEconomicsBasis': top_cand.get('rankEconomicsBasis') if top_cand.get('rankEconomicsBasis') is not None else pc2_sort_components.get('rank_economics_basis'),
+            'rankEdgeEffective': top_cand.get('rankEdgeEffective') if top_cand.get('rankEdgeEffective') is not None else pc2_sort_components.get('rank_edge_effective'),
+            'sigmaOTM': top_cand.get('sigmaOTM') if top_cand.get('sigmaOTM') is not None else pc2_sort_components.get('sigma_otm'),
+            'sigmaPenaltyFactor': top_cand.get('sigmaPenaltyFactor') if top_cand.get('sigmaPenaltyFactor') is not None else pc2_sort_components.get('sigma_penalty_factor'),
+            'sigmaExcessOverCeiling': top_cand.get('sigmaExcessOverCeiling') if top_cand.get('sigmaExcessOverCeiling') is not None else pc2_sort_components.get('sigma_excess_over_ceiling'),
+            'entryEligible': top_cand.get('entryEligible'),
+            'entryConfidence': top_cand.get('entryConfidence'),
             'deterministic_rank': top_cand.get('deterministic_rank'),
             'pc2PaperRank': top_cand.get('pc2PaperRank'),
             'pc2PaperPrimaryEligible': top_cand.get('pc2PaperPrimaryEligible'),
@@ -18559,15 +18580,15 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'teacher_success_rate_pct': top_cand.get('teacher_success_rate_pct'),
             'teacher_coverage': top_cand.get('teacher_coverage'),
             'teacher_recommendable': top_cand.get('teacher_recommendable'),
-            # Persist selector sort-components and entry-eligibility so the active PC2
-            # net-edge authority and the far-OTM sigma de-rate remain auditable from Supabase.
+            # Persist flat selector mirrors plus nested sort-components/entry-eligibility so
+            # the active PC2 net-edge authority and far-OTM sigma de-rate remain auditable.
             # pc2PaperSortComponents carries rank_edge_value / rank_edge_effective /
             # sigma_penalty_factor / sigma_excess_over_ceiling / sigma_otm / rank_economics_basis;
             # entryEligibility carries the gate reasons list plus net/gross edge and friction.
             # Both are already stamped upstream (brain.py:13922 and :14163) — this only stops
             # the primary_candidate_json whitelist from silently dropping them, so today's
             # observability trap (documented in PROJECT_KNOWLEDGE 2026-08-25 §C) cannot recur.
-            'pc2PaperSortComponents': top_cand.get('pc2PaperSortComponents'),
+            'pc2PaperSortComponents': pc2_sort_components or top_cand.get('pc2PaperSortComponents'),
             'entryEligibility': top_cand.get('entryEligibility'),
         }
 
