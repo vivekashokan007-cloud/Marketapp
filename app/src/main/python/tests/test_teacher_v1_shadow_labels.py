@@ -44,7 +44,7 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
             'maxLoss': 4800.0,
         }
 
-    def _row(self, ts, strike, opt_type, ltp, underlying_spot=56900):
+    def _row(self, ts, strike, opt_type, ltp, underlying_spot=56900, bid=None, ask=None):
         return {
             'index_key': 'BNF',
             'strike': strike,
@@ -52,11 +52,13 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
             'expiry': '2026-06-18',
             'poll_ts': ts,
             'ltp': ltp,
+            'bid': ltp if bid is None else bid,
+            'ask': ltp if ask is None else ask,
             'underlying_spot': underlying_spot,
             'session_date': '2026-06-15',
         }
 
-    def _nf_row(self, ts, strike, opt_type, ltp, expiry='2026-07-14', underlying_spot=23600):
+    def _nf_row(self, ts, strike, opt_type, ltp, expiry='2026-07-14', underlying_spot=23600, bid=None, ask=None):
         return {
             'index_key': 'NF',
             'strike': strike,
@@ -64,6 +66,8 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
             'expiry': expiry,
             'poll_ts': ts,
             'ltp': ltp,
+            'bid': ltp if bid is None else bid,
+            'ask': ltp if ask is None else ask,
             'underlying_spot': underlying_spot,
             'session_date': '2026-07-08',
         }
@@ -176,9 +180,9 @@ class TestTeacherV1ShadowLabels(unittest.TestCase):
         self.assertEqual(outcome['is_success'], 0)
         self.assertLess(outcome['managed_pnl'], -2880.0)
         self.assertLess(outcome['r_multiple'], -1.0)
-        self.assertAlmostEqual(outcome['sl_threshold'], 2880.0, places=2)
+        self.assertAlmostEqual(outcome['sl_threshold'], 2939.47, places=2)
         self.assertEqual(outcome['teacher_config_version'], 'tc_2026_07_A')
-        self.assertEqual(outcome['sl_threshold_basis'], 'net_pnl_vs_0.6_max_loss_no_breach_gate')
+        self.assertEqual(outcome['sl_threshold_basis'], 'net_pnl_vs_0.6_net_max_loss_after_executable_friction')
         self.assertEqual(outcome['option_time_basis'], 'trading_252')
 
     def test_teacher_can_label_without_legacy_h2_window(self):
