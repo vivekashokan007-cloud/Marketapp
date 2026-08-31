@@ -6080,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.7"
+BRAIN_VERSION = "2.6.8"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -6141,7 +6141,7 @@ CONTEXT_PERCENTILE_MIN_SUPPORT = PC2_AUTHORITY_POLICY['minimum_support']
 CONTEXT_PERCENTILE_STABILITY_MAX = PC2_AUTHORITY_POLICY['maximum_stability_ratio']
 CONTEXT_PERCENTILE_MAX_RANKING_ABS = 0.35
 PC2_GATE_BASIS_VERSION = "pc2_gate_basis_v1"
-PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v6"
+PC2_PAPER_PRIMARY_SELECTOR_VERSION = "pc2_paper_primary_v7"
 PC2_COMPOSITE_SHADOW_VERSION = "pc2_composite_shadow_v1"
 PC2_COMPOSITE_SHADOW_MODE = "shadow"
 PC2_COMPOSITE_ECONOMICS_WEIGHT = 0.70
@@ -10933,13 +10933,28 @@ def _apply_net_economics(candidate, net_prob_profit=None, friction_breakdown=Non
     return cand
 
 
-SIGMA_DISTANCE_PENALTY_VERSION = 'sigma_distance_penalty_v1'
-SIGMA_PENALTY_HALFLIFE = 0.5      # each 0.5 sigma beyond the ceiling halves effective edge
+SIGMA_DISTANCE_PENALTY_VERSION = 'sigma_distance_penalty_v2_symmetric_band'
+SIGMA_PENALTY_HALFLIFE = 0.5      # each 0.5 sigma outside the band halves effective edge
 SIGMA_PENALTY_FLOOR = 0.05        # never de-rate to zero: keep ordering well-defined
 
 
-def _sigma_distance_penalty(candidate):
-    """Bounded, continuous de-rating for short strikes far beyond the context ceiling.
+def _sigma_penalty_numeric(value):
+    value = _percentile_float(value)
+    return value if value is not None and math.isfinite(value) else None
+
+
+def _sigma_gate_threshold(ctx, candidate, const_name, observed, hard_threshold):
+    """Resolve the active PC2 threshold for a sigma gate, with hard fallback."""
+    hard_threshold = _sigma_penalty_numeric(hard_threshold)
+    if hard_threshold is None:
+        return None, {}
+    decision = _pc2_live_gate_decision(ctx, candidate, const_name, observed, hard_threshold)
+    active_threshold = _sigma_penalty_numeric(decision.get('threshold_value'))
+    return (active_threshold if active_threshold is not None else hard_threshold), decision
+
+
+def _sigma_distance_penalty_components(candidate, control_context=None):
+    """Bounded, continuous de-rating for short strikes outside the PC2 sigma band.
 
     EVIDENCE (2026-08-24 study, 425 historical sessions + 21 live sessions):
     credit candidates with sigmaOTM above MAX_SIGMA_OTM won only 5.7% of the time and
@@ -10947,23 +10962,93 @@ def _sigma_distance_penalty(candidate):
     repeatedly promoted to primary (brain picks averaged 2.1-2.6 sigma versus 0.1-0.9
     sigma for the best-outcome candidates).
 
-    This is deliberately NOT a hard gate — it is a proportional ranking de-rate that
-    decays smoothly with sigma excess, so a genuinely strong far-OTM candidate can still
-    win. Candidates with no sigma reading (4-leg / debit families) are UNAFFECTED
-    (factor 1.0) so absence of a signal is never treated as a fault.
+    Follow-up live evidence (2026-08-31 OOD lock audit) showed the opposite failure:
+    near-ATM credit rows were promoted by raw premium, then blocked by ML OOD because the
+    strike distance was below training support. This remains deliberately NOT a hard gate.
+    It is a proportional ranking de-rate on both sides of the same PC2 band, so a genuinely
+    strong outside-band candidate can still win. Candidates with no sigma reading remain
+    unaffected, so absence of a signal is never treated as a fault.
     """
     cand = candidate if isinstance(candidate, dict) else {}
+    ctx = control_context if isinstance(control_context, dict) else {}
     sigma = _safe_num(cand.get('sigmaOTM'), None)
-    if sigma is None:
-        return 1.0, None
-    ceiling = _percentile_float(_CONST.get('MAX_SIGMA_OTM'))
-    if ceiling is None or ceiling <= 0:
-        return 1.0, None
-    if sigma <= ceiling:
-        return 1.0, 0.0
-    excess = sigma - ceiling
-    factor = 0.5 ** (excess / SIGMA_PENALTY_HALFLIFE)
-    return max(SIGMA_PENALTY_FLOOR, min(1.0, factor)), round(excess, 4)
+    base = {
+        'version': SIGMA_DISTANCE_PENALTY_VERSION,
+        'sigma_otm': sigma,
+        'factor': 1.0,
+        'band_violation': None,
+        'excess_over_ceiling': None,
+        'deficit_below_floor': None,
+        'floor_threshold': None,
+        'ceiling_threshold': None,
+        'floor_basis': None,
+        'ceiling_basis': None,
+        'hard_floor_threshold': None,
+        'hard_ceiling_threshold': None,
+        'percentile_floor_threshold': None,
+        'percentile_ceiling_threshold': None,
+        'reason': 'missing_sigma',
+    }
+    if sigma is None or not math.isfinite(sigma):
+        return base
+
+    hard_floor, hard_ceiling = _credit_sigma_limits(ctx)
+    hard_floor = _sigma_penalty_numeric(hard_floor)
+    hard_ceiling = _sigma_penalty_numeric(hard_ceiling)
+    base['hard_floor_threshold'] = hard_floor
+    base['hard_ceiling_threshold'] = hard_ceiling
+    if hard_floor is None and hard_ceiling is None:
+        base['reason'] = 'missing_band'
+        return base
+
+    floor = floor_decision = None
+    ceiling = ceiling_decision = None
+    if hard_floor is not None:
+        floor, floor_decision = _sigma_gate_threshold(ctx, cand, 'MIN_SIGMA_OTM', sigma, hard_floor)
+        base['floor_threshold'] = floor
+        base['floor_basis'] = floor_decision.get('gate_basis') if isinstance(floor_decision, dict) else None
+        base['percentile_floor_threshold'] = (
+            floor_decision.get('percentile_threshold_value') if isinstance(floor_decision, dict) else None
+        )
+    if hard_ceiling is not None:
+        ceiling, ceiling_decision = _sigma_gate_threshold(ctx, cand, 'MAX_SIGMA_OTM', sigma, hard_ceiling)
+        base['ceiling_threshold'] = ceiling
+        base['ceiling_basis'] = ceiling_decision.get('gate_basis') if isinstance(ceiling_decision, dict) else None
+        base['percentile_ceiling_threshold'] = (
+            ceiling_decision.get('percentile_threshold_value') if isinstance(ceiling_decision, dict) else None
+        )
+
+    if floor is not None and ceiling is not None and floor > ceiling:
+        floor, ceiling = ceiling, floor
+        base['floor_threshold'] = floor
+        base['ceiling_threshold'] = ceiling
+        base['reason'] = 'inverted_band_sorted'
+
+    violation = 0.0
+    if floor is not None and sigma < floor:
+        deficit = floor - sigma
+        violation = -deficit
+        base['deficit_below_floor'] = round(deficit, 4)
+        base['reason'] = 'below_floor'
+    elif ceiling is not None and sigma > ceiling:
+        excess = sigma - ceiling
+        violation = excess
+        base['excess_over_ceiling'] = round(excess, 4)
+        base['reason'] = 'above_ceiling'
+    else:
+        base['band_violation'] = 0.0
+        base['reason'] = 'inside_band'
+        return base
+
+    factor = 0.5 ** (abs(violation) / SIGMA_PENALTY_HALFLIFE)
+    base['factor'] = max(SIGMA_PENALTY_FLOOR, min(1.0, factor))
+    base['band_violation'] = round(violation, 4)
+    return base
+
+
+def _sigma_distance_penalty(candidate, control_context=None):
+    components = _sigma_distance_penalty_components(candidate, control_context)
+    return components['factor'], components['band_violation']
 
 
 def _apply_sigma_distance_penalty(edge_value, factor):
@@ -13523,6 +13608,19 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         # evidence/tiebreaker, not as the first economic objective.
         rank_edge = _candidate_rank_edge(c)
         premium_edge = rank_edge['edge']
+        sigma_penalty = _sigma_distance_penalty_components(c)
+        sigma_penalty_factor = sigma_penalty['factor']
+        premium_edge_effective = _apply_sigma_distance_penalty(premium_edge, sigma_penalty_factor)
+        premium_edge_order = (
+            premium_edge_effective
+            if isinstance(premium_edge_effective, (int, float)) and math.isfinite(premium_edge_effective)
+            else premium_edge
+        )
+        premium_edge_order_key = (
+            -premium_edge_order
+            if isinstance(premium_edge_order, (int, float)) and math.isfinite(premium_edge_order)
+            else float('inf')
+        )
         c['premium_edge_status'] = rank_edge['status']
         opportunity_gate_penalty = _opportunity_gate_penalty(c)
         max_loss = max(_safe_num(rank_edge.get('max_loss'), 0.0), 0.0)
@@ -13543,6 +13641,16 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         c['adjustedEdgePerRisk'] = adjusted_edge_per_risk if math.isfinite(adjusted_edge_per_risk) else None
         c['rankEdgeScale'] = rank_edge['scale']
         c['rankEconomicsBasis'] = rank_edge['basis']
+        c['sigmaPenaltyFactor'] = round(sigma_penalty_factor, 6)
+        c['sigmaExcessOverCeiling'] = sigma_penalty.get('excess_over_ceiling')
+        c['sigmaDeficitBelowFloor'] = sigma_penalty.get('deficit_below_floor')
+        c['sigmaBandViolation'] = sigma_penalty.get('band_violation')
+        c['sigmaPenaltyReason'] = sigma_penalty.get('reason')
+        c['rankEdgeEffective'] = (
+            round(premium_edge_effective, 6)
+            if isinstance(premium_edge_effective, (int, float)) and math.isfinite(premium_edge_effective)
+            else premium_edge_effective
+        )
         c['adjustedPremiumEdge'] = (
             premium_edge - opportunity_gate_penalty
             if isinstance(premium_edge, (int, float)) and math.isfinite(premium_edge)
@@ -13559,12 +13667,25 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
         elif c.get('mlOod') and (c.get('mlOodConf') or 1.0) < 0.6:
             p_ml = 0.0
 
-        return (
-            capital_blocked, safe, -premium_edge, tier,
-            teacher_rank_active, -teacher_score, -teacher_n,
-            -context_percentile_score, -adjusted_edge_per_risk, bv, -win_rate,
-            -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml,
+        adjusted_premium_edge_key = (
             -c['adjustedPremiumEdge']
+            if isinstance(c.get('adjustedPremiumEdge'), (int, float))
+            and math.isfinite(c.get('adjustedPremiumEdge'))
+            else float('inf')
+        )
+        adjusted_edge_per_risk_key = (
+            -adjusted_edge_per_risk
+            if isinstance(adjusted_edge_per_risk, (int, float))
+            and math.isfinite(adjusted_edge_per_risk)
+            else float('inf')
+        )
+
+        return (
+            capital_blocked, safe, premium_edge_order_key, tier,
+            teacher_rank_active, -teacher_score, -teacher_n,
+            -context_percentile_score, adjusted_edge_per_risk_key, bv, -win_rate,
+            -aligned, against, -ctx_score, gamma, -wall, -prob, -p_ml,
+            adjusted_premium_edge_key
         )
 
     ranked = [c for c in candidates if isinstance(c, dict)]
@@ -13580,7 +13701,7 @@ def rank_candidates(candidates, calibration=None, brain_verdict=None, stage2a=No
     return ranked
 
 
-def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
+def _pc2_paper_primary_sort_components(candidate, score_scope='research', control_context=None):
     """Bounded PC2 ordering for paper research after hard construction gates.
 
     Economics and verified percentile context are combined before ordering. This
@@ -13617,9 +13738,10 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
         if isinstance(_rank_edge_raw, (int, float)) and math.isfinite(_rank_edge_raw)
         else None
     )
-    # v6: bounded far-OTM de-rate applied to the ordering value only. The raw net edge is
-    # preserved alongside it as evidence so the A/B stays reconstructible.
-    sigma_penalty_factor, sigma_excess = _sigma_distance_penalty(candidate)
+    # v7: bounded PC2 sigma-band de-rate applied to the ordering value only. The raw net
+    # edge is preserved alongside it as evidence so the A/B stays reconstructible.
+    sigma_penalty = _sigma_distance_penalty_components(candidate, control_context)
+    sigma_penalty_factor = sigma_penalty['factor']
     rank_edge_effective = _apply_sigma_distance_penalty(rank_edge_value, sigma_penalty_factor)
     unsafe = bool(candidate.get('capitalBlocked')) or not bool(candidate.get('directionSafe', True))
     return {
@@ -13639,8 +13761,19 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
         'rank_edge_effective': round(rank_edge_effective, 6) if rank_edge_effective is not None else None,
         'sigma_otm': _safe_num(candidate.get('sigmaOTM'), None),
         'sigma_penalty_factor': round(sigma_penalty_factor, 6),
-        'sigma_excess_over_ceiling': sigma_excess,
-        'sigma_penalty_version': SIGMA_DISTANCE_PENALTY_VERSION,
+        'sigma_band_violation': sigma_penalty.get('band_violation'),
+        'sigma_excess_over_ceiling': sigma_penalty.get('excess_over_ceiling'),
+        'sigma_deficit_below_floor': sigma_penalty.get('deficit_below_floor'),
+        'sigma_floor_threshold': sigma_penalty.get('floor_threshold'),
+        'sigma_ceiling_threshold': sigma_penalty.get('ceiling_threshold'),
+        'sigma_floor_basis': sigma_penalty.get('floor_basis'),
+        'sigma_ceiling_basis': sigma_penalty.get('ceiling_basis'),
+        'sigma_hard_floor_threshold': sigma_penalty.get('hard_floor_threshold'),
+        'sigma_hard_ceiling_threshold': sigma_penalty.get('hard_ceiling_threshold'),
+        'sigma_percentile_floor_threshold': sigma_penalty.get('percentile_floor_threshold'),
+        'sigma_percentile_ceiling_threshold': sigma_penalty.get('percentile_ceiling_threshold'),
+        'sigma_penalty_reason': sigma_penalty.get('reason'),
+        'sigma_penalty_version': sigma_penalty.get('version'),
         'friction_cost': candidate.get('frictionCost'),
         'candidate_id': str(candidate.get('id') or ''),
         # Diagnostics only — retained as evidence, NOT ordering authority under v5.
@@ -13652,7 +13785,7 @@ def _pc2_paper_primary_sort_components(candidate, score_scope='research'):
     }
 
 
-def _pc2_paper_primary_sort_key(candidate, score_scope='research'):
+def _pc2_paper_primary_sort_key(candidate, score_scope='research', control_context=None):
     """Return the finite, auditable PC2 paper ordering tuple.
 
     v5 — PRIMARY ECONOMIC AUTHORITY IS ABSOLUTE NET EDGE (netPremiumEdge via
@@ -13664,7 +13797,7 @@ def _pc2_paper_primary_sort_key(candidate, score_scope='research'):
     and PERSISTED in the components as evidence, but no longer order the menu.
     Candidates missing net economics fail closed (rank_edge_value None -> sort last).
     """
-    components = _pc2_paper_primary_sort_components(candidate, score_scope)
+    components = _pc2_paper_primary_sort_components(candidate, score_scope, control_context)
     net_edge = components['rank_edge_effective']
     net_edge_key = (
         -net_edge
@@ -13946,8 +14079,8 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         )
 
     for candidate in ranked:
-        research_components = _pc2_paper_primary_sort_components(candidate, 'research')
-        entry_components = _pc2_paper_primary_sort_components(candidate, 'entry')
+        research_components = _pc2_paper_primary_sort_components(candidate, 'research', control_context)
+        entry_components = _pc2_paper_primary_sort_components(candidate, 'entry', control_context)
         components = entry_components if entry_primary_eligible(candidate) else research_components
         candidate['pc2PaperResearchSortComponents'] = research_components
         candidate['pc2PaperEntrySortComponents'] = entry_components
@@ -13960,19 +14093,25 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             components['candidate_id'],
         ]
         candidate['sigmaPenaltyFactor'] = components['sigma_penalty_factor']
+        candidate['sigmaExcessOverCeiling'] = components['sigma_excess_over_ceiling']
+        candidate['sigmaDeficitBelowFloor'] = components['sigma_deficit_below_floor']
+        candidate['sigmaBandViolation'] = components['sigma_band_violation']
+        candidate['sigmaPenaltyReason'] = components['sigma_penalty_reason']
+        candidate['sigmaFloorThreshold'] = components['sigma_floor_threshold']
+        candidate['sigmaCeilingThreshold'] = components['sigma_ceiling_threshold']
         candidate['rankEdgeEffective'] = components['rank_edge_effective']
 
     if active:
         research_ordered = sorted(
             ranked,
-            key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'research'),
+            key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'research', control_context),
         )
     else:
         research_ordered = list(ranked)
 
     eligible_before_abstention = sorted(
         (candidate for candidate in ranked if entry_primary_eligible(candidate)),
-        key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'entry'),
+        key=lambda candidate: _pc2_paper_primary_sort_key(candidate, 'entry', control_context),
     ) if active else [candidate for candidate in ranked if entry_primary_eligible(candidate)]
     entry_effective_edges = [
         _safe_num((candidate.get('pc2PaperEntrySortComponents') or {}).get('rank_edge_effective'), None)

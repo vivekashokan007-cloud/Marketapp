@@ -12,6 +12,7 @@ from brain import (
     _compact_android_snapshot_context,
     _decision_gate,
     _finalize_pc2_paper_verdict,
+    _sigma_distance_penalty_components,
     select_pc2_paper_primary,
     take_poll_snapshot,
 )
@@ -602,11 +603,27 @@ class AuditFixesTest(unittest.TestCase):
         self.assertLess(far_f, 1.0)            # beyond ceiling -> de-rated
         self.assertGreater(far_f, 0.0)         # but never zeroed / vetoed
         self.assertAlmostEqual(far_x, 1.0, places=4)
+        self.assertEqual(
+            _sigma_distance_penalty_components({"sigmaOTM": 2.15})["reason"],
+            "above_ceiling",
+        )
         self.assertEqual(none_f, 1.0)          # no sigma reading -> unaffected
         self.assertIsNone(none_x)
         # monotone in both edge signs: penalty always pushes a candidate DOWN
         self.assertLess(_apply_sigma_distance_penalty(1000.0, far_f), 1000.0)
         self.assertLess(_apply_sigma_distance_penalty(-1000.0, far_f), -1000.0)
+
+    def test_sigma_penalty_derates_near_atm_but_never_vetoes(self):
+        from brain import _sigma_distance_penalty, _apply_sigma_distance_penalty
+        low_f, low_x = _sigma_distance_penalty({"sigmaOTM": 0.05})
+        low_components = _sigma_distance_penalty_components({"sigmaOTM": 0.05})
+        self.assertLess(low_f, 1.0)
+        self.assertGreater(low_f, 0.0)
+        self.assertLess(low_x, 0.0)
+        self.assertEqual(low_components["reason"], "below_floor")
+        self.assertAlmostEqual(low_components["deficit_below_floor"], 0.45, places=4)
+        self.assertLess(_apply_sigma_distance_penalty(1000.0, low_f), 1000.0)
+        self.assertLess(_apply_sigma_distance_penalty(-1000.0, low_f), -1000.0)
 
     def test_sigma_penalty_changes_selection_away_from_far_otm(self):
         near = candidate("near", 1, 0.0, 0.10, netPremiumEdge=1000.0, sigmaOTM=0.6)
@@ -618,6 +635,19 @@ class AuditFixesTest(unittest.TestCase):
         self.assertEqual(far["pc2PaperSortComponents"]["rank_edge_value"], 1400.0)
         self.assertLess(far["pc2PaperSortComponents"]["rank_edge_effective"], 1400.0)
         self.assertEqual(near["pc2PaperSortComponents"]["sigma_penalty_factor"], 1.0)
+
+    def test_sigma_penalty_changes_selection_away_from_near_atm(self):
+        near_atm = candidate("near-atm", 1, 0.0, 0.10, netPremiumEdge=1700.0, sigmaOTM=0.05)
+        supported = candidate("supported", 2, 0.0, 0.10, netPremiumEdge=1000.0, sigmaOTM=0.65)
+        ordered, summary = select_pc2_paper_primary([near_atm, supported], "paper")
+        self.assertEqual(ordered[0]["id"], "supported")
+        self.assertEqual(summary["pc2_primary_candidate_id"], "supported")
+        self.assertEqual(near_atm["pc2PaperSortComponents"]["sigma_penalty_reason"], "below_floor")
+        self.assertEqual(supported["pc2PaperSortComponents"]["sigma_penalty_reason"], "inside_band")
+        self.assertLess(
+            near_atm["pc2PaperSortComponents"]["rank_edge_effective"],
+            near_atm["pc2PaperSortComponents"]["rank_edge_value"],
+        )
 
 
 if __name__ == "__main__":
