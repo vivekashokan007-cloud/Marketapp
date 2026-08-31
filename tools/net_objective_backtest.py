@@ -153,7 +153,17 @@ def predicted_vs_realized_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
         risk = number(row.get("risk_at_entry"))
         if predicted is None or realized is None:
             continue
-        sign_agree = (predicted > 0 and realized > 0) or (predicted <= 0 and realized <= 0)
+        predicted_positive = predicted > 0
+        realized_positive = realized > 0
+        sign_agree = predicted_positive == realized_positive
+        if predicted_positive and realized_positive:
+            confusion_bucket = "TP"
+        elif predicted_positive and not realized_positive:
+            confusion_bucket = "FP"
+        elif not predicted_positive and realized_positive:
+            confusion_bucket = "FN"
+        else:
+            confusion_bucket = "TN"
         out.append({
             "session_date": row.get("session_date"),
             "snapshot_id": row.get("snapshot_id"),
@@ -170,7 +180,10 @@ def predicted_vs_realized_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             "realized_net_r": round_opt(realized / risk if risk else None),
             "prediction_error": round_opt(realized - predicted, 2),
             "abs_prediction_error": round_opt(abs(realized - predicted), 2),
+            "predicted_positive": predicted_positive,
+            "realized_positive": realized_positive,
             "sign_agree": sign_agree,
+            "confusion_bucket": confusion_bucket,
             "premium_edge": round_opt(number(row.get("premium_edge")), 2),
             "friction_cost": round_opt(number(row.get("friction_cost")), 2),
             "friction_input_source": FRICTION_INPUT_SOURCE,
@@ -182,6 +195,95 @@ def predicted_vs_realized_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any
             "p_ml": row.get("p_ml"),
         })
     return out
+
+
+def pct(num: float | int | None, den: float | int | None, ndigits: int = 3) -> float | None:
+    if num is None or den in (None, 0):
+        return None
+    return round_opt(float(num) / float(den) * 100.0, ndigits)
+
+
+def confusion_summary(rows: list[dict[str, Any]], bucket_type: str, bucket: str) -> dict[str, Any]:
+    usable = [
+        row for row in rows
+        if row.get("predicted_positive") is not None and row.get("realized_positive") is not None
+    ]
+    n = len(usable)
+    tp = sum(row.get("confusion_bucket") == "TP" for row in usable)
+    fp = sum(row.get("confusion_bucket") == "FP" for row in usable)
+    tn = sum(row.get("confusion_bucket") == "TN" for row in usable)
+    fn = sum(row.get("confusion_bucket") == "FN" for row in usable)
+    predicted_positive = tp + fp
+    predicted_non_positive = tn + fn
+    actual_positive = tp + fn
+    actual_non_positive = tn + fp
+    recall = pct(tp, tp + fn)
+    specificity = pct(tn, tn + fp)
+    denom = math.sqrt(float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)))
+    predicted = [float(row["predicted_net_edge_proxy"]) for row in usable if number(row.get("predicted_net_edge_proxy")) is not None]
+    realized = [float(row["realized_managed_pnl"]) for row in usable if number(row.get("realized_managed_pnl")) is not None]
+    errors = [float(row["prediction_error"]) for row in usable if number(row.get("prediction_error")) is not None]
+    abs_errors = [float(row["abs_prediction_error"]) for row in usable if number(row.get("abs_prediction_error")) is not None]
+    return {
+        "bucket_type": bucket_type,
+        "bucket": bucket,
+        "rows": n,
+        "predicted_positive": predicted_positive,
+        "predicted_non_positive": predicted_non_positive,
+        "actual_positive": actual_positive,
+        "actual_non_positive": actual_non_positive,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "accuracy_pct": pct(tp + tn, n),
+        "always_negative_accuracy_pct": pct(actual_non_positive, n),
+        "majority_class_accuracy_pct": pct(max(actual_positive, actual_non_positive), n),
+        "precision_pct": pct(tp, tp + fp),
+        "recall_pct": recall,
+        "specificity_pct": specificity,
+        "balanced_accuracy_pct": round_opt((recall + specificity) / 2.0, 3)
+        if recall is not None and specificity is not None else None,
+        "mcc": round_opt((tp * tn - fp * fn) / denom, 6) if denom else None,
+        "mean_predicted_net_edge_proxy": round_opt(safe_mean(predicted), 2),
+        "mean_realized_managed_pnl": round_opt(safe_mean(realized), 2),
+        "mean_prediction_error": round_opt(safe_mean(errors), 2),
+        "mean_abs_prediction_error": round_opt(safe_mean(abs_errors), 2),
+        "total_predicted_net_edge_proxy": round_opt(sum(predicted), 2) if predicted else None,
+        "total_realized_managed_pnl": round_opt(sum(realized), 2) if realized else None,
+        "friction_input_source": FRICTION_INPUT_SOURCE,
+        "friction_version_caveat": FRICTION_VERSION_CAVEAT,
+    }
+
+
+def prediction_calibration_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = [confusion_summary(rows, "all", "all")]
+    for segment in SEGMENTS:
+        segment_rows = [row for row in rows if in_segment(str(row.get("session_date") or ""), segment)]
+        if segment_rows:
+            out.append(confusion_summary(segment_rows, "segment", segment))
+    for field in ["role", "index_key", "strategy_type", "lane", "entry_eligible", "ml_action"]:
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[str(row.get(field) if row.get(field) not in (None, "") else "MISSING")].append(row)
+        for value, group in sorted(grouped.items()):
+            out.append(confusion_summary(group, field, value))
+    pair_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        pair_groups[(str(row.get("index_key") or "MISSING"), str(row.get("strategy_type") or "MISSING"))].append(row)
+    for (index_key, strategy_type), group in sorted(pair_groups.items()):
+        out.append(confusion_summary(group, "index_strategy", f"{index_key}|{strategy_type}"))
+    return out
+
+
+def prediction_session_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("session_date") or "MISSING")].append(row)
+    return [
+        confusion_summary(group, "session_date", session_date)
+        for session_date, group in sorted(grouped.items())
+    ]
 
 
 def score(row: dict[str, Any], policy_name: str) -> float | None:
@@ -486,11 +588,15 @@ def main() -> None:
     keep = {(str(row["filter"]), str(row["policy"])) for row in [*top_deployable[:8], *top_oracle[:5]]}
     by_day = summarize_by_day(decisions, keep)
     prediction_rows = predicted_vs_realized_rows(enriched)
+    prediction_summary = prediction_calibration_summary(prediction_rows)
+    prediction_sessions = prediction_session_summary(prediction_rows)
 
     write_csv(out / "net_objective_decision_ledger.csv", decisions)
     write_csv(out / "net_objective_policy_leaderboard.csv", leaderboard)
     write_csv(out / "net_objective_policy_by_day.csv", by_day)
     write_csv(out / "net_objective_predicted_vs_realized.csv", prediction_rows)
+    write_csv(out / "net_objective_prediction_calibration_summary.csv", prediction_summary)
+    write_csv(out / "net_objective_prediction_session_summary.csv", prediction_sessions)
     write_csv(out / "net_objective_exclusions.csv", exclusions)
     (out / "manifest.json").write_text(json.dumps({
         "study": "net_objective_backtest_v2_resumable",
@@ -515,7 +621,19 @@ def main() -> None:
         "menus_excluded": len(exclusions),
         "decision_rows": len(decisions),
         "prediction_rows": len(prediction_rows),
+        "prediction_summary_rows": len(prediction_summary),
+        "prediction_session_rows": len(prediction_sessions),
         "net_proxy": "net_edge_proxy = premium_edge - friction_cost",
+        "prediction_audit_metrics": [
+            "confusion_bucket",
+            "precision_pct",
+            "recall_pct",
+            "specificity_pct",
+            "balanced_accuracy_pct",
+            "mcc",
+            "always_negative_accuracy_pct",
+            "majority_class_accuracy_pct",
+        ],
         "friction_input_source": FRICTION_INPUT_SOURCE,
         "friction_version_caveat": FRICTION_VERSION_CAVEAT,
         "production_replay_exactness": "proxy_not_exact_replay",
@@ -546,6 +664,8 @@ def main() -> None:
         f"- Menus considered: `{len(by_snapshot)}`.",
         f"- Menus excluded: `{len(exclusions)}`.",
         f"- Predicted-vs-realized rows: `{len(prediction_rows)}`.",
+        f"- Prediction calibration summary rows: `{len(prediction_summary)}`.",
+        f"- Prediction session summary rows: `{len(prediction_sessions)}`.",
         f"- Net proxy: `net_edge_proxy = premium_edge - friction_cost`.",
         f"- Friction input source: `{FRICTION_INPUT_SOURCE}`.",
         "",
@@ -559,12 +679,18 @@ def main() -> None:
         "",
         *table(top_oracle[:8]),
         "",
+        "## Prediction Calibration Audit",
+        "",
+        "The calibration summary reports TP/FP/TN/FN buckets, balanced accuracy, MCC, and always-negative/majority-class baselines. Use these rows to detect when sign agreement looks good only because the historical sample is mostly losing after friction.",
+        "",
         "## Evidence Files",
         "",
         "- `net_objective_policy_leaderboard.csv`: segment-level performance.",
         "- `net_objective_decision_ledger.csv`: every selector decision per snapshot.",
         "- `net_objective_policy_by_day.csv`: day-level results for leading policies.",
         "- `net_objective_predicted_vs_realized.csv`: prediction-vs-outcome error rows with friction provenance.",
+        "- `net_objective_prediction_calibration_summary.csv`: grouped confusion-matrix calibration audit.",
+        "- `net_objective_prediction_session_summary.csv`: day-level prediction calibration audit.",
         "- `manifest.json`: counts and assumptions.",
         "- `.cache/...`: optional per-table/day raw Supabase cache when `--resume` or `--force-refresh` is used.",
         "",
