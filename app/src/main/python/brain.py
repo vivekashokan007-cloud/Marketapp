@@ -6080,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.8"
+BRAIN_VERSION = "2.6.9"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -20448,24 +20448,71 @@ def _gross_spread_pnl(snap, cand, point, entry_point=None):
     return round(basis['gross_pnl'], 2), round(basis['short_mark_value'], 2)
 
 
-def _managed_teacher_outcome(chain_rows, snap, cand, config):
+def _record_teacher_drop(drop_sink, reason, snap=None, cand=None, role=None, details=None):
+    if not isinstance(drop_sink, dict):
+        return
+    reason_key = str(reason or '').strip() or 'unknown_teacher_drop'
+    reasons = drop_sink.setdefault('reasons', {})
+    reasons[reason_key] = int(reasons.get(reason_key, 0) or 0) + 1
+
+    samples = drop_sink.setdefault('samples', [])
+    sample_cap = int(drop_sink.get('sample_cap', 12) or 12)
+    if len(samples) >= sample_cap:
+        return
+    snap = snap if isinstance(snap, dict) else {}
+    cand = cand if isinstance(cand, dict) else {}
+    sample = {
+        'reason': reason_key,
+        'role': role,
+        'snapshot_id': snap.get('id'),
+        'candidate_id': cand.get('id'),
+        'strategy_type': cand.get('type') or cand.get('strategy_type'),
+        'index_key': cand.get('index') or cand.get('index_key') or snap.get('index_key'),
+        'expiry': cand.get('expiry'),
+        'poll_ts': cand.get('poll_ts') or snap.get('poll_ts'),
+    }
+    if isinstance(details, dict) and details:
+        sample['details'] = details
+    samples.append(sample)
+
+
+def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, role=None):
     max_profit = _float_or_none(cand.get('maxProfit'))
     if max_profit is None or max_profit <= 0:
+        _record_teacher_drop(drop_sink, 'max_profit_missing_or_non_positive', snap, cand, role, {
+            'maxProfit': cand.get('maxProfit'),
+        })
         return None
     max_loss = _float_or_none(cand.get('maxLoss'))
     is_credit = _teacher_candidate_is_credit(cand)
     path_points = _build_candidate_path(chain_rows, snap, cand)
     if not path_points:
+        _record_teacher_drop(drop_sink, 'candidate_path_empty', snap, cand, role, {
+            'entry_ts': snap.get('poll_ts'),
+            'index_key': cand.get('index') or cand.get('index_key'),
+            'expiry': cand.get('expiry'),
+        })
         return None
 
     entry_point = _entry_snapshot_point(snap, cand)
     first_basis = _teacher_execution_basis(snap, cand, path_points[0], entry_point=entry_point)
     if not isinstance(first_basis, dict):
+        _record_teacher_drop(drop_sink, 'entry_execution_basis_unavailable', snap, cand, role, {
+            'path_points_count': len(path_points),
+        })
         return None
     trade_dt = _parse_iso_ts(snap.get('poll_ts', ''))
     entry_cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, path_points[0], config)
     entry_cost = _float_or_none(entry_cost_breakdown.get('total'))
     if str(entry_cost_breakdown.get('status') or '').upper() != 'OK' or entry_cost is None:
+        _record_teacher_drop(drop_sink, 'entry_round_trip_cost_unavailable', snap, cand, role, {
+            'friction_status': entry_cost_breakdown.get('status'),
+            'friction_reason': entry_cost_breakdown.get('reason'),
+            'missing_quote_labels': entry_cost_breakdown.get('missing_quote_labels'),
+            'missing_entry_quote_labels': entry_cost_breakdown.get('missing_entry_quote_labels'),
+            'missing_close_quote_labels': entry_cost_breakdown.get('missing_close_quote_labels'),
+            'path_points_count': len(path_points),
+        })
         return None
     net_max_profit_at_entry = round(max(max_profit - entry_cost, 0.0), 2)
     net_max_loss_at_entry = round((max_loss or 0.0) + entry_cost, 2) if max_loss is not None and max_loss > 0 else None
@@ -20481,6 +20528,11 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         if risk_at_entry <= 0 and max_loss is not None and max_loss > 0:
             risk_at_entry = round(max_loss + entry_cost, 2)
     if risk_at_entry <= 0:
+        _record_teacher_drop(drop_sink, 'risk_at_entry_non_positive', snap, cand, role, {
+            'risk_at_entry': risk_at_entry,
+            'maxLoss': cand.get('maxLoss'),
+            'entry_cost': entry_cost,
+        })
         return None
 
     exit_reason = 'EOD'
@@ -20492,14 +20544,29 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     peak_pnl = None
     trough_pnl = None
     time_to_peak_step = None
+    path_gross_missing_count = 0
+    path_cost_drop_counts = {}
+    path_cost_drop_sample = None
 
     for idx, point in enumerate(path_points, start=1):
         gross_pnl, sell_premium_value = _gross_spread_pnl(snap, cand, point, entry_point=entry_point)
         if gross_pnl is None:
+            path_gross_missing_count += 1
             continue
         cost_breakdown = _teacher_round_trip_cost(trade_dt, snap, cand, point, config)
         round_trip_cost = _float_or_none(cost_breakdown.get('total'))
         if str(cost_breakdown.get('status') or '').upper() != 'OK' or round_trip_cost is None:
+            path_reason = cost_breakdown.get('reason') or cost_breakdown.get('status') or 'round_trip_cost_unavailable'
+            path_cost_drop_counts[path_reason] = int(path_cost_drop_counts.get(path_reason, 0) or 0) + 1
+            if path_cost_drop_sample is None:
+                path_cost_drop_sample = {
+                    'friction_status': cost_breakdown.get('status'),
+                    'friction_reason': cost_breakdown.get('reason'),
+                    'missing_quote_labels': cost_breakdown.get('missing_quote_labels'),
+                    'missing_entry_quote_labels': cost_breakdown.get('missing_entry_quote_labels'),
+                    'missing_close_quote_labels': cost_breakdown.get('missing_close_quote_labels'),
+                    'point_ts': point.get('poll_ts'),
+                }
             continue
         net_pnl = round(gross_pnl - round_trip_cost, 2)
         if peak_pnl is None or net_pnl > peak_pnl:
@@ -20531,6 +20598,13 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
         managed_pnl = net_pnl
 
     if managed_pnl is None or friction_cost is None or managed_gross_pnl is None:
+        drop_reason = 'path_round_trip_cost_unavailable' if path_cost_drop_counts else 'managed_pnl_unavailable'
+        _record_teacher_drop(drop_sink, drop_reason, snap, cand, role, {
+            'path_points_count': len(path_points),
+            'path_gross_missing_count': path_gross_missing_count,
+            'path_cost_drop_counts': path_cost_drop_counts,
+            'path_cost_drop_sample': path_cost_drop_sample,
+        })
         return None
 
     entry_vix = _resolve_entry_vix(snap)
@@ -20584,7 +20658,7 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config):
     }
 
 
-def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
+def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sink=None, role=None):
     """Evaluate one candidate with both legacy H2 labels and teacher_v1 shadow labels.
     Returns outcome dict, or None if the candidate has no evaluable price path."""
     h2 = _legacy_h2_structure_valuation(chain_rows, cand)
@@ -20618,7 +20692,14 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None):
         'h2_bound_width_points': h2.get('h2_bound_width_points'),
         'h2_formula': h2.get('h2_formula'),
     }
-    teacher = _managed_teacher_outcome(chain_rows, snap, cand, teacher_config or _teacher_default_config())
+    teacher = _managed_teacher_outcome(
+        chain_rows,
+        snap,
+        cand,
+        teacher_config or _teacher_default_config(),
+        drop_sink=drop_sink,
+        role=role,
+    )
     if teacher is None:
         return None
     outcome.update(teacher)
@@ -20682,6 +20763,7 @@ def _snapshot_candidate_menu_for_evaluation(snap, snap_ctx, errors=None):
 def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
     outcomes = []
     errors = []
+    drop_sink = {'reasons': {}, 'samples': [], 'sample_cap': 12}
 
     primary_json = snap.get('primary_candidate_json', '{}')
     primary = _safe_json_field(primary_json, {})
@@ -20697,7 +20779,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
 
     if primary and primary.get('id'):
         try:
-            outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config)
+            outcome = _eval_single_candidate(chain_rows, snap, primary, teacher_config, drop_sink=drop_sink, role='primary')
             if outcome is not None:
                 outcome['role'] = 'primary'
                 outcome['rank_in_snapshot'] = 1
@@ -20745,7 +20827,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
             continue
         seen_ids.add(cand_id)
         try:
-            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config, drop_sink=drop_sink, role='secondary')
             if outcome is not None:
                 outcome['role'] = 'secondary'
                 outcome['rank_in_snapshot'] = rank_idx
@@ -20783,7 +20865,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
             continue
         seen_ids.add(cand_id)
         try:
-            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+            outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config, drop_sink=drop_sink, role='supply_shadow')
             if outcome is not None:
                 outcome['role'] = 'supply_shadow'
                 outcome['rank_in_snapshot'] = None
@@ -20836,7 +20918,7 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                 continue
             seen_ids.add(cand_id)
             try:
-                outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config)
+                outcome = _eval_single_candidate(chain_rows, snap, cand, teacher_config, drop_sink=drop_sink, role='rejected')
                 if outcome is not None:
                     outcome['role'] = 'rejected'
                     outcome['rank_in_snapshot'] = None
@@ -20902,7 +20984,12 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
                     'error': str(exc),
                 })
 
-    return {'outcomes': outcomes, 'errors': errors}
+    return {
+        'outcomes': outcomes,
+        'errors': errors,
+        'teacher_drop_reasons': drop_sink.get('reasons') or {},
+        'teacher_drop_samples': drop_sink.get('samples') or [],
+    }
 
 
 def evaluation_job_prepare(run_id, snapshots_path, chain_slices_path, teacher_config_json_str=None):
@@ -20946,6 +21033,8 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
 
     outcomes = []
     errors = []
+    teacher_drop_reasons = {}
+    teacher_drop_samples = []
     processed = 0
     for idx in range(start, end):
         snap = snapshots[idx]
@@ -20953,6 +21042,13 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
             result = _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
             outcomes.extend(result.get('outcomes') or [])
             errors.extend(result.get('errors') or [])
+            for key, count in (result.get('teacher_drop_reasons') or {}).items():
+                key = str(key or '').strip() or 'UNKNOWN'
+                teacher_drop_reasons[key] = teacher_drop_reasons.get(key, 0) + int(count or 0)
+            for sample in (result.get('teacher_drop_samples') or []):
+                if len(teacher_drop_samples) >= 20:
+                    break
+                teacher_drop_samples.append(sample)
         except Exception as exc:
             errors.append({
                 'scope': 'snapshot',
@@ -20970,6 +21066,9 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
         'produced_count': len(outcomes),
         'error_count': len(errors),
         'errors': errors[:20],
+        'teacher_drop_count': sum(teacher_drop_reasons.values()),
+        'teacher_drop_reasons': teacher_drop_reasons,
+        'teacher_drop_samples': teacher_drop_samples,
         'outcomes': outcomes,
     })
 

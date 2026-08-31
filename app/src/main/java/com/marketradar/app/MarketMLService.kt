@@ -1966,9 +1966,35 @@ class MarketMLService : Service() {
         var completedSnapshots = 0
         var producedCount = 0
         var brain: PyObject? = null
+        val teacherDropReasons = linkedMapOf<String, Int>()
+        val teacherDropSamples = org.json.JSONArray()
+        fun mergeTeacherDropReasons(obj: org.json.JSONObject?) {
+            if (obj == null) return
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next().toString().ifBlank { "UNKNOWN" }
+                val count = obj.optInt(key, 0)
+                if (count > 0) {
+                    teacherDropReasons[key] = (teacherDropReasons[key] ?: 0) + count
+                }
+            }
+        }
+        fun appendTeacherDropSamples(arr: org.json.JSONArray?) {
+            if (arr == null) return
+            var i = 0
+            while (i < arr.length() && teacherDropSamples.length() < 12) {
+                teacherDropSamples.put(arr.opt(i))
+                i += 1
+            }
+        }
+        fun teacherDropSummary(): String =
+            teacherDropReasons.entries
+                .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                .take(6)
+                .joinToString(", ") { "${it.key}:${it.value}" }
         Log.i(TAG, "EVAL_START: sessionDate=$sessionDate runId=$runId")
         try {
-            if (prefs.getString("evaluation_done_date", null) == sessionDate) {
+            if (!forceAnyway && prefs.getString("evaluation_done_date", null) == sessionDate) {
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
                     phase = "DONE",
@@ -2146,6 +2172,8 @@ class MarketMLService : Service() {
                 }
 
                 val batchOutcomes = batchJson.optJSONArray("outcomes") ?: org.json.JSONArray()
+                mergeTeacherDropReasons(batchJson.optJSONObject("teacher_drop_reasons"))
+                appendTeacherDropSamples(batchJson.optJSONArray("teacher_drop_samples"))
                 val beforeBytes = outputsFile.length()
                 producedCount = appendJsonArrayFile(outputsFile, batchOutcomes, producedCount)
                 completedSnapshots = batchJson.optInt("end", completedSnapshots).coerceIn(completedSnapshots, totalSnapshots)
@@ -2153,6 +2181,7 @@ class MarketMLService : Service() {
                     TAG,
                     "EVAL_BATCH_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
                         "batchRows=${batchOutcomes.length()} produced=$producedCount " +
+                        "teacherDrops=${batchJson.optInt("teacher_drop_count", 0)} topTeacherDrops=${teacherDropSummary()} " +
                         "bytes=$beforeBytes->${outputsFile.length()} ${evalHeapLine()}"
                 )
 
@@ -2168,6 +2197,9 @@ class MarketMLService : Service() {
                     phase = evalPhase,
                     message = buildString {
                         append("Evaluated $sessionDate snapshots $completedSnapshots/$totalSnapshots. Produced $producedCount outcomes.")
+                        if (batchOutcomes.length() == 0 && teacherDropReasons.isNotEmpty()) {
+                            append(" Teacher drops: ${teacherDropSummary().take(240)}.")
+                        }
                         if (batchErrorCount > 0) {
                             append(" Skipped $batchErrorCount malformed rows in the last batch")
                             if (batchErrorHint.isNotBlank()) append(" ($batchErrorHint)")
@@ -2189,6 +2221,17 @@ class MarketMLService : Service() {
                     "outputBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
             val evaluatedOutcomes = readJsonArrayFile(outputsFile)
+            val teacherDropReasonsJson = org.json.JSONObject()
+            teacherDropReasons.forEach { (key, value) -> teacherDropReasonsJson.put(key, value) }
+            prefs.edit().also { edit ->
+                if (teacherDropReasons.isNotEmpty()) {
+                    edit.putString("last_evaluation_teacher_drop_reasons", teacherDropReasonsJson.toString())
+                    edit.putString("last_evaluation_teacher_drop_samples", teacherDropSamples.toString())
+                } else {
+                    edit.remove("last_evaluation_teacher_drop_reasons")
+                    edit.remove("last_evaluation_teacher_drop_samples")
+                }
+            }.commit()
             if (evaluatedOutcomes.length() > 0) {
                 val exitCounts = linkedMapOf<String, Int>()
                 var pathMin = Int.MAX_VALUE
@@ -2286,7 +2329,11 @@ class MarketMLService : Service() {
             } else if (evaluatedOutcomes.length() > 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase. $saveDetails"
             } else {
-                "Evaluation done for $sessionDate: 0 evaluable shadow teacher outcomes saved from the day's recommendations."
+                buildString {
+                    append("Evaluation done for $sessionDate: 0 evaluable shadow teacher outcomes saved from the day's recommendations.")
+                    val dropSummary = teacherDropSummary()
+                    if (dropSummary.isNotBlank()) append(" Teacher drops: $dropSummary.")
+                }
             }
             prefs.edit().putString("evaluation_done_date", sessionDate).commit()
             updateEvaluationJobState(

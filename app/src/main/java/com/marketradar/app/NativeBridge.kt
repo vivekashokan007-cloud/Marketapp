@@ -1759,6 +1759,8 @@ class NativeBridge(private val context: Context) {
     /**
      * Detects a session saved as DONE whose teacher research artifact is missing
      * or unreadable, then persists FAILED_RESEARCH so retry unlocks on the same render.
+     * Zero-output DONE sessions are not stale research; they carry drop telemetry
+     * instead of a report artifact.
      */
     private fun repairStaleResearchStateIfNeeded(targetDate: String) {
         val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
@@ -1778,6 +1780,30 @@ class NativeBridge(private val context: Context) {
             false
         }
         if (hasValidReport) return
+
+        val producedCount = prefs.getInt("last_evaluation_produced_count", 0)
+        val persistedCount = prefs.getInt("last_evaluation_outcome_count", 0)
+        val lastMessage = (prefs.getString("last_evaluation_message", "") ?: "").lowercase(Locale.US)
+        val teacherDropReasons = prefs.getString("last_evaluation_teacher_drop_reasons", "") ?: ""
+        val zeroOutcomeDone = producedCount <= 0 &&
+            persistedCount <= 0 &&
+            (
+                lastMessage.contains("0 evaluable shadow teacher") ||
+                    lastMessage.contains("no evaluable shadow teacher labels") ||
+                    lastMessage.contains("teacher drops:") ||
+                    teacherDropReasons.isNotBlank()
+            )
+        if (zeroOutcomeDone) {
+            prefs.edit()
+                .putString("teacher_research_report_status", "NOT_APPLICABLE")
+                .remove("teacher_research_report_error")
+                .commit()
+            Log.i(
+                TAG,
+                "repairStaleResearchStateIfNeeded: skipped FAILED_RESEARCH for zero-output DONE on $targetDate"
+            )
+            return
+        }
 
         prefs.edit()
             .putString("evaluation_phase", "FAILED_RESEARCH")
