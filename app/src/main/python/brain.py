@@ -5960,6 +5960,28 @@ def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
         current += timedelta(days=1)
     return max(float(count), 1.0)
 
+def _infer_strike_step(all_strikes, default_step):
+    """Return the true strike interval (smallest positive gap between adjacent strikes).
+
+    BUGFIX 2026-09-01: the strike step was previously taken as
+    ``all_strikes[1] - all_strikes[0]`` — the gap between the two LOWEST strikes.
+    That is only correct when the whole chain is uniformly spaced. NSE monthly
+    option chains (e.g. Bank Nifty, which lost its weekly expiries) are dense near
+    the money (100-pt) but sparse in the far wings (500–1500-pt), and the lowest
+    two strikes sit in the sparse wing — so the old formula returned 1500 for BNF.
+    A 1500 step makes ``_pc2_batch_f_width_ladder`` return an EMPTY width list,
+    which silently produced ZERO BNF candidates every poll from 2026-08-26 (the day
+    BNF rolled off its last weekly onto the Sep monthly). Using the modal/minimum
+    interval is robust to sparse wings and unchanged for uniformly-spaced chains
+    (Nifty weeklies still resolve to 50).
+    """
+    gaps = [
+        all_strikes[i + 1] - all_strikes[i]
+        for i in range(len(all_strikes) - 1)
+        if all_strikes[i + 1] - all_strikes[i] > 0
+    ]
+    return min(gaps) if gaps else default_step
+
 def _dte_value(ctx, index_key):
     """Return numeric DTE for an index, or None when the producer could not compute it."""
     key = 'bnfDTE' if index_key == 'BNF' else 'nfDTE'
@@ -6080,7 +6102,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.11"
+BRAIN_VERSION = "2.6.12"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -12681,7 +12703,7 @@ def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx,
     strikes = chain['strikes']
     all_strikes = [int(k) for k in chain.get('allStrikes', sorted(strikes.keys()))]
     all_set = set(all_strikes)
-    step = all_strikes[1] - all_strikes[0] if len(all_strikes) > 1 else (100 if is_bnf else 50)
+    step = _infer_strike_step(all_strikes, 100 if is_bnf else 50)
     width_plan = _pc2_batch_f_width_ladder(
         idx,
         base_widths,
@@ -17133,7 +17155,7 @@ def _snapshot_teaching_band(index_key, chain, spot, vix, expiry):
     all_strikes = chain.get('allStrikes') or sorted(int(k) for k in strikes.keys())
     if not strikes or not atm or len(all_strikes) < 2:
         return []
-    step = all_strikes[1] - all_strikes[0]
+    step = _infer_strike_step(all_strikes, 100 if index_key == 'BNF' else 50)
     lo = atm - (8 * step)
     hi = atm + (8 * step)
     band_rows = []
