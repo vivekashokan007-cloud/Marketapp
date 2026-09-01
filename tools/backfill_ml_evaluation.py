@@ -155,6 +155,8 @@ def get_all(base, key, table, query, page_size=CHAIN_READ_PAGE_SIZE):
         payload = request_with_retry(req, timeout=120, operation=f"read {table} offset={offset}")
         batch = json.loads(payload.decode())
         rows.extend(batch)
+        if offset and offset % (page * 20) == 0:
+            print(f"read {table}: {len(rows)} rows")
         if len(batch) < page:
             break
         offset += page
@@ -288,7 +290,10 @@ def main():
                     f"session_date=eq.{date}&order=poll_ts.asc&select=*",
                     page_size=SNAPSHOT_READ_PAGE_SIZE)
     chain = get_all(base, key, "ml_option_chain_snapshots",
-                    f"session_date=eq.{date}&order=poll_ts.asc&"
+                    # The historic source date is immutable and the evaluator groups by
+                    # poll_ts itself. Avoiding an unnecessary database sort keeps the
+                    # large raw-chain read below Supabase's response-time limits.
+                    f"session_date=eq.{date}&"
                     "select=index_key,strike,option_type,expiry,poll_ts,ltp,bid,ask,session_date",
                     page_size=CHAIN_READ_PAGE_SIZE)
     print(f"snapshots={len(snaps)}  chain_rows={len(chain)}  "
