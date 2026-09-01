@@ -41,8 +41,10 @@ USAGE
 """
 
 import argparse
+import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 import urllib.request
@@ -91,6 +93,7 @@ SNAPSHOT_READ_PAGE_SIZE = 10
 CHAIN_READ_PAGE_SIZE = 250
 MAX_RETRY_ATTEMPTS = 5
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+CHECKPOINT_TOOL_VERSION = "snapshot-v1"
 
 
 # ── Supabase REST helpers (stdlib only) ───────────────────────────────────────────
@@ -323,12 +326,68 @@ def _scoped_chain_for_snapshot(brain, snap, chains_by_scope):
     return rows
 
 
+def _snapshot_checkpoint_key(snap):
+    snap = snap if isinstance(snap, dict) else {}
+    for field in ("snapshot_id", "id", "poll_ts"):
+        value = snap.get(field)
+        if value is not None:
+            text = str(value).strip()
+            if text:
+                return text
+    return hashlib.sha1(json.dumps(snap, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _checkpoint_path(checkpoint_dir, snapshot_key):
+    digest = hashlib.sha1(snapshot_key.encode()).hexdigest()
+    return os.path.join(checkpoint_dir, f"snapshot-{digest}.json")
+
+
+def _read_snapshot_checkpoint(checkpoint_dir, date, snapshot_key):
+    path = _checkpoint_path(checkpoint_dir, snapshot_key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if payload.get("tool_version") != CHECKPOINT_TOOL_VERSION:
+        return None
+    if payload.get("date") != date or payload.get("snapshot_key") != snapshot_key:
+        return None
+    outcomes = payload.get("outcomes")
+    drops = payload.get("teacher_drop_reasons") or {}
+    if not isinstance(outcomes, list) or not isinstance(drops, dict):
+        return None
+    return {"outcomes": outcomes, "teacher_drop_reasons": drops}
+
+
+def _write_snapshot_checkpoint(checkpoint_dir, date, snapshot_key, result):
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    path = _checkpoint_path(checkpoint_dir, snapshot_key)
+    tmp_path = f"{path}.tmp"
+    payload = {
+        "tool_version": CHECKPOINT_TOOL_VERSION,
+        "date": date,
+        "snapshot_key": snapshot_key,
+        "outcomes": result.get("outcomes") or [],
+        "teacher_drop_reasons": result.get("teacher_drop_reasons") or {},
+    }
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, separators=(",", ":"), sort_keys=True)
+    os.replace(tmp_path, path)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Backfill ML evaluation outcomes for one session date.")
     ap.add_argument("--date", help="Session date YYYY-MM-DD (default: yesterday IST).")
     ap.add_argument("--write", action="store_true", help="Actually write. Omit for a dry run.")
     ap.add_argument("--brain-dir", default="app/src/main/python", help="Dir containing brain.py.")
+    ap.add_argument(
+        "--checkpoint-dir",
+        help="Optional resumable checkpoint directory. Defaults to /tmp/marketapp-backfill-<date>-checkpoint for writes.",
+    )
     args = ap.parse_args()
 
     base = os.environ.get("SUPABASE_URL", "").rstrip("/")
@@ -341,6 +400,7 @@ def main():
     else:
         ist = timezone(timedelta(hours=5, minutes=30))
         date = (datetime.now(ist) - timedelta(days=1)).strftime("%Y-%m-%d")
+    checkpoint_dir = args.checkpoint_dir or os.path.join("/tmp", f"marketapp-backfill-{date}-checkpoint")
 
     sys.path.insert(0, args.brain_dir)
     import brain  # noqa
@@ -384,10 +444,19 @@ def main():
     print("scope proof: PASS (full-chain and scoped-chain results match)")
 
     # Grade snapshot-by-snapshot so one bad snapshot can't sink the batch.
-    outcomes, graded_snaps, drops = [], 0, {}
+    outcomes, graded_snaps, drops, checkpoint_hits = [], 0, {}, 0
     for snapshot_number, snap in enumerate(snaps, start=1):
-        scoped_chain = _scoped_chain_for_snapshot(brain, snap, chains_by_scope)
-        res = scoped_first if snapshot_number == 1 else brain._evaluate_snapshot_outcomes(snap, scoped_chain, cfg)
+        snapshot_key = _snapshot_checkpoint_key(snap)
+        res = None
+        if args.write:
+            res = _read_snapshot_checkpoint(checkpoint_dir, date, snapshot_key)
+            if res is not None:
+                checkpoint_hits += 1
+        if res is None:
+            scoped_chain = _scoped_chain_for_snapshot(brain, snap, chains_by_scope)
+            res = scoped_first if snapshot_number == 1 else brain._evaluate_snapshot_outcomes(snap, scoped_chain, cfg)
+            if args.write:
+                _write_snapshot_checkpoint(checkpoint_dir, date, snapshot_key, res)
         rows = res.get("outcomes") or []
         if rows:
             graded_snaps += 1
@@ -396,6 +465,9 @@ def main():
             drops[k] = drops.get(k, 0) + int(v or 0)
         if snapshot_number % 5 == 0 or snapshot_number == len(snaps):
             print(f"graded snapshots: {snapshot_number}/{len(snaps)} outcomes={len(outcomes)}")
+
+    if args.write:
+        print(f"checkpoint: {checkpoint_hits}/{len(snaps)} snapshots reused from {checkpoint_dir}")
 
     by_role = {}
     for o in outcomes:
@@ -426,6 +498,9 @@ def main():
                             f"session_date=eq.{date}&select=role",
                             page_size=CHAIN_READ_PAGE_SIZE)
         print(f"VERIFY: ml_evaluation_outcomes now has {len(remaining)} rows for {date}")
+        if os.path.isdir(checkpoint_dir):
+            shutil.rmtree(checkpoint_dir)
+            print(f"checkpoint: removed {checkpoint_dir}")
         print("Next: recompute ml_daily_accuracy for this date (the app's accuracy loop, "
               "or your daily-accuracy job) so the dashboards pick it up.")
     else:
