@@ -174,8 +174,9 @@ def upsert(base, key, table_with_conflict, rows, write):
         return len(rows), "dry-run"
     url = f"{base}/rest/v1/{table_with_conflict}"
     total = 0
+    all_keys = sorted({k for row in rows for k in row.keys()})
     for i in range(0, len(rows), CHUNK):
-        chunk = rows[i:i + CHUNK]
+        chunk = [{k: row.get(k) for k in all_keys} for row in rows[i:i + CHUNK]]
         data = json.dumps(chunk).encode()
         req = urllib.request.Request(url, data=data, headers=_headers(key, write=True), method="POST")
         request_with_retry(
