@@ -6080,7 +6080,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.9"
+BRAIN_VERSION = "2.6.10"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -20797,7 +20797,10 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
             })
 
     context_json = snap.get('context_json', '{}')
-    snap_ctx = _safe_json_field(context_json, {})
+    if isinstance(context_json, dict):
+        snap_ctx = context_json
+    else:
+        snap_ctx = _safe_json_field(context_json, {})
     if context_json and isinstance(context_json, str) and not isinstance(snap_ctx, dict):
         snap_ctx = {}
         errors.append({

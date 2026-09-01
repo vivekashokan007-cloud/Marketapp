@@ -292,7 +292,7 @@ class Pc2SupplyQualityShadowTest(unittest.TestCase):
         with patch.object(
             brain,
             "_eval_single_candidate",
-            side_effect=lambda _rows, snap, cand, _cfg: {
+            side_effect=lambda _rows, snap, cand, _cfg, **_kwargs: {
                 "snapshot_id": snap.get("id"),
                 "candidate_id": cand.get("id"),
             },
@@ -323,7 +323,7 @@ class Pc2SupplyQualityShadowTest(unittest.TestCase):
         with patch.object(
             brain,
             "_eval_single_candidate",
-            side_effect=lambda _rows, snap, cand, _cfg: {
+            side_effect=lambda _rows, snap, cand, _cfg, **_kwargs: {
                 "snapshot_id": snap.get("id"),
                 "candidate_id": cand.get("id"),
             },
