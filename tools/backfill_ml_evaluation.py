@@ -262,6 +262,67 @@ def build_rejected_rows(outcomes, now_iso, session_date):
     return out
 
 
+def _candidate_scope_pairs(brain, snap):
+    """Return every index/expiry pair reachable by the evaluator for one snapshot.
+
+    The evaluator only reads rows matching a candidate's own index and expiry. Keeping
+    those pairs lets the backfill avoid re-scanning an unrelated full-day chain for
+    every candidate without changing the data visible to any evaluated candidate.
+    """
+    snap = snap if isinstance(snap, dict) else {}
+    candidates = []
+    primary = brain._safe_json_field(snap.get("primary_candidate_json", "{}"), {})
+    if isinstance(primary, dict):
+        candidates.append(primary)
+
+    context = brain._safe_json_field(snap.get("context_json", "{}"), {})
+    context = context if isinstance(context, dict) else {}
+    generated, _ = brain._snapshot_candidate_menu_for_evaluation(snap, context)
+    candidates.extend(candidate for candidate in generated if isinstance(candidate, dict))
+
+    supply_shadow = context.get("snapshot_pc2_supply_quality_shadow")
+    if isinstance(supply_shadow, dict):
+        candidates.extend(
+            candidate for candidate in (supply_shadow.get("sample_candidates") or [])
+            if isinstance(candidate, dict)
+        )
+
+    rejected = context.get("snapshot_rejected_candidates_full")
+    if not isinstance(rejected, list) or not rejected:
+        rejected = context.get("snapshot_rejected_candidates")
+    if isinstance(rejected, list):
+        preselection = context.get("snapshot_rejected_candidate_selection")
+        if isinstance(preselection, dict) and preselection.get("selected") == len(rejected):
+            selected_rejected = rejected
+        else:
+            selected_rejected, _ = brain._select_rejected_candidates_for_eval(rejected)
+        candidates.extend(candidate for candidate in selected_rejected if isinstance(candidate, dict))
+
+    pairs = set()
+    for candidate in candidates:
+        index_key = candidate.get("index") or candidate.get("index_key") or "BNF"
+        expiry = str(candidate.get("expiry") or "").strip()
+        if expiry:
+            pairs.add((str(index_key), expiry))
+    return pairs
+
+
+def _chain_by_scope(chain_rows):
+    scoped = {}
+    for row in chain_rows:
+        index_key = str(row.get("index_key") or "")
+        expiry = str(row.get("expiry") or "").strip()
+        scoped.setdefault((index_key, expiry), []).append(row)
+    return scoped
+
+
+def _scoped_chain_for_snapshot(brain, snap, chains_by_scope):
+    rows = []
+    for pair in _candidate_scope_pairs(brain, snap):
+        rows.extend(chains_by_scope.get(pair, []))
+    return rows
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="Backfill ML evaluation outcomes for one session date.")
@@ -313,16 +374,28 @@ def main():
     print(f"teacher: require_executable_quotes={cfg.get('require_executable_quotes', True)} "
           f"allow_ltp_quote_fallback={cfg.get('allow_ltp_quote_fallback', False)}")
 
+    chains_by_scope = _chain_by_scope(chain)
+    first_scoped_chain = _scoped_chain_for_snapshot(brain, snaps[0], chains_by_scope)
+    print(f"scope proof: first snapshot sees {len(first_scoped_chain)}/{len(chain)} chain rows")
+    full_first = brain._evaluate_snapshot_outcomes(snaps[0], chain, cfg)
+    scoped_first = brain._evaluate_snapshot_outcomes(snaps[0], first_scoped_chain, cfg)
+    if json.dumps(full_first, sort_keys=True, default=str) != json.dumps(scoped_first, sort_keys=True, default=str):
+        sys.exit("Scoped-chain proof failed: refusing to grade or write different evaluator results.")
+    print("scope proof: PASS (full-chain and scoped-chain results match)")
+
     # Grade snapshot-by-snapshot so one bad snapshot can't sink the batch.
     outcomes, graded_snaps, drops = [], 0, {}
-    for snap in snaps:
-        res = brain._evaluate_snapshot_outcomes(snap, chain, cfg)
+    for snapshot_number, snap in enumerate(snaps, start=1):
+        scoped_chain = _scoped_chain_for_snapshot(brain, snap, chains_by_scope)
+        res = scoped_first if snapshot_number == 1 else brain._evaluate_snapshot_outcomes(snap, scoped_chain, cfg)
         rows = res.get("outcomes") or []
         if rows:
             graded_snaps += 1
         outcomes.extend(rows)
         for k, v in (res.get("teacher_drop_reasons") or {}).items():
             drops[k] = drops.get(k, 0) + int(v or 0)
+        if snapshot_number % 5 == 0 or snapshot_number == len(snaps):
+            print(f"graded snapshots: {snapshot_number}/{len(snaps)} outcomes={len(outcomes)}")
 
     by_role = {}
     for o in outcomes:
