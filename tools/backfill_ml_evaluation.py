@@ -86,6 +86,9 @@ FAIL_INTEGRITY_STRIP = [
 
 CHUNK = 250  # rows per PostgREST request; deliberately conservative for Supabase.
 WRITE_DELAY_SECONDS = 0.75
+READ_DELAY_SECONDS = 0.10
+SNAPSHOT_READ_PAGE_SIZE = 10
+CHAIN_READ_PAGE_SIZE = 250
 MAX_RETRY_ATTEMPTS = 5
 RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 
@@ -139,9 +142,9 @@ def request_with_retry(request, timeout, operation):
             time.sleep(delay)
 
 
-def get_all(base, key, table, query):
+def get_all(base, key, table, query, page_size=CHAIN_READ_PAGE_SIZE):
     """Paginated GET via Range headers."""
-    rows, offset, page = [], 0, 1000
+    rows, offset, page = [], 0, page_size
     while True:
         url = f"{base}/rest/v1/{table}?{query}"
         req = urllib.request.Request(url, headers={
@@ -155,6 +158,7 @@ def get_all(base, key, table, query):
         if len(batch) < page:
             break
         offset += page
+        time.sleep(READ_DELAY_SECONDS)
     return rows
 
 
@@ -281,10 +285,12 @@ def main():
     print(f"== ML evaluation backfill for {date} ==  (write={args.write})")
 
     snaps = get_all(base, key, "ml_brain_snapshots",
-                    f"session_date=eq.{date}&order=poll_ts.asc&select=*")
+                    f"session_date=eq.{date}&order=poll_ts.asc&select=*",
+                    page_size=SNAPSHOT_READ_PAGE_SIZE)
     chain = get_all(base, key, "ml_option_chain_snapshots",
                     f"session_date=eq.{date}&order=poll_ts.asc&"
-                    "select=index_key,strike,option_type,expiry,poll_ts,ltp,bid,ask,session_date")
+                    "select=index_key,strike,option_type,expiry,poll_ts,ltp,bid,ask,session_date",
+                    page_size=CHAIN_READ_PAGE_SIZE)
     print(f"snapshots={len(snaps)}  chain_rows={len(chain)}  "
           f"chain_null_bid={sum(1 for r in chain if r.get('bid') is None)}")
     if not snaps:
@@ -339,7 +345,8 @@ def main():
 
     if args.write:
         remaining = get_all(base, key, "ml_evaluation_outcomes",
-                            f"session_date=eq.{date}&select=role")
+                            f"session_date=eq.{date}&select=role",
+                            page_size=CHAIN_READ_PAGE_SIZE)
         print(f"VERIFY: ml_evaluation_outcomes now has {len(remaining)} rows for {date}")
         print("Next: recompute ml_daily_accuracy for this date (the app's accuracy loop, "
               "or your daily-accuracy job) so the dashboards pick it up.")
