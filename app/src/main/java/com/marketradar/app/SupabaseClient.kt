@@ -529,7 +529,7 @@ object SupabaseClient {
         return JSONArray()
     }
 
-    private fun normalizedChainRow(src: JSONObject): JSONObject? {
+    internal fun normalizedChainRow(src: JSONObject): JSONObject? {
         val indexKey = src.optString("index_key")
             .ifBlank { src.optString("index") }
             .ifBlank { src.optString("symbol") }
@@ -565,6 +565,19 @@ object SupabaseClient {
         }
         if (ltpValue.isNaN()) return null
 
+        // Executable quotes must survive normalisation. The teacher/friction path
+        // (brain.py _teacher_round_trip_cost) runs with require_executable_quotes=true
+        // and allow_ltp_quote_fallback=false since v2.6.3, so a chain row that arrives
+        // without bid/ask makes every close-side price unresolvable, which fails the
+        // round-trip cost closed and drops the candidate with
+        // `entry_round_trip_cost_unavailable` — i.e. zero evaluation outcomes for the
+        // whole session (the 2026-08-31 blackout: 77 complete snapshots, 38,688
+        // complete chain rows, 0 rows in ml_evaluation_outcomes). Missing values stay
+        // JSON null (never 0.0): absence of a quote must remain absence, not a
+        // fabricated executable price the friction path would silently price off.
+        val bidValue = firstQuoteValue(src, "bid", "bid_price", "bestBid", "best_bid")
+        val askValue = firstQuoteValue(src, "ask", "ask_price", "bestAsk", "best_ask")
+
         return JSONObject().apply {
             put("index_key", indexKey)
             put("strike", strikeValue)
@@ -572,8 +585,24 @@ object SupabaseClient {
             put("expiry", expiry)
             put("poll_ts", pollTs)
             put("ltp", ltpValue)
+            if (bidValue != null) put("bid", bidValue) else put("bid", JSONObject.NULL)
+            if (askValue != null) put("ask", askValue) else put("ask", JSONObject.NULL)
             if (src.has("session_date") && !src.isNull("session_date")) put("session_date", src.opt("session_date"))
         }
+    }
+
+    /**
+     * Returns the first present, non-null, positive finite quote value among [names], or null.
+     * Never substitutes LTP — a missing bid/ask must stay missing so the Python
+     * friction path can fail closed instead of pricing off a display mid.
+     */
+    private fun firstQuoteValue(src: JSONObject, vararg names: String): Double? {
+        for (name in names) {
+            if (!src.has(name) || src.isNull(name)) continue
+            val value = src.optDouble(name, Double.NaN)
+            if (!value.isNaN() && !value.isInfinite() && value > 0.0) return value
+        }
+        return null
     }
 
     private fun buildEvaluationRows(body: JSONArray): JSONArray {
