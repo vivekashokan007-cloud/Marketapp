@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.14 · `versionCode` 445 · **Updated**: September 3, 2026 (teacher-research report OOM fixed: the post-close report rebuild full-loaded the ~4.2MB/~15k-row outcomes file and blew the phone's 256MB heap once BNF supply was restored — now streamed row-by-row. Bundled with the v2.6.13 soft-OOD entry de-rate, which never shipped standalone. Earlier same-day: BNF strike-step blackout fixed and field-verified, PC2 selector at v7 with a symmetric two-sided sigma band. brain/Kotlin/PWA versions synchronized)
+> **Version**: 2.6.15 · `versionCode` 446 · **Updated**: September 7, 2026 (repairs the root Gradle configuration, streams the post-close teacher-research outcomes payload, and correctly reads all four legs from PWA-recorded iron-condor/iron-butterfly trades. The v2.6.12 hard OOD entry gate remains unchanged; no soft-OOD policy relaxation is included.)
 
 ## Project overview
 

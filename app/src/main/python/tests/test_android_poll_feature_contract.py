@@ -1,4 +1,5 @@
 import os
+import re
 import unittest
 
 
@@ -26,6 +27,14 @@ LOCAL_CACHE_PATH = os.path.join(
 MAIN_ACTIVITY_PATH = os.path.join(
     ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "MainActivity.kt"
 )
+NATIVE_BRIDGE_PATH = os.path.join(
+    ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "NativeBridge.kt"
+)
+POSITION_TICK_SERVICE_PATH = os.path.join(
+    ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "PositionTickService.kt"
+)
+APP_BUILD_PATH = os.path.join(ROOT, "app", "build.gradle.kts")
+BRAIN_PATH = os.path.join(ROOT, "app", "src", "main", "python", "brain.py")
 
 
 class AndroidPollFeatureContractTests(unittest.TestCase):
@@ -176,6 +185,36 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
 
         self.assertIn("fun forEachBrainSnapshot", cache)
         self.assertIn("fun streamBrainSnapshotsToJsonArrayFile", cache)
+
+    def test_teacher_report_outcomes_are_streamed_and_four_leg_trade_fields_are_read(self):
+        with open(NATIVE_BRIDGE_PATH, "r", encoding="utf-8") as handle:
+            native_bridge = handle.read()
+        with open(POSITION_TICK_SERVICE_PATH, "r", encoding="utf-8") as handle:
+            position_tick_service = handle.read()
+
+        rebuild_body = native_bridge.split("private fun rebuildTeacherResearchReportIfPossible", 1)[1]
+        rebuild_body = rebuild_body.split("private fun rebuildTeacherResearchReportFromRemoteIfPossible", 1)[0]
+        self.assertIn("buildTeacherResearchOutcomePayload(outcomesFile)", rebuild_body)
+        self.assertNotIn("compactTeacherResearchOutcomePayload(readJsonArrayFile(outcomesFile))", rebuild_body)
+        self.assertIn("streamJsonArrayFile(file)", native_bridge)
+        self.assertIn("teacher research outcome payload compacted (streamed)", native_bridge)
+
+        self.assertIn('"sell_instrument_key2", "sellInstrumentKey2"', position_tick_service)
+        self.assertIn('"buy_instrument_key2", "buyInstrumentKey2"', position_tick_service)
+        self.assertIn('"sell_strike2", "sellStrike2"', position_tick_service)
+        self.assertIn('"buy_strike2", "buyStrike2"', position_tick_service)
+
+    def test_android_and_brain_release_versions_remain_aligned(self):
+        with open(APP_BUILD_PATH, "r", encoding="utf-8") as handle:
+            build_file = handle.read()
+        with open(BRAIN_PATH, "r", encoding="utf-8") as handle:
+            brain = handle.read()
+
+        android_version = re.search(r'versionName\s*=\s*"([^"]+)"', build_file)
+        brain_version = re.search(r'^BRAIN_VERSION\s*=\s*"([^"]+)"', brain, re.MULTILINE)
+        self.assertIsNotNone(android_version)
+        self.assertIsNotNone(brain_version)
+        self.assertEqual(android_version.group(1), brain_version.group(1))
 
 
 if __name__ == "__main__":

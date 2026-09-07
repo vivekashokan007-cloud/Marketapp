@@ -350,9 +350,7 @@ class NativeBridge(private val context: Context) {
         file.bufferedWriter().use { writer -> writer.write(payload.toString()) }
     }
 
-    private fun compactTeacherResearchOutcomePayload(source: JSONArray): JSONArray {
-        val out = JSONArray()
-        var rejectedKept = 0
+    private fun compactTeacherResearchOutcomeRow(src: JSONObject): JSONObject {
         val keys = arrayOf(
             "snapshot_id",
             "session_date",
@@ -411,6 +409,29 @@ class NativeBridge(private val context: Context) {
             "rejected_eval_source",
             "source_record_type"
         )
+        val role = src.optString("role", "secondary").trim().lowercase(Locale.US).ifBlank { "secondary" }
+        val row = JSONObject()
+        row.put("role", role)
+        for (key in keys) {
+            val value = src.opt(key)
+            if (value != null && value != JSONObject.NULL) row.put(key, value)
+        }
+        if (row.optString("price_integrity").equals("FAIL", ignoreCase = true)) {
+            listOf(
+                "managed_pnl",
+                "managed_gross_pnl",
+                "friction_cost",
+                "r_multiple",
+                "captured_pct",
+                "is_success"
+            ).forEach(row::remove)
+        }
+        return row
+    }
+
+    private fun compactTeacherResearchOutcomePayload(source: JSONArray): JSONArray {
+        val out = JSONArray()
+        var rejectedKept = 0
         for (i in 0 until source.length()) {
             val src = source.optJSONObject(i) ?: continue
             val role = src.optString("role", "secondary").trim().lowercase(Locale.US).ifBlank { "secondary" }
@@ -418,27 +439,31 @@ class NativeBridge(private val context: Context) {
                 if (rejectedKept >= TEACHER_RESEARCH_REJECTED_OUTCOME_CAP) continue
                 rejectedKept += 1
             }
-            val row = JSONObject()
-            row.put("role", role)
-            for (key in keys) {
-                val value = src.opt(key)
-                if (value != null && value != JSONObject.NULL) row.put(key, value)
-            }
-            if (row.optString("price_integrity").equals("FAIL", ignoreCase = true)) {
-                listOf(
-                    "managed_pnl",
-                    "managed_gross_pnl",
-                    "friction_cost",
-                    "r_multiple",
-                    "captured_pct",
-                    "is_success"
-                ).forEach(row::remove)
-            }
-            out.put(row)
+            out.put(compactTeacherResearchOutcomeRow(src))
         }
         Log.i(
             TAG,
             "teacher research outcome payload compacted input=${source.length()} output=${out.length()} rejectedKept=$rejectedKept rejectedCap=$TEACHER_RESEARCH_REJECTED_OUTCOME_CAP"
+        )
+        return out
+    }
+
+    private fun buildTeacherResearchOutcomePayload(file: File): JSONArray {
+        val out = JSONArray()
+        var inputCount = 0
+        var rejectedKept = 0
+        streamJsonArrayFile(file) { src ->
+            inputCount += 1
+            val role = src.optString("role", "secondary").trim().lowercase(Locale.US).ifBlank { "secondary" }
+            if (role == "rejected") {
+                if (rejectedKept >= TEACHER_RESEARCH_REJECTED_OUTCOME_CAP) return@streamJsonArrayFile
+                rejectedKept += 1
+            }
+            out.put(compactTeacherResearchOutcomeRow(src))
+        }
+        Log.i(
+            TAG,
+            "teacher research outcome payload compacted (streamed) input=$inputCount output=${out.length()} rejectedKept=$rejectedKept rejectedCap=$TEACHER_RESEARCH_REJECTED_OUTCOME_CAP"
         )
         return out
     }
@@ -510,7 +535,7 @@ class NativeBridge(private val context: Context) {
             val outcomesFile = File(MarketMLService.evaluationOutcomesPath(context, targetDate))
             if (!snapshotsFile.exists() || !outcomesFile.exists()) return null
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
-            val outcomes = compactTeacherResearchOutcomePayload(readJsonArrayFile(outcomesFile))
+            val outcomes = buildTeacherResearchOutcomePayload(outcomesFile)
             if (compactSnapshots.length() == 0 || outcomes.length() == 0) return null
 
             val inputDir = File(context.cacheDir, "teacher_research_inputs").apply { mkdirs() }

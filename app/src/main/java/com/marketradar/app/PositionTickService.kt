@@ -383,9 +383,27 @@ class PositionTickService : Service() {
         side: String,
         closeSide: CloseSide
     ) {
-        val key = trade.optStringAny("${prefix}_instrument_key", "${prefix}InstrumentKey")
-        val strike = trade.optDoubleAny("${prefix}_strike", "${prefix}Strike")
-        val type = trade.optStringAny("${prefix}_type", "${prefix}Type", "${prefix}_option_type", "${prefix}OptionType")
+        // PWA trades record a second leg as sell_instrument_key2/sellStrike2,
+        // whereas an earlier tracker draft expected sell2_instrument_key/sell2Strike.
+        // Accept both forms so an IC/IB is always marked with all four legs.
+        val keyNames = when (prefix) {
+            "sell2" -> arrayOf("sell_instrument_key2", "sellInstrumentKey2", "sell2_instrument_key", "sell2InstrumentKey")
+            "buy2" -> arrayOf("buy_instrument_key2", "buyInstrumentKey2", "buy2_instrument_key", "buy2InstrumentKey")
+            else -> arrayOf("${prefix}_instrument_key", "${prefix}InstrumentKey")
+        }
+        val strikeNames = when (prefix) {
+            "sell2" -> arrayOf("sell_strike2", "sellStrike2", "sell2_strike", "sell2Strike")
+            "buy2" -> arrayOf("buy_strike2", "buyStrike2", "buy2_strike", "buy2Strike")
+            else -> arrayOf("${prefix}_strike", "${prefix}Strike")
+        }
+        val typeNames = when (prefix) {
+            "sell2" -> arrayOf("sell_type2", "sellType2", "sell2_type", "sell2Type", "sell_option_type2", "sellOptionType2", "sell2_option_type", "sell2OptionType")
+            "buy2" -> arrayOf("buy_type2", "buyType2", "buy2_type", "buy2Type", "buy_option_type2", "buyOptionType2", "buy2_option_type", "buy2OptionType")
+            else -> arrayOf("${prefix}_type", "${prefix}Type", "${prefix}_option_type", "${prefix}OptionType")
+        }
+        val key = trade.optStringAny(*keyNames)
+        val strike = trade.optDoubleAny(*strikeNames)
+        val type = trade.optStringAny(*typeNames)
         if (key.isBlank() && strike == null && type.isBlank()) return
         legs.add(PositionLeg(
             instrumentKey = key.ifBlank { null },
