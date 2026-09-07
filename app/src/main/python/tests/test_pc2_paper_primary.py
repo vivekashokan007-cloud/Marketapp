@@ -44,6 +44,43 @@ def candidate(candidate_id, deterministic_rank, percentile_score, edge, **extra)
 
 
 class Pc2PaperPrimaryTest(unittest.TestCase):
+    def test_preserved_deterministic_reference_survives_pc2_reselection(self):
+        deterministic = candidate("deterministic", 1, 0.0, 300.0)
+        pc2_winner = candidate("pc2", 2, 0.0, 900.0)
+
+        ordered, first_summary = select_pc2_paper_primary(
+            [deterministic, pc2_winner],
+            "paper",
+            deterministic_reference_ids=["deterministic", "pc2"],
+        )
+        _, second_summary = select_pc2_paper_primary(
+            ordered,
+            "paper",
+            deterministic_reference_ids=["deterministic", "pc2"],
+        )
+
+        self.assertEqual(ordered[0]["id"], "pc2")
+        self.assertEqual(first_summary["deterministic_shadow_candidate_id"], "deterministic")
+        self.assertEqual(second_summary["deterministic_shadow_candidate_id"], "deterministic")
+        self.assertTrue(second_summary["changed_from_deterministic"])
+        self.assertEqual(second_summary["deterministic_reference_source"], "preserved_deterministic_rank")
+
+    def test_comparator_uses_deterministic_entry_candidate_not_monitor_top(self):
+        monitor = candidate("monitor", 1, 0.0, 1000.0, entryEligible=False)
+        deterministic_entry = candidate("deterministic-entry", 2, 0.0, 300.0)
+        pc2_winner = candidate("pc2", 3, 0.0, 900.0)
+
+        _, summary = select_pc2_paper_primary(
+            [monitor, deterministic_entry, pc2_winner],
+            "paper",
+            deterministic_reference_ids=["monitor", "deterministic-entry", "pc2"],
+        )
+
+        self.assertEqual(summary["deterministic_research_candidate_id"], "monitor")
+        self.assertEqual(summary["deterministic_entry_candidate_id"], "deterministic-entry")
+        self.assertEqual(summary["deterministic_shadow_candidate_id"], "deterministic-entry")
+        self.assertTrue(summary["changed_from_deterministic"])
+
     def test_entry_eligible_primary_resolves_preliminary_wait(self):
         primary = candidate(
             "primary", 1, 0.20, 0.30,
@@ -471,6 +508,26 @@ class Pc2PaperPrimaryTest(unittest.TestCase):
             "snapshot_evaluation_legs",
         ):
             self.assertIn(key, compact)
+
+    def test_android_compact_candidate_keeps_active_pc2_sort_inputs(self):
+        compact = _compact_android_snapshot_context({
+            "snapshot_ranked_candidates_full": [{
+                "id": "candidate-1",
+                "pc2PaperSortComponents": {
+                    "selector_version": "pc2_paper_primary_v7",
+                    "rank_edge_effective": 123.45,
+                    "rank_economics_basis": "NET",
+                    "context_percentile_score": 0.12,
+                    "sigma_penalty_factor": 0.8,
+                    "friction_cost": 14.0,
+                },
+            }],
+        })
+
+        components = compact["snapshot_ranked_candidates_full"][0]["pc2PaperSortComponents"]
+        self.assertEqual(components["rank_edge_effective"], 123.45)
+        self.assertEqual(components["rank_economics_basis"], "NET")
+        self.assertEqual(components["sigma_penalty_factor"], 0.8)
 
 
     # ---- v6 regression: edge-per-risk demoted, positive absolute net edge is authority ----

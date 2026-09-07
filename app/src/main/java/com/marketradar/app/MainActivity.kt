@@ -562,6 +562,7 @@ class MainActivity : AppCompatActivity() {
                     setTradeModeDefault: function(mode) { AndroidBridge.setTradeModeDefault(mode || "intraday"); },
                     requestImmediatePoll: function() { AndroidBridge.requestImmediatePoll(); },
                     setClosedTrades: function(j) { AndroidBridge.setClosedTrades(j); },
+                    recordClosedTrade: function(j) { return AndroidBridge.recordClosedTrade(j); },
                     
                     // Data Pull
                     getLatestPoll: function() { return AndroidBridge.getLatestPoll(); },

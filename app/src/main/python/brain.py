@@ -4430,6 +4430,83 @@ def chain_profile_insights(ctx):
     
     return insights
 
+def _daily_risk_state(closed_trades, open_trades, ctx):
+    """Derive same-session risk inputs locally instead of trusting UI memory.
+
+    Closed-trade records are the durable source for realized P&L. Open records
+    contribute to the session trade count only; they never affect realized P&L.
+    This makes the daily STOP guard survive a PWA reload or a dropped bridge
+    field while keeping the evidence persisted with each snapshot.
+    """
+    context = ctx if isinstance(ctx, dict) else {}
+    session_date = (
+        context.get('today_ist')
+        or context.get('session_date')
+        or context.get('sessionDate')
+    )
+    session_date = str(session_date)[:10] if session_date else None
+    state = {
+        'schema_version': 'daily_risk_state_v1',
+        'status': 'OK' if session_date else 'UNAVAILABLE_SESSION_DATE',
+        'session_date': session_date,
+        'source': 'local_closed_and_open_trades',
+        'realized_pnl': 0.0,
+        'closed_trade_count': 0,
+        'open_trade_count': 0,
+        'daily_trade_count': 0,
+    }
+    if not session_date:
+        return state
+
+    def trade_day(trade, *keys):
+        for key in keys:
+            value = trade.get(key)
+            if value:
+                return str(value)[:10]
+        return None
+
+    for trade in closed_trades if isinstance(closed_trades, list) else []:
+        if not isinstance(trade, dict):
+            continue
+        status = str(trade.get('status') or '').upper()
+        if status and status != 'CLOSED':
+            continue
+        if trade_day(trade, 'exit_date', 'exitDate', 'closed_at', 'closedAt') != session_date:
+            continue
+        pnl = _safe_num(
+            trade.get('net_pnl', trade.get('netPnl')),
+            None,
+        )
+        if pnl is None:
+            pnl = _safe_num(trade.get('actual_pnl', trade.get('actualPnl')), 0.0)
+        state['realized_pnl'] += pnl
+        state['closed_trade_count'] += 1
+
+    for trade in open_trades if isinstance(open_trades, list) else []:
+        if not isinstance(trade, dict):
+            continue
+        if str(trade.get('status') or '').upper() == 'CLOSED':
+            continue
+        if trade_day(trade, 'entry_date', 'entryDate', 'created_at', 'createdAt') == session_date:
+            state['open_trade_count'] += 1
+
+    state['realized_pnl'] = round(state['realized_pnl'], 2)
+    state['daily_trade_count'] = state['closed_trade_count'] + state['open_trade_count']
+    return state
+
+
+def _apply_daily_risk_state(ctx, closed_trades, open_trades):
+    state = _daily_risk_state(closed_trades, open_trades, ctx)
+    if not isinstance(ctx, dict):
+        return state
+    ctx['dailyRiskState'] = state
+    if state.get('status') == 'OK':
+        ctx['dailyPnl'] = state['realized_pnl']
+        ctx['dailyTradeCount'] = state['daily_trade_count']
+        ctx['dailyRiskStateSource'] = state['source']
+    return state
+
+
 def daily_pnl_check(polls, ctx):
     """Prevent overtrading and chasing losses."""
     pnl = ctx.get('dailyPnl', 0)
@@ -6102,7 +6179,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.16"
+BRAIN_VERSION = "2.6.17"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -13974,7 +14051,12 @@ def _pc2_paper_control(eligible, control_context=None):
     }
 
 
-def select_pc2_paper_primary(candidates, execution_mode='paper', control_context=None):
+def select_pc2_paper_primary(
+    candidates,
+    execution_mode='paper',
+    control_context=None,
+    deterministic_reference_ids=None,
+):
     """Return PC2-primary global order plus deterministic comparator evidence.
 
     PC2 authority is deliberately limited to paper mode. Existing construction,
@@ -13984,7 +14066,32 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
     """
     mode = str(execution_mode or PC2_PAPER_PRIMARY_MODE).strip().lower()
     ranked = [candidate for candidate in (candidates or []) if isinstance(candidate, dict)]
-    deterministic_top = ranked[0] if ranked else None
+    # The selector may be called more than once after it has already placed its
+    # PC2 winner first. Preserve the original deterministic order explicitly so
+    # the post-close comparator never silently compares PC2 with itself.
+    deterministic_reference = list(ranked)
+    deterministic_reference_source = 'input_order'
+    if isinstance(deterministic_reference_ids, (list, tuple)):
+        by_id = {
+            str(candidate.get('id')): candidate
+            for candidate in ranked
+            if candidate.get('id') is not None
+        }
+        preserved = []
+        seen_ids = set()
+        for raw_id in deterministic_reference_ids:
+            candidate_id = str(raw_id)
+            candidate = by_id.get(candidate_id)
+            if candidate is not None and candidate_id not in seen_ids:
+                preserved.append(candidate)
+                seen_ids.add(candidate_id)
+        preserved.extend(
+            candidate for candidate in ranked
+            if candidate.get('id') is None or str(candidate.get('id')) not in seen_ids
+        )
+        deterministic_reference = preserved
+        deterministic_reference_source = 'preserved_deterministic_rank'
+    deterministic_top = deterministic_reference[0] if deterministic_reference else None
     active = mode == PC2_PAPER_PRIMARY_MODE
 
     def research_safe(candidate):
@@ -14022,6 +14129,18 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
             economics_reference_key(research_candidate), []
         ).append(edge)
     entry_rows = [candidate for candidate in ranked if entry_primary_eligible(candidate)]
+    # The meaningful policy comparator is the deterministic leader that was
+    # actually eligible to enter in this final menu. Keep the raw research top
+    # separately so monitor-only candidates remain observable without
+    # distorting the entry-policy comparison.
+    deterministic_entry_top = next(
+        (candidate for candidate in deterministic_reference if entry_primary_eligible(candidate)),
+        None,
+    )
+    deterministic_research_top = next(
+        (candidate for candidate in deterministic_reference if research_safe(candidate)),
+        None,
+    )
     entry_economics_by_group = {}
     for entry_candidate in entry_rows:
         edge = _safe_num(entry_candidate.get('adjustedEdgePerRisk'), None)
@@ -14211,12 +14330,15 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ),
         'pc2_research_candidate_id': research_top.get('id') if isinstance(research_top, dict) else None,
         'pc2_primary_candidate_id': pc2_top.get('id') if isinstance(pc2_top, dict) else None,
-        'deterministic_shadow_candidate_id': deterministic_top.get('id') if isinstance(deterministic_top, dict) else None,
+        'deterministic_shadow_candidate_id': deterministic_entry_top.get('id') if isinstance(deterministic_entry_top, dict) else None,
+        'deterministic_entry_candidate_id': deterministic_entry_top.get('id') if isinstance(deterministic_entry_top, dict) else None,
+        'deterministic_research_candidate_id': deterministic_research_top.get('id') if isinstance(deterministic_research_top, dict) else None,
+        'deterministic_reference_source': deterministic_reference_source,
         'random_control': control,
         'changed_from_deterministic': bool(
             isinstance(pc2_top, dict)
-            and isinstance(deterministic_top, dict)
-            and pc2_top.get('id') != deterministic_top.get('id')
+            and isinstance(deterministic_entry_top, dict)
+            and pc2_top.get('id') != deterministic_entry_top.get('id')
         ),
         'hard_safety_contract': [
             'existing candidate construction gates preserved',
@@ -14230,6 +14352,7 @@ def select_pc2_paper_primary(candidates, execution_mode='paper', control_context
         ],
         'ranking_contract': [
             'entry-eligible candidates precede monitor-only research candidates',
+            'the deterministic comparator preserves the pre-PC2 order and selects its top final entry-eligible candidate',
             'research normalization uses every capital-safe and direction-safe candidate with valid economics',
             'v6 PRIMARY AUTHORITY: absolute net edge after sigma/fraction/de-rate (rank_edge_effective), descending; fail-closed when net economics are missing',
             'Candidate N no-trade gate: max(rank_edge_effective) must be positive before PC2 may nominate a paper primary',
@@ -14767,6 +14890,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         ctx['_trace'] = _new_trace(source=_trace_source)
 
     result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": [], "learnedBranches": {}}
+    daily_risk_state = _apply_daily_risk_state(ctx, closed_trades, open_trades)
+    result['dailyRiskState'] = daily_risk_state
     if len(polls) < 3:
         # Do not return an empty stub for low-history sessions. Emit an explicit
         # WAIT verdict so UI and logs can explain why strategy generation is empty.
@@ -15418,6 +15543,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 cur_vix,
             )
             ranked = _recompute_rankings(brain_verdict, gated_cands)
+            deterministic_reference_ids = [
+                str(candidate.get('id'))
+                for candidate in ranked
+                if isinstance(candidate, dict) and candidate.get('id') is not None
+            ]
             market_confidence = _safe_num((result.get('verdict') or {}).get('market_confidence'), None)
             if market_confidence is None:
                 market_confidence = _safe_num((result.get('verdict') or {}).get('confidence'), 0.0)
@@ -15449,6 +15579,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'poll_count': len(polls),
                     'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
                 },
+                deterministic_reference_ids=deterministic_reference_ids,
             )
             result['pc2_paper_primary'] = pc2_paper_primary
             if pc2_paper_primary.get('active'):
@@ -15565,6 +15696,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                         'poll_count': len(polls),
                         'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
                     },
+                    deterministic_reference_ids=deterministic_reference_ids,
                 )
                 result['pc2_paper_primary'] = pc2_paper_primary
                 watchlist = _build_watchlist_from_ranked(ranked)
@@ -15596,6 +15728,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'poll_count': len(polls),
                     'latest_poll_time': latest_poll.get('t') or latest_poll.get('time'),
                 },
+                deterministic_reference_ids=deterministic_reference_ids,
             )
             result['pc2_paper_primary'] = pc2_paper_primary
             watchlist = _build_watchlist_from_ranked(ranked)
@@ -16395,6 +16528,20 @@ def _candidate_android_snapshot_view(raw):
                 'economics_percentile',
                 'quality_percentile',
                 'teacher_modifier',
+                'selector_version',
+                'candidate_id',
+                'safety_ineligible',
+                'context_percentile_score',
+                'prob_profit',
+                'rank_economics_basis',
+                'rank_edge_value',
+                'rank_edge_effective',
+                'net_premium_edge',
+                'friction_cost',
+                'sigma_otm',
+                'sigma_penalty_factor',
+                'sigma_penalty_reason',
+                'sigma_band_violation',
             ),
         )
     return candidate
@@ -18515,6 +18662,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_shadow_selector_suite',
         'snapshot_menu_abstention_shadow',
         'snapshot_brain_notification',
+        'snapshot_daily_risk_state',
         'snapshot_latest_poll',
         'signal_independence',
         'candidate_generation_trace',
@@ -19056,6 +19204,11 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['snapshot_rejected_candidate_selection'] = rejected_selection
     snapshot_context['snapshot_rejected_candidate_stats'] = rejected_stats
     snapshot_context['snapshot_brain_notification'] = result.get('brain_notification') if isinstance(result.get('brain_notification'), dict) else {}
+    snapshot_context['snapshot_daily_risk_state'] = (
+        result.get('dailyRiskState')
+        if isinstance(result.get('dailyRiskState'), dict)
+        else ctx.get('dailyRiskState') if isinstance(ctx.get('dailyRiskState'), dict) else {}
+    )
     snapshot_context['snapshot_watchlist'] = clean_cands
     snapshot_context['snapshot_generation_skip_reason'] = result.get('generation_skip_reason')
     snapshot_context['snapshot_generation_skip_reasons'] = result.get('generation_skip_reasons') or []

@@ -1136,6 +1136,38 @@ class NativeBridge(private val context: Context) {
         prefs.edit().putString("closed_trades", json).commit()
     }
 
+    /**
+     * Persist a just-closed trade before the PWA's asynchronous remote update.
+     * This gives the next brain poll a local daily-loss source even if the UI
+     * reloads or the network write is delayed. The bounded id-deduplicated
+     * ledger is intentionally compatible with the existing closed_trades JSON.
+     */
+    @JavascriptInterface
+    fun recordClosedTrade(json: String): Boolean {
+        return try {
+            val incoming = JSONObject(json)
+            val incomingId = incoming.optString("id", "").trim()
+            if (incomingId.isEmpty()) return false
+
+            val existing = try {
+                JSONArray(prefs.getString("closed_trades", "[]") ?: "[]")
+            } catch (_: Exception) {
+                JSONArray()
+            }
+            val merged = JSONArray().put(incoming)
+            for (index in 0 until existing.length()) {
+                val row = existing.optJSONObject(index) ?: continue
+                if (row.optString("id", "").trim() == incomingId) continue
+                if (merged.length() >= 500) break
+                merged.put(row)
+            }
+            prefs.edit().putString("closed_trades", merged.toString()).commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "recordClosedTrade rejected: ${e.message}")
+            false
+        }
+    }
+
     // --- NEW: Data Pull (JS -> Kotlin) ---
 
     @JavascriptInterface
