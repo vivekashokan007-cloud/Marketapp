@@ -203,6 +203,7 @@ class PositionTickService : Service() {
         var anyQuote = false
         var hasMissingKey = false
         var hasMissingExecutableSide = false
+        var nonPositiveQuoteLegs = 0
         var executableMark = 0.0
         var midMark = 0.0
         var ltpMark = 0.0
@@ -215,11 +216,21 @@ class PositionTickService : Service() {
             val ask = quote?.ask
             val ltp = quote?.ltp
             val mid = if (bid != null && ask != null) (bid + ask) / 2.0 else null
-            val executablePrice = if (leg.closeSide == CloseSide.BUY_TO_CLOSE) ask else bid
+            val executableRaw = if (leg.closeSide == CloseSide.BUY_TO_CLOSE) ask else bid
+            // A zero on the side we must trade is only credible when the contract is
+            // genuinely worthless. If LTP says the leg has real value, a zero bid/ask
+            // is a data gap, not a market - using it prices the leg at nothing and
+            // silently distorts the whole spread mark. This is the same principle the
+            // Python side already applies (v2.6.3 executable-quote contract); the
+            // Kotlin tick path never got it.
+            val executableSuspect = (executableRaw == null || executableRaw <= 0.0) &&
+                (ltp != null && ltp > 0.0)
+            val executablePrice = if (executableSuspect) null else executableRaw
             val status = when {
                 leg.instrumentKey.isNullOrBlank() -> "KEY_MISSING"
                 quote == null || (bid == null && ask == null && ltp == null) -> "NO_QUOTE"
                 bid == null || ask == null -> "NO_DEPTH"
+                executableSuspect -> "NON_POSITIVE_QUOTE"
                 else -> "OK"
             }
             val priceBasis = when {
@@ -228,6 +239,7 @@ class PositionTickService : Service() {
                 else -> "NONE"
             }
             if (status == "KEY_MISSING") hasMissingKey = true
+            if (executableSuspect) nonPositiveQuoteLegs += 1
             if (bid != null || ask != null || ltp != null) anyQuote = true
             if (bid == null || ask == null || executablePrice == null) hasMissingExecutableSide = true
 
@@ -251,22 +263,79 @@ class PositionTickService : Service() {
             })
         }
 
+        // Structure validation. Counting legs is not enough: duplicates, wrong roles,
+        // or extra legs can all satisfy a >= check. For supported strategies we assert
+        // the exact multiset of (side, option type) and unique instrument keys.
+        // Unsupported strategies are reported as UNCHECKED - explicitly not "complete",
+        // so a reader can never mistake "we did not look" for "we looked and it is fine".
+        val structure = validateStructure(strategyType, legs)
+        if (structure.status == "INCOMPLETE" || structure.status == "MALFORMED") {
+            val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} strategy=$strategyType " +
+                "status=${structure.status} expected=${structure.expected} actual=${structure.actual} " +
+                "problems=${structure.problems.joinToString(",")}"
+            Log.w(TAG, "POSITION_TICK_STRUCTURE_${structure.status}: $reason")
+            LogBuffer.add('W', TAG, "POSITION_TICK_STRUCTURE_${structure.status}: $reason")
+        }
+        val structureUsable = structure.status == "COMPLETE" || structure.status == "UNCHECKED"
+
         val valuationQuality = when {
+            structure.status == "INCOMPLETE" -> "STRUCTURE_INCOMPLETE"
+            structure.status == "MALFORMED" -> "STRUCTURE_MALFORMED"
             !anyQuote -> "UNAVAILABLE"
             hasMissingKey || hasMissingExecutableSide -> "DEGRADED"
             else -> "OK"
         }
-        val executableMarkValue = if (valuationQuality == "OK" && legs.isNotEmpty()) executableMark else null
-        val midMarkValue = if (midComplete && legs.isNotEmpty()) midMark else null
-        val ltpMarkValue = if (ltpComplete && legs.isNotEmpty()) ltpMark else null
+        // Single gate for every mark: if the valuation is not accepted, NO mark is
+        // serialized as accepted. Previously a rejected row could still publish an
+        // executable_mark with mark_basis=EXECUTABLE while current_pnl was null.
+        val valuationAccepted = valuationQuality == "OK" && legs.isNotEmpty()
+        val executableMarkValue = if (valuationAccepted) executableMark else null
+        val midMarkValue = if (structureUsable && midComplete && legs.isNotEmpty()) midMark else null
+        val ltpMarkValue = if (structureUsable && ltpComplete && legs.isNotEmpty()) ltpMark else null
         val currentPnl = if (entryPremium != null && executableMarkValue != null) {
             computePositionTickCurrentPnl(entryPremium, executableMarkValue, isCredit, lotSize)
         } else {
             null
         }
         val currentPnlR = if (currentPnl != null && maxLoss != null && maxLoss > 0.0) currentPnl / maxLoss else null
-        val running = updateRunningState(tradeId, currentPnl)
+
+        // Defined-risk bounds check. This is ANOMALY TELEMETRY, not a fail-closed gate.
+        // Rationale: the guard fires most often exactly when a position is deepest
+        // underwater, and nulling P&L there would convert a decisive SHADOW_SL into an
+        // uninformative SHADOW_DEGRADED. The mark that actually caused the one
+        // production breach (current_pnl_r -1.458) came from a zero executable price,
+        // which the NON_POSITIVE_QUOTE check above now rejects at source. Fail-closed
+        // here would be a second, blunter answer to a problem already fixed upstream.
+        val boundAnomaly = violatesStructuralBounds(currentPnl, maxProfit, maxLoss)
+        if (boundAnomaly) {
+            val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} strategy=$strategyType " +
+                "current_pnl=$currentPnl max_profit=$maxProfit max_loss=$maxLoss " +
+                "legs=${legs.size} non_positive_quote_legs=$nonPositiveQuoteLegs"
+            Log.w(TAG, "POSITION_TICK_BOUND_ANOMALY: $reason")
+            LogBuffer.add('W', TAG, "POSITION_TICK_BOUND_ANOMALY: $reason")
+        }
+
+        // Anomalous marks are recorded but kept out of the running extrema, so one bad
+        // quote cannot permanently pin running_mae/running_mfe for the whole trade.
+        val runningInput = if (boundAnomaly) null else currentPnl
+        val running = updateRunningState(tradeId, runningInput)
         val policy = evaluateShadowPolicy(tickTs, currentPnl, maxLoss, maxProfit, valuationQuality, lotMeta)
+        // Diagnostics ride in policy_trace_json (jsonb, free-form) rather than new
+        // top-level columns, so this ships without a position_ticks migration.
+        policy.trace.apply {
+            put("position_tick_guards_version", POSITION_TICK_GUARDS_VERSION)
+            put("structure_status", structure.status)
+            put("expected_leg_count", structure.expected ?: JSONObject.NULL)
+            put("actual_leg_count", structure.actual)
+            put("structure_problems", JSONArray(structure.problems))
+            put("valuation_accepted", valuationAccepted)
+            put("bound_anomaly", boundAnomaly)
+            put("non_positive_quote_legs", nonPositiveQuoteLegs)
+            put("running_state_updated", runningInput != null)
+            putOptNumber("raw_executable_mark", if (legs.isEmpty()) null else executableMark)
+            putOptNumber("max_profit_ref", maxProfit)
+            putOptNumber("max_loss_ref", maxLoss)
+        }
 
         return JSONObject().apply {
             put("trade_id", tradeId)
@@ -598,15 +667,8 @@ class PositionTickService : Service() {
             normalized == "SELL_PREMIUM"
     }
 
-    private data class PositionLeg(
-        val instrumentKey: String?,
-        val side: String,
-        val closeSide: CloseSide,
-        val optionType: String?,
-        val strike: Double?
-    )
-
-    private enum class CloseSide { BUY_TO_CLOSE, SELL_TO_CLOSE }
+    /* PositionLeg / CloseSide live at file level (bottom of this file) so the
+       structure validator that consumes them can be unit-tested. */
 
     private data class Quote(val bid: Double?, val ask: Double?, val ltp: Double?)
 
@@ -634,6 +696,13 @@ class PositionTickService : Service() {
         private const val NOTIFICATION_CHANNEL_ID = "position_tick_capture"
         private const val NOTIFICATION_ID = 23018
         private const val SOURCE = "P1_REST_60S"
+        /**
+         * Bumped whenever the valuation guards change, so a production row proves which
+         * logic wrote it. v2 validates leg roles/uniqueness (not just count), rejects a
+         * zero executable price contradicted by a positive LTP, and records bound
+         * breaches as anomalies rather than nulling P&L.
+         */
+        internal const val POSITION_TICK_GUARDS_VERSION = "position_tick_guards_v2_roles_quotes_anomaly"
         private const val TICK_MS = 60_000L
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
@@ -780,6 +849,16 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     )
 }
 
+internal data class PositionLeg(
+    val instrumentKey: String?,
+    val side: String,
+    val closeSide: CloseSide,
+    val optionType: String?,
+    val strike: Double?
+)
+
+internal enum class CloseSide { BUY_TO_CLOSE, SELL_TO_CLOSE }
+
 internal fun computePositionTickCurrentPnl(
     entryPremium: Double,
     executableMarkValue: Double,
@@ -791,4 +870,95 @@ internal fun computePositionTickCurrentPnl(
     } else {
         (executableMarkValue - entryPremium) * lotSize
     }
+}
+
+/**
+ * Outcome of validating a resolved leg set against its declared strategy.
+ *
+ * [status] is one of:
+ *  - `COMPLETE`   - supported strategy, exact roles and count matched
+ *  - `INCOMPLETE` - supported strategy, fewer legs than required
+ *  - `MALFORMED`  - right count but wrong roles, duplicate instruments, or extra legs
+ *  - `UNCHECKED`  - strategy not in the supported set; nothing was asserted
+ *
+ * `UNCHECKED` is deliberately distinct from `COMPLETE`: "we did not look" must never
+ * read as "we looked and it is fine".
+ */
+internal data class StructureCheck(
+    val status: String,
+    val expected: Int?,
+    val actual: Int,
+    val problems: List<String>
+)
+
+/** Required (side, optionType) multiset per supported strategy. */
+private val STRUCTURE_SPEC: Map<String, List<Pair<String, String>>> = mapOf(
+    "BEAR_CALL" to listOf("SHORT" to "CE", "LONG" to "CE"),
+    "BULL_CALL" to listOf("LONG" to "CE", "SHORT" to "CE"),
+    "BULL_PUT" to listOf("SHORT" to "PE", "LONG" to "PE"),
+    "BEAR_PUT" to listOf("LONG" to "PE", "SHORT" to "PE"),
+    "IRON_CONDOR" to listOf("SHORT" to "CE", "LONG" to "CE", "SHORT" to "PE", "LONG" to "PE"),
+    "IRON_BUTTERFLY" to listOf("SHORT" to "CE", "LONG" to "CE", "SHORT" to "PE", "LONG" to "PE")
+)
+
+/** Legs a supported structure must have; null when the strategy is not recognised. */
+internal fun expectedLegCount(strategyType: String): Int? =
+    STRUCTURE_SPEC[strategyType.uppercase()]?.size
+
+/**
+ * Validates that a resolved leg set actually is the structure it claims to be.
+ *
+ * Counting alone is insufficient - duplicate instruments, inverted roles, or an extra
+ * leg all satisfy `legs.size >= expected`. This asserts the exact multiset of
+ * (side, option type) plus instrument-key uniqueness.
+ */
+internal fun validateStructure(strategyType: String, legs: List<PositionLeg>): StructureCheck {
+    val spec = STRUCTURE_SPEC[strategyType.uppercase()]
+        ?: return StructureCheck("UNCHECKED", null, legs.size, listOf("unsupported_strategy"))
+
+    val problems = mutableListOf<String>()
+    if (legs.size < spec.size) {
+        problems.add("missing_legs:${spec.size - legs.size}")
+        return StructureCheck("INCOMPLETE", spec.size, legs.size, problems)
+    }
+    if (legs.size > spec.size) problems.add("extra_legs:${legs.size - spec.size}")
+
+    val keys = legs.mapNotNull { it.instrumentKey?.takeIf { k -> k.isNotBlank() } }
+    if (keys.size != keys.distinct().size) problems.add("duplicate_instrument_keys")
+    if (legs.any { it.instrumentKey.isNullOrBlank() }) problems.add("blank_instrument_key")
+
+    val want = spec.map { "${it.first}:${it.second}" }.sorted()
+    val got = legs.map { "${it.side}:${(it.optionType ?: "?").uppercase()}" }.sorted()
+    if (want != got) problems.add("role_mismatch:expected=${want.joinToString("|")}:got=${got.joinToString("|")}")
+
+    val status = if (problems.isEmpty()) "COMPLETE" else "MALFORMED"
+    return StructureCheck(status, spec.size, legs.size, problems)
+}
+
+/**
+ * Slack allowed on the defined-risk P&L bounds before a mark is flagged as anomalous.
+ *
+ * max_profit / max_loss are recorded gross of friction while the mark is executable
+ * (bid/ask), so a few percent of legitimate drift is expected.
+ */
+internal const val STRUCTURAL_BOUND_TOLERANCE_VALUE: Double = 1.05
+
+/**
+ * True when a mark lies outside what a defined-risk structure can realise.
+ *
+ * This is an ANOMALY SIGNAL, not a veto. Callers record it and keep the P&L: a wide
+ * quoted market can briefly price outside the expiry payoff envelope without the
+ * position being mismarked, and suppressing P&L on those ticks would blind the shadow
+ * stop-loss path at exactly the moment it matters most.
+ */
+internal fun violatesStructuralBounds(
+    pnl: Double?,
+    maxProfit: Double?,
+    maxLoss: Double?,
+    tolerance: Double = STRUCTURAL_BOUND_TOLERANCE_VALUE
+): Boolean {
+    if (pnl == null || !pnl.isFinite()) return false
+    if (maxProfit != null && maxProfit > 0.0 && pnl > maxProfit * tolerance) return true
+    if (maxLoss != null && maxLoss > 0.0 && pnl < -maxLoss * tolerance) return true
+    return false
 }
