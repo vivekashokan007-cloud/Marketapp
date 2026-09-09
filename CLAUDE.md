@@ -146,7 +146,15 @@ Fix: `_infer_strike_step()` (`brain.py:5963`) now returns the smallest positive 
 
 **Production verification (not just code review):** confirmed directly against `ml_generated_candidates` for two full sessions after the phone updated (2026-09-02 and 2026-09-03) — `brain_version 2.6.12` on every row, BNF producing candidates across all four strategy types (BEAR_CALL/BULL_PUT/IRON_CONDOR/IRON_BUTTERFLY) at a healthy ~1,100–1,700/session versus NF's ~1,350–2,050, with BNF candidates also being surfaced by the selector (not just generated). The blackout is closed, not just patched.
 
-### BNF second blackout — ML OOD veto on monthly DTE — fixed in v2.6.13 (entry-eligibility v6)
+### BNF monthly-DTE OOD — unmerged v2.6.13 proposal (entry-eligibility v6)
+
+> **Status corrected 2026-09-09:** The section below describes an earlier proposal,
+> not shipped behavior. The September 7 release deliberately excluded soft-OOD
+> relaxation; current runtime remains `entry_eligibility_v5_quote_friction_fail_closed`.
+> Do not treat the old “fixed/shipped” wording or proposed test count below as
+> release evidence. September 9 production already contains eligible NF selections
+> and ACTIONABLE final verdicts under v5. Any v6 change needs independent policy
+> evaluation. See MarketVivi `REVIEW_CLAUDE_HANDOFF_20260909.md` for current evidence.
 
 After the strike-step fix (v2.6.12) restored BNF *generation*, BNF was still **100% entry-ineligible** every poll on 09-02 and 09-03 — generated, top-ranked by `rank_edge_effective` (avg 2.2× NF, max 4×), then discarded at the entry gate. So every "New Setup Ready" notification named NF; BNF never appeared. Root cause was the **second** casualty of NSE discontinuing Bank Nifty weeklies: the shipped model's OOD bound `dte [0,6]` (learned entirely in the weekly era, trip point `p99 + 0.5*span = 9.0`) is violated by BNF's only remaining expiry, the monthly at **DTE ~26**. `ml_engine.py:308` sets `is_ood = violations > 0`, and the old entry gate (`annotate_candidate_entry_eligibility`, `brain.py`) treated *any* OOD as a fatal veto (`if ml_ood: reasons.append('ml_out_of_distribution')`, `eligible = not reasons`), nulling confidence. Verified in production: 100% of BNF OOD since 08-26; the natural experiment (BNF OOD 0–22% while weekly, step to 100% on the monthly roll, NF unaffected) is conclusive.
 
