@@ -1052,6 +1052,9 @@ class MarketMLService : Service() {
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
             compactContext.put("snapshot_pc2_paper_primary", policy)
         }
+        parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let { riskState ->
+            compactContext.put("snapshot_daily_risk_state", riskState)
+        }
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
             compactContext.put("snapshot_pc2_composite_shadow", shadow)
         }

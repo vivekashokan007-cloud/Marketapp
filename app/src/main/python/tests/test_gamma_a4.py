@@ -61,22 +61,16 @@ def test_synthesis_self_consistency_random():
             f"Drift at risk={risk}: inserted={cand['gammaTag']!r}, direct={direct!r}"
         )
 
-def test_three_call_sites_after_a4a():
-    """A.4 + A.4a: exactly 3 _gamma_tag call sites (one per
-    candidate-construction path: cand, ic, ib). Catches future
-    drift if a 4th candidate path is added without tag-set."""
+def test_all_gamma_producer_sites_have_tags():
+    """Every current candidate producer must stamp the gamma tag."""
     import re, os
     brain_path = os.path.join(os.path.dirname(__file__), '..', 'brain.py')
     with open(brain_path, encoding='utf-8') as f:
         content = f.read()
     pattern = re.compile(r"(\w+)\['gammaTag'\]\s*=\s*_gamma_tag\(\1\['gammaRisk'\]\)")
     matches = pattern.findall(content)
-    assert len(matches) == 3, (
-        f"Expected 3 _gamma_tag call sites, found {len(matches)}: {matches}"
-    )
-    assert set(matches) == {'cand', 'ic', 'ib'}, (
-        f"Expected {{cand, ic, ib}}, got {set(matches)}"
-    )
+    assert set(matches) == {'shadow_candidate', 'cand', 'ic', 'ib'}, f"Gamma tag producers drifted: {matches}"
+    assert len(matches) == len(set(matches)), f"Duplicate gamma tag producer: {matches}"
 
 if __name__ == '__main__':
     for name in list(globals()):

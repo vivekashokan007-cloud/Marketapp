@@ -314,6 +314,9 @@ class NativeBridge(private val context: Context) {
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let { policy ->
             compactContext.put("snapshot_pc2_paper_primary", policy)
         }
+        parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let { riskState ->
+            compactContext.put("snapshot_daily_risk_state", riskState)
+        }
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let { shadow ->
             compactContext.put("snapshot_pc2_composite_shadow", shadow)
         }
@@ -1131,9 +1134,14 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun setClosedTrades(json: String) {
-        val last = prefs.getString("closed_trades", "")
-        if (json == last) return
-        prefs.edit().putString("closed_trades", json).commit()
+        val reconciled = ClosedTradeLedger.mergeUnacknowledged(
+            json,
+            prefs.getString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, "[]")
+        ) ?: return
+        prefs.edit()
+            .putString(ClosedTradeLedger.CLOSED_TRADES_PREF, reconciled.closedTradesJson)
+            .putString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, reconciled.pendingTradesJson)
+            .commit()
     }
 
     /**
@@ -1144,28 +1152,15 @@ class NativeBridge(private val context: Context) {
      */
     @JavascriptInterface
     fun recordClosedTrade(json: String): Boolean {
-        return try {
-            val incoming = JSONObject(json)
-            val incomingId = incoming.optString("id", "").trim()
-            if (incomingId.isEmpty()) return false
-
-            val existing = try {
-                JSONArray(prefs.getString("closed_trades", "[]") ?: "[]")
-            } catch (_: Exception) {
-                JSONArray()
-            }
-            val merged = JSONArray().put(incoming)
-            for (index in 0 until existing.length()) {
-                val row = existing.optJSONObject(index) ?: continue
-                if (row.optString("id", "").trim() == incomingId) continue
-                if (merged.length() >= 500) break
-                merged.put(row)
-            }
-            prefs.edit().putString("closed_trades", merged.toString()).commit()
-        } catch (e: Exception) {
-            Log.w(TAG, "recordClosedTrade rejected: ${e.message}")
-            false
-        }
+        val recorded = ClosedTradeLedger.record(
+            prefs.getString(ClosedTradeLedger.CLOSED_TRADES_PREF, "[]"),
+            prefs.getString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, "[]"),
+            json
+        ) ?: return false
+        return prefs.edit()
+            .putString(ClosedTradeLedger.CLOSED_TRADES_PREF, recorded.closedTradesJson)
+            .putString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, recorded.pendingTradesJson)
+            .commit()
     }
 
     // --- NEW: Data Pull (JS -> Kotlin) ---

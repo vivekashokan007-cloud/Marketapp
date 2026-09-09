@@ -199,140 +199,75 @@ class PositionTickService : Service() {
         val lotSize = lotMeta.lotSize
 
         val legs = extractLegs(trade)
-        val legsJson = JSONArray()
-        var anyQuote = false
-        var hasMissingKey = false
-        var hasMissingExecutableSide = false
-        var nonPositiveQuoteLegs = 0
-        var executableMark = 0.0
-        var midMark = 0.0
-        var ltpMark = 0.0
-        var midComplete = legs.isNotEmpty()
-        var ltpComplete = legs.isNotEmpty()
 
-        legs.forEach { leg ->
-            val quote = leg.instrumentKey?.let { quoteFetch.quotes[it] }
-            val bid = quote?.bid
-            val ask = quote?.ask
-            val ltp = quote?.ltp
-            val mid = if (bid != null && ask != null) (bid + ask) / 2.0 else null
-            val executableRaw = if (leg.closeSide == CloseSide.BUY_TO_CLOSE) ask else bid
-            // A zero on the side we must trade is only credible when the contract is
-            // genuinely worthless. If LTP says the leg has real value, a zero bid/ask
-            // is a data gap, not a market - using it prices the leg at nothing and
-            // silently distorts the whole spread mark. This is the same principle the
-            // Python side already applies (v2.6.3 executable-quote contract); the
-            // Kotlin tick path never got it.
-            val executableSuspect = (executableRaw == null || executableRaw <= 0.0) &&
-                (ltp != null && ltp > 0.0)
-            val executablePrice = if (executableSuspect) null else executableRaw
-            val status = when {
-                leg.instrumentKey.isNullOrBlank() -> "KEY_MISSING"
-                quote == null || (bid == null && ask == null && ltp == null) -> "NO_QUOTE"
-                bid == null || ask == null -> "NO_DEPTH"
-                executableSuspect -> "NON_POSITIVE_QUOTE"
-                else -> "OK"
-            }
-            val priceBasis = when {
-                executablePrice != null -> "EXECUTABLE"
-                ltp != null -> "LTP"
-                else -> "NONE"
-            }
-            if (status == "KEY_MISSING") hasMissingKey = true
-            if (executableSuspect) nonPositiveQuoteLegs += 1
-            if (bid != null || ask != null || ltp != null) anyQuote = true
-            if (bid == null || ask == null || executablePrice == null) hasMissingExecutableSide = true
+        // All quote resolution, structure validation, mark accumulation and P&L now
+        // live in valuePositionTick() - a pure function with no Android dependency, so
+        // the behaviour can be executed in a unit test rather than asserted about in
+        // source text. This method is the adapter: fetch, delegate, log, serialize.
+        val valuation = valuePositionTick(
+            strategyType = strategyType,
+            legs = legs,
+            quotes = legs.mapNotNull { leg ->
+                leg.instrumentKey?.let { k -> quoteFetch.quotes[k]?.let { k to LegQuote(it.bid, it.ask, it.ltp) } }
+            }.toMap(),
+            isCredit = isCredit,
+            entryPremium = entryPremium,
+            maxProfit = maxProfit,
+            maxLoss = maxLoss,
+            lotSize = lotSize
+        )
 
-            val sign = markSign(leg, isCredit)
-            if (executablePrice != null) executableMark += sign * executablePrice
-            if (mid != null) midMark += sign * mid else midComplete = false
-            if (ltp != null) ltpMark += sign * ltp else ltpComplete = false
-
-            legsJson.put(JSONObject().apply {
-                put("instrument_key", leg.instrumentKey ?: JSONObject.NULL)
-                put("side", leg.side)
-                put("option_type", leg.optionType ?: JSONObject.NULL)
-                put("strike", leg.strike ?: JSONObject.NULL)
-                putOptNumber("bid", bid)
-                putOptNumber("ask", ask)
-                putOptNumber("ltp", ltp)
-                putOptNumber("mid", mid)
-                putOptNumber("executable_price", executablePrice)
-                put("price_basis", priceBasis)
-                put("quote_status", status)
-            })
-        }
-
-        // Structure validation. Counting legs is not enough: duplicates, wrong roles,
-        // or extra legs can all satisfy a >= check. For supported strategies we assert
-        // the exact multiset of (side, option type) and unique instrument keys.
-        // Unsupported strategies are reported as UNCHECKED - explicitly not "complete",
-        // so a reader can never mistake "we did not look" for "we looked and it is fine".
-        val structure = validateStructure(strategyType, legs)
-        if (structure.status == "INCOMPLETE" || structure.status == "MALFORMED") {
+        if (valuation.structure.status == STRUCTURE_LEGS_MISSING ||
+            valuation.structure.status == STRUCTURE_ROLES_INVALID
+        ) {
             val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} strategy=$strategyType " +
-                "status=${structure.status} expected=${structure.expected} actual=${structure.actual} " +
-                "problems=${structure.problems.joinToString(",")}"
-            Log.w(TAG, "POSITION_TICK_STRUCTURE_${structure.status}: $reason")
-            LogBuffer.add('W', TAG, "POSITION_TICK_STRUCTURE_${structure.status}: $reason")
+                "status=${valuation.structure.status} expected=${valuation.structure.expected} " +
+                "actual=${valuation.structure.actual} " +
+                "problems=${valuation.structure.problems.joinToString(",")}"
+            Log.w(TAG, "POSITION_TICK_STRUCTURE_REJECTED: $reason")
+            LogBuffer.add('W', TAG, "POSITION_TICK_STRUCTURE_REJECTED: $reason")
         }
-        val structureUsable = structure.status == "COMPLETE" || structure.status == "UNCHECKED"
-
-        val valuationQuality = when {
-            structure.status == "INCOMPLETE" -> "STRUCTURE_INCOMPLETE"
-            structure.status == "MALFORMED" -> "STRUCTURE_MALFORMED"
-            !anyQuote -> "UNAVAILABLE"
-            hasMissingKey || hasMissingExecutableSide -> "DEGRADED"
-            else -> "OK"
-        }
-        // Single gate for every mark: if the valuation is not accepted, NO mark is
-        // serialized as accepted. Previously a rejected row could still publish an
-        // executable_mark with mark_basis=EXECUTABLE while current_pnl was null.
-        val valuationAccepted = valuationQuality == "OK" && legs.isNotEmpty()
-        val executableMarkValue = if (valuationAccepted) executableMark else null
-        val midMarkValue = if (structureUsable && midComplete && legs.isNotEmpty()) midMark else null
-        val ltpMarkValue = if (structureUsable && ltpComplete && legs.isNotEmpty()) ltpMark else null
-        val currentPnl = if (entryPremium != null && executableMarkValue != null) {
-            computePositionTickCurrentPnl(entryPremium, executableMarkValue, isCredit, lotSize)
-        } else {
-            null
-        }
-        val currentPnlR = if (currentPnl != null && maxLoss != null && maxLoss > 0.0) currentPnl / maxLoss else null
-
-        // Defined-risk bounds check. This is ANOMALY TELEMETRY, not a fail-closed gate.
-        // Rationale: the guard fires most often exactly when a position is deepest
-        // underwater, and nulling P&L there would convert a decisive SHADOW_SL into an
-        // uninformative SHADOW_DEGRADED. The mark that actually caused the one
-        // production breach (current_pnl_r -1.458) came from a zero executable price,
-        // which the NON_POSITIVE_QUOTE check above now rejects at source. Fail-closed
-        // here would be a second, blunter answer to a problem already fixed upstream.
-        val boundAnomaly = violatesStructuralBounds(currentPnl, maxProfit, maxLoss)
-        if (boundAnomaly) {
+        if (valuation.nonPositiveQuoteLegs > 0 || valuation.crossedQuoteLegs > 0) {
             val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} strategy=$strategyType " +
-                "current_pnl=$currentPnl max_profit=$maxProfit max_loss=$maxLoss " +
-                "legs=${legs.size} non_positive_quote_legs=$nonPositiveQuoteLegs"
+                "non_positive=${valuation.nonPositiveQuoteLegs} crossed=${valuation.crossedQuoteLegs} " +
+                "valuation_quality=${valuation.valuationQuality}"
+            Log.w(TAG, "POSITION_TICK_QUOTE_REJECTED: $reason")
+            LogBuffer.add('W', TAG, "POSITION_TICK_QUOTE_REJECTED: $reason")
+        }
+        if (valuation.boundAnomaly) {
+            val reason = "trade_id=${tradeId.ifBlank { "__missing__" }} strategy=$strategyType " +
+                "current_pnl=${valuation.currentPnl} max_profit=$maxProfit max_loss=$maxLoss"
             Log.w(TAG, "POSITION_TICK_BOUND_ANOMALY: $reason")
             LogBuffer.add('W', TAG, "POSITION_TICK_BOUND_ANOMALY: $reason")
         }
 
-        // Anomalous marks are recorded but kept out of the running extrema, so one bad
-        // quote cannot permanently pin running_mae/running_mfe for the whole trade.
-        val runningInput = if (boundAnomaly) null else currentPnl
-        val running = updateRunningState(tradeId, runningInput)
-        val policy = evaluateShadowPolicy(tickTs, currentPnl, maxLoss, maxProfit, valuationQuality, lotMeta)
+        // Observed-extrema contract: every ACCEPTED valuation contributes, without
+        // exception. A rejected valuation produces no P&L at all and so cannot reach
+        // the extrema. Revision 2 additionally excluded bound anomalies here, which was
+        // inconsistent - it trusted the bound check enough to censor research metrics
+        // while deliberately not trusting it enough to veto P&L. One rule now.
+        val running = updateRunningState(tradeId, valuation.currentPnl)
+        val policy = evaluateShadowPolicy(
+            tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta
+        )
         // Diagnostics ride in policy_trace_json (jsonb, free-form) rather than new
         // top-level columns, so this ships without a position_ticks migration.
         policy.trace.apply {
             put("position_tick_guards_version", POSITION_TICK_GUARDS_VERSION)
-            put("structure_status", structure.status)
-            put("expected_leg_count", structure.expected ?: JSONObject.NULL)
-            put("actual_leg_count", structure.actual)
-            put("structure_problems", JSONArray(structure.problems))
-            put("valuation_accepted", valuationAccepted)
-            put("bound_anomaly", boundAnomaly)
-            put("non_positive_quote_legs", nonPositiveQuoteLegs)
-            put("running_state_updated", runningInput != null)
-            putOptNumber("raw_executable_mark", if (legs.isEmpty()) null else executableMark)
+            put("structure_contract", STRUCTURE_CONTRACT)
+            put("quote_contract", QUOTE_CONTRACT)
+            put("extrema_contract", EXTREMA_CONTRACT)
+            put("structure_status", valuation.structure.status)
+            put("expected_leg_count", valuation.structure.expected ?: JSONObject.NULL)
+            put("actual_leg_count", valuation.structure.actual)
+            put("structure_problems", JSONArray(valuation.structure.problems))
+            put("valuation_accepted", valuation.valuationAccepted)
+            put("bound_anomaly", valuation.boundAnomaly)
+            put("non_positive_quote_legs", valuation.nonPositiveQuoteLegs)
+            put("crossed_quote_legs", valuation.crossedQuoteLegs)
+            put("raw_mark_complete", valuation.rawMarkComplete)
+            put("running_state_updated", valuation.currentPnl != null)
+            putOptNumber("raw_executable_mark", valuation.rawExecutableMark)
             putOptNumber("max_profit_ref", maxProfit)
             putOptNumber("max_loss_ref", maxLoss)
         }
@@ -347,19 +282,19 @@ class PositionTickService : Service() {
             put("strategy_type", strategyType)
             put("status", trade.optStringAny("status").ifBlank { "OPEN" })
             put("leg_count", legs.size)
-            put("valuation_quality", valuationQuality)
-            put("mark_basis", if (executableMarkValue != null) "EXECUTABLE" else "NONE")
-            putOptNumber("executable_mark", executableMarkValue)
-            putOptNumber("mid_mark", midMarkValue)
-            putOptNumber("ltp_mark", ltpMarkValue)
-            putOptNumber("current_pnl", currentPnl)
-            putOptNumber("current_pnl_r", currentPnlR)
+            put("valuation_quality", valuation.valuationQuality)
+            put("mark_basis", if (valuation.executableMark != null) "EXECUTABLE" else "NONE")
+            putOptNumber("executable_mark", valuation.executableMark)
+            putOptNumber("mid_mark", valuation.midMark)
+            putOptNumber("ltp_mark", valuation.ltpMark)
+            putOptNumber("current_pnl", valuation.currentPnl)
+            putOptNumber("current_pnl_r", valuation.currentPnlR)
             putOptNumber("running_mae", running.mae)
             putOptNumber("running_mfe", running.mfe)
             put("policy_action", policy.action)
             put("policy_reason", policy.reason)
             put("policy_trace_json", policy.trace)
-            put("legs_json", legsJson)
+            put("legs_json", valuation.legsJson())
         }
     }
 
@@ -649,14 +584,6 @@ class PositionTickService : Service() {
             }
             .build()
 
-    private fun markSign(leg: PositionLeg, isCredit: Boolean): Double {
-        return if (isCredit) {
-            if (leg.closeSide == CloseSide.BUY_TO_CLOSE) 1.0 else -1.0
-        } else {
-            if (leg.closeSide == CloseSide.SELL_TO_CLOSE) 1.0 else -1.0
-        }
-    }
-
     private fun isCreditTrade(trade: JSONObject, strategyType: String): Boolean {
         if (trade.has("is_credit")) return trade.optBoolean("is_credit", false)
         if (trade.has("isCredit")) return trade.optBoolean("isCredit", false)
@@ -700,9 +627,16 @@ class PositionTickService : Service() {
          * Bumped whenever the valuation guards change, so a production row proves which
          * logic wrote it. v2 validates leg roles/uniqueness (not just count), rejects a
          * zero executable price contradicted by a positive LTP, and records bound
-         * breaches as anomalies rather than nulling P&L.
+         * breaches as anomalies rather than nulling P&L. v3 extracts valuation into the
+         * pure, directly-testable valuePositionTick(); adds explicit crossed-quote
+         * detection; makes raw_executable_mark all-or-nothing (never a partial sum);
+         * stops excluding bound anomalies from running MAE/MFE (EXTREMA_CONTRACT: every
+         * accepted valuation contributes); and reports an UNSUPPORTED strategy as
+         * STRUCTURE_UNCHECKED rather than letting it reach valuation_quality=OK. v4
+         * restores the complete bid/ask requirement for accepted marks and requires
+         * every strategy leg before raw_mark_complete can be true.
          */
-        internal const val POSITION_TICK_GUARDS_VERSION = "position_tick_guards_v2_roles_quotes_anomaly"
+        internal const val POSITION_TICK_GUARDS_VERSION = "position_tick_guards_v4_complete_book_position"
         private const val TICK_MS = 60_000L
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
@@ -872,17 +806,68 @@ internal fun computePositionTickCurrentPnl(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Published contracts. These strings are written into every tick's policy trace
+// so a downstream reader knows exactly what was and was not asserted, without
+// having to infer it from a status name.
+// ---------------------------------------------------------------------------
+
+/**
+ * What structure validation does and does NOT cover.
+ *
+ * It asserts leg COUNT, leg ROLES (side + option type multiset) and instrument-key
+ * UNIQUENESS. It does NOT validate strike geometry, expiry alignment, quantities, or
+ * the relationship between the two short strikes - so it cannot distinguish an iron
+ * butterfly from an iron condor, and `ROLES_OK` must never be read as "economically
+ * valid structure".
+ */
+internal const val STRUCTURE_CONTRACT =
+    "roles_count_keys_only_no_strike_or_expiry_geometry"
+
+/**
+ * What counts as an executable price.
+ *
+ * Strictly positive and finite on the side that must be traded to close - ask for a
+ * short leg, bid for a long leg - independent of LTP. This matches the Python teacher
+ * contract (`net_economics_v2_executable_quote_contract`); the Kotlin tick path did
+ * not previously enforce it.
+ *
+ * Zero is not accepted as "worthless". Across 47,338 persisted legs, every one of the
+ * four zero executable prices carried a positive LTP (83.05, 404.15 x2, 1010.0) and
+ * none carried a zero LTP, so no genuinely worthless leg has ever been observed and
+ * the strict rule costs nothing measurable. If one appears it degrades that tick
+ * rather than pricing the leg at nothing - the conservative direction.
+ */
+internal const val QUOTE_CONTRACT =
+    "strictly_positive_finite_executable_side_independent_of_ltp"
+
+/**
+ * Which marks contribute to running MAE/MFE.
+ *
+ * Observed extrema: every ACCEPTED valuation contributes, with no further filtering.
+ * A rejected valuation yields no P&L and therefore cannot reach the extrema. Bound
+ * anomalies are recorded but do NOT censor the extrema - censoring there while
+ * deliberately not vetoing P&L would be two different levels of trust in one check.
+ */
+internal const val EXTREMA_CONTRACT = "observed_every_accepted_valuation_no_exclusions"
+
+internal const val STRUCTURE_ROLES_OK = "ROLES_OK"
+internal const val STRUCTURE_LEGS_MISSING = "LEGS_MISSING"
+internal const val STRUCTURE_ROLES_INVALID = "ROLES_INVALID"
+internal const val STRUCTURE_UNSUPPORTED = "UNSUPPORTED"
+
 /**
  * Outcome of validating a resolved leg set against its declared strategy.
  *
  * [status] is one of:
- *  - `COMPLETE`   - supported strategy, exact roles and count matched
- *  - `INCOMPLETE` - supported strategy, fewer legs than required
- *  - `MALFORMED`  - right count but wrong roles, duplicate instruments, or extra legs
- *  - `UNCHECKED`  - strategy not in the supported set; nothing was asserted
+ *  - [STRUCTURE_ROLES_OK]       - count, roles and key uniqueness all matched.
+ *                                 NOT a statement about strike or expiry geometry.
+ *  - [STRUCTURE_LEGS_MISSING]   - supported strategy, fewer legs than required
+ *  - [STRUCTURE_ROLES_INVALID]  - wrong roles, duplicate instruments, or extra legs
+ *  - [STRUCTURE_UNSUPPORTED]    - strategy not in the supported set; nothing asserted
  *
- * `UNCHECKED` is deliberately distinct from `COMPLETE`: "we did not look" must never
- * read as "we looked and it is fine".
+ * The names deliberately avoid "COMPLETE"/"VALID" so that no reader can mistake a
+ * role check for an economic one. See [STRUCTURE_CONTRACT].
  */
 internal data class StructureCheck(
     val status: String,
@@ -890,6 +875,215 @@ internal data class StructureCheck(
     val actual: Int,
     val problems: List<String>
 )
+
+/** A raw quote for one leg, as returned by the market-data fetch. */
+internal data class LegQuote(val bid: Double?, val ask: Double?, val ltp: Double?)
+
+/** Per-leg valuation outcome, serialized into `legs_json`. */
+internal data class LegValuation(
+    val leg: PositionLeg,
+    val bid: Double?,
+    val ask: Double?,
+    val ltp: Double?,
+    val mid: Double?,
+    val executablePrice: Double?,
+    val priceBasis: String,
+    val quoteStatus: String
+)
+
+/**
+ * Complete outcome of valuing one position tick.
+ *
+ * Accepted vs raw is explicit throughout: [executableMark], [currentPnl] and
+ * [currentPnlR] are null unless [valuationAccepted]; [rawExecutableMark] is a
+ * diagnostic that is null unless [rawMarkComplete].
+ */
+internal data class TickValuation(
+    val legValuations: List<LegValuation>,
+    val structure: StructureCheck,
+    val valuationQuality: String,
+    val valuationAccepted: Boolean,
+    val executableMark: Double?,
+    val midMark: Double?,
+    val ltpMark: Double?,
+    val rawExecutableMark: Double?,
+    val rawMarkComplete: Boolean,
+    val currentPnl: Double?,
+    val currentPnlR: Double?,
+    val boundAnomaly: Boolean,
+    val nonPositiveQuoteLegs: Int,
+    val crossedQuoteLegs: Int
+) {
+    fun legsJson(): JSONArray {
+        val out = JSONArray()
+        legValuations.forEach { lv ->
+            out.put(JSONObject().apply {
+                put("instrument_key", lv.leg.instrumentKey ?: JSONObject.NULL)
+                put("side", lv.leg.side)
+                put("option_type", lv.leg.optionType ?: JSONObject.NULL)
+                put("strike", lv.leg.strike ?: JSONObject.NULL)
+                putOptNumber("bid", lv.bid)
+                putOptNumber("ask", lv.ask)
+                putOptNumber("ltp", lv.ltp)
+                putOptNumber("mid", lv.mid)
+                putOptNumber("executable_price", lv.executablePrice)
+                put("price_basis", lv.priceBasis)
+                put("quote_status", lv.quoteStatus)
+            })
+        }
+        return out
+    }
+}
+
+private fun Double?.usable(): Boolean = this != null && this.isFinite() && this > 0.0
+
+/** Sign a leg contributes to the close-out mark (BUY_TO_CLOSE vs SELL_TO_CLOSE, credit vs debit). */
+private fun legMarkSign(leg: PositionLeg, isCredit: Boolean): Double {
+    val closing = leg.closeSide == CloseSide.BUY_TO_CLOSE
+    return if (isCredit) {
+        if (closing) 1.0 else -1.0
+    } else {
+        if (closing) -1.0 else 1.0
+    }
+}
+
+/**
+ * Values one position tick. Pure: no Android, no prefs, no clock, no I/O.
+ *
+ * This is the function that decides `valuation_quality`, which marks are published,
+ * and whether a P&L exists. It exists as a separate pure function specifically so
+ * that tests can execute the real decision path instead of asserting that source
+ * strings are present - a distinction that matters, because a test suite asserting on
+ * source text passes unchanged when the behaviour it describes is deleted.
+ */
+internal fun valuePositionTick(
+    strategyType: String,
+    legs: List<PositionLeg>,
+    quotes: Map<String, LegQuote>,
+    isCredit: Boolean,
+    entryPremium: Double?,
+    maxProfit: Double?,
+    maxLoss: Double?,
+    lotSize: Double,
+    boundTolerance: Double = STRUCTURAL_BOUND_TOLERANCE_VALUE
+): TickValuation {
+    val structure = validateStructure(strategyType, legs)
+
+    var anyQuote = false
+    var hasMissingKey = false
+    var hasMissingExecutableSide = false
+    var nonPositive = 0
+    var crossed = 0
+    var executableMark = 0.0
+    var rawExecutableMark = 0.0
+    var midMark = 0.0
+    var ltpMark = 0.0
+    var midComplete = legs.isNotEmpty()
+    var ltpComplete = legs.isNotEmpty()
+    var rawMarkComplete = legs.isNotEmpty()
+
+    val legValuations = legs.map { leg ->
+        val q = leg.instrumentKey?.let { quotes[it] }
+        val bid = q?.bid?.takeIf { it.isFinite() }
+        val ask = q?.ask?.takeIf { it.isFinite() }
+        val ltp = q?.ltp?.takeIf { it.isFinite() }
+        val isCrossed = bid != null && ask != null && bid > ask
+        val mid = if (bid != null && ask != null && !isCrossed) (bid + ask) / 2.0 else null
+        val executableRaw = if (leg.closeSide == CloseSide.BUY_TO_CLOSE) ask else bid
+        // QUOTE_CONTRACT: strictly positive and finite, independent of LTP.
+        val executablePrice = if (executableRaw.usable() && !isCrossed) executableRaw else null
+
+        val status = when {
+            leg.instrumentKey.isNullOrBlank() -> "KEY_MISSING"
+            q == null || (bid == null && ask == null && ltp == null) -> "NO_QUOTE"
+            isCrossed -> "CROSSED_QUOTE"
+            bid == null || ask == null -> "NO_DEPTH"
+            !executableRaw.usable() -> "NON_POSITIVE_QUOTE"
+            else -> "OK"
+        }
+        val priceBasis = when {
+            executablePrice != null -> "EXECUTABLE"
+            ltp != null -> "LTP"
+            else -> "NONE"
+        }
+
+        if (status == "KEY_MISSING") hasMissingKey = true
+        if (status == "NON_POSITIVE_QUOTE") nonPositive += 1
+        if (isCrossed) crossed += 1
+        if (bid != null || ask != null || ltp != null) anyQuote = true
+        // A complete two-sided book is required for an accepted tick. The closing
+        // side alone is insufficient: without both sides a reader cannot validate
+        // the book or detect a crossed quote. Keep any raw side as diagnostics only.
+        if (bid == null || ask == null || executablePrice == null) hasMissingExecutableSide = true
+
+        val sign = legMarkSign(leg, isCredit)
+        if (executablePrice != null) executableMark += sign * executablePrice
+        // rawExecutableMark is a DIAGNOSTIC of what the venue actually quoted, so it
+        // uses the unfiltered side - but it is only published when every leg supplied
+        // one, never as a partial sum (see rawMarkComplete).
+        if (executableRaw != null) rawExecutableMark += sign * executableRaw else rawMarkComplete = false
+        if (mid != null) midMark += sign * mid else midComplete = false
+        if (ltp != null) ltpMark += sign * ltp else ltpComplete = false
+
+        LegValuation(leg, bid, ask, ltp, mid, executablePrice, priceBasis, status)
+    }
+
+    val valuationQuality = when {
+        structure.status == STRUCTURE_LEGS_MISSING -> "STRUCTURE_INCOMPLETE"
+        structure.status == STRUCTURE_ROLES_INVALID -> "STRUCTURE_MALFORMED"
+        // An UNSUPPORTED strategy was never role-checked at all - not "checked and
+        // fine". Reported distinctly so "OK" is never reached without validateStructure()
+        // actually having asserted the leg roles. Found while extracting this function;
+        // not something revision 2 or Codex's review raised, and it costs nothing
+        // measurable - every strategy_type ever persisted (IRON_BUTTERFLY, BEAR_CALL,
+        // BEAR_PUT, IRON_CONDOR, BULL_PUT) is in STRUCTURE_SPEC.
+        structure.status == STRUCTURE_UNSUPPORTED -> "STRUCTURE_UNCHECKED"
+        !anyQuote -> "UNAVAILABLE"
+        hasMissingKey || hasMissingExecutableSide -> "DEGRADED"
+        else -> "OK"
+    }
+    val valuationAccepted = valuationQuality == "OK" && legs.isNotEmpty()
+    val structureUsable =
+        structure.status == STRUCTURE_ROLES_OK || structure.status == STRUCTURE_UNSUPPORTED
+
+    val executableMarkValue = if (valuationAccepted) executableMark else null
+    // Diagnostic marks. Published whenever they are internally complete and the
+    // structure is not rejected; they are NOT executable valuations and must never be
+    // substituted for executable_mark by a consumer.
+    val midMarkValue = if (structureUsable && midComplete && legs.isNotEmpty()) midMark else null
+    val ltpMarkValue = if (structureUsable && ltpComplete && legs.isNotEmpty()) ltpMark else null
+    // A raw mark only represents a complete position when every required leg was
+    // present and supplied the relevant side. It must not look complete for a
+    // truncated four-leg structure.
+    val rawMarkIsCompletePosition = rawMarkComplete && structure.status == STRUCTURE_ROLES_OK && legs.isNotEmpty()
+    val rawMarkValue = if (rawMarkIsCompletePosition) rawExecutableMark else null
+
+    val currentPnl = if (entryPremium != null && executableMarkValue != null) {
+        computePositionTickCurrentPnl(entryPremium, executableMarkValue, isCredit, lotSize)
+    } else {
+        null
+    }
+    val currentPnlR =
+        if (currentPnl != null && maxLoss != null && maxLoss > 0.0) currentPnl / maxLoss else null
+    val boundAnomaly = violatesStructuralBounds(currentPnl, maxProfit, maxLoss, boundTolerance)
+
+    return TickValuation(
+        legValuations = legValuations,
+        structure = structure,
+        valuationQuality = valuationQuality,
+        valuationAccepted = valuationAccepted,
+        executableMark = executableMarkValue,
+        midMark = midMarkValue,
+        ltpMark = ltpMarkValue,
+        rawExecutableMark = rawMarkValue,
+        rawMarkComplete = rawMarkIsCompletePosition,
+        currentPnl = currentPnl,
+        currentPnlR = currentPnlR,
+        boundAnomaly = boundAnomaly,
+        nonPositiveQuoteLegs = nonPositive,
+        crossedQuoteLegs = crossed
+    )
+}
 
 /** Required (side, optionType) multiset per supported strategy. */
 private val STRUCTURE_SPEC: Map<String, List<Pair<String, String>>> = mapOf(
@@ -914,12 +1108,12 @@ internal fun expectedLegCount(strategyType: String): Int? =
  */
 internal fun validateStructure(strategyType: String, legs: List<PositionLeg>): StructureCheck {
     val spec = STRUCTURE_SPEC[strategyType.uppercase()]
-        ?: return StructureCheck("UNCHECKED", null, legs.size, listOf("unsupported_strategy"))
+        ?: return StructureCheck(STRUCTURE_UNSUPPORTED, null, legs.size, listOf("unsupported_strategy"))
 
     val problems = mutableListOf<String>()
     if (legs.size < spec.size) {
         problems.add("missing_legs:${spec.size - legs.size}")
-        return StructureCheck("INCOMPLETE", spec.size, legs.size, problems)
+        return StructureCheck(STRUCTURE_LEGS_MISSING, spec.size, legs.size, problems)
     }
     if (legs.size > spec.size) problems.add("extra_legs:${legs.size - spec.size}")
 
@@ -931,7 +1125,7 @@ internal fun validateStructure(strategyType: String, legs: List<PositionLeg>): S
     val got = legs.map { "${it.side}:${(it.optionType ?: "?").uppercase()}" }.sorted()
     if (want != got) problems.add("role_mismatch:expected=${want.joinToString("|")}:got=${got.joinToString("|")}")
 
-    val status = if (problems.isEmpty()) "COMPLETE" else "MALFORMED"
+    val status = if (problems.isEmpty()) STRUCTURE_ROLES_OK else STRUCTURE_ROLES_INVALID
     return StructureCheck(status, spec.size, legs.size, problems)
 }
 

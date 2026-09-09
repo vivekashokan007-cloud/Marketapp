@@ -71,7 +71,7 @@ def test_group_g():
     print("PASS Group G")
 
 # TEST GROUP H — DRIFT DETECTOR
-def test_three_wall_sites_after_a5():
+def test_all_wall_producer_sites_have_tags():
     brain_path = os.path.join(os.path.dirname(__file__), '..', 'brain.py')
     with open(brain_path, encoding='utf-8') as f:
         content = f.read()
@@ -79,15 +79,8 @@ def test_three_wall_sites_after_a5():
         r"(\w+)\['wallTag'\]\s*=\s*_wall_tag\(\1\['wallScore'\],\s*\1\['type'\]\)"
     )
     matches = pattern.findall(content)
-    assert len(matches) == 3, (
-        f"Expected exactly 3 wallTag tag-set lines (cand/ic/ib), "
-        f"found {len(matches)}: {matches}. A.5 producer-detection "
-        f"discipline violated."
-    )
-    assert set(matches) == {'cand', 'ic', 'ib'}, (
-        f"Expected variable set {{'cand','ic','ib'}}, got {set(matches)}. "
-        f"Drift detected — variable names changed."
-    )
+    assert set(matches) == {'shadow_candidate', 'cand', 'ic', 'ib'}, f"Wall tag producers drifted: {matches}"
+    assert len(matches) == len(set(matches)), f"Duplicate wall tag producer: {matches}"
     print("PASS Group H")
 
 if __name__ == '__main__':

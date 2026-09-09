@@ -944,16 +944,16 @@ object SupabaseClient {
     /**
      * Reads trades_v2 where status = CLOSED, limit 200 (SC1: increased from 20 for ML calibration)
      */
-    fun getClosedTrades(): JSONArray {
+    fun getClosedTradesOrNull(): JSONArray? {
         val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=exit_date.desc&limit=200")
             .get()
             .build()
-        val json = fetchSync(request) ?: return JSONArray()
+        val json = fetchSync(request) ?: return null
         return try {
             JSONArray(json)
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing closed trades: ${e.message}")
-            JSONArray()
+            null
         }
     }
 

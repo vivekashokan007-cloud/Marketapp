@@ -600,8 +600,17 @@ class MarketWatchService : Service() {
                 prefs.edit().putString("open_trades", open.toString()).apply()
 
                 // 3. Closed Trades
-                val closed = SupabaseClient.getClosedTrades()
-                prefs.edit().putString("closed_trades", closed.toString()).apply()
+                SupabaseClient.getClosedTradesOrNull()?.let { closed ->
+                    ClosedTradeLedger.reconcileRemote(
+                        closed.toString(),
+                        prefs.getString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, "[]")
+                    )?.let { reconciled ->
+                        prefs.edit()
+                            .putString(ClosedTradeLedger.CLOSED_TRADES_PREF, reconciled.closedTradesJson)
+                            .putString(ClosedTradeLedger.PENDING_CLOSED_TRADES_PREF, reconciled.pendingTradesJson)
+                            .commit()
+                    }
+                } ?: LogBuffer.add('W', TAG, "CLOSED_TRADE_BOOTSTRAP_UNAVAILABLE: preserving local risk ledger")
                 val history = SupabaseClient.getPollHistory(today)
                 if (history.length() > 0) {
                     val latest = history.optJSONObject(history.length() - 1)

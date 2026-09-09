@@ -770,6 +770,9 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
             compactContext.put("snapshot_pc2_paper_primary", it)
         }
+        parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let {
+            compactContext.put("snapshot_daily_risk_state", it)
+        }
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
             compactContext.put("snapshot_pc2_composite_shadow", it)
         }
@@ -942,6 +945,9 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
             compactContext.put("snapshot_pc2_paper_primary", it)
+        }
+        parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let {
+            compactContext.put("snapshot_daily_risk_state", it)
         }
         parseJsonObject(context.opt("snapshot_pc2_composite_shadow"))?.let {
             compactContext.put("snapshot_pc2_composite_shadow", it)
