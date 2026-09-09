@@ -6179,7 +6179,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.18"
+BRAIN_VERSION = "2.6.19"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -21214,6 +21214,8 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
     teacher_drop_reasons = {}
     teacher_drop_samples = []
     processed = 0
+    fatal_snapshot_error_count = 0
+    next_index = start
     for idx in range(start, end):
         snap = snapshots[idx]
         try:
@@ -21228,21 +21230,28 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
                     break
                 teacher_drop_samples.append(sample)
         except Exception as exc:
+            fatal_snapshot_error_count += 1
             errors.append({
                 'scope': 'snapshot',
                 'snapshot_id': snap.get('id') if isinstance(snap, dict) else None,
                 'error': str(exc),
             })
+            # Do not advance past an ungraded snapshot. Kotlin checkpoints the
+            # successfully completed prefix, marks the run failed, and retries
+            # this same snapshot after the underlying input/problem is fixed.
+            break
         processed += 1
+        next_index = idx + 1
 
     return json.dumps({
         'ok': True,
         'start': start,
-        'end': end,
+        'end': next_index,
         'processed': processed,
         'snapshot_count': len(snapshots),
         'produced_count': len(outcomes),
         'error_count': len(errors),
+        'fatal_snapshot_error_count': fatal_snapshot_error_count,
         'errors': errors[:20],
         'teacher_drop_count': sum(teacher_drop_reasons.values()),
         'teacher_drop_reasons': teacher_drop_reasons,

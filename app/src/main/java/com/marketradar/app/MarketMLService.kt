@@ -149,6 +149,12 @@ class MarketMLService : Service() {
         internal const val EVAL_STALE_AFTER_MS = 15 * 60 * 1000L
         private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
         private const val EVAL_REMINDER_END_MIN = 18 * 60 + 30
+        // `onStartCommand` can receive an alarm launch and a notification tap
+        // back-to-back. Keep foreground ownership until every accepted action
+        // finishes, and allow only one evaluator in this app process.
+        private val serviceActionLock = Any()
+        private val activeServiceActions = mutableSetOf<Int>()
+        private var activeEvaluationSession: String? = null
 
         // File paths inside app's internal storage
         fun backtestPath(ctx: Context): String =
@@ -393,6 +399,7 @@ class MarketMLService : Service() {
             .build()
         
         startForeground(2002, notification)
+        registerServiceAction(startId)
         Log.i(TAG, "onStartCommand: action=$action sessionDate=${intent?.getStringExtra("session_date")}")
         
         when (action) {
@@ -403,8 +410,7 @@ class MarketMLService : Service() {
                     } catch (t: Throwable) {
                         Log.e(TAG, "RETRAIN_ACTION_FAIL: ${t.message}", t)
                     } finally {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
@@ -415,16 +421,14 @@ class MarketMLService : Service() {
                     } catch (t: Throwable) {
                         Log.e(TAG, "TRAIN_ACTION_FAIL: ${t.message}", t)
                     } finally {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
             "ACTION_ONLINE_UPDATE" -> {
                 val tradeJson = intent.getStringExtra("trade_json")
                 if (tradeJson == null) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    finishServiceAction(startId)
                     return START_NOT_STICKY
                 }
                 scope.launch {
@@ -433,8 +437,7 @@ class MarketMLService : Service() {
                     } catch (t: Throwable) {
                         Log.e(TAG, "ONLINE_UPDATE_ACTION_FAIL: ${t.message}", t)
                     } finally {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
@@ -445,33 +448,37 @@ class MarketMLService : Service() {
                     } catch (t: Throwable) {
                         Log.e(TAG, "TEMPORAL_TRAIN_ACTION_FAIL: ${t.message}", t)
                     } finally {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
             "ACTION_DAY_EVALUATION" -> {
-            val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
-            val forceAnyway = intent.getBooleanExtra("force_anyway", false)
-            scope.launch {
-                try {
-                    Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate force=$forceAnyway")
-                    prefs.edit()
-                        .putString("teacher_research_report_status", "PENDING")
-                        .remove("teacher_research_report_error")
-                        .commit()
-                    runDayEvaluation(sessionDate, forceAnyway)
-                } catch (t: Throwable) {
-                    Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
+                val sessionDate = intent.getStringExtra("session_date")?.ifBlank { null } ?: todayIstDate()
+                val forceAnyway = intent.getBooleanExtra("force_anyway", false)
+                if (!claimEvaluationSession(sessionDate)) {
+                    Log.w(TAG, "DAY_EVAL_DUPLICATE_IGNORED: requested=$sessionDate active=${activeEvaluationSessionSnapshot()}")
+                    finishServiceAction(startId)
+                    return START_NOT_STICKY
+                }
+                scope.launch {
+                    try {
+                        Log.i(TAG, "DAY_EVAL_LAUNCHED: sessionDate=$sessionDate force=$forceAnyway")
+                        prefs.edit()
+                            .putString("teacher_research_report_status", "PENDING")
+                            .remove("teacher_research_report_error")
+                            .commit()
+                        runDayEvaluation(sessionDate, forceAnyway)
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
                         LogBuffer.recordCrash(
                             TAG,
                             "DAY_EVAL_ACTION_FAIL: ${t.message}",
                             t
                         )
                     } finally {
+                        releaseEvaluationSession(sessionDate)
                         clearPostCloseHandoffState(reason = "day_evaluation_action")
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
@@ -484,28 +491,65 @@ class MarketMLService : Service() {
                         Log.e(TAG, "C3_FINALIZE_ACTION_FAIL: ${t.message}", t)
                         updateC3FinalizationState(sessionDate, "FAILED", "C3 finalization failed: ${t.message}", running = false, lastError = t.message)
                     } finally {
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf(startId)
+                        finishServiceAction(startId)
                     }
                 }
             }
             "ACTION_EXPORT_BACKTEST" -> {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+                finishServiceAction(startId)
             }
             else -> {
                 // Unknown action — shouldn't happen but don't leak foreground
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(startId)
+                finishServiceAction(startId)
             }
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        synchronized(serviceActionLock) {
+            activeServiceActions.clear()
+            activeEvaluationSession = null
+        }
         clearPostCloseHandoffState(reason = "service_destroy")
         scope.cancel()
         super.onDestroy()
+    }
+
+    private fun registerServiceAction(startId: Int) {
+        synchronized(serviceActionLock) {
+            activeServiceActions += startId
+        }
+    }
+
+    private fun finishServiceAction(startId: Int) {
+        val shouldStop = synchronized(serviceActionLock) {
+            activeServiceActions.remove(startId)
+            activeServiceActions.isEmpty()
+        }
+        if (shouldStop) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun claimEvaluationSession(sessionDate: String): Boolean = synchronized(serviceActionLock) {
+        if (activeEvaluationSession != null) {
+            false
+        } else {
+            activeEvaluationSession = sessionDate
+            true
+        }
+    }
+
+    private fun releaseEvaluationSession(sessionDate: String) {
+        synchronized(serviceActionLock) {
+            if (activeEvaluationSession == sessionDate) activeEvaluationSession = null
+        }
+    }
+
+    private fun activeEvaluationSessionSnapshot(): String? = synchronized(serviceActionLock) {
+        activeEvaluationSession
     }
 
     private fun updateEvaluationJobState(
@@ -2014,10 +2058,6 @@ class MarketMLService : Service() {
                 sessionDate = sessionDate,
                 phase = evalPhase,
                 message = "Preparing full-session teacher evaluation for $sessionDate...",
-                totalSnapshots = 0,
-                completedSnapshots = 0,
-                producedCount = 0,
-                persistedCount = 0,
                 running = true
             )
 
@@ -2189,6 +2229,7 @@ class MarketMLService : Service() {
                 )
 
                 val batchErrorCount = batchJson.optInt("error_count", 0)
+                val fatalSnapshotErrorCount = batchJson.optInt("fatal_snapshot_error_count", 0)
                 val batchErrors = batchJson.optJSONArray("errors") ?: org.json.JSONArray()
                 val batchErrorHint = if (batchErrorCount > 0 && batchErrors.length() > 0) {
                     batchErrors.optJSONObject(0)?.optString("error", "") ?: ""
@@ -2216,6 +2257,12 @@ class MarketMLService : Service() {
                     running = true,
                     lastError = if (batchErrorCount > 0) batchErrorHint else null
                 )
+                if (fatalSnapshotErrorCount > 0) {
+                    throw IllegalStateException(
+                        "Evaluation batch stopped after $fatalSnapshotErrorCount snapshot failure(s) at checkpoint $completedSnapshots/$totalSnapshots" +
+                            if (batchErrorHint.isBlank()) "." else ": $batchErrorHint"
+                    )
+                }
             }
 
             Log.i(
