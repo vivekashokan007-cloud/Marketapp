@@ -60,6 +60,27 @@ class EvaluationMalformedOutputRecoveryTests(unittest.TestCase):
         self.assertIn("LogBuffer.add(", self.service)
         self.assertIn('throw IllegalStateException("Evaluation output ${file.name} is malformed", t)', self.service)
 
+    def test_atomic_second_batch_append_preserves_the_copied_json_prefix(self):
+        # The first batch creates `[rows]`. For the second one, the writer
+        # copies the prefix through the closing bracket and must append to
+        # that temp file. File.outputStream() would truncate the prefix and
+        # create `,rows]`, the exact field failure from 2026-09-10.
+        self.assertIn("import java.io.FileOutputStream", self.service)
+        self.assertRegex(
+            self.service,
+            re.compile(
+                r"copyFilePrefix\(file, temp, closingOffset\)\s*"
+                r"//[\s\S]*?FileOutputStream\(temp, true\)\.buffered\(\)\.use",
+                re.S,
+            ),
+        )
+        append_block = re.search(
+            r"private fun appendJsonArrayFile\([\s\S]*?\n    \}",
+            self.service,
+        )
+        self.assertIsNotNone(append_block)
+        self.assertNotIn("temp.outputStream().buffered()", append_block.group(0))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,7 @@ import com.chaquo.python.PyObject
 import com.marketradar.app.util.LogBuffer
 import kotlinx.coroutines.*
 import java.io.File
+import java.io.FileOutputStream
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
@@ -855,7 +856,10 @@ class MarketMLService : Service() {
         if (temp.exists()) temp.delete()
         val closingOffset = closingJsonArrayBracketOffset(file)
         copyFilePrefix(file, temp, closingOffset)
-        temp.outputStream().buffered().use { output ->
+        // copyFilePrefix has already written the valid array prefix into temp.
+        // Reopening with File.outputStream() would truncate that prefix and
+        // leave a file beginning with ',' on the second evaluator batch.
+        FileOutputStream(temp, true).buffered().use { output ->
             output.write(",".toByteArray(Charsets.UTF_8))
             output.write(encodedRows.joinToString(",").toByteArray(Charsets.UTF_8))
             output.write("]".toByteArray(Charsets.UTF_8))
