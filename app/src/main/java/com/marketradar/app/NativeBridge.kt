@@ -1785,6 +1785,10 @@ class NativeBridge(private val context: Context) {
     private fun clearStaleEvaluationRunningIfNeeded(): Boolean {
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate.isBlank()) return false
+        // A synchronous Chaquopy call may not cooperate with coroutine timeout.
+        // Never unlock a retry based on an ageing preference heartbeat while the
+        // in-process evaluator still owns this session.
+        if (MarketMLService.isEvaluationSessionActive(runningDate)) return false
         val phase = prefs.getString("evaluation_phase", "") ?: ""
         val startedAtMs = prefs.getLong("evaluation_started_at_ms", 0L)
         val updatedAtMs = prefs.getLong("evaluation_job_updated_at_ms", startedAtMs)

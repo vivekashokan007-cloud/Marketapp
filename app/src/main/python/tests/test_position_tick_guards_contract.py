@@ -175,7 +175,7 @@ class PositionTickGuardsContractTests(unittest.TestCase):
         )
         self.assertIn('"NON_POSITIVE_QUOTE"', self.source)
         self.assertIn(
-            'internal const val QUOTE_CONTRACT =\n    "strictly_positive_finite_executable_side_independent_of_ltp"',
+            'internal const val QUOTE_CONTRACT =\n    "finite_two_sided_non_crossed_book_plus_strictly_positive_executable_side_independent_of_ltp"',
             self.source,
         )
 

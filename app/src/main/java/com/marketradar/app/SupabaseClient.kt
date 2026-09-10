@@ -286,7 +286,10 @@ object SupabaseClient {
         val message: String,
         val rejectedPersistedCount: Int = 0,
         val rejectedExpectedCount: Int = 0,
-        val rejectedSaveMode: String = "not_attempted"
+        val rejectedSaveMode: String = "not_attempted",
+        val evaluationSaved: Boolean = false,
+        val recommendationSaved: Boolean = false,
+        val rejectedSaved: Boolean = false
     )
 
     data class C3PercentileWriteResult(
@@ -2186,10 +2189,15 @@ object SupabaseClient {
             0
         }
         val evaluationSaved = evaluationWriteResult.success && evaluationPersisted >= evaluationWriteResult.expectedRows
-        val recommendationSaved = recommendationPersisted > 0 && recommendationWriteResult.success
+        val recommendationSaved = recommendationWriteResult.success &&
+            (recommendationWriteResult.expectedRows == 0 ||
+                recommendationPersisted >= recommendationWriteResult.expectedRows)
         val rejectedSaved = rejectedRows.length() == 0 ||
             (rejectedWriteResult.success && rejectedPersisted >= rejectedRows.length())
-        val success = evaluationSaved
+        // A locally completed evaluation is not a fully saved outcome if any
+        // required companion output failed. Return explicit component state so
+        // callers retry truthfully instead of reporting a misleading DONE.
+        val success = evaluationSaved && recommendationSaved && rejectedSaved
         val baseMessage = when {
             evaluationSaved && recommendationSaved ->
                 "Persisted $evaluationPersisted evaluation rows; $recommendationPersisted recommendation rows persisted separately. evalMode=${evaluationWriteResult.mode} recoMode=${recommendationWriteResult.mode}"
@@ -2231,7 +2239,10 @@ object SupabaseClient {
             message = message,
             rejectedPersistedCount = rejectedPersisted,
             rejectedExpectedCount = rejectedRows.length(),
-            rejectedSaveMode = if (rejectedSaved) rejectedWriteMode else "failed"
+            rejectedSaveMode = if (rejectedSaved) rejectedWriteMode else "failed",
+            evaluationSaved = evaluationSaved,
+            recommendationSaved = recommendationSaved,
+            rejectedSaved = rejectedSaved
         )
     }
 

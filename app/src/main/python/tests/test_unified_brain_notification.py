@@ -7,12 +7,24 @@ PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
-from brain import brain_notification_process, evaluate_alerts, reset_notification_agent
+from brain import (
+    brain_notification_ack_deliveries,
+    brain_notification_process,
+    evaluate_alerts,
+    reset_notification_agent,
+)
 
 
 def _call_contract(result, ctx):
     import json
     return json.loads(brain_notification_process(result, ctx))
+
+
+def _acknowledge(payload):
+    import json
+    contracts = payload.get("brain_notifications") or [payload.get("brain_notification")]
+    posted = [contract for contract in contracts if isinstance(contract, dict) and contract.get("notify_user")]
+    return json.loads(brain_notification_ack_deliveries(json.dumps(posted)))
 
 
 def _watchlist_candidate(candidate_id="c1", cand_type="BULL_PUT", index_key="NF", lane="NF intraday", **extra):
@@ -153,10 +165,12 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             ],
         }
 
-        first = _call_contract(
+        first_payload = _call_contract(
             result,
             {"now_ms": 2200, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 23},
-        )["brain_notification"]
+        )
+        first = first_payload["brain_notification"]
+        _acknowledge(first_payload)
         second = _call_contract(
             result,
             {"now_ms": 5200, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 24},
@@ -240,6 +254,43 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             ["POS_STOP_trade123", "POS_BOOK_trade456"],
         )
         self.assertEqual(payload["brain_notification"]["reason_code"], "POS_STOP_trade123")
+
+    def test_position_alert_does_not_consume_confirmed_setup(self):
+        result = {
+            "verdict": {"action": "SELL PREMIUM", "strategy": "BULL_PUT", "confidence": 66},
+            "watchlist": [_watchlist_candidate()],
+            "alerts": [],
+        }
+        _call_contract(result, {"now_ms": 1000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 41})
+        payload = _call_contract(
+            {**result, "alerts": [{
+                "key": "POS_STOP_trade123", "category": "POSITION", "priority": "urgent",
+                "title": "Stop Loss Near", "body": "Exit review required.",
+            }]},
+            {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 42},
+        )
+        self.assertEqual(
+            [contract["title"] for contract in payload["brain_notifications"]],
+            ["Stop Loss Near", "New Setup Ready"],
+        )
+        ack = _acknowledge(payload)
+        self.assertEqual(ack["best_candidate_id"], "c1")
+
+    def test_operational_alert_is_not_seen_until_acknowledged(self):
+        result = {
+            "verdict": {"action": "WAIT", "strategy": None, "confidence": 0},
+            "watchlist": [],
+            "alerts": [
+                {"key": "MARKET_A", "category": "MARKET", "priority": "important", "title": "Warning A", "body": "A"},
+                {"key": "MARKET_B", "category": "MARKET", "priority": "important", "title": "Warning B", "body": "B"},
+            ],
+        }
+        first = _call_contract(result, {"now_ms": 1000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 43})
+        self.assertEqual(first["brain_notification"]["title"], "Warning A")
+        self.assertEqual(first["agent_state"]["operational_alert_keys"], [])
+        _acknowledge(first)
+        second = _call_contract(result, {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 44})
+        self.assertEqual(second["brain_notification"]["title"], "Warning B")
 
     def test_position_alert_generation_does_not_require_significant_move(self):
         alerts = evaluate_alerts(
@@ -506,8 +557,11 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         }
         ctx = {"now_ms": 3000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 3}
 
-        first = _call_contract(result, ctx)["brain_notification"]
-        second = _call_contract(result, {"now_ms": 6000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 4})["brain_notification"]
+        first_payload = _call_contract(result, ctx)
+        second_payload = _call_contract(result, {"now_ms": 6000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 4})
+        first = first_payload["brain_notification"]
+        second = second_payload["brain_notification"]
+        _acknowledge(second_payload)
         third = _call_contract(result, {"now_ms": 9000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 5})["brain_notification"]
 
         self.assertFalse(first["notify_user"])
@@ -522,7 +576,8 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             "alerts": [],
         }
         _call_contract(base_result, {"now_ms": 1000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 10})
-        _call_contract(base_result, {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 11})
+        base_confirmed = _call_contract(base_result, {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 11})
+        _acknowledge(base_confirmed)
 
         shifted = _call_contract(
             {

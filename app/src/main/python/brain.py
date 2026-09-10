@@ -6179,7 +6179,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.21"
+BRAIN_VERSION = "2.6.22"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -22640,7 +22640,7 @@ class NotificationAgent:
         contract.update(updates)
         return contract
 
-    def _alert_to_contract(self, alert, base, decision_type, notification_kind, reason_code, reason_text):
+    def _alert_to_contract(self, alert, base, decision_type, notification_kind, reason_code, reason_text, **updates):
         return self._build_contract(
             base,
             decision_type=decision_type,
@@ -22654,6 +22654,7 @@ class NotificationAgent:
                 alert.get('urgency'), base.get('confidence', 0)
             ),
             alert_key=alert.get('dedupe_bucket'),
+            **updates
         )
 
     def _position_alert_to_contract(self, alert, base):
@@ -22811,6 +22812,36 @@ class NotificationAgent:
         full['operational_alert_keys'] = sorted(self.operational_alert_keys)
         return full
 
+    def acknowledge_delivery(self, contracts):
+        """Commit notification dedupe only after Kotlin posts to Android OS.
+
+        A selected alert is not the same thing as a delivered one: permissions,
+        disabled channels and the local throttle may suppress transport. Keeping
+        acknowledgement separate lets the next poll retry a non-delivered alert
+        instead of silently consuming it.
+        """
+        for contract in contracts or []:
+            if not isinstance(contract, dict):
+                continue
+            key = str(contract.get('alert_key') or '').strip()
+            if key:
+                if key.startswith('POS_'):
+                    state_key = self._position_alert_state_key({'key': key})
+                    if state_key:
+                        self.position_alert_states.add(state_key)
+                else:
+                    self.operational_alert_keys.add(key)
+            transition = contract.get('state_transition')
+            if isinstance(transition, dict):
+                self._update_state(
+                    transition.get('action', 'WAIT'),
+                    transition.get('strategy'),
+                    _safe_num(transition.get('confidence'), 0) or 0,
+                    _safe_num(transition.get('timestamp'), 0) or 0,
+                    transition.get('best_candidate_id'),
+                )
+        return self.snapshot_state()
+
     def process_contract(self, result, ctx):
         current_time = ctx.get('now_ms', 0)
         verdict = result.get('verdict', {}) or {}
@@ -22904,7 +22935,6 @@ class NotificationAgent:
         elif action == self.last_state['action'] and strategy == self.last_state['strategy'] and best_id == self.last_state.get('best_candidate_id'):
             if abs(confidence - self.last_state['confidence']) >= 15:
                 msg = f"{best_index or ''} {best_type or strategy} conviction shifted from {self.last_state['confidence']}% to {confidence}%."
-                self._update_state(action, strategy, confidence, current_time, best_id)
                 alert = self._build_alert("UPDATE", "Conviction Update", msg,
                                           sound_class='update')
                 contract = self._alert_to_contract(
@@ -22914,6 +22944,13 @@ class NotificationAgent:
                     notification_kind='UPDATE',
                     reason_code='CONVICTION_SHIFT',
                     reason_text='Conviction changed materially for the same setup.',
+                    state_transition={
+                        'action': action,
+                        'strategy': strategy,
+                        'confidence': confidence,
+                        'timestamp': current_time,
+                        'best_candidate_id': best_id,
+                    },
                 )
             else:
                 contract = self._build_contract(
@@ -22926,7 +22963,6 @@ class NotificationAgent:
             if len(self.verdict_history) >= 2 and self.verdict_history[-2:] == ['WAIT', 'WAIT'] and \
                len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [None, None]:
                 msg = f"Previous {self.last_state['strategy']} thesis invalidated by contrary price action."
-                self._update_state('WAIT', None, 0, current_time, None)
                 alert = self._build_alert("INFO", "Setup Invalidated", msg,
                                           sound_class='routine')
                 contract = self._alert_to_contract(
@@ -22936,6 +22972,13 @@ class NotificationAgent:
                     notification_kind='UPDATE',
                     reason_code='SETUP_INVALIDATED',
                     reason_text='Prior setup became invalid after repeated WAIT confirmation.',
+                    state_transition={
+                        'action': 'WAIT',
+                        'strategy': None,
+                        'confidence': 0,
+                        'timestamp': current_time,
+                        'best_candidate_id': None,
+                    },
                 )
             else:
                 contract = self._build_contract(
@@ -22955,7 +22998,6 @@ class NotificationAgent:
             stable_best = len(self.best_candidate_history) >= 2 and self.best_candidate_history[-2:] == [best_id, best_id]
             if stable_action and stable_best:
                 msg = f"Entry Window OPEN. Best setup: {best_index or ''} {best_type or strategy} with {confidence}% conviction."
-                self._update_state(action, strategy, confidence, current_time, best_id)
                 alert = self._build_alert(
                     "HIGH", "New Setup Ready", msg,
                     sound_class=self._compute_sound_class('HIGH', confidence)
@@ -22967,6 +23009,13 @@ class NotificationAgent:
                     notification_kind='ENTRY',
                     reason_code='SETUP_READY',
                     reason_text='Stable actionable setup confirmed across consecutive polls.',
+                    state_transition={
+                        'action': action,
+                        'strategy': strategy,
+                        'confidence': confidence,
+                        'timestamp': current_time,
+                        'best_candidate_id': best_id,
+                    },
                 )
             else:
                 contract = self._build_contract(
@@ -22989,6 +23038,11 @@ class NotificationAgent:
         ]
 
         if position_notification_contracts:
+            # Risk keeps first priority, but an independently actionable setup
+            # must be delivered in the same ordered event set rather than being
+            # marked announced and discarded behind the position alert.
+            if (contract or {}).get('notify_user'):
+                position_notification_contracts.append(contract)
             contract = position_notification_contracts[0]
         elif unseen_operational_alerts and not (contract or {}).get('notify_user'):
             operational_contract = self._operational_alert_to_contract(unseen_operational_alerts[0], base)
@@ -23001,8 +23055,13 @@ class NotificationAgent:
         )
 
         self.position_alert_keys = current_position_keys
-        self.position_alert_states.update(current_position_states)
-        self.operational_alert_keys = current_operational_keys
+        # Keep acknowledgements for alerts that remain present, but do not mark
+        # a selected/suppressed alert as seen. Kotlin calls acknowledge_delivery
+        # only after NotificationManager accepted the notification.
+        # Position-state re-entry is a separate explicit cooldown/episode policy
+        # (N2). Retain acknowledged states until that policy is changed; only
+        # the selected-vs-delivered acknowledgement timing changes in this batch.
+        self.operational_alert_keys.intersection_update(current_operational_keys)
 
         return {
             'brain_notification': contract,
@@ -23099,6 +23158,17 @@ def brain_notification_process(result, ctx):
             'agent_state': {},
         }
         return json.dumps(fallback)
+
+
+def brain_notification_ack_deliveries(contracts_json):
+    """Persist only notification contracts posted to the Android notification OS."""
+    try:
+        contracts = _safe_json_field(contracts_json, [])
+        if not isinstance(contracts, list):
+            contracts = []
+        return json.dumps(_NOTIFICATION_AGENT.acknowledge_delivery(contracts))
+    except Exception:
+        return json.dumps(_NOTIFICATION_AGENT.snapshot_state())
 
 
 def reset_notification_agent(state_json='null'):

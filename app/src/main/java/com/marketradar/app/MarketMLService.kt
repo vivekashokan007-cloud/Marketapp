@@ -61,6 +61,7 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
             .commit()
         if (istToday == prefs.getString("evaluation_done_date", null)) {
             Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already done today")
+            MarketMLService.clearEvaluationStatusNotification(context)
             return
         }
         val nowIst = Calendar.getInstance(MarketMLService.IST)
@@ -71,7 +72,15 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
             return
         }
         if (istToday == prefs.getString("evaluation_running_date", null)) {
-            Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already running today")
+            Log.i("EvaluationAlarmReceiver", "Evaluation already running; retaining a retry reminder")
+            MarketMLService.publishEvaluationStatus(
+                context,
+                "Day Evaluation Running",
+                "Today's evaluation is still running. Progress is available in ML status.",
+                sessionDate = istToday,
+                allowRetry = false
+            )
+            MarketMLService.scheduleNextEvaluationReminder(context)
             return
         }
 
@@ -95,27 +104,17 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
             .putString("evaluation_auto_start_status", autoStartStatus)
             .putString("evaluation_auto_start_error", autoStartError)
             .commit()
-        val pendingIntent = PendingIntent.getForegroundService(
-            context, 1002, runIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        MarketMLService.publishEvaluationStatus(
+            context,
+            if (autoStartStatus == "STARTED") "Day Evaluation Running" else "Day Evaluation Needs Retry",
+            if (autoStartStatus == "STARTED") {
+                "Today's evaluation started automatically. Open ML status to follow progress."
+            } else {
+                "Automatic start failed. Tap to retry today's evaluation."
+            },
+            sessionDate = istToday,
+            allowRetry = autoStartStatus != "STARTED"
         )
-
-        val channel = android.app.NotificationChannel(
-            "ml_evaluation", "Day Evaluation",
-            android.app.NotificationManager.IMPORTANCE_DEFAULT
-        )
-        val nm = context.getSystemService(android.app.NotificationManager::class.java)
-        nm?.createNotificationChannel(channel)
-
-        val notification = android.app.Notification.Builder(context, "ml_evaluation")
-            .setContentTitle("Day Evaluation Ready")
-            .setContentText("Tap to evaluate today's brain recommendations")
-            .setSmallIcon(android.R.drawable.ic_menu_manage)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-
-        nm?.notify(2003, notification)
 
         // Schedule next reminder in 30 min
         MarketMLService.scheduleNextEvaluationReminder(context)
@@ -135,6 +134,8 @@ class MarketMLService : Service() {
 
     companion object {
         private const val TAG = "MarketMLService"
+        private const val EVALUATION_NOTIFICATION_CHANNEL = "ml_evaluation"
+        private const val EVALUATION_NOTIFICATION_ID = 2003
         private const val EVENING_EVAL_TIMEOUT_MS = 45 * 60 * 1000L
         private const val EVAL_BATCH_SIZE = 4
         private const val EVAL_BATCH_TIMEOUT_MS = 180_000L
@@ -271,6 +272,68 @@ class MarketMLService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             am.cancel(intent)
+            clearEvaluationStatusNotification(context)
+        }
+
+        fun publishEvaluationStatus(
+            context: Context,
+            title: String,
+            body: String,
+            sessionDate: String = todayIstDate(),
+            allowRetry: Boolean
+        ) {
+            val manager = context.getSystemService(android.app.NotificationManager::class.java) ?: return
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                manager.createNotificationChannel(
+                    android.app.NotificationChannel(
+                        EVALUATION_NOTIFICATION_CHANNEL,
+                        "Day Evaluation",
+                        android.app.NotificationManager.IMPORTANCE_DEFAULT
+                    )
+                )
+            }
+            val targetIntent = if (allowRetry) {
+                Intent(context, MarketMLService::class.java).apply {
+                    action = "ACTION_DAY_EVALUATION"
+                    putExtra("session_date", sessionDate)
+                }
+            } else {
+                context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+                    putExtra("openTab", "ml")
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                } ?: Intent(context, MainActivity::class.java).apply {
+                    putExtra("openTab", "ml")
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                }
+            }
+            val pending = if (allowRetry) {
+                PendingIntent.getForegroundService(
+                    context,
+                    1002,
+                    targetIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else {
+                PendingIntent.getActivity(
+                    context,
+                    EVALUATION_NOTIFICATION_ID,
+                    targetIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            }
+            val notification = android.app.Notification.Builder(context, EVALUATION_NOTIFICATION_CHANNEL)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setSmallIcon(android.R.drawable.ic_menu_manage)
+                .setContentIntent(pending)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(EVALUATION_NOTIFICATION_ID, notification)
+        }
+
+        fun clearEvaluationStatusNotification(context: Context) {
+            context.getSystemService(android.app.NotificationManager::class.java)
+                ?.cancel(EVALUATION_NOTIFICATION_ID)
         }
 
         internal fun todayIstDate(): String {
@@ -300,6 +363,13 @@ class MarketMLService : Service() {
                 if (status.marketDay && minutes < EVAL_REMINDER_START_MIN) {
                     next.set(Calendar.HOUR_OF_DAY, 16)
                     next.set(Calendar.MINUTE, 30)
+                    return next
+                }
+                if (status.marketDay && minutes in EVAL_REMINDER_START_MIN..EVAL_REMINDER_END_MIN) {
+                    // App/service startup during the active post-close window
+                    // must catch up today, not replace the pending reminder with
+                    // tomorrow's 16:30 alarm.
+                    next.add(Calendar.MINUTE, 1)
                     return next
                 }
                 next.add(Calendar.DATE, 1)
@@ -547,9 +617,13 @@ class MarketMLService : Service() {
         }
     }
 
-    private fun activeEvaluationSessionSnapshot(): String? = synchronized(serviceActionLock) {
-        activeEvaluationSession
-    }
+        private fun activeEvaluationSessionSnapshot(): String? = synchronized(serviceActionLock) {
+            activeEvaluationSession
+        }
+
+        internal fun isEvaluationSessionActive(sessionDate: String): Boolean = synchronized(serviceActionLock) {
+            activeEvaluationSession == sessionDate
+        }
 
     private fun updateEvaluationJobState(
         sessionDate: String,
@@ -2027,6 +2101,14 @@ class MarketMLService : Service() {
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
     private suspend fun runDayEvaluation(sessionDateOverride: String? = null, forceAnyway: Boolean = false) = withContext(Dispatchers.IO) {
         val sessionDate = sessionDateOverride?.takeIf { it.isNotBlank() } ?: todayIstDate()
+        val evaluationDeadlineMs = System.currentTimeMillis() + EVENING_EVAL_TIMEOUT_MS
+        fun enforceEvaluationBudget(stage: String) {
+            if (System.currentTimeMillis() >= evaluationDeadlineMs) {
+                throw IllegalStateException(
+                    "EVALUATION_TIME_BUDGET_EXCEEDED: cooperative 45-minute budget reached during $stage; retry resumes from the last atomic checkpoint."
+                )
+            }
+        }
         val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
         var evalPhase = "PREPARING"
         var runId = "eval-$sessionDate-${System.currentTimeMillis()}"
@@ -2062,6 +2144,7 @@ class MarketMLService : Service() {
                 .joinToString(", ") { "${it.key}:${it.value}" }
         Log.i(TAG, "EVAL_START: sessionDate=$sessionDate runId=$runId")
         try {
+            enforceEvaluationBudget("preparing")
             if (!forceAnyway && prefs.getString("evaluation_done_date", null) == sessionDate) {
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
@@ -2128,6 +2211,7 @@ class MarketMLService : Service() {
                     TeacherTruthConfig.toJson().toString()
                 ).toString()
             } ?: throw IllegalStateException("Evaluation preparation timed out.")
+            enforceEvaluationBudget("preparation")
 
             val prepareJson = org.json.JSONObject(prepareStr)
             if (!prepareJson.optBoolean("ok", false)) {
@@ -2209,6 +2293,7 @@ class MarketMLService : Service() {
             )
 
             while (completedSnapshots < totalSnapshots) {
+                enforceEvaluationBudget("batch_checkpoint_$completedSnapshots")
                 evalPhase = "RUNNING"
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
@@ -2229,6 +2314,7 @@ class MarketMLService : Service() {
                         EVAL_BATCH_SIZE
                     ).toString()
                 } ?: throw IllegalStateException("Evaluation batch timed out at snapshot $completedSnapshots of $totalSnapshots.")
+                enforceEvaluationBudget("batch_result_$completedSnapshots")
 
                 val batchJson = org.json.JSONObject(batchStr)
                 if (!batchJson.optBoolean("ok", false)) {
@@ -2339,6 +2425,7 @@ class MarketMLService : Service() {
             }
 
             evalPhase = "SAVING"
+            enforceEvaluationBudget("saving")
             updateEvaluationJobState(
                 sessionDate = sessionDate,
                 phase = evalPhase,
@@ -2359,6 +2446,9 @@ class MarketMLService : Service() {
                     persistedCount = 0,
                     primaryPersistedCount = 0,
                     evaluationPersistedCount = 0,
+                    evaluationSaved = true,
+                    recommendationSaved = true,
+                    rejectedSaved = true,
                     message = "No evaluable shadow teacher labels were produced from today's saved recommendations."
                 )
             }
@@ -2375,6 +2465,14 @@ class MarketMLService : Service() {
                     lastError = saveResult.message
                 )
                 Log.w(TAG, "EVAL_SAVE_FAIL: ${saveResult.message}")
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Needs Retry",
+                    "Local results are retained, but not every required Supabase output was verified. Tap to retry.",
+                    sessionDate = sessionDate,
+                    allowRetry = true
+                )
+                scheduleNextEvaluationReminder(this@MarketMLService)
                 return@withContext
             }
 
@@ -2383,6 +2481,7 @@ class MarketMLService : Service() {
             var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
             if (evaluatedOutcomes.length() > 0) {
                 evalPhase = "AGGREGATING"
+                enforceEvaluationBudget("aggregation")
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
                     phase = evalPhase,
@@ -2432,6 +2531,13 @@ class MarketMLService : Service() {
             startC3PercentileFinalization(sessionDate)
             cancelDayEvaluationReminder(this@MarketMLService)
             if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Completed with Warning",
+                    "Outcomes were saved, but the teacher research report needs recovery. Open ML status for details.",
+                    sessionDate = sessionDate,
+                    allowRetry = false
+                )
                 Log.w(
                     TAG,
                     "EVAL_COMPLETE_WITH_WARNINGS: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} teacherResearchError=${teacherResearchResult.error} for $sessionDate — reminder cancelled"
@@ -2462,6 +2568,14 @@ class MarketMLService : Service() {
             )
             Log.e(TAG, "EVAL_FAIL: ${e.message}", e)
             LogBuffer.recordCrash(TAG, "EVAL_FAIL[$evalPhase]: ${e.message}", e, crashExtra)
+            publishEvaluationStatus(
+                this@MarketMLService,
+                "Day Evaluation Needs Retry",
+                "Evaluation stopped during ${evalPhase.lowercase(Locale.US)}. Tap to retry from the saved checkpoint.",
+                sessionDate = sessionDate,
+                allowRetry = true
+            )
+            scheduleNextEvaluationReminder(this@MarketMLService)
         } finally {
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)

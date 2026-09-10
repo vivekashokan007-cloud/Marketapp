@@ -827,10 +827,11 @@ internal const val STRUCTURE_CONTRACT =
 /**
  * What counts as an executable price.
  *
- * Strictly positive and finite on the side that must be traded to close - ask for a
- * short leg, bid for a long leg - independent of LTP. This matches the Python teacher
- * contract (`net_economics_v2_executable_quote_contract`); the Kotlin tick path did
- * not previously enforce it.
+ * Requires finite bid and ask, a non-crossed book, and a strictly positive finite
+ * side that must be traded to close - ask for a short leg, bid for a long leg -
+ * independent of LTP. This matches the Python teacher contract
+ * (`net_economics_v2_executable_quote_contract`); the Kotlin tick path did not
+ * previously enforce it.
  *
  * Zero is not accepted as "worthless". Across 47,338 persisted legs, every one of the
  * four zero executable prices carried a positive LTP (83.05, 404.15 x2, 1010.0) and
@@ -839,7 +840,7 @@ internal const val STRUCTURE_CONTRACT =
  * rather than pricing the leg at nothing - the conservative direction.
  */
 internal const val QUOTE_CONTRACT =
-    "strictly_positive_finite_executable_side_independent_of_ltp"
+    "finite_two_sided_non_crossed_book_plus_strictly_positive_executable_side_independent_of_ltp"
 
 /**
  * Which marks contribute to running MAE/MFE.
@@ -990,7 +991,8 @@ internal fun valuePositionTick(
         val isCrossed = bid != null && ask != null && bid > ask
         val mid = if (bid != null && ask != null && !isCrossed) (bid + ask) / 2.0 else null
         val executableRaw = if (leg.closeSide == CloseSide.BUY_TO_CLOSE) ask else bid
-        // QUOTE_CONTRACT: strictly positive and finite, independent of LTP.
+        // QUOTE_CONTRACT: finite two-sided non-crossed book plus a strictly
+        // positive executable close side, independent of LTP.
         val executablePrice = if (executableRaw.usable() && !isCrossed) executableRaw else null
 
         val status = when {

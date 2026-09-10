@@ -6,12 +6,20 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 
 object NotificationHelper {
+
+    data class DeliveryResult(
+        val attempted: Boolean,
+        val postedToOs: Boolean,
+        val outcome: String,
+        val detail: String = ""
+    )
 
     // Channel sound/vibration settings are locked by Android once created.
     // Versioned IDs ensure deterministic sound behaviour after app updates.
@@ -111,14 +119,21 @@ object NotificationHelper {
         body: String,
         type: String,
         tab: String? = null
-    ) {
+    ): DeliveryResult {
         // 30-second throttle per rendered alert prevents bursts without merging
         // different positions that share a generic title like Stop Loss Near.
         val now = System.currentTimeMillis()
         val throttleKey = "$type|$title|$body"
         val lastTime = lastNotifyTimes[throttleKey] ?: 0L
-        if (now - lastTime < 30_000L) return
-        lastNotifyTimes[throttleKey] = now
+        if (now - lastTime < 30_000L) {
+            return DeliveryResult(false, false, "THROTTLED")
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return DeliveryResult(false, false, "PERMISSION_DENIED")
+        }
 
         createChannels(context)
 
@@ -171,6 +186,21 @@ object NotificationHelper {
         }
 
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager?.notify(currentId, builder.build())
+            ?: return DeliveryResult(false, false, "MANAGER_UNAVAILABLE")
+        if (!manager.areNotificationsEnabled()) {
+            return DeliveryResult(false, false, "APP_NOTIFICATIONS_DISABLED")
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(channelId)?.importance == NotificationManager.IMPORTANCE_NONE
+        ) {
+            return DeliveryResult(false, false, "CHANNEL_DISABLED", channelId)
+        }
+        return try {
+            manager.notify(currentId, builder.build())
+            lastNotifyTimes[throttleKey] = now
+            DeliveryResult(true, true, "POSTED_TO_OS", channelId)
+        } catch (t: Throwable) {
+            DeliveryResult(true, false, "NOTIFY_FAILED", t.javaClass.simpleName)
+        }
     }
 }

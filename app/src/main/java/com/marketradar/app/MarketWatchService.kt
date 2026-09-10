@@ -3017,26 +3017,54 @@ class MarketWatchService : Service() {
             }
 
             val agentState = payload.optJSONObject("agent_state")
-            if (agentState != null) {
-                prefs.edit().putString("notification_agent_state", agentState.toString()).commit()
-            }
 
             val transportMode = prefs.getString(PREF_NOTIFICATION_TRANSPORT_MODE, "live") ?: "live"
             val brainNotifications = payload.optJSONArray("brain_notifications")
-            var dispatchedCount = 0
+            var selectedCount = 0
+            var attemptedCount = 0
+            var postedCount = 0
+            val postedContracts = JSONArray()
+            val outcomes = linkedMapOf<String, Int>()
+            fun deliver(contract: JSONObject?) {
+                if (contract == null || !contract.optBoolean("notify_user", false)) return
+                selectedCount += 1
+                val delivery = dispatchUnifiedBrainNotification(contract, transportMode)
+                if (delivery.attempted) attemptedCount += 1
+                outcomes[delivery.outcome] = (outcomes[delivery.outcome] ?: 0) + 1
+                if (delivery.postedToOs) {
+                    postedCount += 1
+                    postedContracts.put(contract)
+                }
+            }
             if (brainNotifications != null && brainNotifications.length() > 0) {
                 for (i in 0 until brainNotifications.length()) {
-                    val contract = brainNotifications.optJSONObject(i)
-                    if (dispatchUnifiedBrainNotification(contract, transportMode)) dispatchedCount += 1
+                    deliver(brainNotifications.optJSONObject(i))
                 }
-            } else if (dispatchUnifiedBrainNotification(brainNotification, transportMode)) {
-                dispatchedCount = 1
+            } else {
+                deliver(brainNotification)
             }
-            val dispatched = dispatchedCount > 0
+            val acknowledgedState = if (postedContracts.length() > 0) {
+                try {
+                    JSONObject(brain.callAttr("brain_notification_ack_deliveries", postedContracts.toString()).toString())
+                } catch (t: Throwable) {
+                    Log.w(TAG, "BRAIN_NOTIFICATION_ACK_FAIL: ${t.message}")
+                    agentState
+                }
+            } else {
+                agentState
+            }
+            if (acknowledgedState != null) {
+                prefs.edit().putString("notification_agent_state", acknowledgedState.toString()).commit()
+            }
             val transportMeta = JSONObject().apply {
                 put("mode", transportMode)
-                put("dispatched", dispatched)
-                put("dispatched_count", dispatchedCount)
+                put("selected_count", selectedCount)
+                put("attempted_count", attemptedCount)
+                put("posted_to_os_count", postedCount)
+                put("dispatched", postedCount > 0)
+                put("delivery_outcomes", JSONObject().apply {
+                    outcomes.forEach { (outcome, count) -> put(outcome, count) }
+                })
                 put("contract_count", brainNotifications?.length() ?: if (brainNotification != null) 1 else 0)
                 put("notify_user", brainNotification?.optBoolean("notify_user", false) ?: false)
                 put("decision_type", brainNotification?.optString("decision_type", "WAIT") ?: "WAIT")
@@ -3051,22 +3079,27 @@ class MarketWatchService : Service() {
             LogBuffer.add(
                 'I',
                 TAG,
-                "BRAIN_NOTIFICATION_MODE: mode=$transportMode dispatched=$dispatched count=$dispatchedCount notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
+                "BRAIN_NOTIFICATION_MODE: mode=$transportMode selected=$selectedCount attempted=$attemptedCount posted=$postedCount outcomes=$outcomes notify=${brainNotification?.optBoolean("notify_user", false)} type=${brainNotification?.optString("decision_type")}"
             )
         } catch (e: Exception) {
             Log.w(TAG, "BRAIN_NOTIFICATION_FAIL: ${e.message}")
         }
     }
 
-    private fun dispatchUnifiedBrainNotification(contract: JSONObject?, transportMode: String): Boolean {
-        if (contract == null || !contract.optBoolean("notify_user", false)) return false
+    private fun dispatchUnifiedBrainNotification(
+        contract: JSONObject?,
+        transportMode: String
+    ): NotificationHelper.DeliveryResult {
+        if (contract == null || !contract.optBoolean("notify_user", false)) {
+            return NotificationHelper.DeliveryResult(false, false, "NOT_SELECTED")
+        }
         if (transportMode != "live") {
             LogBuffer.add(
                 'I',
                 TAG,
                 "BRAIN_NOTIFICATION_SHADOW: type=${contract.optString("decision_type")} key=${contract.optString("alert_key")}"
             )
-            return false
+            return NotificationHelper.DeliveryResult(false, false, "SHADOW_MODE")
         }
         val notifType = notificationTypeFrom(
             soundClass = contract.optString("sound_class", ""),
@@ -3074,7 +3107,7 @@ class MarketWatchService : Service() {
         )
         val channel = if (contract.optString("decision_type").startsWith("POSITION")) "positions" else null
         if (channel != null) {
-            NotificationHelper.send(
+            return NotificationHelper.send(
                 this,
                 contract.optString("title"),
                 contract.optString("body"),
@@ -3082,15 +3115,13 @@ class MarketWatchService : Service() {
                 channel
             )
         } else {
-            NotificationHelper.send(
+            return NotificationHelper.send(
                 this,
                 contract.optString("title"),
                 contract.optString("body"),
                 notifType
             )
         }
-        Log.d(TAG, "BRAIN_NOTIFICATION_SEND: ${contract.optString("title")}")
-        return true
     }
 
     private fun notificationTypeFrom(soundClass: String, urgency: String): String {
