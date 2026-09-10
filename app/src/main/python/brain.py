@@ -6179,7 +6179,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.19"
+BRAIN_VERSION = "2.6.20"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -14889,7 +14889,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         _trace_source = ctx.get('_trace_source_override', 'live')
         ctx['_trace'] = _new_trace(source=_trace_source)
 
-    result = {"verdict": None, "market": [], "positions": {}, "candidates": {}, "timing": [], "risk": [], "learnedBranches": {}}
+    result = {
+        "app_version": BRAIN_VERSION,
+        "brain_version": BRAIN_VERSION,
+        "verdict": None,
+        "market": [],
+        "positions": {},
+        "candidates": {},
+        "timing": [],
+        "risk": [],
+        "learnedBranches": {},
+    }
     daily_risk_state = _apply_daily_risk_state(ctx, closed_trades, open_trades)
     result['dailyRiskState'] = daily_risk_state
     if len(polls) < 3:
