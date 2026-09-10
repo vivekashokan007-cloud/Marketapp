@@ -6179,7 +6179,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.20"
+BRAIN_VERSION = "2.6.21"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -20721,8 +20721,14 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
         return None
 
     exit_reason = 'EOD'
-    exit_point = path_points[-1]
-    exit_step = len(path_points)
+    # EOD must be attributed to an executable valuation, not merely the last
+    # chain timestamp. A path point can have all LTPs while lacking a close
+    # bid/ask; fail-closed friction then skips it. Keeping the old tail here
+    # reported a timestamp for which the returned P&L could not be executed.
+    exit_point = None
+    exit_step = None
+    last_valued_point = None
+    last_valued_step = None
     managed_gross_pnl = None
     friction_cost = None
     managed_pnl = None
@@ -20754,6 +20760,8 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
                 }
             continue
         net_pnl = round(gross_pnl - round_trip_cost, 2)
+        last_valued_point = point
+        last_valued_step = idx
         if peak_pnl is None or net_pnl > peak_pnl:
             peak_pnl = net_pnl
             time_to_peak_step = idx
@@ -20792,6 +20800,28 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
         })
         return None
 
+    # TP/SL already set their own executable point above. For EOD, bind the
+    # reported exit to the last point that supplied both a gross value and an
+    # executable round-trip cost. This preserves fail-closed quote semantics
+    # and makes exit_ts faithfully identify the price used for managed_pnl.
+    if exit_reason == 'EOD':
+        exit_point = last_valued_point
+        exit_step = last_valued_step
+    if exit_point is None or exit_step is None:
+        _record_teacher_drop(drop_sink, 'managed_exit_point_unavailable', snap, cand, role, {
+            'path_points_count': len(path_points),
+        })
+        return None
+
+    terminal_point = path_points[-1]
+    terminal_ts = terminal_point.get('poll_ts')
+    exit_ts = exit_point.get('poll_ts')
+    exit_valuation_status = (
+        'TP_SL_EXECUTABLE'
+        if exit_reason in ('TP', 'SL')
+        else ('EOD_TERMINAL_EXECUTABLE' if exit_ts == terminal_ts else 'EOD_LAST_EXECUTABLE')
+    )
+
     entry_vix = _resolve_entry_vix(snap)
     regime_bucket = _teacher_regime_bucket(entry_vix, config)
     managed_pnl = round(managed_pnl if managed_pnl is not None else 0.0, 2)
@@ -20814,7 +20844,12 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
         'friction_cost': round(friction_cost or 0.0, 2),
         'exit_reason': exit_reason,
         'exit_step': exit_step,
-        'exit_ts': exit_point.get('poll_ts'),
+        'exit_ts': exit_ts,
+        # Additive provenance for local/report consumers. Existing database
+        # persistence remains schema-compatible and persists the corrected
+        # exit_ts rather than inventing a new column without a migration.
+        'exit_valuation_status': exit_valuation_status,
+        'terminal_path_ts': terminal_ts,
         'path_points_count': len(path_points),
         'r_multiple': r_multiple,
         'captured_pct': captured_pct,
@@ -20919,6 +20954,146 @@ def _load_json_file(path, default):
                 handle.seek(0)
                 break
         return json.load(handle)
+
+
+def _iter_json_array_file(path):
+    """Yield a top-level JSON-array file without retaining the whole file.
+
+    Evaluation inputs are written by Kotlin as one JSON array. The evening
+    evaluator previously decoded both large files into the long-lived
+    Chaquopy cache. This decoder deliberately accepts only that contract and
+    raises on malformed/truncated input; an incomplete session must retry,
+    never silently become an empty evaluation.
+    """
+    if not path:
+        raise ValueError('JSON array path is required')
+    decoder = json.JSONDecoder()
+    buffer = ''
+    position = 0
+    started = False
+    need_separator = False
+    finished = False
+
+    with open(path, 'r', encoding='utf-8') as handle:
+        while not finished:
+            chunk = handle.read(65536)
+            eof = not chunk
+            if chunk:
+                buffer += chunk
+
+            while True:
+                while position < len(buffer) and buffer[position].isspace():
+                    position += 1
+                if not started:
+                    if position >= len(buffer):
+                        break
+                    if buffer[position] != '[':
+                        raise ValueError('expected top-level JSON array')
+                    started = True
+                    position += 1
+                    continue
+                if need_separator:
+                    if position >= len(buffer):
+                        break
+                    token = buffer[position]
+                    if token == ',':
+                        position += 1
+                        need_separator = False
+                        continue
+                    if token == ']':
+                        position += 1
+                        finished = True
+                        break
+                    raise ValueError('expected comma or closing bracket in JSON array')
+                if position >= len(buffer):
+                    break
+                if buffer[position] == ']':
+                    position += 1
+                    finished = True
+                    break
+                try:
+                    value, next_position = decoder.raw_decode(buffer, position)
+                except json.JSONDecodeError:
+                    if eof:
+                        raise ValueError('truncated or malformed JSON array')
+                    break
+                yield value
+                position = next_position
+                need_separator = True
+
+            if finished:
+                if buffer[position:].strip():
+                    raise ValueError('unexpected data after JSON array')
+                # Check the remaining source without retaining it.
+                if handle.read().strip():
+                    raise ValueError('unexpected data after JSON array')
+                return
+            if eof:
+                raise ValueError('truncated JSON array')
+            # Keep only the unparsed suffix. Do this only between source reads
+            # so a JSON token split across chunks remains intact.
+            if position:
+                buffer = buffer[position:]
+                position = 0
+
+
+def _count_json_array_file(path):
+    return sum(1 for _ in _iter_json_array_file(path))
+
+
+def _json_array_slice(path, start, end):
+    items = []
+    for idx, item in enumerate(_iter_json_array_file(path)):
+        if idx >= end:
+            break
+        if idx >= start:
+            items.append(item)
+    return items
+
+
+def _evaluation_batch_chain_keys(snapshots):
+    """Return the index/expiry pairs needed by a batch's evaluable menu."""
+    pairs = set()
+    for snap in snapshots:
+        if not isinstance(snap, dict):
+            continue
+        candidates = []
+        primary = _safe_json_field(snap.get('primary_candidate_json', '{}'), {})
+        if isinstance(primary, dict):
+            candidates.append(primary)
+        context = _safe_json_field(snap.get('context_json', '{}'), {})
+        context = context if isinstance(context, dict) else {}
+        generated, _ = _snapshot_candidate_menu_for_evaluation(snap, context)
+        if isinstance(generated, list):
+            candidates.extend(cand for cand in generated if isinstance(cand, dict))
+        supply = context.get('snapshot_pc2_supply_quality_shadow')
+        if isinstance(supply, dict) and isinstance(supply.get('sample_candidates'), list):
+            candidates.extend(cand for cand in supply['sample_candidates'] if isinstance(cand, dict))
+        rejected = context.get('snapshot_rejected_candidates_full')
+        if not isinstance(rejected, list) or not rejected:
+            rejected = context.get('snapshot_rejected_candidates')
+        if isinstance(rejected, list):
+            candidates.extend(cand for cand in rejected if isinstance(cand, dict))
+        for cand in candidates:
+            index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+            expiry = str(cand.get('expiry') or '').strip()
+            if expiry:
+                pairs.add((index_key, expiry))
+    return pairs
+
+
+def _evaluation_batch_chain_rows(path, snapshots):
+    pairs = _evaluation_batch_chain_keys(snapshots)
+    if not pairs:
+        return []
+    rows = []
+    for row in _iter_json_array_file(path):
+        if not isinstance(row, dict):
+            continue
+        pair = (row.get('index_key'), str(row.get('expiry') or '').strip())
+        if pair in pairs:
+            rows.append(row)
+    return rows
 
 
 def _snapshot_candidate_menu_for_evaluation(snap, snap_ctx, errors=None):
@@ -21188,22 +21363,20 @@ def evaluation_job_prepare(run_id, snapshots_path, chain_slices_path, teacher_co
         except Exception:
             teacher_config = _teacher_default_config()
 
-    snapshots = _load_json_file(snapshots_path, [])
-    chain_slices = _load_json_file(chain_slices_path, [])
-    if not isinstance(snapshots, list):
-        snapshots = []
-    if not isinstance(chain_slices, list):
-        chain_slices = []
+    snapshot_count = _count_json_array_file(snapshots_path)
+    chain_row_count = _count_json_array_file(chain_slices_path)
 
     _EVAL_JOB_CACHE[str(run_id)] = {
-        'snapshots': snapshots,
-        'chain_rows': chain_slices,
+        'snapshots_path': snapshots_path,
+        'chain_slices_path': chain_slices_path,
+        'snapshot_count': snapshot_count,
+        'chain_row_count': chain_row_count,
         'teacher_config': teacher_config,
     }
     return json.dumps({
         'ok': True,
-        'snapshot_count': len(snapshots),
-        'chain_row_count': len(chain_slices),
+        'snapshot_count': snapshot_count,
+        'chain_row_count': chain_row_count,
     })
 
 
@@ -21212,12 +21385,20 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
     if not job:
         return json.dumps({'ok': False, 'error': 'RUN_NOT_PREPARED'})
 
-    snapshots = job.get('snapshots') or []
-    chain_rows = job.get('chain_rows') or []
     teacher_config = job.get('teacher_config') or _teacher_default_config()
     start = max(int(start_idx or 0), 0)
     size = max(int(batch_size or 1), 1)
-    end = min(start + size, len(snapshots))
+    # Preserve the small in-memory fixture contract used by diagnostic probes
+    # while production jobs use only paths and bounded batch data.
+    legacy_snapshots = job.get('snapshots')
+    snapshot_count = int(job.get('snapshot_count') or (len(legacy_snapshots) if isinstance(legacy_snapshots, list) else 0))
+    end = min(start + size, snapshot_count)
+    if isinstance(legacy_snapshots, list):
+        snapshots = legacy_snapshots[start:end]
+        chain_rows = job.get('chain_rows') or []
+    else:
+        snapshots = _json_array_slice(job.get('snapshots_path'), start, end)
+        chain_rows = _evaluation_batch_chain_rows(job.get('chain_slices_path'), snapshots)
 
     outcomes = []
     errors = []
@@ -21226,8 +21407,8 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
     processed = 0
     fatal_snapshot_error_count = 0
     next_index = start
-    for idx in range(start, end):
-        snap = snapshots[idx]
+    for offset, snap in enumerate(snapshots):
+        idx = start + offset
         try:
             result = _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config)
             outcomes.extend(result.get('outcomes') or [])
@@ -21258,7 +21439,7 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
         'start': start,
         'end': next_index,
         'processed': processed,
-        'snapshot_count': len(snapshots),
+        'snapshot_count': snapshot_count,
         'produced_count': len(outcomes),
         'error_count': len(errors),
         'fatal_snapshot_error_count': fatal_snapshot_error_count,

@@ -181,6 +181,28 @@ class EvaluationChainQuoteContractTest(unittest.TestCase):
         self.assertTrue(graded_rows, "quotes present must yield at least one outcome row")
         self.assertFalse(blind_rows, "quotes stripped must yield zero outcome rows")
 
+    def test_eod_exit_timestamp_uses_last_executable_point(self):
+        """A tail with LTP but no executable quote must not claim the exit."""
+        rows = chain_rows(True)
+        terminal_ts = max(row["poll_ts"] for row in rows)
+        for row in rows:
+            if row["poll_ts"] == terminal_ts:
+                row.pop("bid")
+                row.pop("ask")
+        config = dict(self.config)
+        config.update(tp_capture_pct=100, sl_loss_multiple=100)
+
+        with_unvalued_tail = brain._managed_teacher_outcome(rows, self.snap, self.cand, config)
+        without_tail = brain._managed_teacher_outcome(
+            [row for row in rows if row["poll_ts"] != terminal_ts], self.snap, self.cand, config
+        )
+
+        self.assertEqual(with_unvalued_tail["exit_reason"], "EOD")
+        self.assertEqual(with_unvalued_tail["managed_pnl"], without_tail["managed_pnl"])
+        self.assertEqual(with_unvalued_tail["exit_ts"], without_tail["exit_ts"])
+        self.assertNotEqual(with_unvalued_tail["exit_ts"], terminal_ts)
+        self.assertEqual(with_unvalued_tail["exit_valuation_status"], "EOD_LAST_EXECUTABLE")
+
 
 if __name__ == "__main__":
     unittest.main()

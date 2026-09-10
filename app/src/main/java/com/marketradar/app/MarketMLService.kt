@@ -30,7 +30,6 @@ import com.chaquo.python.PyObject
 import com.marketradar.app.util.LogBuffer
 import kotlinx.coroutines.*
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
@@ -667,22 +666,23 @@ class MarketMLService : Service() {
     private fun readJsonArrayFile(file: File): org.json.JSONArray {
         if (!file.exists()) return org.json.JSONArray()
         val raw = file.readText().trim()
-        if (raw.isBlank()) return org.json.JSONArray()
+        if (raw.isBlank()) throw IllegalStateException("Evaluation output ${file.name} is empty")
         return try {
             org.json.JSONArray(raw)
-        } catch (_: Exception) {
-            org.json.JSONArray()
+        } catch (t: Throwable) {
+            throw IllegalStateException("Evaluation output ${file.name} is malformed", t)
         }
     }
 
     private fun writeJsonArrayFile(file: File, body: org.json.JSONArray) {
-        file.parentFile?.mkdirs()
-        file.writeText(body.toString())
+        writeJsonArrayFileStreamed(file, body)
     }
 
     private fun writeJsonArrayFileStreamed(file: File, body: org.json.JSONArray) {
         file.parentFile?.mkdirs()
-        file.bufferedWriter().use { writer ->
+        val temp = File(file.parentFile, "${file.name}.tmp")
+        if (temp.exists()) temp.delete()
+        temp.bufferedWriter().use { writer ->
             writer.write("[")
             var first = true
             for (i in 0 until body.length()) {
@@ -693,15 +693,20 @@ class MarketMLService : Service() {
             }
             writer.write("]")
         }
+        if (!temp.renameTo(file)) {
+            temp.delete()
+            throw IllegalStateException("Could not atomically replace evaluation output ${file.name}")
+        }
     }
 
     private fun countJsonArrayFile(file: File): Int {
-        if (!file.exists() || file.length() == 0L) return 0
+        if (!file.exists()) return 0
+        if (file.length() == 0L) throw IllegalStateException("Evaluation output ${file.name} is empty")
         return try {
             file.reader().buffered().use { source ->
                 JsonReader(source).use { reader ->
                     if (reader.peek() != JsonToken.BEGIN_ARRAY) {
-                        0
+                        throw IllegalStateException("Evaluation output ${file.name} is not a JSON array")
                     } else {
                         var count = 0
                         reader.beginArray()
@@ -715,8 +720,43 @@ class MarketMLService : Service() {
                 }
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "EVAL_COUNT_JSON_FALLBACK: file=${file.name} bytes=${file.length()} error=${t.message}")
-            readJsonArrayFile(file).length()
+            throw IllegalStateException("Evaluation output ${file.name} is malformed", t)
+        }
+    }
+
+    private fun closingJsonArrayBracketOffset(file: File): Long {
+        file.inputStream().buffered().use { input ->
+            var offset = 0L
+            var lastNonWhitespaceOffset = -1L
+            var lastNonWhitespace = -1
+            while (true) {
+                val value = input.read()
+                if (value < 0) break
+                if (!value.toChar().isWhitespace()) {
+                    lastNonWhitespaceOffset = offset
+                    lastNonWhitespace = value
+                }
+                offset += 1
+            }
+            if (lastNonWhitespaceOffset < 0L || lastNonWhitespace.toChar() != ']') {
+                throw IllegalStateException("Evaluation output ${file.name} is missing its closing bracket")
+            }
+            return lastNonWhitespaceOffset
+        }
+    }
+
+    private fun copyFilePrefix(source: File, target: File, byteCount: Long) {
+        source.inputStream().buffered().use { input ->
+            target.outputStream().buffered().use { output ->
+                val buffer = ByteArray(8192)
+                var remaining = byteCount
+                while (remaining > 0L) {
+                    val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                    if (read <= 0) throw IllegalStateException("Unexpected EOF copying ${source.name}")
+                    output.write(buffer, 0, read)
+                    remaining -= read.toLong()
+                }
+            }
         }
     }
 
@@ -725,51 +765,32 @@ class MarketMLService : Service() {
         for (i in 0 until rows.length()) {
             rows.optJSONObject(i)?.let { encodedRows += it.toString() }
         }
-        val existingCount = if (existingCountHint >= 0) existingCountHint else countJsonArrayFile(file)
+        val existingCount = countJsonArrayFile(file)
+        if (existingCountHint >= 0 && existingCountHint != existingCount) {
+            Log.w(TAG, "EVAL_OUTPUT_COUNT_RECONCILED: file=${file.name} checkpoint=$existingCountHint actual=$existingCount")
+        }
         if (encodedRows.isEmpty()) return existingCount
 
         file.parentFile?.mkdirs()
         if (!file.exists() || file.length() == 0L || existingCount <= 0) {
-            file.bufferedWriter().use { writer ->
-                writer.write("[")
-                writer.write(encodedRows.joinToString(","))
-                writer.write("]")
-            }
+            writeJsonArrayFile(file, org.json.JSONArray("[${encodedRows.joinToString(",")}]"))
             return encodedRows.size
         }
 
-        return try {
-            RandomAccessFile(file, "rw").use { raf ->
-                var pos = raf.length() - 1L
-                var last = -1
-                while (pos >= 0L) {
-                    raf.seek(pos)
-                    last = raf.read()
-                    if (!last.toChar().isWhitespace()) break
-                    pos -= 1L
-                }
-                if (pos < 0L || last.toChar() != ']') {
-                    throw IllegalStateException("outcomes JSON array is missing closing bracket")
-                }
-                raf.setLength(pos)
-                raf.seek(pos)
-                raf.write(",".toByteArray(Charsets.UTF_8))
-                raf.write(encodedRows.joinToString(",").toByteArray(Charsets.UTF_8))
-                raf.write("]".toByteArray(Charsets.UTF_8))
-            }
-            existingCount + encodedRows.size
-        } catch (t: Throwable) {
-            Log.w(TAG, "EVAL_APPEND_JSON_FALLBACK: file=${file.name} existing=$existingCount add=${encodedRows.size} bytes=${file.length()} error=${t.message}")
-            val merged = readJsonArrayFile(file)
-            for (row in encodedRows) {
-                try {
-                    merged.put(org.json.JSONObject(row))
-                } catch (_: Exception) {
-                }
-            }
-            writeJsonArrayFileStreamed(file, merged)
-            merged.length()
+        val temp = File(file.parentFile, "${file.name}.append.tmp")
+        if (temp.exists()) temp.delete()
+        val closingOffset = closingJsonArrayBracketOffset(file)
+        copyFilePrefix(file, temp, closingOffset)
+        temp.outputStream().buffered().use { output ->
+            output.write(",".toByteArray(Charsets.UTF_8))
+            output.write(encodedRows.joinToString(",").toByteArray(Charsets.UTF_8))
+            output.write("]".toByteArray(Charsets.UTF_8))
         }
+        if (!temp.renameTo(file)) {
+            temp.delete()
+            throw IllegalStateException("Could not atomically append evaluation output ${file.name}")
+        }
+        return existingCount + encodedRows.size
     }
 
     private fun evalHeapLine(): String {
@@ -2271,6 +2292,11 @@ class MarketMLService : Service() {
                     "outputBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
             val evaluatedOutcomes = readJsonArrayFile(outputsFile)
+            if (evaluatedOutcomes.length() != producedCount) {
+                throw IllegalStateException(
+                    "Evaluation output count mismatch: checkpoint=$producedCount parsed=${evaluatedOutcomes.length()} file=${outputsFile.name}"
+                )
+            }
             val teacherDropReasonsJson = org.json.JSONObject()
             teacherDropReasons.forEach { (key, value) -> teacherDropReasonsJson.put(key, value) }
             prefs.edit().also { edit ->
