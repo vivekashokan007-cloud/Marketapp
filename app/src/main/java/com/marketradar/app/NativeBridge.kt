@@ -201,7 +201,12 @@ class NativeBridge(private val context: Context) {
         val cand = parseJsonObject(raw) ?: return null
         val compact = JSONObject()
         val keys = arrayOf(
-            "id", "candidate_id", "rank", "watchlist_rank",
+            "id", "candidate_id", "rank", "final_rank", "watchlist_rank",
+            "evidence_source", "ranked_population_size", "ranked_evidence_retention_cap",
+            "sampling_rule_version", "sampling_frame", "sampling_frame_size",
+            "sampling_frame_digest", "sampling_sample_cap", "sampling_selected_count",
+            "sampling_sample_rank", "sampling_inclusion_probability", "sampling_included",
+            "sampling_hash_prefix",
             "type", "strategy_type", "index", "lane", "trade_mode", "poll_ts", "expiry", "width", "tDTE",
             "premiumEdge", "ev", "evPer1k", "creditWidthRatio", "sigmaOTM", "ivRichness",
             "probProfit", "prob_source", "prob_status", "trueProb", "riskReward",
@@ -267,6 +272,7 @@ class NativeBridge(private val context: Context) {
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
         val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
+        val rankedBelowCapSample = parseJsonArray(context.opt("snapshot_ranked_below_cap_sample"))
 
         val compactContext = JSONObject()
         val scalarKeys = arrayOf("vix", "bnfSpot", "nfSpot", "significant_move")
@@ -290,6 +296,15 @@ class NativeBridge(private val context: Context) {
             if (compactRankedFull.length() > 0) {
                 compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
             }
+        }
+        rankedBelowCapSample?.let {
+            val compactSample = compactTeacherResearchCandidates(it, 50)
+            if (compactSample.length() > 0) {
+                compactContext.put("snapshot_ranked_below_cap_sample", compactSample)
+            }
+        }
+        parseJsonObject(context.opt("snapshot_ranked_below_cap_sampling"))?.let {
+            compactContext.put("snapshot_ranked_below_cap_sampling", it)
         }
         if (includeRejectedCandidates) {
             val rejected = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))

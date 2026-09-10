@@ -522,6 +522,20 @@ object EvaluationLocalCache {
             "ivRichness",
             "creditWidthRatio",
             "rank",
+            "final_rank",
+            "evidence_source",
+            "ranked_population_size",
+            "ranked_evidence_retention_cap",
+            "sampling_rule_version",
+            "sampling_frame",
+            "sampling_frame_size",
+            "sampling_frame_digest",
+            "sampling_sample_cap",
+            "sampling_selected_count",
+            "sampling_sample_rank",
+            "sampling_inclusion_probability",
+            "sampling_included",
+            "sampling_hash_prefix",
             "deterministic_rank",
             "varsityTier",
             "targetProfit",
@@ -704,6 +718,7 @@ object EvaluationLocalCache {
             ?: parseJsonArray(snapshot.opt("top_candidates_json"))
             ?: JSONArray()
         val rankedFull = parseJsonArray(context.opt("snapshot_ranked_candidates_full"))
+        val rankedBelowCapSample = parseJsonArray(context.opt("snapshot_ranked_below_cap_sample"))
         val rejectedFull = parseJsonArray(context.opt("snapshot_rejected_candidates_full"))
         val rejected = rejectedFull
             ?: parseJsonArray(context.opt("snapshot_rejected_candidates"))
@@ -767,6 +782,9 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_build3_flow"))?.let {
             compactContext.put("snapshot_build3_flow", it)
         }
+        parseJsonObject(context.opt("snapshot_ranked_below_cap_sampling"))?.let {
+            compactContext.put("snapshot_ranked_below_cap_sampling", it)
+        }
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
             compactContext.put("snapshot_pc2_paper_primary", it)
         }
@@ -816,11 +834,15 @@ object EvaluationLocalCache {
 
         val compactGenerated = compactCandidates(generated)
         val compactRankedFull = compactCandidates(rankedFull)
+        val compactRankedBelowCapSample = compactCandidates(rankedBelowCapSample)
         val compactRejected = compactCandidates(rejected)
 
         compactContext.put("snapshot_generated_candidates", compactGenerated)
         if (compactRankedFull.length() > 0) {
             compactContext.put("snapshot_ranked_candidates_full", compactRankedFull)
+        }
+        if (compactRankedBelowCapSample.length() > 0) {
+            compactContext.put("snapshot_ranked_below_cap_sample", compactRankedBelowCapSample)
         }
         if (compactRejected.length() > 0) {
             compactContext.put(

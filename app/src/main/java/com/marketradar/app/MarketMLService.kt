@@ -2663,7 +2663,20 @@ class MarketMLService : Service() {
             "rejected_eval_rank",
             "rejected_eval_cap",
             "rejected_eval_source",
-            "source_record_type"
+            "source_record_type",
+            "candidate_menu_source",
+            "evidence_source",
+            "ranked_population_size",
+            "ranked_evidence_retention_cap",
+            "sampling_rule_version",
+            "sampling_frame",
+            "sampling_frame_size",
+            "sampling_frame_digest",
+            "sampling_sample_cap",
+            "sampling_selected_count",
+            "sampling_sample_rank",
+            "sampling_inclusion_probability",
+            "sampling_hash_prefix"
         )
         for (i in 0 until source.length()) {
             val src = source.optJSONObject(i) ?: continue

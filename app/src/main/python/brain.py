@@ -21,6 +21,11 @@ BUILD3_A8_HARD_GATE_ACTIVE = False
 BUILD3_CALM_RANGE_SIGMA_MAX = 0.30
 BUILD3_GENERATED_CANDIDATE_UI_CAP = 30
 BUILD3_RANKED_EVIDENCE_CAP = 200
+RANKING_EVIDENCE_PROTOCOL_VERSION = 'ranker_evidence_collection_v1'
+RANKED_BELOW_CAP_SAMPLE_VERSION = 'ranked_below_cap_hash_v1'
+RANKED_BELOW_CAP_SAMPLE_CAP = 50
+RANKED_EVIDENCE_SOURCE_TOP_CAP = 'ranked_top_cap'
+RANKED_EVIDENCE_SOURCE_BELOW_CAP = 'ranked_below_cap_deterministic_sample'
 PC2_SUPPLY_QUALITY_SHADOW_VERSION = 'pc2_supply_quality_shadow_v1'
 PC2_SUPPLY_QUALITY_SAMPLE_CAP = 16
 PC2_DIRECTIONAL_GENERATION_SHADOW_VERSION = 'pc2_directional_generation_paper_v1'
@@ -6179,7 +6184,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.22"
+BRAIN_VERSION = "2.6.23"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -11560,7 +11565,7 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
     evidence = []
     for rank, cand in enumerate(ranked[:cap], start=1):
         cid = cand.get('id')
-        evidence.append({
+        row = {
             'id': cid,
             'candidate_id': cid,
             'rank': rank,
@@ -11657,8 +11662,95 @@ def _build3_ranked_candidate_evidence(candidates, watchlist=None, cap=BUILD3_RAN
             'teacher_shadow_rank': cand.get('teacher_shadow_rank'),
             'stage2a_live_rank': cand.get('stage2a_live_rank'),
             'rank_diagnostics': cand.get('rank_diagnostics') or _build3_rank_fingerprint(cand),
+        }
+        row.update({
+            'evidence_source': RANKED_EVIDENCE_SOURCE_TOP_CAP,
+            'final_rank': rank,
+            'ranked_population_size': len(ranked),
+            'ranked_evidence_retention_cap': cap,
+            'sampling_rule_version': RANKED_BELOW_CAP_SAMPLE_VERSION,
+            'sampling_included': True,
+            'sampling_frame': 'top_cap',
         })
+        evidence.append(row)
     return evidence
+
+
+def _build3_ranked_below_cap_sample(candidates, cap=BUILD3_RANKED_EVIDENCE_CAP,
+                                    sample_cap=RANKED_BELOW_CAP_SAMPLE_CAP):
+    """Return a deterministic probability sample from final ranks strictly below cap.
+
+    This is research capture only. It neither changes the final ranking nor adds a
+    candidate to the user-facing menu. The frame digest makes a retry of the same
+    final menu select the same rows, while the hash ordering gives every valid
+    below-cap row the same inclusion probability within that snapshot.
+    """
+    ranked = [c for c in candidates or [] if isinstance(c, dict)]
+    population_size = len(ranked)
+    retention_cap = max(int(cap or 0), 0)
+    sample_limit = max(int(sample_cap or 0), 0)
+    remainder = ranked[retention_cap:]
+    frame = []
+    for final_rank, cand in enumerate(remainder, start=retention_cap + 1):
+        candidate_id = str(cand.get('id') or cand.get('candidate_id') or '').strip()
+        if not candidate_id:
+            continue
+        frame.append((final_rank, candidate_id, cand))
+
+    frame_identity = '|'.join(f'{rank}:{candidate_id}' for rank, candidate_id, _ in frame)
+    frame_digest = hashlib.sha256(
+        f'{RANKED_BELOW_CAP_SAMPLE_VERSION}|{population_size}|{frame_identity}'.encode('utf-8')
+    ).hexdigest()[:20]
+    selected_count = min(sample_limit, len(frame))
+    inclusion_probability = (float(selected_count) / len(frame)) if frame else 0.0
+    ordered = []
+    for final_rank, candidate_id, cand in frame:
+        selection_key = hashlib.sha256(
+            f'{RANKED_BELOW_CAP_SAMPLE_VERSION}|{frame_digest}|{candidate_id}|{final_rank}'.encode('utf-8')
+        ).hexdigest()
+        ordered.append((selection_key, final_rank, candidate_id, cand))
+    selected = sorted(ordered, key=lambda row: (row[0], row[1], row[2]))[:selected_count]
+
+    sample = []
+    for sample_rank, (selection_key, final_rank, _candidate_id, cand) in enumerate(selected, start=1):
+        # Reuse the bounded evaluator-grade projection so the sample has the
+        # same quote/friction/leg contract as the top-cap cohort.
+        row = _build3_ranked_candidate_evidence([cand], cap=1)[0]
+        row.update({
+            'rank': final_rank,
+            'final_rank': final_rank,
+            'watchlist_rank': None,
+            'evidence_source': RANKED_EVIDENCE_SOURCE_BELOW_CAP,
+            'ranked_population_size': population_size,
+            'ranked_evidence_retention_cap': retention_cap,
+            'sampling_rule_version': RANKED_BELOW_CAP_SAMPLE_VERSION,
+            'sampling_frame': 'ranked_remainder_after_top_cap',
+            'sampling_frame_size': len(frame),
+            'sampling_frame_digest': frame_digest,
+            'sampling_sample_cap': sample_limit,
+            'sampling_selected_count': selected_count,
+            'sampling_sample_rank': sample_rank,
+            'sampling_inclusion_probability': round(inclusion_probability, 8),
+            'sampling_included': True,
+            'sampling_hash_prefix': selection_key[:16],
+        })
+        sample.append(row)
+
+    metadata = {
+        'protocol_version': RANKING_EVIDENCE_PROTOCOL_VERSION,
+        'evidence_source': RANKED_EVIDENCE_SOURCE_BELOW_CAP,
+        'sampling_rule_version': RANKED_BELOW_CAP_SAMPLE_VERSION,
+        'ranked_population_size': population_size,
+        'ranked_evidence_retention_cap': retention_cap,
+        'sampling_frame': 'ranked_remainder_after_top_cap',
+        'sampling_frame_size': len(frame),
+        'sampling_frame_digest': frame_digest,
+        'sampling_sample_cap': sample_limit,
+        'sampling_selected_count': selected_count,
+        'sampling_inclusion_probability': round(inclusion_probability, 8),
+        'research_authority': 'COLLECTION_ONLY_NO_RANKING_OR_ENTRY_CHANGE',
+    }
+    return sample, metadata
 
 
 def _build3_candidate_brief(candidate, rank=None):
@@ -15809,6 +15901,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 ranked,
                 watchlist=result.get("watchlist") or watchlist,
             )
+            ranked_below_cap_sample, ranked_below_cap_sampling = _build3_ranked_below_cap_sample(ranked)
+            result["ranked_below_cap_sample"] = ranked_below_cap_sample
+            result["ranked_below_cap_sampling"] = ranked_below_cap_sampling
             _finalize_pc2_supply_quality_shadow(result.get('pc2_supply_quality_shadow'), ranked)
             result["rejected_candidates"] = all_rejected
             result["build3_flow"] = _build3_candidate_flow_summary(
@@ -15923,6 +16018,10 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     # poll cannot retain several megabytes of repeated PC2 distributions.
     result['ranked_candidates_full'] = [
         _candidate_view(c) for c in (result.get('ranked_candidates_full') or [])
+        if isinstance(c, dict)
+    ]
+    result['ranked_below_cap_sample'] = [
+        _candidate_view(c) for c in (result.get('ranked_below_cap_sample') or [])
         if isinstance(c, dict)
     ]
     result['rejected_candidates'] = [
@@ -16359,7 +16458,7 @@ def _candidate_view(c):
         leg for leg in (_compact_snapshot_leg(row) for row in (c.get('legs') or []))
         if leg
     ]
-    return {
+    view = {
         'id': c.get('id'),
         'type': c.get('type'),
         'index': c.get('index'),
@@ -16516,6 +16615,31 @@ def _candidate_view(c):
         'marginRequestUrl': c.get('marginRequestUrl'),
         'marginQuoteError': c.get('marginQuoteError'),
     }
+    # This provenance exists only on the bounded ranked-evidence cohorts. Do
+    # not add null keys to ordinary candidates: snapshots retain hundreds of
+    # them and Android has a strict payload budget.
+    for key in (
+        'evidence_source',
+        'final_rank',
+        'ranked_population_size',
+        'ranked_evidence_retention_cap',
+        'sampling_rule_version',
+        'sampling_frame',
+        'sampling_frame_size',
+        'sampling_frame_digest',
+        'sampling_sample_cap',
+        'sampling_selected_count',
+        'sampling_sample_rank',
+        'sampling_inclusion_probability',
+        'sampling_included',
+        'sampling_hash_prefix',
+    ):
+        value = c.get(key)
+        if key == 'final_rank' and value is None:
+            value = c.get('rank')
+        if value is not None:
+            view[key] = value
+    return view
 
 
 def _candidate_android_snapshot_view(raw):
@@ -18656,6 +18780,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_build3_gate',
         'snapshot_build3_lane_gate',
         'snapshot_build3_flow',
+        'snapshot_ranked_below_cap_sampling',
         'snapshot_pc2_parameter_authority',
         'snapshot_pc2_batch_a_width_wall',
         'snapshot_pc2_batch_b_regime_sigma',
@@ -18683,6 +18808,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_generation_skip_reasons',
         'snapshot_generated_candidates',
         'snapshot_ranked_candidates_full',
+        'snapshot_ranked_below_cap_sample',
         'snapshot_pc2_authority_decisions',
         'snapshot_supply_states',
         'snapshot_evaluation_legs',
@@ -18702,6 +18828,12 @@ def _compact_android_snapshot_context(snapshot_context):
         compact['snapshot_ranked_candidates_full'] = [
             _candidate_android_snapshot_view(row) if isinstance(row, dict) else row
             for row in ranked_full
+        ]
+    ranked_below_cap_sample = compact.get('snapshot_ranked_below_cap_sample')
+    if isinstance(ranked_below_cap_sample, list) and ranked_below_cap_sample:
+        compact['snapshot_ranked_below_cap_sample'] = [
+            _candidate_android_snapshot_view(row) if isinstance(row, dict) else row
+            for row in ranked_below_cap_sample
         ]
 
     if isinstance(source.get('snapshot_rejected_candidates_full'), list):
@@ -18785,6 +18917,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     watchlist = result.get('watchlist', [])
     generated_candidates = result.get('generated_candidates', [])
     ranked_candidates_full = result.get('ranked_candidates_full', [])
+    ranked_below_cap_sample = result.get('ranked_below_cap_sample', [])
+    ranked_below_cap_sampling = result.get('ranked_below_cap_sampling', {})
     research_candidates = ranked_candidates_full if isinstance(ranked_candidates_full, list) and ranked_candidates_full else generated_candidates
     rejected_candidates = result.get('rejected_candidates', [])
     top_5_nf = [c for c in watchlist if isinstance(c, dict) and c.get('index') == 'NF'][:5]
@@ -18932,6 +19066,12 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             if not isinstance(c, dict):
                 continue
             clean_ranked_full.append(_candidate_view(c))
+    clean_ranked_below_cap_sample = []
+    if isinstance(ranked_below_cap_sample, list):
+        for c in ranked_below_cap_sample:
+            if not isinstance(c, dict):
+                continue
+            clean_ranked_below_cap_sample.append(_candidate_view(c))
     phase3_expected_r_shadow = _compute_phase3_expected_r_shadow(research_candidates, rejected_candidates)
     phase4_ev_ladder_shadow = _compute_phase4_ev_ladder_shadow(research_candidates, rejected_candidates)
     phase5_gate_registry = _compute_phase5_gate_registry(rejected_candidates, research_candidates)
@@ -19087,6 +19227,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         'generated_count': len(generated_candidates) if isinstance(generated_candidates, list) else 0,
         'ranked_evidence_count': len(ranked_candidates_full) if isinstance(ranked_candidates_full, list) else 0,
         'ranked_evidence_cap': BUILD3_RANKED_EVIDENCE_CAP,
+        'ranked_below_cap_sample_count': len(ranked_below_cap_sample) if isinstance(ranked_below_cap_sample, list) else 0,
+        'ranked_below_cap_sampling': ranked_below_cap_sampling if isinstance(ranked_below_cap_sampling, dict) else {},
         'rejected_count': len(rejected_candidates) if isinstance(rejected_candidates, list) else 0,
         'top_candidate_type': top_cand.get('type') if top_cand else None,
         'signal_independence_score': signal_independence.get('score'),
@@ -19185,6 +19327,10 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['morningBias'] = morning_bias
     snapshot_context['snapshot_generated_candidates'] = clean_generated
     snapshot_context['snapshot_ranked_candidates_full'] = clean_ranked_full
+    snapshot_context['snapshot_ranked_below_cap_sample'] = clean_ranked_below_cap_sample
+    snapshot_context['snapshot_ranked_below_cap_sampling'] = (
+        ranked_below_cap_sampling if isinstance(ranked_below_cap_sampling, dict) else {}
+    )
     snapshot_context['snapshot_phase3_expected_r_shadow'] = phase3_expected_r_shadow
     snapshot_context['snapshot_phase4_ev_ladder_shadow'] = phase4_ev_ladder_shadow
     snapshot_context['snapshot_phase5_gate_registry'] = phase5_gate_registry
@@ -21120,6 +21266,22 @@ def _snapshot_candidate_menu_for_evaluation(snap, snap_ctx, errors=None):
     return generated, 'top_candidates_json'
 
 
+def _snapshot_ranked_below_cap_sample_for_evaluation(snap_ctx, errors=None):
+    """Return the separately retained coverage cohort, never as menu evidence."""
+    snap_ctx = snap_ctx if isinstance(snap_ctx, dict) else {}
+    sample = snap_ctx.get('snapshot_ranked_below_cap_sample')
+    if sample is None:
+        return [], 'missing'
+    if isinstance(sample, list):
+        return sample, 'snapshot_ranked_below_cap_sample'
+    if isinstance(errors, list):
+        errors.append({
+            'scope': 'ranked_below_cap_sample',
+            'error': 'snapshot_ranked_below_cap_sample_not_list',
+        })
+    return [], 'invalid'
+
+
 def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
     outcomes = []
     errors = []
@@ -21213,6 +21375,64 @@ def _evaluate_snapshot_outcomes(snap, chain_rows, teacher_config):
         except Exception as exc:
             errors.append({
                 'scope': 'secondary',
+                'snapshot_id': snap.get('id'),
+                'candidate_id': cand_id,
+                'error': str(exc),
+            })
+
+    below_cap_sample, below_cap_source = _snapshot_ranked_below_cap_sample_for_evaluation(
+        snap_ctx, errors
+    )
+    for sample_rank, cand in enumerate(below_cap_sample, start=1):
+        if not isinstance(cand, dict):
+            errors.append({
+                'scope': 'ranked_below_cap_sample',
+                'snapshot_id': snap.get('id'),
+                'error': 'sample_candidate_not_object',
+            })
+            continue
+        cand_id = cand.get('id') or cand.get('candidate_id')
+        if not cand_id or cand_id in seen_ids:
+            continue
+        seen_ids.add(cand_id)
+        try:
+            # Existing production tables intentionally accept primary/secondary
+            # roles only. Preserve that contract and carry the independent
+            # research cohort in immutable provenance fields instead.
+            outcome = _eval_single_candidate(
+                chain_rows, snap, cand, teacher_config, drop_sink=drop_sink, role='secondary'
+            )
+            if outcome is not None:
+                outcome['role'] = 'secondary'
+                outcome['rank_in_snapshot'] = cand.get('final_rank') or cand.get('rank')
+                outcome['candidate_menu_source'] = below_cap_source
+                outcome['evidence_source'] = cand.get('evidence_source') or RANKED_EVIDENCE_SOURCE_BELOW_CAP
+                outcome['source_record_type'] = 'RANKED_BELOW_CAP_DETERMINISTIC_SAMPLE'
+                outcome['ranked_population_size'] = cand.get('ranked_population_size')
+                outcome['ranked_evidence_retention_cap'] = cand.get('ranked_evidence_retention_cap')
+                outcome['sampling_rule_version'] = cand.get('sampling_rule_version')
+                outcome['sampling_frame'] = cand.get('sampling_frame')
+                outcome['sampling_frame_size'] = cand.get('sampling_frame_size')
+                outcome['sampling_frame_digest'] = cand.get('sampling_frame_digest')
+                outcome['sampling_sample_cap'] = cand.get('sampling_sample_cap')
+                outcome['sampling_selected_count'] = cand.get('sampling_selected_count')
+                outcome['sampling_sample_rank'] = cand.get('sampling_sample_rank') or sample_rank
+                outcome['sampling_inclusion_probability'] = cand.get('sampling_inclusion_probability')
+                outcome['sampling_hash_prefix'] = cand.get('sampling_hash_prefix')
+                outcome['poll_ts'] = cand.get('poll_ts') or snap.get('poll_ts')
+                outcome['targetProfit'] = cand.get('targetProfit')
+                outcome['stopLoss'] = cand.get('stopLoss')
+                outcome['marginRequired'] = cand.get('marginRequired')
+                outcome['marginForSizing'] = cand.get('marginForSizing')
+                outcome['marginSource'] = cand.get('marginSource')
+                outcome['marginFallbackUsed'] = cand.get('marginFallbackUsed')
+                outcome['marginFallbackValue'] = cand.get('marginFallbackValue')
+                outcome['marginModelVersion'] = cand.get('marginModelVersion')
+                outcome['brainMaxLoss'] = cand.get('brainMaxLoss')
+                outcomes.append(outcome)
+        except Exception as exc:
+            errors.append({
+                'scope': 'ranked_below_cap_sample',
                 'snapshot_id': snap.get('id'),
                 'candidate_id': cand_id,
                 'error': str(exc),
@@ -21579,6 +21799,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     significant_moves = 0
     flat_gap_count = 0
     generated_meta = {}
+    below_cap_meta = {}
     stage2a_mode_counts = {}
     stage2a_table_error_counts = {}
     stage2a_chosen_coverage_counts = {}
@@ -21793,6 +22014,29 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
                     'marginQuoteSource': cand.get('marginQuoteSource'),
                     'candidateMenuSource': generated_source,
                 }
+        below_cap_sample, below_cap_source = _snapshot_ranked_below_cap_sample_for_evaluation(ctx)
+        for sample_rank, cand in enumerate(below_cap_sample, start=1):
+            if not isinstance(cand, dict):
+                continue
+            cand_id = cand.get('id') or cand.get('candidate_id')
+            if sid is None or not cand_id:
+                continue
+            below_cap_meta[(sid, cand_id)] = {
+                'rank': cand.get('final_rank') or cand.get('rank'),
+                'type': cand.get('type') or cand.get('strategy_type') or 'UNKNOWN',
+                'index': cand.get('index'),
+                'lane': cand.get('lane'),
+                'poll_ts': cand.get('poll_ts') or snap.get('poll_ts'),
+                'evidence_source': cand.get('evidence_source') or RANKED_EVIDENCE_SOURCE_BELOW_CAP,
+                'candidateMenuSource': below_cap_source,
+                'ranked_population_size': cand.get('ranked_population_size'),
+                'ranked_evidence_retention_cap': cand.get('ranked_evidence_retention_cap'),
+                'sampling_rule_version': cand.get('sampling_rule_version'),
+                'sampling_frame': cand.get('sampling_frame'),
+                'sampling_frame_size': cand.get('sampling_frame_size'),
+                'sampling_sample_rank': cand.get('sampling_sample_rank') or sample_rank,
+                'sampling_inclusion_probability': cand.get('sampling_inclusion_probability'),
+            }
         has_bc = 'BEAR_CALL' in first_pos
         has_bp = 'BULL_PUT' in first_pos
         if has_bc:
@@ -21814,6 +22058,8 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
     by_rank = {}
     primary_rows = []
     secondary_rows = []
+    below_cap_rows = []
+    below_cap_by_snapshot = {}
     rejected_outcome_rows = []
     for row in outcomes:
         if not isinstance(row, dict):
@@ -21821,6 +22067,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         sid = row.get('snapshot_id')
         cid = row.get('candidate_id')
         meta = generated_meta.get((sid, cid), {})
+        below_meta = below_cap_meta.get((sid, cid), {})
         enriched = dict(row)
         if meta:
             enriched.setdefault('rank_in_snapshot', meta.get('rank'))
@@ -21859,7 +22106,14 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
             enriched.setdefault('brainMaxLoss', meta.get('brainMaxLoss'))
             enriched.setdefault('marginQuoteStatus', meta.get('marginQuoteStatus'))
             enriched.setdefault('marginQuoteSource', meta.get('marginQuoteSource'))
+        if below_meta:
+            for key, value in below_meta.items():
+                enriched.setdefault(key, value)
         enriched_outcomes.append(enriched)
+        if enriched.get('evidence_source') == RANKED_EVIDENCE_SOURCE_BELOW_CAP:
+            below_cap_rows.append(enriched)
+            below_cap_by_snapshot.setdefault(sid, []).append(enriched)
+            continue
         by_snapshot.setdefault(sid, []).append(enriched)
         role = str(enriched.get('role') or '').lower()
         if role == 'primary':
@@ -22416,9 +22670,60 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         integrity_key = str(row.get('price_integrity') or 'UNKNOWN').strip() or 'UNKNOWN'
         _count_key(rejected_integrity_counts, integrity_key)
 
+    below_cap_integrity_counts = {}
+    coverage_compared = 0
+    below_cap_best_better = 0
+    coverage_delta_sum = 0.0
+    coverage_delta_count = 0
+    for row in below_cap_rows:
+        integrity_key = str(row.get('price_integrity') or 'UNKNOWN').strip() or 'UNKNOWN'
+        _count_key(below_cap_integrity_counts, integrity_key)
+    for sid, sampled_rows in below_cap_by_snapshot.items():
+        top_rows = [
+            row for row in (by_snapshot.get(sid) or [])
+            if _safe_float(row.get('r_multiple')) is not None
+        ]
+        sampled_rows = [
+            row for row in sampled_rows
+            if _safe_float(row.get('r_multiple')) is not None
+        ]
+        if not top_rows or not sampled_rows:
+            continue
+        top_best = max(_safe_float(row.get('r_multiple')) for row in top_rows)
+        sample_best = max(_safe_float(row.get('r_multiple')) for row in sampled_rows)
+        if top_best is None or sample_best is None:
+            continue
+        coverage_compared += 1
+        delta = sample_best - top_best
+        coverage_delta_sum += delta
+        coverage_delta_count += 1
+        if delta > 0:
+            below_cap_best_better += 1
+    below_cap_coverage = {
+        'protocol_version': RANKING_EVIDENCE_PROTOCOL_VERSION,
+        'evidence_source': RANKED_EVIDENCE_SOURCE_BELOW_CAP,
+        'sampling_rule_version': RANKED_BELOW_CAP_SAMPLE_VERSION,
+        'sample_rows': len(below_cap_rows),
+        'gradeable_sample_rows': sum(
+            1 for row in below_cap_rows if _safe_float(row.get('r_multiple')) is not None
+        ),
+        'sampled_snapshot_count': len(below_cap_by_snapshot),
+        'snapshots_with_top_and_sample_outcomes': coverage_compared,
+        'below_cap_best_beats_top_cap_best': below_cap_best_better,
+        'avg_below_cap_best_minus_top_cap_best_r': round(
+            coverage_delta_sum / coverage_delta_count, 4
+        ) if coverage_delta_count else None,
+        'integrity_counts': below_cap_integrity_counts,
+        'authority': 'COLLECTION_ONLY_NO_RANKING_OR_ENTRY_CHANGE',
+        'interpretation_guard': (
+            'Snapshot candidates are correlated; aggregate by distinct session/event '
+            'under a separately frozen promotion protocol before any policy claim.'
+        ),
+    }
+
     return json.dumps({
         'ok': True,
-        'schema_version': 1,
+        'schema_version': 2,
         'session_date': session_date_str,
         'scope': 'daily_primary_vs_generated_teacher_research',
         'snapshot_count': len(snapshots),
@@ -22444,6 +22749,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'teacher_outcomes': {
             'primary': _summary_from_outcomes(primary_rows),
             'secondary': _summary_from_outcomes(secondary_rows),
+            'ranked_below_cap_sample': _summary_from_outcomes(below_cap_rows),
             'rejected_research': _summary_from_outcomes(rejected_outcome_rows),
             'rejected_research_separate_cohort': True,
             'rejected_research_candidate_cap_per_snapshot': REJECTED_EVAL_CANDIDATE_CAP,
@@ -22455,6 +22761,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         },
         'integrity_summary': {
             'counts': integrity_counts,
+            'ranked_below_cap_sample_counts': below_cap_integrity_counts,
             'rejected_research_counts': rejected_integrity_counts,
             'gradeable_teacher_rows': gradeable_teacher_rows,
             'gradeable_primary_rows': gradeable_primary_rows,
@@ -22472,6 +22779,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         },
         'menu_abstention_shadow': menu_abstention_shadow_summary,
         'native_memory_ranker': native_memory_summary,
+        'ranker_coverage_sample': below_cap_coverage,
         'primary_vs_best': {
             'snapshots_compared': snapshot_compared,
             'primary_was_best': primary_best,

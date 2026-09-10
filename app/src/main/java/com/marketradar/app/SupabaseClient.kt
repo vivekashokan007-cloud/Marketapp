@@ -618,7 +618,9 @@ object SupabaseClient {
                 .lowercase(Locale.US)
                 .ifBlank { "secondary" }
             // The production teacher table intentionally permits only these
-            // roles. Experimental samples remain in recommendation outcomes.
+            // roles. The below-cap research cohort uses the secondary role
+            // for schema compatibility; its durable provenance lives in the
+            // snapshot context and the teacher-research report.
             if (role != "primary" && role != "secondary") continue
             val row = JSONObject()
             row.put("snapshot_id", src.opt("snapshot_id"))
