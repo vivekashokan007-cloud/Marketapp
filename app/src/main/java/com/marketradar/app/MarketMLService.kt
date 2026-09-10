@@ -156,6 +156,10 @@ class MarketMLService : Service() {
         private val activeServiceActions = mutableSetOf<Int>()
         private var activeEvaluationSession: String? = null
 
+        internal fun isEvaluationSessionActive(sessionDate: String): Boolean = synchronized(serviceActionLock) {
+            activeEvaluationSession == sessionDate
+        }
+
         // File paths inside app's internal storage
         fun backtestPath(ctx: Context): String =
             File(ctx.filesDir, "backtest_trades.csv").absolutePath
@@ -619,10 +623,6 @@ class MarketMLService : Service() {
 
         private fun activeEvaluationSessionSnapshot(): String? = synchronized(serviceActionLock) {
             activeEvaluationSession
-        }
-
-        internal fun isEvaluationSessionActive(sessionDate: String): Boolean = synchronized(serviceActionLock) {
-            activeEvaluationSession == sessionDate
         }
 
     private fun updateEvaluationJobState(
