@@ -2257,19 +2257,44 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
-            val canResume = (prefs.getString("evaluation_job_date", "") == sessionDate) &&
+            // An existing output file is not necessarily a resumable checkpoint:
+            // process death can leave a malformed derived outcomes file. Keep the
+            // strict JSON reader, but discard only that regenerable checkpoint
+            // when validation fails and restart from the saved snapshots.
+            var canResume = (prefs.getString("evaluation_job_date", "") == sessionDate) &&
                 (prefs.getInt("evaluation_total_snapshots", 0) == totalSnapshots) &&
                 outputsFile.exists()
+            if (canResume) {
+                val existingProduced = try {
+                    countJsonArrayFile(outputsFile)
+                } catch (t: IllegalStateException) {
+                    Log.w(
+                        TAG,
+                        "EVAL_RESUME_DISCARDED_MALFORMED_OUTPUTS: date=$sessionDate " +
+                            "file=${outputsFile.name} bytes=${outputsFile.length()} error=${t.message}"
+                    )
+                    LogBuffer.add(
+                        'W',
+                        TAG,
+                        "EVAL_RESUME_DISCARDED_MALFORMED_OUTPUTS: date=$sessionDate " +
+                            "file=${outputsFile.name} bytes=${outputsFile.length()} error=${t.message}"
+                    )
+                    canResume = false
+                    0
+                }
+                if (canResume) {
+                    completedSnapshots = prefs.getInt("evaluation_completed_snapshots", 0)
+                        .coerceIn(0, totalSnapshots)
+                    producedCount = existingProduced
+                    if (completedSnapshots > 0 && producedCount == 0) {
+                        completedSnapshots = 0
+                    }
+                }
+            }
             if (!canResume) {
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
                 completedSnapshots = 0
                 producedCount = 0
-            } else {
-                completedSnapshots = prefs.getInt("evaluation_completed_snapshots", 0).coerceIn(0, totalSnapshots)
-                producedCount = countJsonArrayFile(outputsFile)
-                if (completedSnapshots > 0 && producedCount == 0) {
-                    completedSnapshots = 0
-                }
             }
             Log.i(
                 TAG,
