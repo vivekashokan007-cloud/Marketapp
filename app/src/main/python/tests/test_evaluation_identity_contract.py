@@ -42,6 +42,14 @@ class EvaluationIdentityContractTests(unittest.TestCase):
         end = source.index('for (key in scalarKeys)', start)
         self.assertIn('"id"', source[start:end])
 
+    def test_missing_snapshot_replay_uses_existing_writer_before_input_replacement(self):
+        source = (JAVA / 'MarketMLService.kt').read_text()
+        fragment = source.split('private fun reconcileEvaluationSnapshotIds(')[1].split('private fun archiveEvaluationOutput')[0]
+        self.assertIn('EvaluationIdentity.SnapshotReconciler', fragment)
+        self.assertIn('SupabaseClient.saveBrainSnapshot(snapshot)', fragment)
+        self.assertLess(fragment.index('reconciler.resolve(row)'), fragment.index('temp.renameTo(file)'))
+        self.assertNotIn('file.delete()', fragment)
+
     def test_identity_lookup_is_complete_and_read_only(self):
         source = (JAVA / 'SupabaseClient.kt').read_text()
         fragment = source.split('internal fun fetchEvaluationSnapshotIdentities(')[1].split('fun fetchChainSlices')[0]

@@ -1375,8 +1375,13 @@ class MarketMLService : Service() {
     )
 
     private fun reconcileEvaluationSnapshotIds(sessionDate: String, file: File): Set<Long> {
-        val index = EvaluationIdentity.SnapshotIndex(
-            sessionDate, SupabaseClient.fetchEvaluationSnapshotIdentities(sessionDate)
+        val reconciler = EvaluationIdentity.SnapshotReconciler(
+            sessionDate,
+            fetch = { SupabaseClient.fetchEvaluationSnapshotIdentities(sessionDate) },
+            persist = { snapshot ->
+                LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_REPLAY: date=$sessionDate poll=${snapshot.optString("poll_ts")}")
+                SupabaseClient.saveBrainSnapshot(snapshot)
+            }
         )
         val ids = linkedSetOf<Long>()
         val temp = File(file.parentFile, "${file.name}.identity.tmp")
@@ -1386,7 +1391,7 @@ class MarketMLService : Service() {
                 writer.write("[")
                 var first = true
                 streamJsonArrayFile(file) { row ->
-                    val id = index.resolve(row)
+                    val id = reconciler.resolve(row)
                     check(ids.add(id)) { "EVAL_DUPLICATE_SNAPSHOT: id=$id; inputs retained" }
                     if (EvaluationIdentity.positiveId(row.opt("id")) != id) repaired += 1
                     row.put("id", id)
@@ -1400,7 +1405,7 @@ class MarketMLService : Service() {
         } finally {
             if (temp.exists()) temp.delete()
         }
-        LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_IDENTITIES_READY: date=$sessionDate rows=${ids.size} repaired=$repaired")
+        LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_IDENTITIES_READY: date=$sessionDate rows=${ids.size} repaired=$repaired replayed=${reconciler.replayed}")
         return ids
     }
 

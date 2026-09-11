@@ -35,22 +35,61 @@ internal object EvaluationIdentity {
             }
         }
 
-        fun resolve(snapshot: JSONObject): Long {
+        /** Null means an absent poll which can be replayed, never a conflicting identity. */
+        fun find(snapshot: JSONObject): Long? {
             val ts = instant(text(snapshot, "poll_ts"))
-            require(text(snapshot, "session_date") == sessionDate && ts != null) {
+            require(text(snapshot, "session_date") == sessionDate && ts != null &&
+                ts.atZone(ZoneId.of("Asia/Kolkata")).toLocalDate().toString() == sessionDate) {
                 "EVAL_IDENTITY_INVALID_SNAPSHOT: session or poll timestamp missing"
             }
+            val existing = positiveId(snapshot.opt("id"))
+            require(snapshot.isNull("id") || existing != null) {
+                "EVAL_IDENTITY_INVALID_SNAPSHOT: invalid existing ID; local data retained"
+            }
+            val atTime = byTime[ts].orEmpty()
+            if (atTime.isEmpty()) {
+                require(existing == null) { "EVAL_IDENTITY_CONFLICT: existing ID has no remote poll; local data retained" }
+                return null
+            }
             val recommendation = text(snapshot, "recommendation_id")
-            val matches = byTime[ts].orEmpty().filter {
+            val matches = atTime.filter {
                 recommendation.isEmpty() || text(it, "recommendation_id") == recommendation
             }
             val ids = matches.mapNotNull { positiveId(it.opt("id")) }.distinct()
             require(ids.size == 1) { "EVAL_IDENTITY_UNRESOLVED: poll=$ts matches=${ids.size}; local data retained" }
-            val existing = positiveId(snapshot.opt("id"))
             require(existing == null || existing == ids.single()) {
                 "EVAL_IDENTITY_CONFLICT: existing snapshot ID disagrees with remote poll; local data retained"
             }
             return ids.single()
+        }
+
+        fun resolve(snapshot: JSONObject): Long = find(snapshot)
+            ?: throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=${text(snapshot, "poll_ts")}; local data retained")
+    }
+
+    /** Replay only absent, ID-less local captures. A successful POST alone is not proof of identity. */
+    class SnapshotReconciler(
+        private val sessionDate: String,
+        private val fetch: () -> JSONArray,
+        private val persist: (JSONObject) -> Boolean
+    ) {
+        private var index = SnapshotIndex(sessionDate, fetch())
+        var replayed = 0
+            private set
+
+        fun resolve(snapshot: JSONObject): Long {
+            index.find(snapshot)?.let { return it }
+            require(text(snapshot, "recommendation_id").isNotEmpty()) {
+                "EVAL_SNAPSHOT_REPLAY_INVALID: missing recommendation identity; local data retained"
+            }
+            val payload = JSONObject(snapshot.toString()).apply { remove("id") }
+            check(persist(payload)) {
+                "EVAL_SNAPSHOT_REPLAY_FAILED: poll=${text(snapshot, "poll_ts")}; local data retained"
+            }
+            index = SnapshotIndex(sessionDate, fetch())
+            val id = index.resolve(snapshot)
+            replayed += 1
+            return id
         }
     }
 

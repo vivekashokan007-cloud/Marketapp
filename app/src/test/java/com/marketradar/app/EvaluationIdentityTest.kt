@@ -86,4 +86,92 @@ class EvaluationIdentityTest {
         val b = outcome().put("extra", JSONObject().put("b", JSONArray().put(true)).put("a", 1))
         assertEquals(1, EvaluationIdentity.validatedDistinctOutcomes(date, JSONArray().put(a).put(b)).length())
     }
+
+    @Test fun missingLocalCaptureIsReplayedThenResolvedBeforeOutcomeUpload() {
+        val local = snapshot(ts = "2026-09-10T12:50:55+0530")
+            .put("context_json", JSONObject().put("original_evidence", 123))
+        val remote = JSONArray()
+        var posts = 0
+        val reconciler = EvaluationIdentity.SnapshotReconciler(date, { remote }) { payload ->
+            posts++
+            assertFalse(payload.has("id"))
+            assertEquals(123, payload.getJSONObject("context_json").getInt("original_evidence"))
+            remote.put(JSONObject(payload.toString()).put("id", 6001L))
+            true
+        }
+        val id = reconciler.resolve(local)
+        assertEquals(6001L, id)
+        assertTrue(local.isNull("id")) // input is unchanged until whole-file reconciliation succeeds
+        assertEquals(id, reconciler.resolve(local))
+        assertEquals(1, posts)
+        assertEquals(1, reconciler.replayed)
+        assertEquals(1, EvaluationIdentity.validatedDistinctOutcomes(date, JSONArray().put(outcome(id))).length())
+    }
+
+    @Test fun retryAfterLostUploadResponseReusesDatabaseRow() {
+        val remote = JSONArray()
+        var posts = 0
+        val persist: (JSONObject) -> Boolean = { payload ->
+            posts++
+            remote.put(JSONObject(payload.toString()).put("id", 6001L))
+            false // server committed; client lost the response
+        }
+        try {
+            EvaluationIdentity.SnapshotReconciler(date, { remote }, persist).resolve(snapshot())
+            fail("Failed upload response must retain local data")
+        } catch (e: IllegalStateException) { assertTrue(e.message!!.contains("EVAL_SNAPSHOT_REPLAY_FAILED")) }
+        assertEquals(6001L, EvaluationIdentity.SnapshotReconciler(date, { remote }, persist).resolve(snapshot()))
+        assertEquals(1, posts)
+    }
+
+    @Test fun successfulPostWithoutExactReadbackCannotInventId() {
+        var posts = 0
+        val reconciler = EvaluationIdentity.SnapshotReconciler(date, { JSONArray() }) { posts++; true }
+        rejects { reconciler.resolve(snapshot()) }
+        assertEquals(1, posts)
+        assertEquals(0, reconciler.replayed)
+    }
+
+    @Test fun unavailableLookupNeverTriggersReplay() {
+        var posts = 0
+        try {
+            EvaluationIdentity.SnapshotReconciler(date, { error("lookup unavailable") }) { posts++; true }
+            fail("Unavailable lookup was treated as an empty database")
+        } catch (_: IllegalStateException) { }
+        assertEquals(0, posts)
+    }
+
+    @Test fun identityConflictsAndInvalidLocalDatesNeverTriggerReplay() {
+        var posts = 0
+        val persist: (JSONObject) -> Boolean = { posts++; true }
+        val remote = JSONArray().put(snapshot(5688L))
+        rejects { EvaluationIdentity.SnapshotReconciler(date, { remote }, persist)
+            .resolve(snapshot().put("recommendation_id", "different")) }
+        for (invalid in listOf(snapshot(99L), snapshot("bad-id"),
+            snapshot(ts = "2026-09-09T15:20:44+0530"), snapshot().put("session_date", "2026-09-09"),
+            snapshot().put("recommendation_id", JSONObject.NULL))) {
+            rejects { EvaluationIdentity.SnapshotReconciler(date, { JSONArray() }, persist).resolve(invalid) }
+        }
+        assertEquals(0, posts)
+    }
+
+    @Test fun retryAfterReadbackFailureDoesNotReinsert() {
+        val remote = JSONArray()
+        var reads = 0
+        var posts = 0
+        val persist: (JSONObject) -> Boolean = { payload ->
+            posts++
+            remote.put(JSONObject(payload.toString()).put("id", 6001L))
+            true
+        }
+        try {
+            EvaluationIdentity.SnapshotReconciler(date, {
+                if (++reads == 2) error("readback unavailable")
+                remote
+            }, persist).resolve(snapshot())
+            fail("Unconfirmed readback must stop")
+        } catch (_: IllegalStateException) { }
+        assertEquals(6001L, EvaluationIdentity.SnapshotReconciler(date, { remote }, persist).resolve(snapshot()))
+        assertEquals(1, posts)
+    }
 }

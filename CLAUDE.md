@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.26 · `versionCode` 457 · **Updated**: September 11, 2026 (validates/reconciles evaluator snapshot identity, retains invalid checkpoints for regeneration, and rejects conflicting duplicate outcomes before upload. No ranking, Paper/Real, model, or broker behavior changes.)
+> **Version**: 2.6.27 · `versionCode` 458 · **Updated**: September 11, 2026 (replays missing local snapshots through the existing persistence path and verifies their database IDs before evaluation; retains strict conflict checks and recovery evidence. No ranking, Paper/Real, model, or broker behavior changes.)
 
 ## Project overview
 
