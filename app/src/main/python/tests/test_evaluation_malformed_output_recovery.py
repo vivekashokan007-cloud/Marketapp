@@ -38,6 +38,7 @@ class EvaluationMalformedOutputRecoveryTests(unittest.TestCase):
         match = re.search(
             r"canResume = false\s*\n\s*0\s*\n\s*\}"
             r"[\s\S]*?if \(!canResume\) \{\s*"
+            r"archiveEvaluationOutput\(outputsFile, \"checkpoint_not_resumable\"\)\s*"
             r"writeJsonArrayFile\(outputsFile, org\.json\.JSONArray\(\)\)",
             self.service,
         )

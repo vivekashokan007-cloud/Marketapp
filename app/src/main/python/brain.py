@@ -6184,7 +6184,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.25"
+BRAIN_VERSION = "2.6.26"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -21042,6 +21042,7 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     outcome = {
         'snapshot_id': snap.get('id'),
         'session_date': snap.get('session_date'),
+        'snapshot_poll_ts': snap.get('poll_ts'),
         'candidate_id': cand.get('id'),
         'lane': lane or _candidate_lane(index_key, trade_mode or 'intraday'),
         'index_key': index_key,

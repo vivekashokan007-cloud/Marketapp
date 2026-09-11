@@ -685,6 +685,7 @@ object EvaluationLocalCache {
     private fun compactBrainSnapshot(snapshot: JSONObject): JSONObject {
         val compact = JSONObject()
         val scalarKeys = arrayOf(
+            "id",
             "recommendation_id",
             "session_date",
             "poll_ts",

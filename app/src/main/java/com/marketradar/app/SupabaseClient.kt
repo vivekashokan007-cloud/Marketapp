@@ -1689,6 +1689,23 @@ object SupabaseClient {
         return SnapshotStreamResult("none", 0, 0, false, "")
     }
 
+    /** Small, complete identity lookup. A failed/capped read must not look complete. */
+    internal fun fetchEvaluationSnapshotIdentities(sessionDate: String): JSONArray {
+        require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(sessionDate))
+        val rows = JSONArray()
+        val pageSize = 250
+        repeat(80) { pageIndex ->
+            val page = fetchArray(
+                "ml_brain_snapshots?session_date=eq.$sessionDate" +
+                    "&select=id,poll_ts,session_date,recommendation_id&order=id.asc" +
+                    "&limit=$pageSize&offset=${pageIndex * pageSize}"
+            ) ?: throw IllegalStateException("EVAL_IDENTITY_LOOKUP_FAILED: local inputs and results retained")
+            for (i in 0 until page.length()) rows.put(page.getJSONObject(i))
+            if (page.length() < pageSize) return rows
+        }
+        throw IllegalStateException("EVAL_IDENTITY_LOOKUP_CAPPED: local inputs and results retained")
+    }
+
     fun fetchChainSlices(date: String): JSONArray {
         val exact = fetchArrayFromTables(
             listOf(
@@ -2055,9 +2072,18 @@ object SupabaseClient {
     }
 
     fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {
-        val evaluationRows = buildEvaluationRows(body)
-        val recommendationRows = buildRecommendationRows(sessionDate, body)
-        val rejectedRows = buildRejectedEvaluationRows(sessionDate, body)
+        // Validate the complete batch before *any* table write. Identical retry
+        // copies are collapsed, while conflicting identities retain the local file.
+        val distinct = EvaluationIdentity.validatedDistinctOutcomes(sessionDate, body)
+        val evaluationRows = buildEvaluationRows(distinct)
+        val recommendationRows = buildRecommendationRows(sessionDate, distinct)
+        val rejectedRows = buildRejectedEvaluationRows(sessionDate, distinct)
+        val rejectedIds = HashSet<String>()
+        for (i in 0 until rejectedRows.length()) {
+            check(rejectedIds.add(rejectedRows.getJSONObject(i).getString("id"))) {
+                "EVAL_REJECTED_ID_COLLISION: local results retained; no upload attempted"
+            }
+        }
 
         fun outcomeWritePath(table: String): String {
             return when (table) {

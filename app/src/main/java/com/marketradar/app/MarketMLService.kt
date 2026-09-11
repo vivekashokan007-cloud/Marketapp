@@ -1374,6 +1374,43 @@ class MarketMLService : Service() {
         val emptyReason: String? = null
     )
 
+    private fun reconcileEvaluationSnapshotIds(sessionDate: String, file: File): Set<Long> {
+        val index = EvaluationIdentity.SnapshotIndex(
+            sessionDate, SupabaseClient.fetchEvaluationSnapshotIdentities(sessionDate)
+        )
+        val ids = linkedSetOf<Long>()
+        val temp = File(file.parentFile, "${file.name}.identity.tmp")
+        var repaired = 0
+        try {
+            temp.bufferedWriter().use { writer ->
+                writer.write("[")
+                var first = true
+                streamJsonArrayFile(file) { row ->
+                    val id = index.resolve(row)
+                    check(ids.add(id)) { "EVAL_DUPLICATE_SNAPSHOT: id=$id; inputs retained" }
+                    if (EvaluationIdentity.positiveId(row.opt("id")) != id) repaired += 1
+                    row.put("id", id)
+                    if (!first) writer.write(",")
+                    writer.write(row.toString())
+                    first = false
+                }
+                writer.write("]")
+            }
+            check(temp.renameTo(file)) { "EVAL_IDENTITY_REPLACE_FAILED: original inputs retained" }
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+        LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_IDENTITIES_READY: date=$sessionDate rows=${ids.size} repaired=$repaired")
+        return ids
+    }
+
+    private fun archiveEvaluationOutput(file: File, reason: String) {
+        if (!file.exists()) return
+        val archive = File(file.parentFile, "${file.name}.${java.util.UUID.randomUUID()}.retained")
+        check(file.renameTo(archive)) { "EVAL_OUTPUT_ARCHIVE_FAILED: original results retained" }
+        LogBuffer.add('W', TAG, "EVAL_OUTPUT_RETAINED: reason=$reason file=${archive.name} bytes=${archive.length()}")
+    }
+
     private suspend fun ensureEvaluationInputFiles(sessionDate: String): EvaluationInputPreparation = withContext(Dispatchers.IO) {
         val snapshotsFile = File(evaluationSnapshotsPath(this@MarketMLService, sessionDate))
         val chainFile = File(evaluationChainPath(this@MarketMLService, sessionDate))
@@ -2174,6 +2211,11 @@ class MarketMLService : Service() {
             val preparedInputs = ensureEvaluationInputFiles(sessionDate)
             val snapshotsFile = preparedInputs.snapshotsFile
             val chainFile = preparedInputs.chainFile
+            // This also checks cached/local-fallback inputs before Python consumes
+            // them. Missing or ambiguous remote identity stops without an upload.
+            val evaluationSnapshotIds = if (preparedInputs.snapshotCount > 0) {
+                reconcileEvaluationSnapshotIds(sessionDate, snapshotsFile)
+            } else emptySet<Long>()
             Log.i(
                 TAG,
                 "EVAL_INPUT_FILES_READY: date=$sessionDate snapshots=${preparedInputs.snapshotCount} " +
@@ -2287,6 +2329,19 @@ class MarketMLService : Service() {
                     0
                 }
                 if (canResume) {
+                    var invalidIdentityRows = 0
+                    streamJsonArrayFile(outputsFile) { row ->
+                        if (!EvaluationIdentity.hasSnapshotIdentity(row, evaluationSnapshotIds)) invalidIdentityRows += 1
+                    }
+                    if (invalidIdentityRows > 0) {
+                        // Old primary outcomes lack poll provenance; assigning IDs
+                        // by row position/candidate would fabricate attribution.
+                        // Retain the original and regenerate from reconciled inputs.
+                        archiveEvaluationOutput(outputsFile, "missing_or_unknown_snapshot_id:$invalidIdentityRows")
+                        canResume = false
+                    }
+                }
+                if (canResume) {
                     completedSnapshots = prefs.getInt("evaluation_completed_snapshots", 0)
                         .coerceIn(0, totalSnapshots)
                     producedCount = existingProduced
@@ -2296,6 +2351,7 @@ class MarketMLService : Service() {
                 }
             }
             if (!canResume) {
+                archiveEvaluationOutput(outputsFile, "checkpoint_not_resumable")
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
                 completedSnapshots = 0
                 producedCount = 0
@@ -2406,7 +2462,7 @@ class MarketMLService : Service() {
                 "EVAL_LOCAL_COMPLETE: date=$sessionDate produced=$producedCount " +
                     "outputBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
-            val evaluatedOutcomes = readJsonArrayFile(outputsFile)
+            var evaluatedOutcomes = readJsonArrayFile(outputsFile)
             if (evaluatedOutcomes.length() != producedCount) {
                 throw IllegalStateException(
                     "Evaluation output count mismatch: checkpoint=$producedCount parsed=${evaluatedOutcomes.length()} file=${outputsFile.name}"
@@ -2455,6 +2511,14 @@ class MarketMLService : Service() {
 
             evalPhase = "SAVING"
             enforceEvaluationBudget("saving")
+            val uniqueOutcomes = EvaluationIdentity.validatedDistinctOutcomes(sessionDate, evaluatedOutcomes)
+            if (uniqueOutcomes.length() != evaluatedOutcomes.length()) {
+                LogBuffer.add('W', TAG, "EVAL_IDENTICAL_DUPLICATES_COLLAPSED: before=${evaluatedOutcomes.length()} after=${uniqueOutcomes.length()}")
+                archiveEvaluationOutput(outputsFile, "identical_duplicates")
+                writeJsonArrayFile(outputsFile, uniqueOutcomes)
+                evaluatedOutcomes = uniqueOutcomes
+                producedCount = uniqueOutcomes.length()
+            }
             updateEvaluationJobState(
                 sessionDate = sessionDate,
                 phase = evalPhase,
