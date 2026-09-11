@@ -63,8 +63,11 @@ internal object EvaluationIdentity {
             return ids.single()
         }
 
-        fun resolve(snapshot: JSONObject): Long = find(snapshot)
-            ?: throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=${text(snapshot, \"poll_ts\")}; local data retained")
+        fun resolve(snapshot: JSONObject): Long {
+            find(snapshot)?.let { return it }
+            val pollTs = text(snapshot, "poll_ts")
+            throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=$pollTs; local data retained")
+        }
     }
 
     /** Replay only absent, ID-less local captures. A successful POST alone is not proof of identity. */
@@ -83,8 +86,9 @@ internal object EvaluationIdentity {
                 "EVAL_SNAPSHOT_REPLAY_INVALID: missing recommendation identity; local data retained"
             }
             val payload = JSONObject(snapshot.toString()).apply { remove("id") }
+            val pollTsForPersist = text(snapshot, "poll_ts")
             check(persist(payload)) {
-                "EVAL_SNAPSHOT_REPLAY_FAILED: poll=${text(snapshot, \"poll_ts\")}; local data retained"
+                "EVAL_SNAPSHOT_REPLAY_FAILED: poll=$pollTsForPersist; local data retained"
             }
             // Supabase may acknowledge the insert before the next REST read sees
             // the committed row. Retry the readback only; never repost and never
@@ -102,14 +106,15 @@ internal object EvaluationIdentity {
                 }
                 if (attempt < 4) Thread.sleep(250L * (attempt + 1))
             }
+            val pollTs = text(snapshot, "poll_ts")
             if (lastReadError != null) {
                 throw IllegalStateException(
-                    "EVAL_SNAPSHOT_REPLAY_READBACK_FAILED: poll=${text(snapshot, \"poll_ts\")}; local data retained",
+                    "EVAL_SNAPSHOT_REPLAY_READBACK_FAILED: poll=$pollTs; local data retained",
                     lastReadError
                 )
             }
             throw IllegalStateException(
-                "EVAL_SNAPSHOT_REPLAY_READBACK_PENDING: poll=${text(snapshot, \"poll_ts\")}; local data retained"
+                "EVAL_SNAPSHOT_REPLAY_READBACK_PENDING: poll=$pollTs; local data retained"
             )
         }
     }
