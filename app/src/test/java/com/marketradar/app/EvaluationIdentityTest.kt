@@ -127,7 +127,12 @@ class EvaluationIdentityTest {
     @Test fun successfulPostWithoutExactReadbackCannotInventId() {
         var posts = 0
         val reconciler = EvaluationIdentity.SnapshotReconciler(date, { JSONArray() }) { posts++; true }
-        rejects { reconciler.resolve(snapshot()) }
+        try {
+            reconciler.resolve(snapshot())
+            fail("Unconfirmed readback must not invent an ID")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("EVAL_SNAPSHOT_REPLAY_READBACK_PENDING"))
+        }
         assertEquals(1, posts)
         assertEquals(0, reconciler.replayed)
     }
@@ -166,11 +171,15 @@ class EvaluationIdentityTest {
         }
         try {
             EvaluationIdentity.SnapshotReconciler(date, {
-                if (++reads == 2) error("readback unavailable")
+                // Constructor read is #1 (empty). After persist, every readback
+                // attempt fails — retries must not re-post.
+                if (++reads >= 2) error("readback unavailable")
                 remote
             }, persist).resolve(snapshot())
             fail("Unconfirmed readback must stop")
-        } catch (_: IllegalStateException) { }
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message!!.contains("EVAL_SNAPSHOT_REPLAY_READBACK_FAILED"))
+        }
         assertEquals(6001L, EvaluationIdentity.SnapshotReconciler(date, { remote }, persist).resolve(snapshot()))
         assertEquals(1, posts)
     }
