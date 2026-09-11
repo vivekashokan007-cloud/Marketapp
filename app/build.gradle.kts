@@ -26,7 +26,7 @@ android {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
         
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv(\"SUPABASE_ANON_KEY\") ?: project.findProperty(\"SUPABASE_ANON_KEY\") ?: \"\"}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv("SUPABASE_ANON_KEY") ?: project.findProperty("SUPABASE_ANON_KEY") ?: ""}\"")
         buildConfigField("String", "SUPABASE_URL", "\"https://fdynxkfxohbnlvayouje.supabase.co\"")
     }
 
