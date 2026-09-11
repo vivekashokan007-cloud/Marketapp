@@ -15,18 +15,18 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b398: Make PC2 context thresholds percentile-live with recommendation outcome schema parity.
+        // b459: Retry Supabase snapshot replay readback after insert ack race.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 458
-        versionName = "2.6.27"
+        versionCode = 459
+        versionName = "2.6.28"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
         
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv("SUPABASE_ANON_KEY") ?: project.findProperty("SUPABASE_ANON_KEY") ?: ""}\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv(\"SUPABASE_ANON_KEY\") ?: project.findProperty(\"SUPABASE_ANON_KEY\") ?: \"\"}\"")
         buildConfigField("String", "SUPABASE_URL", "\"https://fdynxkfxohbnlvayouje.supabase.co\"")
     }
 

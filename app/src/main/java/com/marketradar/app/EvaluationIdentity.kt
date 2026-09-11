@@ -64,7 +64,7 @@ internal object EvaluationIdentity {
         }
 
         fun resolve(snapshot: JSONObject): Long = find(snapshot)
-            ?: throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=${text(snapshot, "poll_ts")}; local data retained")
+            ?: throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=${text(snapshot, \"poll_ts\")}; local data retained")
     }
 
     /** Replay only absent, ID-less local captures. A successful POST alone is not proof of identity. */
@@ -84,12 +84,33 @@ internal object EvaluationIdentity {
             }
             val payload = JSONObject(snapshot.toString()).apply { remove("id") }
             check(persist(payload)) {
-                "EVAL_SNAPSHOT_REPLAY_FAILED: poll=${text(snapshot, "poll_ts")}; local data retained"
+                "EVAL_SNAPSHOT_REPLAY_FAILED: poll=${text(snapshot, \"poll_ts\")}; local data retained"
             }
-            index = SnapshotIndex(sessionDate, fetch())
-            val id = index.resolve(snapshot)
-            replayed += 1
-            return id
+            // Supabase may acknowledge the insert before the next REST read sees
+            // the committed row. Retry the readback only; never repost and never
+            // manufacture an ID from local ordering or a nearby poll.
+            var lastReadError: Throwable? = null
+            repeat(5) { attempt ->
+                try {
+                    index = SnapshotIndex(sessionDate, fetch())
+                    index.find(snapshot)?.let {
+                        replayed += 1
+                        return it
+                    }
+                } catch (t: Throwable) {
+                    lastReadError = t
+                }
+                if (attempt < 4) Thread.sleep(250L * (attempt + 1))
+            }
+            if (lastReadError != null) {
+                throw IllegalStateException(
+                    "EVAL_SNAPSHOT_REPLAY_READBACK_FAILED: poll=${text(snapshot, \"poll_ts\")}; local data retained",
+                    lastReadError
+                )
+            }
+            throw IllegalStateException(
+                "EVAL_SNAPSHOT_REPLAY_READBACK_PENDING: poll=${text(snapshot, \"poll_ts\")}; local data retained"
+            )
         }
     }
 
