@@ -447,6 +447,9 @@ class PositionTickService : Service() {
             reason = reason,
             trace = JSONObject().apply {
                 put("policy_version", PositionPolicyV1.VERSION)
+                put("position_exit_policy_version", PositionExitPolicy.CONTRACT_VERSION)
+                put("net_target_version", PositionExitPolicy.NET_TARGET_VERSION)
+                put("net_basis_alignment_is_new_policy_version", true)
                 put("tick_ts", tickTs)
                 putOptNumber("current_pnl", currentPnl)
                 putOptNumber("sl_threshold", slThreshold)
@@ -913,6 +916,10 @@ class PositionTickService : Service() {
         private const val MAX_PENDING_TICKS = 1_500
         private const val FGS_BLOCKED_BASE_BACKOFF_MS = 10 * 60 * 1000L
         private const val FGS_BLOCKED_MAX_BACKOFF_MS = 30 * 60 * 1000L
+        // Shared schedule (G4): policy exit intent = 15:15; native session
+        // close = 15:40; Python readiness helper = 15:30. Do not randomly
+        // change these windows. Net-basis alignment is a new policy version
+        // (PositionExitPolicy); live SHADOW_* still uses PositionPolicyV1.
         private const val MARKET_OPEN_MINUTES = 9 * 60 + 15
         private const val MARKET_CLOSE_MINUTES = 15 * 60 + 40
         private const val POLICY_EOD_MINUTES = 15 * 60 + 15

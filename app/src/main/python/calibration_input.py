@@ -455,6 +455,11 @@ def admit_calibration_inputs(
             "learning_pnl": verdict["net_pnl"],
             "learning_won": verdict["net_pnl"] > 0,
             "learning_flat": verdict["net_pnl"] == 0,
+            # G4: net-basis alignment is a new policy version. learning_won
+            # here remains the G2 eligible-net sign; consumers that persist
+            # teacher labels should also carry position_exit_policy_version.
+            "net_target_version": "net_target_v1_gross_minus_costs_once_20260912",
+            "position_exit_policy_version": "position_exit_policy_v1_net_20260912",
         }
         # Learning consumers should read learning_pnl; keep actual_pnl for accounting.
         admitted["learning_pnl"] = verdict["net_pnl"]

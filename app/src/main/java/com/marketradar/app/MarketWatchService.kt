@@ -191,6 +191,9 @@ class MarketWatchService : Service() {
         private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
         private const val LAST_POLL_GAP_WARNING_SLOT_KEY = "last_poll_gap_warning_slot"
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+        // Shared schedule (G4): native poll/session close = 15:40 IST.
+        // Policy exit intent is 15:15 (PositionPolicyV1 / PositionExitPolicy).
+        // Python readiness helper uses 15:30. Do not randomly change these.
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
         private const val SETTLED_EVALUATION_START_MINUTE = 16 * 60 + 30
         private const val POLL_SLOT_MINUTES = 5

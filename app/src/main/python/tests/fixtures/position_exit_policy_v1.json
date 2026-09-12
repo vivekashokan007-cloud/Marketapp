@@ -1,0 +1,667 @@
+{
+  "contract_version": "position_exit_policy_v1_net_20260912",
+  "net_target_version": "net_target_v1_gross_minus_costs_once_20260912",
+  "pnl_tolerance_rupees": 1.0,
+  "tp_mult": 0.5,
+  "sl_mult": 0.6,
+  "policy_exit_intent": "15:15",
+  "net_basis_alignment_is_new_policy_version": true,
+  "notes": [
+    "Teacher (Python) and monitor (Kotlin) consume these cases on the same ordered stream.",
+    "A five-minute-only replay is labelled approximate and is not certified tick-equivalent.",
+    "Legacy canonical_won / H2 / TP-hit are not encoded as the expected learning target."
+  ],
+  "cases": [
+    {
+      "name": "positive_eod_non_tp",
+      "identity": {
+        "trade_id": "t-eod-win",
+        "candidate_id": "c-eod-win",
+        "index": "BNF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1000.0,
+        "gross_max_loss": 2000.0,
+        "entry_cost_estimate": 80.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 800
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:00:00+05:30",
+          "gross_pnl": 200.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T13:00:00+05:30",
+          "gross_pnl": 260.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 200.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "EOD",
+        "exit_ts": "2026-09-10T15:15:00+05:30",
+        "net_pnl": 120.0,
+        "learning_result_net": "WIN",
+        "learning_won_net": true,
+        "tp_hit": false,
+        "note": "Positive EOD is a net win even if TP was never hit."
+      }
+    },
+    {
+      "name": "zero_net",
+      "identity": {
+        "trade_id": "t-flat",
+        "candidate_id": "c-flat",
+        "index": "NF",
+        "strategy": "BULL_PUT",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:30:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:30:00+05:30",
+        "gross_max_profit": 800.0,
+        "gross_max_loss": 1600.0,
+        "entry_cost_estimate": 50.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 400
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T12:00:00+05:30",
+          "gross_pnl": 50.0,
+          "cost": 50.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 50.0,
+          "cost": 50.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "EOD",
+        "exit_ts": "2026-09-10T15:15:00+05:30",
+        "net_pnl": 0.0,
+        "learning_result_net": "FLAT",
+        "learning_won_net": false,
+        "learning_flat_net": true
+      }
+    },
+    {
+      "name": "missing_quotes",
+      "identity": {
+        "trade_id": "t-miss",
+        "candidate_id": "c-miss",
+        "index": "BNF",
+        "strategy": "IRON_CONDOR",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1500.0,
+        "gross_max_loss": 3000.0,
+        "entry_cost_estimate": 120.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 200
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:00:00+05:30",
+          "gross_pnl": null,
+          "cost": null,
+          "quote_quality": "MISSING"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": null,
+          "cost": null,
+          "quote_quality": "MISSING"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "MISSING_QUOTES",
+        "exit_ts": null,
+        "net_pnl": null,
+        "learning_result_net": "UNAVAILABLE",
+        "learning_won_net": null
+      }
+    },
+    {
+      "name": "late_quotes",
+      "identity": {
+        "trade_id": "t-late",
+        "candidate_id": "c-late",
+        "index": "NF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 900.0,
+        "gross_max_loss": 1800.0,
+        "entry_cost_estimate": 60.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 100
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "data_cutoff_ts": "2026-09-10T14:00:00+05:30",
+      "events": [
+        {
+          "ts": "2026-09-10T13:00:00+05:30",
+          "gross_pnl": 140.0,
+          "cost": 60.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 500.0,
+          "cost": 60.0,
+          "quote_quality": "LATE"
+        },
+        {
+          "ts": "2026-09-10T15:20:00+05:30",
+          "gross_pnl": 900.0,
+          "cost": 60.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "EOD",
+        "exit_ts": "2026-09-10T13:00:00+05:30",
+        "net_pnl": 80.0,
+        "learning_result_net": "WIN",
+        "note": "Late/post-cutoff marks must not create a TP or a 15:15 fill."
+      }
+    },
+    {
+      "name": "gap_through_stop",
+      "identity": {
+        "trade_id": "t-gap",
+        "candidate_id": "c-gap",
+        "index": "BNF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1000.0,
+        "gross_max_loss": 2000.0,
+        "entry_cost_estimate": 80.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 50
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:00:00+05:30",
+          "gross_pnl": 100.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T11:01:00+05:30",
+          "gross_pnl": -2500.0,
+          "cost": 80.0,
+          "quote_quality": "GAP"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "SL",
+        "exit_ts": "2026-09-10T11:01:00+05:30",
+        "net_pnl": -2580.0,
+        "learning_result_net": "LOSS",
+        "learning_won_net": false,
+        "note": "sl_threshold is -1248; realized net -2580 is kept, not clipped."
+      }
+    },
+    {
+      "name": "lot_sizes",
+      "identity": {
+        "trade_id": "t-lots",
+        "candidate_id": "c-lots",
+        "index": "NF",
+        "strategy": "BULL_PUT",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 2,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 2000.0,
+        "gross_max_loss": 4000.0,
+        "entry_cost_estimate": 160.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 300
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T12:00:00+05:30",
+          "gross_pnl": 400.0,
+          "cost": 160.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 400.0,
+          "cost": 160.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "EOD",
+        "exit_ts": "2026-09-10T15:15:00+05:30",
+        "net_pnl": 240.0,
+        "learning_result_net": "WIN",
+        "note": "Quantity is lot_size x lots in INR total; do not treat 400 as per-unit premium."
+      }
+    },
+    {
+      "name": "incomplete_legs",
+      "identity": {
+        "trade_id": "t-inc",
+        "candidate_id": "c-inc",
+        "index": "BNF",
+        "strategy": "IRON_BUTTERFLY",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1200.0,
+        "gross_max_loss": 2400.0,
+        "entry_cost_estimate": 100.0,
+        "legs_complete": false,
+        "quote_quality": "OK",
+        "quote_age_ms": 100
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:00:00+05:30",
+          "gross_pnl": 300.0,
+          "cost": 100.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": false,
+        "exit_reason": "NO_ENTRY",
+        "exit_ts": null,
+        "net_pnl": null,
+        "learning_result_net": "UNAVAILABLE",
+        "entry_reasons_contains": "incomplete_legs"
+      }
+    },
+    {
+      "name": "published_thresholds",
+      "identity": {
+        "trade_id": "t-pub",
+        "candidate_id": "c-pub",
+        "index": "BNF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1000.0,
+        "gross_max_loss": 2000.0,
+        "entry_cost_estimate": 80.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 90
+      },
+      "published": {
+        "target_pnl_at": 200.0,
+        "stop_pnl_at": -800.0,
+        "schema_version": "position_exit_threshold_v1"
+      },
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:30:00+05:30",
+          "gross_pnl": 300.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "TP",
+        "exit_ts": "2026-09-10T11:30:00+05:30",
+        "net_pnl": 220.0,
+        "learning_result_net": "WIN",
+        "tp_hit": true,
+        "note": "Published TP 200 < constant 460; composition fires earlier. Net 220 >= 200."
+      }
+    },
+    {
+      "name": "no_entry_after_eod",
+      "identity": {
+        "trade_id": "t-late-entry",
+        "candidate_id": "c-late-entry",
+        "index": "NF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T15:15:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T15:15:00+05:30",
+        "gross_max_profit": 700.0,
+        "gross_max_loss": 1400.0,
+        "entry_cost_estimate": 40.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 50
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T15:20:00+05:30",
+          "gross_pnl": 100.0,
+          "cost": 40.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": false,
+        "exit_reason": "NO_ENTRY",
+        "exit_ts": null,
+        "net_pnl": null,
+        "learning_result_net": "UNAVAILABLE",
+        "entry_reasons_contains": "no_entry_after_eod_intent"
+      }
+    },
+    {
+      "name": "overnight_explicit",
+      "identity": {
+        "trade_id": "t-on",
+        "candidate_id": "c-on",
+        "index": "BNF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-17",
+        "execution_mode": "swing",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 15,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1500.0,
+        "gross_max_loss": 3000.0,
+        "entry_cost_estimate": 90.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 200
+      },
+      "published": null,
+      "overnight": true,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 200.0,
+          "cost": 90.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:40:00+05:30",
+          "gross_pnl": 180.0,
+          "cost": 90.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "OVERNIGHT_HOLD",
+        "exit_ts": "2026-09-10T15:40:00+05:30",
+        "net_pnl": 90.0,
+        "learning_result_net": "WIN",
+        "note": "Overnight/manual holds are their own cohort; 15:15 is not forced as EOD."
+      }
+    },
+    {
+      "name": "sl_before_tp_same_mark",
+      "identity": {
+        "trade_id": "t-prec",
+        "candidate_id": "c-prec",
+        "index": "NF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1000.0,
+        "gross_max_loss": 2000.0,
+        "entry_cost_estimate": 80.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 10
+      },
+      "published": {
+        "target_pnl_at": 200.0,
+        "stop_pnl_at": 250.0
+      },
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [
+        {
+          "ts": "2026-09-10T11:00:00+05:30",
+          "gross_pnl": 300.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "SL",
+        "exit_ts": "2026-09-10T11:00:00+05:30",
+        "net_pnl": 220.0,
+        "precedence_applied": "SL_BEFORE_TP",
+        "note": "Same mark satisfies both composed levels; SL wins."
+      }
+    },
+    {
+      "name": "five_minute_approximate",
+      "identity": {
+        "trade_id": "t-5m",
+        "candidate_id": "c-5m",
+        "index": "BNF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 30,
+        "lots": 1,
+        "unit": "INR_TOTAL"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 1000.0,
+        "gross_max_loss": 2000.0,
+        "entry_cost_estimate": 80.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 0
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "FIVE_MINUTE_APPROXIMATE",
+      "events": [
+        {
+          "ts": "2026-09-10T10:05:00+05:30",
+          "gross_pnl": 100.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        },
+        {
+          "ts": "2026-09-10T15:15:00+05:30",
+          "gross_pnl": 150.0,
+          "cost": 80.0,
+          "quote_quality": "OK"
+        }
+      ],
+      "expected": {
+        "entry_valid": true,
+        "exit_reason": "EOD",
+        "exit_ts": "2026-09-10T15:15:00+05:30",
+        "net_pnl": 70.0,
+        "learning_result_net": "WIN",
+        "replay_certified_tick_equivalent": false,
+        "replay_resolution": "FIVE_MINUTE_APPROXIMATE"
+      }
+    },
+    {
+      "name": "per_unit_quantity_rejected",
+      "identity": {
+        "trade_id": "t-unit",
+        "candidate_id": "c-unit",
+        "index": "NF",
+        "strategy": "BEAR_CALL",
+        "expiry": "2026-09-10",
+        "execution_mode": "intraday",
+        "decision_ts": "2026-09-10T10:00:00+05:30"
+      },
+      "quantity": {
+        "lot_size": 25,
+        "lots": 1,
+        "unit": "PER_UNIT_PREMIUM"
+      },
+      "entry": {
+        "ts": "2026-09-10T10:00:00+05:30",
+        "gross_max_profit": 40.0,
+        "gross_max_loss": 80.0,
+        "entry_cost_estimate": 2.0,
+        "legs_complete": true,
+        "quote_quality": "OK",
+        "quote_age_ms": 10
+      },
+      "published": null,
+      "overnight": false,
+      "replay_resolution": "TICK",
+      "events": [],
+      "expected": {
+        "entry_valid": false,
+        "exit_reason": "NO_ENTRY",
+        "entry_reasons_contains": "quantity_unit_not_total_currency",
+        "net_pnl": null,
+        "learning_result_net": "UNAVAILABLE"
+      }
+    }
+  ]
+}

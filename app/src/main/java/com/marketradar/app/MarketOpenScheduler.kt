@@ -22,6 +22,8 @@ object MarketOpenScheduler {
     private const val PREF_LAST_FORCE_POLL_MS = "last_force_poll_ms"
     private const val FORCE_POLL_DEBOUNCE_MS = 15_000L
     private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+    // Shared schedule (G4): native session close = 15:40; policy exit
+    // intent = 15:15; Python readiness = 15:30. Unrelated to net-target version.
     private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
 
     private val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")

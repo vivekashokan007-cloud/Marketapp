@@ -59,6 +59,8 @@ class NativeBridge(private val context: Context) {
         private const val ML_BRAIN_SNAPSHOT_JS_MAX_BYTES = 2L * 1024L * 1024L
         private const val ML_BRAIN_SNAPSHOT_JS_CACHE_TTL_MS = 60_000L
         private const val MARKET_OPEN_MINUTE = 9 * 60 + 15
+        // Shared schedule (G4): native poll close = 15:40; policy exit intent
+        // = 15:15; Python readiness = 15:30. See PositionExitPolicy.
         private const val MARKET_CLOSE_MINUTE = 15 * 60 + 40
         private const val POLL_SLOT_MINUTES = 5
         private const val POLL_FULL_DAY_SLOTS = ((MARKET_CLOSE_MINUTE - MARKET_OPEN_MINUTE) / POLL_SLOT_MINUTES) + 1
@@ -381,6 +383,13 @@ class NativeBridge(private val context: Context) {
             "sim_pnl_h2",
             "outcome_h2",
             "canonical_won",
+            "learning_result_net",
+            "learning_won_net",
+            "learning_flat_net",
+            "net_target_version",
+            "position_exit_policy_version",
+            "legacy_position_policy_version",
+            "net_basis_alignment_is_new_policy_version",
             "managed_pnl",
             "managed_gross_pnl",
             "friction_cost",

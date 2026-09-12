@@ -11,6 +11,14 @@ from calibration_input import (
     learning_pnl_of,
     unavailable_calibration,
 )
+from position_exit_policy import (
+    NATIVE_MARKET_CLOSE_HH_MM,
+    NET_TARGET_VERSION,
+    POLICY_EXIT_INTENT_HH_MM,
+    POSITION_EXIT_POLICY_CONTRACT_VERSION,
+    PYTHON_READINESS_CLOSE_HH_MM,
+    annotate_legacy_and_net_targets,
+)
 
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
 _ML_ENGINE     = None
@@ -6304,7 +6312,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.38"
+BRAIN_VERSION = "2.6.39"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -13047,6 +13055,13 @@ def check_execution_readiness(candidate, current_result, ctx):
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
     mins = now_ist.hour * 60 + now_ist.minute
     is_weekday = now_ist.weekday() < 5
+    # Shared schedule (G4): do not randomly change this window.
+    #   policy exit intent / no new intraday entry = 15:15 IST
+    #     (POSITION_EXIT_POLICY / PositionPolicyV1.EOD_HH_MM)
+    #   this readiness helper (cash-market close)  = 15:30 IST
+    #   native poll/session close                  = 15:40 IST
+    # Net-basis alignment is a new policy version; this 15:30 check is
+    # readiness-only and is not the exit contract cutoff.
     in_hours = (9 * 60 + 15) <= mins <= (15 * 60 + 30)
     # M1.1 FIX: the holiday list is a hand-maintained calendar year. Once the clock rolls
     # past its coverage every day silently reads as a trading day. Fail closed on an
@@ -13091,7 +13106,13 @@ def check_execution_readiness(candidate, current_result, ctx):
             'sandboxEnabled': sandbox_enabled,
             'proxyReady': proxy_ready,
             'marketHoursOk': market_hours_ok,
-        }
+        },
+        # Additive G4 schedule identity. Does not change ready/gate.
+        'position_exit_policy_version': POSITION_EXIT_POLICY_CONTRACT_VERSION,
+        'net_target_version': NET_TARGET_VERSION,
+        'policy_exit_intent': POLICY_EXIT_INTENT_HH_MM,
+        'python_readiness_close': PYTHON_READINESS_CLOSE_HH_MM,
+        'native_market_close': NATIVE_MARKET_CLOSE_HH_MM,
     }
 
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
@@ -21346,6 +21367,17 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     if teacher is None:
         return None
     outcome.update(teacher)
+    # G4: additive net-target fields. canonical_won / outcome_h2 / won /
+    # is_success (TP-hit) keep their historical meanings. Net-basis
+    # alignment is a new policy version.
+    outcome.update(annotate_legacy_and_net_targets(
+        managed_pnl=outcome.get('managed_pnl'),
+        canonical_won=outcome.get('canonical_won'),
+        outcome_h2=outcome.get('outcome_h2'),
+        won=outcome.get('won'),
+        is_success=outcome.get('is_success'),
+        target_was_reached=outcome.get('target_was_reached'),
+    ))
     return outcome
 
 
