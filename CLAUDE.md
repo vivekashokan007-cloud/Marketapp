@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.27 · `versionCode` 458 · **Updated**: September 11, 2026 (replays missing local snapshots through the existing persistence path and verifies their database IDs before evaluation; retains strict conflict checks and recovery evidence. No ranking, Paper/Real, model, or broker behavior changes.)
+> **Version**: 2.6.34 · `versionCode` 465 · **Updated**: September 12, 2026 (notification pack through b465: six channels; D4 tick/brain ownership split; published exit thresholds; F4 entry window 09:15–15:15 + morning-input notice. F5 entry-stability still next. Docs-only catch-up in this commit — no behavior code changes.)
 
 ## Project overview
 
@@ -12,7 +12,7 @@ Guidance for Claude Code when working in this repository.
 - A JavaScript ↔ Kotlin bridge (`window.AndroidBridge`) for state exchange between the PWA and native code.
 - On-device ML inference via **Chaquopy** (Python 3.11 embedded) for trade-candidate scoring.
 - **Supabase** REST backend for trade / baseline / poll-history persistence.
-- Foreground notifications across three channels (urgent / important / routine).
+- Foreground notifications across six versioned channels (perfect / entry / update / warning / routine / urgent).
 
 The WebView ships no bundled HTML — all UI is remote. Native code exists only to run background jobs the web layer cannot, and `app/src/main/python/brain.py` is the canonical brain source.
 
@@ -96,7 +96,20 @@ Supabase tables: `trades_v2` (113 cols live, verified 2026-08-25 — earlier doc
 
 ### Notifications (`NotificationHelper`)
 
-Three channels — `urgent` (HIGH + vibrate), `important` (DEFAULT), `routine` (LOW). Tapping routes into the right WebView tab via `openTab` extra handled in `MainActivity.handleIntent()`.
+Six versioned channels (Android locks sound once a channel ID is created): `trade_perfect_v1` (HIGH), `trade_entry_v1` (DEFAULT), `trade_update_v1` (DEFAULT), `trade_warning_v1` (DEFAULT), `trade_routine_v1` (LOW, silent), `trade_urgent_v1` (HIGH). Type map: `perfect`→perfect; `entry`/`important`→entry; `update`→update; `warning`→warning; `routine`/`info`→routine; `urgent`/`ERROR`→urgent. Tapping routes via `openTab` in `MainActivity.handleIntent()`.
+
+**D4 ownership (interim dual-engine):** `PositionTickService` (60s) owns Target Near / Stop Loss Near / Degraded / EOD (`SHADOW_TP` / `SHADOW_SL` / `SHADOW_DEGRADED` / `SHADOW_EOD`). Brain (5min) still owns `POS_BOOK_*` (needs force alignment the tick path cannot see). Brain still *generates* tick-owned alerts for UI/evidence but sets `notify_user=False` with `reason_code=POSITION_ALERT_OWNED_BY_TICK_SERVICE`.
+
+**Published exit thresholds:** brain publishes rupee `target_pnl_at` / `stop_pnl_at` when live percentile authority holds; tick composes with `PositionPolicyV1` constants (`TP_MULT=0.50`, `SL_MULT=0.60`) so publication can only fire earlier or equal. Absent/stale (>20 min) → constants only.
+
+**F4 entry window:** 09:15–15:15 IST and requires `morning_input`. Once-per-session audible morning-input-missing notice (D6: warning channel, stamped only after `postedToOs`).
+
+**Next:** F5 (two-poll candidate-id stability + choppy mute) is **not** on tip — binding remaining notification P0 after F4 opened the morning window.
+
+**Key version constants** (`brain.py`):
+- `POSITION_ALERT_OWNERSHIP_VERSION = 'position_alert_ownership_v1_tick_service_authoritative'`
+- `POSITION_EXIT_THRESHOLD_PUBLISH_VERSION = 'position_exit_thresholds_v1_published_from_brain'`
+- `POSITION_ALERT_REENTRY_COOLDOWN_MS = 45 * 60 * 1000` (F3 genuine re-entry after clear+cooldown)
 
 ### Candidate selection — PC2 paper primary selector (v7, brain.py)
 
