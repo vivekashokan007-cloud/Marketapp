@@ -69,6 +69,17 @@ class EvaluationRunLedgerTest {
         run = EvaluationRunLedger.applyC3Assessment(run, assessment)
         assertEquals("ineligible", run.getJSONObject("stages").getJSONObject("percentile_finalization").optString("state"))
         assertTrue(run.optBoolean("labels_saved"))
+        assertFalse(run.optBoolean("learning_complete")) // G6 metrics still pending
+        run = EvaluationRunLedger.applyPerformanceMetricsResult(
+            run,
+            JSONObject()
+                .put("state", "verified")
+                .put("reason_code", "NO_ELIGIBLE_PREDICTIONS")
+                .put("expected_count", 0)
+                .put("written_count", 0)
+                .put("verified_count", 0)
+                .put("active_recommendation_unchanged", true)
+        )
         assertTrue(run.optBoolean("learning_complete"))
     }
 
@@ -96,6 +107,11 @@ class EvaluationRunLedgerTest {
             run.getJSONObject("stages").getJSONObject("training").optString("reason_code")
         )
         assertEquals("disabled", run.getJSONObject("stages").getJSONObject("promotion").optString("state"))
+        assertEquals("pending", run.getJSONObject("stages").getJSONObject("performance_metrics").optString("state"))
+        assertEquals(
+            EvaluationRunLedger.REASON_METRICS_READY_G6,
+            run.getJSONObject("stages").getJSONObject("performance_metrics").optString("reason_code")
+        )
     }
 
     @Test

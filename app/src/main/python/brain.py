@@ -6312,7 +6312,16 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.40"
+BRAIN_VERSION = "2.6.41"
+# G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
+G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
+G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
+G6_SHADOW_C_ENABLED = False  # ML-free deterministic research stub (off by default)
+G6_SHADOW_FLAGS = {
+    'SHADOW_A_NET_CAL_BASELINE': G6_SHADOW_A_ENABLED,
+    'SHADOW_B_NO_PML_CAP': G6_SHADOW_B_ENABLED,
+    'SHADOW_C_ML_FREE_DETERMINISTIC': G6_SHADOW_C_ENABLED,
+}
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -14803,6 +14812,43 @@ def _neutral_structure_market_fit(regime):
     return round(max(0.0, min(100.0, fit)), 2), components
 
 
+
+
+
+
+def g6_compute_metrics_json(payload_json):
+    """Chaquopy entry: G6 performance metrics stage (identity upsert payload)."""
+    from evaluation_metrics_ledger import g6_compute_metrics_json as _impl
+    return _impl(payload_json)
+
+
+def g6_shadow_compare_json(payload_json):
+    from evaluation_metrics_ledger import g6_shadow_compare_json as _impl
+    return _impl(payload_json)
+
+def g6_attach_shadow_menu_comparison(menu, active_recommendation_id=None, shadow_flags=None):
+    """Log-only G6 shadow comparison. Never changes active recommendation.
+
+    Returns a diagnostic dict; callers must not use it to re-rank or re-gate.
+    """
+    flags = dict(G6_SHADOW_FLAGS)
+    if shadow_flags:
+        flags.update(shadow_flags)
+    try:
+        from evaluation_metrics_ledger import compare_menus_active_vs_shadows
+        return compare_menus_active_vs_shadows(
+            list(menu or []),
+            shadow_flags=flags,
+            active_recommendation_id=active_recommendation_id,
+        )
+    except Exception as exc:
+        return {
+            'active_recommendation_id': active_recommendation_id,
+            'active_recommendation_unchanged': True,
+            'error': str(exc),
+            'sizing_held_fixed': True,
+        }
+
 def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regime=None):
     """Attach a fail-closed, strategy-agnostic entry contract to a candidate.
 
@@ -14952,7 +14998,37 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regi
             for failure in pc2_quality_failures
         }),
         'pc2_quality_contract': 'quality gate failures remain soft ranking evidence and never independently block entry',
+        # G6 named confidence decomposition (not a calibrated probability)
+        'confidence_decomposition': {
+            'raw_p_ml': p_ml,
+            'market_fit_confidence': market_fit_confidence,
+            'market_confidence': candidate.get('marketConfidence'),
+            'final_entry_score': entry_confidence,
+            'final_entry_score_is_calibrated_probability': False,
+            'confidence_contract': (
+                'min(strategy_market_fit_confidence, candidate_ml_probability_pct) for neutral structures; '
+                'min(market_confidence, candidate_ml_probability_pct) for directional structures'
+            ),
+        },
     }
+    # G6 SHADOW_B: log-only counterfactual without numerical p_ml cap.
+    # Does NOT change entryEligible / entryGate / entryConfidence (live gate preserved).
+    if G6_SHADOW_B_ENABLED:
+        try:
+            from evaluation_metrics_ledger import shadow_b_would_differ
+            candidate['g6_shadow_b'] = shadow_b_would_differ(
+                p_ml=p_ml,
+                market_fit_confidence=market_fit_confidence,
+                market_confidence=candidate.get('marketConfidence'),
+                strategy_direction=strategy_direction,
+                active_eligible=eligible,
+            )
+        except Exception as _g6_exc:
+            candidate['g6_shadow_b'] = {
+                'variant': 'SHADOW_B_NO_PML_CAP',
+                'error': str(_g6_exc),
+                'live_gate_unchanged': True,
+            }
     return candidate
 
 def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):

@@ -63,7 +63,10 @@ REASON_NO_FRAMES = "NO_C3_FRAMES"
 REASON_UNRECONSTRUCTABLE = "UNRECONSTRUCTABLE_ORIGINAL_EVIDENCE"
 REASON_TRAINING_FROZEN = "TRAINING_FROZEN_NOT_ATTEMPTED"
 REASON_PROMOTION_DISABLED = "PROMOTION_DISABLED_NOT_ATTEMPTED"
-REASON_METRICS_DEFERRED_G6 = "PERFORMANCE_METRICS_DEFERRED_TO_G6"
+REASON_METRICS_DEFERRED_G6 = "PERFORMANCE_METRICS_DEFERRED_TO_G6"  # legacy alias
+REASON_METRICS_READY_G6 = "PERFORMANCE_METRICS_G6_ENABLED"
+REASON_METRICS_WRITTEN = "METRICS_WRITTEN"
+REASON_METRICS_UNAVAILABLE = "NO_ELIGIBLE_PREDICTIONS"
 REASON_NONLABELABLE = "NONLABELABLE_SNAPSHOTS_ACCOUNTED"
 REASON_DUPLICATE_LEASE = "ACTIVE_LEASE_HELD"
 REASON_CROSS_DATE = "CROSS_DATE_OUTCOME_REJECTED"
@@ -144,9 +147,9 @@ def new_run(
     stages["promotion"] = _empty_stage("promotion", initial="not_attempted")
     stages["promotion"]["state"] = "disabled"
     stages["promotion"]["reason_code"] = REASON_PROMOTION_DISABLED
-    # G6 owns the real metrics table; mark explicitly so completion is honest.
-    stages["performance_metrics"]["state"] = "ineligible"
-    stages["performance_metrics"]["reason_code"] = REASON_METRICS_DEFERRED_G6
+    # G6: performance_metrics is now an applicable stage (pending until written).
+    stages["performance_metrics"]["state"] = "pending"
+    stages["performance_metrics"]["reason_code"] = REASON_METRICS_READY_G6
     now = _utc_now_iso()
     return {
         "run_id": run_id,
@@ -263,9 +266,6 @@ def next_resumable_stage(run: dict[str, Any]) -> Optional[str]:
     for name in STAGE_ORDER:
         st = (stages.get(name) or {}).get("state")
         if st in {"pending", "running", "failed"}:
-            # performance_metrics starts ineligible (G6) — skip if already terminal-ok
-            if st in COMPLETION_OK_STATES:
-                continue
             return name
     return None
 
@@ -405,6 +405,30 @@ def apply_c3_assessment(run: dict[str, Any], assessment: dict[str, Any]) -> dict
         detail=assessment,
     )
 
+
+
+
+def apply_performance_metrics_result(run: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Wire G6 metrics stage result into the durable evening ledger."""
+    state = str(result.get("state") or "verified")
+    if state not in STAGE_STATES:
+        state = "verified"
+    reason = str(result.get("reason_code") or REASON_METRICS_WRITTEN)
+    return set_stage(
+        run,
+        "performance_metrics",
+        state,
+        reason_code=reason,
+        expected_count=int(result.get("expected_count") or 0),
+        written_count=int(result.get("written_count") or 0),
+        verified_count=int(result.get("verified_count") or 0),
+        detail={
+            "active_recommendation_unchanged": result.get("active_recommendation_unchanged"),
+            "variants": (result.get("detail") or {}).get("variants"),
+            "shadow_b_differ_count": (result.get("detail") or {}).get("shadow_b_differ_count"),
+            "g6": True,
+        },
+    )
 
 def summarize_stages_ran(run: dict[str, Any]) -> list[str]:
     """Backfill/reporting helper: which stages were actually executed."""

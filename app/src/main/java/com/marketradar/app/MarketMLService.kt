@@ -2160,6 +2160,7 @@ class MarketMLService : Service() {
             c3Phase in setOf("DONE", "INELIGIBLE")
         ) {
             Log.i(TAG, "C3_FINALIZE_SKIP: already $c3Phase for $sessionDate")
+            maybeRunPerformanceMetricsStage(sessionDate)
             return@withContext
         }
         // Also skip when durable ledger already terminal-ok for C3.
@@ -2169,6 +2170,7 @@ class MarketMLService : Service() {
             ?.optString("state")
         if (ledgerC3 in setOf("verified", "ineligible")) {
             Log.i(TAG, "C3_FINALIZE_SKIP: ledger stage=$ledgerC3 for $sessionDate")
+            maybeRunPerformanceMetricsStage(sessionDate)
             return@withContext
         }
         updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
@@ -2208,7 +2210,8 @@ class MarketMLService : Service() {
                 lastError = "NO_C3_FRAMES"
             )
             Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=$snapshotCount")
-            return@withContext
+                        maybeRunPerformanceMetricsStage(sessionDate)
+return@withContext
         }
 
         // G5: assess original-frame provenance BEFORE any C3 write. Capped /
@@ -2235,7 +2238,8 @@ class MarketMLService : Service() {
                 )
             }
             Log.w(TAG, "C3_FINALIZE_INELIGIBLE: date=$sessionDate reason=$reason frames=${frames.length()}")
-            return@withContext
+                        maybeRunPerformanceMetricsStage(sessionDate)
+return@withContext
         }
         updateC3FinalizationState(sessionDate, "BUILDING", "Building C3 rows from ${frames.length()} captured frames...", frameCount = frames.length(), running = true)
         val historySeed = SupabaseClient.fetchC3PercentileHistorySeed(sessionDate)
@@ -2273,6 +2277,70 @@ class MarketMLService : Service() {
             verifiedCount = write.verifiedRows
         )
         Log.i(TAG, "C3_FINALIZE_DONE: date=$sessionDate frames=${frames.length()} rows=${write.expectedRows} existing=${write.alreadyPresentRows}")
+        maybeRunPerformanceMetricsStage(sessionDate)
+    }
+
+
+    // G6: versioned performance ledger. Runs after C3 is terminal-ok (verified/ineligible).
+    // Shadow variants are log-only; active p_ml gate and recommendation stay unchanged.
+    private suspend fun maybeRunPerformanceMetricsStage(sessionDate: String) = withContext(Dispatchers.IO) {
+        try {
+            val run = activeEvaluationRun
+                ?: EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
+                ?: return@withContext
+            val stages = run.optJSONObject("stages") ?: org.json.JSONObject()
+            val metricsState = stages.optJSONObject("performance_metrics")?.optString("state")
+            if (metricsState in setOf("verified", "ineligible", "disabled")) {
+                Log.i(TAG, "G6_METRICS_SKIP: already $metricsState for $sessionDate")
+                return@withContext
+            }
+            val c3State = stages.optJSONObject("percentile_finalization")?.optString("state")
+            if (c3State !in setOf("verified", "ineligible")) {
+                Log.i(TAG, "G6_METRICS_DEFER: C3 state=$c3State for $sessionDate")
+                return@withContext
+            }
+            updateRunStage("performance_metrics", "running")
+            val rows = org.json.JSONArray()
+            // Prefer local evaluation outcomes as immutable inputs when present
+            try {
+                val outFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
+                if (outFile.exists()) {
+                    val parsed = org.json.JSONArray(outFile.readText())
+                    for (i in 0 until parsed.length()) {
+                        parsed.optJSONObject(i)?.let { rows.put(it) }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "G6_METRICS_ROWS_LOAD: ${e.message}")
+            }
+            val brain = Python.getInstance().getModule("brain")
+            val result = EvaluationMetricsLedger.runStage(
+                context = this@MarketMLService,
+                brain = brain,
+                runId = run.optString("run_id"),
+                sessionDate = sessionDate,
+                rows = rows,
+                activeRecommendationId = null
+            )
+            // Re-load run after updateRunStage(running) mutated activeEvaluationRun
+            val latest = activeEvaluationRun ?: run
+            val updated = EvaluationRunLedger.applyPerformanceMetricsResult(latest, result)
+            persistEvaluationRun(updated)
+            Log.i(
+                TAG,
+                "G6_METRICS_DONE: date=$sessionDate state=${result.optString("state")} " +
+                    "written=${result.optInt("written_count")} " +
+                    "activeUnchanged=${result.optBoolean("active_recommendation_unchanged", true)}"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "G6_METRICS_FAIL: ${e.message}", e)
+            updateRunStage(
+                "performance_metrics",
+                "failed",
+                reasonCode = "METRICS_STAGE_FAIL",
+                lastError = e.message ?: "metrics_failed"
+            )
+        }
     }
 
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────

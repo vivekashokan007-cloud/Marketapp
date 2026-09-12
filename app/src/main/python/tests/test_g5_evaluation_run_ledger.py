@@ -12,11 +12,12 @@ from evaluation_run_ledger import (
     REASON_CAPPED_POPULATION,
     REASON_CROSS_DATE,
     REASON_DUPLICATE_LEASE,
-    REASON_METRICS_DEFERRED_G6,
+    REASON_METRICS_READY_G6,
     REASON_PROMOTION_DISABLED,
     REASON_TRAINING_FROZEN,
     InMemoryRunStore,
     apply_c3_assessment,
+    apply_performance_metrics_result,
     assess_c3_frames,
     build_run_identity,
     hash_input_manifest,
@@ -127,7 +128,17 @@ class EvaluationRunLedgerTests(unittest.TestCase):
         self.assertFalse(assessment["would_write_rows"])
         run = apply_c3_assessment(run, assessment)
         self.assertTrue(run["labels_saved"])
-        self.assertTrue(run["learning_complete"])  # ineligible C3 is explicitly explained
+        self.assertFalse(run["learning_complete"])  # G6 metrics still pending
+        run = apply_performance_metrics_result(run, {
+            "state": "verified",
+            "reason_code": "NO_ELIGIBLE_PREDICTIONS",
+            "expected_count": 0,
+            "written_count": 0,
+            "verified_count": 0,
+            "active_recommendation_unchanged": True,
+            "detail": {"variants": ["ACTIVE"]},
+        })
+        self.assertTrue(run["learning_complete"])  # C3 ineligible + metrics verified
         self.assertEqual(run["stages"]["percentile_finalization"]["state"], "ineligible")
 
     def test_nonlabelable_accounted(self):
@@ -170,7 +181,8 @@ class EvaluationRunLedgerTests(unittest.TestCase):
         self.assertEqual(run["stages"]["training"]["reason_code"], REASON_TRAINING_FROZEN)
         self.assertEqual(run["stages"]["promotion"]["state"], "disabled")
         self.assertEqual(run["stages"]["promotion"]["reason_code"], REASON_PROMOTION_DISABLED)
-        self.assertEqual(run["stages"]["performance_metrics"]["reason_code"], REASON_METRICS_DEFERRED_G6)
+        self.assertEqual(run["stages"]["performance_metrics"]["state"], "pending")
+        self.assertEqual(run["stages"]["performance_metrics"]["reason_code"], REASON_METRICS_READY_G6)
 
     def test_cross_date_outcomes_rejected(self):
         with self.assertRaises(ValueError) as ctx:

@@ -36,7 +36,9 @@ object EvaluationRunLedger {
     const val REASON_NO_FRAMES = "NO_C3_FRAMES"
     const val REASON_TRAINING_FROZEN = "TRAINING_FROZEN_NOT_ATTEMPTED"
     const val REASON_PROMOTION_DISABLED = "PROMOTION_DISABLED_NOT_ATTEMPTED"
-    const val REASON_METRICS_DEFERRED_G6 = "PERFORMANCE_METRICS_DEFERRED_TO_G6"
+    const val REASON_METRICS_DEFERRED_G6 = "PERFORMANCE_METRICS_DEFERRED_TO_G6" // legacy alias
+    const val REASON_METRICS_READY_G6 = "PERFORMANCE_METRICS_G6_ENABLED"
+    const val REASON_METRICS_WRITTEN = "METRICS_WRITTEN"
     const val REASON_DUPLICATE_LEASE = "ACTIVE_LEASE_HELD"
 
     private const val MIRROR_DIR = "evaluation_run_ledger"
@@ -121,7 +123,7 @@ object EvaluationRunLedger {
         )
         stages.put(
             "performance_metrics",
-            emptyStage("performance_metrics", "ineligible").put("reason_code", REASON_METRICS_DEFERRED_G6)
+            emptyStage("performance_metrics", "pending").put("reason_code", REASON_METRICS_READY_G6)
         )
         val now = java.time.Instant.now().toString()
         return JSONObject()
@@ -278,6 +280,29 @@ object EvaluationRunLedger {
             .put("capped_or_incomplete_frames", 0)
             .put("would_write_rows", true)
             .put("message", "$verified frames have verified candidate-population provenance.")
+    }
+
+    
+    fun applyPerformanceMetricsResult(run: JSONObject, result: JSONObject): JSONObject {
+        val state = result.optString("state", "verified").ifBlank { "verified" }
+        val reason = result.optString("reason_code", REASON_METRICS_WRITTEN)
+        val detail = JSONObject()
+            .put("active_recommendation_unchanged", result.optBoolean("active_recommendation_unchanged", true))
+            .put("g6", true)
+        result.optJSONObject("detail")?.let { d ->
+            detail.put("variants", d.opt("variants"))
+            detail.put("shadow_b_differ_count", d.opt("shadow_b_differ_count"))
+        }
+        return setStage(
+            run,
+            "performance_metrics",
+            state,
+            reasonCode = reason,
+            expectedCount = result.optInt("expected_count", 0),
+            writtenCount = result.optInt("written_count", 0),
+            verifiedCount = result.optInt("verified_count", 0),
+            detail = detail
+        )
     }
 
     fun applyC3Assessment(run: JSONObject, assessment: JSONObject): JSONObject {
