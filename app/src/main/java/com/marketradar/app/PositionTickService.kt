@@ -135,7 +135,14 @@ class PositionTickService : Service() {
             return false
         }
 
-        val openTrades = getOpenTradesFromPrefs()
+        // D7: prune before the zero-trade early return — the moment every position
+        // closes is exactly when the leftover per-trade keys need clearing. Skipped
+        // when open_trades could not be parsed, so a transient read failure cannot
+        // wipe the cooldown anchors of positions that are still live.
+        val parsedOpenTrades = parseOpenTradesFromPrefs()
+        if (parsedOpenTrades != null) pruneShadowNotifyState(parsedOpenTrades)
+
+        val openTrades = parsedOpenTrades ?: JSONArray()
         if (openTrades.length() == 0) {
             flushPending(force = true)
             return false
@@ -160,7 +167,10 @@ class PositionTickService : Service() {
         return true
     }
 
-    private fun getOpenTradesFromPrefs(): JSONArray {
+    private fun getOpenTradesFromPrefs(): JSONArray = parseOpenTradesFromPrefs() ?: JSONArray()
+
+    /** Returns null — distinct from "no open trades" — when the blob cannot be parsed. */
+    private fun parseOpenTradesFromPrefs(): JSONArray? {
         val raw = prefs.getString(PREF_OPEN_TRADES, "[]") ?: "[]"
         return try {
             val rows = JSONArray(raw)
@@ -173,8 +183,50 @@ class PositionTickService : Service() {
             out
         } catch (e: Exception) {
             Log.e(TAG, "Open trade parse failed: ${e.message}")
-            JSONArray()
+            null
         }
+    }
+
+    /**
+     * Drop per-trade shadow notification state for trades that are no longer open.
+     *
+     * `shadow_last_action_<tradeId>` and `shadow_last_notify_ms_<class>_<tradeId>`
+     * were written per trade and never removed, so every trade the app ever
+     * alerted on left entries in SharedPreferences for the life of the install.
+     */
+    private fun pruneShadowNotifyState(openTrades: JSONArray) {
+        val live = HashSet<String>()
+        for (i in 0 until openTrades.length()) {
+            val id = openTrades.optJSONObject(i)?.optStringAny("id")?.trim().orEmpty()
+            if (id.isNotEmpty()) live.add(id)
+        }
+
+        val stale = prefs.all.keys.filter { key ->
+            val tradeId = shadowStateKeyTradeId(key) ?: return@filter false
+            tradeId.isNotEmpty() && !live.contains(tradeId)
+        }
+        if (stale.isEmpty()) return
+
+        val editor = prefs.edit()
+        stale.forEach(editor::remove)
+        editor.apply()
+        val line = "SHADOW_NOTIFY_STATE_PRUNED: removed=${stale.size} liveTrades=${live.size}"
+        Log.i(TAG, line)
+        LogBuffer.add('I', TAG, line)
+    }
+
+    /** Trade id embedded in a shadow-notify prefs key, or null if not one of ours. */
+    private fun shadowStateKeyTradeId(key: String): String? {
+        if (key.startsWith(SHADOW_LAST_ACTION_PREFIX)) {
+            return key.removePrefix(SHADOW_LAST_ACTION_PREFIX)
+        }
+        if (!key.startsWith(SHADOW_LAST_NOTIFY_MS_PREFIX)) return null
+        val remainder = key.removePrefix(SHADOW_LAST_NOTIFY_MS_PREFIX)
+        for (alertClass in SHADOW_ALERT_CLASSES) {
+            val classPrefix = "${alertClass}_"
+            if (remainder.startsWith(classPrefix)) return remainder.removePrefix(classPrefix)
+        }
+        return null
     }
 
     private fun buildTickRow(
@@ -593,7 +645,7 @@ class PositionTickService : Service() {
         val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }
         if (tradeId.isBlank()) return
         val action = row.optString("policy_action", "HOLD")
-        val lastActionKey = "shadow_last_action_$tradeId"
+        val lastActionKey = "$SHADOW_LAST_ACTION_PREFIX$tradeId"
         if (!action.startsWith("SHADOW_")) {
             // Clearing the state marker lets a genuine re-entry alert again. The
             // cooldown anchor below must survive this, otherwise the throttle is
@@ -611,7 +663,7 @@ class PositionTickService : Service() {
         val lastAction = prefs.getString(lastActionKey, "") ?: ""
         if (action == lastAction) return
 
-        val lastNotifyMsKey = "shadow_last_notify_ms_${alertClass}_$tradeId"
+        val lastNotifyMsKey = "$SHADOW_LAST_NOTIFY_MS_PREFIX${alertClass}_$tradeId"
         val lastNotifyMs = prefs.getLong(lastNotifyMsKey, 0L)
         val cooldownMs = if (alertClass == "exit") {
             SHADOW_EXIT_NOTIFY_COOLDOWN_MS
@@ -763,6 +815,12 @@ class PositionTickService : Service() {
          */
         private const val SHADOW_EXIT_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000L
         private const val SHADOW_DEGRADED_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000L
+
+        // Single definition of the per-trade key shapes so the writer and the
+        // pruner cannot drift apart and leak keys the pruner no longer recognises.
+        private const val SHADOW_LAST_ACTION_PREFIX = "shadow_last_action_"
+        private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"
+        private val SHADOW_ALERT_CLASSES = listOf("exit", "degraded")
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
         private const val MAX_PENDING_TICKS = 1_500

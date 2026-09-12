@@ -6184,7 +6184,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.32"
+BRAIN_VERSION = "2.6.33"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7299,6 +7299,15 @@ PC2_POSITION_ALERT_CONTEXT_VERSION = 'pc2_position_alert_context_live_v1'
 # adaptivity for latency (60s vs 5min) and for actually firing. Porting the
 # percentile context into the tick service is the follow-up; see the D4 handoff.
 POSITION_ALERT_OWNERSHIP_VERSION = 'position_alert_ownership_v1_tick_service_authoritative'
+
+# F3 — the N2 re-entry policy the acknowledged-state comment deferred.
+# Acknowledged position-alert states used to be retained forever: the map grew
+# with every trade the app ever alerted on, and a state that cleared and later
+# returned could never alert again. A state is now forgotten once its condition
+# has cleared AND this cooldown has elapsed, so a genuine re-crossing alerts
+# while flapping around the threshold stays suppressed. 45 minutes matches the
+# whipsaw mute already used by _is_market_choppy, so the agent has one tempo.
+POSITION_ALERT_REENTRY_COOLDOWN_MS = 45 * 60 * 1000
 POSITION_ALERT_PREFIXES_OWNED_BY_TICK_SERVICE = (
     'POS_TARGET_',
     'POS_STOP_',
@@ -22844,7 +22853,10 @@ class NotificationAgent:
         self.verdict_history = list(state.get('verdict_history', []) or [])
         self.best_candidate_history = list(state.get('best_candidate_history', []) or [])
         self.position_alert_keys = set(state.get('position_alert_keys', []) or [])
-        self.position_alert_states = set(state.get('position_alert_states', []) or [])
+        self.position_alert_states = self._load_position_alert_states(
+            state.get('position_alert_states')
+        )
+        self.last_processed_ms = _safe_num(state.get('last_processed_ms'), 0) or 0
         self.operational_alert_keys = set(state.get('operational_alert_keys', []) or [])
 
     def _best_executable_candidate(self, result):
@@ -22883,6 +22895,57 @@ class NotificationAgent:
         if key.startswith('POS_TARGET_') or key.startswith('POS_BOOK_'):
             return 'POSITION_EXIT'
         return 'POSITION_RISK'
+
+    @staticmethod
+    def _load_position_alert_states(raw):
+        """Acknowledged position states as {state_key: acked_at_ms}.
+
+        Accepts the legacy list form so a persisted agent state written before
+        the re-entry policy still loads; those entries get timestamp 0, which
+        makes them immediately eligible for re-entry once their condition clears.
+        """
+        if isinstance(raw, dict):
+            return {str(key): (_safe_num(value, 0) or 0) for key, value in raw.items()}
+        if isinstance(raw, (list, tuple, set)):
+            return {str(key): 0 for key in raw}
+        return {}
+
+    def _prune_position_alert_states(self, result, current_position_states, current_time):
+        """Bound the acknowledged-state map and permit genuine re-entry (F3).
+
+        Two rules:
+
+        * a state whose trade is no longer open is dropped — nothing can re-enter
+          it, and keeping it grew the persisted agent state without limit;
+        * a state whose condition has cleared is dropped once
+          POSITION_ALERT_REENTRY_COOLDOWN_MS has elapsed since it was
+          acknowledged, so a fresh crossing alerts again.
+
+        A state whose condition is still active is always retained, so nothing
+        re-fires while the position sits on the wrong side of the threshold.
+
+        Open-trade identity comes from result['position_live'], which brain.py
+        fills for every open position. When it is missing — an older payload, or
+        a poll where valuation failed — the trade-closed rule is skipped entirely
+        rather than guessed at, so live state is never dropped on absent evidence.
+        """
+        live_ids = None
+        position_live = result.get('position_live') if isinstance(result, dict) else None
+        if isinstance(position_live, dict) and position_live:
+            live_ids = {str(trade_id) for trade_id in position_live.keys()}
+
+        retained = {}
+        for state_key, acked_ms in self.position_alert_states.items():
+            trade_id = str(state_key).split(':', 1)[0]
+            if live_ids is not None and trade_id not in live_ids:
+                continue
+            if state_key in current_position_states:
+                retained[state_key] = acked_ms
+                continue
+            if current_time - (_safe_num(acked_ms, 0) or 0) < POSITION_ALERT_REENTRY_COOLDOWN_MS:
+                retained[state_key] = acked_ms
+                continue
+        self.position_alert_states = retained
 
     def _position_alert_owner(self, alert):
         """Which engine is allowed to *notify* for this position alert.
@@ -23186,7 +23249,8 @@ class NotificationAgent:
         full['verdict_history'] = list(self.verdict_history)
         full['best_candidate_history'] = list(self.best_candidate_history)
         full['position_alert_keys'] = sorted(self.position_alert_keys)
-        full['position_alert_states'] = sorted(self.position_alert_states)
+        full['position_alert_states'] = dict(sorted(self.position_alert_states.items()))
+        full['last_processed_ms'] = self.last_processed_ms
         full['operational_alert_keys'] = sorted(self.operational_alert_keys)
         return full
 
@@ -23206,7 +23270,10 @@ class NotificationAgent:
                 if key.startswith('POS_'):
                     state_key = self._position_alert_state_key({'key': key})
                     if state_key:
-                        self.position_alert_states.add(state_key)
+                        # Timestamped so the re-entry cooldown (F3) has an anchor.
+                        # last_processed_ms is the poll clock, not wall time, so
+                        # ack and cooldown are measured on the same scale.
+                        self.position_alert_states[state_key] = self.last_processed_ms
                 else:
                     self.operational_alert_keys.add(key)
             transition = contract.get('state_transition')
@@ -23222,6 +23289,7 @@ class NotificationAgent:
 
     def process_contract(self, result, ctx):
         current_time = ctx.get('now_ms', 0)
+        self.last_processed_ms = current_time
         verdict = result.get('verdict', {}) or {}
         action = verdict.get('action', 'WAIT')
         strategy = verdict.get('strategy')
@@ -23449,10 +23517,10 @@ class NotificationAgent:
         # Keep acknowledgements for alerts that remain present, but do not mark
         # a selected/suppressed alert as seen. Kotlin calls acknowledge_delivery
         # only after NotificationManager accepted the notification.
-        # Position-state re-entry is a separate explicit cooldown/episode policy
-        # (N2). Retain acknowledged states until that policy is changed; only
-        # the selected-vs-delivered acknowledgement timing changes in this batch.
         self.operational_alert_keys.intersection_update(current_operational_keys)
+        # F3: the N2 re-entry/episode policy this used to defer. Bounds the map
+        # and lets a cleared state alert again after the cooldown.
+        self._prune_position_alert_states(result, current_position_states, current_time)
 
         return {
             'brain_notification': contract,

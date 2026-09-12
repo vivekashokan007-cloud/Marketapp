@@ -56,9 +56,15 @@ class ShadowExitNotifyContractTests(unittest.TestCase):
         # A shared anchor would let a SHADOW_DEGRADED notice suppress a real
         # stop-loss alert for the remainder of the cooldown.
         self.assertIn(
-            'val lastNotifyMsKey = "shadow_last_notify_ms_${alertClass}_$tradeId"',
+            'val lastNotifyMsKey = "$SHADOW_LAST_NOTIFY_MS_PREFIX${alertClass}_$tradeId"',
             self.block,
             "cooldown anchor must be keyed by alert class, not per trade only",
+        )
+        # The prefix is a shared constant so the writer and the D7 pruner cannot
+        # drift apart and leak keys the pruner no longer recognises.
+        self.assertIn(
+            'private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"',
+            self.service,
         )
         self.assertIn("private fun shadowAlertClass(", self.service)
         self.assertIn("SHADOW_SL\", \"SHADOW_TP\", \"SHADOW_EOD\" -> \"exit\"", self.service)
