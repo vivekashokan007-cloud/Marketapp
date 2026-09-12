@@ -8,6 +8,11 @@ import org.json.JSONObject
  * server read contains the same id. The PWA remains responsible for the remote
  * update; this journal only protects local safety state across a reload, restart,
  * or stale bootstrap response.
+ *
+ * G3: the pending/closed JSON row is opaque — peak_pnl / trough_pnl and extrema
+ * validity metadata supplied by the PWA close payload are retained verbatim so
+ * reload/retry queues do not drop gross extrema. Kotlin does not itself write
+ * trades_v2 close patches (audit: no native trades_v2 CLOSE path omits peak).
  */
 internal object ClosedTradeLedger {
     const val CLOSED_TRADES_PREF = "closed_trades"

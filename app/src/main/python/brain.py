@@ -3781,11 +3781,14 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     else:
         pnl = (current_net - entry_premium) * lot_size
 
-    # Peak tracking — only positive peaks
+    # Peak/trough tracking — GROSS MTM extrema (INR total for lots×lot_size).
+    # G3 contract: top-level trades_v2 fields remain GROSS; do not store net here.
+    # Open-trade live path seeds missing peak/trough as 0 (observed at entry).
+    # Close/repair paths must not fabricate 0 for unknown historical extrema.
     prev_peak = trade.get('peak_pnl', 0) or 0
     new_peak = max(prev_peak, pnl) if pnl > 0 else prev_peak
 
-    # Trough tracking — most negative seen
+    # Trough tracking — most negative seen (gross)
     prev_trough = trade.get('trough_pnl', 0) or 0
     new_trough = min(prev_trough, pnl) if pnl < 0 else prev_trough
 
@@ -6301,7 +6304,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.37"
+BRAIN_VERSION = "2.6.38"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12

@@ -45,4 +45,26 @@ class ClosedTradeLedgerTest {
     @Test fun invalidRemotePayloadCannotBecomeAnEmptyLedger() {
         assertNull(ClosedTradeLedger.reconcileRemote("not-json", "[]"))
     }
+
+    @Test fun pendingClosePreservesGrossExtremaAcrossReloadJournal() {
+        val incoming = JSONObject()
+            .put("id", "pending-peak")
+            .put("status", "CLOSED")
+            .put("exit_date", "2026-09-12T10:00:00+05:30")
+            .put("net_pnl", -100.0)
+            .put("peak_pnl", 2400.0)
+            .put("trough_pnl", -800.0)
+            .put("peak_pnl_validity", "valid")
+            .put("extrema_basis", "GROSS_MTM")
+            .toString()
+        val recorded = ClosedTradeLedger.record("[]", "[]", incoming)!!
+        val pending = JSONArray(recorded.pendingTradesJson).getJSONObject(0)
+        assertEquals(2400.0, pending.getDouble("peak_pnl"), 0.001)
+        assertEquals(-800.0, pending.getDouble("trough_pnl"), 0.001)
+        assertEquals("valid", pending.getString("peak_pnl_validity"))
+        assertEquals("GROSS_MTM", pending.getString("extrema_basis"))
+        val reconciled = ClosedTradeLedger.reconcileRemote("[]", recorded.pendingTradesJson)!!
+        val retained = JSONArray(reconciled.pendingTradesJson).getJSONObject(0)
+        assertEquals(2400.0, retained.getDouble("peak_pnl"), 0.001)
+    }
 }
