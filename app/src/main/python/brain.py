@@ -1,6 +1,17 @@
 import json, math, os as _os, statistics, hashlib, time
 from datetime import datetime, timezone, timedelta
 
+from calibration_input import (
+    CALIBRATION_INPUT_CONTRACT_VERSION,
+    MIN_CALIBRATION_SUPPORT,
+    admit_calibration_inputs,
+    calibration_cache_signature,
+    is_learning_win,
+    ist_hour_of,
+    learning_pnl_of,
+    unavailable_calibration,
+)
+
 # ── ML Engine bootstrap (silent-fail if model not yet trained) ───────────
 _ML_ENGINE     = None
 _ML_MODEL_PATH = '/data/data/com.marketradar.app/files/ml_model.json'
@@ -1203,15 +1214,16 @@ def timing_wait_signal(polls, baseline, regime):
 # ═══════════════════════════════════════════
 
 def risk_kelly_headroom(polls, baseline, open_trades, closed_trades):
-    """Kelly % vs current exposure."""
+    """Kelly % vs current exposure — G2: eligible net outcomes only."""
     try:
-        if len(closed_trades) < 5: return None
-        wins = [t for t in closed_trades if (t.get('actual_pnl') or 0) > 0]
-        losses = [t for t in closed_trades if (t.get('actual_pnl') or 0) <= 0]
-        w = len(wins) / len(closed_trades)
+        admitted = admit_calibration_inputs(closed_trades, cohort='paper').get('admitted') or []
+        if len(admitted) < MIN_CALIBRATION_SUPPORT: return None
+        wins = [t for t in admitted if is_learning_win(t)]
+        losses = [t for t in admitted if not is_learning_win(t)]
+        w = len(wins) / len(admitted)
         
-        avg_w = sum(t.get('actual_pnl', 0) or 0 for t in wins) / len(wins) if wins else 0
-        avg_l = abs(sum(t.get('actual_pnl', 0) or 0 for t in losses) / len(losses)) if losses else 1
+        avg_w = sum((learning_pnl_of(t) or 0) for t in wins) / len(wins) if wins else 0
+        avg_l = abs(sum((learning_pnl_of(t) or 0) for t in losses) / len(losses)) if losses else 1
         
         r = avg_w / avg_l if avg_l > 0 else 1
         kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
@@ -1259,7 +1271,8 @@ def risk_regime_shift(polls, baseline, open_trades, closed_trades):
 
 # ═══════════════════════════════════════════
 # PART 6: LEARNING — builds knowledge from YOUR trade history
-# Cached: recomputes only when trade count changes
+# G2: shared calibration_input adapter; cache signature hashes
+# IDs/revisions/net/quality/cohort/contract (not count+sum(gross)).
 # ═══════════════════════════════════════════
 
 _calibration = None
@@ -1267,35 +1280,96 @@ _cal_count = 0
 _cal_signature = None
 _capital = 250000
 
-def build_calibration(closed_trades):
-    global _calibration, _cal_count, _cal_signature
-    trades = [t for t in closed_trades if t.get('status') == 'CLOSED' and t.get('actual_pnl') is not None]
-    # BR31: Signature detects PnL corrections at same count (dev/debug scenario)
-    sig = f"{len(trades)}|{sum((t.get('actual_pnl') or 0) for t in trades):.2f}"
-    if sig == _cal_signature and _calibration:
-        return _calibration
-    _cal_count = len(trades)
-    _cal_signature = sig
-    if len(trades) < 5:
-        _calibration = None
+
+def _usable_calibration():
+    """Return calibration only when eligible support is available."""
+    cal = _calibration
+    if not cal or cal.get('unavailable'):
         return None
+    return cal
 
-    cal = {}
 
-    # 1. Strategy win rates
+def _cal_pnl(trade):
+    pnl = learning_pnl_of(trade)
+    return 0.0 if pnl is None else pnl
+
+
+def build_calibration(closed_trades, decision_ts=None, cohort='paper'):
+    """Build calibration from G2-admitted net outcomes only.
+
+    Insufficient eligible support → explicit unavailable calibration and
+    deterministic neutral fallback (no stale reuse).
+    """
+    global _calibration, _cal_count, _cal_signature
+
+    batch = admit_calibration_inputs(
+        closed_trades,
+        cohort=cohort,
+        decision_ts=decision_ts,
+        include_rejected=False,
+    )
+    trades = batch.get('admitted') or []
+    sig = batch.get('signature') or calibration_cache_signature(trades, cohort=cohort or 'paper')
+
+    if sig == _cal_signature and _calibration is not None:
+        # Empty/unavailable must never reuse a prior populated calibration.
+        if trades and not _calibration.get('unavailable'):
+            return _calibration
+        if (not trades) and _calibration.get('unavailable'):
+            return _calibration
+
+    _cal_signature = sig
+    _cal_count = len(trades)
+
+    if len(trades) < MIN_CALIBRATION_SUPPORT:
+        _calibration = unavailable_calibration(
+            reason='insufficient_eligible_support',
+            eligible_count=len(trades),
+            signature=sig,
+            admitted_ids=batch.get('admitted_ids') or [],
+            extra={
+                'cohort': cohort,
+                'cohort_counts': {k: len(v) for k, v in (batch.get('cohorts') or {}).items()},
+                'input_coverage': {
+                    'raw_closed': len(closed_trades or []),
+                    'eligible': len(trades),
+                    'contract_version': CALIBRATION_INPUT_CONTRACT_VERSION,
+                },
+            },
+        )
+        return _calibration
+
+    cal = {
+        'status': 'ok',
+        'unavailable': False,
+        'contract_version': CALIBRATION_INPUT_CONTRACT_VERSION,
+        'signature': sig,
+        'cohort': cohort,
+        'admitted_ids': list(batch.get('admitted_ids') or []),
+        'eligible_count': len(trades),
+        'cohort_counts': {k: len(v) for k, v in (batch.get('cohorts') or {}).items()},
+        'availability_filter': batch.get('availability_filter'),
+        'availability_filter_note': batch.get('availability_filter_note'),
+        'fallback': None,
+    }
+
+    # 1. Strategy win rates (net)
     cal['strategy'] = {}
     for t in trades:
         st = t.get('strategy_type', 'UNKNOWN')
         if st not in cal['strategy']:
             cal['strategy'][st] = {'wins': 0, 'total': 0, 'pnls': []}
         cal['strategy'][st]['total'] += 1
-        if t['actual_pnl'] > 0:
+        pnl = _cal_pnl(t)
+        if pnl > 0:
             cal['strategy'][st]['wins'] += 1
-        cal['strategy'][st]['pnls'].append(t['actual_pnl'])
+        cal['strategy'][st]['pnls'].append(pnl)
     for st in cal['strategy']:
         s = cal['strategy'][st]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
+        s['support'] = s['total']
+        s['uncertain'] = s['total'] < MIN_CALIBRATION_SUPPORT
 
     # 2. VIX regime rates
     cal['vix_regime'] = {}
@@ -1305,7 +1379,7 @@ def build_calibration(closed_trades):
         if regime not in cal['vix_regime']:
             cal['vix_regime'][regime] = {'wins': 0, 'total': 0}
         cal['vix_regime'][regime]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        if _cal_pnl(t) > 0:
             cal['vix_regime'][regime]['wins'] += 1
     for r in cal['vix_regime']:
         s = cal['vix_regime'][r]
@@ -1316,7 +1390,7 @@ def build_calibration(closed_trades):
     for t in trades:
         key = 'credit' if t.get('is_credit') else 'debit'
         cal['side'][key]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        if _cal_pnl(t) > 0:
             cal['side'][key]['wins'] += 1
     for k in cal['side']:
         s = cal['side'][k]
@@ -1332,9 +1406,10 @@ def build_calibration(closed_trades):
         if key not in cal['multi']:
             cal['multi'][key] = {'wins': 0, 'total': 0, 'pnls': []}
         cal['multi'][key]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        pnl = _cal_pnl(t)
+        if pnl > 0:
             cal['multi'][key]['wins'] += 1
-        cal['multi'][key]['pnls'].append(t.get('actual_pnl', 0))
+        cal['multi'][key]['pnls'].append(pnl)
     for k in cal['multi']:
         s = cal['multi'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
@@ -1349,32 +1424,37 @@ def build_calibration(closed_trades):
             fval = t.get(fname, 0)
             bucket = pos if fval and fval > 0 else neg
             bucket['total'] += 1
-            if (t.get('actual_pnl') or 0) > 0:
+            if _cal_pnl(t) > 0:
                 bucket['wins'] += 1
         pr = pos['wins'] / pos['total'] if pos['total'] > 0 else 0
         nr = neg['wins'] / neg['total'] if neg['total'] > 0 else 0
         cal['forces'][fname] = {'pos_rate': pr, 'neg_rate': nr, 'spread': pr - nr, 'n': pos['total'] + neg['total']}
 
-    # 6. Exit analysis — are you capturing peak profit?
-    winners = [t for t in trades if (t.get('actual_pnl') or 0) > 0 and t.get('peak_pnl')]
-    if len(winners) >= 3:
-        peaks = [t['peak_pnl'] for t in winners]
-        exits = [t['actual_pnl'] for t in winners]
-        cal['exit'] = {
+    # 6. Exit analysis — G2/G3: do not compare net exit to gross peak for learning.
+    # Keep a gross diagnostic only; learning statistic disabled until net extrema exist.
+    winners_gross = [t for t in trades if _cal_pnl(t) > 0 and t.get('peak_pnl')]
+    if len(winners_gross) >= 3:
+        peaks = [t['peak_pnl'] for t in winners_gross]
+        # Diagnostic uses gross peak vs net exit — labelled, not used for learning.
+        exits_net = [_cal_pnl(t) for t in winners_gross]
+        cal['exit_gross_diagnostic'] = {
+            'basis': 'gross_peak_vs_net_exit_diagnostic',
+            'learning_enabled': False,
+            'note': 'G3 net extrema required before capture learning; diagnostic only.',
             'avg_peak': sum(peaks) / len(peaks),
-            'avg_exit': sum(exits) / len(exits),
-            'capture_pct': sum(exits) / sum(peaks) * 100 if sum(peaks) > 0 else 0,
-            'left_on_table': sum(p - e for p, e in zip(peaks, exits)) / len(peaks),
-            'n': len(winners)
+            'avg_exit_net': sum(exits_net) / len(exits_net),
+            'capture_pct_mixed_basis': sum(exits_net) / sum(peaks) * 100 if sum(peaks) > 0 else 0,
+            'n': len(winners_gross),
         }
     else:
-        cal['exit'] = None
+        cal['exit_gross_diagnostic'] = None
+    cal['exit'] = None  # learning path disabled
 
-    # 7. Consecutive losses — max streak
+    # 7. Consecutive losses — max streak on net outcomes
     streak = 0
     max_streak = 0
-    for t in sorted(trades, key=lambda x: x.get('exit_date', '')):
-        if (t.get('actual_pnl') or 0) <= 0:
+    for t in sorted(trades, key=lambda x: x.get('exit_date', '') or ''):
+        if _cal_pnl(t) <= 0:
             streak += 1
             max_streak = max(max_streak, streak)
         else:
@@ -1388,7 +1468,7 @@ def build_calibration(closed_trades):
         if mode not in cal['mode']:
             cal['mode'][mode] = {'wins': 0, 'total': 0}
         cal['mode'][mode]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        if _cal_pnl(t) > 0:
             cal['mode'][mode]['wins'] += 1
     for m in cal['mode']:
         s = cal['mode'][m]
@@ -1396,9 +1476,7 @@ def build_calibration(closed_trades):
 
     cal['total_trades'] = len(trades)
 
-    # ═══ b92: LEARNING — what made trades WIN or LOSE? ═══
-
-    # 9. Wall protection correlation — were wall-backed trades more successful?
+    # 9. Wall protection correlation
     cal['wall'] = {'backed': {'wins': 0, 'total': 0}, 'exposed': {'wins': 0, 'total': 0}}
     for t in trades:
         snap = t.get('entry_snapshot') or {}
@@ -1407,7 +1485,6 @@ def build_calibration(closed_trades):
         cw = snap.get('call_wall')
         pw = snap.get('put_wall')
         ws = snap.get('wall_score', 0)
-        # Determine if wall-backed at entry
         backed = False
         if 'BEAR' in stype and cw and sell and cw >= sell:
             backed = True
@@ -1419,7 +1496,7 @@ def build_calibration(closed_trades):
             backed = True
         bucket = cal['wall']['backed'] if backed else cal['wall']['exposed']
         bucket['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        if _cal_pnl(t) > 0:
             bucket['wins'] += 1
     for k in cal['wall']:
         s = cal['wall'][k]
@@ -1437,72 +1514,72 @@ def build_calibration(closed_trades):
         if key not in cal['multi']:
             cal['multi'][key] = {'wins': 0, 'total': 0, 'pnls': []}
         cal['multi'][key]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        pnl = _cal_pnl(t)
+        if pnl > 0:
             cal['multi'][key]['wins'] += 1
-        cal['multi'][key]['pnls'].append(t.get('actual_pnl', 0))
-    # Recompute rates for new multi keys
+        cal['multi'][key]['pnls'].append(pnl)
     for k in cal['multi']:
         s = cal['multi'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
 
-    # 11. Exit reason patterns — why do you close trades?
+    # 11. Exit reason patterns
     cal['exit_reasons'] = {}
     for t in trades:
         reason = t.get('exit_reason', 'unknown') or 'unknown'
         if reason not in cal['exit_reasons']:
             cal['exit_reasons'][reason] = {'wins': 0, 'total': 0, 'avg_pnl': 0, 'pnls': []}
         cal['exit_reasons'][reason]['total'] += 1
-        pnl = t.get('actual_pnl', 0)
-        if pnl > 0: cal['exit_reasons'][reason]['wins'] += 1
+        pnl = _cal_pnl(t)
+        if pnl > 0:
+            cal['exit_reasons'][reason]['wins'] += 1
         cal['exit_reasons'][reason]['pnls'].append(pnl)
     for k in cal['exit_reasons']:
         s = cal['exit_reasons'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
 
-    # ═══ b93: 4 NEW CALIBRATION DIMENSIONS ═══
-
-    # 12. Time-of-day win rates — morning vs afternoon entries
+    # 12. Time-of-day win rates — Asia/Kolkata, not raw UTC hour
     cal['time_of_day'] = {}
     for t in trades:
         entry = t.get('entry_date', '')
-        try:
-            hour = int(entry.split('T')[1].split(':')[0]) if 'T' in entry else 0
-        except Exception as e:
-            # BR34: Malformed entry_date → defaults to hour 0 (morning bucket). Log it.
-            print(f"time_of_day bucket: entry_date '{entry}' parse: {e}")
-            hour = 0
+        hour = ist_hour_of(entry)
+        if hour is None:
+            print(f"time_of_day bucket: entry_date '{entry}' IST parse failed; skip")
+            continue
         bucket = 'morning' if hour < 12 else 'afternoon' if hour < 15 else 'late'
         if bucket not in cal['time_of_day']:
             cal['time_of_day'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
         cal['time_of_day'][bucket]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        pnl = _cal_pnl(t)
+        if pnl > 0:
             cal['time_of_day'][bucket]['wins'] += 1
-        cal['time_of_day'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+        cal['time_of_day'][bucket]['pnls'].append(pnl)
     for k in cal['time_of_day']:
         s = cal['time_of_day'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
 
-    # 13. Width bucket win rates — which widths actually perform?
+    # 13. Width bucket win rates
     cal['width'] = {}
     for t in trades:
         w = t.get('width', 0)
-        if not w: continue
+        if not w:
+            continue
         bucket = f"W{w}"
         if bucket not in cal['width']:
             cal['width'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
         cal['width'][bucket]['total'] += 1
-        if (t.get('actual_pnl') or 0) > 0:
+        pnl = _cal_pnl(t)
+        if pnl > 0:
             cal['width'][bucket]['wins'] += 1
-        cal['width'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+        cal['width'][bucket]['pnls'].append(pnl)
     for k in cal['width']:
         s = cal['width'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
         s['avg_pnl'] = sum(s['pnls']) / len(s['pnls']) if s['pnls'] else 0
 
-    # 14. VIX change during trade — did vol crush or expand while holding?
+    # 14. VIX change during trade
     cal['vix_change'] = {'crush': {'wins': 0, 'total': 0}, 'expand': {'wins': 0, 'total': 0}, 'flat': {'wins': 0, 'total': 0}}
     for t in trades:
         entry_v = t.get('entry_vix')
@@ -1512,13 +1589,13 @@ def build_calibration(closed_trades):
             diff = exit_v - entry_v
             bucket = 'crush' if diff < -0.5 else 'expand' if diff > 0.5 else 'flat'
             cal['vix_change'][bucket]['total'] += 1
-            if (t.get('actual_pnl') or 0) > 0:
+            if _cal_pnl(t) > 0:
                 cal['vix_change'][bucket]['wins'] += 1
     for k in cal['vix_change']:
         s = cal['vix_change'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
 
-    # 15. Sigma OTM at entry — does distance from ATM predict success?
+    # 15. Sigma OTM at entry
     cal['sigma_otm'] = {}
     for t in trades:
         snap = t.get('entry_snapshot') or {}
@@ -1528,9 +1605,10 @@ def build_calibration(closed_trades):
             if bucket not in cal['sigma_otm']:
                 cal['sigma_otm'][bucket] = {'wins': 0, 'total': 0, 'pnls': []}
             cal['sigma_otm'][bucket]['total'] += 1
-            if (t.get('actual_pnl') or 0) > 0:
+            pnl = _cal_pnl(t)
+            if pnl > 0:
                 cal['sigma_otm'][bucket]['wins'] += 1
-            cal['sigma_otm'][bucket]['pnls'].append(t.get('actual_pnl', 0))
+            cal['sigma_otm'][bucket]['pnls'].append(pnl)
     for k in cal['sigma_otm']:
         s = cal['sigma_otm'][k]
         s['rate'] = s['wins'] / s['total'] if s['total'] > 0 else 0
@@ -1541,8 +1619,12 @@ def build_calibration(closed_trades):
 
 def candidate_pattern_match(cand, polls, baseline, regime):
     """b92: Score candidate from YOUR trade history in similar conditions.
-    Now uses 3-factor key: strategy + VIX + wall protection."""
-    if not _calibration:
+    Now uses 3-factor key: strategy + VIX + wall protection.
+    G2: requires usable (eligible-support) calibration; shows support/uncertainty
+    instead of 'Edge confirmed' on small samples.
+    """
+    cal = _usable_calibration()
+    if not cal:
         return None
     ctype = cand.get('type', '')
     # Current VIX regime
@@ -1553,33 +1635,46 @@ def candidate_pattern_match(cand, polls, baseline, regime):
     wall_key = 'wall' if (cand.get('wallScore') or 0) > 0 else 'nowall'
     # Try 3-factor key first: strategy + VIX + wall
     key3 = f"{ctype}|{vr}|{wall_key}"
-    match3 = _calibration.get('multi', {}).get(key3)
+    match3 = cal.get('multi', {}).get(key3)
     if match3 and match3['total'] >= 3:
         rate = match3['rate']
         wall_label = "wall-backed" if wall_key == 'wall' else "unprotected"
-        return {"icon": "📊", "label": f"Your data: {match3['wins']}/{match3['total']} ({rate*100:.0f}%)",
-                "detail": f"{ctype} at {vr} VIX, {wall_label}. Avg P&L ₹{match3['avg_pnl']:.0f}.",
-                "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
-                "strength": 4 if match3['total'] >= 5 else 3}
+        support = match3['total']
+        uncertain = " Support thin — treat as uncertain." if support < MIN_CALIBRATION_SUPPORT else ""
+        return {"icon": "📊", "label": f"Your data: {match3['wins']}/{support} ({rate*100:.0f}%)",
+                "detail": f"{ctype} at {vr} VIX, {wall_label}. Avg net ₹{match3['avg_pnl']:.0f}. n={support}.{uncertain}",
+                "impact": "bullish" if rate >= 0.6 and support >= MIN_CALIBRATION_SUPPORT else "caution" if rate < 0.4 else "neutral",
+                "strength": 4 if support >= 5 else 3}
     # Fall back to 2-factor: strategy + VIX
     key2 = f"{ctype}|{vr}"
-    match2 = _calibration.get('multi', {}).get(key2)
+    match2 = cal.get('multi', {}).get(key2)
     if match2 and match2['total'] >= 3:
         rate = match2['rate']
-        return {"icon": "📊", "label": f"Your data: {match2['wins']}/{match2['total']} ({rate*100:.0f}%)",
-                "detail": f"{ctype} at {vr} VIX. Avg P&L ₹{match2['avg_pnl']:.0f}.",
-                "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
-                "strength": 4 if match2['total'] >= 5 else 3}
+        support = match2['total']
+        uncertain = " Support thin — treat as uncertain." if support < MIN_CALIBRATION_SUPPORT else ""
+        return {"icon": "📊", "label": f"Your data: {match2['wins']}/{support} ({rate*100:.0f}%)",
+                "detail": f"{ctype} at {vr} VIX. Avg net ₹{match2['avg_pnl']:.0f}. n={support}.{uncertain}",
+                "impact": "bullish" if rate >= 0.6 and support >= MIN_CALIBRATION_SUPPORT else "caution" if rate < 0.4 else "neutral",
+                "strength": 4 if support >= 5 else 3}
     # Fall back to strategy-only
-    strat = _calibration.get('strategy', {}).get(ctype)
+    strat = cal.get('strategy', {}).get(ctype)
     if strat and strat['total'] >= 2:
         rate = strat['rate']
-        return {"icon": "📊", "label": f"Your {ctype}: {strat['wins']}/{strat['total']} ({rate*100:.0f}%)",
-                "detail": f"Avg P&L ₹{strat['avg_pnl']:.0f}. {'Edge confirmed.' if rate > 0.6 else 'Needs more data.' if rate >= 0.4 else 'Below 40% — paper first.'}",
-                "impact": "bullish" if rate >= 0.6 else "caution" if rate < 0.4 else "neutral",
-                "strength": 3 if strat['total'] >= 5 else 2}
+        support = strat['total']
+        if support < MIN_CALIBRATION_SUPPORT:
+            tone = f"Insufficient support (n={support}; need {MIN_CALIBRATION_SUPPORT})."
+        elif rate > 0.6:
+            tone = f"Positive net sample (n={support}); uncertainty remains."
+        elif rate >= 0.4:
+            tone = f"Mixed net sample (n={support})."
+        else:
+            tone = f"Below 40% net wins (n={support}) — paper first."
+        return {"icon": "📊", "label": f"Your {ctype}: {strat['wins']}/{support} ({rate*100:.0f}%)",
+                "detail": f"Avg net ₹{strat['avg_pnl']:.0f}. {tone}",
+                "impact": "bullish" if rate >= 0.6 and support >= MIN_CALIBRATION_SUPPORT else "caution" if rate < 0.4 else "neutral",
+                "strength": 3 if support >= 5 else 2}
     # b92: Wall protection aggregate insight
-    wall_cal = _calibration.get('wall', {})
+    wall_cal = cal.get('wall', {})
     if wall_cal.get('backed', {}).get('total', 0) >= 3 and wall_cal.get('exposed', {}).get('total', 0) >= 3:
         b_rate = wall_cal['backed']['rate']
         e_rate = wall_cal['exposed']['rate']
@@ -1590,17 +1685,26 @@ def candidate_pattern_match(cand, polls, baseline, regime):
                     "impact": "bullish" if (wall_key == 'wall' and b_rate > e_rate) or (wall_key == 'nowall' and e_rate > b_rate) else "caution",
                     "strength": 3}
     # Never traded this type
-    if ctype not in _calibration.get('strategy', {}):
+    if ctype not in cal.get('strategy', {}):
         return {"icon": "🆕", "label": f"No history for {ctype}",
                 "detail": "First time. Consider paper trade.", "impact": "caution", "strength": 2}
     return None
 
+
 def risk_exit_analysis(polls, baseline, open_trades, closed_trades):
-    if not _calibration or not _calibration.get('exit'):
+    """G2: capture learning disabled until net extrema exist (G3).
+
+    Gross-peak diagnostic may be present on calibration for inspection but must
+    not drive risk insights that mix net exits with gross peaks.
+    """
+    cal = _usable_calibration()
+    if not cal or not cal.get('exit'):
         return None
-    ex = _calibration['exit']
+    # Learning path currently always sets exit=None; keep structure for G3.
+    ex = cal['exit']
+    if not ex or not ex.get('learning_enabled', True):
+        return None
     cap = ex['capture_pct']
-    # BR24: Scaled threshold. Intraday sellers capture MORE. 60% too low.
     if cap < 70:
         return {"type": "risk", "icon": "💸", "label": f"Capturing {cap:.0f}% of peaks",
                 "detail": f"Avg peak ₹{ex['avg_peak']:.0f} → exit ₹{ex['avg_exit']:.0f}. Capture efficiency low.",
@@ -1611,10 +1715,11 @@ def risk_exit_analysis(polls, baseline, open_trades, closed_trades):
     return None
 
 def risk_factor_importance(polls, baseline, open_trades, closed_trades):
-    if not _calibration or not _calibration.get('forces'):
+    cal = _usable_calibration()
+    if not cal or not cal.get('forces'):
         return None
     best_name, best_spread = None, 0
-    for fname, fdata in _calibration['forces'].items():
+    for fname, fdata in cal['forces'].items():
         if fdata['n'] >= 10 and fdata['spread'] > best_spread:
             best_name, best_spread = fname, fdata['spread']
     if best_name and best_spread > 0.15:
@@ -1625,9 +1730,10 @@ def risk_factor_importance(polls, baseline, open_trades, closed_trades):
     return None
 
 def risk_streak_warning(polls, baseline, open_trades, closed_trades):
-    if not _calibration:
+    cal = _usable_calibration()
+    if not cal:
         return None
-    streak = _calibration.get('max_loss_streak', 0)
+    streak = cal.get('max_loss_streak', 0)
     if streak >= 3:
         return {"type": "risk", "icon": "📉", "label": f"Max losing streak: {streak}",
                 "detail": f"Worst run was {streak} consecutive losses. Size accordingly.",
@@ -4879,8 +4985,9 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     # b93: HARD VETO — calibration kill switch (0% win rate = never recommend)
     vetoed_strategy = None
-    if _calibration and strategy:
-        cal = _calibration.get('strategy', {}).get(strategy, {})
+    _cal_use = _usable_calibration()
+    if _cal_use and strategy:
+        cal = _cal_use.get('strategy', {}).get(strategy, {})
         n = cal.get('total', 0)
         rate = cal.get('rate', 0.5)
         if n >= 5 and rate < 0.15:
@@ -4956,8 +5063,8 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         elif strategy:
             has_cands = any(c.get('type') == strategy for c in candidates)
             cal_dead = False
-            if _calibration:
-                cal_check = _calibration.get('strategy', {}).get(strategy, {})
+            if _usable_calibration():
+                cal_check = _usable_calibration().get('strategy', {}).get(strategy, {})
                 cal_dead = cal_check.get('total', 0) >= 5 and cal_check.get('rate', 0.5) < 0.3
             if not has_cands or cal_dead:
                 needs_fallback = True
@@ -4978,8 +5085,8 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             if info['count'] == 0: continue
             # Calibration rate (default 0.5 if unknown)
             cal_rate = 0.5
-            if _calibration:
-                cal_s = _calibration.get('strategy', {}).get(ct, {})
+            if _usable_calibration():
+                cal_s = _usable_calibration().get('strategy', {}).get(ct, {})
                 if cal_s.get('total', 0) >= 3:
                     cal_rate = cal_s.get('rate', 0.5)
             # Score = calibration × log(count+1) × context quality
@@ -5221,8 +5328,8 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if abs(fii_sum) > 1000: reasons.append(f"FII {'+' if fii_sum>0 else ''}₹{fii_sum:.0f}Cr/5d")
     if abs(skew) > 2: reasons.append(f"Skew {'steep' if skew>0 else 'flat'} ({skew:.0f})")
     if dte <= 1: reasons.append(f"EXPIRY (DTE {dte})")
-    if _calibration and strategy:
-        cal = _calibration.get('strategy', {}).get(strategy, {})
+    if _usable_calibration() and strategy:
+        cal = _usable_calibration().get('strategy', {}).get(strategy, {})
         if cal.get('total', 0) >= 3:
             reasons.append(f"Your {strategy}: {cal.get('wins',0)}/{cal['total']}")
     # b92: Context-aware reasoning
@@ -6194,7 +6301,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.36"
+BRAIN_VERSION = "2.6.37"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -12277,6 +12384,11 @@ def _load_signal_reliability(lane, ctx):
     }
 
 def build_ml_memory_block(candidate, ctx, calibration, closed_trades):
+    """Lane memory for explanations.
+
+    Learning stats (win_rate/avg_pnl) use G2-admitted net outcomes only.
+    recent_closed_trades remains display-oriented (may include dirty rows).
+    """
     lane = candidate.get('lane') or _candidate_lane(candidate.get('index'), ctx.get('tradeMode'))
     lane_trades = [
         t for t in (closed_trades or [])
@@ -12284,8 +12396,8 @@ def build_ml_memory_block(candidate, ctx, calibration, closed_trades):
         and str(t.get('status') or '').upper() == 'CLOSED'
         and _trade_lane(t) == lane
     ]
-    labeled_trades = [t for t in lane_trades if _trade_outcome_bool(t) is not None]
-    wins = [t for t in labeled_trades if _trade_outcome_bool(t) is True]
+    admitted = admit_calibration_inputs(lane_trades, cohort='paper').get('admitted') or []
+    wins = [t for t in admitted if is_learning_win(t)]
     recent_trades = sorted(
         lane_trades,
         key=lambda t: str(t.get('exit_date') or t.get('updated_at') or t.get('created_at') or ''),
@@ -12297,32 +12409,31 @@ def build_ml_memory_block(candidate, ctx, calibration, closed_trades):
             'id': trade.get('id'),
             'strategy_type': trade.get('strategy_type'),
             'actual_pnl': trade.get('actual_pnl'),
+            'net_pnl': trade.get('net_pnl'),
             'canonical_won': _trade_outcome_bool(trade),
             'exit_date': trade.get('exit_date') or trade.get('updated_at') or trade.get('created_at'),
         })
 
-    lane_pnls = []
-    for trade in labeled_trades:
-        pnl = trade.get('actual_pnl')
-        try:
-            if pnl is not None:
-                lane_pnls.append(float(pnl))
-        except Exception:
-            pass
+    lane_pnls = [learning_pnl_of(t) for t in admitted if learning_pnl_of(t) is not None]
     avg_pnl = round(sum(lane_pnls) / len(lane_pnls), 2) if lane_pnls else 0.0
-    win_rate = round(len(wins) / len(labeled_trades), 4) if labeled_trades else None
+    win_rate = round(len(wins) / len(admitted), 4) if admitted else None
+    cal = calibration if isinstance(calibration, dict) else {}
+    cal_sig = None if cal.get('unavailable') else cal.get('signature')
+    max_streak = 0 if cal.get('unavailable') else cal.get('max_loss_streak')
 
     return {
         'lane': lane,
         'trade_count_closed': len(lane_trades),
-        'trade_count_labeled': len(labeled_trades),
+        'trade_count_labeled': len(admitted),
         'win_count': len(wins),
         'win_rate': win_rate,
         'avg_pnl': avg_pnl,
+        'learning_basis': 'g2_net_eligible',
         'signal_reliability': _load_signal_reliability(lane, ctx),
         'recent_closed_trades': recent_summary,
-        'calibration_signature': calibration.get('signature') if isinstance(calibration, dict) else None,
-        'max_loss_streak': calibration.get('max_loss_streak') if isinstance(calibration, dict) else None,
+        'calibration_signature': cal_sig,
+        'max_loss_streak': max_streak,
+        'calibration_unavailable': bool(cal.get('unavailable')),
     }
 
 def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):

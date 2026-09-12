@@ -995,7 +995,10 @@ object SupabaseClient {
     }
 
     /**
-     * Reads trades_v2 where status = CLOSED, limit 200 (SC1: increased from 20 for ML calibration)
+     * Reads trades_v2 where status = CLOSED, limit 200 (SC1: increased from 20 for ML calibration).
+     *
+     * Returns dirty rows for UI/accounting. Learning/calibration must filter via
+     * [CalibrationInputGate] / Python `calibration_input` — do not assume all 200 are eligible.
      */
     fun getClosedTradesOrNull(): JSONArray? {
         val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=exit_date.desc&limit=200")

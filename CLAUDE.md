@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.36 · `versionCode` 467 · **Updated**: September 12, 2026 (G1 Release A: archive RLS/grant lock, TRUNCATE/anon-DELETE revoke, AuthAccess bearer stub default-off. Notification pack through b466 remains. Training/live orders still frozen.)
+> **Version**: 2.6.37 · `versionCode` 468 · **Updated**: September 12, 2026 (G2 Release B: shared net calibration-input adapter, cache invalidation by ID/revision/net/quality/cohort, IST time buckets. Training/live orders still frozen; p_ml entry gate unchanged.)
 
 ## Project overview
 
@@ -148,7 +148,7 @@ Release commit `751c289` fixed the executable quote contract that was still allo
 - **Android quote bridge:** `MarketWatchService.optionQuote()` now preserves missing bid/ask as JSON `null` in the chain payload, full ML slice, and strike resolver. `optionMid()` can still use LTP for display-only mid price, but executable economics no longer inherit that fallback.
 - **Python entry economics:** candidate net economics require executable prices: short entry bid, long entry ask, short close ask, and long close bid. Missing executable quotes now return `QUOTE_INCOMPLETE`, add entry reasons such as `quote_incomplete` / `friction_unavailable`, mark `NET_UNAVAILABLE_FAIL_CLOSED`, and prevent ranking/entry from silently using zero or LTP.
 - **Teacher managed outcome:** `_teacher_candidate_leg_specs()` now accepts camelCase, snake_case, and compact `legs` payloads; `_normalize_teacher_quote_point()` maps compact leg arrays into explicit quote fields. `_managed_teacher_outcome()` drops candidates/points when the friction path is incomplete and uses net max-loss after friction for stop-loss thresholding.
-- **Version markers:** `ENTRY_ELIGIBILITY_VERSION = entry_eligibility_v5_quote_friction_fail_closed`; `NET_ECONOMICS_VERSION = net_economics_v2_executable_quote_contract`; `TEACHER_FRICTION_VERSION = teacher_friction_v2_executable_bid_ask_charges`; `BRAIN_VERSION = "2.6.26"`; `NET_RANK_EDGE_SCALE = net_premium_edge_absolute_rupees_after_executable_friction`.
+- **Version markers:** `ENTRY_ELIGIBILITY_VERSION = entry_eligibility_v5_quote_friction_fail_closed`; `NET_ECONOMICS_VERSION = net_economics_v2_executable_quote_contract`; `TEACHER_FRICTION_VERSION = teacher_friction_v2_executable_bid_ask_charges`; `BRAIN_VERSION = "2.6.37"`; `NET_RANK_EDGE_SCALE = net_premium_edge_absolute_rupees_after_executable_friction`.
 - **Validation before push:** `python -m py_compile app/src/main/python/brain.py`, `git diff --check`, and a zero-default bid/ask scan passed. Pytest remains unavailable in this environment.
 
 ### BNF strike-step blackout fixed in v2.6.12 (field-verified)

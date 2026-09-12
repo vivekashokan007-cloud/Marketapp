@@ -109,7 +109,7 @@ def run():
     assert out_empty['replay_meta']['calibration_override_used'] is True
     assert out_mock['replay_meta']['calibration_override_used'] is True
     # Override should execute without crashing; results may be identical if
-    # fixture has <5 closed trades (build_calibration returns None anyway)
+    # fixture has <5 eligible closed trades (build_calibration returns unavailable / no usable cal)
     assert out_empty['result'] is not None, "replay crashed with empty override"
     assert out_mock['result']  is not None, "replay crashed with mock override"
     print(f"  PASS: calibration override plumbing works (3 variants)")
