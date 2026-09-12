@@ -1381,6 +1381,22 @@ class NativeBridge(private val context: Context) {
             status.put("c3FinalizationVerifiedRows", prefs.getInt("c3_finalization_verified_rows", 0))
             status.put("c3FinalizationError", prefs.getString("c3_finalization_last_error", "") ?: "")
             status.put("c3FinalizationUpdatedAtMs", prefs.getLong("c3_finalization_updated_at_ms", 0L))
+            // G5: Labels saved ≠ learning complete
+            val g5Session = targetDate ?: today
+            val g5Run = EvaluationRunLedger.loadLocal(context, prefs, g5Session)
+            val labelsSaved = g5Run?.optBoolean("labels_saved", false)
+                ?: prefs.getBoolean("g5_labels_saved", false)
+            val learningComplete = g5Run?.optBoolean("learning_complete", false)
+                ?: prefs.getBoolean("g5_learning_complete", false)
+            status.put("evaluationRunId", g5Run?.optString("run_id") ?: (prefs.getString("g5_evaluation_run_id", "") ?: ""))
+            status.put("labelsSaved", labelsSaved)
+            status.put("learningComplete", learningComplete)
+            status.put(
+                "evaluationStages",
+                if (g5Run != null) EvaluationRunLedger.stagesSummaryJson(g5Run) else JSONObject()
+            )
+            // Prefer truthful learningComplete over legacy evaluationDone aliases for UI.
+            status.put("learningCompleteRequiresC3", true)
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"

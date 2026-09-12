@@ -28,6 +28,12 @@ FAITHFULNESS
     keys are copied from app/src/main/java/com/marketradar/app/SupabaseClient.kt as of
     v2.6.11. If that file changes, re-check the constants below.
 
+G5 NOTE
+    This tool runs outcome stages (input coverage + outcome computation +
+    outcome persistence). It does NOT claim learning complete. C3 percentile
+    finalization is a separate stage — use tools/g5_c3_stage_repair.py for
+    dry-run eligibility. The tool prints stages_ran at the end of each date.
+
 USAGE
     export SUPABASE_URL=https://fdynxkfxohbnlvayouje.supabase.co
     export SUPABASE_SERVICE_KEY=<service_role_key>          # service role: bypasses RLS for writes
@@ -506,6 +512,20 @@ def main():
               "or your daily-accuracy job) so the dashboards pick it up.")
     else:
         print("\nDRY RUN complete. Re-run with --write to commit.")
+
+    stages_ran = [
+        "input_coverage:ran",
+        "outcome_computation:ran",
+        f"outcome_persistence:{'verified' if args.write else 'dry_run'}",
+        "research_aggregation:not_run_by_this_tool",
+        "percentile_finalization:not_run_by_this_tool_use_g5_c3_stage_repair",
+        "performance_metrics:deferred_g6",
+        "training:disabled",
+        "promotion:disabled",
+    ]
+    print("[g5] stages_ran=" + ",".join(stages_ran))
+    print("[g5] labels_saved_claim=" + ("yes_if_write_verified" if args.write else "no_dry_run"))
+    print("[g5] learning_complete_claim=no (C3/research/metrics not asserted by this tool)")
 
 
 if __name__ == "__main__":

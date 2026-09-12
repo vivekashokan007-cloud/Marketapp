@@ -2115,14 +2115,64 @@ class MarketMLService : Service() {
         }
     }
 
+
+    // ── G5 evaluation-run ledger helpers ─────────────────────────────────────
+    private var activeEvaluationRun: org.json.JSONObject? = null
+
+    private fun persistEvaluationRun(run: org.json.JSONObject) {
+        activeEvaluationRun = run
+        EvaluationRunLedger.persistLocal(this, prefs, run)
+    }
+
+    private fun updateRunStage(
+        name: String,
+        state: String,
+        reasonCode: String = "",
+        expectedCount: Int? = null,
+        writtenCount: Int? = null,
+        verifiedCount: Int? = null,
+        nonlabelableCount: Int? = null,
+        lastError: String = "",
+        detail: org.json.JSONObject? = null
+    ) {
+        val current = activeEvaluationRun ?: return
+        val updated = EvaluationRunLedger.setStage(
+            current,
+            name,
+            state,
+            reasonCode = reasonCode,
+            expectedCount = expectedCount,
+            writtenCount = writtenCount,
+            verifiedCount = verifiedCount,
+            nonlabelableCount = nonlabelableCount,
+            lastError = lastError,
+            detail = detail
+        )
+        persistEvaluationRun(updated)
+    }
+
     private suspend fun runC3PercentileFinalization(sessionDate: String) = withContext(Dispatchers.IO) {
+        if (activeEvaluationRun == null) {
+            activeEvaluationRun = EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
+        }
+        val c3Phase = prefs.getString("c3_finalization_phase", "") ?: ""
         if (prefs.getString("c3_finalization_date", "") == sessionDate &&
-            prefs.getString("c3_finalization_phase", "") == "DONE"
+            c3Phase in setOf("DONE", "INELIGIBLE")
         ) {
-            Log.i(TAG, "C3_FINALIZE_SKIP: already verified for $sessionDate")
+            Log.i(TAG, "C3_FINALIZE_SKIP: already $c3Phase for $sessionDate")
+            return@withContext
+        }
+        // Also skip when durable ledger already terminal-ok for C3.
+        val ledgerC3 = activeEvaluationRun
+            ?.optJSONObject("stages")
+            ?.optJSONObject("percentile_finalization")
+            ?.optString("state")
+        if (ledgerC3 in setOf("verified", "ineligible")) {
+            Log.i(TAG, "C3_FINALIZE_SKIP: ledger stage=$ledgerC3 for $sessionDate")
             return@withContext
         }
         updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
+        updateRunStage("percentile_finalization", "running")
         val frames = org.json.JSONArray()
         fun captureFrame(snapshot: org.json.JSONObject) {
             val context = parseJsonObject(snapshot.opt("context_json")) ?: return
@@ -2144,14 +2194,49 @@ class MarketMLService : Service() {
         }
         if (frames.length() == 0) {
             updateC3FinalizationState(
-                sessionDate, "SKIPPED_NO_FRAMES",
-                "No C3 recording frames were captured for $sessionDate. Evaluation remains complete.",
+                sessionDate, "INELIGIBLE",
+                "No C3 recording frames were captured for $sessionDate. Labels may be saved; learning is not complete until C3 is verified or explicitly ineligible.",
                 frameCount = 0, rowCount = 0, verifiedRows = 0, running = false
+            )
+            updateRunStage(
+                "percentile_finalization",
+                "ineligible",
+                reasonCode = EvaluationRunLedger.REASON_NO_FRAMES,
+                expectedCount = 0,
+                writtenCount = 0,
+                verifiedCount = 0,
+                lastError = "NO_C3_FRAMES"
             )
             Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=$snapshotCount")
             return@withContext
         }
 
+        // G5: assess original-frame provenance BEFORE any C3 write. Capped /
+        // incomplete populations are ineligible — never fabricate verified rows.
+        val assessment = EvaluationRunLedger.assessC3Frames(frames)
+        if (!assessment.optBoolean("eligible", false)) {
+            val reason = assessment.optString("reason_code", EvaluationRunLedger.REASON_CAPPED_POPULATION)
+            val message = assessment.optString("message", "C3 provenance ineligible")
+            updateC3FinalizationState(
+                sessionDate, "INELIGIBLE", message,
+                frameCount = frames.length(), rowCount = 0, verifiedRows = 0, running = false, lastError = reason
+            )
+            val run = activeEvaluationRun ?: EvaluationRunLedger.loadLocal(this, prefs, sessionDate)
+            if (run != null) {
+                persistEvaluationRun(EvaluationRunLedger.applyC3Assessment(run, assessment))
+            } else {
+                updateRunStage(
+                    "percentile_finalization",
+                    "ineligible",
+                    reasonCode = reason,
+                    expectedCount = frames.length(),
+                    lastError = message,
+                    detail = assessment
+                )
+            }
+            Log.w(TAG, "C3_FINALIZE_INELIGIBLE: date=$sessionDate reason=$reason frames=${frames.length()}")
+            return@withContext
+        }
         updateC3FinalizationState(sessionDate, "BUILDING", "Building C3 rows from ${frames.length()} captured frames...", frameCount = frames.length(), running = true)
         val historySeed = SupabaseClient.fetchC3PercentileHistorySeed(sessionDate)
         val outcomePrior = SupabaseClient.fetchC3OutcomePrior(sessionDate)
@@ -2167,10 +2252,26 @@ class MarketMLService : Service() {
         val write = SupabaseClient.saveC3PercentileRows(sessionDate, rows)
         if (!write.success) {
             updateC3FinalizationState(sessionDate, "FAILED", write.message, frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false, lastError = write.message)
+            updateRunStage(
+                "percentile_finalization",
+                "failed",
+                reasonCode = "C3_WRITE_FAIL",
+                expectedCount = write.expectedRows,
+                writtenCount = write.verifiedRows,
+                verifiedCount = write.verifiedRows,
+                lastError = write.message ?: ""
+            )
             Log.e(TAG, "C3_FINALIZE_WRITE_FAIL: date=$sessionDate ${write.message}")
             return@withContext
         }
         updateC3FinalizationState(sessionDate, "DONE", "C3 percentile finalization verified: ${write.verifiedRows}/${write.expectedRows} rows.", frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false)
+        updateRunStage(
+            "percentile_finalization",
+            "verified",
+            expectedCount = write.expectedRows,
+            writtenCount = write.expectedRows,
+            verifiedCount = write.verifiedRows
+        )
         Log.i(TAG, "C3_FINALIZE_DONE: date=$sessionDate frames=${frames.length()} rows=${write.expectedRows} existing=${write.alreadyPresentRows}")
     }
 
@@ -2256,6 +2357,38 @@ class MarketMLService : Service() {
                 "EVAL_INPUT_FILES_READY: date=$sessionDate snapshots=${preparedInputs.snapshotCount} " +
                     "snapshotsBytes=${snapshotsFile.length()} chainBytes=${chainFile.length()} ${evalHeapLine()}"
             )
+            val inputManifest = org.json.JSONObject()
+                .put("snapshot_count", preparedInputs.snapshotCount)
+                .put("snapshot_ids", org.json.JSONArray(evaluationSnapshotIds.toList().sorted()))
+                .put("snapshots_bytes", snapshotsFile.length())
+                .put("chain_bytes", chainFile.length())
+                .put("coverage_integrity", currentCoverageIntegrity(sessionDate))
+            val (begunRun, leaseOk, leaseReason) = EvaluationRunLedger.beginOrResume(
+                this@MarketMLService,
+                prefs,
+                sessionDate,
+                holder = "device:${android.os.Build.MODEL}:$runId",
+                inputManifest = inputManifest
+            )
+            if (!leaseOk) {
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = "LEASE_HELD",
+                    message = "Another evaluation run holds the lease for this identity ($leaseReason). Not duplicating outcomes.",
+                    running = false,
+                    lastError = leaseReason
+                )
+                Log.w(TAG, "EVAL_LEASE_DENIED: date=$sessionDate reason=$leaseReason runId=${begunRun.optString("run_id")}")
+                return@withContext
+            }
+            activeEvaluationRun = begunRun
+            val resumeStage = EvaluationRunLedger.nextResumableStage(begunRun)
+            Log.i(TAG, "EVAL_RUN_LEASED: runId=${begunRun.optString("run_id")} resumeStage=$resumeStage labelsSaved=${begunRun.optBoolean("labels_saved")} learningComplete=${begunRun.optBoolean("learning_complete")}")
+            updateRunStage(
+                "input_coverage",
+                "running",
+                expectedCount = preparedInputs.snapshotCount
+            )
             val coverageIntegrity = currentCoverageIntegrity(sessionDate).uppercase(Locale.US)
             val coverageIntegrityIssue = currentCoverageIntegrityIssue(sessionDate).ifBlank { "UNKNOWN_INTEGRITY_ISSUE" }
             if (coverageIntegrity == "INTEGRITY_BROKEN" && !forceAnyway) {
@@ -2305,6 +2438,22 @@ class MarketMLService : Service() {
                 "EVAL_PREPARED: date=$sessionDate totalSnapshots=$totalSnapshots " +
                     "outputsBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
+            val labelableMap = try { buildSnapshotLabelableMap(snapshotsFile) } catch (_: Exception) { emptyMap() }
+            val nonlabelable = labelableMap.values.count { !it }
+            val labelable = labelableMap.values.count { it }
+            updateRunStage(
+                "input_coverage",
+                "verified",
+                reasonCode = if (nonlabelable > 0) "NONLABELABLE_SNAPSHOTS_ACCOUNTED" else "",
+                expectedCount = totalSnapshots,
+                verifiedCount = labelable.coerceAtLeast(0),
+                nonlabelableCount = nonlabelable,
+                detail = org.json.JSONObject()
+                    .put("labelable", labelable)
+                    .put("nonlabelable", nonlabelable)
+                    .put("reconciled_snapshot_ids", evaluationSnapshotIds.size)
+            )
+            updateRunStage("outcome_computation", "running", expectedCount = totalSnapshots)
 
             if (totalSnapshots == 0) {
                 val pollCount = prefs.getInt("poll_count", 0)
@@ -2497,6 +2646,14 @@ class MarketMLService : Service() {
                 "EVAL_LOCAL_COMPLETE: date=$sessionDate produced=$producedCount " +
                     "outputBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
+            updateRunStage(
+                "outcome_computation",
+                "verified",
+                expectedCount = totalSnapshots,
+                writtenCount = producedCount,
+                verifiedCount = producedCount
+            )
+            updateRunStage("outcome_persistence", "running", expectedCount = producedCount)
             var evaluatedOutcomes = readJsonArrayFile(outputsFile)
             if (evaluatedOutcomes.length() != producedCount) {
                 throw IllegalStateException(
@@ -2581,10 +2738,19 @@ class MarketMLService : Service() {
                 )
             }
             if (!saveResult.success) {
+                updateRunStage(
+                    "outcome_persistence",
+                    "failed",
+                    reasonCode = "OUTCOME_PERSISTENCE_FAILED",
+                    expectedCount = saveResult.producedCount,
+                    writtenCount = saveResult.persistedCount,
+                    verifiedCount = saveResult.persistedCount,
+                    lastError = saveResult.message
+                )
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
                     phase = "FAILED_SAVE",
-                    message = "Evaluation for $sessionDate finished locally with ${saveResult.producedCount} outcomes, but Supabase persistence failed. Retry will reuse the saved local output.",
+                    message = "Evaluation for $sessionDate finished locally with ${saveResult.producedCount} outcomes, but Supabase persistence failed. Retry will reuse the saved local output. Labels are NOT saved; learning is incomplete.",
                     totalSnapshots = totalSnapshots,
                     completedSnapshots = completedSnapshots,
                     producedCount = saveResult.producedCount,
@@ -2604,11 +2770,23 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
+            updateRunStage(
+                "outcome_persistence",
+                "verified",
+                expectedCount = saveResult.producedCount,
+                writtenCount = saveResult.persistedCount,
+                verifiedCount = saveResult.persistedCount,
+                detail = org.json.JSONObject()
+                    .put("primary_persisted", saveResult.primaryPersistedCount)
+                    .put("evaluation_persisted", saveResult.evaluationPersistedCount)
+                    .put("rejected_persisted", saveResult.rejectedPersistedCount)
+            )
             val reportableOutcomes = sanitizedTeacherOutcomesForReporting(evaluatedOutcomes)
             val gradeableTeacherRows = countGradeableTeacherRows(reportableOutcomes)
             var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
             if (evaluatedOutcomes.length() > 0) {
                 evalPhase = "AGGREGATING"
+                updateRunStage("research_aggregation", "running")
                 enforceEvaluationBudget("aggregation")
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
@@ -2638,11 +2816,38 @@ class MarketMLService : Service() {
                     if (dropSummary.isNotBlank()) append(" Teacher drops: $dropSummary.")
                 }
             }
+            if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                updateRunStage(
+                    "research_aggregation",
+                    "failed",
+                    reasonCode = "TEACHER_RESEARCH_FAILED",
+                    lastError = teacherResearchResult.error ?: "teacher_research_report_missing"
+                )
+            } else {
+                updateRunStage(
+                    "research_aggregation",
+                    "verified",
+                    expectedCount = saveResult.producedCount,
+                    verifiedCount = gradeableTeacherRows
+                )
+            }
+            // Labels-saved is recorded by outcome_persistence=verified. Learning
+            // complete requires C3 (and other stages) verified or explicitly ineligible.
             prefs.edit().putString("evaluation_done_date", sessionDate).commit()
+            val labelsSaved = activeEvaluationRun?.optBoolean("labels_saved", false) == true
+            val learningComplete = activeEvaluationRun?.optBoolean("learning_complete", false) == true
+            val truthfulMessage = buildString {
+                append(evaluationMessage)
+                append(" Labels saved: ")
+                append(if (labelsSaved) "YES" else "NO")
+                append(". Learning complete: ")
+                append(if (learningComplete) "YES" else "NO (awaiting C3 / remaining stages)")
+                append(".")
+            }
             updateEvaluationJobState(
                 sessionDate = sessionDate,
-                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH" else "DONE",
-                message = evaluationMessage,
+                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH" else "LABELS_SAVED",
+                message = truthfulMessage,
                 totalSnapshots = totalSnapshots,
                 completedSnapshots = completedSnapshots,
                 producedCount = saveResult.producedCount,
@@ -2654,8 +2859,9 @@ class MarketMLService : Service() {
                     null
                 }
             )
-            // C3 is intentionally a separate best-effort job. Its failure is
-            // visible in its own status and never changes evaluation DONE.
+            // C3 is a separate restartable stage. Its failure/ineligibility must
+            // never be described as full learning completion.
+            updateRunStage("percentile_finalization", "pending")
             startC3PercentileFinalization(sessionDate)
             cancelDayEvaluationReminder(this@MarketMLService)
             if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
