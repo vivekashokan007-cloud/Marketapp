@@ -2298,7 +2298,7 @@ object SupabaseClient {
     }
 
     private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
-        val filter = "session_date=eq.$sessionDate"
+        val filter = "session_date=eq.$sessionDate&snapshot_id=not.is.null"
         val shadowRows = normalizeShadowOutcomeRows(
             select("ml_recommendation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
         )
