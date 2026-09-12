@@ -3051,7 +3051,7 @@ def _position_alert_body(trade, current_pnl, action_text, quality_note='', pct_o
     t_index = trade.get('index_key', '')
     t_type = trade.get('strategy_type', '')
     t_forces = trade.get('forces') or {}
-    t_aligned = t_forces.get('aligned')
+    t_aligned = t_forces.get('aligned', trade.get('force_alignment'))
     max_profit = _alert_num(trade.get('max_profit'))
     max_loss = _alert_num(trade.get('max_loss'))
     pnl = _alert_num(current_pnl, 0)
@@ -3139,7 +3139,7 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
         max_profit = trade.get('max_profit', 0)
         max_loss = trade.get('max_loss', 0)
         t_forces = trade.get('forces') or {}
-        t_aligned = t_forces.get('aligned')
+        t_aligned = t_forces.get('aligned', trade.get('force_alignment'))
         trade_label = f"{t_index} {t_type} {t_sell_strike}"
         quality = trade.get('valuation_quality')
         ci_meta = trade.get('controlIndexMeta') or {}
@@ -6184,7 +6184,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.28"
+BRAIN_VERSION = "2.6.29"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12

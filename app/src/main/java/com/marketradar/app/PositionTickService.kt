@@ -152,6 +152,7 @@ class PositionTickService : Service() {
         val rows = JSONArray()
         trades.forEach { trade ->
             val row = buildTickRow(trade, sessionDate, tickTs, quoteFetch) ?: return@forEach
+            maybeNotifyShadowExit(row, trade)
             rows.put(row)
         }
         enqueueRows(rows)
@@ -562,6 +563,76 @@ class PositionTickService : Service() {
 
     private fun isoUtcNow(): String = UTC_DATE_FORMAT.get().format(Date())
 
+    /**
+     * Live shadow-exit alerts. Dual path with brain.py position alerts for now —
+     * notify only on (tradeId, shadowAction) transitions, with a short cooldown
+     * against rapid flapping between recommendations.
+     */
+    private fun maybeNotifyShadowExit(row: JSONObject, trade: JSONObject) {
+        val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }
+        if (tradeId.isBlank()) return
+        val action = row.optString("policy_action", "HOLD")
+        val lastActionKey = "shadow_last_action_$tradeId"
+        val lastNotifyMsKey = "shadow_last_notify_ms_$tradeId"
+        if (!action.startsWith("SHADOW_")) {
+            if (prefs.contains(lastActionKey)) {
+                prefs.edit().remove(lastActionKey).apply()
+            }
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        val lastAction = prefs.getString(lastActionKey, "") ?: ""
+        val lastNotifyMs = prefs.getLong(lastNotifyMsKey, 0L)
+        if (action == lastAction) return
+        if (lastAction.isNotEmpty() && now - lastNotifyMs < SHADOW_NOTIFY_COOLDOWN_MS) {
+            LogBuffer.add(
+                'I',
+                TAG,
+                "SHADOW_EXIT_NOTIFY_THROTTLED: trade=$tradeId action=$action prev=$lastAction"
+            )
+            return
+        }
+
+        val indexKey = row.optString("index_key", trade.optStringAny("index_key", "indexKey", "index"))
+        val strategy = row.optString("strategy_type", trade.optStringAny("strategy_type", "strategyType"))
+        val pnl = if (row.isNull("current_pnl")) Double.NaN else row.optDouble("current_pnl", Double.NaN)
+        val pnlText = if (pnl.isNaN()) "P&L n/a" else "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))}"
+        val label = listOf(indexKey, strategy).filter { it.isNotBlank() }.joinToString(" ").ifBlank { tradeId }
+
+        val (title, body, notifType) = when (action) {
+            "SHADOW_SL" -> Triple(
+                "🛑 Stop Loss Near",
+                "$label · $pnlText · Cut position.",
+                "urgent"
+            )
+            "SHADOW_TP" -> Triple(
+                "💰 Target Near",
+                "$label · $pnlText · Book profit.",
+                "urgent"
+            )
+            "SHADOW_EOD" -> Triple(
+                "⏰ Exit — EOD",
+                "$label · $pnlText · Square off before close.",
+                "urgent"
+            )
+            "SHADOW_DEGRADED" -> Triple(
+                "🧪 Position Data Incomplete",
+                "$label · valuation degraded · review marks before trusting P&L.",
+                "warning"
+            )
+            else -> return
+        }
+
+        val delivery = NotificationHelper.send(this, title, body, notifType, "positions")
+        prefs.edit()
+            .putString(lastActionKey, action)
+            .putLong(lastNotifyMsKey, now)
+            .apply()
+        Log.i(TAG, "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action outcome=${delivery.outcome}")
+        LogBuffer.add('I', TAG, "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action outcome=${delivery.outcome}")
+    }
+
     private fun buildNotification() =
         NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
@@ -638,6 +709,8 @@ class PositionTickService : Service() {
          */
         internal const val POSITION_TICK_GUARDS_VERSION = "position_tick_guards_v4_complete_book_position"
         private const val TICK_MS = 60_000L
+        /** Suppress repeat shadow alerts for the same (trade, action); transitions always notify. */
+        private const val SHADOW_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000L
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
         private const val MAX_PENDING_TICKS = 1_500

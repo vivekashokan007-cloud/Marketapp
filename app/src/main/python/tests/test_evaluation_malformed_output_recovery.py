@@ -83,5 +83,24 @@ class EvaluationMalformedOutputRecoveryTests(unittest.TestCase):
         self.assertNotIn("temp.outputStream().buffered()", append_block.group(0))
 
 
+    def test_append_count_is_guarded_like_resume_recovery(self):
+        append_block = re.search(
+            r"private fun appendJsonArrayFile\([\s\S]*?\n    \}",
+            self.service,
+        )
+        self.assertIsNotNone(append_block)
+        block = append_block.group(0)
+        self.assertIn("countJsonArrayFile(file)", block)
+        self.assertIn("catch (t: IllegalStateException)", block)
+        self.assertIn("EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS", block)
+        self.assertIn('archiveEvaluationOutput(file, "append_malformed_outputs")', block)
+        # Strict reader must remain the shared failure mode.
+        self.assertIn(
+            'throw IllegalStateException("Evaluation output ${file.name} is malformed", t)',
+            self.service,
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

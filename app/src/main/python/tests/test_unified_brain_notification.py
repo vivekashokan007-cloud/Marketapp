@@ -429,7 +429,41 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         self.assertIn("Context coverage limited", book.get("body", ""))
         self.assertIn("CI signals 45%", book.get("body", ""))
 
+    def test_book_profit_fires_when_only_flat_force_alignment_is_set(self):
+        """Production open trades store force_alignment flat, not forces.aligned."""
+        alerts = evaluate_alerts(
+            open_trades=[
+                {
+                    "id": "trade_flat_forces",
+                    "index_key": "BNF",
+                    "strategy_type": "BEAR_CALL",
+                    "sell_strike": 58000,
+                    "current_pnl": 420,
+                    "max_profit": 1000,
+                    "max_loss": 1500,
+                    "valuation_quality": "full",
+                    "force_alignment": 1,
+                    "controlIndexMeta": {"signal_completeness_pct": 100},
+                }
+            ],
+            watchlist=[],
+            result={},
+            ctx={
+                "mins_since_open": 90,
+                "now_ms": 123456,
+                "significant_move": False,
+                "entry_window_active": False,
+            },
+        )
+
+        keys = [alert.get("key") for alert in alerts]
+        self.assertIn("POS_BOOK_trade_flat_forces", keys)
+        book = next(alert for alert in alerts if alert.get("key") == "POS_BOOK_trade_flat_forces")
+        self.assertEqual(book.get("title"), "⚡ Book Profit")
+        self.assertIn("Forces 1/3", book.get("body", ""))
+
     def test_missing_position_pnl_remains_data_quality_only(self):
+
         alerts = evaluate_alerts(
             open_trades=[
                 {

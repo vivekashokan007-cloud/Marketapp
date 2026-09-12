@@ -763,6 +763,33 @@ object SupabaseClient {
             body.contains("'width'")
     }
 
+    /** Keep last row per id so ON CONFLICT DO UPDATE never sees the same key twice in one POST. */
+    private fun dedupeRejectedRowsById(rows: JSONArray): JSONArray {
+        if (rows.length() <= 1) return rows
+        val byId = linkedMapOf<String, JSONObject>()
+        var missingId = 0
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val id = row.optString("id", "").trim()
+            if (id.isEmpty()) {
+                missingId += 1
+                continue
+            }
+            byId[id] = row
+        }
+        val dropped = rows.length() - byId.size - missingId
+        if (dropped > 0 || missingId > 0) {
+            Log.w(TAG, "REJECTED_RESEARCH_ID_DEDUPE: input=${rows.length()} unique=${byId.size} dropped=$dropped missingId=$missingId")
+            LogBuffer.add(
+                'W',
+                TAG,
+                "REJECTED_RESEARCH_ID_DEDUPE: input=${rows.length()} unique=${byId.size} dropped=$dropped missingId=$missingId"
+            )
+        }
+        if (dropped <= 0 && missingId <= 0) return rows
+        return JSONArray().also { out -> byId.values.forEach(out::put) }
+    }
+
     private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
         val snapshotId = src.optString("snapshot_id").ifBlank { "snapshot_unknown" }
         val candidateId = src.optString("candidate_id").ifBlank { "candidate_$rowIndex" }
@@ -2077,13 +2104,8 @@ object SupabaseClient {
         val distinct = EvaluationIdentity.validatedDistinctOutcomes(sessionDate, body)
         val evaluationRows = buildEvaluationRows(distinct)
         val recommendationRows = buildRecommendationRows(sessionDate, distinct)
-        val rejectedRows = buildRejectedEvaluationRows(sessionDate, distinct)
-        val rejectedIds = HashSet<String>()
-        for (i in 0 until rejectedRows.length()) {
-            check(rejectedIds.add(rejectedRows.getJSONObject(i).getString("id"))) {
-                "EVAL_REJECTED_ID_COLLISION: local results retained; no upload attempted"
-            }
-        }
+        val rejectedRowsRaw = buildRejectedEvaluationRows(sessionDate, distinct)
+        val rejectedRows = dedupeRejectedRowsById(rejectedRowsRaw)
 
         fun outcomeWritePath(table: String): String {
             return when (table) {

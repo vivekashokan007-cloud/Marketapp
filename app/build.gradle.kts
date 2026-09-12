@@ -15,12 +15,13 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
-        // b459: Retry Supabase snapshot replay readback after insert ack race.
+        // b460: Notification audit fixes — Book Profit force_alignment, entry 09:15,
+        // position-tick shadow alerts, eval append guard, rejected-id dedupe.
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 459
-        versionName = "2.6.28"
+        versionCode = 460
+        versionName = "2.6.29"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

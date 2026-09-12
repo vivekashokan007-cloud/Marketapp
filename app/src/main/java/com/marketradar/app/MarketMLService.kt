@@ -840,8 +840,27 @@ class MarketMLService : Service() {
         for (i in 0 until rows.length()) {
             rows.optJSONObject(i)?.let { encodedRows += it.toString() }
         }
-        val existingCount = countJsonArrayFile(file)
-        if (existingCountHint >= 0 && existingCountHint != existingCount) {
+        // Same recovery posture as EVAL_RESUME_DISCARDED_MALFORMED_OUTPUTS: a
+        // corrupt checkpoint must not crash RUNNING-phase appends. Discard the
+        // regenerable file and restart the array from this batch.
+        val existingCount = try {
+            countJsonArrayFile(file)
+        } catch (t: IllegalStateException) {
+            Log.w(
+                TAG,
+                "EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS: file=${file.name} " +
+                    "bytes=${file.length()} error=${t.message}"
+            )
+            LogBuffer.add(
+                'W',
+                TAG,
+                "EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS: file=${file.name} " +
+                    "bytes=${file.length()} error=${t.message}"
+            )
+            archiveEvaluationOutput(file, "append_malformed_outputs")
+            0
+        }
+        if (existingCountHint >= 0 && existingCountHint != existingCount && existingCount > 0) {
             Log.w(TAG, "EVAL_OUTPUT_COUNT_RECONCILED: file=${file.name} checkpoint=$existingCountHint actual=$existingCount")
         }
         if (encodedRows.isEmpty()) return existingCount

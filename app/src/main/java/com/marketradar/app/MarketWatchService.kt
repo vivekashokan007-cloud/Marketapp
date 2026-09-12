@@ -177,6 +177,7 @@ class MarketWatchService : Service() {
         private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
         private const val PREF_LAST_BRAIN_NOTIFICATION = "last_brain_notification"
         private const val PREF_LAST_BRAIN_NOTIFICATION_META = "last_brain_notification_meta"
+        private const val PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE = "morning_input_block_notified_date"
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
@@ -2378,7 +2379,23 @@ class MarketWatchService : Service() {
 
             val hasMorningInput = !morningInputStr.isNullOrBlank()
             val wallClockMinutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-            val entryWindowActive = hasMorningInput && wallClockMinutes in 660..915
+            // Entry window matches cash-market hours (09:15–15:15 IST). Trading-window
+            // telemetry keeps the historical 11:00 floor so ops charts stay comparable.
+            val entryWindowActive = hasMorningInput && wallClockMinutes in 555..915
+            if (!hasMorningInput && wallClockMinutes in 555..915) {
+                val today = todayIstDate()
+                val alreadyNotified = prefs.getString(PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE, "") == today
+                if (!alreadyNotified) {
+                    prefs.edit().putString(PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE, today).apply()
+                    LogBuffer.add('I', TAG, "ENTRY_ALERTS_OFF: morning_input not set session=$today")
+                    NotificationHelper.send(
+                        this@MarketWatchService,
+                        "Entry alerts off",
+                        "Entry alerts off: morning input not set",
+                        "info"
+                    )
+                }
+            }
 
             ctxObj.put("significant_move", sigMove)
             ctxObj.put("entry_window_active", entryWindowActive)
