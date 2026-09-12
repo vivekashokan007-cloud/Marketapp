@@ -2,7 +2,7 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.35 · `versionCode` 465 · **Updated**: September 12, 2026 (notification pack through b466: six channels; D4 tick/brain ownership split; published exit thresholds; F4 entry window 09:15–15:15 + morning-input notice. F5 entry-stability still shipped in 2.6.35/b466. Docs-only catch-up in this commit — no behavior code changes.)
+> **Version**: 2.6.36 · `versionCode` 467 · **Updated**: September 12, 2026 (G1 Release A: archive RLS/grant lock, TRUNCATE/anon-DELETE revoke, AuthAccess bearer stub default-off. Notification pack through b466 remains. Training/live orders still frozen.)
 
 ## Project overview
 

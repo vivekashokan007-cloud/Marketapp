@@ -764,6 +764,42 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
+    fun setSupabaseUserSession(accessToken: String): String {
+        val token = accessToken.trim()
+        if (AuthAccess.isDisallowedClientSecret(token)) {
+            Log.w(TAG, "setSupabaseUserSession rejected disallowed credential")
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "disallowed_credential")
+                .put("containment", AuthAccess.CONTAINMENT)
+                .toString()
+        }
+        AuthAccess.setUserAccessToken(token)
+        prefs.edit().putString(AuthAccess.PREF_USER_ACCESS_TOKEN, AuthAccess.hasUserJwt().let {
+            if (it) token else ""
+        }).commit()
+        return JSONObject(AuthAccess.statusJson()).put("ok", true).toString()
+    }
+
+    @JavascriptInterface
+    fun clearSupabaseUserSession(): String {
+        AuthAccess.clearUserAccessToken()
+        prefs.edit().remove(AuthAccess.PREF_USER_ACCESS_TOKEN).commit()
+        return JSONObject(AuthAccess.statusJson()).put("ok", true).toString()
+    }
+
+    @JavascriptInterface
+    fun setAuthSessionEnabled(enabled: Boolean): String {
+        AuthAccess.setSessionEnabled(enabled)
+        prefs.edit().putBoolean(AuthAccess.PREF_SESSION_ENABLED, enabled).commit()
+        Log.i(TAG, "setAuthSessionEnabled=$enabled containment=${AuthAccess.CONTAINMENT}")
+        return JSONObject(AuthAccess.statusJson()).put("ok", true).toString()
+    }
+
+    @JavascriptInterface
+    fun getAuthAccessStatus(): String = AuthAccess.statusJson()
+
+    @JavascriptInterface
     fun setOpenTrades(json: String) {
         openTradesCache = json
         openTradesCacheMs = System.currentTimeMillis()

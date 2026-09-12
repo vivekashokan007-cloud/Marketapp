@@ -61,10 +61,13 @@ object SupabaseClient {
     )
 
     private fun getBaseRequest(path: String): Request.Builder {
+        // apikey stays the publishable anon key. Authorization uses a stored
+        // user JWT only when the G1 session flag is on; otherwise anon.
+        val bearer = AuthAccess.resolveBearerToken(ANON_KEY)
         return Request.Builder()
             .url("$URL/rest/v1/$path")
             .addHeader("apikey", ANON_KEY)
-            .addHeader("Authorization", "Bearer $ANON_KEY")
+            .addHeader("Authorization", "Bearer $bearer")
             .addHeader("Content-Type", "application/json")
     }
 

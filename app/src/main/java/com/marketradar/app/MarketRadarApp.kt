@@ -37,6 +37,10 @@ class MarketRadarApp : Application() {
                 }
             }
             prefs.edit().putLong("last_process_start_ms", now).commit()
+            AuthAccess.setSessionEnabled(
+                prefs.getBoolean(AuthAccess.PREF_SESSION_ENABLED, AuthAccess.DEFAULT_SESSION_ENABLED)
+            )
+            AuthAccess.setUserAccessToken(prefs.getString(AuthAccess.PREF_USER_ACCESS_TOKEN, "") ?: "")
             val pid = android.os.Process.myPid()
             Log.i("MarketRadarApp", "onCreate starting pid=$pid startUuid=$PROCESS_START_UUID")
             LogBuffer.add('I', "MarketRadarApp", "APP_PROCESS_START: pid=$pid startUuid=$PROCESS_START_UUID heap=${heapLine()}")
