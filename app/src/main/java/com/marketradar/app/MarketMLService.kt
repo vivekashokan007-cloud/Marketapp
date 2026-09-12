@@ -2121,7 +2121,7 @@ class MarketMLService : Service() {
 
     private fun persistEvaluationRun(run: org.json.JSONObject) {
         activeEvaluationRun = run
-        EvaluationRunLedger.persistLocal(this, prefs, run)
+        EvaluationRunLedger.persistLocal(this@MarketMLService, prefs, run)
     }
 
     private fun updateRunStage(
@@ -2221,7 +2221,7 @@ class MarketMLService : Service() {
                 sessionDate, "INELIGIBLE", message,
                 frameCount = frames.length(), rowCount = 0, verifiedRows = 0, running = false, lastError = reason
             )
-            val run = activeEvaluationRun ?: EvaluationRunLedger.loadLocal(this, prefs, sessionDate)
+            val run = activeEvaluationRun ?: EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
             if (run != null) {
                 persistEvaluationRun(EvaluationRunLedger.applyC3Assessment(run, assessment))
             } else {
