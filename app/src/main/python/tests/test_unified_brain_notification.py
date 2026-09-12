@@ -8,6 +8,7 @@ if PY_DIR not in sys.path:
     sys.path.insert(0, PY_DIR)
 
 from brain import (
+    NotificationAgent,
     brain_notification_ack_deliveries,
     brain_notification_process,
     evaluate_alerts,
@@ -104,11 +105,11 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
                 "watchlist": [],
                 "alerts": [
                     {
-                        "key": "POS_STOP_trade123",
+                        "key": "POS_BOOK_trade123",
                         "category": "POSITION",
                         "priority": "urgent",
-                        "title": "Stop Loss Near",
-                        "body": "NF BULL_PUT P&L down. Cut position.",
+                        "title": "Book Profit",
+                        "body": "NF BULL_PUT profitable but forces dropped.",
                     }
                 ],
             },
@@ -116,9 +117,13 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         )
         contract = payload["brain_notification"]
 
+        # D4: POS_STOP is delivered by the tick service now, so the mechanic — a
+        # position alert is not gated on the entry verdict — is asserted with the
+        # brain-owned alert. Note this makes POSITION_EXIT the only decision_type
+        # the brain still notifies for; POSITION_RISK is tick-service territory.
         self.assertTrue(contract["notify_user"])
-        self.assertEqual(contract["decision_type"], "POSITION_RISK")
-        self.assertEqual(contract["notification_kind"], "RISK")
+        self.assertEqual(contract["decision_type"], "POSITION_EXIT")
+        self.assertEqual(contract["notification_kind"], "EXIT")
 
     def test_urgent_position_alert_wins_over_data_quality_warning(self):
         payload = _call_contract(
@@ -146,9 +151,14 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         )
         contract = payload["brain_notification"]
 
-        self.assertTrue(contract["notify_user"])
-        self.assertEqual(contract["reason_code"], "POS_STOP_trade123")
+        # D4: both alerts are tick-service owned, so neither notifies from here.
+        # The mechanic still under test is the priority sort — the urgent alert,
+        # not the important one, is the contract surfaced for telemetry.
+        self.assertFalse(contract["notify_user"])
+        self.assertEqual(contract["reason_code"], "POSITION_ALERT_OWNED_BY_TICK_SERVICE")
+        self.assertEqual(contract["alert_key"], "POS_STOP_trade123")
         self.assertEqual(contract["title"], "Stop Loss Near")
+        self.assertEqual(payload["brain_notifications"], [])
 
     def test_same_position_alert_state_dedupes(self):
         result = {
@@ -156,11 +166,11 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             "watchlist": [],
             "alerts": [
                 {
-                    "key": "POS_TARGET_trade123",
+                    "key": "POS_BOOK_trade123",
                     "category": "POSITION",
                     "priority": "urgent",
-                    "title": "Target Near",
-                    "body": "Book profit.",
+                    "title": "Book Profit",
+                    "body": "Forces weak while profitable.",
                 }
             ],
         }
@@ -176,8 +186,9 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             {"now_ms": 5200, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 24},
         )["brain_notification"]
 
+        # D4: dedupe-after-delivery mechanic, asserted with the brain-owned alert.
         self.assertTrue(first["notify_user"])
-        self.assertEqual(first["reason_code"], "POS_TARGET_trade123")
+        self.assertEqual(first["reason_code"], "POS_BOOK_trade123")
         self.assertFalse(second["notify_user"])
 
     def test_position_alert_state_transition_notifies_again(self):
@@ -217,10 +228,35 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             {"now_ms": 5300, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 26},
         )["brain_notification"]
 
-        self.assertTrue(first["notify_user"])
-        self.assertEqual(first["reason_code"], "POS_TARGET_trade123")
-        self.assertTrue(second["notify_user"])
-        self.assertEqual(second["reason_code"], "POS_STOP_trade123")
+        # D4: both of these states are now owned by the 60-second tick service, so
+        # the brain reports the ownership decision instead of notifying twice. The
+        # state-transition mechanic itself is asserted directly below so it keeps
+        # coverage independently of which engine delivers.
+        self.assertFalse(first["notify_user"])
+        self.assertEqual(first["reason_code"], "POSITION_ALERT_OWNED_BY_TICK_SERVICE")
+        self.assertEqual(first["alert_key"], "POS_TARGET_trade123")
+        self.assertFalse(second["notify_user"])
+        self.assertEqual(second["reason_code"], "POSITION_ALERT_OWNED_BY_TICK_SERVICE")
+        self.assertEqual(second["alert_key"], "POS_STOP_trade123")
+
+    def test_position_alert_state_key_separates_states_of_one_trade(self):
+        """Mechanic behind re-notification on a state change, engine-independent.
+
+        Previously only covered implicitly by the POS_TARGET -> POS_STOP
+        notification test, which D4 made an ownership assertion.
+        """
+        agent = NotificationAgent()
+        target = agent._position_alert_state_key({"key": "POS_TARGET_trade123"})
+        stop = agent._position_alert_state_key({"key": "POS_STOP_trade123"})
+        book = agent._position_alert_state_key({"key": "POS_BOOK_trade123"})
+        self.assertEqual("trade123:POS_TARGET", target)
+        self.assertEqual("trade123:POS_STOP", stop)
+        self.assertEqual("trade123:POS_BOOK", book)
+        self.assertEqual(3, len({target, stop, book}))
+        # Same state, different trade must not collide.
+        self.assertNotEqual(
+            book, agent._position_alert_state_key({"key": "POS_BOOK_trade456"})
+        )
 
     def test_multiple_position_alerts_are_returned_for_dispatch(self):
         payload = _call_contract(
@@ -229,11 +265,11 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
                 "watchlist": [],
                 "alerts": [
                     {
-                        "key": "POS_STOP_trade123",
+                        "key": "POS_BOOK_trade123",
                         "category": "POSITION",
                         "priority": "urgent",
-                        "title": "Stop Loss Near",
-                        "body": "BNF BEAR_CALL P&L down. Cut position.",
+                        "title": "Book Profit",
+                        "body": "BNF BEAR_CALL profitable but forces dropped.",
                     },
                     {
                         "key": "POS_BOOK_trade456",
@@ -247,13 +283,16 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
             {"now_ms": 2400, "entry_window_active": False, "session_date": "2026-06-23", "poll_id": 27},
         )
 
+        # D4: POS_STOP/POS_TARGET/POS_DATA_QUALITY notifications belong to the
+        # 60-second tick service, so this covers multi-alert dispatch with the
+        # alerts that remain brain-owned (POS_BOOK, one per trade).
         notifications = payload["brain_notifications"]
         self.assertEqual(len(notifications), 2)
         self.assertEqual(
             [item["reason_code"] for item in notifications],
-            ["POS_STOP_trade123", "POS_BOOK_trade456"],
+            ["POS_BOOK_trade123", "POS_BOOK_trade456"],
         )
-        self.assertEqual(payload["brain_notification"]["reason_code"], "POS_STOP_trade123")
+        self.assertEqual(payload["brain_notification"]["reason_code"], "POS_BOOK_trade123")
 
     def test_position_alert_does_not_consume_confirmed_setup(self):
         result = {
@@ -264,14 +303,16 @@ class UnifiedBrainNotificationTests(unittest.TestCase):
         _call_contract(result, {"now_ms": 1000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 41})
         payload = _call_contract(
             {**result, "alerts": [{
-                "key": "POS_STOP_trade123", "category": "POSITION", "priority": "urgent",
-                "title": "Stop Loss Near", "body": "Exit review required.",
+                "key": "POS_BOOK_trade123", "category": "POSITION", "priority": "urgent",
+                "title": "Book Profit", "body": "Exit review required.",
             }]},
             {"now_ms": 2000, "entry_window_active": True, "session_date": "2026-06-23", "poll_id": 42},
         )
+        # D4: uses the brain-owned position alert; the mechanic under test is that
+        # a position alert does not swallow a confirmed entry setup in the same poll.
         self.assertEqual(
             [contract["title"] for contract in payload["brain_notifications"]],
-            ["Stop Loss Near", "New Setup Ready"],
+            ["Book Profit", "New Setup Ready"],
         )
         ack = _acknowledge(payload)
         self.assertEqual(ack["best_candidate_id"], "c1")

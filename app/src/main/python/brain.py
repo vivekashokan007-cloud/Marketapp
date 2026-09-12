@@ -6184,7 +6184,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.30"  # Kotlin-only release; kept in lockstep with versionName
+BRAIN_VERSION = "2.6.31"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7285,6 +7285,25 @@ PC2_VIX_REGIME_CONTEXT_VERSION = 'pc2_vix_regime_context_live_v1'
 PC2_SIGMA_IMPORTANT_CONTEXT_VERSION = 'pc2_sigma_important_context_live_v1'
 PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE = 85.0
 PC2_POSITION_ALERT_CONTEXT_VERSION = 'pc2_position_alert_context_live_v1'
+
+# Position-alert notification ownership (D4). The 60-second PositionTickService is
+# authoritative for threshold exits and the valuation-degraded notice; brain.py
+# still generates those alerts for the UI and evidence but does not notify for
+# them. POS_BOOK stays brain-owned because 'forces weak while profitable' has no
+# tick-side counterpart — the tick service cannot see force alignment.
+#
+# Threshold note, deliberately recorded: the tick path uses fixed constants
+# (PositionPolicyV1 TP_MULT 0.50 / SL_MULT 0.60) while the brain path used
+# _pc2_position_alert_context — percentile-contextual with the old constants as a
+# safety floor. Making the tick path authoritative therefore trades threshold
+# adaptivity for latency (60s vs 5min) and for actually firing. Porting the
+# percentile context into the tick service is the follow-up; see the D4 handoff.
+POSITION_ALERT_OWNERSHIP_VERSION = 'position_alert_ownership_v1_tick_service_authoritative'
+POSITION_ALERT_PREFIXES_OWNED_BY_TICK_SERVICE = (
+    'POS_TARGET_',
+    'POS_STOP_',
+    'POS_DATA_QUALITY_',
+)
 PC2_POSITION_TARGET_CAPTURE_PERCENTILE = 85.0
 PC2_POSITION_STOP_CAPTURE_PERCENTILE = 85.0
 
@@ -22865,6 +22884,28 @@ class NotificationAgent:
             return 'POSITION_EXIT'
         return 'POSITION_RISK'
 
+    def _position_alert_owner(self, alert):
+        """Which engine is allowed to *notify* for this position alert.
+
+        Threshold-based exits and the valuation-degraded notice are owned by the
+        60-second PositionTickService: it sees the same condition five times
+        sooner and it is the path that can act within a minute. brain.py still
+        produces these alerts for the UI and for evidence, but must not also
+        notify — both engines emit identical titles ('💰 Target Near',
+        '🛑 Stop Loss Near', '🧪 Position Data Incomplete') from different
+        thresholds, so one target crossing produced two alerts at different P&L
+        levels, minutes to hours apart.
+
+        POS_BOOK has no tick-side counterpart: 'forces weak while profitable'
+        needs the brain's force alignment, which the tick service has no access
+        to. It stays brain-owned rather than being silently lost.
+        """
+        key = str((alert or {}).get('key') or '')
+        for prefix in POSITION_ALERT_PREFIXES_OWNED_BY_TICK_SERVICE:
+            if key.startswith(prefix):
+                return 'position_tick_service'
+        return 'brain'
+
     def _position_alert_notification_kind(self, alert):
         return 'EXIT' if self._position_alert_decision_type(alert) == 'POSITION_EXIT' else 'RISK'
 
@@ -22967,6 +23008,32 @@ class NotificationAgent:
         )
 
     def _position_alert_to_contract(self, alert, base):
+        owner = self._position_alert_owner(alert)
+        candidate_id = (
+            str(alert.get('key') or '').split('_', 2)[-1] if alert.get('key') else None
+        )
+        if owner != 'brain':
+            # Kept as a contract (not dropped) so the suppression stays visible in
+            # brain_notification telemetry and the alert still reaches the UI.
+            return self._build_contract(
+                base,
+                decision_type=self._position_alert_decision_type(alert),
+                notify_user=False,
+                notification_kind='NONE',
+                title=alert.get('title', ''),
+                body=alert.get('body', ''),
+                reason_code='POSITION_ALERT_OWNED_BY_TICK_SERVICE',
+                reason_text=(
+                    'Threshold exit and valuation alerts are delivered by the '
+                    '60-second position tick service; the 5-minute poll does not '
+                    'duplicate them.'
+                ),
+                sound_class='routine',
+                alert_key=alert.get('key'),
+                candidate_id=candidate_id,
+                position_alert_owner=owner,
+                position_alert_ownership_version=POSITION_ALERT_OWNERSHIP_VERSION,
+            )
         return self._build_contract(
             base,
             decision_type=self._position_alert_decision_type(alert),
@@ -22978,7 +23045,9 @@ class NotificationAgent:
             reason_text='Open position crossed a risk/exit threshold.',
             sound_class=alert.get('priority', 'urgent'),
             alert_key=alert.get('key'),
-            candidate_id=(str(alert.get('key') or '').split('_', 2)[-1] if alert.get('key') else None),
+            candidate_id=candidate_id,
+            position_alert_owner=owner,
+            position_alert_ownership_version=POSITION_ALERT_OWNERSHIP_VERSION,
         )
 
     def _operational_alert_to_contract(self, alert, base):
@@ -23341,9 +23410,18 @@ class NotificationAgent:
                 reason_text='No actionable trading notification for this poll.',
             )
 
-        position_notification_contracts = [
+        position_contracts = [
             self._position_alert_to_contract(alert, base)
             for alert in unseen_position_alerts
+        ]
+        # Alerts the tick service owns produce a suppressed contract. They must not
+        # enter the delivery list, and must not shadow a genuinely notifying entry
+        # contract by being selected as `brain_notification`.
+        position_notification_contracts = [
+            item for item in position_contracts if item.get('notify_user')
+        ]
+        suppressed_position_contracts = [
+            item for item in position_contracts if not item.get('notify_user')
         ]
 
         if position_notification_contracts:
@@ -23353,6 +23431,10 @@ class NotificationAgent:
             if (contract or {}).get('notify_user'):
                 position_notification_contracts.append(contract)
             contract = position_notification_contracts[0]
+        elif suppressed_position_contracts and not (contract or {}).get('notify_user'):
+            # Nothing else is notifying this poll, so surface the ownership
+            # decision rather than reporting a bare NO_ACTIONABLE_STATE_CHANGE.
+            contract = suppressed_position_contracts[0]
         elif unseen_operational_alerts and not (contract or {}).get('notify_user'):
             operational_contract = self._operational_alert_to_contract(unseen_operational_alerts[0], base)
             if operational_contract is not None:
