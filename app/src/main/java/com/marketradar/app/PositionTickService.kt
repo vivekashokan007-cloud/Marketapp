@@ -215,6 +215,26 @@ class PositionTickService : Service() {
         LogBuffer.add('I', TAG, line)
     }
 
+    /**
+     * Names the arm that set an effective threshold: the published percentile
+     * level only when it actually won the composition, otherwise the constant.
+     */
+    private fun thresholdBasis(
+        constant: Double?,
+        publishedLevel: Double?,
+        effective: Double?,
+        published: JSONObject?,
+        brainBasisKey: String
+    ): String {
+        if (effective == null) return "unavailable"
+        if (publishedLevel == null) return "constant_only"
+        if (constant != null && effective == constant && effective != publishedLevel) {
+            return "constant_safety_floor"
+        }
+        val brainBasis = published?.optString(brainBasisKey, "") ?: ""
+        return if (brainBasis.isNotBlank()) "published_$brainBasis" else "published"
+    }
+
     /** Trade id embedded in a shadow-notify prefs key, or null if not one of ours. */
     private fun shadowStateKeyTradeId(key: String): String? {
         if (key.startsWith(SHADOW_LAST_ACTION_PREFIX)) {
@@ -301,7 +321,8 @@ class PositionTickService : Service() {
         // while deliberately not trusting it enough to veto P&L. One rule now.
         val running = updateRunningState(tradeId, valuation.currentPnl)
         val policy = evaluateShadowPolicy(
-            tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta
+            tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
+            publishedExitThresholds(tradeId)
         )
         // Diagnostics ride in policy_trace_json (jsonb, free-form) rather than new
         // top-level columns, so this ships without a position_ticks migration.
@@ -351,16 +372,61 @@ class PositionTickService : Service() {
         }
     }
 
+    /**
+     * Percentile-contextual exit levels resolved by brain.py for this trade, or
+     * null when none are published or they have gone stale.
+     *
+     * brain.py owns the statistics — poll history, context percentiles, support,
+     * diversity and stability gating. Reimplementing that here would put one
+     * policy in two languages and guarantee drift, so this reads the resolved
+     * rupee levels instead. Stale or absent means the fixed constants stand.
+     */
+    private fun publishedExitThresholds(tradeId: String): JSONObject? {
+        if (tradeId.isBlank()) return null
+        val raw = prefs.getString(PREF_POSITION_EXIT_THRESHOLDS, null) ?: return null
+        return try {
+            val row = JSONObject(raw).optJSONObject(tradeId) ?: return null
+            val computedAt = row.optLong("computed_at_ms", 0L)
+            val age = System.currentTimeMillis() - computedAt
+            if (computedAt <= 0L || age > POSITION_EXIT_THRESHOLD_MAX_AGE_MS || age < 0L) {
+                LogBuffer.add(
+                    'I',
+                    TAG,
+                    "POSITION_EXIT_THRESHOLDS_STALE: trade=$tradeId ageMs=$age"
+                )
+                null
+            } else {
+                row.put("age_ms", age)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Published exit threshold parse failed: ${e.message}")
+            null
+        }
+    }
+
     private fun evaluateShadowPolicy(
         tickTs: String,
         currentPnl: Double?,
         maxLoss: Double?,
         maxProfit: Double?,
         valuationQuality: String,
-        lotMeta: PositionTickLotMeta
+        lotMeta: PositionTickLotMeta,
+        published: JSONObject? = null
     ): PolicyDecision {
-        val slThreshold = maxLoss?.let { -PositionPolicyV1.SL_MULT * it }
-        val tpThreshold = maxProfit?.let { PositionPolicyV1.TP_MULT * it }
+        val constantSl = maxLoss?.let { -PositionPolicyV1.SL_MULT * it }
+        val constantTp = maxProfit?.let { PositionPolicyV1.TP_MULT * it }
+        val publishedSl = published?.optNullableDouble("stop_pnl_at")
+        val publishedTp = published?.optNullableDouble("target_pnl_at")
+
+        // Compose so the published level can only make the alert fire EARLIER,
+        // never later — today's constants remain the least sensitive case.
+        // Profit rises toward the target, so the lower level triggers first.
+        // Loss falls toward the stop and both levels are negative, so the level
+        // closer to zero triggers first.
+        val tpThreshold = listOfNotNull(constantTp, publishedTp).minOrNull()
+        val slThreshold = listOfNotNull(constantSl, publishedSl).maxOrNull()
+        val tpBasis = thresholdBasis(constantTp, publishedTp, tpThreshold, published, "target_basis")
+        val slBasis = thresholdBasis(constantSl, publishedSl, slThreshold, published, "stop_basis")
         val eod = isAtOrAfterPolicyEod()
         val action = when {
             currentPnl != null && slThreshold != null && currentPnl <= slThreshold -> "SHADOW_SL"
@@ -388,6 +454,20 @@ class PositionTickService : Service() {
                 put("eod_hh_mm", PositionPolicyV1.EOD_HH_MM)
                 put("is_eod", eod)
                 put("valuation_quality", valuationQuality)
+                // Which arm set each level, so a session can be audited for how
+                // often the published percentile context actually moved a
+                // threshold versus the constants standing alone.
+                put("target_threshold_basis", tpBasis)
+                put("stop_threshold_basis", slBasis)
+                putOptNumber("constant_tp_threshold", constantTp)
+                putOptNumber("constant_sl_threshold", constantSl)
+                putOptNumber("published_tp_threshold", publishedTp)
+                putOptNumber("published_sl_threshold", publishedSl)
+                put("published_age_ms", published?.optLong("age_ms", -1L) ?: -1L)
+                put(
+                    "published_schema_version",
+                    published?.optString("schema_version", "") ?: ""
+                )
                 putOptNumber("lot_size_resolved", lotMeta.lotSize)
                 put("lot_size_assumed", lotMeta.assumed)
                 put("lot_size_source", lotMeta.source)
@@ -818,6 +898,13 @@ class PositionTickService : Service() {
 
         // Single definition of the per-trade key shapes so the writer and the
         // pruner cannot drift apart and leak keys the pruner no longer recognises.
+        // Written by MarketWatchService from brain.py's position_exit_thresholds.
+        // Max age mirrors brain.POSITION_EXIT_THRESHOLD_MAX_AGE_MS — polls are 5
+        // minutes apart, so this tolerates a couple of missed polls before the
+        // fixed constants take over again.
+        private const val PREF_POSITION_EXIT_THRESHOLDS = "position_exit_thresholds"
+        private const val POSITION_EXIT_THRESHOLD_MAX_AGE_MS = 20 * 60 * 1000L
+
         private const val SHADOW_LAST_ACTION_PREFIX = "shadow_last_action_"
         private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"
         private val SHADOW_ALERT_CLASSES = listOf("exit", "degraded")

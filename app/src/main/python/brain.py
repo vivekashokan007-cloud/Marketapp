@@ -3075,7 +3075,12 @@ def _position_alert_body(trade, current_pnl, action_text, quality_note='', pct_o
 def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict) -> list:
     alerts = []
     ctx = ctx or {}
-    result = result or {}
+    # `result or {}` rebound the name whenever the caller passed an *empty* dict,
+    # which silently detached anything written back into it — including the
+    # published exit thresholds below. Production always passes a populated
+    # result, so that would have worked by luck rather than by contract.
+    if not isinstance(result, dict):
+        result = {}
     elapsed = ctx.get('mins_since_open', 0)
     now_ms = ctx.get('now_ms', 0)
     context_percentiles = result.get('context_percentiles') or ctx.get('context_percentiles')
@@ -3178,6 +3183,11 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
             max_loss=max_loss,
             ctx=ctx,
             context_percentiles=context_percentiles,
+        )
+        # Hand the resolved levels to the 60-second tick service, which owns the
+        # notification for these two states since D4.
+        _publish_position_exit_thresholds(
+            result, trade, position_alert_context, max_profit, max_loss, ctx
         )
 
         if (position_alert_context.get('target_near') or {}).get('triggered'):
@@ -6184,7 +6194,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.33"
+BRAIN_VERSION = "2.6.34"
 TRACE_SCHEMA_VERSION = "1.1"
 MAX_TRACE_ITEMS = 500  # Hard cap per trace array — prevents runaway memory
 TRACE_ATTEMPT_SAMPLE_CAP = 12
@@ -7316,6 +7326,101 @@ POSITION_ALERT_PREFIXES_OWNED_BY_TICK_SERVICE = (
 PC2_POSITION_TARGET_CAPTURE_PERCENTILE = 85.0
 PC2_POSITION_STOP_CAPTURE_PERCENTILE = 85.0
 
+# Published position-exit thresholds. D4 made the 60-second PositionTickService
+# authoritative for threshold exits, which cost the percentile-contextual
+# sensitivity that _pc2_position_alert_context provides — the tick service ran on
+# fixed constants alone. Rather than reimplement percentile statistics in Kotlin
+# (two copies of one policy, guaranteed to drift — the exact failure this codebase
+# keeps hitting), brain.py resolves the thresholds it already computes into plain
+# rupee P&L levels and publishes them. The tick service compares a number; the
+# policy keeps one owner, in line with "trading semantics stay in brain.py".
+POSITION_EXIT_THRESHOLD_PUBLISH_VERSION = 'position_exit_thresholds_v1_published_from_brain'
+# How long the tick service may keep using a published level. Polls are 5 minutes
+# apart; this tolerates a couple of missed polls before reverting to constants.
+POSITION_EXIT_THRESHOLD_MAX_AGE_MS = 20 * 60 * 1000
+
+
+def _publish_position_exit_thresholds(result, trade, alert_context, max_profit, max_loss, ctx):
+    """Resolve one trade's percentile-contextual exit levels into rupee P&L.
+
+    The tick service has no access to poll history, context percentiles, or the
+    statistics that qualify them, and reimplementing those in Kotlin would put
+    one policy in two languages. It instead reads the numbers resolved here.
+    Absent or unusable context publishes nothing, and the tick service falls back
+    to its own constants — never less protective than today's behaviour.
+    """
+    if not isinstance(result, dict):
+        return
+    trade_id = trade.get('id') if isinstance(trade, dict) else None
+    if trade_id is None or str(trade_id).strip() == '':
+        return
+
+    profit_cap = _percentile_float(max_profit)
+    loss_cap = _percentile_float(max_loss)
+    target_row = (alert_context or {}).get('target_near') or {}
+    stop_row = (alert_context or {}).get('stop_loss_near') or {}
+    target_ratio = _percentile_float(target_row.get('effective_trigger_level'))
+    stop_ratio = _percentile_float(stop_row.get('effective_trigger_level'))
+
+    target_pnl_at = (
+        round(target_ratio * profit_cap, 4)
+        if target_ratio is not None and profit_cap is not None and profit_cap > 0
+        else None
+    )
+    stop_pnl_at = (
+        round(-abs(stop_ratio * loss_cap), 4)
+        if stop_ratio is not None and loss_cap is not None and loss_cap > 0
+        else None
+    )
+    if target_pnl_at is None and stop_pnl_at is None:
+        return
+
+    published = result.setdefault('position_exit_thresholds', {})
+    if not isinstance(published, dict):
+        return
+    published[str(trade_id)] = {
+        'schema_version': POSITION_EXIT_THRESHOLD_PUBLISH_VERSION,
+        'computed_at_ms': _safe_num(ctx.get('now_ms') if isinstance(ctx, dict) else None, 0) or 0,
+        'max_profit': profit_cap,
+        'max_loss': loss_cap,
+        'target_capture_ratio': target_ratio,
+        'stop_capture_ratio': stop_ratio,
+        'target_pnl_at': target_pnl_at,
+        'stop_pnl_at': stop_pnl_at,
+        'target_basis': target_row.get('trigger_level_basis'),
+        'stop_basis': stop_row.get('trigger_level_basis'),
+        'target_series': target_row.get('trigger_level_series'),
+        'stop_series': stop_row.get('trigger_level_series'),
+    }
+
+
+def _pc2_capture_trigger_level(history, percentile_cutoff):
+    """Smallest capture ratio whose percentile rank reaches ``percentile_cutoff``.
+
+    The exact inverse of the ``_percentile_rank`` convention rather than a
+    quantile interpolation, so the published level reproduces the live arm's
+    own trigger rather than approximating it with a different rule.
+
+    ``_percentile_rank`` scores a fresh value ``x`` (not present in history) as
+    ``100 * #{h < x} / n``. Reaching ``cutoff`` therefore needs
+    ``#{h < x} >= k`` where ``k = ceil(cutoff * n / 100)``, which holds exactly
+    when ``x > series[k - 1]``. Returning ``series[k - 1]`` with a ``>=``
+    comparison downstream fires at the boundary value itself — marginally more
+    sensitive, which is the safe direction for an exit notice and consistent
+    with the constants-as-safety-floor rule.
+    """
+    series = sorted(_numeric_series(history))
+    cutoff = _percentile_float(percentile_cutoff)
+    if not series or cutoff is None:
+        return None
+    cutoff = max(0.0, min(100.0, cutoff))
+    k = int(math.ceil((cutoff * len(series)) / 100.0))
+    if k <= 0:
+        return series[0]
+    if k > len(series):
+        return None
+    return series[k - 1]
+
 
 def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     """Relative VIX regime authority.
@@ -7650,12 +7755,41 @@ def _pc2_position_alert_context(
             basis = 'constant_safety_floor'
         else:
             basis = 'not_triggered'
+        # Resolved trigger level for the tick service (see
+        # POSITION_EXIT_THRESHOLD_PUBLISH_VERSION). Only published when the live
+        # percentile arm actually has authority — the same gate that governs
+        # live_pass — so a thin or flat history can never publish a level.
+        percentile_level = (
+            _pc2_capture_trigger_level(history, percentile_cutoff)
+            if evidence['live_percentile_authority']
+            else None
+        )
+        candidate_levels = [level for level in (threshold, percentile_level) if level is not None]
+        # min(): triggered = live_pass or old_pass, so whichever arm fires first
+        # is the effective level, and the constant caps the least sensitive case.
+        effective_level = min(candidate_levels) if candidate_levels else None
         return {
             'triggered': triggered,
             'basis': basis,
             'capture_ratio': None if effective_value is None else round(effective_value, 4),
             'capture_percentile': None if percentile is None else round(percentile, 2),
             'notify_percentile': percentile_cutoff,
+            'constant_trigger_level': threshold,
+            'percentile_trigger_level': (
+                None if percentile_level is None else round(percentile_level, 6)
+            ),
+            'effective_trigger_level': (
+                None if effective_level is None else round(effective_level, 6)
+            ),
+            'trigger_level_basis': (
+                'percentile_rank_inverse' if percentile_level is not None
+                and (threshold is None or percentile_level < threshold)
+                else 'constant_safety_floor'
+            ),
+            # The live arm may score against the context-percentile window while
+            # this level is derived from the parallel premium-history series. The
+            # min() composition keeps that difference on the more-sensitive side.
+            'trigger_level_series': evidence['evidence_source'],
             'support_count': support_count,
             'window': window,
             'support_status': evidence['support_status'],

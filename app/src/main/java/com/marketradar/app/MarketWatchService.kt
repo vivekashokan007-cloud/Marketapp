@@ -178,6 +178,8 @@ class MarketWatchService : Service() {
         private const val PREF_LAST_BRAIN_NOTIFICATION = "last_brain_notification"
         private const val PREF_LAST_BRAIN_NOTIFICATION_META = "last_brain_notification_meta"
         private const val PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE = "morning_input_block_notified_date"
+        // Shared with PositionTickService.PREF_POSITION_EXIT_THRESHOLDS.
+        private const val PREF_POSITION_EXIT_THRESHOLDS = "position_exit_thresholds"
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
@@ -2752,6 +2754,22 @@ class MarketWatchService : Service() {
                 captureChainSnapshots(ctxObj, py)
 
                 // Decision #17/#18/#Issue9: Persist brain-computed P&L and metrics back to open_trades
+                // Percentile-contextual exit levels resolved by brain.py for the
+                // 60-second tick service, which owns those notifications since D4
+                // but has no access to poll history or context percentiles. Stored
+                // with commit() because PositionTickService reads it from its own
+                // tick loop, which can run before an apply() has flushed.
+                resultObj.optJSONObject("position_exit_thresholds")?.let { thresholds ->
+                    prefs.edit()
+                        .putString(PREF_POSITION_EXIT_THRESHOLDS, thresholds.toString())
+                        .commit()
+                    LogBuffer.add(
+                        'I',
+                        TAG,
+                        "POSITION_EXIT_THRESHOLDS_PUBLISHED: trades=${thresholds.length()}"
+                    )
+                }
+
                 val posLive = resultObj.optJSONObject("position_live")
                 if (posLive != null) {
                     val tradesStr = prefs.getString("open_trades", "[]") ?: "[]"
