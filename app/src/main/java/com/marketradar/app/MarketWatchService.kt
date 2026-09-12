@@ -2386,14 +2386,37 @@ class MarketWatchService : Service() {
                 val today = todayIstDate()
                 val alreadyNotified = prefs.getString(PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE, "") == today
                 if (!alreadyNotified) {
-                    prefs.edit().putString(PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE, today).apply()
-                    LogBuffer.add('I', TAG, "ENTRY_ALERTS_OFF: morning_input not set session=$today")
-                    NotificationHelper.send(
+                    // Audible by design. This is the one notification whose whole
+                    // job is to say that notifications are off for the session, and
+                    // "info" routes to CHANNEL_ROUTINE — IMPORTANCE_LOW, no sound,
+                    // no vibration — where the user would never notice it. A silent
+                    // warning about silence is not a warning.
+                    val delivery = NotificationHelper.send(
                         this@MarketWatchService,
                         "Entry alerts off",
-                        "Entry alerts off: morning input not set",
-                        "info"
+                        "No entry alerts today — morning input is not set. " +
+                            "Open the app and set it to turn them back on.",
+                        "warning"
                     )
+                    LogBuffer.add(
+                        if (delivery.postedToOs) 'I' else 'W',
+                        TAG,
+                        "ENTRY_ALERTS_OFF: morning_input not set session=$today " +
+                            "outcome=${delivery.outcome}"
+                    )
+                    // Stamp the session only once the OS actually accepted the
+                    // notification. Same selected-vs-delivered rule the notification
+                    // agent's acknowledge_delivery() already enforces: a denied
+                    // permission, a disabled channel or the local throttle can
+                    // suppress transport, and a session that never received the
+                    // warning must be able to retry on the next poll instead of
+                    // having silently consumed its single chance. commit(), not
+                    // apply(), because the next poll reads this straight back.
+                    if (delivery.postedToOs) {
+                        prefs.edit()
+                            .putString(PREF_MORNING_INPUT_BLOCK_NOTIFIED_DATE, today)
+                            .commit()
+                    }
                 }
             }
 
