@@ -840,28 +840,39 @@ class MarketMLService : Service() {
         for (i in 0 until rows.length()) {
             rows.optJSONObject(i)?.let { encodedRows += it.toString() }
         }
-        // Same recovery posture as EVAL_RESUME_DISCARDED_MALFORMED_OUTPUTS: a
-        // corrupt checkpoint must not crash RUNNING-phase appends. Discard the
-        // regenerable file and restart the array from this batch.
+        // A corrupt checkpoint mid-run must not crash in a loop, but it must also not
+        // be swallowed. b460 archived the file and continued from this batch while
+        // leaving completedSnapshots untouched, so a corruption at batch 20 of 34
+        // uploaded only batches 20-34 while still reporting the session complete —
+        // and the same change suppressed EVAL_OUTPUT_COUNT_RECONCILED (the one line
+        // that would have shown the shortfall) by requiring existingCount > 0.
+        //
+        // Archive the regenerable file, then abort this run with an actionable
+        // message. Because the corrupt file is now renamed away, the retry finds no
+        // outputs file, takes the !canResume branch, resets completedSnapshots to 0
+        // and re-evaluates the full session — self-healing and complete, rather than
+        // silently short. The strict reader stays the shared failure mode.
         val existingCount = try {
             countJsonArrayFile(file)
         } catch (t: IllegalStateException) {
-            Log.w(
-                TAG,
-                "EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS: file=${file.name} " +
-                    "bytes=${file.length()} error=${t.message}"
+            val line = "EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS: file=${file.name} " +
+                "bytes=${file.length()} checkpoint=$existingCountHint error=${t.message}"
+            Log.w(TAG, line)
+            LogBuffer.add('W', TAG, line)
+            archiveEvaluationOutput(file, "append_malformed_outputs")
+            throw IllegalStateException(
+                "EVAL_APPEND_RESTART_REQUIRED: ${file.name} was malformed mid-run and has been " +
+                    "retained for inspection; the next run re-evaluates the session from snapshot 1.",
+                t
             )
+        }
+        if (existingCountHint >= 0 && existingCountHint != existingCount) {
+            Log.w(TAG, "EVAL_OUTPUT_COUNT_RECONCILED: file=${file.name} checkpoint=$existingCountHint actual=$existingCount")
             LogBuffer.add(
                 'W',
                 TAG,
-                "EVAL_APPEND_DISCARDED_MALFORMED_OUTPUTS: file=${file.name} " +
-                    "bytes=${file.length()} error=${t.message}"
+                "EVAL_OUTPUT_COUNT_RECONCILED: file=${file.name} checkpoint=$existingCountHint actual=$existingCount"
             )
-            archiveEvaluationOutput(file, "append_malformed_outputs")
-            0
-        }
-        if (existingCountHint >= 0 && existingCountHint != existingCount && existingCount > 0) {
-            Log.w(TAG, "EVAL_OUTPUT_COUNT_RECONCILED: file=${file.name} checkpoint=$existingCountHint actual=$existingCount")
         }
         if (encodedRows.isEmpty()) return existingCount
 

@@ -100,6 +100,40 @@ class EvaluationMalformedOutputRecoveryTests(unittest.TestCase):
             self.service,
         )
 
+    def test_append_discard_aborts_instead_of_silently_truncating_the_session(self):
+        # b460 archived the corrupt file and continued from the current batch while
+        # leaving completedSnapshots untouched, so a corruption at batch 20 of 34
+        # uploaded only batches 20-34 and still reported the session complete.
+        # Aborting after the archive makes the retry take the !canResume branch
+        # (no outputs file -> completedSnapshots = 0) and re-evaluate in full.
+        append_block = re.search(
+            r"private fun appendJsonArrayFile\([\s\S]*?\n    \}",
+            self.service,
+        )
+        self.assertIsNotNone(append_block)
+        block = append_block.group(0)
+        self.assertIn("EVAL_APPEND_RESTART_REQUIRED", block)
+        archive_at = block.index('archiveEvaluationOutput(file, "append_malformed_outputs")')
+        throw_at = block.index("EVAL_APPEND_RESTART_REQUIRED")
+        self.assertLess(
+            archive_at,
+            throw_at,
+            "the corrupt file must be archived before aborting, otherwise the retry "
+            "re-reads it and the crash loops",
+        )
+
+    def test_output_count_reconciliation_is_not_suppressed(self):
+        # The `existingCount > 0` qualifier added in b460 silenced this warning in
+        # exactly the discard case it exists to surface.
+        append_block = re.search(
+            r"private fun appendJsonArrayFile\([\s\S]*?\n    \}",
+            self.service,
+        )
+        self.assertIsNotNone(append_block)
+        block = append_block.group(0)
+        self.assertIn("EVAL_OUTPUT_COUNT_RECONCILED", block)
+        self.assertNotIn("&& existingCount > 0", block)
+
 
 
 if __name__ == "__main__":

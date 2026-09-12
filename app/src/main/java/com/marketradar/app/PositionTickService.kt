@@ -564,32 +564,68 @@ class PositionTickService : Service() {
     private fun isoUtcNow(): String = UTC_DATE_FORMAT.get().format(Date())
 
     /**
+     * Alert class for a shadow policy action. Exit signals and data-quality
+     * notices get independent cooldown anchors so a transient valuation gap can
+     * never suppress a real stop-loss or target alert.
+     */
+    private fun shadowAlertClass(action: String): String = when (action) {
+        "SHADOW_SL", "SHADOW_TP", "SHADOW_EOD" -> "exit"
+        "SHADOW_DEGRADED" -> "degraded"
+        else -> ""
+    }
+
+    /**
      * Live shadow-exit alerts. Dual path with brain.py position alerts for now —
-     * notify only on (tradeId, shadowAction) transitions, with a short cooldown
+     * notify only on (tradeId, shadowAction) transitions, with a per-class cooldown
      * against rapid flapping between recommendations.
+     *
+     * The cooldown anchor is keyed by alert class and is deliberately NOT cleared
+     * when the position returns to HOLD. b460 cleared the whole state on every HOLD
+     * tick, so `lastAction` was empty on the next SHADOW tick and the old
+     * `lastAction.isNotEmpty()` guard skipped the throttle entirely. Measured against
+     * production position_ticks, HOLD->SHADOW was the *only* transition that ever
+     * occurred (6 per trade on 2026-09-10, 0 SHADOW->other-SHADOW across both
+     * sessions), so the throttle was unreachable and 2026-09-10 would have produced
+     * 24 alerts across four open positions — five of six per trade being
+     * SHADOW_DEGRADED with a null P&L.
      */
     private fun maybeNotifyShadowExit(row: JSONObject, trade: JSONObject) {
         val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }
         if (tradeId.isBlank()) return
         val action = row.optString("policy_action", "HOLD")
         val lastActionKey = "shadow_last_action_$tradeId"
-        val lastNotifyMsKey = "shadow_last_notify_ms_$tradeId"
         if (!action.startsWith("SHADOW_")) {
+            // Clearing the state marker lets a genuine re-entry alert again. The
+            // cooldown anchor below must survive this, otherwise the throttle is
+            // bypassed by exactly the HOLD-interleaved flapping it exists to damp.
             if (prefs.contains(lastActionKey)) {
                 prefs.edit().remove(lastActionKey).apply()
             }
             return
         }
 
+        val alertClass = shadowAlertClass(action)
+        if (alertClass.isEmpty()) return
+
         val now = System.currentTimeMillis()
         val lastAction = prefs.getString(lastActionKey, "") ?: ""
-        val lastNotifyMs = prefs.getLong(lastNotifyMsKey, 0L)
         if (action == lastAction) return
-        if (lastAction.isNotEmpty() && now - lastNotifyMs < SHADOW_NOTIFY_COOLDOWN_MS) {
+
+        val lastNotifyMsKey = "shadow_last_notify_ms_${alertClass}_$tradeId"
+        val lastNotifyMs = prefs.getLong(lastNotifyMsKey, 0L)
+        val cooldownMs = if (alertClass == "exit") {
+            SHADOW_EXIT_NOTIFY_COOLDOWN_MS
+        } else {
+            SHADOW_DEGRADED_NOTIFY_COOLDOWN_MS
+        }
+        if (lastNotifyMs > 0L && now - lastNotifyMs < cooldownMs) {
+            // Deliberately does not record lastAction: if the condition persists,
+            // the alert must fire as soon as the cooldown expires.
             LogBuffer.add(
                 'I',
                 TAG,
-                "SHADOW_EXIT_NOTIFY_THROTTLED: trade=$tradeId action=$action prev=$lastAction"
+                "SHADOW_EXIT_NOTIFY_THROTTLED: trade=$tradeId action=$action class=$alertClass " +
+                    "prev=$lastAction sinceMs=${now - lastNotifyMs}"
             )
             return
         }
@@ -616,10 +652,15 @@ class PositionTickService : Service() {
                 "$label · $pnlText · Square off before close.",
                 "urgent"
             )
+            // Data-quality notice, not an exit signal: evaluateShadowPolicy only
+            // reaches SHADOW_DEGRADED when no SL/TP/EOD rule matched, so nothing is
+            // wrong with the position itself. Routed to the silent routine channel
+            // so a transient quote gap cannot train the user to ignore the audible
+            // position channels.
             "SHADOW_DEGRADED" -> Triple(
                 "🧪 Position Data Incomplete",
                 "$label · valuation degraded · review marks before trusting P&L.",
-                "warning"
+                "routine"
             )
             else -> return
         }
@@ -629,8 +670,15 @@ class PositionTickService : Service() {
             .putString(lastActionKey, action)
             .putLong(lastNotifyMsKey, now)
             .apply()
-        Log.i(TAG, "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action outcome=${delivery.outcome}")
-        LogBuffer.add('I', TAG, "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action outcome=${delivery.outcome}")
+        Log.i(
+            TAG,
+            "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action class=$alertClass outcome=${delivery.outcome}"
+        )
+        LogBuffer.add(
+            'I',
+            TAG,
+            "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action class=$alertClass outcome=${delivery.outcome}"
+        )
     }
 
     private fun buildNotification() =
@@ -709,8 +757,12 @@ class PositionTickService : Service() {
          */
         internal const val POSITION_TICK_GUARDS_VERSION = "position_tick_guards_v4_complete_book_position"
         private const val TICK_MS = 60_000L
-        /** Suppress repeat shadow alerts for the same (trade, action); transitions always notify. */
-        private const val SHADOW_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000L
+        /**
+         * Suppress repeat shadow alerts per (trade, alert class). Anchors are kept
+         * separate so a SHADOW_DEGRADED notice never consumes the exit cooldown.
+         */
+        private const val SHADOW_EXIT_NOTIFY_COOLDOWN_MS = 10 * 60 * 1000L
+        private const val SHADOW_DEGRADED_NOTIFY_COOLDOWN_MS = 60 * 60 * 1000L
         private const val JITTER_MS = 5_000L
         private const val FLUSH_MIN_MS = 60_000L
         private const val MAX_PENDING_TICKS = 1_500

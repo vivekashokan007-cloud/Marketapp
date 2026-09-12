@@ -763,35 +763,53 @@ object SupabaseClient {
             body.contains("'width'")
     }
 
-    /** Keep last row per id so ON CONFLICT DO UPDATE never sees the same key twice in one POST. */
-    private fun dedupeRejectedRowsById(rows: JSONArray): JSONArray {
-        if (rows.length() <= 1) return rows
+    private const val REJECTED_SNAPSHOT_UNKNOWN = "snapshot_unknown"
+
+    /**
+     * Prepare rejected rows for an `on_conflict=id` POST.
+     *
+     * Two distinct cases, deliberately handled differently:
+     *
+     *  - **Unkeyable rows** (no usable `snapshot_id`). `rejectedOutcomeId` collapses
+     *    these onto the shared `snapshot_unknown` constant, so unrelated candidates
+     *    share one id and overwrite each other. b460 kept "the last row per id",
+     *    which silently discarded genuinely distinct evaluations — the same class of
+     *    defect as the 8,296 null-`snapshot_id` rows found in
+     *    `ml_recommendation_outcomes` for 2026-09-10. These rows have no canonical
+     *    identity and are not uploaded at all; they are counted loudly instead.
+     *
+     *  - **True duplicates** (identical fully-keyed id, i.e. same session, snapshot,
+     *    candidate and label version). These are the same logical row, usually a
+     *    retry artifact, and collapsing them is exactly what the upsert would do.
+     *    The pre-b460 `check()` aborted the whole upload on these, which was
+     *    stricter than the data warrants and is why it was removed.
+     */
+    private fun prepareRejectedRowsForUpload(rows: JSONArray): JSONArray {
         val byId = linkedMapOf<String, JSONObject>()
-        var missingId = 0
+        var unkeyable = 0
+        var collapsed = 0
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: continue
+            val snapshotId = row.optString("snapshot_id", "").trim()
             val id = row.optString("id", "").trim()
-            if (id.isEmpty()) {
-                missingId += 1
+            if (id.isEmpty() || snapshotId.isEmpty() || snapshotId == REJECTED_SNAPSHOT_UNKNOWN) {
+                unkeyable += 1
                 continue
             }
-            byId[id] = row
+            if (byId.put(id, row) != null) collapsed += 1
         }
-        val dropped = rows.length() - byId.size - missingId
-        if (dropped > 0 || missingId > 0) {
-            Log.w(TAG, "REJECTED_RESEARCH_ID_DEDUPE: input=${rows.length()} unique=${byId.size} dropped=$dropped missingId=$missingId")
-            LogBuffer.add(
-                'W',
-                TAG,
-                "REJECTED_RESEARCH_ID_DEDUPE: input=${rows.length()} unique=${byId.size} dropped=$dropped missingId=$missingId"
-            )
+        if (unkeyable > 0 || collapsed > 0) {
+            val line = "REJECTED_RESEARCH_ROWS_FILTERED: input=${rows.length()} upload=${byId.size} " +
+                "unkeyableDropped=$unkeyable duplicatesCollapsed=$collapsed"
+            Log.w(TAG, line)
+            LogBuffer.add('W', TAG, line)
         }
-        if (dropped <= 0 && missingId <= 0) return rows
+        if (unkeyable <= 0 && collapsed <= 0) return rows
         return JSONArray().also { out -> byId.values.forEach(out::put) }
     }
 
     private fun rejectedOutcomeId(sessionDate: String, src: JSONObject, rowIndex: Int): String {
-        val snapshotId = src.optString("snapshot_id").ifBlank { "snapshot_unknown" }
+        val snapshotId = src.optString("snapshot_id").ifBlank { REJECTED_SNAPSHOT_UNKNOWN }
         val candidateId = src.optString("candidate_id").ifBlank { "candidate_$rowIndex" }
         val labelVersion = src.optString("label_version").ifBlank { "teacher_v1" }
         return "$sessionDate:$snapshotId:$candidateId:$labelVersion"
@@ -808,7 +826,7 @@ object SupabaseClient {
             if (role != "rejected") continue
             val row = JSONObject()
             row.put("id", rejectedOutcomeId(sessionDate, src, i))
-            row.put("snapshot_id", src.optString("snapshot_id").ifBlank { "snapshot_unknown" })
+            row.put("snapshot_id", src.optString("snapshot_id").ifBlank { REJECTED_SNAPSHOT_UNKNOWN })
             row.put("session_date", sessionDate)
             row.put("candidate_id", src.optString("candidate_id").ifBlank { "candidate_$i" })
             row.put("role", "rejected")
@@ -2105,7 +2123,7 @@ object SupabaseClient {
         val evaluationRows = buildEvaluationRows(distinct)
         val recommendationRows = buildRecommendationRows(sessionDate, distinct)
         val rejectedRowsRaw = buildRejectedEvaluationRows(sessionDate, distinct)
-        val rejectedRows = dedupeRejectedRowsById(rejectedRowsRaw)
+        val rejectedRows = prepareRejectedRowsForUpload(rejectedRowsRaw)
 
         fun outcomeWritePath(table: String): String {
             return when (table) {

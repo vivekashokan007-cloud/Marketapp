@@ -34,8 +34,8 @@ class EvaluationIdentityContractTests(unittest.TestCase):
         self.assertIn('buildEvaluationRows(distinct)', fragment)
         self.assertIn('buildRecommendationRows(sessionDate, distinct)', fragment)
         self.assertIn('buildRejectedEvaluationRows(sessionDate, distinct)', fragment)
-        self.assertIn('dedupeRejectedRowsById(rejectedRowsRaw)', fragment)
-        self.assertIn('REJECTED_RESEARCH_ID_DEDUPE', source)
+        self.assertIn('prepareRejectedRowsForUpload(rejectedRowsRaw)', fragment)
+        self.assertIn('REJECTED_RESEARCH_ROWS_FILTERED', source)
 
     def test_cache_preserves_id_if_available(self):
         source = (JAVA / 'EvaluationLocalCache.kt').read_text()
