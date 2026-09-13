@@ -10,6 +10,7 @@
 | Base (merge-base `origin/main`) | `f03cd2aacd4cadadf013794f3229bdb504c36e8e` |
 | Tip before this finish | `20d15c57fcf965b907384ec220f410e38937ffbc` |
 | Tip after this finish | `3ba3d5085d5cfe378653462d45f7526306f126d1` |
+| Docs stamp after tip | `67cfbc7` (gate tip SHA stamp) |
 
 ## Declaration
 
@@ -74,6 +75,12 @@ candidate → android_compact → lineage → upload with `contract_identity` �
 | ml_rejected_candidate_outcomes | 15704 | 15704 | 26 |
 
 **Lot categories (verified / blanket / missing / conflict / unverifiable): UNKNOWN** — prod primary/secondary have no `contract_identity` / lot / DTE columns (confirmed). Only rejected has `outcome_json`. No writes performed.
+
+Month slices (evaluation_outcomes, read-only):
+- 2026-07: 2,805 rows / 19 sessions / index_missing=0
+- 2026-08: 175,779 rows / 21 sessions / index_missing=0
+- 2026-09-01..13: 124,320 rows / 9 sessions / index_missing=0
+- Rejected Sep 1–13: 3,450 rows; `outcome_json` lot/quarantine fields present = 0
 
 ## Status matrix
 
