@@ -223,6 +223,71 @@ internal object ContractIdentityPayload {
         val eligibleForContractMetrics: Boolean
     )
 
+    private fun parseIsoDate(raw: Any?): String? {
+        if (raw == null || raw == JSONObject.NULL) return null
+        val text = raw.toString().trim()
+        if (text.length < 10) return null
+        return try {
+            java.time.LocalDate.parse(text.substring(0, 10)).toString()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun parseIsoDateTime(raw: Any?): Boolean {
+        if (raw == null || raw == JSONObject.NULL) return true
+        var text = raw.toString().trim()
+        if (text.isEmpty()) return true
+        return try {
+            if (text.endsWith("Z")) text = text.dropLast(1) + "+00:00"
+            java.time.OffsetDateTime.parse(text)
+            true
+        } catch (_: Exception) {
+            try {
+                java.time.LocalDateTime.parse(text)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    private fun positiveInt(raw: Any?): Int? {
+        if (raw == null || raw == JSONObject.NULL) return null
+        return try {
+            when (raw) {
+                is Number -> {
+                    val d = raw.toDouble()
+                    if (!d.isFinite() || d % 1.0 != 0.0 || d <= 0.0) null else d.toInt()
+                }
+                else -> {
+                    val d = raw.toString().toDouble()
+                    if (!d.isFinite() || d % 1.0 != 0.0 || d <= 0.0) null else d.toInt()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun nonNegInt(raw: Any?): Int? {
+        if (raw == null || raw == JSONObject.NULL) return null
+        return try {
+            when (raw) {
+                is Number -> {
+                    val d = raw.toDouble()
+                    if (!d.isFinite() || d % 1.0 != 0.0 || d < 0.0) null else d.toInt()
+                }
+                else -> {
+                    val d = raw.toString().toDouble()
+                    if (!d.isFinite() || d % 1.0 != 0.0 || d < 0.0) null else d.toInt()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun validate(payload: JSONObject?, requireVersion: Boolean = true): Validation {
         if (payload == null) {
             return Validation(true, true, emptyList(), null, null, false)
@@ -243,12 +308,39 @@ internal object ContractIdentityPayload {
         }
         val errors = mutableListOf<String>()
         val status = payload.optString("identity_status", "")
-        if (status == STATUS_VERIFIED) {
-            val missing = mutableListOf<String>()
-            for (key in listOf("index_key", "expiry", "contract_lot_size", "quantity_basis")) {
-                if (!has(payload, key)) missing.add(key)
+        val allowedStatuses = setOf(
+            "", STATUS_VERIFIED, STATUS_QUARANTINE, STATUS_LEGACY_NULL, STATUS_INCOMPLETE, STATUS_CONFLICT
+        )
+        if (status.isNotBlank() && status !in allowedStatuses) {
+            errors.add("invalid_identity_status:$status")
+        }
+        if (has(payload, "index_key")) {
+            val norm = ContractLotTable.normalizeIndexKey(payload.opt("index_key")?.toString())
+            if (norm != "NF" && norm != "BNF") {
+                errors.add("invalid_index_key:${payload.opt("index_key")}")
             }
-            if (missing.isNotEmpty()) errors.add("verified_missing:" + missing.joinToString(","))
+        }
+        for (dateKey in listOf("expiry", "session_date", "lot_as_of")) {
+            if (has(payload, dateKey) && parseIsoDate(payload.opt(dateKey)) == null) {
+                errors.add("invalid_$dateKey:unparseable_date")
+            }
+        }
+        if (has(payload, "observed_at") && !parseIsoDateTime(payload.opt("observed_at"))) {
+            errors.add("invalid_observed_at:unparseable_datetime")
+        }
+        val clsV = if (has(payload, "contract_lot_size")) positiveInt(payload.opt("contract_lot_size")) else null
+        if (has(payload, "contract_lot_size") && clsV == null) errors.add("invalid_contract_lot_size:non_positive")
+        val nV = if (has(payload, "number_of_lots")) positiveInt(payload.opt("number_of_lots")) else null
+        if (has(payload, "number_of_lots") && nV == null) errors.add("invalid_number_of_lots:non_positive")
+        val qV = if (has(payload, "quantity_units")) positiveInt(payload.opt("quantity_units")) else null
+        if (has(payload, "quantity_units") && qV == null) errors.add("invalid_quantity_units:non_positive")
+        if (clsV != null && nV != null && qV != null && clsV.toLong() * nV.toLong() != qV.toLong()) {
+            errors.add("quantity_units_product_mismatch")
+        }
+        for (dteKey in listOf("calendar_dte", "trading_dte")) {
+            if (has(payload, dteKey) && nonNegInt(payload.opt(dteKey)) == null) {
+                errors.add("invalid_$dteKey:bad")
+            }
         }
         val qb = payload.optString("quantity_basis", "")
         if (qb.isNotBlank() && qb !in setOf(
@@ -261,15 +353,74 @@ internal object ContractIdentityPayload {
         }
         if (payload.has("legs") && !payload.isNull("legs") && payload.optJSONArray("legs") == null) {
             errors.add("legs_not_array")
+        } else {
+            val legs = payload.optJSONArray("legs")
+            if (legs != null) {
+                for (i in 0 until legs.length()) {
+                    val leg = legs.optJSONObject(i)
+                    if (leg == null) {
+                        errors.add("leg_${i}_not_object")
+                        continue
+                    }
+                    for (qk in listOf("contract_lot_size", "quantity_units", "ratio")) {
+                        if (has(leg, qk) && positiveInt(leg.opt(qk)) == null) {
+                            errors.add("leg_${i}_invalid_$qk")
+                        }
+                    }
+                    if (has(leg, "expiry") && has(payload, "expiry")) {
+                        val le = parseIsoDate(leg.opt("expiry"))
+                        val pe = parseIsoDate(payload.opt("expiry"))
+                        if (le != null && pe != null && le != pe) {
+                            errors.add("leg_${i}_expiry_mismatch")
+                        }
+                    }
+                }
+            }
+        }
+        if (status == STATUS_VERIFIED) {
+            val missing = mutableListOf<String>()
+            for (key in listOf(
+                "index_key", "expiry", "contract_lot_size", "number_of_lots",
+                "quantity_units", "quantity_basis"
+            )) {
+                if (!has(payload, key)) missing.add(key)
+            }
+            if (missing.isNotEmpty()) errors.add("verified_missing:" + missing.joinToString(","))
+            if (!payload.optBoolean("identity_complete", false)) {
+                errors.add("verified_requires_identity_complete")
+            }
+            if (payload.optBoolean("contract_identity_quarantine", false) ||
+                payload.optBoolean("evaluation_ineligible", false)
+            ) {
+                errors.add("verified_with_quarantine_or_ineligible")
+            }
+            if (payload.optBoolean("lot_conflict", false)) {
+                errors.add("verified_with_conflict")
+            }
+            if (!has(payload, "lot_source") && !has(payload, "lot_table_version")) {
+                errors.add("verified_missing_lot_provenance")
+            }
+            if (clsV == null || nV == null || qV == null) {
+                errors.add("verified_requires_quantity_triplet")
+            }
         }
         val out = JSONObject(payload.toString())
         if (!has(out, "schema_version") || out.optString("schema_version").isBlank()) {
             out.put("schema_version", SCHEMA_VERSION)
         }
-        val eligible = status == STATUS_VERIFIED &&
+        if (errors.isNotEmpty()) {
+            out.put("evaluation_ineligible", true)
+            if (status == STATUS_VERIFIED) {
+                out.put("identity_status", STATUS_QUARANTINE)
+                out.put("contract_identity_quarantine", true)
+            }
+            out.put("validation_errors", org.json.JSONArray(errors))
+        }
+        val eligible = out.optString("identity_status", "") == STATUS_VERIFIED &&
             errors.isEmpty() &&
             !out.optBoolean("contract_identity_quarantine", false) &&
-            out.optBoolean("identity_complete", true)
+            out.optBoolean("identity_complete", false) &&
+            !out.optBoolean("evaluation_ineligible", false)
         return Validation(
             ok = errors.isEmpty(),
             schemaCompatible = true,

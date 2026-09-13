@@ -18,7 +18,6 @@ class CodexRectificationIdentityTests(unittest.TestCase):
             "expiry_cycle": "weekly",
             "lot_size": 65,
             "number_of_lots": 1,
-            "tDTE": 2,
             "dte": 2,
         })
         self.assertTrue(got["lot_conflict"])
@@ -35,7 +34,6 @@ class CodexRectificationIdentityTests(unittest.TestCase):
             "expiry_cycle": "weekly",
             "lot_size": 75,
             "number_of_lots": 1,
-            "tDTE": 2,
             "dte": 2,
         })
         self.assertFalse(got["lot_conflict"])
@@ -50,7 +48,6 @@ class CodexRectificationIdentityTests(unittest.TestCase):
             "expiry_cycle": "monthly",
             "lot_size": 30,
             "number_of_lots": 1,
-            "tDTE": 2,
             "dte": 2,
         })
         self.assertTrue(got["lot_conflict"])
@@ -67,7 +64,6 @@ class CodexRectificationIdentityTests(unittest.TestCase):
             "expiry_cycle": "monthly",
             "lot_size": 35,
             "number_of_lots": 1,
-            "tDTE": 2,
             "dte": 2,
         })
         self.assertFalse(got["lot_conflict"])
@@ -83,8 +79,10 @@ class CodexRectificationIdentityTests(unittest.TestCase):
             "contract_lot_size": 65,
             "number_of_lots": 2,
             "quantity_units": 130,
-            "tDTE": 2,
-            "dte": 2,
+            "calendar_dte": 18,
+            "trading_dte": 14,
+            "dte": 18,
+            "dte_basis": "calendar",
         })
         self.assertTrue(got["identity_complete"])
         self.assertEqual(got["quantity_units"], 130)

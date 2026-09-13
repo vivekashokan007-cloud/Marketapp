@@ -6,14 +6,14 @@ Called by Kotlin TrainingService via Chaquopy at 11 PM nightly.
 Usage (Kotlin via Chaquopy):
     Python.getModule("ml_train").callAttr("run",
         "/data/backtest_trades.csv",   # primary training data
-        "/data/app_trades.json",       # paper research export path (NOT live; training disabled)
+        "/data/paper_trades.json",     # sole canonical Paper research name (NOT live; training disabled)
         "/data/ml_model.json",          # current model (replaced if better)
         log_fn,                         # optional Kotlin callback for logs
         "/data/evaluation_outcomes.json",
         "/data/brain_snapshots.json")
 
 Usage (CLI for testing):
-    python3 ml_train.py /data/backtest.csv /data/app_trades.json /data/model.json [/data/evaluation_outcomes.json] [/data/brain_snapshots.json]
+    python3 ml_train.py /data/backtest.csv /data/paper_trades.json /data/model.json [/data/evaluation_outcomes.json] [/data/brain_snapshots.json]
 
 Returns JSON string with:
     {success, deployed, accuracy_new, accuracy_old, n_train, duration_sec, reason}
@@ -185,7 +185,24 @@ def _app_trade_to_row(t):
     mode = str(t.get('mode', 'intraday')).lower()
     vix  = t.get('entry_vix') or t.get('vix') or 17.0
     spot = t.get('entry_spot') or t.get('spot') or 0
-    dte  = t.get('dte') or t.get('tDTE') or 3
+    # R3.5: never fabricate NF / dte=3 — missing identity/DTE skips the row.
+    raw_index = t.get('index_key') if t.get('index_key') not in (None, '') else t.get('index')
+    if raw_index in (None, ''):
+        return None
+    index = str(raw_index).strip().upper()
+    if index not in ('NF', 'BNF'):
+        return None
+    dte_raw = t.get('dte') if t.get('dte') not in (None, '') else t.get('tDTE')
+    if dte_raw in (None, ''):
+        dte_raw = t.get('trading_dte') if t.get('trading_dte') not in (None, '') else t.get('calendar_dte')
+    if dte_raw in (None, ''):
+        return None
+    try:
+        dte = int(dte_raw)
+        if dte < 0 or float(dte_raw) != dte:
+            return None
+    except Exception:
+        return None
 
     entry_credit = (t.get('entry_credit') or t.get('net_premium') or
                     t.get('netPremium') or 0)
@@ -193,7 +210,6 @@ def _app_trade_to_row(t):
     max_loss     = t.get('max_loss')   or t.get('maxLoss')   or 0
     width        = t.get('width') or 200
     sigma_away   = t.get('sigma_from_atm') or t.get('sigmaOTM') or t.get('sigma_away') or 0
-    index        = str(t.get('index', 'NF'))
 
     is_credit = stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY')
     legs = 4 if 'IRON' in stype else 2
@@ -590,31 +606,69 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_pa
                     log('ml_train: ABORT — paper export must not be live-training eligible')
                     result['duration_sec'] = round(time.time() - t0, 1)
                     return json.dumps(result)
-                # Source mismatch / checksum mismatch when declared.
+                # R3.5: handle dict and string checksums in SEPARATE reachable branches.
                 declared_ck = manifest.get('checksum_sha256')
+                _sha256_re = __import__('re').compile(r'^[0-9a-f]{64}$')
+
+                def _abort_ck(reason):
+                    result['reason'] = reason
+                    result['success'] = False
+                    result['deployed'] = False
+                    log(f"ml_train: ABORT — {reason}")
+                    result['duration_sec'] = round(time.time() - t0, 1)
+                    return json.dumps(result)
+
                 if isinstance(declared_ck, dict):
-                    # For paper file, verify against paper_trades.json when present.
-                    target = None
+                    # Object checksum: verify named file digests / outcomes / snapshots.
                     if 'paper' in status_name:
                         target = os.path.join(base_dir, 'paper_trades.json')
-                    if target and os.path.isfile(target) and declared_ck.get('file'):
-                        digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
-                        if digest != declared_ck.get('file'):
-                            result['reason'] = f"export_manifest_checksum_mismatch:{status_name}"
-                            result['success'] = False
-                            result['deployed'] = False
-                            log(f"ml_train: ABORT — checksum mismatch {status_name}")
-                            result['duration_sec'] = round(time.time() - t0, 1)
-                            return json.dumps(result)
-                    elif isinstance(declared_ck, str) and status_name.startswith('paper') and os.path.isfile(paper_json):
+                        expected = declared_ck.get('file') or declared_ck.get('paper_trades')
+                        if expected is not None:
+                            if not isinstance(expected, str) or not _sha256_re.match(expected.lower()):
+                                return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
+                            if not os.path.isfile(target):
+                                return _abort_ck(f"export_manifest_checksum_file_missing:{status_name}")
+                            digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
+                            if digest != expected.lower():
+                                return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}")
+                    for key, fname in (
+                        ('outcomes', 'evaluation_outcomes.json'),
+                        ('snapshots', 'brain_snapshots.json'),
+                    ):
+                        if declared_ck.get(key):
+                            expected = declared_ck.get(key)
+                            if not isinstance(expected, str) or not _sha256_re.match(str(expected).lower()):
+                                return _abort_ck(f"export_manifest_checksum_malformed:{status_name}:{key}")
+                            target = os.path.join(base_dir, fname)
+                            if os.path.isfile(target):
+                                digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
+                                if digest != str(expected).lower():
+                                    return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}:{key}")
+                elif isinstance(declared_ck, str):
+                    # String checksum branch (reachable): exact lowercase SHA-256 of paper file.
+                    if not _sha256_re.match(declared_ck.lower()):
+                        return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
+                    if status_name.startswith('paper') or 'paper' in status_name:
+                        if not os.path.isfile(paper_json):
+                            return _abort_ck(f"export_manifest_checksum_file_missing:{status_name}")
                         digest = hashlib.sha256(open(paper_json, 'rb').read()).hexdigest()
-                        if digest != declared_ck:
-                            result['reason'] = f"export_manifest_checksum_mismatch:{status_name}"
-                            result['success'] = False
-                            result['deployed'] = False
-                            log(f"ml_train: ABORT — checksum mismatch {status_name}")
-                            result['duration_sec'] = round(time.time() - t0, 1)
-                            return json.dumps(result)
+                        if digest != declared_ck.lower():
+                            return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}")
+                elif declared_ck is not None:
+                    return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
+
+                # Row count / dataset label / generation cutoff when declared.
+                if manifest.get('row_count') is not None and os.path.isfile(paper_json) and 'paper' in status_name:
+                    try:
+                        rows = json.load(open(paper_json, 'r', encoding='utf-8'))
+                        n = len(rows) if isinstance(rows, list) else len(rows.get('trades') or [])
+                        declared_n = manifest.get('row_count')
+                        if isinstance(declared_n, dict):
+                            declared_n = declared_n.get('paper') or declared_n.get('file')
+                        if declared_n is not None and int(declared_n) != int(n):
+                            return _abort_ck(f"export_manifest_row_count_mismatch:{status_name}")
+                    except Exception as ex:
+                        return _abort_ck(f"export_manifest_row_count_error:{status_name}:{ex}")
                 kind = str(manifest.get('kind') or '')
                 if kind and 'paper' in status_name and 'paper' not in kind and kind != 'canonical_eval_export':
                     result['reason'] = f"export_manifest_source_mismatch:{status_name}:{kind}"
@@ -941,7 +995,7 @@ if __name__ == '__main__':
 
     # Default: full training
     bt_path    = sys.argv[1] if len(sys.argv) > 1 else 'backtest_trades.csv'
-    app_path      = sys.argv[2] if len(sys.argv) > 2 else 'app_trades.json'
+    app_path      = sys.argv[2] if len(sys.argv) > 2 else 'paper_trades.json'
     model_path    = sys.argv[3] if len(sys.argv) > 3 else 'model.json'
     outcomes_path = sys.argv[4] if len(sys.argv) > 4 else None
     snapshots_path = sys.argv[5] if len(sys.argv) > 5 else None

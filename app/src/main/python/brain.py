@@ -3655,58 +3655,132 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         raw_idx = str(trade.get('index_key') or trade.get('indexKey') or trade.get('index') or '').strip().upper()
         idx = raw_idx if raw_idx in ('BNF', 'NF') else None
 
-    # `lots` is trade quantity in lots, not lot size. App trades usually store
-    # `lots: 1`, so treating it as lot_size under-scales BNF P&L by 30x.
+    # R3.1: prefer explicit triplet (contract_lot_size, number_of_lots, quantity_units).
+    # Validate multiplication identity; fail closed on conflict.
+    # Legacy lot_size means TOTAL position units (not per-contract).
     entry_snapshot = trade.get('entry_snapshot') or {}
     if not isinstance(entry_snapshot, dict):
         entry_snapshot = {}
-    explicit_lot_size = _num(
-        trade.get('lot_size') or trade.get('lotSize') or entry_snapshot.get('lot_size') or entry_snapshot.get('lotSize'),
-        0
-    )
-    lots_count = max(_num(trade.get('lots'), 1), 1)
-    session_as_of = (
-        trade.get('session_date') or trade.get('entry_date')
-        or entry_snapshot.get('session_date') or entry_snapshot.get('entry_date')
-    )
-    dated = None
+
+    def _first(*vals):
+        for v in vals:
+            if v not in (None, ''):
+                return v
+        return None
+
     try:
-        from contract_lot_table import resolve_contract_lot
-        expiry_for_lot = (
-            trade.get('expiry') or trade.get('expiry_date')
-            or entry_snapshot.get('expiry') or entry_snapshot.get('expiry_date')
-        )
-        cycle_for_lot = trade.get('expiry_cycle') or entry_snapshot.get('expiry_cycle')
-        captured_cls = (
-            trade.get('contract_lot_size') or entry_snapshot.get('contract_lot_size')
-        )
-        dated = resolve_contract_lot(
-            idx,
-            as_of=session_as_of,
-            number_of_lots=lots_count,
-            expiry=expiry_for_lot,
-            expiry_cycle=cycle_for_lot,
-            captured_contract_lot=captured_cls,
-            allow_operational_current=(session_as_of in (None, '') and expiry_for_lot in (None, '')),
-        )
+        from contract_lot_table import parse_positive_integral_lot, parse_number_of_lots
     except Exception:
+        parse_positive_integral_lot = None
+        parse_number_of_lots = None
+
+    triplet_cls_raw = _first(
+        trade.get('contract_lot_size'), entry_snapshot.get('contract_lot_size'),
+        trade.get('contractLotSize'), entry_snapshot.get('contractLotSize'),
+    )
+    triplet_lots_raw = _first(
+        trade.get('number_of_lots'), entry_snapshot.get('number_of_lots'),
+        trade.get('lots'),
+    )
+    triplet_qty_raw = _first(
+        trade.get('quantity_units'), entry_snapshot.get('quantity_units'),
+    )
+
+    lot_size = 0
+    lot_size_assumed = True
+    lot_size_source = 'unknown'
+    lots_count = 1
+    resolved_contract_lot = None
+
+    if parse_positive_integral_lot is not None and (
+        triplet_cls_raw is not None or triplet_qty_raw is not None
+        or (triplet_lots_raw is not None and trade.get('number_of_lots') not in (None, ''))
+    ):
+        cls_v, cls_err = parse_positive_integral_lot(triplet_cls_raw) if triplet_cls_raw is not None else (None, None)
+        if triplet_cls_raw is not None and cls_v is None:
+            return None  # fail closed
+        n_pack = parse_number_of_lots(triplet_lots_raw, allow_missing_default_one=(triplet_lots_raw in (None, '')))
+        if triplet_lots_raw not in (None, '') and not n_pack.get('valid'):
+            return None
+        lots_count = int(n_pack['number_of_lots']) if n_pack.get('valid') and n_pack.get('number_of_lots') else None
+        qty_v, qty_err = parse_positive_integral_lot(triplet_qty_raw) if triplet_qty_raw is not None else (None, None)
+        if triplet_qty_raw is not None and qty_v is None:
+            return None
+        if cls_v is not None and lots_count is not None and qty_v is not None:
+            if int(cls_v) * int(lots_count) != int(qty_v):
+                return None  # disagreement — never substitute one lot
+            lot_size = float(qty_v)
+            resolved_contract_lot = float(cls_v)
+            lot_size_assumed = False
+            lot_size_source = 'entry_snapshot_triplet'
+        elif cls_v is not None and lots_count is not None and qty_v is None:
+            lot_size = float(int(cls_v) * int(lots_count))
+            resolved_contract_lot = float(cls_v)
+            lot_size_assumed = False
+            lot_size_source = 'entry_snapshot_triplet_derived'
+        elif triplet_cls_raw is not None or triplet_qty_raw is not None:
+            return None  # partial triplet → fail closed
+
+    if lot_size <= 0:
+        explicit_total_units = _num(
+            _first(
+                trade.get('lot_size'), trade.get('lotSize'),
+                entry_snapshot.get('lot_size'), entry_snapshot.get('lotSize'),
+            ),
+            0,
+        )
+        n_pack2 = None
+        if parse_number_of_lots is not None:
+            n_pack2 = parse_number_of_lots(
+                _first(trade.get('number_of_lots'), trade.get('lots'), entry_snapshot.get('number_of_lots')),
+                allow_missing_default_one=True,
+            )
+            lots_count = int(n_pack2['number_of_lots']) if n_pack2.get('valid') else 1
+        else:
+            lots_count = max(int(_num(trade.get('lots'), 1)), 1)
+        session_as_of = (
+            trade.get('session_date') or trade.get('entry_date')
+            or entry_snapshot.get('session_date') or entry_snapshot.get('entry_date')
+        )
         dated = None
-    if explicit_lot_size > 0:
-        lot_size = explicit_lot_size
-        lot_size_assumed = False
-        lot_size_source = 'trade' if _num(trade.get('lot_size') or trade.get('lotSize'), 0) > 0 else 'entry_snapshot'
-    elif dated and dated.get('resolved'):
-        lot_size = float(dated['lot_size'])
-        lot_size_assumed = True
-        lot_size_source = dated.get('lot_source') or 'authoritative_contract_rule'
-    else:
-        # Fail-closed: do not invent historical lots from CONST.
-        lot_size = 0
-        lot_size_assumed = True
-        lot_size_source = (dated or {}).get('lot_source') or 'unknown'
+        try:
+            from contract_lot_table import resolve_contract_lot
+            expiry_for_lot = (
+                trade.get('expiry') or trade.get('expiry_date')
+                or entry_snapshot.get('expiry') or entry_snapshot.get('expiry_date')
+            )
+            cycle_for_lot = trade.get('expiry_cycle') or entry_snapshot.get('expiry_cycle')
+            captured_cls = _first(
+                trade.get('contract_lot_size'), entry_snapshot.get('contract_lot_size'),
+            )
+            dated = resolve_contract_lot(
+                idx,
+                as_of=session_as_of,
+                number_of_lots=lots_count,
+                expiry=expiry_for_lot,
+                expiry_cycle=cycle_for_lot,
+                captured_contract_lot=captured_cls,
+                allow_operational_current=(session_as_of in (None, '') and expiry_for_lot in (None, '')),
+            )
+        except Exception:
+            dated = None
+        if explicit_total_units > 0:
+            lot_size = explicit_total_units
+            lot_size_assumed = False
+            lot_size_source = (
+                'trade' if _num(trade.get('lot_size') or trade.get('lotSize'), 0) > 0 else 'entry_snapshot'
+            )
+        elif dated and dated.get('resolved'):
+            lot_size = float(dated['lot_size'])
+            resolved_contract_lot = dated.get('contract_lot_size')
+            lot_size_assumed = True
+            lot_size_source = dated.get('lot_source') or 'authoritative_contract_rule'
+        else:
+            lot_size = 0
+            lot_size_assumed = True
+            lot_size_source = (dated or {}).get('lot_source') or 'unknown'
 
     if not idx:
-        # Unknown identity — cannot value position; retain trade elsewhere.
         return None
     if lot_size <= 0:
         return None

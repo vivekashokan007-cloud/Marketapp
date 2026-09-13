@@ -113,6 +113,8 @@ class G8NetLabelTests(unittest.TestCase):
             "actual_pnl": -50.0,
             "strategy": "BULL_PUT",
             "date": "2026-09-10",
+            "index": "NF",
+            "dte": 2,
         }
         won = ml_train._resolve_training_won(trade, pnl=-50.0)
         self.assertIs(won, False)
@@ -307,7 +309,7 @@ class G8KotlinExportSourceTests(unittest.TestCase):
             src = f.read()
         self.assertIn("incomplete_truncated", src)
         self.assertIn("canonical_eval_export_status.json", src)
-        self.assertIn("app_trades_export_status.json", src)
+        self.assertIn("paper_trades_export_status.json", src)
 
     def test_export_uses_multi_page_fetch(self):
         with open(self.kt, encoding="utf-8") as f:

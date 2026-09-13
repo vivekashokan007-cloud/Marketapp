@@ -1043,11 +1043,70 @@ internal data class PositionTickLotMeta(
 
 internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta? {
     // Shared contract-specific table with Python contract_lot_table.py — never invent BNF.
+    // R3.1: prefer explicit triplet (contract_lot_size, number_of_lots, quantity_units);
+    // validate multiplication; fail closed on conflict. Legacy lot_size = TOTAL units.
     val indexRaw = trade.optStringAny("index_key", "indexKey", "index")
     val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
+
+    val tripletCls = trade.optDoubleAny("contract_lot_size", "contractLotSize")
+        ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
+    val rawTripletLots = when {
+        trade.has("number_of_lots") && !trade.isNull("number_of_lots") -> trade.opt("number_of_lots")
+        entrySnapshot.has("number_of_lots") && !entrySnapshot.isNull("number_of_lots") -> entrySnapshot.opt("number_of_lots")
+        trade.has("lots") && !trade.isNull("lots") -> trade.opt("lots")
+        else -> null
+    }
+    val tripletLotsParsed = if (rawTripletLots != null) {
+        ContractLotTable.parseNumberOfLots(rawTripletLots, allowMissingDefaultOne = false)
+    } else null
+    val tripletLots = tripletLotsParsed?.first
+    val tripletQty = trade.optDoubleAny("quantity_units")
+        ?: entrySnapshot.optDoubleAny("quantity_units")
+
+    // Explicit triplet present → validate product, never silently substitute one lot.
+    if (tripletCls != null || tripletLots != null || tripletQty != null) {
+        val clsParsed = if (tripletCls != null) ContractLotTable.parsePositiveIntegralLot(tripletCls) else null
+        if (tripletCls != null && clsParsed == null) return null
+        if (rawTripletLots != null && (tripletLotsParsed == null || !tripletLotsParsed.second || tripletLots == null)) return null
+        val qtyParsed = if (tripletQty != null) ContractLotTable.parsePositiveIntegralLot(tripletQty) else null
+        if (tripletQty != null && qtyParsed == null) return null
+        if (clsParsed != null && tripletLots != null && qtyParsed != null) {
+            val expected = clsParsed.toLong() * tripletLots.toLong()
+            if (expected != qtyParsed.toLong()) return null // fail closed on disagreement
+            return PositionTickLotMeta(
+                lotSize = qtyParsed.toDouble(), // total units for P&L
+                assumed = false,
+                source = "entry_snapshot_triplet",
+                contractLotSize = clsParsed.toDouble(),
+                numberOfLots = tripletLots,
+                lotTableVersion = ContractLotTable.VERSION_ID,
+                lotAsOf = null
+            )
+        }
+        if (clsParsed != null && tripletLots != null && qtyParsed == null) {
+            val total = clsParsed.toLong() * tripletLots.toLong()
+            return PositionTickLotMeta(
+                lotSize = total.toDouble(),
+                assumed = false,
+                source = "entry_snapshot_triplet_derived",
+                contractLotSize = clsParsed.toDouble(),
+                numberOfLots = tripletLots,
+                lotTableVersion = ContractLotTable.VERSION_ID,
+                lotAsOf = null
+            )
+        }
+        // Partial/conflicting triplet without enough fields to derive safely → fail closed
+        // rather than falling through to a one-lot substitute when any triplet field was present.
+        if (tripletCls != null || (rawTripletLots != null && tripletLotsParsed?.second == true) || tripletQty != null) {
+            // Allow fallthrough only when solely number_of_lots/lots was present (legacy path).
+            if (tripletCls != null || tripletQty != null) return null
+        }
+    }
+
     val tradeLot = trade.optDoubleAny("lot_size", "lotSize")
     val entrySnapshotLot = entrySnapshot.optDoubleAny("lot_size", "lotSize")
-    val explicitLotSize = tradeLot ?: entrySnapshotLot ?: 0.0
+    // Legacy lot_size = TOTAL position units (R3.1).
+    val explicitTotalUnits = tradeLot ?: entrySnapshotLot ?: 0.0
     val rawLots = trade.opt("number_of_lots") ?: trade.opt("lots") ?: entrySnapshot.opt("number_of_lots")
     val lotsParsed = ContractLotTable.parseNumberOfLots(rawLots, allowMissingDefaultOne = true)
     val lotsCount = lotsParsed.first ?: return null
@@ -1068,12 +1127,11 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val capturedClsExplicit = trade.optDoubleAny("contract_lot_size", "contractLotSize")
         ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
     val inVerifiedWindow = asOf != null || expiry != null
-    // In a verified rule window, derive captured contract lot from legacy quantity and compare
-    // to authority (B3). Outside that window, prefer explicit trade/snapshot quantity for live ticks.
+    // When legacy total units + lots are both present, derive per-contract for authority compare.
     val capturedCls = when {
         capturedClsExplicit != null -> capturedClsExplicit
-        inVerifiedWindow && explicitLotSize > 0.0 && lotsCount > 0.0 -> {
-            val derived = explicitLotSize / lotsCount
+        inVerifiedWindow && explicitTotalUnits > 0.0 && lotsCount > 0.0 -> {
+            val derived = explicitTotalUnits / lotsCount
             ContractLotTable.parsePositiveIntegralLot(derived)?.toDouble()
         }
         else -> null
@@ -1089,7 +1147,7 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     )
     if (dated.lotConflict) return null
     val lotSize = when {
-        !inVerifiedWindow && explicitLotSize > 0.0 -> explicitLotSize
+        !inVerifiedWindow && explicitTotalUnits > 0.0 -> explicitTotalUnits
         else -> dated.lotSize ?: 0.0
     }
     if (lotSize <= 0.0) return null
@@ -1101,9 +1159,14 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     }
     return PositionTickLotMeta(
         lotSize = lotSize,
-        assumed = source !in setOf("trade", "entry_snapshot"),
+        assumed = source !in setOf("trade", "entry_snapshot", "entry_snapshot_triplet", "entry_snapshot_triplet_derived"),
         source = source,
-        contractLotSize = if (source in setOf("trade", "entry_snapshot")) null else dated.contractLotSize,
+        contractLotSize = when {
+            source in setOf("trade", "entry_snapshot") -> {
+                if (lotsCount > 0.0) ContractLotTable.parsePositiveIntegralLot(lotSize / lotsCount)?.toDouble() else null
+            }
+            else -> dated.contractLotSize
+        },
         numberOfLots = lotsCount,
         lotTableVersion = dated.lotTableVersion,
         lotAsOf = dated.lotAsOf

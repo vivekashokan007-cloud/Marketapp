@@ -199,7 +199,7 @@ class MarketMLService : Service() {
             File(ctx.filesDir, "backtest_trades.csv").absolutePath
 
         fun appTradesPath(ctx: Context): String =
-            File(ctx.filesDir, "app_trades.json").absolutePath // paper research export path (not live)
+            File(ctx.filesDir, "paper_trades.json").absolutePath // R3.5 sole canonical Paper research name
 
         fun evalOutcomesPath(ctx: Context): String =
             File(ctx.filesDir, "evaluation_outcomes.json").absolutePath
@@ -2045,9 +2045,6 @@ class MarketMLService : Service() {
             val resp = paged.optJSONArray("rows") ?: org.json.JSONArray()
             val truncated = paged.optBoolean("truncated_at_max_pages", false)
             val statusName = paged.optString("status", if (resp.length() == 0) "empty" else "complete")
-            val exportPath = appTradesPath(this)
-            val statusPath = File(filesDir, "paper_trades_export_status.json").absolutePath
-            val legacyStatusPath = File(filesDir, "app_trades_export_status.json").absolutePath
             val status = org.json.JSONObject()
                 .put("kind", "paper_trades_export")
                 .put("dataset_label", "paper_research_not_live")
@@ -2070,28 +2067,19 @@ class MarketMLService : Service() {
                     "incomplete_truncated" -> "Hit maxPages ceiling; incomplete cohort."
                     else -> "Paper research export only — never feed into live training paths."
                 })
-            // Atomic replace only after complete; retain last good on failure.
-            if (statusName == "complete" || statusName == "empty") {
-                val tmp = File("$exportPath.tmp")
-                tmp.writeText(resp.toString())
-                if (!tmp.renameTo(File(exportPath))) {
-                    File(exportPath).writeText(resp.toString())
-                    tmp.delete()
-                }
-                // Also write unambiguously named paper file
-                val paperPath = File(filesDir, "paper_trades.json")
-                val paperTmp = File(filesDir, "paper_trades.json.tmp")
-                paperTmp.writeText(resp.toString())
-                if (!paperTmp.renameTo(paperPath)) {
-                    paperPath.writeText(resp.toString())
-                    paperTmp.delete()
-                }
-            } else {
-                Log.w(TAG, "Paper export incomplete ($statusName); retaining last good file at $exportPath")
+            // R3.5/R3.6: sole canonical paper_trades.json via generation store; no ambiguous duplicate.
+            // Status artifact: paper_trades_export_status.json (written by CanonicalExportStore).
+            status.put("export_cutoff", paged.opt("export_cutoff") ?: org.json.JSONObject.NULL)
+            status.put("filter", paged.optString("filter", status.optString("filter")))
+            val write = CanonicalExportStore.writePaperResearchExport(
+                root = filesDir,
+                rowsJson = resp.toString(),
+                status = status
+            )
+            if (!write.ok) {
+                Log.w(TAG, "Paper export incomplete ($statusName); retaining last good; reason=${write.reason}")
             }
-            File(statusPath).writeText(status.toString())
-            File(legacyStatusPath).writeText(status.toString())
-            Log.i(TAG, "Paper trades export status=${status.optString("status")} pages=${paged.optInt("pages_fetched", 0)}")
+            Log.i(TAG, "Paper trades export status=${status.optString("status")} pages=${paged.optInt("pages_fetched", 0)} gen=${write.generationId}")
         } catch (e: Exception) {
             Log.w(TAG, "Could not export paper trades: ${e.message}")
         }
@@ -2205,27 +2193,36 @@ class MarketMLService : Service() {
                     else -> "Multi-page joined coverage complete for exported window."
                 })
 
-            // Always record the attempt; only replace last-good on complete/empty.
-            attemptPath.writeText(status.toString())
-            if (statusName == "complete" || statusName == "empty") {
-                val outFile = File(evalOutcomesPath(this))
-                val snapFile = File(brainSnapshotsPath(this))
-                val outTmp = File(outFile.absolutePath + ".tmp")
-                val snapTmp = File(snapFile.absolutePath + ".tmp")
-                val statusTmp = File(statusPath.absolutePath + ".tmp")
-                outTmp.writeBytes(outcomesBytes)
-                snapTmp.writeBytes(snapshotsBytes)
-                statusTmp.writeText(status.toString())
-                val okOut = outTmp.renameTo(outFile) || run { outFile.writeBytes(outcomesBytes); outTmp.delete(); true }
-                val okSnap = snapTmp.renameTo(snapFile) || run { snapFile.writeBytes(snapshotsBytes); snapTmp.delete(); true }
-                val okStatus = statusTmp.renameTo(statusPath) || run { statusPath.writeText(status.toString()); statusTmp.delete(); true }
-                if (!okOut || !okSnap || !okStatus) {
-                    Log.w(TAG, "Canonical export atomic replace partially failed")
+            // R3.6: immutable generation dir + atomic current pointer only.
+            status.put("export_cutoff", outcomePage.opt("export_cutoff") ?: snapshotPage.opt("export_cutoff") ?: org.json.JSONObject.NULL)
+            val exportRoot = File(filesDir, "canonical_eval_export")
+            exportRoot.mkdirs()
+            val write = CanonicalExportStore.writeGeneration(
+                root = exportRoot,
+                outcomesBytes = outcomesBytes,
+                snapshotsBytes = snapshotsBytes,
+                status = status,
+                cutoff = status.optString("export_cutoff").ifBlank { null }
+            )
+            // Mirror last_attempt / last_good pointers into legacy status path for trainer guards.
+            val attemptFile = File(exportRoot, CanonicalExportStore.LAST_ATTEMPT_POINTER)
+            if (attemptFile.exists()) {
+                attemptPath.writeText(attemptFile.readText())
+            } else {
+                attemptPath.writeText(status.toString())
+            }
+            if (write.ok) {
+                val good = File(exportRoot, CanonicalExportStore.LAST_GOOD_POINTER)
+                if (good.exists()) statusPath.writeText(good.readText())
+                // Also materialize stable paths for existing readers (from verified generation).
+                val read = CanonicalExportStore.readCurrent(exportRoot)
+                if (read.ok && read.outcomes != null && read.snapshots != null) {
+                    File(evalOutcomesPath(this)).writeBytes(read.outcomes)
+                    File(brainSnapshotsPath(this)).writeBytes(read.snapshots)
                 }
             } else {
-                // Retain prior complete last-good bytes; status/attempt only.
-                statusPath.writeText(status.toString())
-                Log.w(TAG, "Canonical export incomplete ($statusName); last-good outcome/snapshot files unchanged")
+                // Incomplete attempt must NOT overwrite committed complete last-good status/data.
+                Log.w(TAG, "Canonical export incomplete ($statusName); last-good unchanged reason=${write.reason}")
             }
             Log.i(
                 TAG,

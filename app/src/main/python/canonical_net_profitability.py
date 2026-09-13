@@ -631,6 +631,123 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
 
     dte_basis = src.get("dte_basis") or dte_pack.get("dte_basis") or "unknown"
 
+    # R3.3: DTE semantic consistency — recompute and require explicit fields to match.
+    dte_consistency_errors: dict[str, str] = {}
+    recomputed_calendar = dte_pack.get("calendar_dte")
+    if recomputed_calendar is None and expiry_text and session:
+        recomputed_calendar = calendar_dte_from_expiry(session, expiry_text)
+    recomputed_trading = dte_pack.get("trading_dte")
+    coverage_ok = bool(dte_pack.get("calendar_coverage_ok"))
+
+    # Expiry before session invalid.
+    if (
+        recomputed_calendar is not None
+        and isinstance(recomputed_calendar, (int, float))
+        and float(recomputed_calendar) < 0
+    ):
+        explicit_dte_invalid = True
+        dte_consistency_errors["expiry_before_session"] = "expiry_before_session"
+        dte_field_errors["expiry_before_session"] = "expiry_before_session"
+
+    # Explicit calendar_dte must match recomputed when session+expiry exist.
+    if (
+        cal_obs["status"] == "field_present"
+        and session
+        and expiry_text
+        and recomputed_calendar is not None
+        and cal_obs["value"] != int(recomputed_calendar)
+    ):
+        explicit_dte_invalid = True
+        dte_consistency_errors["calendar_dte_mismatch"] = (
+            f"explicit={cal_obs['value']} recomputed={int(recomputed_calendar)}"
+        )
+        dte_field_errors["calendar_dte"] = "calendar_dte_mismatch"
+        calendar_dte_val = cal_obs["value"]  # retain raw observation
+
+    # Explicit trading_dte / tDTE must match recomputed when calendar covers interval.
+    explicit_trading_val = None
+    if trading_obs["status"] == "field_present":
+        explicit_trading_val = trading_obs["value"]
+    elif tdte_obs["status"] == "field_present":
+        explicit_trading_val = tdte_obs["value"]
+    if explicit_trading_val is not None and session and expiry_text:
+        if coverage_ok and recomputed_trading is not None:
+            if int(explicit_trading_val) != int(recomputed_trading):
+                explicit_dte_invalid = True
+                dte_consistency_errors["trading_dte_mismatch"] = (
+                    f"explicit={explicit_trading_val} recomputed={int(recomputed_trading)}"
+                )
+                dte_field_errors["trading_dte"] = "trading_dte_mismatch"
+        elif not coverage_ok:
+            # Outside coverage: retain explicit only with explicit non-NSE basis; never claim NSE-calendar.
+            declared_basis = str(src.get("dte_basis") or "").lower()
+            if declared_basis in ("", "unknown", "nse_trading_calendar", "nse", "trading_calendar"):
+                explicit_dte_invalid = True
+                dte_consistency_errors["trading_dte_outside_coverage"] = (
+                    "explicit_trading_dte_without_non_nse_basis"
+                )
+                dte_field_errors["trading_dte"] = "trading_dte_outside_coverage_no_basis"
+            # Force basis away from NSE-calendar claim.
+            if dte_basis in ("nse_trading_calendar", "nse", "trading_calendar"):
+                dte_basis = "explicit_unverified"
+
+    # dte must agree with *explicitly declared* dte_basis.
+    # Accept match against the basis target; if basis is the pack label
+    # "nse_trading_calendar" and dte equals recomputed/consistent calendar OR trading,
+    # do not invent a contradiction (measurement dte often uses calendar days).
+    declared_basis_raw = src.get("dte_basis")
+    if dte_obs["status"] == "field_present" and dte_obs["value"] is not None and declared_basis_raw not in (None, ""):
+        basis_l = str(declared_basis_raw).lower()
+        dte_i = int(dte_obs["value"])
+        if basis_l in ("calendar", "calendar_dte", "calendar_expiry_minus_session"):
+            expect = calendar_dte_val if calendar_dte_val is not None else recomputed_calendar
+            if expect is not None and dte_i != int(expect):
+                explicit_dte_invalid = True
+                dte_consistency_errors["dte_basis_mismatch"] = (
+                    f"dte={dte_i} basis={basis_l} expect={expect}"
+                )
+                dte_field_errors["dte"] = "dte_basis_mismatch"
+        elif basis_l in ("trading", "trading_dte", "explicit_tdte"):
+            expect = trading_dte_val if trading_dte_val is not None else recomputed_trading
+            if expect is not None and dte_i != int(expect):
+                explicit_dte_invalid = True
+                dte_consistency_errors["dte_basis_mismatch"] = (
+                    f"dte={dte_i} basis={basis_l} expect={expect}"
+                )
+                dte_field_errors["dte"] = "dte_basis_mismatch"
+        elif basis_l in ("nse_trading_calendar", "nse", "trading_calendar"):
+            cal_e = calendar_dte_val if calendar_dte_val is not None else recomputed_calendar
+            tr_e = trading_dte_val if trading_dte_val is not None else recomputed_trading
+            ok_cal = cal_e is not None and dte_i == int(cal_e)
+            ok_tr = tr_e is not None and dte_i == int(tr_e)
+            if not (ok_cal or ok_tr):
+                explicit_dte_invalid = True
+                dte_consistency_errors["dte_basis_mismatch"] = (
+                    f"dte={dte_i} basis={basis_l} cal={cal_e} trading={tr_e}"
+                )
+                dte_field_errors["dte"] = "dte_basis_mismatch"
+    # Contradictory multi-field when calendar AND trading both explicit and disagree with dte.
+    if (
+        dte_obs["status"] == "field_present"
+        and cal_obs["status"] == "field_present"
+        and (trading_obs["status"] == "field_present" or tdte_obs["status"] == "field_present")
+        and calendar_dte_val is not None
+        and trading_dte_val is not None
+        and int(calendar_dte_val) != int(trading_dte_val)
+        and int(dte_obs["value"]) not in (int(calendar_dte_val), int(trading_dte_val))
+    ):
+        explicit_dte_invalid = True
+        dte_consistency_errors["dte_contradiction"] = (
+            f"dte={dte_obs['value']} calendar={calendar_dte_val} trading={trading_dte_val}"
+        )
+        dte_field_errors["dte"] = "dte_contradiction"
+
+    if dte_consistency_errors:
+        # Quarantine: do not silently prefer one contradictory field.
+        if explicit_dte_invalid:
+            dte_value = None
+            dte_source = "dte_consistency_conflict"
+
     from contract_lot_table import (
         parse_number_of_lots,
         parse_positive_integral_lot,
@@ -946,6 +1063,7 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "explicit_lot_invalid": explicit_lot_invalid,
         "explicit_dte_invalid": explicit_dte_invalid,
         "dte_field_errors": dte_field_errors or None,
+        "dte_consistency_errors": dte_consistency_errors or None,
         "retained_explicit_dte": retained_explicit_dte or None,
         "retained_invalid_observations": {
             k: v["raw"]

@@ -16,11 +16,12 @@ class R2InvalidLotQuantityTests(unittest.TestCase):
     BASE = {
         "index": "NF",
         "session_date": "2026-07-19",
-        "expiry": "2026-08-06",
+        "expiry": "2026-07-21",
         "expiry_cycle": "weekly",
         "number_of_lots": 1,
         "tDTE": 2,
         "dte": 2,
+        "dte_basis": "nse_trading_calendar",
     }
 
     def _got(self, **over):
@@ -63,13 +64,14 @@ class R2InvalidLotQuantityTests(unittest.TestCase):
         bnf = resolve_contract_identity({
             "index": "BNF",
             "session_date": "2026-07-19",
-            "expiry": "2026-07-30",
+            "expiry": "2026-07-21",
             "expiry_cycle": "weekly",
             "contract_lot_size": 30,
             "number_of_lots": 1,
             "quantity_units": 30,
             "tDTE": 2,
             "dte": 2,
+            "dte_basis": "nse_trading_calendar",
         })
         self.assertTrue(bnf["identity_complete"])
         self.assertEqual(bnf["contract_lot_size"], 30)
@@ -96,7 +98,7 @@ class R2DteTests(unittest.TestCase):
     BASE = {
         "index": "NF",
         "session_date": "2026-07-19",
-        "expiry": "2026-08-06",
+        "expiry": "2026-07-21",
         "expiry_cycle": "weekly",
         "contract_lot_size": 65,
         "number_of_lots": 1,

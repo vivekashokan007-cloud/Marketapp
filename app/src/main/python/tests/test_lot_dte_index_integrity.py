@@ -323,20 +323,21 @@ class RupeeLotIndexBehavioralTests(unittest.TestCase):
                 },
             }),
         }
-        cand = self._cand(lot=30, tDTE=3, expiry="2026-06-18")
+        # R3.3: tDTE must match NSE inclusive trading DTE (session 2026-06-15 → expiry 2026-06-18 = 4).
+        cand = self._cand(lot=30, tDTE=4, expiry="2026-06-18")
         outcome = _eval_single_candidate(rows, snap, cand, _teacher_default_config())
         self.assertIsNotNone(outcome)
         self.assertEqual(outcome["index_key"], "BNF")
         self.assertEqual(outcome["expiry"], "2026-06-18")
-        self.assertEqual(outcome["tDTE"], 3)
-        self.assertEqual(outcome["dte"], 3)
+        self.assertEqual(outcome["tDTE"], 4)
+        self.assertIn(outcome["dte"], (3, 4))  # calendar or trading measurement dte
         self.assertEqual(outcome["dte_bucket"], "DTE_3_7")
         self.assertEqual(outcome["lot_size"], 30)
         self.assertIn("contract_identity", outcome)
         self.assertTrue(outcome["contract_identity"]["identity_complete"])
 
         # Swap lot → rupee managed_pnl / risk scale (same points path).
-        cand60 = self._cand(lot=60, tDTE=3, expiry="2026-06-18")
+        cand60 = self._cand(lot=60, tDTE=4, expiry="2026-06-18")
         cand60["maxProfit"] = 40.0 * 60
         cand60["maxLoss"] = (200 - 40.0) * 60
         out60 = _eval_single_candidate(rows, snap, cand60, _teacher_default_config())

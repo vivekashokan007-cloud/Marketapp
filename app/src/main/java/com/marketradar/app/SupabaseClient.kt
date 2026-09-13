@@ -2504,6 +2504,46 @@ object SupabaseClient {
         else selectPage(table, filter, order, limit, offset)
     }
 
+
+    /**
+     * R3.4: Permit table fallback ONLY for exact missing-table / schema-cache codes.
+     * Never for generic 400/404, bad column/order, auth, timeout, parse, or transport.
+     */
+    internal fun extractPostgrestCode(page: PageResult): String? {
+        val body = page.body ?: page.error ?: return null
+        val pattern = "\"code\"\\s*:\\s*\"([A-Z0-9]+)\""
+        return Regex(pattern, RegexOption.IGNORE_CASE)
+            .find(body)?.groupValues?.getOrNull(1)
+    }
+
+    internal fun isExactMissingTableError(page: PageResult): Boolean {
+        val body = page.body ?: page.error ?: ""
+        val code = extractPostgrestCode(page)?.uppercase()
+        if (code != null) {
+            // PGRST205 = table not in schema cache; 42P01 = undefined_table
+            if (code == "PGRST205" || code == "42P01") return true
+            return false
+        }
+        val lower = body.lowercase()
+        if (lower.contains("pgrst205")) return true
+        if (Regex("relation .* does not exist").containsMatchIn(lower) &&
+            !lower.contains("column") &&
+            page.httpCode in setOf(404, 400)
+        ) {
+            return true
+        }
+        return false
+    }
+
+    /** Freeze export boundary before page 0. */
+    internal fun exportFreezeCutoffIso(): String =
+        java.time.Instant.now().toString()
+
+    internal fun withCreatedAtFreeze(filter: String?, cutoffIso: String): String {
+        val freeze = "created_at=lte.$cutoffIso"
+        return if (filter.isNullOrBlank()) freeze else "$filter&$freeze"
+    }
+
     /**
      * Multi-page evaluation-outcome export via typed page API.
      * Explicit preferred source; network/parse errors ⇒ incomplete_error (no table fallback).
@@ -2512,7 +2552,8 @@ object SupabaseClient {
     fun fetchRecentEvaluationOutcomesPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
         val safePage = if (pageSize > 0) pageSize else 500
         val safeMax = if (maxPages > 0) maxPages else 1
-        // Preferred source first. Fallback only on typed schema_unavailable / not_found — never on network error.
+        val cutoff = exportFreezeCutoffIso()
+        // Preferred source first. Fallback only on exact missing-table codes — never on network error.
         val candidates = listOf(
             Triple("ml_evaluation_outcomes_s1", null as String?, "effective_session_date.desc,created_at.desc,id.asc"),
             Triple("ml_evaluation_outcomes", null, "created_at.desc,id.asc"),
@@ -2520,18 +2561,16 @@ object SupabaseClient {
         )
         var lastEmptyTable: String? = null
         var selectionReason = "none"
-        for ((table, filter, order) in candidates) {
+        for ((table, baseFilter, order) in candidates) {
+            val filter = withCreatedAtFreeze(baseFilter, cutoff)
             val first = selectPageViaSeam(table, filter, order, safePage, 0)
             if (first.status != "success") {
-                val schemaMissing = first.httpCode == 404 ||
-                    (first.error?.contains("does not exist", true) == true) ||
-                    (first.body?.contains("PGRST", true) == true && first.httpCode in setOf(400, 404))
-                if (schemaMissing) {
+                if (isExactMissingTableError(first)) {
                     selectionReason = "schema_unavailable:$table"
                     lastEmptyTable = table
-                    continue // typed not_found/schema_unavailable only
+                    continue // exact missing-table codes only
                 }
-                // Network / parse / cancelled — never fall through to legacy table.
+                // Network / parse / cancelled / generic 400/404 / auth — never fall through.
                 return JSONObject()
                     .put("rows", JSONArray())
                     .put("source_table", table)
@@ -2542,8 +2581,11 @@ object SupabaseClient {
                     .put("truncated_at_max_pages", false)
                     .put("page_error", first.error ?: first.status)
                     .put("page_error_status", first.status)
+                    .put("http_status", first.httpCode ?: JSONObject.NULL)
+                    .put("postgrest_code", extractPostgrestCode(first) ?: JSONObject.NULL)
                     .put("failed_page", 0)
                     .put("selection_reason", "preferred_source_error_no_fallback")
+                    .put("export_cutoff", cutoff)
                     .put("status", "incomplete_error")
             }
             if (first.rows.length() == 0) {
@@ -2587,6 +2629,7 @@ object SupabaseClient {
                     .put("page_error_status", pageErrorStatus)
                     .put("failed_page", failedPage)
                     .put("selection_reason", selectionReason)
+                    .put("export_cutoff", cutoff)
                     .put("status", "incomplete_error")
             }
             val normalized = if (table == "ml_evaluation_outcomes_s1") {
@@ -2604,6 +2647,7 @@ object SupabaseClient {
                 .put("truncated_at_max_pages", truncated)
                 .put("selection_reason", selectionReason)
                 .put("order", order)
+                .put("export_cutoff", cutoff)
                 .put(
                     "status",
                     when {
@@ -2622,19 +2666,22 @@ object SupabaseClient {
             .put("returned", 0)
             .put("truncated_at_max_pages", false)
             .put("selection_reason", selectionReason)
+            .put("export_cutoff", cutoff)
             .put("status", "empty")
     }
 
     fun fetchRecentBrainSnapshotsPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
         val safePage = if (pageSize > 0) pageSize else 500
         val safeMax = if (maxPages > 0) maxPages else 1
+        val cutoff = exportFreezeCutoffIso()
         val order = "poll_ts.desc,id.asc"
         val table = "ml_brain_snapshots"
+        val frozenFilter = withCreatedAtFreeze(null, cutoff)
         val out = JSONArray()
         var pagesFetched = 0
         var truncated = false
         for (pageIndex in 0 until safeMax) {
-            val page = selectPageViaSeam(table, null, order, safePage, pageIndex * safePage)
+            val page = selectPageViaSeam(table, frozenFilter, order, safePage, pageIndex * safePage)
             pagesFetched += 1
             if (page.status != "success") {
                 return JSONObject()
@@ -2649,6 +2696,7 @@ object SupabaseClient {
                     .put("failed_page", pageIndex)
                     .put("source_table", table)
                     .put("order", order)
+                    .put("export_cutoff", cutoff)
                     .put("status", "incomplete_error")
             }
             if (page.rows.length() == 0) break
@@ -2668,6 +2716,7 @@ object SupabaseClient {
             .put("truncated_at_max_pages", truncated)
             .put("source_table", table)
             .put("order", order)
+            .put("export_cutoff", cutoff)
             .put(
                 "status",
                 when {
@@ -3306,31 +3355,58 @@ object SupabaseClient {
         filter: String? = null,
         order: String? = null,
         pageSize: Int = 500,
-        maxPages: Int = 40
+        maxPages: Int = 40,
+        freezeCutoffIso: String? = null
     ): JSONObject {
         val out = JSONArray()
         var pagesFetched = 0
         var truncated = false
         var pageError: String? = null
         var pageStatus = "success"
+        var failedPage: Int? = null
+        var lastHttp: Int? = null
+        var lastCode: String? = null
         val safePage = if (pageSize > 0) pageSize else 500
         val safeMax = if (maxPages > 0) maxPages else 1
-        // Prefer keyset when order ends with id; still support offset for compatibility.
+        // R3.4: freeze created_at<=cutoff before page 0; include on every page.
+        val cutoff = freezeCutoffIso ?: exportFreezeCutoffIso()
+        val frozenFilter = withCreatedAtFreeze(filter, cutoff)
+        // Prefer keyset when order ends with id; offset remains only with freeze mandatory.
         val stableOrder = when {
-            order.isNullOrBlank() -> "id.asc"
+            order.isNullOrBlank() -> "created_at.asc,id.asc"
             order.contains("id.") -> order
             else -> "$order,id.asc"
         }
+        var keysetCreatedAt: String? = null
+        var keysetId: String? = null
         for (pageIndex in 0 until safeMax) {
-            val page = selectPage(table, filter, stableOrder, safePage, pageIndex * safePage)
+            val pageFilter = if (keysetCreatedAt != null && keysetId != null &&
+                stableOrder.contains("created_at.asc")
+            ) {
+                // Keyset: (created_at, id) > last
+                "$frozenFilter&or=(created_at.gt.$keysetCreatedAt,and(created_at.eq.$keysetCreatedAt,id.gt.$keysetId))"
+            } else {
+                frozenFilter
+            }
+            val offset = if (keysetCreatedAt != null) 0 else pageIndex * safePage
+            val page = selectPageViaSeam(table, pageFilter, stableOrder, safePage, offset)
             pagesFetched += 1
             if (page.status != "success") {
                 pageStatus = page.status
                 pageError = page.error ?: page.status
+                failedPage = pageIndex
+                lastHttp = page.httpCode
+                lastCode = extractPostgrestCode(page)
                 break
             }
             for (i in 0 until page.rows.length()) {
                 page.rows.optJSONObject(i)?.let(out::put)
+            }
+            if (page.rows.length() > 0) {
+                val last = page.rows.optJSONObject(page.rows.length() - 1)
+                keysetCreatedAt = last?.optString("created_at")?.takeIf { it.isNotBlank() }
+                keysetId = last?.optString("id")?.takeIf { it.isNotBlank() }
+                    ?: last?.opt("id")?.toString()
             }
             if (page.rows.length() < safePage) {
                 truncated = false
@@ -3354,8 +3430,13 @@ object SupabaseClient {
             .put("returned", out.length())
             .put("truncated_at_max_pages", truncated)
             .put("order", stableOrder)
+            .put("export_cutoff", cutoff)
+            .put("filter", frozenFilter)
             .put("page_error", pageError ?: JSONObject.NULL)
             .put("page_error_status", if (pageStatus == "success") JSONObject.NULL else pageStatus)
+            .put("failed_page", failedPage ?: JSONObject.NULL)
+            .put("http_status", lastHttp ?: JSONObject.NULL)
+            .put("postgrest_code", lastCode ?: JSONObject.NULL)
             .put("status", status)
     }
 

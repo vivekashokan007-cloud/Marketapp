@@ -305,6 +305,72 @@ def build_canonical_contract_identity(
     return canonical
 
 
+def _parse_iso_date(value: Any) -> tuple[str | None, str | None]:
+    """Return (YYYY-MM-DD, error)."""
+    if value in (None, ""):
+        return None, None
+    text = str(value).strip()
+    if len(text) < 10:
+        return None, "unparseable_date"
+    try:
+        from datetime import date
+        d = date.fromisoformat(text[:10])
+        return d.isoformat(), None
+    except Exception:
+        return None, "unparseable_date"
+
+
+def _parse_iso_datetime(value: Any) -> tuple[str | None, str | None]:
+    if value in (None, ""):
+        return None, None
+    text = str(value).strip()
+    try:
+        from datetime import datetime
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        datetime.fromisoformat(text)
+        return str(value).strip(), None
+    except Exception:
+        return None, "unparseable_datetime"
+
+
+def _positive_int(value: Any) -> tuple[int | None, str | None]:
+    if value in (None, ""):
+        return None, None
+    try:
+        if isinstance(value, bool):
+            return None, "non_integral"
+        if isinstance(value, float) and not float(value).is_integer():
+            return None, "non_integral"
+        iv = int(value)
+        if iv != float(value):
+            return None, "non_integral"
+        if iv <= 0:
+            return None, "non_positive"
+        return iv, None
+    except Exception:
+        return None, "non_integral"
+
+
+def _nonneg_int(value: Any) -> tuple[int | None, str | None]:
+    if value in (None, ""):
+        return None, None
+    try:
+        if isinstance(value, bool):
+            return None, "non_integral"
+        if isinstance(value, float) and not float(value).is_integer():
+            return None, "non_integral"
+        iv = int(value)
+        if iv != float(value):
+            return None, "non_integral"
+        if iv < 0:
+            return None, "negative"
+        return iv, None
+    except Exception:
+        return None, "non_integral"
+
+
+
 def validate_contract_identity(
     payload: Any,
     *,
@@ -347,14 +413,59 @@ def validate_contract_identity(
             "eligible_for_contract_metrics": False,
         }
 
-    missing_required_when_verified = []
+    # R3.2: semantic validation — never repair malformed into verified.
     status = payload.get("identity_status")
-    if status == IDENTITY_STATUS_VERIFIED:
-        for key in ("index_key", "expiry", "contract_lot_size", "quantity_basis"):
-            if _nullish(payload.get(key)):
-                missing_required_when_verified.append(key)
-        if missing_required_when_verified:
-            errors.append("verified_missing:" + ",".join(missing_required_when_verified))
+    allowed_statuses = {
+        None, "",
+        IDENTITY_STATUS_VERIFIED,
+        IDENTITY_STATUS_QUARANTINE,
+        IDENTITY_STATUS_LEGACY_NULL,
+        IDENTITY_STATUS_INCOMPLETE,
+        IDENTITY_STATUS_CONFLICT,
+    }
+    if status not in allowed_statuses:
+        errors.append(f"invalid_identity_status:{status}")
+
+    # index_key must normalize to NF or BNF when present / when verified.
+    raw_index = payload.get("index_key")
+    if not _nullish(raw_index):
+        try:
+            from contract_lot_table import normalize_index_key
+            norm = normalize_index_key(raw_index)
+        except Exception:
+            text = str(raw_index).strip().upper()
+            norm = text if text in ("NF", "BNF") else None
+        if norm not in ("NF", "BNF"):
+            errors.append(f"invalid_index_key:{raw_index}")
+
+    for date_key in ("expiry", "session_date", "lot_as_of"):
+        if not _nullish(payload.get(date_key)):
+            _, err = _parse_iso_date(payload.get(date_key))
+            if err:
+                errors.append(f"invalid_{date_key}:{err}")
+    if not _nullish(payload.get("observed_at")):
+        _, err = _parse_iso_datetime(payload.get("observed_at"))
+        if err:
+            errors.append(f"invalid_observed_at:{err}")
+
+    cls_v, cls_err = _positive_int(payload.get("contract_lot_size"))
+    if payload.get("contract_lot_size") not in (None, "") and cls_err:
+        errors.append(f"invalid_contract_lot_size:{cls_err}")
+    n_v, n_err = _positive_int(payload.get("number_of_lots"))
+    if payload.get("number_of_lots") not in (None, "") and n_err:
+        errors.append(f"invalid_number_of_lots:{n_err}")
+    q_v, q_err = _positive_int(payload.get("quantity_units"))
+    if payload.get("quantity_units") not in (None, "") and q_err:
+        errors.append(f"invalid_quantity_units:{q_err}")
+    if cls_v is not None and n_v is not None and q_v is not None:
+        if cls_v * n_v != q_v:
+            errors.append("quantity_units_product_mismatch")
+
+    for dte_key in ("calendar_dte", "trading_dte"):
+        if payload.get(dte_key) not in (None, ""):
+            _, derr = _nonneg_int(payload.get(dte_key))
+            if derr:
+                errors.append(f"invalid_{dte_key}:{derr}")
 
     qb = payload.get("quantity_basis")
     if qb not in (
@@ -369,18 +480,69 @@ def validate_contract_identity(
     legs = payload.get("legs")
     if legs is not None and not isinstance(legs, (list, tuple)):
         errors.append("legs_not_array")
+    elif isinstance(legs, (list, tuple)):
+        for i, leg in enumerate(legs):
+            if not isinstance(leg, Mapping):
+                errors.append(f"leg_{i}_not_object")
+                continue
+            for qk in ("contract_lot_size", "quantity_units", "ratio"):
+                if leg.get(qk) not in (None, ""):
+                    lv, lerr = _positive_int(leg.get(qk))
+                    if lerr:
+                        errors.append(f"leg_{i}_invalid_{qk}:{lerr}")
+            if not _nullish(leg.get("expiry")) and not _nullish(payload.get("expiry")):
+                le, _ = _parse_iso_date(leg.get("expiry"))
+                pe, _ = _parse_iso_date(payload.get("expiry"))
+                if le and pe and le != pe:
+                    errors.append(f"leg_{i}_expiry_mismatch")
 
-    eligible = (
-        status == IDENTITY_STATUS_VERIFIED
-        and not errors
-        and not payload.get("contract_identity_quarantine")
-        and payload.get("identity_complete") is not False
-    )
+    missing_required_when_verified = []
+    if status == IDENTITY_STATUS_VERIFIED:
+        for key in (
+            "index_key", "expiry", "contract_lot_size", "number_of_lots",
+            "quantity_units", "quantity_basis",
+        ):
+            if _nullish(payload.get(key)):
+                missing_required_when_verified.append(key)
+        if payload.get("identity_complete") is not True:
+            errors.append("verified_requires_identity_complete")
+        if payload.get("contract_identity_quarantine") or payload.get("evaluation_ineligible"):
+            errors.append("verified_with_quarantine_or_ineligible")
+        if status == IDENTITY_STATUS_VERIFIED and (
+            payload.get("identity_status") == IDENTITY_STATUS_CONFLICT
+            or payload.get("lot_conflict")
+        ):
+            errors.append("verified_with_conflict")
+        # Provenance / lot source required for verified.
+        if _nullish(payload.get("lot_source")) and _nullish(payload.get("lot_table_version")):
+            errors.append("verified_missing_lot_provenance")
+        if missing_required_when_verified:
+            errors.append("verified_missing:" + ",".join(missing_required_when_verified))
+        if cls_v is None or n_v is None or q_v is None:
+            errors.append("verified_requires_quantity_triplet")
+        elif cls_v * n_v != q_v:
+            if "quantity_units_product_mismatch" not in errors:
+                errors.append("quantity_units_product_mismatch")
 
+    # Never repair: retain original payload fields; only annotate errors.
     out_payload = dict(payload)
     if version in (None, ""):
-        # Backfill version on known-shape local objects without dropping fields.
         out_payload["schema_version"] = CONTRACT_IDENTITY_SCHEMA_VERSION
+    if errors:
+        # Malformed must not remain eligible / verified for metrics.
+        out_payload["evaluation_ineligible"] = True
+        if status == IDENTITY_STATUS_VERIFIED:
+            out_payload["identity_status"] = IDENTITY_STATUS_QUARANTINE
+            out_payload["contract_identity_quarantine"] = True
+        out_payload["validation_errors"] = list(errors)
+
+    eligible = (
+        (out_payload.get("identity_status") == IDENTITY_STATUS_VERIFIED)
+        and not errors
+        and not out_payload.get("contract_identity_quarantine")
+        and out_payload.get("identity_complete") is True
+        and not out_payload.get("evaluation_ineligible")
+    )
 
     return {
         "ok": len(errors) == 0,
@@ -389,7 +551,7 @@ def validate_contract_identity(
         "payload": out_payload,
         "schema_error": errors[0] if errors else None,
         "eligible_for_contract_metrics": bool(eligible),
-        "identity_status": status or out_payload.get("identity_status"),
+        "identity_status": out_payload.get("identity_status"),
     }
 
 
