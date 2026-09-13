@@ -6,8 +6,9 @@
 **Working tip before compaction-allowlist work:** `e032c72`  
 **Verified SHAs (local only):**
 - `01a4df3` — fix(compaction): CONTRACT_IDENTITY_COMPACTION_KEYS on teacher-research allowlist + `ContractIdentityCompactionTest`
-- `ae61495` — test(persistence): `android_compact_teacher_candidate_v1` mock + rejected `outcome_json` roundtrip  
-**Tip after this pass:** `ae61495` (docs commit will follow)
+- `ae61495` — test(persistence): `android_compact_teacher_candidate_v1` mock + rejected `outcome_json` roundtrip
+- `24e3042` — docs: gate status compaction/persistence; primary DB columns blocked/deferred  
+**Tip after this pass:** `24e3042` (full `24e3042f2bd254f182f6f2537392efce00ddd577`)
 
 ---
 
