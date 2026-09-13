@@ -26,12 +26,13 @@ from typing import Any, Iterable, Mapping, Sequence
 PAPER_TRADES_FILTER = "status=eq.CLOSED&paper=eq.true"
 LIVE_TRADES_FILTER = "status=eq.CLOSED&paper=eq.false"
 # Prefer exit_date (close time); fall back key documented for callers without it.
-TRADES_ORDER_ASC = "exit_date.asc,created_at.asc"
-TRADES_ORDER_DESC = "exit_date.desc,created_at.desc"
+TRADES_ORDER_ASC = "exit_date.asc,created_at.asc,id.asc"
+TRADES_ORDER_DESC = "exit_date.desc,created_at.desc,id.desc"
 
 DEFAULT_PAGE_SIZE = 500
 STATUS_COMPLETE = "complete"
 STATUS_INCOMPLETE = "incomplete_truncated"
+STATUS_INCOMPLETE_ERROR = "incomplete_error"
 STATUS_EMPTY = "empty"
 
 DEFECT_EXPORT_PAPER_FILTER = {

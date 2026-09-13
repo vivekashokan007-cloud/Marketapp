@@ -137,9 +137,12 @@ object SupabaseClient {
         "outcome_h2",
         "canonical_won"
     )
-    // Local additive contract_identity jsonb (migration 20260913054400 — NOT applied to prod).
-    // Writers carry the column in the payload; prod upsert remains untested / paused.
-    private val outcomeFullColumns = outcomeBaseColumns + shadowTeacherKeys + listOf("contract_identity", "created_at")
+    // contract_identity is local-only until schema capability proves the column exists.
+    // Draft SQL lives in docs/design/ (NOT active supabase/migrations). Prod untouched.
+    private val outcomeFullColumnsWithoutIdentity = outcomeBaseColumns + shadowTeacherKeys + listOf("created_at")
+    private val outcomeFullColumnsWithIdentity = outcomeBaseColumns + shadowTeacherKeys + listOf("contract_identity", "created_at")
+    @Volatile private var remoteContractIdentityCapable: Boolean? = false // fail-closed until proven
+    @Volatile private var remoteContractIdentityPersisted: Boolean = false
 
     private fun fetchSync(request: Request): String? {
         return try {
@@ -157,6 +160,38 @@ object SupabaseClient {
             null
         }
     }
+
+    /**
+     * Schema capability: contract_identity column on primary/recommendation tables.
+     * Fail closed — missing/unknown ⇒ do not send the column on remote writers.
+     */
+    fun remoteContractIdentityCapability(forceRefresh: Boolean = false): Boolean {
+        val cached = remoteContractIdentityCapable
+        if (!forceRefresh) return cached == true
+        // Probe via zero-row select requesting the column. Fail closed on any error.
+        val capable = try {
+            val request = getBaseRequest(
+                "ml_evaluation_outcomes?select=contract_identity&limit=0"
+            ).get().build()
+            val result = fetchSyncTyped(request)
+            result.status == "success"
+        } catch (_: Exception) {
+            false
+        }
+        remoteContractIdentityCapable = capable
+        if (!capable) remoteContractIdentityPersisted = false
+        return capable
+    }
+
+    fun remoteContractIdentityPersistedFlag(): Boolean = remoteContractIdentityPersisted
+
+    /** Test seam: simulate missing/present column without hitting network. */
+    internal fun setRemoteContractIdentityCapabilityForTest(capable: Boolean?) {
+        remoteContractIdentityCapable = capable
+        if (capable != true) remoteContractIdentityPersisted = false
+    }
+
+
 
     // ML schema can differ across environments. Try multiple table names safely.
     private fun fetchArrayFromTables(paths: List<String>): JSONArray {
@@ -642,13 +677,25 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
-            // Additive jsonb — never strip on canonicalize; incompatible schema retained with schema_error.
-            ContractIdentityPayload.extractForUpload(src)?.let { row.put("contract_identity", it) }
+            // Keep full identity locally on src; remote column only when capability proves it exists.
+            val localIdentity = ContractIdentityPayload.extractForUpload(src)
+            if (localIdentity != null) {
+                src.put("contract_identity", localIdentity)
+                src.put("remote_contract_identity_persisted", false)
+            }
+            if (remoteContractIdentityCapability() && localIdentity != null) {
+                row.put("contract_identity", localIdentity)
+                remoteContractIdentityPersisted = true
+                row.put("remote_contract_identity_persisted", true)
+            } else {
+                row.put("remote_contract_identity_persisted", false)
+            }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return canonicalizeRows(rows, outcomeFullColumns)
+        val cols = if (remoteContractIdentityCapability()) outcomeFullColumnsWithIdentity else outcomeFullColumnsWithoutIdentity
+        return canonicalizeRows(rows, cols)
     }
 
     private fun hasValue(src: JSONObject, key: String): Boolean = src.has(key) && !src.isNull(key)
@@ -939,12 +986,20 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
-            ContractIdentityPayload.extractForUpload(src)?.let { row.put("contract_identity", it) }
+            val localIdentity = ContractIdentityPayload.extractForUpload(src)
+            if (localIdentity != null) {
+                src.put("contract_identity", localIdentity)
+                src.put("remote_contract_identity_persisted", false)
+            }
+            if (remoteContractIdentityCapability() && localIdentity != null) {
+                row.put("contract_identity", localIdentity)
+                remoteContractIdentityPersisted = true
+            }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return canonicalizeRows(rows, outcomeFullColumns)
+        return canonicalizeRows(rows, if (remoteContractIdentityCapability()) outcomeFullColumnsWithIdentity else outcomeFullColumnsWithoutIdentity)
     }
 
     private fun sanitizeFailedIntegrityTeacherRow(row: JSONObject) {
@@ -2977,13 +3032,43 @@ object SupabaseClient {
         }
     }
 
-    fun select(
+
+    data class PageResult(
+        val status: String, // success | http_error | parse_error | cancelled
+        val rows: JSONArray = JSONArray(),
+        val httpCode: Int? = null,
+        val error: String? = null,
+        val body: String? = null
+    )
+
+    private fun fetchSyncTyped(request: Request): PageResult {
+        return try {
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string()
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Request failed: ${response.code} ${response.message} | URL: ${request.url} | Body: ${body ?: ""}")
+                    return PageResult(status = "http_error", httpCode = response.code, error = response.message, body = body)
+                }
+                PageResult(status = "success", rows = JSONArray(), httpCode = response.code, body = body)
+            }
+        } catch (e: java.io.IOException) {
+            if (e.message?.contains("Canceled", true) == true || e.message?.contains("Cancelled", true) == true) {
+                PageResult(status = "cancelled", error = e.message)
+            } else {
+                PageResult(status = "http_error", error = e.message)
+            }
+        } catch (e: Exception) {
+            PageResult(status = "http_error", error = e.message)
+        }
+    }
+
+    fun selectPage(
         table: String,
         filter: String? = null,
         order: String? = null,
         limit: Int? = null,
         offset: Int? = null
-    ): JSONArray {
+    ): PageResult {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)
         if (order != null) queryParams.add("order=$order")
@@ -2992,20 +3077,36 @@ object SupabaseClient {
 
         val url = if (queryParams.isNotEmpty()) "$table?${queryParams.joinToString("&")}" else table
         val request = getBaseRequest(url).get().build()
-
-        val json = fetchSync(request) ?: return JSONArray()
+        val fetched = fetchSyncTyped(request)
+        if (fetched.status != "success") {
+            return PageResult(status = fetched.status, httpCode = fetched.httpCode, error = fetched.error)
+        }
+        val raw = fetched.body
         return try {
-            JSONArray(json)
+            val arr = if (raw.isNullOrBlank()) JSONArray() else JSONArray(raw)
+            PageResult(status = "success", rows = arr, httpCode = fetched.httpCode)
         } catch (e: Exception) {
-            Log.e(TAG, "Select from $table failed: ${e.message}")
-            JSONArray()
+            Log.e(TAG, "Select parse from $table failed: ${e.message}")
+            PageResult(status = "parse_error", httpCode = fetched.httpCode, error = e.message)
         }
     }
 
+    /** Legacy wrapper — empty array on error (prefer selectPage / selectAllPages). */
+    fun select(
+        table: String,
+        filter: String? = null,
+        order: String? = null,
+        limit: Int? = null,
+        offset: Int? = null
+    ): JSONArray {
+        val page = selectPage(table, filter, order, limit, offset)
+        return if (page.status == "success") page.rows else JSONArray()
+    }
+
     /**
-     * G8/G10: deterministic PostgREST pagination. Returns all rows up to
-     * pageSize*maxPages with an explicit truncated_at_max_pages flag so callers
-     * never treat a hard page ceiling as a complete cohort.
+     * Deterministic pagination with typed page errors.
+     * Failed page ⇒ status incomplete_error (never empty-success / complete).
+     * Stable order should end with unique id tie-break (caller-provided).
      */
     fun selectAllPages(
         table: String,
@@ -3017,21 +3118,40 @@ object SupabaseClient {
         val out = JSONArray()
         var pagesFetched = 0
         var truncated = false
+        var pageError: String? = null
+        var pageStatus = "success"
         val safePage = if (pageSize > 0) pageSize else 500
         val safeMax = if (maxPages > 0) maxPages else 1
+        // Prefer keyset when order ends with id; still support offset for compatibility.
+        val stableOrder = when {
+            order.isNullOrBlank() -> "id.asc"
+            order.contains("id.") -> order
+            else -> "$order,id.asc"
+        }
         for (pageIndex in 0 until safeMax) {
-            val page = select(table, filter, order, safePage, pageIndex * safePage)
+            val page = selectPage(table, filter, stableOrder, safePage, pageIndex * safePage)
             pagesFetched += 1
-            for (i in 0 until page.length()) {
-                page.optJSONObject(i)?.let(out::put)
+            if (page.status != "success") {
+                pageStatus = page.status
+                pageError = page.error ?: page.status
+                break
             }
-            if (page.length() < safePage) {
+            for (i in 0 until page.rows.length()) {
+                page.rows.optJSONObject(i)?.let(out::put)
+            }
+            if (page.rows.length() < safePage) {
                 truncated = false
                 break
             }
             if (pageIndex == safeMax - 1) {
                 truncated = true
             }
+        }
+        val status = when {
+            pageStatus != "success" -> "incomplete_error"
+            out.length() == 0 -> "empty"
+            truncated -> "incomplete_truncated"
+            else -> "complete"
         }
         return JSONObject()
             .put("rows", out)
@@ -3040,14 +3160,10 @@ object SupabaseClient {
             .put("max_pages", safeMax)
             .put("returned", out.length())
             .put("truncated_at_max_pages", truncated)
-            .put(
-                "status",
-                when {
-                    out.length() == 0 -> "empty"
-                    truncated -> "incomplete_truncated"
-                    else -> "complete"
-                }
-            )
+            .put("order", stableOrder)
+            .put("page_error", pageError ?: JSONObject.NULL)
+            .put("page_error_status", if (pageStatus == "success") JSONObject.NULL else pageStatus)
+            .put("status", status)
     }
 
     /**

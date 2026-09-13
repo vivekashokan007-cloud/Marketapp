@@ -298,7 +298,7 @@ class G8KotlinExportSourceTests(unittest.TestCase):
         self.assertNotIn('filter = "paper=eq.REAL"', src)
         self.assertIn('filter = "status=eq.CLOSED&paper=eq.true"', src)
         # Named-arg form after multi-page selectAllPages wiring (single space around =).
-        self.assertIn('order = "exit_date.asc,created_at.asc"', src)
+        self.assertIn('order = "exit_date.asc,created_at.asc,id.asc"', src)
         self.assertNotIn('order  = "date.asc"', src)
         self.assertNotIn('order = "date.asc"', src)
 

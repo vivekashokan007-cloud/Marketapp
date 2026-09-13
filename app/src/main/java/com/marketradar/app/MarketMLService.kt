@@ -199,7 +199,7 @@ class MarketMLService : Service() {
             File(ctx.filesDir, "backtest_trades.csv").absolutePath
 
         fun appTradesPath(ctx: Context): String =
-            File(ctx.filesDir, "app_trades.json").absolutePath
+            File(ctx.filesDir, "app_trades.json").absolutePath // paper research export path (not live)
 
         fun evalOutcomesPath(ctx: Context): String =
             File(ctx.filesDir, "evaluation_outcomes.json").absolutePath
@@ -2103,22 +2103,28 @@ class MarketMLService : Service() {
         try {
             val pageSize = 500
             val maxPages = 40
+            // Paper research cohort only — never labelled or consumed as live training.
             val paged = SupabaseClient.selectAllPages(
                 table = "trades_v2",
                 filter = "status=eq.CLOSED&paper=eq.true",
-                order = "exit_date.asc,created_at.asc",
+                order = "exit_date.asc,created_at.asc,id.asc",
                 pageSize = pageSize,
                 maxPages = maxPages
             )
             val resp = paged.optJSONArray("rows") ?: org.json.JSONArray()
-            File(appTradesPath(this)).writeText(resp.toString())
             val truncated = paged.optBoolean("truncated_at_max_pages", false)
             val statusName = paged.optString("status", if (resp.length() == 0) "empty" else "complete")
+            val exportPath = appTradesPath(this)
+            val statusPath = File(filesDir, "paper_trades_export_status.json").absolutePath
+            val legacyStatusPath = File(filesDir, "app_trades_export_status.json").absolutePath
             val status = org.json.JSONObject()
-                .put("kind", "app_trades_export")
+                .put("kind", "paper_trades_export")
+                .put("dataset_label", "paper_research_not_live")
+                .put("paper_lanes", org.json.JSONArray().put("paper_primary").put("paper_analysis"))
+                .put("live_training_eligible", false)
                 .put("status", statusName)
                 .put("filter", "status=eq.CLOSED&paper=eq.true")
-                .put("order", "exit_date.asc,created_at.asc")
+                .put("order", paged.optString("order", "exit_date.asc,created_at.asc,id.asc"))
                 .put("page_size", pageSize)
                 .put("max_pages", maxPages)
                 .put("pages_fetched", paged.optInt("pages_fetched", 0))
@@ -2126,13 +2132,36 @@ class MarketMLService : Service() {
                 .put("truncated_at_max_pages", truncated)
                 .put("multi_page", true)
                 .put("training_enabled", false)
-                .put("note", if (truncated)
-                    "Hit maxPages ceiling; cohort may still be incomplete — raise maxPages or narrow window before training."
-                    else "Multi-page typed paper boolean export with chronological exit_date order.")
-            File(File(filesDir, "app_trades_export_status.json").absolutePath).writeText(status.toString())
-            Log.i(TAG, "App trades exported to ${appTradesPath(this)} status=${status.optString("status")} pages=${paged.optInt("pages_fetched", 0)}")
+                .put("checksum_sha256", org.json.JSONObject().put("rows", resp.length()))
+                .put("note", when (statusName) {
+                    "incomplete_error" -> "Page failure — retained last good export; do not train."
+                    "incomplete_truncated" -> "Hit maxPages ceiling; incomplete cohort."
+                    else -> "Paper research export only — never feed into live training paths."
+                })
+            // Atomic replace only after complete; retain last good on failure.
+            if (statusName == "complete" || statusName == "empty") {
+                val tmp = File("$exportPath.tmp")
+                tmp.writeText(resp.toString())
+                if (!tmp.renameTo(File(exportPath))) {
+                    File(exportPath).writeText(resp.toString())
+                    tmp.delete()
+                }
+                // Also write unambiguously named paper file
+                val paperPath = File(filesDir, "paper_trades.json")
+                val paperTmp = File(filesDir, "paper_trades.json.tmp")
+                paperTmp.writeText(resp.toString())
+                if (!paperTmp.renameTo(paperPath)) {
+                    paperPath.writeText(resp.toString())
+                    paperTmp.delete()
+                }
+            } else {
+                Log.w(TAG, "Paper export incomplete ($statusName); retaining last good file at $exportPath")
+            }
+            File(statusPath).writeText(status.toString())
+            File(legacyStatusPath).writeText(status.toString())
+            Log.i(TAG, "Paper trades export status=${status.optString("status")} pages=${paged.optInt("pages_fetched", 0)}")
         } catch (e: Exception) {
-            Log.w(TAG, "Could not export app trades: ${e.message}")
+            Log.w(TAG, "Could not export paper trades: ${e.message}")
         }
     }
 
