@@ -175,6 +175,7 @@ class MarketMLService : Service() {
             "evaluation_ineligible",
             "calibration_ineligible",
             "contract_identity",
+            "contract_identity_digest",
             "identity_complete",
             "exclusion_reason",
             "retained_for_recovery"
@@ -198,14 +199,22 @@ class MarketMLService : Service() {
         fun backtestPath(ctx: Context): String =
             File(ctx.filesDir, "backtest_trades.csv").absolutePath
 
-        fun appTradesPath(ctx: Context): String =
-            File(ctx.filesDir, "paper_trades.json").absolutePath // R3.5 sole canonical Paper research name
+        fun appTradesPath(ctx: Context): String {
+            val root = File(ctx.filesDir, "paper_trades_export")
+            val read = CanonicalExportStore.readCurrentPaper(root)
+            require(read.ok && read.manifest != null) { "paper_export_unavailable:${read.reason}" }
+            val generationId = read.manifest.optString("generation_id")
+            return File(File(File(root, CanonicalExportStore.GENERATIONS_DIR), generationId), "paper_trades.json").absolutePath
+        }
 
-        fun evalOutcomesPath(ctx: Context): String =
-            File(ctx.filesDir, "evaluation_outcomes.json").absolutePath
-
-        fun brainSnapshotsPath(ctx: Context): String =
-            File(ctx.filesDir, "brain_snapshots.json").absolutePath
+        fun canonicalEvaluationInputPaths(ctx: Context): Pair<String, String> {
+            val root = File(ctx.filesDir, "canonical_eval_export")
+            val resolved = CanonicalExportStore.resolveCurrentFiles(root)
+            require(resolved.ok && resolved.outcomesFile != null && resolved.snapshotsFile != null) {
+                "canonical_eval_export_unavailable:${resolved.reason}"
+            }
+            return resolved.outcomesFile.absolutePath to resolved.snapshotsFile.absolutePath
+        }
 
         fun modelPath(ctx: Context): String =
             File(ctx.filesDir, "ml_model.json").absolutePath
@@ -1059,6 +1068,8 @@ class MarketMLService : Service() {
             "lane",
             "trade_mode",
             "poll_ts",
+            "session_date",
+            "brain_version",
             "expiry",
             "width",
             "tDTE",
@@ -1077,11 +1088,15 @@ class MarketMLService : Service() {
             "trueProb",
             "riskReward",
             "sellStrike",
+            "sellLTP",
             "buyStrike",
+            "buyLTP",
             "sellType",
             "buyType",
             "sellStrike2",
+            "sellLTP2",
             "buyStrike2",
+            "buyLTP2",
             "sellType2",
             "buyType2",
             "netPremium",
@@ -1101,6 +1116,9 @@ class MarketMLService : Service() {
             "entryEligible",
             "entryGate",
             "entryEligibility",
+            "paperAnalysisEligible",
+            "paperAnalysisGate",
+            "paperAnalysisEligibility",
             "brainScore",
             "contextPercentileScore",
             "p_ml",
@@ -2067,12 +2085,12 @@ class MarketMLService : Service() {
                     "incomplete_truncated" -> "Hit maxPages ceiling; incomplete cohort."
                     else -> "Paper research export only — never feed into live training paths."
                 })
-            // R3.5/R3.6: sole canonical paper_trades.json via generation store; no ambiguous duplicate.
-            // Status artifact: paper_trades_export_status.json (written by CanonicalExportStore).
+            // R3.5/R3.6/R4.2: sole canonical paper_trades.json inside the verified
+            // generation selected by current.json; no fixed-name mirror or sidecar status.
             status.put("export_cutoff", paged.opt("export_cutoff") ?: org.json.JSONObject.NULL)
             status.put("filter", paged.optString("filter", status.optString("filter")))
             val write = CanonicalExportStore.writePaperResearchExport(
-                root = filesDir,
+                root = File(filesDir, "paper_trades_export").apply { mkdirs() },
                 rowsJson = resp.toString(),
                 status = status
             )
@@ -2114,13 +2132,13 @@ class MarketMLService : Service() {
      * and join coverage passes. On error, write attempt/status only — preserve last-good.
      */
     private suspend fun exportCanonicalEvaluationInputs() {
-        val statusPath = File(filesDir, "canonical_eval_export_status.json")
         val attemptPath = File(filesDir, "canonical_eval_export_attempt.json")
         try {
             val pageSize = 500
             val maxPages = 20
-            val outcomePage = SupabaseClient.fetchRecentEvaluationOutcomesPaged(pageSize, maxPages)
-            val snapshotPage = SupabaseClient.fetchRecentBrainSnapshotsPaged(pageSize, maxPages)
+            val exportCutoff = SupabaseClient.exportFreezeCutoffIso()
+            val outcomePage = SupabaseClient.fetchRecentEvaluationOutcomesPaged(pageSize, maxPages, exportCutoff)
+            val snapshotPage = SupabaseClient.fetchRecentBrainSnapshotsPaged(pageSize, maxPages, exportCutoff)
             val outcomes = outcomePage.optJSONArray("rows") ?: org.json.JSONArray()
             val snapshots = snapshotPage.optJSONArray("rows") ?: org.json.JSONArray()
             val outcomeStatus = outcomePage.optString("status", "empty")
@@ -2161,6 +2179,8 @@ class MarketMLService : Service() {
             val snapshotsBytes = snapshots.toString().toByteArray(Charsets.UTF_8)
             val status = org.json.JSONObject()
                 .put("kind", "canonical_eval_export")
+                .put("dataset_label", "canonical_evaluation_inputs")
+                .put("live_training_eligible", false)
                 .put("status", statusName)
                 .put("n_outcomes", outcomes.length())
                 .put("n_snapshots", snapshots.length())
@@ -2173,6 +2193,10 @@ class MarketMLService : Service() {
                 .put("outcomes_source_table", outcomePage.optString("source_table", ""))
                 .put("outcomes_status", outcomeStatus)
                 .put("snapshots_status", snapshotStatus)
+                .put("outcomes_order", outcomePage.optString("order", ""))
+                .put("snapshots_order", snapshotPage.optString("order", ""))
+                .put("outcomes_cursor_mode", outcomePage.optString("cursor_mode", "frozen_offset"))
+                .put("snapshots_cursor_mode", snapshotPage.optString("cursor_mode", "frozen_offset"))
                 .put("outcomes_page_error", outcomePage.opt("page_error") ?: org.json.JSONObject.NULL)
                 .put("snapshots_page_error", snapshotPage.opt("page_error") ?: org.json.JSONObject.NULL)
                 .put("selection_reason", outcomePage.optString("selection_reason", ""))
@@ -2194,7 +2218,7 @@ class MarketMLService : Service() {
                 })
 
             // R3.6: immutable generation dir + atomic current pointer only.
-            status.put("export_cutoff", outcomePage.opt("export_cutoff") ?: snapshotPage.opt("export_cutoff") ?: org.json.JSONObject.NULL)
+            status.put("export_cutoff", exportCutoff)
             val exportRoot = File(filesDir, "canonical_eval_export")
             exportRoot.mkdirs()
             val write = CanonicalExportStore.writeGeneration(
@@ -2204,23 +2228,15 @@ class MarketMLService : Service() {
                 status = status,
                 cutoff = status.optString("export_cutoff").ifBlank { null }
             )
-            // Mirror last_attempt / last_good pointers into legacy status path for trainer guards.
+            // Project only last_attempt into the diagnostic attempt file. The
+            // committed current/last_good pointers remain inside exportRoot.
             val attemptFile = File(exportRoot, CanonicalExportStore.LAST_ATTEMPT_POINTER)
             if (attemptFile.exists()) {
                 attemptPath.writeText(attemptFile.readText())
             } else {
                 attemptPath.writeText(status.toString())
             }
-            if (write.ok) {
-                val good = File(exportRoot, CanonicalExportStore.LAST_GOOD_POINTER)
-                if (good.exists()) statusPath.writeText(good.readText())
-                // Also materialize stable paths for existing readers (from verified generation).
-                val read = CanonicalExportStore.readCurrent(exportRoot)
-                if (read.ok && read.outcomes != null && read.snapshots != null) {
-                    File(evalOutcomesPath(this)).writeBytes(read.outcomes)
-                    File(brainSnapshotsPath(this)).writeBytes(read.snapshots)
-                }
-            } else {
+            if (!write.ok) {
                 // Incomplete attempt must NOT overwrite committed complete last-good status/data.
                 Log.w(TAG, "Canonical export incomplete ($statusName); last-good unchanged reason=${write.reason}")
             }
@@ -2237,7 +2253,6 @@ class MarketMLService : Service() {
                     .put("training_enabled", false)
                     .put("note", "Exception during export — last-good files unchanged")
                 attemptPath.writeText(err.toString())
-                statusPath.writeText(err.toString())
             } catch (_: Exception) {
             }
             Log.w(TAG, "Could not export canonical evaluator inputs: ${e.message}")

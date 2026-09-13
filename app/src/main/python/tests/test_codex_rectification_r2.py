@@ -131,8 +131,10 @@ class R2ManifestFailClosed(unittest.TestCase):
         from ml_train import run
         with tempfile.TemporaryDirectory() as td:
             trades = os.path.join(td, "paper_trades.json")
-            open(trades, "w").write("[]")
-            open(os.path.join(td, "paper_trades_export_status.json"), "w").write("{not-json")
+            with open(trades, "w", encoding="utf-8") as handle:
+                handle.write("[]")
+            with open(os.path.join(td, "manifest.json"), "w", encoding="utf-8") as handle:
+                handle.write("{not-json")
             result = json.loads(run("missing.csv", trades, os.path.join(td, "model.json")))
             self.assertFalse(result.get("deployed"))
             self.assertIn("malformed", result.get("reason", ""))
@@ -141,7 +143,8 @@ class R2ManifestFailClosed(unittest.TestCase):
         from ml_train import run
         with tempfile.TemporaryDirectory() as td:
             trades = os.path.join(td, "paper_trades.json")
-            open(trades, "w").write("[]")
+            with open(trades, "w", encoding="utf-8") as handle:
+                handle.write("[]")
             # no status file
             result = json.loads(run("missing.csv", trades, os.path.join(td, "model.json")))
             self.assertFalse(result.get("deployed"))

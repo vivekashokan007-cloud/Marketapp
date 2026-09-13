@@ -12,6 +12,14 @@ import org.junit.Test
 import java.io.File
 
 class CodexRectificationR3Test {
+    private fun canonicalStatus(outcomes: Int = 1, snapshots: Int = 1): JSONObject = JSONObject()
+        .put("status", "complete")
+        .put("kind", "canonical_eval_export")
+        .put("dataset_label", "canonical_evaluation_inputs")
+        .put("live_training_eligible", false)
+        .put("export_cutoff", "2026-09-13T00:00:00Z")
+        .put("row_count", JSONObject().put("outcomes", outcomes).put("snapshots", snapshots))
+
     @After
     fun tearDown() {
         SupabaseClient.resetPageFetchSeam()
@@ -134,7 +142,7 @@ class CodexRectificationR3Test {
         root.delete()
         root.mkdirs()
         try {
-            val status1 = JSONObject().put("status", "complete").put("n_outcomes", 1)
+            val status1 = canonicalStatus()
             val w1 = CanonicalExportStore.writeGeneration(
                 root, """[{"id":"a"}]""".toByteArray(), """[{"id":"s1"}]""".toByteArray(), status1
             )
@@ -143,7 +151,7 @@ class CodexRectificationR3Test {
             assertTrue(read1.ok)
             assertEquals("""[{"id":"a"}]""", String(read1.outcomes!!))
 
-            val status2 = JSONObject().put("status", "complete").put("n_outcomes", 1)
+            val status2 = canonicalStatus()
             val w2 = CanonicalExportStore.writeGeneration(
                 root,
                 """[{"id":"b"}]""".toByteArray(),
@@ -175,12 +183,12 @@ class CodexRectificationR3Test {
         try {
             val w1 = CanonicalExportStore.writeGeneration(
                 root, """[1]""".toByteArray(), """[1]""".toByteArray(),
-                JSONObject().put("status", "complete")
+                canonicalStatus()
             )
             assertTrue(w1.ok)
             val w2 = CanonicalExportStore.writeGeneration(
                 root, """[2]""".toByteArray(), """[2]""".toByteArray(),
-                JSONObject().put("status", "incomplete_error")
+                canonicalStatus().put("status", "incomplete_error")
             )
             assertFalse(w2.ok)
             val read = CanonicalExportStore.readCurrent(root)

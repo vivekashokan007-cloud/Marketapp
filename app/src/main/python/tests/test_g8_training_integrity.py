@@ -308,8 +308,11 @@ class G8KotlinExportSourceTests(unittest.TestCase):
         with open(self.kt, encoding="utf-8") as f:
             src = f.read()
         self.assertIn("incomplete_truncated", src)
-        self.assertIn("canonical_eval_export_status.json", src)
-        self.assertIn("paper_trades_export_status.json", src)
+        self.assertIn("CanonicalExportStore.writeGeneration", src)
+        self.assertIn("CanonicalExportStore.LAST_ATTEMPT_POINTER", src)
+        self.assertIn('"canonical_evaluation_inputs"', src)
+        self.assertNotIn("canonical_eval_export_status.json", src)
+        self.assertNotIn("paper_trades_export_status.json", src)
 
     def test_export_uses_multi_page_fetch(self):
         with open(self.kt, encoding="utf-8") as f:

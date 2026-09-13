@@ -14971,7 +14971,7 @@ def g6_attach_shadow_menu_comparison(menu, active_recommendation_id=None, shadow
             'sizing_held_fixed': True,
         }
 
-def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regime=None):
+def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regime=None, context=None):
     """Attach a fail-closed, strategy-agnostic entry contract to a candidate.
 
     Candidates remain available as research evidence when this contract fails.
@@ -15154,13 +15154,17 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regi
     # Paper-analysis lane: structural admission independent of ranking/ML/Real gates.
     try:
         from paper_analysis_eligibility import annotate_paper_analysis_eligibility
-        annotate_paper_analysis_eligibility(candidate, candidate.get('entryEligibility'))
+        annotate_paper_analysis_eligibility(
+            candidate,
+            candidate.get('entryEligibility'),
+            context=context,
+            brain_version=BRAIN_VERSION,
+        )
     except Exception as _paper_exc:
         candidate['paperAnalysisEligible'] = False
         candidate['paperAnalysisGate'] = 'PAPER_ANALYSIS_BLOCKED'
         candidate['paperAnalysisEligibility'] = {
-            'schema': 1,
-            'version': 'paper_analysis_eligibility_v1_20260913',
+            'schema_version': 'paper_analysis_authorization_v1_20260913',
             'allowed': False,
             'gate': 'PAPER_ANALYSIS_BLOCKED',
             'reasons': ['paper_analysis_annotator_error'],
@@ -16170,7 +16174,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 candidate['executionReadiness'] = readiness
                 candidate['executionReady'] = readiness.get('ready', False)
                 candidate['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(candidate, market_confidence, regime)
+                annotate_candidate_entry_eligibility(candidate, market_confidence, regime, {
+                    'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                    'scan_identity': _derive_poll_timestamp(
+                        ctx.get('today_ist') or ctx.get('session_date'), latest_poll
+                    ),
+                    'brain_version': BRAIN_VERSION,
+                })
             result['pc2_composite_shadow'] = annotate_pc2_composite_shadow(
                 ranked,
                 ctx.get('pc2CompositeReference') or ctx.get('pc2_composite_reference'),
@@ -16320,7 +16330,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(c, market_confidence, regime)
+                annotate_candidate_entry_eligibility(c, market_confidence, regime, {
+                    'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                    'scan_identity': _derive_poll_timestamp(
+                        ctx.get('today_ist') or ctx.get('session_date'), latest_poll
+                    ),
+                    'brain_version': BRAIN_VERSION,
+                })
 
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
@@ -16329,7 +16345,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReadiness'] = readiness
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
-                annotate_candidate_entry_eligibility(c, market_confidence, regime)
+                annotate_candidate_entry_eligibility(c, market_confidence, regime, {
+                    'session_date': ctx.get('today_ist') or ctx.get('session_date'),
+                    'scan_identity': _derive_poll_timestamp(
+                        ctx.get('today_ist') or ctx.get('session_date'), latest_poll
+                    ),
+                    'brain_version': BRAIN_VERSION,
+                })
 
             # Eligibility can change after verdict alignment and the final
             # readiness pass. Recompute PC2 authority from that final state so
@@ -16858,6 +16880,17 @@ def _compact_snapshot_object(raw, keys):
     return out or None
 
 
+def _compact_contract_identity(raw):
+    return _compact_snapshot_object(raw, (
+        'schema_version', 'index_key', 'expiry', 'expiry_cycle', 'session_date',
+        'contract_lot_size', 'number_of_lots', 'quantity_units', 'quantity_basis',
+        'lot_source', 'lot_table_version', 'source_ref', 'source_digest',
+        'calendar_dte', 'trading_dte', 'calendar_version', 'dte_basis',
+        'identity_status', 'identity_complete', 'lot_conflict',
+        'contract_identity_quarantine', 'evaluation_ineligible',
+    ))
+
+
 def _compact_snapshot_strings(raw, limit=12, max_chars=160):
     if not isinstance(raw, list):
         return []
@@ -16880,15 +16913,14 @@ def _compact_paper_analysis_eligibility(raw):
     except Exception:
         if not isinstance(raw, dict):
             return None
-        return {
-            'schema': raw.get('schema'),
-            'version': raw.get('version'),
-            'allowed': raw.get('allowed'),
-            'gate': raw.get('gate'),
-            'reasons': raw.get('reasons'),
-            'real_gate_unchanged': raw.get('real_gate_unchanged'),
-            'does_not_change_live_recommendation': raw.get('does_not_change_live_recommendation'),
-        }
+        keys = (
+            'schema_version', 'allowed', 'gate', 'reasons',
+            'authorization_id', 'brain_version', 'candidate_id',
+            'session_date', 'scan_identity', 'expiry',
+            'contract_identity_schema_version', 'contract_identity_digest',
+            'real_gate_unchanged', 'does_not_change_live_recommendation',
+        )
+        return {key: raw.get(key) for key in keys if raw.get(key) is not None}
 
 
 def _compact_entry_eligibility(raw):
@@ -17170,6 +17202,17 @@ def _candidate_view(c):
             value = c.get('rank')
         if value is not None:
             view[key] = value
+    compact_identity = _compact_contract_identity(c.get('contract_identity'))
+    if compact_identity:
+        view['contract_identity'] = compact_identity
+    for key in ('session_date', 'brain_version', 'contract_identity_digest'):
+        if c.get(key) is not None:
+            view[key] = c.get(key)
+    # Paper authorization needs the actual captured entry quotes. Preserve
+    # them only when present so large historical menus do not gain null bloat.
+    for key in ('sellLTP', 'buyLTP', 'sellLTP2', 'buyLTP2'):
+        if c.get(key) is not None:
+            view[key] = c.get(key)
     # Paper-analysis fields only when present — avoid null-key bloat on large menus.
     if c.get('paperAnalysisEligible') is not None:
         view['paperAnalysisEligible'] = c.get('paperAnalysisEligible')

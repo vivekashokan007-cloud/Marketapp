@@ -40,10 +40,16 @@ class CodexExportPaginationTests(unittest.TestCase):
     def test_trainer_aborts_unless_complete(self):
         from ml_train import run
         with tempfile.TemporaryDirectory() as td:
-            trades = os.path.join(td, "app_trades.json")
-            open(trades, "w").write("[]")
-            status = os.path.join(td, "app_trades_export_status.json")
-            json.dump({"status": "incomplete_error", "live_training_eligible": False}, open(status, "w"))
+            trades = os.path.join(td, "paper_trades.json")
+            with open(trades, "w", encoding="utf-8") as handle:
+                handle.write("[]")
+            status = os.path.join(td, "manifest.json")
+            with open(status, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "schema_version": "market_radar_export_manifest_v1_20260913",
+                    "status": "incomplete_error",
+                    "kind": "paper_trades_export",
+                }, handle)
             result = json.loads(run("missing.csv", trades, os.path.join(td, "model.json")))
             self.assertFalse(result.get("deployed"))
             self.assertIn("incomplete", result.get("reason", ""))

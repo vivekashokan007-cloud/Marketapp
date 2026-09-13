@@ -20,7 +20,11 @@ def structural_candidate(**extra):
         "type": "BEAR_CALL",
         "index": "NF",
         "expiry": "2026-09-17",
+        "expiry_cycle": "weekly",
         "lotSize": 65,
+        "contract_lot_size": 65,
+        "number_of_lots": 1,
+        "quantity_units": 65,
         "sellStrike": 25000,
         "buyStrike": 25100,
         "sellType": "CE",
@@ -45,11 +49,18 @@ def structural_candidate(**extra):
 
 
 class PaperAnalysisEligibilityTests(unittest.TestCase):
+    AUTH_CONTEXT = {
+        "session_date": "2026-09-10",
+        "scan_identity": "2026-09-10T10:00:00+05:30",
+    }
+
     def test_structurally_valid_non_primary_is_allowed(self):
-        row = annotate_paper_analysis_eligibility(structural_candidate())
+        row = annotate_paper_analysis_eligibility(
+            structural_candidate(), context=self.AUTH_CONTEXT, brain_version="2.6.41"
+        )
         self.assertTrue(row["paperAnalysisEligible"])
         self.assertEqual(row["paperAnalysisGate"], "PAPER_ANALYSIS")
-        self.assertEqual(row["paperAnalysisEligibility"]["version"], PAPER_ANALYSIS_ELIGIBILITY_VERSION)
+        self.assertEqual(row["paperAnalysisEligibility"]["schema_version"], PAPER_ANALYSIS_ELIGIBILITY_VERSION)
         self.assertTrue(row["paperAnalysisEligibility"]["non_primary"])
         self.assertTrue(row["paperAnalysisEligibility"]["real_gate_unchanged"])
         self.assertTrue(row["paperAnalysisEligibility"]["does_not_change_live_recommendation"])
@@ -80,6 +91,7 @@ class PaperAnalysisEligibilityTests(unittest.TestCase):
                 netMaxLossAfterFriction=7100,
             ),
             70,
+            context=self.AUTH_CONTEXT,
         )
         self.assertFalse(row["entryEligible"])
         self.assertIn("ml_action_skip", row["entryEligibility"]["reasons"])

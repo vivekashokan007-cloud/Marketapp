@@ -1030,6 +1030,11 @@ def json_round_trip_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
 # Mirrors MarketMLService.CONTRACT_IDENTITY_COMPACTION_KEYS (+ index/expiry/tDTE
 # already present on the Android teacher-research candidate allowlist).
 ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS = (
+    "id",
+    "candidate_id",
+    "poll_ts",
+    "session_date",
+    "brain_version",
     "index",
     "expiry",
     "tDTE",
@@ -1056,7 +1061,11 @@ ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS = (
     "evaluation_ineligible",
     "calibration_ineligible",
     "contract_identity",
+    "contract_identity_digest",
     "identity_complete",
+    "paperAnalysisEligible",
+    "paperAnalysisGate",
+    "paperAnalysisEligibility",
     "exclusion_reason",
     "retained_for_recovery",
 )

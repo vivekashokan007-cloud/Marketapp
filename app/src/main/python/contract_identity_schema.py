@@ -10,6 +10,21 @@ from __future__ import annotations
 from typing import Any, Mapping, MutableMapping, Optional, Sequence
 
 CONTRACT_IDENTITY_SCHEMA_VERSION = "contract_identity_v1_20260913"
+CONTRACT_LOT_TABLE_VERSION = "contract_lot_table_v2_20260913"
+
+VERIFIED_LOT_PROVENANCE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "authoritative_contract_rule": ("lot_table_version", "source_ref"),
+    "captured_metadata_consistent": ("lot_table_version", "source_ref"),
+    "captured_metadata": ("source_ref", "source_digest"),
+}
+
+VERIFIED_DTE_BASIS_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "nse_trading_calendar": (
+        "session_date", "expiry", "calendar_dte", "trading_dte", "calendar_version"
+    ),
+    "explicit_calendar_dte": ("session_date", "expiry", "calendar_dte", "dte_source", "source_ref"),
+    "explicit_trading_dte": ("session_date", "expiry", "trading_dte", "dte_source", "source_ref"),
+}
 
 # quantity_basis must distinguish explicit hypothetical lots vs recorded fills.
 QUANTITY_BASIS_HYPOTHETICAL_LOTS = "hypothetical_lots"
@@ -498,6 +513,8 @@ def validate_contract_identity(
 
     missing_required_when_verified = []
     if status == IDENTITY_STATUS_VERIFIED:
+        if version != CONTRACT_IDENTITY_SCHEMA_VERSION:
+            errors.append("verified_requires_exact_schema_version")
         for key in (
             "index_key", "expiry", "contract_lot_size", "number_of_lots",
             "quantity_units", "quantity_basis",
@@ -513,9 +530,44 @@ def validate_contract_identity(
             or payload.get("lot_conflict")
         ):
             errors.append("verified_with_conflict")
-        # Provenance / lot source required for verified.
-        if _nullish(payload.get("lot_source")) and _nullish(payload.get("lot_table_version")):
-            errors.append("verified_missing_lot_provenance")
+        lot_source = str(payload.get("lot_source") or "")
+        provenance_required = VERIFIED_LOT_PROVENANCE_REQUIREMENTS.get(lot_source)
+        if provenance_required is None:
+            errors.append(f"verified_invalid_lot_source:{lot_source or 'missing'}")
+        else:
+            for key in provenance_required:
+                if _nullish(payload.get(key)):
+                    errors.append(f"verified_lot_provenance_missing:{key}")
+            if "lot_table_version" in provenance_required and payload.get("lot_table_version") != CONTRACT_LOT_TABLE_VERSION:
+                errors.append(f"verified_invalid_lot_table_version:{payload.get('lot_table_version')}")
+
+        dte_basis = str(payload.get("dte_basis") or "")
+        dte_required = VERIFIED_DTE_BASIS_REQUIREMENTS.get(dte_basis)
+        if dte_required is None:
+            errors.append(f"verified_invalid_dte_basis:{dte_basis or 'missing'}")
+        else:
+            for key in dte_required:
+                if _nullish(payload.get(key)):
+                    errors.append(f"verified_dte_provenance_missing:{key}")
+        if dte_basis == "nse_trading_calendar" and payload.get("calendar_coverage_ok") is not True:
+            errors.append("verified_nse_calendar_coverage_required")
+        session_iso, _ = _parse_iso_date(payload.get("session_date"))
+        expiry_iso, _ = _parse_iso_date(payload.get("expiry"))
+        if session_iso and expiry_iso and not _nullish(payload.get("calendar_dte")):
+            from datetime import date
+            expected_calendar = (date.fromisoformat(expiry_iso) - date.fromisoformat(session_iso)).days
+            calendar_value, calendar_error = _nonneg_int(payload.get("calendar_dte"))
+            if calendar_error is None and calendar_value != expected_calendar:
+                errors.append("calendar_dte_session_expiry_mismatch")
+        if not _nullish(payload.get("calendar_dte")) and not _nullish(payload.get("trading_dte")):
+            calendar_value, calendar_error = _nonneg_int(payload.get("calendar_dte"))
+            trading_value, trading_error = _nonneg_int(payload.get("trading_dte"))
+            if (
+                calendar_error is None and trading_error is None
+                and trading_value is not None and calendar_value is not None
+                and trading_value > calendar_value + 1
+            ):
+                errors.append("trading_dte_exceeds_calendar_window")
         if missing_required_when_verified:
             errors.append("verified_missing:" + ",".join(missing_required_when_verified))
         if cls_v is None or n_v is None or q_v is None:
@@ -526,8 +578,6 @@ def validate_contract_identity(
 
     # Never repair: retain original payload fields; only annotate errors.
     out_payload = dict(payload)
-    if version in (None, ""):
-        out_payload["schema_version"] = CONTRACT_IDENTITY_SCHEMA_VERSION
     if errors:
         # Malformed must not remain eligible / verified for metrics.
         out_payload["evaluation_ineligible"] = True

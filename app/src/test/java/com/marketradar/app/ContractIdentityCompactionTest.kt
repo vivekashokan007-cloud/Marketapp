@@ -41,6 +41,7 @@ class ContractIdentityCompactionTest {
         "evaluation_ineligible",
         "calibration_ineligible",
         "contract_identity",
+        "contract_identity_digest",
         "identity_complete",
         "exclusion_reason",
         "retained_for_recovery",
@@ -51,6 +52,18 @@ class ContractIdentityCompactionTest {
         val keys = MarketMLService.CONTRACT_IDENTITY_COMPACTION_KEYS.toSet()
         for (key in requiredIdentityKeys) {
             assertTrue("missing CONTRACT_IDENTITY_COMPACTION_KEYS entry: $key", keys.contains(key))
+        }
+    }
+
+    @Test
+    fun nativeBridgeRetainsBoundPaperAuthorizationAndIdentity() {
+        val source = loadSource("NativeBridge.kt")
+        for (key in listOf(
+            "session_date", "brain_version", "paperAnalysisEligible",
+            "paperAnalysisGate", "paperAnalysisEligibility", "contract_identity",
+            "contract_identity_digest", "sellLTP", "buyLTP", "sellLTP2", "buyLTP2"
+        )) {
+            assertTrue("NativeBridge.kt missing bound paper key \"$key\"", source.contains("\"$key\""))
         }
     }
 
@@ -75,10 +88,14 @@ class ContractIdentityCompactionTest {
     }
 
     private fun loadMarketMLServiceSource(): String {
+        return loadSource("MarketMLService.kt")
+    }
+
+    private fun loadSource(name: String): String {
         val candidates = listOf(
-            File("src/main/java/com/marketradar/app/MarketMLService.kt"),
-            File("app/src/main/java/com/marketradar/app/MarketMLService.kt"),
-            File("../main/java/com/marketradar/app/MarketMLService.kt"),
+            File("src/main/java/com/marketradar/app/$name"),
+            File("app/src/main/java/com/marketradar/app/$name"),
+            File("../main/java/com/marketradar/app/$name"),
         )
         for (file in candidates) {
             if (file.isFile) return file.readText()
@@ -86,12 +103,12 @@ class ContractIdentityCompactionTest {
         // Walk up from user.dir looking for the module source
         var dir = File(System.getProperty("user.dir") ?: ".").canonicalFile
         repeat(6) {
-            val hit = File(dir, "app/src/main/java/com/marketradar/app/MarketMLService.kt")
+            val hit = File(dir, "app/src/main/java/com/marketradar/app/$name")
             if (hit.isFile) return hit.readText()
-            val hit2 = File(dir, "src/main/java/com/marketradar/app/MarketMLService.kt")
+            val hit2 = File(dir, "src/main/java/com/marketradar/app/$name")
             if (hit2.isFile) return hit2.readText()
             dir = dir.parentFile ?: return@repeat
         }
-        error("MarketMLService.kt not found from user.dir=${System.getProperty("user.dir")}")
+        error("$name not found from user.dir=${System.getProperty("user.dir")}")
     }
 }

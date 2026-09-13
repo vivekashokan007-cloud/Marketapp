@@ -12,6 +12,24 @@ import org.json.JSONObject
  */
 internal object ContractIdentityPayload {
     const val SCHEMA_VERSION = "contract_identity_v1_20260913"
+    const val LOT_TABLE_VERSION = "contract_lot_table_v2_20260913"
+
+    private val VERIFIED_LOT_PROVENANCE_REQUIREMENTS = mapOf(
+        "authoritative_contract_rule" to listOf("lot_table_version", "source_ref"),
+        "captured_metadata_consistent" to listOf("lot_table_version", "source_ref"),
+        "captured_metadata" to listOf("source_ref", "source_digest"),
+    )
+    private val VERIFIED_DTE_BASIS_REQUIREMENTS = mapOf(
+        "nse_trading_calendar" to listOf(
+            "session_date", "expiry", "calendar_dte", "trading_dte", "calendar_version"
+        ),
+        "explicit_calendar_dte" to listOf(
+            "session_date", "expiry", "calendar_dte", "dte_source", "source_ref"
+        ),
+        "explicit_trading_dte" to listOf(
+            "session_date", "expiry", "trading_dte", "dte_source", "source_ref"
+        ),
+    )
 
     const val QUANTITY_BASIS_HYPOTHETICAL_LOTS = "hypothetical_lots"
     const val QUANTITY_BASIS_RECORDED_FILLS = "recorded_fills"
@@ -378,6 +396,9 @@ internal object ContractIdentityPayload {
             }
         }
         if (status == STATUS_VERIFIED) {
+            if (version != SCHEMA_VERSION) {
+                errors.add("verified_requires_exact_schema_version")
+            }
             val missing = mutableListOf<String>()
             for (key in listOf(
                 "index_key", "expiry", "contract_lot_size", "number_of_lots",
@@ -397,17 +418,57 @@ internal object ContractIdentityPayload {
             if (payload.optBoolean("lot_conflict", false)) {
                 errors.add("verified_with_conflict")
             }
-            if (!has(payload, "lot_source") && !has(payload, "lot_table_version")) {
-                errors.add("verified_missing_lot_provenance")
+            val lotSource = payload.optString("lot_source", "")
+            val provenanceRequired = VERIFIED_LOT_PROVENANCE_REQUIREMENTS[lotSource]
+            if (provenanceRequired == null) {
+                errors.add("verified_invalid_lot_source:${lotSource.ifBlank { "missing" }}")
+            } else {
+                for (key in provenanceRequired) {
+                    if (!has(payload, key) || payload.optString(key).isBlank()) {
+                        errors.add("verified_lot_provenance_missing:$key")
+                    }
+                }
+                if ("lot_table_version" in provenanceRequired &&
+                    payload.optString("lot_table_version") != LOT_TABLE_VERSION
+                ) {
+                    errors.add("verified_invalid_lot_table_version:${payload.optString("lot_table_version")}")
+                }
+            }
+            val dteBasis = payload.optString("dte_basis", "")
+            val dteRequired = VERIFIED_DTE_BASIS_REQUIREMENTS[dteBasis]
+            if (dteRequired == null) {
+                errors.add("verified_invalid_dte_basis:${dteBasis.ifBlank { "missing" }}")
+            } else {
+                for (key in dteRequired) {
+                    if (!has(payload, key) || payload.optString(key).isBlank()) {
+                        errors.add("verified_dte_provenance_missing:$key")
+                    }
+                }
+            }
+            if (dteBasis == "nse_trading_calendar" &&
+                !payload.optBoolean("calendar_coverage_ok", false)
+            ) {
+                errors.add("verified_nse_calendar_coverage_required")
+            }
+            val sessionDate = parseIsoDate(payload.opt("session_date"))
+            val expiryDate = parseIsoDate(payload.opt("expiry"))
+            val calendarDte = if (has(payload, "calendar_dte")) nonNegInt(payload.opt("calendar_dte")) else null
+            val tradingDte = if (has(payload, "trading_dte")) nonNegInt(payload.opt("trading_dte")) else null
+            if (sessionDate != null && expiryDate != null && calendarDte != null) {
+                val expected = java.time.temporal.ChronoUnit.DAYS.between(
+                    java.time.LocalDate.parse(sessionDate),
+                    java.time.LocalDate.parse(expiryDate)
+                ).toInt()
+                if (calendarDte != expected) errors.add("calendar_dte_session_expiry_mismatch")
+            }
+            if (calendarDte != null && tradingDte != null && tradingDte > calendarDte + 1) {
+                errors.add("trading_dte_exceeds_calendar_window")
             }
             if (clsV == null || nV == null || qV == null) {
                 errors.add("verified_requires_quantity_triplet")
             }
         }
         val out = JSONObject(payload.toString())
-        if (!has(out, "schema_version") || out.optString("schema_version").isBlank()) {
-            out.put("schema_version", SCHEMA_VERSION)
-        }
         if (errors.isNotEmpty()) {
             out.put("evaluation_ineligible", true)
             if (status == STATUS_VERIFIED) {

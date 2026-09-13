@@ -185,18 +185,26 @@ class R33DteConsistency(unittest.TestCase):
 class R35ChecksumAndDefaults(unittest.TestCase):
     def test_string_checksum_mismatch_reason(self):
         from ml_train import run
+        from ml_train import EXPORT_MANIFEST_SCHEMA_VERSION
         with tempfile.TemporaryDirectory() as td:
             trades = os.path.join(td, "paper_trades.json")
-            open(trades, "w").write("[]")
+            with open(trades, "w", encoding="utf-8") as handle:
+                handle.write("[]")
             bad = "0" * 64
             status = {
+                "schema_version": EXPORT_MANIFEST_SCHEMA_VERSION,
                 "status": "complete",
                 "kind": "paper_trades_export",
+                "dataset_label": "paper_research_not_live",
+                "generation_id": "paper_test",
+                "export_cutoff": "2026-09-13T00:00:00Z",
                 "live_training_eligible": False,
+                "file": "paper_trades.json",
                 "checksum_sha256": bad,
                 "row_count": 0,
             }
-            open(os.path.join(td, "paper_trades_export_status.json"), "w").write(json.dumps(status))
+            with open(os.path.join(td, "manifest.json"), "w", encoding="utf-8") as handle:
+                json.dump(status, handle)
             result = json.loads(run("missing.csv", trades, os.path.join(td, "model.json")))
             self.assertFalse(result.get("deployed"))
             self.assertIn("checksum_mismatch", result.get("reason", ""))

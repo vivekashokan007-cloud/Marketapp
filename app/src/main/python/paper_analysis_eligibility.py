@@ -10,10 +10,12 @@ and final-entry authority. Those remain Real-only gates.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from typing import Any, Optional
 
-PAPER_ANALYSIS_ELIGIBILITY_VERSION = "paper_analysis_eligibility_v1_20260913"
+PAPER_ANALYSIS_ELIGIBILITY_VERSION = "paper_analysis_authorization_v1_20260913"
 PAPER_ANALYSIS_GATE = "PAPER_ANALYSIS"
 PAPER_ANALYSIS_BLOCKED_GATE = "PAPER_ANALYSIS_BLOCKED"
 
@@ -47,6 +49,83 @@ def _option_type(value: Any) -> Optional[str]:
     if text in ("CE", "PE"):
         return text
     return None
+
+
+def _canonical_digest(payload: dict) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _binding_value(candidate: dict, context: Optional[dict], *keys: str):
+    for src in (candidate, context if isinstance(context, dict) else {}):
+        for key in keys:
+            value = src.get(key)
+            if value not in (None, ""):
+                return value
+    return None
+
+
+def _build_contract_identity(candidate: dict, context: Optional[dict]) -> tuple[Optional[dict], Optional[str], list[str]]:
+    """Resolve and validate the exact identity bound into Paper authorization."""
+    reasons: list[str] = []
+    source = dict(candidate)
+    session_date = _binding_value(candidate, context, "session_date", "today_ist", "sessionDate")
+    scan_identity = _binding_value(candidate, context, "poll_ts", "scan_identity", "poll_timestamp")
+    if session_date not in (None, ""):
+        source["session_date"] = str(session_date)[:10]
+    if scan_identity not in (None, ""):
+        source["observed_at"] = str(scan_identity)
+    if source.get("contract_lot_size") in (None, "") and source.get("lotSize") not in (None, ""):
+        source["contract_lot_size"] = source.get("lotSize")
+    if source.get("number_of_lots") in (None, ""):
+        source["number_of_lots"] = 1
+    if source.get("quantity_units") in (None, "") and source.get("contract_lot_size") not in (None, ""):
+        try:
+            source["quantity_units"] = int(source["contract_lot_size"]) * int(source["number_of_lots"])
+        except (TypeError, ValueError):
+            pass
+    source.setdefault("quantity_basis", "hypothetical_lots")
+
+    try:
+        from canonical_net_profitability import resolve_contract_identity
+        from contract_identity_schema import (
+            CONTRACT_IDENTITY_SCHEMA_VERSION,
+            build_canonical_contract_identity,
+            validate_contract_identity,
+        )
+        resolved = resolve_contract_identity(source)
+        canonical = build_canonical_contract_identity(source, resolved=resolved)
+        checked = validate_contract_identity(canonical, require_version=True)
+        identity = checked.get("payload") if isinstance(checked.get("payload"), dict) else canonical
+        if identity.get("schema_version") != CONTRACT_IDENTITY_SCHEMA_VERSION:
+            reasons.append("contract_identity_schema_unsupported")
+        if not checked.get("eligible_for_contract_metrics"):
+            reasons.extend(str(x) for x in checked.get("errors") or [])
+            reasons.append("contract_identity_not_verified")
+        if not identity.get("identity_complete"):
+            reasons.append("contract_identity_incomplete")
+        if reasons:
+            return identity, None, list(dict.fromkeys(reasons))
+        digest_fields = {
+            key: identity.get(key)
+            for key in (
+                "schema_version", "index_key", "expiry", "expiry_cycle",
+                "session_date", "contract_lot_size", "number_of_lots",
+                "quantity_units", "quantity_basis", "lot_source",
+                "lot_table_version", "lot_as_of", "source_ref", "source_digest",
+                "calendar_dte", "trading_dte", "calendar_version", "dte_basis",
+                "identity_status", "identity_complete",
+            )
+        }
+        return identity, _canonical_digest(digest_fields), []
+    except Exception as exc:
+        return None, None, [f"contract_identity_resolution_error:{type(exc).__name__}"]
 
 
 def candidate_leg_count(candidate: dict) -> int:
@@ -92,15 +171,7 @@ def structural_paper_analysis_reasons(candidate: dict) -> list:
         else candidate.get("lot_size")
     )
     if lot is None:
-        # Fall back to index defaults only when index is known — still require
-        # a positive resolved lot for a meaningful paper label.
-        index_key = str(candidate.get("index") or candidate.get("index_key") or "").upper()
-        if index_key == "BNF":
-            lot = 30.0
-        elif index_key == "NF":
-            lot = 65.0
-        else:
-            reasons.append("lot_size_invalid")
+        reasons.append("lot_size_invalid")
 
     legs = [
         ("sell", "", "sell"),
@@ -143,13 +214,37 @@ def structural_paper_analysis_reasons(candidate: dict) -> list:
     return list(dict.fromkeys(reasons))
 
 
-def annotate_paper_analysis_eligibility(candidate, entry_eligibility=None):
+def annotate_paper_analysis_eligibility(
+    candidate,
+    entry_eligibility=None,
+    *,
+    context=None,
+    brain_version=None,
+):
     """Attach paper-analysis admission. Never mutates Real entryEligible/gate."""
     if not isinstance(candidate, dict):
         return candidate
 
     structural_reasons = structural_paper_analysis_reasons(candidate)
-    allowed = not structural_reasons
+    candidate_id = _binding_value(candidate, context, "id", "candidate_id")
+    session_date = _binding_value(candidate, context, "session_date", "today_ist", "sessionDate")
+    scan_identity = _binding_value(candidate, context, "poll_ts", "scan_identity", "poll_timestamp")
+    expiry = _binding_value(candidate, context, "expiry", "expiry_date")
+    resolved_brain_version = brain_version or _binding_value(candidate, context, "brain_version", "brainVersion")
+    identity, identity_digest, identity_reasons = _build_contract_identity(candidate, context)
+    binding_reasons = []
+    for name, value in (
+        ("candidate_id", candidate_id),
+        ("session_date", session_date),
+        ("scan_identity", scan_identity),
+        ("expiry", expiry),
+        ("brain_version", resolved_brain_version),
+        ("contract_identity_digest", identity_digest),
+    ):
+        if value in (None, ""):
+            binding_reasons.append(f"authorization_{name}_missing")
+    all_reasons = list(dict.fromkeys(structural_reasons + identity_reasons + binding_reasons))
+    allowed = not all_reasons
 
     entry = entry_eligibility if isinstance(entry_eligibility, dict) else candidate.get("entryEligibility")
     entry_reasons = []
@@ -175,11 +270,10 @@ def annotate_paper_analysis_eligibility(candidate, entry_eligibility=None):
     monitor_only = (not entry_eligible) or str(candidate.get("entryGate") or "").upper() == "MONITOR"
 
     payload = {
-        "schema": 1,
-        "version": PAPER_ANALYSIS_ELIGIBILITY_VERSION,
+        "schema_version": PAPER_ANALYSIS_ELIGIBILITY_VERSION,
         "allowed": allowed,
         "gate": PAPER_ANALYSIS_GATE if allowed else PAPER_ANALYSIS_BLOCKED_GATE,
-        "reasons": structural_reasons,
+        "reasons": all_reasons,
         "structural_contract": (
             "require 2/4 legs, expiry, positive lot, CE/PE types, and positive entry quotes; "
             "ranking/ML/advisory vetoes never block paper analysis"
@@ -193,7 +287,35 @@ def annotate_paper_analysis_eligibility(candidate, entry_eligibility=None):
         "advisory_blocks_ignored": advisory_blocks_ignored[:24],
         "selection_source_if_taken": "operator_test",
         "evidence_source_if_taken": "operator_paper_test",
+        "brain_version": str(resolved_brain_version) if resolved_brain_version not in (None, "") else None,
+        "candidate_id": str(candidate_id) if candidate_id not in (None, "") else None,
+        "session_date": str(session_date)[:10] if session_date not in (None, "") else None,
+        "scan_identity": str(scan_identity) if scan_identity not in (None, "") else None,
+        "expiry": str(expiry)[:10] if expiry not in (None, "") else None,
+        "contract_identity_schema_version": identity.get("schema_version") if isinstance(identity, dict) else None,
+        "contract_identity_digest": identity_digest,
     }
+    authorization_body = {
+        key: payload.get(key)
+        for key in (
+            "schema_version", "allowed", "gate", "brain_version", "candidate_id",
+            "session_date", "scan_identity", "expiry",
+            "contract_identity_schema_version", "contract_identity_digest",
+            "real_gate_unchanged",
+        )
+    }
+    authorization_body["reasons"] = payload["reasons"]
+    payload["authorization_id"] = "pa1_" + _canonical_digest(authorization_body)
+
+    if isinstance(identity, dict):
+        candidate["contract_identity"] = identity
+        candidate["contract_identity_digest"] = identity_digest
+    if session_date not in (None, ""):
+        candidate["session_date"] = str(session_date)[:10]
+    if scan_identity not in (None, ""):
+        candidate["poll_ts"] = str(scan_identity)
+    if resolved_brain_version not in (None, ""):
+        candidate["brain_version"] = str(resolved_brain_version)
     candidate["paperAnalysisEligible"] = allowed
     candidate["paperAnalysisGate"] = payload["gate"]
     candidate["paperAnalysisEligibility"] = payload
@@ -204,8 +326,7 @@ def compact_paper_analysis_eligibility(raw):
     if not isinstance(raw, dict):
         return None
     out = {
-        "schema": raw.get("schema"),
-        "version": raw.get("version"),
+        "schema_version": raw.get("schema_version"),
         "allowed": raw.get("allowed"),
         "gate": raw.get("gate"),
         "real_gate_unchanged": raw.get("real_gate_unchanged"),
@@ -216,6 +337,14 @@ def compact_paper_analysis_eligibility(raw):
         "non_primary": raw.get("non_primary"),
         "selection_source_if_taken": raw.get("selection_source_if_taken"),
         "evidence_source_if_taken": raw.get("evidence_source_if_taken"),
+        "authorization_id": raw.get("authorization_id"),
+        "brain_version": raw.get("brain_version"),
+        "candidate_id": raw.get("candidate_id"),
+        "session_date": raw.get("session_date"),
+        "scan_identity": raw.get("scan_identity"),
+        "expiry": raw.get("expiry"),
+        "contract_identity_schema_version": raw.get("contract_identity_schema_version"),
+        "contract_identity_digest": raw.get("contract_identity_digest"),
     }
     reasons = raw.get("reasons")
     if isinstance(reasons, list) and reasons:

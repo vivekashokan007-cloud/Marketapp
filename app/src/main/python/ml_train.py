@@ -6,22 +6,24 @@ Called by Kotlin TrainingService via Chaquopy at 11 PM nightly.
 Usage (Kotlin via Chaquopy):
     Python.getModule("ml_train").callAttr("run",
         "/data/backtest_trades.csv",   # primary training data
-        "/data/paper_trades.json",     # sole canonical Paper research name (NOT live; training disabled)
+        "/data/paper_export/generations/<id>/paper_trades.json", # verified generation path
         "/data/ml_model.json",          # current model (replaced if better)
         log_fn,                         # optional Kotlin callback for logs
-        "/data/evaluation_outcomes.json",
-        "/data/brain_snapshots.json")
+        "/data/eval_export/generations/<id>/outcomes.json",
+        "/data/eval_export/generations/<id>/snapshots.json")
 
 Usage (CLI for testing):
-    python3 ml_train.py /data/backtest.csv /data/paper_trades.json /data/model.json [/data/evaluation_outcomes.json] [/data/brain_snapshots.json]
+    python3 ml_train.py BACKTEST GENERATION/PAPER MODEL [GENERATION/OUTCOMES] [GENERATION/SNAPSHOTS]
 
 Returns JSON string with:
     {success, deployed, accuracy_new, accuracy_old, n_train, duration_sec, reason}
 """
 
 import json
+import hashlib
 import math
 import os
+import re
 import csv as _csv
 import time
 
@@ -41,6 +43,120 @@ APP_TRADE_WEIGHT = 3       # each real app trade replicated 3× in training mix
 EVAL_OUTCOME_WEIGHT = 4    # evaluator-backed labels should outrank raw trade-close inference
 MAX_APP_ROWS     = 500     # cap app trades to prevent distribution shift
 RETRAIN_DISABLED_REASON = 'retrain_disabled_pending_canonical_won_unification'
+EXPORT_MANIFEST_SCHEMA_VERSION = 'market_radar_export_manifest_v1_20260913'
+
+
+def validate_export_manifest(manifest_path, expected_kind=None, expected_dataset_label=None):
+    """Validate one committed immutable export generation, independently of training.
+
+    This guard deliberately requires files to live beside ``manifest.json`` in
+    the committed generation directory. Legacy fixed-file/status projections are
+    not canonical inputs.
+    """
+    path = os.fspath(manifest_path) if manifest_path is not None else ''
+
+    def fail(reason):
+        return {'ok': False, 'reason': reason, 'manifest_path': path}
+
+    if not path or not os.path.isfile(path):
+        return fail('export_manifest_missing')
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            manifest = json.load(handle)
+    except Exception as exc:
+        return fail(f'export_manifest_malformed:{type(exc).__name__}')
+    if not isinstance(manifest, dict):
+        return fail('export_manifest_not_object')
+    if manifest.get('schema_version') != EXPORT_MANIFEST_SCHEMA_VERSION:
+        return fail('export_manifest_schema_mismatch')
+    status = manifest.get('status')
+    if status not in ('complete', 'empty'):
+        return fail(f'export_manifest_incomplete:{status or "missing_status"}')
+    kind = manifest.get('kind')
+    if expected_kind is not None and kind != expected_kind:
+        return fail(f'export_manifest_kind_mismatch:{kind or "missing"}')
+    dataset = manifest.get('dataset_label')
+    if expected_dataset_label is not None and dataset != expected_dataset_label:
+        return fail(f'export_manifest_dataset_mismatch:{dataset or "missing"}')
+    generation_id = manifest.get('generation_id')
+    if not isinstance(generation_id, str) or not generation_id or '/' in generation_id or '..' in generation_id:
+        return fail('export_manifest_generation_id_invalid')
+    cutoff = manifest.get('export_cutoff')
+    if not isinstance(cutoff, str) or not cutoff.strip():
+        return fail('export_manifest_cutoff_missing')
+    try:
+        from datetime import datetime
+        datetime.fromisoformat(cutoff.replace('Z', '+00:00'))
+    except Exception:
+        return fail('export_manifest_cutoff_invalid')
+    if manifest.get('live_training_eligible') is not False:
+        return fail('export_manifest_live_training_eligible_not_false')
+
+    generation_dir = os.path.dirname(os.path.abspath(path))
+    sha_re = re.compile(r'^[0-9a-f]{64}$')
+
+    def load_array(filename, checksum, count, label):
+        if not isinstance(filename, str) or os.path.basename(filename) != filename:
+            return None, f'export_manifest_{label}_path_invalid'
+        if not isinstance(checksum, str) or not sha_re.fullmatch(checksum.lower()):
+            return None, f'export_manifest_{label}_checksum_missing_or_invalid'
+        file_path = os.path.join(generation_dir, filename)
+        if not os.path.isfile(file_path):
+            return None, f'export_manifest_{label}_file_missing'
+        with open(file_path, 'rb') as handle:
+            raw = handle.read()
+        if hashlib.sha256(raw).hexdigest() != checksum.lower():
+            return None, f'export_manifest_{label}_checksum_mismatch'
+        try:
+            rows = json.loads(raw.decode('utf-8'))
+        except Exception:
+            return None, f'export_manifest_{label}_json_malformed'
+        if not isinstance(rows, list):
+            return None, f'export_manifest_{label}_json_not_array'
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None, f'export_manifest_{label}_row_count_invalid'
+        if len(rows) != count:
+            return None, f'export_manifest_{label}_row_count_mismatch'
+        if status == 'empty' and rows:
+            return None, f'export_manifest_{label}_empty_status_has_rows'
+        return rows, None
+
+    if kind == 'paper_trades_export':
+        if dataset != 'paper_research_not_live':
+            return fail(f'export_manifest_dataset_mismatch:{dataset or "missing"}')
+        filename = manifest.get('file')
+        if filename != 'paper_trades.json':
+            return fail('export_manifest_paper_path_invalid')
+        _, error = load_array(filename, manifest.get('checksum_sha256'), manifest.get('row_count'), 'paper')
+        if error:
+            return fail(error)
+    elif kind == 'canonical_eval_export':
+        if dataset != 'canonical_evaluation_inputs':
+            return fail(f'export_manifest_dataset_mismatch:{dataset or "missing"}')
+        if manifest.get('outcomes_file') != 'outcomes.json' or manifest.get('snapshots_file') != 'snapshots.json':
+            return fail('export_manifest_canonical_paths_invalid')
+        checksums = manifest.get('checksum_sha256')
+        counts = manifest.get('row_count')
+        if not isinstance(checksums, dict):
+            return fail('export_manifest_checksums_missing')
+        if not isinstance(counts, dict):
+            return fail('export_manifest_row_counts_missing')
+        for label, filename in (('outcomes', 'outcomes.json'), ('snapshots', 'snapshots.json')):
+            _, error = load_array(filename, checksums.get(label), counts.get(label), label)
+            if error:
+                return fail(error)
+    else:
+        return fail(f'export_manifest_kind_mismatch:{kind or "missing"}')
+
+    return {
+        'ok': True,
+        'reason': None,
+        'kind': kind,
+        'dataset_label': dataset,
+        'generation_id': generation_id,
+        'export_cutoff': cutoff,
+        'manifest': manifest,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -555,133 +671,37 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_pa
         result['live_training_eligible'] = False
         result['paper_contamination_guard'] = 'ml_train_disabled_paper_not_live'
         log(f"ml_train: SKIPPED — {RETRAIN_DISABLED_REASON}")
-        # Fail-closed on missing/malformed/stale/incomplete/source-mismatched/checksum-mismatched manifests.
-        # Manifest parsing errors are fatal for trainer eligibility — never "non-fatal".
-        try:
-            import os
-            import hashlib
-            manifest_paths = []
-            base_dir = os.path.dirname(app_trades_path or '') or '.'
-            for status_name in (
-                'paper_trades_export_status.json',
-                'app_trades_export_status.json',
-                'canonical_eval_export_status.json',
-            ):
-                status_path = os.path.join(base_dir, status_name)
-                if os.path.isfile(status_path):
-                    manifest_paths.append((status_name, status_path))
-            # If a paper status file is expected beside paper_trades.json and missing → fail closed.
-            paper_json = os.path.join(base_dir, 'paper_trades.json')
-            paper_status = os.path.join(base_dir, 'paper_trades_export_status.json')
-            if os.path.isfile(paper_json) and not os.path.isfile(paper_status):
-                result['reason'] = 'export_manifest_missing:paper_trades_export_status.json'
-                result['success'] = False
-                result['deployed'] = False
-                log('ml_train: ABORT — missing paper export manifest (fail-closed)')
-                result['duration_sec'] = round(time.time() - t0, 1)
-                return json.dumps(result)
-            for status_name, status_path in manifest_paths:
-                try:
-                    with open(status_path, 'r', encoding='utf-8') as fh:
-                        manifest = json.load(fh)
-                except Exception as parse_ex:
-                    result['reason'] = f"export_manifest_malformed:{status_name}:{parse_ex}"
-                    result['success'] = False
-                    result['deployed'] = False
-                    log(f"ml_train: ABORT — malformed export manifest {status_name} (fail-closed)")
-                    result['duration_sec'] = round(time.time() - t0, 1)
-                    return json.dumps(result)
-                status_val = str(manifest.get('status') or '')
-                if status_val != 'complete':
-                    result['reason'] = f"export_manifest_incomplete:{status_val or 'missing_status'}"
-                    result['success'] = False
-                    result['deployed'] = False
-                    log(f"ml_train: ABORT — incomplete export manifest {status_name}")
-                    result['duration_sec'] = round(time.time() - t0, 1)
-                    return json.dumps(result)
-                if manifest.get('live_training_eligible') is True:
-                    result['reason'] = 'paper_export_marked_live_training_eligible_blocked'
-                    result['success'] = False
-                    result['deployed'] = False
-                    log('ml_train: ABORT — paper export must not be live-training eligible')
-                    result['duration_sec'] = round(time.time() - t0, 1)
-                    return json.dumps(result)
-                # R3.5: handle dict and string checksums in SEPARATE reachable branches.
-                declared_ck = manifest.get('checksum_sha256')
-                _sha256_re = __import__('re').compile(r'^[0-9a-f]{64}$')
-
-                def _abort_ck(reason):
-                    result['reason'] = reason
-                    result['success'] = False
-                    result['deployed'] = False
-                    log(f"ml_train: ABORT — {reason}")
-                    result['duration_sec'] = round(time.time() - t0, 1)
-                    return json.dumps(result)
-
-                if isinstance(declared_ck, dict):
-                    # Object checksum: verify named file digests / outcomes / snapshots.
-                    if 'paper' in status_name:
-                        target = os.path.join(base_dir, 'paper_trades.json')
-                        expected = declared_ck.get('file') or declared_ck.get('paper_trades')
-                        if expected is not None:
-                            if not isinstance(expected, str) or not _sha256_re.match(expected.lower()):
-                                return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
-                            if not os.path.isfile(target):
-                                return _abort_ck(f"export_manifest_checksum_file_missing:{status_name}")
-                            digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
-                            if digest != expected.lower():
-                                return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}")
-                    for key, fname in (
-                        ('outcomes', 'evaluation_outcomes.json'),
-                        ('snapshots', 'brain_snapshots.json'),
-                    ):
-                        if declared_ck.get(key):
-                            expected = declared_ck.get(key)
-                            if not isinstance(expected, str) or not _sha256_re.match(str(expected).lower()):
-                                return _abort_ck(f"export_manifest_checksum_malformed:{status_name}:{key}")
-                            target = os.path.join(base_dir, fname)
-                            if os.path.isfile(target):
-                                digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
-                                if digest != str(expected).lower():
-                                    return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}:{key}")
-                elif isinstance(declared_ck, str):
-                    # String checksum branch (reachable): exact lowercase SHA-256 of paper file.
-                    if not _sha256_re.match(declared_ck.lower()):
-                        return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
-                    if status_name.startswith('paper') or 'paper' in status_name:
-                        if not os.path.isfile(paper_json):
-                            return _abort_ck(f"export_manifest_checksum_file_missing:{status_name}")
-                        digest = hashlib.sha256(open(paper_json, 'rb').read()).hexdigest()
-                        if digest != declared_ck.lower():
-                            return _abort_ck(f"export_manifest_checksum_mismatch:{status_name}")
-                elif declared_ck is not None:
-                    return _abort_ck(f"export_manifest_checksum_malformed:{status_name}")
-
-                # Row count / dataset label / generation cutoff when declared.
-                if manifest.get('row_count') is not None and os.path.isfile(paper_json) and 'paper' in status_name:
-                    try:
-                        rows = json.load(open(paper_json, 'r', encoding='utf-8'))
-                        n = len(rows) if isinstance(rows, list) else len(rows.get('trades') or [])
-                        declared_n = manifest.get('row_count')
-                        if isinstance(declared_n, dict):
-                            declared_n = declared_n.get('paper') or declared_n.get('file')
-                        if declared_n is not None and int(declared_n) != int(n):
-                            return _abort_ck(f"export_manifest_row_count_mismatch:{status_name}")
-                    except Exception as ex:
-                        return _abort_ck(f"export_manifest_row_count_error:{status_name}:{ex}")
-                kind = str(manifest.get('kind') or '')
-                if kind and 'paper' in status_name and 'paper' not in kind and kind != 'canonical_eval_export':
-                    result['reason'] = f"export_manifest_source_mismatch:{status_name}:{kind}"
-                    result['success'] = False
-                    result['deployed'] = False
-                    log(f"ml_train: ABORT — source mismatch {status_name}")
-                    result['duration_sec'] = round(time.time() - t0, 1)
-                    return json.dumps(result)
-        except Exception as ex:
-            result['reason'] = f"export_manifest_guard_error:{ex}"
-            result['success'] = False
-            result['deployed'] = False
-            log(f"ml_train: ABORT — manifest guard error (fail-closed): {ex}")
+        # R4.5: validate requested immutable generations before returning the
+        # global training-disable result. This prevents the kill switch from
+        # masking corrupt/missing export evidence.
+        validations = []
+        if app_trades_path:
+            paper_manifest = os.path.join(os.path.dirname(os.path.abspath(app_trades_path)), 'manifest.json')
+            validations.append(validate_export_manifest(
+                paper_manifest,
+                expected_kind='paper_trades_export',
+                expected_dataset_label='paper_research_not_live',
+            ))
+        if outcomes_path is not None or snapshots_path is not None:
+            if not outcomes_path or not snapshots_path:
+                validations.append({'ok': False, 'reason': 'canonical_export_pair_required'})
+            elif os.path.dirname(os.path.abspath(outcomes_path)) != os.path.dirname(os.path.abspath(snapshots_path)):
+                validations.append({'ok': False, 'reason': 'canonical_export_generation_mismatch'})
+            else:
+                canonical_manifest = os.path.join(os.path.dirname(os.path.abspath(outcomes_path)), 'manifest.json')
+                validations.append(validate_export_manifest(
+                    canonical_manifest,
+                    expected_kind='canonical_eval_export',
+                    expected_dataset_label='canonical_evaluation_inputs',
+                ))
+        invalid = next((item for item in validations if not item.get('ok')), None)
+        if invalid is not None:
+            result['reason'] = invalid.get('reason') or 'export_manifest_invalid'
+            result['manifest_validation'] = validations
+            result['duration_sec'] = round(time.time() - t0, 1)
+            return json.dumps(result)
+        if validations:
+            result['manifest_validation'] = validations
             result['duration_sec'] = round(time.time() - t0, 1)
             return json.dumps(result)
         result['duration_sec'] = round(time.time() - t0, 1)

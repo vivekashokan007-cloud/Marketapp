@@ -10,7 +10,8 @@ MARKETAPP = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", 
 # parents: tests, python, main, src, app, Marketapp
 MARKETAPP = os.path.abspath(os.path.join(os.path.dirname(__file__), *([".."] * 5)))
 MR_ROOT = os.path.abspath(os.path.join(MARKETAPP, ".."))
-PWA = os.path.join(MR_ROOT, "MarketVivi", "app.js")
+MARKETVIVI_ROOT = os.environ.get("MARKETVIVI_ROOT", os.path.join(MR_ROOT, "MarketVivi"))
+PWA = os.path.join(MARKETVIVI_ROOT, "app.js")
 BRIDGE = os.path.join(MARKETAPP, "app", "src", "main", "java", "com", "marketradar", "app", "NativeBridge.kt")
 ML = os.path.join(MARKETAPP, "app", "src", "main", "java", "com", "marketradar", "app", "MarketMLService.kt")
 
