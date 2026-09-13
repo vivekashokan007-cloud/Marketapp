@@ -5,8 +5,9 @@
 **Base (merge-base origin/main):** `f03cd2aacd4cadadf013794f3229bdb504c36e8e`  
 **Prior tip before this local finish:** `20d15c57fcf965b907384ec220f410e38937ffbc`
 **Tip after local finish:** `3ba3d5085d5cfe378653462d45f7526306f126d1`  
-**Local implementation:** **VERIFIED** (steps 2–7 passed)  
+**Local implementation:** **CLOSED** (Codex final ruling 2026-09-13)  
 **Overall gate:** **OPEN-with-residuals** (production rollout / operational evidence remain open)
+**This pass:** STOPPED — no further Lot/DTE local scope unless new defect.
 
 ---
 
