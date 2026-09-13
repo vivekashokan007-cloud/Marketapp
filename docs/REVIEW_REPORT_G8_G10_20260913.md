@@ -17,7 +17,7 @@
 | `8cfc326…` | feat(paper,G9): paper-analysis lane, E3/notif lineage, advisory Kelly |
 | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | fix(G8): training export/label/temporal integrity + canonical net metrics |
 
-**Branch tip (includes docs):** `205e911426b847ee746a6f1cecfbd120bda5049a`  
+**Branch tip (includes docs):** `fe74340c7721223b252042e5d452fe604170fc59`  
 **Feature tip (pre-docs):** `98a86c25cc2b9d07f785dabc9e55381c92f46dfd`  
 **Branch tip after docs commit:** see §8 / `PAPER_G9_PROGRESS.md` (updated after this report is copied into `docs/`).
 
@@ -31,7 +31,7 @@ Base `origin/main`: `f03cd2aacd4cadadf013794f3229bdb504c36e8e` (2.6.41 / b472).
 | `133350475400f95f07e4557d61336f1fdf809a91` | docs: record Paper/G9 local tip SHAs |
 | `9799970…` | feat(paper): surface non-primary PAPER ANALYSIS alternatives |
 
-**Branch tip (includes docs):** `37de044210bfb46d1b9266e1a9b6499b3f47d20a`  
+**Branch tip (includes docs):** `5c2a7914e2d18b13a9811078f3d0d6aad381bef2`  
 **Feature tip (pre-docs):** `79582db1eabf5e9a291b496c624b5bba3c181a0a`  
 PWA cache: `app.js?v=1337`.
 
