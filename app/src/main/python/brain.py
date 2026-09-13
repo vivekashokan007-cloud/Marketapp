@@ -15029,6 +15029,23 @@ def annotate_candidate_entry_eligibility(candidate, market_confidence=None, regi
                 'error': str(_g6_exc),
                 'live_gate_unchanged': True,
             }
+    # Paper-analysis lane: structural admission independent of ranking/ML/Real gates.
+    try:
+        from paper_analysis_eligibility import annotate_paper_analysis_eligibility
+        annotate_paper_analysis_eligibility(candidate, candidate.get('entryEligibility'))
+    except Exception as _paper_exc:
+        candidate['paperAnalysisEligible'] = False
+        candidate['paperAnalysisGate'] = 'PAPER_ANALYSIS_BLOCKED'
+        candidate['paperAnalysisEligibility'] = {
+            'schema': 1,
+            'version': 'paper_analysis_eligibility_v1_20260913',
+            'allowed': False,
+            'gate': 'PAPER_ANALYSIS_BLOCKED',
+            'reasons': ['paper_analysis_annotator_error'],
+            'error': str(_paper_exc),
+            'real_gate_unchanged': True,
+            'does_not_change_live_recommendation': True,
+        }
     return candidate
 
 def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):
@@ -16733,6 +16750,25 @@ def _compact_snapshot_strings(raw, limit=12, max_chars=160):
     return out
 
 
+
+def _compact_paper_analysis_eligibility(raw):
+    try:
+        from paper_analysis_eligibility import compact_paper_analysis_eligibility
+        return compact_paper_analysis_eligibility(raw)
+    except Exception:
+        if not isinstance(raw, dict):
+            return None
+        return {
+            'schema': raw.get('schema'),
+            'version': raw.get('version'),
+            'allowed': raw.get('allowed'),
+            'gate': raw.get('gate'),
+            'reasons': raw.get('reasons'),
+            'real_gate_unchanged': raw.get('real_gate_unchanged'),
+            'does_not_change_live_recommendation': raw.get('does_not_change_live_recommendation'),
+        }
+
+
 def _compact_entry_eligibility(raw):
     if not isinstance(raw, dict):
         return None
@@ -17012,6 +17048,14 @@ def _candidate_view(c):
             value = c.get('rank')
         if value is not None:
             view[key] = value
+    # Paper-analysis fields only when present — avoid null-key bloat on large menus.
+    if c.get('paperAnalysisEligible') is not None:
+        view['paperAnalysisEligible'] = c.get('paperAnalysisEligible')
+    if c.get('paperAnalysisGate') is not None:
+        view['paperAnalysisGate'] = c.get('paperAnalysisGate')
+    paper_el = _compact_paper_analysis_eligibility(c.get('paperAnalysisEligibility'))
+    if paper_el is not None:
+        view['paperAnalysisEligibility'] = paper_el
     return view
 
 
@@ -17020,6 +17064,13 @@ def _candidate_android_snapshot_view(raw):
     candidate['entryEligibility'] = _compact_entry_eligibility_android(
         raw.get('entryEligibility')
     )
+    candidate['paperAnalysisEligibility'] = _compact_paper_analysis_eligibility(
+        raw.get('paperAnalysisEligibility')
+    )
+    if raw.get('paperAnalysisEligible') is not None:
+        candidate['paperAnalysisEligible'] = raw.get('paperAnalysisEligible')
+    if raw.get('paperAnalysisGate') is not None:
+        candidate['paperAnalysisGate'] = raw.get('paperAnalysisGate')
     candidate['pc2_gate_basis'] = _compact_snapshot_strings(
         raw.get('pc2_gate_basis'),
         limit=6,
@@ -21454,6 +21505,24 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
         is_success=outcome.get('is_success'),
         target_was_reached=outcome.get('target_was_reached'),
     ))
+    # G4/G5/G6 lineage stamp — links outcome to session/snapshot/candidate/versions.
+    try:
+        from evaluation_outcome_lineage import stamp_outcome_lineage
+        stamp_outcome_lineage(
+            outcome,
+            session_date=outcome.get('session_date') or snap.get('session_date'),
+            snapshot_id=outcome.get('snapshot_id') or snap.get('id'),
+            candidate_id=outcome.get('candidate_id') or cand.get('id'),
+            role=role,
+            policy_selector_version=(
+                cand.get('pc2PaperSelectorVersion')
+                or cand.get('pc2_paper_selector_version')
+                or 'pc2_paper_primary_v7'
+            ),
+            cohort_execution_mode='paper',
+        )
+    except Exception as _lineage_exc:
+        outcome['evaluation_lineage_error'] = str(_lineage_exc)
     return outcome
 
 
@@ -23705,6 +23774,16 @@ class NotificationAgent:
         full['best_candidate_history'] = list(self.best_candidate_history)
         full['position_alert_keys'] = sorted(self.position_alert_keys)
         full['position_alert_states'] = dict(sorted(self.position_alert_states.items()))
+        try:
+            from notification_lineage import NOTIFICATION_LINEAGE_VERSION, merge_agent_state_for_recovery
+            full['notification_lineage_version'] = NOTIFICATION_LINEAGE_VERSION
+            # Normalize through recovery merge so device restart sees stable shape.
+            normalized = merge_agent_state_for_recovery({}, full)
+            full['position_alert_keys'] = normalized.get('position_alert_keys', list(self.position_alert_keys))
+            full['position_alert_states'] = normalized.get('position_alert_states', full['position_alert_states'])
+        except Exception:
+            full['notification_lineage_version'] = 'notification_lineage_v1_20260913'
+
         full['last_processed_ms'] = self.last_processed_ms
         full['operational_alert_keys'] = sorted(self.operational_alert_keys)
         return full
