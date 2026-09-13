@@ -4,7 +4,8 @@
 **Publishing:** PAUSED — do NOT push / merge / APK / prod migrate / retrain / size-promote / broker-activate.
 **Base (merge-base origin/main):** `f03cd2aacd4cadadf013794f3229bdb504c36e8e`
 **Reviewed tip (pre-rectification):** `83c61291e0ada5dba80528f9f10c026ae38cd8f3`
-**Rectification tip:** `cd0de5ef94f3105c4dc0914f5abea61028060952`
+**Rectification code tip:** `cd0de5ef94f3105c4dc0914f5abea61028060952`  
+**Branch tip (incl. docs):** `b41051c3287c46da0ccd950f92bc2975dc593e96`
 
 **Lot/DTE local integrity:** **review-blocked / OPEN** (Codex B3 conflict-bypass + B4 SSOT parity reopened the gate)
 **Overall gate:** **OPEN** — corrective pass pending final Codex/Claude approval. Merge to `main` FORBIDDEN.
@@ -36,4 +37,4 @@
 - G9 sizing / G10 broker: DISABLED / PAUSED
 - Merge to main: FORBIDDEN pending final review
 
-**MarketVivi rectification tip:** 
+**MarketVivi branch tip:** `4917af41ba7997a0244ff93b12c125def27989f6`
