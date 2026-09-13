@@ -474,6 +474,10 @@ class PositionTickService : Service() {
                 putOptNumber("lot_size_resolved", lotMeta.lotSize)
                 put("lot_size_assumed", lotMeta.assumed)
                 put("lot_size_source", lotMeta.source)
+                put("lot_table_version", lotMeta.lotTableVersion)
+                if (lotMeta.lotAsOf != null) put("lot_as_of", lotMeta.lotAsOf)
+                put("number_of_lots", lotMeta.numberOfLots)
+                if (lotMeta.contractLotSize != null) put("contract_lot_size", lotMeta.contractLotSize)
             }
         )
     }
@@ -1030,33 +1034,43 @@ private fun JSONObject.bestDepthPrice(side: String): Double? {
 internal data class PositionTickLotMeta(
     val lotSize: Double,
     val assumed: Boolean,
-    val source: String
+    val source: String,
+    val contractLotSize: Double? = null,
+    val numberOfLots: Double = 1.0,
+    val lotTableVersion: String = ContractLotTable.VERSION_ID,
+    val lotAsOf: String? = null
 )
 
 internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta? {
-    // Keep this contract pinned to brain.py:3283-3299; do not introduce a third lot-size rule.
-    val indexKey = trade.optStringAny("index_key", "indexKey", "index").uppercase(Locale.US)
-    val baseLot = when (indexKey) {
-        "BNF" -> 30.0
-        "NF" -> 65.0
-        else -> 0.0
-    }
+    // Shared dated table with Python contract_lot_table.py — never invent BNF.
+    val indexRaw = trade.optStringAny("index_key", "indexKey", "index")
     val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
     val tradeLot = trade.optDoubleAny("lot_size", "lotSize")
     val entrySnapshotLot = entrySnapshot.optDoubleAny("lot_size", "lotSize")
     val explicitLotSize = tradeLot ?: entrySnapshotLot ?: 0.0
     val lotsCount = max(trade.optDoubleAny("lots") ?: 1.0, 1.0)
-    val lotSize = if (explicitLotSize > 0.0) explicitLotSize else baseLot * lotsCount
+    val asOfText = trade.optStringAny("session_date", "sessionDate", "entry_date", "entryDate")
+        .ifBlank { entrySnapshot.optStringAny("session_date", "sessionDate") }
+    val asOf = try {
+        if (asOfText.length >= 10) java.time.LocalDate.parse(asOfText.substring(0, 10)) else null
+    } catch (_: Exception) { null }
+    val dated = ContractLotTable.resolve(indexRaw, asOf = asOf, numberOfLots = lotsCount)
+    val lotSize = if (explicitLotSize > 0.0) explicitLotSize else (dated.lotSize ?: 0.0)
     if (lotSize <= 0.0) return null
     val source = when {
         (tradeLot ?: 0.0) > 0.0 -> "trade"
         (entrySnapshotLot ?: 0.0) > 0.0 -> "entry_snapshot"
-        else -> "contract_default"
+        dated.resolved -> dated.lotSource
+        else -> "unknown"
     }
     return PositionTickLotMeta(
         lotSize = lotSize,
         assumed = explicitLotSize <= 0.0,
-        source = source
+        source = source,
+        contractLotSize = if (explicitLotSize > 0.0) null else dated.contractLotSize,
+        numberOfLots = lotsCount,
+        lotTableVersion = dated.lotTableVersion,
+        lotAsOf = dated.lotAsOf
     )
 }
 

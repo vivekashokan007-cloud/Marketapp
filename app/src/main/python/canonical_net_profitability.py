@@ -30,6 +30,7 @@ REASON_MIXED_COHORT = "MIXED_COHORT_REJECTED"
 REASON_N_BELOW_MIN = "N_BELOW_MIN"
 REASON_NET_UNAVAILABLE = "NET_UNAVAILABLE_FAIL_CLOSED"
 REASON_FABRICATED_FORBIDDEN = "FABRICATED_ROW_FORBIDDEN"
+REASON_CONTRACT_IDENTITY_UNKNOWN = "CONTRACT_IDENTITY_UNKNOWN"
 
 REALIZED_ROLES = frozenset({
     "realized", "paper", "paper_close", "paper_closure", "fill",
@@ -144,6 +145,19 @@ def assess_unit_eligibility(unit: Mapping[str, Any]) -> dict[str, Any]:
     if unit.get("fabricated") in (True, 1, "1", "true", "True"):
         reasons.append(REASON_FABRICATED_FORBIDDEN)
         net = None
+
+    # Unknown NF/BNF identity: quarantine — retain record, block evaluation/calibration.
+    if unit.get("contract_identity_quarantine") in (True, 1, "1", "true", "True"):
+        reasons.append(REASON_CONTRACT_IDENTITY_UNKNOWN)
+    elif unit.get("require_contract_identity", True) not in (False, 0, "0", "false", "False"):
+        idx = str(unit.get("index_key") or unit.get("index") or "").strip().upper()
+        if unit.get("identity_complete") in (False, 0, "0", "false", "False"):
+            reasons.append(REASON_CONTRACT_IDENTITY_UNKNOWN)
+        elif idx in ("", "UNKNOWN") and unit.get("index_known") in (False, 0, "0", "false", "False", None):
+            # Only enforce when caller opted into contract identity checks via flag
+            # or when quarantine/identity_complete already stamped.
+            if "identity_complete" in unit or "contract_identity" in unit:
+                reasons.append(REASON_CONTRACT_IDENTITY_UNKNOWN)
 
     eligible = len(reasons) == 0 and net is not None
     return {
@@ -399,109 +413,114 @@ def compute_canonical_net_metrics(
 
 
 # ─── Contract identity (lot / DTE / index) — measurement only ───────────────
-# Declared lot table must match brain._CONST BNF_LOT / NF_LOT. Do not invent
-# historical lots; callers pass explicit lot_size when known.
-CURRENT_CONTRACT_LOT_TABLE = {
-    "BNF": 30,
-    "NF": 65,
-}
-CONTRACT_LOT_TABLE_NOTE = (
-    "NSE index F&O lot sizes pinned to brain._CONST (BNF_LOT=30, NF_LOT=65) "
-    "as of 2026-09-13. Historical 25/50 (NF) or 15/25 (BNF) are NOT used."
+# Dated lot table SSOT: contract_lot_table.py / assets/contract_lot_table_v1.json
+# Ranking DTE buckets stay separate from measurement buckets (both versioned).
+
+from contract_lot_table import (  # noqa: E402
+    DTE_MEASUREMENT_BUCKET_VERSION,
+    DTE_MEASUREMENT_BUCKETS,
+    DTE_RANKING_BUCKET_VERSION,
+    DTE_RANKING_BUCKETS,
+    LOT_TABLE_VERSION_ID,
+    calendar_dte as _calendar_dte_impl,
+    current_declared_lots,
+    json_round_trip_identity,
+    measurement_dte_bucket as _measurement_dte_bucket_impl,
+    normalize_index_key,
+    ranking_dte_bucket,
+    resolve_contract_lot,
+    trading_dte as _trading_dte_impl,
 )
 
-# Measurement DTE buckets (NOT trading / stage2a ranking thresholds).
-# Derived from calendar days between session_date and expiry when dte absent.
-DTE_MEASUREMENT_BUCKET_VERSION = "dte_measurement_buckets_v1_0_1_2_3_7_8plus_20260913"
-DTE_MEASUREMENT_BUCKETS = (
-    "DTE_0",      # 0 calendar days to expiry (0DTE)
-    "DTE_1_2",    # 1–2 calendar days
-    "DTE_3_7",    # 3–7 calendar days
-    "DTE_8_PLUS", # 8+ calendar days
-    "UNKNOWN",    # expiry/session/dte absent — fail closed, never invent
+CURRENT_CONTRACT_LOT_TABLE = current_declared_lots()
+CONTRACT_LOT_TABLE_NOTE = (
+    f"Dated NSE index F&O lots via {LOT_TABLE_VERSION_ID}. "
+    "Current open-ended period: BNF=30, NF=65 (verified). "
+    "Historical periods are reconstructive — prefer explicit lot_size. "
+    "contract_lot_size = units per lot; number_of_lots = quantity — never conflate."
 )
 THIN_SUPPORT_MIN_CONTRACT = 20
-REASON_CONTRACT_IDENTITY_UNKNOWN = "CONTRACT_IDENTITY_UNKNOWN"
 
 
-def declared_lot_for_index(index_key: Any) -> int | None:
-    """Return current declared lot for NF/BNF, else None (fail-closed)."""
-    idx = str(index_key or "").strip().upper()
-    if idx in CURRENT_CONTRACT_LOT_TABLE:
-        return int(CURRENT_CONTRACT_LOT_TABLE[idx])
-    return None
 
-
-def calendar_dte_from_expiry(session_date: Any, expiry: Any) -> int | None:
-    """Calendar DTE = max(expiry_date - session_date, 0). Fail-closed on parse miss."""
-    try:
-        from datetime import date as _date
-    except Exception:  # pragma: no cover
+def declared_lot_for_index(index_key, as_of=None):
+    """Return dated declared contract lot for NF/BNF, else None (fail-closed)."""
+    resolved = resolve_contract_lot(index_key, as_of=as_of, number_of_lots=1)
+    if not resolved.get("resolved"):
         return None
-    s = str(session_date or "").strip()[:10]
-    e = str(expiry or "").strip()[:10]
-    if len(s) < 10 or len(e) < 10:
-        return None
-    try:
-        sd = _date.fromisoformat(s)
-        ed = _date.fromisoformat(e)
-    except ValueError:
-        return None
-    return max((ed - sd).days, 0)
+    return resolved.get("contract_lot_size")
 
 
-def measurement_dte_bucket(dte: Any) -> str:
-    """Map integer DTE to measurement bucket. Missing → UNKNOWN (not invented)."""
-    if dte is None or dte == "":
-        return "UNKNOWN"
-    try:
-        d = int(float(dte))
-    except (TypeError, ValueError):
-        return "UNKNOWN"
-    if d < 0:
-        return "UNKNOWN"
-    if d <= 0:
-        return "DTE_0"
-    if d <= 2:
-        return "DTE_1_2"
-    if d <= 7:
-        return "DTE_3_7"
-    return "DTE_8_PLUS"
+def calendar_dte_from_expiry(session_date, expiry):
+    return _calendar_dte_impl(session_date, expiry)
+
+
+def measurement_dte_bucket(dte):
+    return _measurement_dte_bucket_impl(dte)
 
 
 def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     """Extract lot / expiry / DTE / index without inventing values.
 
-    Missing fields stay None / UNKNOWN. Lot may fall back to declared table
-    only when index is known and no explicit lot is present — flagged assumed.
+    Stamps calendar_dte and trading_dte separately. Lot resolution uses the
+    dated table when no explicit lot is present. Unknown identity → quarantine
+    flags (record retained; evaluation/calibration ineligible).
     """
     src = unit if isinstance(unit, Mapping) else {}
     raw_index = src.get("index_key") if src.get("index_key") not in (None, "") else src.get("index")
     if raw_index in (None, ""):
         raw_index = src.get("underlying")
-    index_key = str(raw_index).strip().upper() if raw_index not in (None, "") else None
-    if index_key == "":
-        index_key = None
+    index_key = normalize_index_key(raw_index)
+    index_display = index_key if index_key else "UNKNOWN"
 
     expiry = src.get("expiry") or src.get("expiry_date")
     expiry_text = str(expiry).strip()[:10] if expiry not in (None, "") else None
     if expiry_text == "":
         expiry_text = None
 
-    dte_raw = src.get("dte")
-    if dte_raw is None:
-        dte_raw = src.get("tDTE")
-    dte_value: int | None
-    dte_source: str
-    try:
-        if dte_raw is None or dte_raw == "":
-            raise TypeError("missing")
-        dte_value = int(float(dte_raw))
+    session = _session_date(src)
+
+    # Explicit DTE fields (producer trading-DTE often on tDTE)
+    explicit_tdte = _finite(src.get("tDTE"))
+    explicit_dte = _finite(src.get("dte"))
+    explicit_cal = _finite(src.get("calendar_dte"))
+    explicit_trading = _finite(src.get("trading_dte"))
+
+    dte_pack = _trading_dte_impl(session, expiry_text) if (session and expiry_text) else {
+        "trading_dte": None,
+        "calendar_dte": None,
+        "dte_basis": "unknown",
+        "holiday_calendar_used": False,
+    }
+    calendar_dte_val = (
+        int(explicit_cal) if explicit_cal is not None
+        else dte_pack.get("calendar_dte")
+    )
+    if calendar_dte_val is None and expiry_text and session:
+        calendar_dte_val = calendar_dte_from_expiry(session, expiry_text)
+
+    if explicit_trading is not None:
+        trading_dte_val = int(explicit_trading)
+    elif explicit_tdte is not None:
+        trading_dte_val = int(explicit_tdte)
+    else:
+        trading_dte_val = dte_pack.get("trading_dte")
+
+    # Measurement dte: explicit dte wins; else calendar; else trading.
+    if explicit_dte is not None:
+        dte_value = int(explicit_dte)
         dte_source = "explicit"
-    except (TypeError, ValueError):
-        session = _session_date(src)
-        dte_value = calendar_dte_from_expiry(session, expiry_text)
-        dte_source = "calendar_expiry_minus_session" if dte_value is not None else "unknown"
+    elif calendar_dte_val is not None:
+        dte_value = int(calendar_dte_val)
+        dte_source = "calendar_expiry_minus_session"
+    elif trading_dte_val is not None:
+        dte_value = int(trading_dte_val)
+        dte_source = "trading_dte"
+    else:
+        dte_value = None
+        dte_source = "unknown"
+
+    dte_basis = src.get("dte_basis") or dte_pack.get("dte_basis") or "unknown"
 
     explicit_lot = _finite(src.get("lot_size"))
     if explicit_lot is None:
@@ -509,27 +528,46 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     if explicit_lot is None:
         explicit_lot = _finite(src.get("lot_size_resolved"))
 
+    number_of_lots = _finite(src.get("number_of_lots"))
+    if number_of_lots is None:
+        number_of_lots = _finite(src.get("lots"))
+    if number_of_lots is None or number_of_lots <= 0:
+        number_of_lots = 1.0
+
+    explicit_contract_lot = _finite(src.get("contract_lot_size"))
+
     lot_assumed = False
-    lot_source = "unknown"
-    lot_size: float | None = None
+    dated = resolve_contract_lot(index_key, as_of=session or None, number_of_lots=number_of_lots)
+
     if explicit_lot is not None and explicit_lot > 0:
         lot_size = float(explicit_lot)
         lot_source = "explicit"
+        contract_lot_size = (
+            int(explicit_contract_lot)
+            if explicit_contract_lot is not None and explicit_contract_lot > 0
+            else (int(round(lot_size / number_of_lots)) if number_of_lots else int(lot_size))
+        )
+        lot_table_version = src.get("lot_table_version") or dated.get("lot_table_version")
+        lot_as_of = src.get("lot_as_of") or dated.get("lot_as_of")
+    elif dated.get("resolved"):
+        lot_size = float(dated["lot_size"])
+        contract_lot_size = dated.get("contract_lot_size")
+        lot_source = dated.get("lot_source") or "dated_contract_table"
+        lot_assumed = True
+        lot_table_version = dated.get("lot_table_version")
+        lot_as_of = dated.get("lot_as_of")
     else:
-        declared = declared_lot_for_index(index_key)
-        if declared is not None:
-            lots_count = _finite(src.get("lots")) or 1.0
-            if lots_count <= 0:
-                lots_count = 1.0
-            lot_size = float(declared) * float(lots_count)
-            lot_assumed = True
-            lot_source = "contract_default"
-        else:
-            lot_size = None
-            lot_assumed = True
-            lot_source = "unknown"
+        lot_size = None
+        contract_lot_size = None
+        lot_source = "unknown"
+        lot_assumed = True
+        lot_table_version = dated.get("lot_table_version")
+        lot_as_of = dated.get("lot_as_of")
 
     bucket = measurement_dte_bucket(dte_value)
+    ranking_bucket = ranking_dte_bucket(
+        trading_dte_val if trading_dte_val is not None else dte_value
+    )
     identity_complete = bool(
         index_key in ("NF", "BNF")
         and lot_size is not None
@@ -537,21 +575,36 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         and expiry_text
         and dte_value is not None
     )
+    quarantine = not identity_complete
     return {
-        "index_key": index_key if index_key else "UNKNOWN",
+        "index_key": index_display,
         "index_known": index_key in ("NF", "BNF"),
         "expiry": expiry_text,
+        "calendar_dte": calendar_dte_val,
+        "trading_dte": trading_dte_val,
         "dte": dte_value,
+        "tDTE": trading_dte_val if trading_dte_val is not None else dte_value,
         "dte_source": dte_source,
+        "dte_basis": dte_basis,
         "dte_bucket": bucket,
         "dte_bucket_version": DTE_MEASUREMENT_BUCKET_VERSION,
+        "dte_ranking_bucket": ranking_bucket,
+        "dte_ranking_bucket_version": DTE_RANKING_BUCKET_VERSION,
+        "contract_lot_size": contract_lot_size,
+        "number_of_lots": number_of_lots,
         "lot_size": None if lot_size is None else round(lot_size, 6),
         "lot_size_assumed": lot_assumed,
         "lot_size_source": lot_source,
+        "lot_source": lot_source,
+        "lot_table_version": lot_table_version,
+        "lot_as_of": lot_as_of,
         "declared_lot_table": dict(CURRENT_CONTRACT_LOT_TABLE),
         "identity_complete": identity_complete,
+        "contract_identity_quarantine": quarantine,
+        "evaluation_ineligible": quarantine,
+        "calibration_ineligible": quarantine,
         "measurement_note": (
-            "DTE buckets are measurement partitions only — not entry/exit thresholds. "
+            "Measurement DTE buckets ≠ ranking (stage2a) buckets. "
             + CONTRACT_LOT_TABLE_NOTE
         ),
     }
@@ -563,20 +616,31 @@ def attach_contract_identity(row: dict[str, Any]) -> dict[str, Any]:
         raise TypeError("row must be a dict")
     identity = resolve_contract_identity(row)
     row["contract_identity"] = identity
-    # Flat mirrors for slice / ledger consumers — never overwrite a present explicit value
-    # with UNKNOWN/None except when the field is absent.
     if row.get("index_key") in (None, "") and row.get("index") in (None, ""):
         row["index_key"] = identity["index_key"]
     elif row.get("index_key") in (None, "") and row.get("index") not in (None, ""):
-        row["index_key"] = str(row.get("index")).strip().upper()
+        norm = normalize_index_key(row.get("index"))
+        row["index_key"] = norm if norm else "UNKNOWN"
     if row.get("expiry") in (None, "") and identity.get("expiry"):
         row["expiry"] = identity["expiry"]
+    if row.get("calendar_dte") is None and identity.get("calendar_dte") is not None:
+        row["calendar_dte"] = identity["calendar_dte"]
+    if row.get("trading_dte") is None and identity.get("trading_dte") is not None:
+        row["trading_dte"] = identity["trading_dte"]
     if row.get("dte") is None and identity.get("dte") is not None:
         row["dte"] = identity["dte"]
-    if row.get("tDTE") is None and identity.get("dte") is not None:
-        row["tDTE"] = identity["dte"]
+    if row.get("tDTE") is None and identity.get("tDTE") is not None:
+        row["tDTE"] = identity["tDTE"]
+    if row.get("dte_basis") in (None, ""):
+        row["dte_basis"] = identity.get("dte_basis")
     if row.get("dte_bucket") in (None, ""):
         row["dte_bucket"] = identity["dte_bucket"]
+    if row.get("dte_bucket_version") in (None, ""):
+        row["dte_bucket_version"] = identity.get("dte_bucket_version")
+    if row.get("dte_ranking_bucket") in (None, ""):
+        row["dte_ranking_bucket"] = identity.get("dte_ranking_bucket")
+    if row.get("dte_ranking_bucket_version") in (None, ""):
+        row["dte_ranking_bucket_version"] = identity.get("dte_ranking_bucket_version")
     if row.get("lot_size") is None:
         if row.get("lotSize") is not None:
             row["lot_size"] = row.get("lotSize")
@@ -584,10 +648,37 @@ def attach_contract_identity(row: dict[str, Any]) -> dict[str, Any]:
             row["lot_size"] = identity["lot_size"]
     if row.get("lotSize") is None and row.get("lot_size") is not None:
         row["lotSize"] = row.get("lot_size")
+    if row.get("contract_lot_size") is None and identity.get("contract_lot_size") is not None:
+        row["contract_lot_size"] = identity["contract_lot_size"]
+    if row.get("number_of_lots") is None:
+        row["number_of_lots"] = identity.get("number_of_lots")
     if row.get("lot_size_source") in (None, ""):
         row["lot_size_source"] = identity["lot_size_source"]
+    if row.get("lot_source") in (None, ""):
+        row["lot_source"] = identity.get("lot_source")
+    if row.get("lot_table_version") in (None, ""):
+        row["lot_table_version"] = identity.get("lot_table_version")
+    if row.get("lot_as_of") in (None, ""):
+        row["lot_as_of"] = identity.get("lot_as_of")
     if row.get("lot_size_assumed") is None:
         row["lot_size_assumed"] = identity["lot_size_assumed"]
+    row["identity_complete"] = identity["identity_complete"]
+    row["contract_identity_quarantine"] = identity["contract_identity_quarantine"]
+    row["evaluation_ineligible"] = identity["evaluation_ineligible"]
+    row["calibration_ineligible"] = identity["calibration_ineligible"]
+    return row
+
+
+def quarantine_unknown_identity(row: dict[str, Any]) -> dict[str, Any]:
+    """Retain original record; mark ineligible for evaluation/calibration."""
+    if not isinstance(row, dict):
+        raise TypeError("row must be a dict")
+    attach_contract_identity(row)
+    if row.get("contract_identity_quarantine"):
+        row["retained_for_recovery"] = True
+        row["learning_excluded"] = True
+        row["exclusion_reason"] = REASON_CONTRACT_IDENTITY_UNKNOWN
+        # Do not delete any original fields.
     return row
 
 
@@ -608,7 +699,26 @@ def _slice_dim_key(row: Mapping[str, Any], dim: str) -> str:
         if row.get("dte_bucket"):
             return str(row.get("dte_bucket"))
         return measurement_dte_bucket(row.get("dte") if row.get("dte") is not None else row.get("tDTE"))
+    if dim == "joint":
+        idx = _slice_dim_key(row, "index")
+        dte_b = _slice_dim_key(row, "dte_bucket")
+        strat = _slice_dim_key(row, "strategy")
+        return f"{idx}|{dte_b}|{strat}"
     return "UNKNOWN"
+
+
+def _distinct_sessions(rows: list) -> int:
+    sessions = set()
+    for row in rows:
+        s = _session_date(row)
+        if not s and isinstance(row.get("contract_identity"), Mapping):
+            s = str((row.get("contract_identity") or {}).get("lot_as_of") or "")[:10]
+        # Prefer original unit session via _src if present (classify_units)
+        if not s and isinstance(row.get("_src"), Mapping):
+            s = _session_date(row["_src"])
+        if s:
+            sessions.add(s)
+    return len(sessions)
 
 
 def compute_contract_slice_report(
@@ -619,27 +729,39 @@ def compute_contract_slice_report(
 ) -> dict[str, Any]:
     """Performance reporting by underlying, DTE measurement bucket, and strategy.
 
-    Sparse cohorts are marked thin_support / insufficient — never silently pooled
-    across index or DTE buckets. Reuses eligibility + mean_ci_t from this module.
+    Joint underlying × DTE × strategy cells included. Support uses distinct
+    session_dates (not just row counts). Sparse cohorts marked thin/insufficient
+    — never silently pooled across index or DTE.
     """
-    dims = ("index", "dte_bucket", "strategy")
+    dims = ("index", "dte_bucket", "strategy", "joint")
     prepared: list[dict[str, Any]] = []
+    quarantined = 0
     for u in units:
         row = dict(u)
         attach_contract_identity(row)
+        if row.get("contract_identity_quarantine"):
+            quarantined += 1
+            # Retain in prepared for recovery visibility but mark; metrics skip via eligibility
+            row = quarantine_unknown_identity(row)
         prepared.append(row)
 
     out: dict[str, Any] = {
         "spec_version": SPEC_VERSION,
         "dte_bucket_version": DTE_MEASUREMENT_BUCKET_VERSION,
+        "dte_ranking_bucket_version": DTE_RANKING_BUCKET_VERSION,
         "dte_buckets": list(DTE_MEASUREMENT_BUCKETS),
+        "dte_ranking_buckets": list(DTE_RANKING_BUCKETS),
         "lot_table": dict(CURRENT_CONTRACT_LOT_TABLE),
+        "lot_table_version": LOT_TABLE_VERSION_ID,
         "lot_table_note": CONTRACT_LOT_TABLE_NOTE,
         "thin_support_min": thin_support_min,
+        "thin_support_basis": "distinct_session_dates",
+        "n_quarantined_identity": quarantined,
         "dims": {},
         "note": (
-            "Slices are measurement partitions by index / DTE bucket / strategy. "
-            "Thin cohorts are flagged; sparse cells are not pooled into a parent claim."
+            "Slices are measurement partitions by index / DTE bucket / strategy / joint. "
+            "Support = distinct session_dates. Thin cohorts flagged; sparse cells not pooled. "
+            "Ranking buckets versioned separately and not used here."
         ),
     }
     for dim in dims:
@@ -648,12 +770,27 @@ def compute_contract_slice_report(
             buckets.setdefault(_slice_dim_key(row, dim), []).append(row)
         dim_out: dict[str, Any] = {}
         for key, bucket in sorted(buckets.items()):
-            metrics = compute_canonical_net_metrics(bucket, min_eligible=min_eligible)
-            support = int(metrics.get("n_eligible") or 0)
+            # Exclude quarantined from eligible metrics but keep n_total/n_rows
+            eligible_bucket = [
+                r for r in bucket
+                if not r.get("contract_identity_quarantine")
+            ]
+            metrics = compute_canonical_net_metrics(eligible_bucket, min_eligible=min_eligible)
+            n_rows = len(bucket)
+            n_sessions = _distinct_sessions(bucket)
+            # Prefer attaching session from original units
+            if n_sessions == 0:
+                for r in bucket:
+                    sd = _session_date(r)
+                    if sd:
+                        n_sessions = max(n_sessions, 1)
+            support = n_sessions if n_sessions > 0 else int(metrics.get("n_eligible") or 0)
             thin = support < thin_support_min
             insufficient = support < min_eligible or metrics.get("availability") != "available"
             dim_out[key] = {
                 "support": support,
+                "n_rows": n_rows,
+                "n_distinct_sessions": n_sessions,
                 "n_total": metrics.get("n_total"),
                 "n_eligible": metrics.get("n_eligible"),
                 "thin_support": thin,

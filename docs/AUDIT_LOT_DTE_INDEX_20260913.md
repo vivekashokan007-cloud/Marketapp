@@ -96,4 +96,22 @@ Unchanged / disabled:
 
 ## Verdict
 
-Lot, expiry/DTE, and NF/BNF identity are now stamped fail-closed through evaluation outcomes and sliced for reporting with thin-support honesty. Rupee P&L/cost/risk proven to track declared lots. Live sizing and broker remain off. Safe to treat this gate as closed for local G8/G9 integrity review; do not publish yet.
+Lot, expiry/DTE, and NF/BNF identity are now stamped fail-closed through evaluation outcomes and sliced for reporting with thin-support honesty. Rupee P&L/cost/risk proven to track declared lots. Live sizing and broker remain off. Prior pass preserved identity through evaluation. **Gate remains OPEN** after extension work — see addendum.
+
+---
+
+## Addendum 2026-09-13 (gate extension — still OPEN)
+
+### Changes since tip d2c0ee8
+
+1. **Shared dated lot table** `contract_lot_table_v1_20260913` (JSON asset + Python `contract_lot_table.py` + Kotlin `ContractLotTable.kt`).
+2. **Fail-closed BNF removal** on teacher/trade/position/calibration identity paths; unknown → `UNKNOWN` / None / quarantine.
+3. **Calendar DTE vs trading DTE** stamped with `dte_basis`; ranking vs measurement bucket versions explicit.
+4. **Joint slices** count `n_distinct_sessions`; unknown identity quarantined but **retained**.
+5. Behavioral coverage expanded (dated lots, lot vs lots, dual DTE, JSON round-trip, quarantine, joint sessions).
+
+### Remaining (keeps gate OPEN)
+
+See `/workspace/mr-g8plus/GATE_LOT_DTE_INDEX_STATUS_20260913.md` § Still unavailable.
+
+**Verdict:** Local integrity extended; **do not publish**. Gate Lot/DTE/NF–BNF stays **OPEN**.

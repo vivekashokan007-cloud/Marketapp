@@ -85,6 +85,20 @@ def trade_id_of(trade: dict) -> str:
     return str(raw).strip() if raw is not None else ""
 
 
+
+def stamp_identity_quarantine(trade: dict, *, reason: str = "unknown_index_identity") -> dict:
+    """Retain original trade fields; mark ineligible for calibration/evaluation."""
+    out = dict(trade) if isinstance(trade, dict) else {}
+    out["contract_identity_quarantine"] = True
+    out["calibration_ineligible"] = True
+    out["evaluation_ineligible"] = True
+    out["retained_for_recovery"] = True
+    out["exclusion_reason"] = reason
+    out["learning_excluded"] = True
+    if not out.get("index_key"):
+        out["index_key"] = "UNKNOWN"
+    return out
+
 def index_key_of(trade: dict) -> str:
     raw = str(_first_present(trade, "index_key", "indexKey", "index") or "").strip().upper()
     if raw in {"BANKNIFTY", "NIFTY BANK"}:
@@ -145,10 +159,9 @@ def structure_identity_ok(trade: dict) -> tuple[bool, str]:
     strategy = strategy_of(trade)
     idx = index_key_of(trade)
     lots = _finite_num(_first_present(trade, "lots", "lot_count", "lotCount"))
-    if not idx or idx not in KNOWN_INDEX_KEYS and idx not in {"BNF", "NF"}:
-        # Allow empty index only when lots and strikes still identify a leg set.
-        if lots is None or lots <= 0:
-            return False, "missing_instrument_or_lots"
+    # Fail-closed: unknown / missing index quarantines learning (record retained).
+    if not idx or idx not in {"BNF", "NF"}:
+        return False, "unknown_index_identity"
     if lots is not None and lots <= 0:
         return False, "invalid_lots"
     if strategy in FOUR_LEG_STRATEGIES:
@@ -356,6 +369,11 @@ def validate_calibration_trade(trade: Any, *, decision_ts: Any = None) -> dict[s
     ok_struct, struct_reason = structure_identity_ok(trade)
     if not ok_struct:
         out["reason"] = struct_reason
+        if struct_reason == "unknown_index_identity":
+            quarantined = stamp_identity_quarantine(trade, reason=struct_reason)
+            out["contract_identity_quarantine"] = True
+            out["retained_for_recovery"] = True
+            out["original_trade_keys"] = sorted(quarantined.keys())
         return out
 
     engine_raw = _first_present(trade, "pnl_engine", "pnlEngine")

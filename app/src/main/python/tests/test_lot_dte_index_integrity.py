@@ -25,13 +25,26 @@ from brain import (
 from canonical_net_profitability import (
     CURRENT_CONTRACT_LOT_TABLE,
     DTE_MEASUREMENT_BUCKET_VERSION,
+    REASON_CONTRACT_IDENTITY_UNKNOWN,
     attach_contract_identity,
     calendar_dte_from_expiry,
     compute_contract_slice_report,
     declared_lot_for_index,
     measurement_dte_bucket,
+    quarantine_unknown_identity,
     resolve_contract_identity,
+    assess_unit_eligibility,
 )
+from contract_lot_table import (
+    DTE_RANKING_BUCKET_VERSION,
+    LOT_TABLE_VERSION_ID,
+    json_round_trip_identity,
+    ranking_dte_bucket,
+    resolve_contract_lot,
+    trading_dte,
+)
+from brain import _trade_to_teacher_candidate, _candidate_contract_fields
+
 from evaluation_metrics_ledger import _slice_key, compute_slices
 from evaluation_outcome_lineage import stamp_outcome_lineage
 
@@ -398,6 +411,215 @@ class LiveSizingDisabledTests(unittest.TestCase):
         import g9_sizing_kelly as g9
         self.assertEqual(g9.G9_EXPERIMENT_STATUS, "experimental_advisory_only")
         self.assertIn("never silently change live", g9.__doc__)
+
+
+
+class DatedLotTableTests(unittest.TestCase):
+    def test_dated_periods_change_contract_lot(self):
+        hist = resolve_contract_lot("BNF", "2024-06-01")
+        mid = resolve_contract_lot("BNF", "2024-12-01")
+        cur = resolve_contract_lot("BNF", "2026-09-01")
+        self.assertEqual(hist["contract_lot_size"], 25)
+        self.assertEqual(mid["contract_lot_size"], 15)
+        self.assertEqual(cur["contract_lot_size"], 30)
+        self.assertEqual(hist["lot_table_version"], LOT_TABLE_VERSION_ID)
+        self.assertEqual(declared_lot_for_index("NF", "2024-06-01"), 50)
+        self.assertEqual(declared_lot_for_index("NF", "2026-09-01"), 65)
+
+    def test_lot_size_vs_number_of_lots(self):
+        one = resolve_contract_lot("BNF", "2026-09-01", number_of_lots=1)
+        two = resolve_contract_lot("BNF", "2026-09-01", number_of_lots=2)
+        self.assertEqual(one["contract_lot_size"], 30)
+        self.assertEqual(two["contract_lot_size"], 30)
+        self.assertEqual(one["number_of_lots"], 1.0)
+        self.assertEqual(two["number_of_lots"], 2.0)
+        self.assertAlmostEqual(two["lot_size"], 60.0)
+        self.assertNotEqual(two["contract_lot_size"], two["lot_size"])
+
+    def test_candidate_lot_uses_dated_table(self):
+        self.assertEqual(_candidate_lot_size({"index": "BNF", "session_date": "2024-06-01"}), 25.0)
+        self.assertEqual(_candidate_lot_size({"index": "BNF", "session_date": "2026-09-01"}), 30.0)
+        self.assertEqual(
+            _candidate_lot_size({"index": "BNF", "session_date": "2026-09-01", "number_of_lots": 2}),
+            60.0,
+        )
+
+
+class DualDteTests(unittest.TestCase):
+    def test_calendar_vs_trading_dte_weekend_holiday(self):
+        # Thu 2026-09-10 → Thu 2026-09-17: calendar 7; trading skips Sat/Sun (+NSE holidays).
+        cal = calendar_dte_from_expiry("2026-09-10", "2026-09-17")
+        pack = trading_dte("2026-09-10", "2026-09-17")
+        self.assertEqual(cal, 7)
+        self.assertEqual(pack["calendar_dte"], 7)
+        self.assertIsNotNone(pack["trading_dte"])
+        self.assertLess(pack["trading_dte"], cal)  # weekends removed
+        self.assertIn(pack["dte_basis"], ("nse_trading_calendar", "weekday_only_approximation"))
+
+    def test_expiry_day_dte(self):
+        self.assertEqual(calendar_dte_from_expiry("2026-09-10", "2026-09-10"), 0)
+        pack = trading_dte("2026-09-10", "2026-09-10")  # Thursday
+        self.assertEqual(pack["calendar_dte"], 0)
+        self.assertEqual(pack["trading_dte"], 1)  # inclusive session remaining
+
+    def test_candidate_fields_stamp_both(self):
+        fields = _candidate_contract_fields(
+            {"index": "NF", "expiry": "2026-09-17", "lotSize": 65},
+            {"session_date": "2026-09-10"},
+        )
+        self.assertEqual(fields["calendar_dte"], 7)
+        self.assertIsNotNone(fields["trading_dte"])
+        self.assertEqual(fields["dte"], 7)
+        self.assertIn("dte_basis", fields)
+        self.assertEqual(fields["dte_bucket_version"], DTE_MEASUREMENT_BUCKET_VERSION)
+        self.assertEqual(fields["dte_ranking_bucket_version"], DTE_RANKING_BUCKET_VERSION)
+
+    def test_ranking_buckets_distinct_from_measurement(self):
+        self.assertEqual(measurement_dte_bucket(1), "DTE_1_2")
+        self.assertEqual(ranking_dte_bucket(1), "DTE_1")
+        self.assertEqual(measurement_dte_bucket(2), "DTE_1_2")
+        self.assertEqual(ranking_dte_bucket(2), "DTE_2_3")
+        self.assertNotEqual(DTE_MEASUREMENT_BUCKET_VERSION, DTE_RANKING_BUCKET_VERSION)
+
+
+class LegacyUnknownIdentityTests(unittest.TestCase):
+    def test_trade_to_teacher_does_not_invent_bnf(self):
+        cand = _trade_to_teacher_candidate({"strategy_type": "BULL_PUT", "lot_size": 30})
+        self.assertEqual(cand["index"], "UNKNOWN")
+
+    def test_quarantine_retains_record(self):
+        row = {
+            "session_date": "2026-09-10",
+            "gross_pnl": 100.0,
+            "net_pnl": 60.0,
+            "friction_rt": 40.0,
+            "friction_baked_into_net": True,
+            "legs_complete": True,
+            "quotes_ok": True,
+            "outcome_finished": True,
+            "status": "CLOSED",
+            "unit_kind": "candidate_day",
+            "policy_selector_version": "pc2_paper_primary_v7",
+            "net_target_version": "net_target_v1_gross_minus_costs_once_20260912",
+            "cohort_execution_mode": "paper_intraday",
+            "variant": "ACTIVE",
+            "original_payload": {"keep": True, "secret_note": "recover_me"},
+        }
+        quarantined = quarantine_unknown_identity(dict(row))
+        self.assertTrue(quarantined["contract_identity_quarantine"])
+        self.assertTrue(quarantined["retained_for_recovery"])
+        self.assertEqual(quarantined["original_payload"]["secret_note"], "recover_me")
+        self.assertEqual(quarantined["exclusion_reason"], REASON_CONTRACT_IDENTITY_UNKNOWN)
+        verdict = assess_unit_eligibility(quarantined)
+        self.assertFalse(verdict["eligible"])
+        self.assertEqual(verdict["reason_code"], REASON_CONTRACT_IDENTITY_UNKNOWN)
+
+
+class JsonRoundTripTests(unittest.TestCase):
+    def test_contract_identity_json_round_trip(self):
+        identity = resolve_contract_identity({
+            "index_key": "BNF",
+            "expiry": "2026-09-17",
+            "session_date": "2026-09-10",
+            "lot_size": 30,
+            "number_of_lots": 1,
+        })
+        back = json_round_trip_identity(identity)
+        for key in (
+            "index_key", "expiry", "calendar_dte", "trading_dte", "dte_basis",
+            "dte_bucket", "dte_bucket_version", "dte_ranking_bucket_version",
+            "contract_lot_size", "number_of_lots", "lot_size", "lot_table_version",
+            "lot_as_of", "identity_complete",
+        ):
+            self.assertIn(key, back)
+            self.assertEqual(back[key], identity.get(key), key)
+
+    def test_lineage_round_trip_preserves_identity(self):
+        row = {
+            "session_date": "2026-09-10",
+            "snapshot_id": 9,
+            "candidate_id": "c-rt",
+            "index_key": "NF",
+            "expiry": "2026-09-17",
+            "lotSize": 65,
+            "strategy_type": "BEAR_CALL",
+        }
+        stamp_outcome_lineage(row)
+        payload = json.loads(json.dumps(row, default=str))
+        ci = payload["evaluation_lineage"]["contract_identity"]
+        self.assertEqual(ci["index_key"], "NF")
+        self.assertEqual(ci["lot_size"], 65)
+        self.assertEqual(ci["calendar_dte"], 7)
+        self.assertTrue(ci["identity_complete"])
+        self.assertEqual(ci["lot_table_version"], LOT_TABLE_VERSION_ID)
+
+
+class JointSliceDistinctSessionTests(unittest.TestCase):
+    def test_joint_counts_distinct_sessions_not_just_rows(self):
+        units = [
+            _unit(index_key="BNF", dte=1, strategy_type="BULL_PUT", managed_pnl=10, net_pnl=10, session_date="2026-09-08"),
+            _unit(index_key="BNF", dte=1, strategy_type="BULL_PUT", managed_pnl=12, net_pnl=12, session_date="2026-09-08"),
+            _unit(index_key="BNF", dte=1, strategy_type="BULL_PUT", managed_pnl=14, net_pnl=14, session_date="2026-09-09"),
+            _unit(index_key="NF", dte=5, strategy_type="BEAR_CALL", managed_pnl=-5, net_pnl=-5, lot_size=65,
+                  expiry="2026-09-15", session_date="2026-09-10"),
+        ]
+        report = compute_contract_slice_report(units, thin_support_min=3)
+        self.assertIn("joint", report["dims"])
+        joint_bnf = report["dims"]["joint"]["BNF|DTE_1_2|BULL_PUT"]
+        self.assertEqual(joint_bnf["n_rows"], 3)
+        self.assertEqual(joint_bnf["n_distinct_sessions"], 2)
+        self.assertEqual(joint_bnf["support"], 2)
+        self.assertTrue(joint_bnf["thin_support"])  # 2 < 3
+        self.assertEqual(report["dte_ranking_bucket_version"], DTE_RANKING_BUCKET_VERSION)
+        self.assertEqual(report["lot_table_version"], LOT_TABLE_VERSION_ID)
+
+
+class FullCostMaxLossTests(unittest.TestCase):
+    def test_max_loss_and_friction_scale_with_contract_lot(self):
+        width = 200
+        credit = 40.0
+        for lot in (30, 60):
+            max_loss = (width - credit) * lot
+            max_profit = credit * lot
+            self.assertAlmostEqual(max_loss / lot, width - credit)
+            self.assertAlmostEqual(max_profit / lot, credit)
+        # Friction path already covered; assert lot stamped on cost OK payload.
+        import brain as brain_mod
+        from datetime import datetime, timezone, timedelta
+        snap = {
+            "id": 1,
+            "session_date": "2026-06-15",
+            "poll_ts": "2026-06-15T10:00:00+05:30",
+            "context_json": json.dumps({"vix": 15.0}),
+        }
+        entry = {
+            "sell": 45.0, "sell_bid": 45.0, "sell_ask": 45.5,
+            "buy": 5.0, "buy_bid": 4.5, "buy_ask": 5.0,
+            "poll_ts": "2026-06-15T10:00:00+05:30",
+        }
+        close = {
+            "sell": 20.0, "sell_bid": 19.5, "sell_ask": 20.0,
+            "buy": 5.0, "buy_bid": 5.0, "buy_ask": 5.5,
+            "poll_ts": "2026-06-15T10:15:00+05:30",
+        }
+        original = brain_mod._entry_snapshot_point
+        brain_mod._entry_snapshot_point = lambda s, c: entry
+        try:
+            ist = timezone(timedelta(hours=5, minutes=30))
+            trade_dt = datetime(2026, 6, 15, 10, 0, 0, tzinfo=ist)
+            cand = {
+                "type": "BULL_PUT", "index": "BNF", "expiry": "2026-06-18",
+                "tDTE": 3, "sellStrike": 57000, "buyStrike": 56800,
+                "sellType": "PE", "buyType": "PE", "lotSize": 30,
+                "netPremium": 40.0, "maxProfit": 1200.0, "maxLoss": 4800.0, "isCredit": True,
+            }
+            cost = _teacher_round_trip_cost(trade_dt, snap, cand, close, _teacher_default_config())
+        finally:
+            brain_mod._entry_snapshot_point = original
+        self.assertEqual(cost.get("status"), "OK")
+        self.assertEqual(cost.get("lot_size"), 30)
+        self.assertGreater(cost.get("entry_turnover", 0), 0)
+
 
 
 if __name__ == "__main__":

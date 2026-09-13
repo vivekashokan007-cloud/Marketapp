@@ -2507,7 +2507,10 @@ class MarketWatchService : Service() {
                     val tradeId = trade.optString("id", "")
                     if (tradeId.isBlank()) continue
 
-                    val chain = if (trade.optString("index_key", "BNF") == "NF") nfChain else bnfChain
+                    val indexKeyRaw = trade.optString("index_key", "").ifBlank { trade.optString("indexKey", "") }
+                    val indexNorm = ContractLotTable.normalizeIndexKey(indexKeyRaw)
+                    if (indexNorm == null) continue // fail-closed: never invent BNF
+                    val chain = if (indexNorm == "NF") nfChain else bnfChain
                     val sellStrike = trade.optDouble("sell_strike", 0.0)
                     val buyStrike = trade.optDouble("buy_strike", 0.0)
                     val sellOi = if (sellStrike > 0.0) oiAt(chain, sellStrike) else Pair(null, null)

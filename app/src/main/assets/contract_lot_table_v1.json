@@ -1,0 +1,39 @@
+{
+  "version_id": "contract_lot_table_v1_20260913",
+  "schema": "contract_lot_table_dated_periods",
+  "unit": "units_per_lot",
+  "note": "Contract lot size = units per lot. Distinct from number_of_lots (quantity). Resolve by (index, as_of/session_date). Fail-closed when index unknown.",
+  "indices": ["BNF", "NF"],
+  "periods": [
+    {
+      "as_of_start": "2025-01-01",
+      "as_of_end": null,
+      "lots": {"BNF": 30, "NF": 65},
+      "provenance": "upstox_instrument_master_verified_20260719",
+      "provenance_quality": "verified",
+      "evidence": "reports/lot_size_verification_20260719.json"
+    },
+    {
+      "as_of_start": "2024-11-20",
+      "as_of_end": "2024-12-31",
+      "lots": {"BNF": 15, "NF": 25},
+      "provenance": "nse_fo_lot_revision_2024_reconstructive",
+      "provenance_quality": "reconstructive",
+      "evidence": "NSE F&O lot-size revision window (reconstructive; prefer explicit lot_size on trades)"
+    },
+    {
+      "as_of_start": "2000-01-01",
+      "as_of_end": "2024-11-19",
+      "lots": {"BNF": 25, "NF": 50},
+      "provenance": "pre_2024_nse_index_lots_reconstructive",
+      "provenance_quality": "reconstructive",
+      "evidence": "Pre-revision NSE index F&O lots (reconstructive; prefer explicit lot_size on trades)"
+    }
+  ],
+  "aliases": {
+    "BANKNIFTY": "BNF",
+    "NIFTY BANK": "BNF",
+    "NIFTY": "NF",
+    "NIFTY 50": "NF"
+  }
+}
