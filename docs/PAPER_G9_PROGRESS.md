@@ -10,8 +10,8 @@ Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commi
 
 | Repo | Branch | Tip SHA | Note |
 |---|---|---|---|
-| Marketapp | `work/g8-g10-integrity-20260913` | `TIP_MA` | finish gaps + review docs |
-| MarketVivi | `work/g8-g10-integrity-20260913` | `TIP_MV` | Kelly readout + review docs |
+| Marketapp | `work/g8-g10-integrity-20260913` | `5f022d3caf7fe5122832990cecb9c008dd900366` | finish gaps + review docs |
+| MarketVivi | `work/g8-g10-integrity-20260913` | `e260a5093e5dcbe084e02503090d5776cd56d107` | Kelly readout + review docs |
 | Marketapp feature (pre-docs) | same | `98a86c25cc2b9d07f785dabc9e55381c92f46dfd` | multi-page export / E3 honesty / champion CLI |
 | MarketVivi feature (pre-docs) | same | `79582db1eabf5e9a291b496c624b5bba3c181a0a` | experimental Kelly PWA |
 | Prior Marketapp G8 | same branch | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | G8 integrity parent |
