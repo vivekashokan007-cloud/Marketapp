@@ -367,6 +367,8 @@ class TemporalEngine:
         self.val_acc    = 0.0
         self.n_train    = 0
         self.version    = TEMPORAL_VERSION
+        # G8: 'synthetic' | 'real' — synthetic cannot certify real-path performance
+        self.sequence_kind = 'unspecified'
 
     # ── Synthetic pre-training from backtest CSV rows ────────────────────────
     def fit_synthetic(self, rows, epochs=8, lr=0.005, log_fn=None):
@@ -389,6 +391,7 @@ class TemporalEngine:
         n = len(seqs)
         if n == 0: return
         self.n_train = n
+        self.sequence_kind = 'synthetic'
 
         # Holdout: last 15%
         val_n = max(4, min(int(n * 0.15), n // 4))
@@ -430,6 +433,7 @@ class TemporalEngine:
         """
         from collections import defaultdict
         by_trade = defaultdict(list)
+        self.sequence_kind = 'real'
         
         # T1: Ensure trade_ids are strings for consistent lookup
         outcomes = {str(k): bool(v) for k, v in trade_outcomes.items()}
@@ -498,6 +502,7 @@ class TemporalEngine:
         return {
             'ver': self.version, 'trained': self.trained,
             'n_train': self.n_train, 'ta': self.train_acc, 'va': self.val_acc,
+            'sequence_kind': getattr(self, 'sequence_kind', 'unspecified'),
             'gru': self.gru.to_dict(),
         }
 
@@ -509,6 +514,7 @@ class TemporalEngine:
         te.n_train   = d.get('n_train', 0)
         te.train_acc = d.get('ta', 0.0)
         te.val_acc   = d.get('va', 0.0)
+        te.sequence_kind = d.get('sequence_kind', 'unspecified')
         te.gru       = MiniGRU.from_dict(d['gru'])
         return te
 
@@ -517,21 +523,78 @@ class TemporalEngine:
 # TRAIN FROM BACKTEST CSV
 # ─────────────────────────────────────────────────────────────────────────────
 
-def train_temporal(csv_path=None, rows=None, epochs=20, log_fn=None):
+def train_temporal(csv_path=None, rows=None, epochs=20, log_fn=None, is_real=False,
+                   trade_outcomes=None):
     """
-    Train TemporalEngine from backtest CSV.
-    Accepts either csv_path (string) or pre-loaded rows (list of dicts).
+    Train TemporalEngine.
+
+    G8 arity fix: Kotlin may pass a 5th positional arg `is_real=True` for the
+    real-sequence path. Synthetic remains the default (csv/backtest rows).
+
+    Args:
+      csv_path: backtest CSV for synthetic pre-training
+      rows: list of dicts — synthetic trade rows OR real poll/journey rows
+      epochs: synthetic training epochs
+      log_fn: optional logger
+      is_real: when True, route to fit_real (requires trade_outcomes or
+               rows carrying trade_id + won)
+      trade_outcomes: optional dict trade_id -> won for fit_real
+
+    Synthetic engines are marked sequence_kind='synthetic' and must not certify
+    real-path performance.
     """
     import csv as _csv
+    te = TemporalEngine()
+
+    # Coerce Chaquopy / JSON-ish truthy values
+    real = is_real in (True, 1, '1', 'true', 'True', 'yes')
+
+    if real:
+        journey_rows = list(rows or [])
+        outcomes = dict(trade_outcomes or {})
+        if not outcomes:
+            # Derive outcomes from rows that embed won/label beside trade_id
+            for r in journey_rows:
+                if not isinstance(r, dict):
+                    continue
+                tid = str(r.get('trade_id') or r.get('id') or '')
+                if not tid:
+                    continue
+                label = _row_label_value(r)
+                if label is None and r.get('won') is not None:
+                    text = str(r.get('won')).strip().lower()
+                    if text in ('1', 'true', 'yes'):
+                        label = 1
+                    elif text in ('0', 'false', 'no'):
+                        label = 0
+                if label is not None and tid not in outcomes:
+                    outcomes[tid] = bool(label)
+        n = te.fit_real(journey_rows, outcomes, log_fn=log_fn)
+        te.trained = bool(n and n > 0) or te.trained
+        te.sequence_kind = 'real'
+        if log_fn:
+            log_fn(f"train_temporal: real-sequence path n_trades={n} kind={te.sequence_kind}")
+        return te
+
     if rows is None:
         rows = []
+        if not csv_path:
+            raise ValueError('train_temporal synthetic path requires csv_path or rows')
         with open(csv_path, 'r', newline='', encoding='utf-8') as f:
             for row in _csv.DictReader(f):
                 rows.append(row)
 
-    te = TemporalEngine()
     te.fit_synthetic(rows, epochs=epochs, log_fn=log_fn)
+    te.sequence_kind = 'synthetic'
+    if log_fn:
+        log_fn(f"train_temporal: synthetic path n={te.n_train} kind={te.sequence_kind}")
     return te
+
+
+def can_certify_real_path(te) -> bool:
+    """Synthetic (or unspecified) sequences cannot certify real-path performance."""
+    kind = getattr(te, 'sequence_kind', 'unspecified')
+    return kind == 'real' and bool(getattr(te, 'trained', False))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

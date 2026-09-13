@@ -62,6 +62,7 @@ CONFIDENCE_CONTRACT_SHADOW_C = (
 
 REASON_NO_ELIGIBLE = "NO_ELIGIBLE_PREDICTIONS"
 REASON_MIXED_VERSIONS = "MIXED_MODEL_OR_TARGET_VERSIONS_REFUSED"
+REASON_MIXED_POPULATION = "MIXED_REALIZED_HYPOTHETICAL_PNL_REFUSED"
 REASON_METRICS_OK = "METRICS_WRITTEN"
 
 
@@ -518,12 +519,48 @@ def compute_brier_and_reliability(
     }
 
 
+def _population_bucket(row: dict[str, Any]) -> str:
+    """Map a row to realized vs hypothetical for mix rejection (G8)."""
+    role = str(row.get("population_role") or row.get("role") or "").strip().lower()
+    if role in ("menu", "shadow", "hypothetical", "teacher_shadow", "prediction"):
+        return "hypothetical"
+    if role in ("paper", "paper_close", "paper_closure", "fill", "broker_fill",
+                "live_fill", "selected", "primary", "recommendation", "realized"):
+        return "realized"
+    variant = str(row.get("variant") or "").strip().upper()
+    if variant.startswith("SHADOW"):
+        return "hypothetical"
+    # Default: treat closed managed_pnl rows without menu role as realized cohort
+    return "realized"
+
+
+def assert_single_pnl_population(rows: list[dict[str, Any]]) -> str | None:
+    """Return reason code if realized and hypothetical P&L would be mixed."""
+    buckets = {_population_bucket(r) for r in rows}
+    if "realized" in buckets and "hypothetical" in buckets:
+        return REASON_MIXED_POPULATION
+    return None
+
+
 def compute_policy_economics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Net expectancy / costs / drawdown under executable constraints.
 
     Realized (paper/fill) and hypothetical menu P&L must not be summed together;
-    callers should pass a single population per call.
+    callers should pass a single population per call. G8: refuse mixed cohorts.
     """
+    mixed = assert_single_pnl_population(rows)
+    if mixed:
+        return {
+            "n": 0,
+            "availability": "unavailable",
+            "reason_code": mixed,
+            "net_expectancy": None,
+            "total_net": None,
+            "total_costs": None,
+            "profit_factor": None,
+            "max_drawdown": None,
+            "note": "Refused to mix realized and hypothetical P&L in one economics cell.",
+        }
     nets: list[float] = []
     costs: list[float] = []
     for row in rows:

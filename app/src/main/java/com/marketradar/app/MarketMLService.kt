@@ -1962,16 +1962,17 @@ class MarketMLService : Service() {
 
             Log.i(TAG, "Temporal training: $nReal real sequences available")
 
-            // Train (synthetic if <20 real sequences, mixed if more)
+            // Train (synthetic if <20 real sequences, real path otherwise).
+            // G8: Python train_temporal accepts 5th arg is_real (arity aligned).
             val te = withTimeoutOrNull(45_000L) {
                 if (nReal >= 20) {
-                    // MLS9: Use fit_real route for actual poll sequences
+                    // Real-sequence path — must not be certified by synthetic models.
                     mod.callAttr("train_temporal",
                         null,                                    // csv_path
                         buildPyListFromRows(py, sequences),      // rows
                         8,                                       // epochs
                         py.builtins.callAttr("print"),
-                        true                                     // is_real=True
+                        true                                     // is_real=True (G8 arity)
                     )
                 } else {
                     // Synthetic pre-training from backtest CSV
@@ -2062,16 +2063,33 @@ class MarketMLService : Service() {
     }
 
     // ── Export app trades to JSON file for ml_train.run() ─────────────────────
+    // G8: paper is boolean (not REAL string); order by exit_date/created_at.
+    // Write explicit incomplete status when a page hits the cap — never silent truncate.
     private suspend fun exportAppTrades() {
         try {
+            val pageSize = 500
             val resp = SupabaseClient.select(
                 "trades_v2",
-                filter = "paper=eq.REAL",
-                order  = "date.asc",
-                limit  = 500
+                filter = "status=eq.CLOSED&paper=eq.true",
+                order  = "exit_date.asc,created_at.asc",
+                limit  = pageSize
             )
             File(appTradesPath(this)).writeText(resp.toString())
-            Log.i(TAG, "App trades exported to ${appTradesPath(this)}")
+            val incomplete = resp.length() >= pageSize
+            val status = org.json.JSONObject()
+                .put("kind", "app_trades_export")
+                .put("status", if (incomplete) "incomplete_truncated" else if (resp.length() == 0) "empty" else "complete")
+                .put("filter", "status=eq.CLOSED&paper=eq.true")
+                .put("order", "exit_date.asc,created_at.asc")
+                .put("page_size", pageSize)
+                .put("returned", resp.length())
+                .put("truncated_at_cap", incomplete)
+                .put("training_enabled", false)
+                .put("note", if (incomplete)
+                    "Page filled to cap; do not treat as full closed-paper cohort without further pages."
+                    else "Typed paper boolean export with chronological exit_date order.")
+            File(File(filesDir, "app_trades_export_status.json").absolutePath).writeText(status.toString())
+            Log.i(TAG, "App trades exported to ${appTradesPath(this)} status=${status.optString("status")}")
         } catch (e: Exception) {
             Log.w(TAG, "Could not export app trades: ${e.message}")
         }
@@ -2079,13 +2097,55 @@ class MarketMLService : Service() {
 
     private suspend fun exportCanonicalEvaluationInputs() {
         try {
-            val outcomes = SupabaseClient.fetchRecentEvaluationOutcomes(1000)
-            val snapshots = SupabaseClient.fetchRecentBrainSnapshots(1000)
+            val pageSize = 1000
+            val outcomes = SupabaseClient.fetchRecentEvaluationOutcomes(pageSize)
+            val snapshots = SupabaseClient.fetchRecentBrainSnapshots(pageSize)
             File(evalOutcomesPath(this)).writeText(outcomes.toString())
             File(brainSnapshotsPath(this)).writeText(snapshots.toString())
+            // G8: independent caps do not guarantee joined primary coverage.
+            val capped = outcomes.length() >= pageSize || snapshots.length() >= pageSize
+            var primary = 0
+            var primaryWithSnap = 0
+            val snapIds = HashSet<String>()
+            for (i in 0 until snapshots.length()) {
+                val sid = snapshots.optJSONObject(i)?.optString("id")
+                    ?: snapshots.optJSONObject(i)?.optString("snapshot_id")
+                    ?: ""
+                if (sid.isNotBlank()) snapIds.add(sid)
+            }
+            for (i in 0 until outcomes.length()) {
+                val row = outcomes.optJSONObject(i) ?: continue
+                val role = row.optString("role", row.optString("training_role", "secondary"))
+                if (role.equals("primary", true) || role.equals("selected", true) ||
+                    role.equals("recommendation", true)
+                ) {
+                    primary++
+                    val sid = row.optString("snapshot_id", "")
+                    if (sid.isNotBlank() && snapIds.contains(sid)) primaryWithSnap++
+                }
+            }
+            val statusName = when {
+                outcomes.length() == 0 && snapshots.length() == 0 -> "empty"
+                capped || (primary > 0 && primaryWithSnap < primary) -> "incomplete_truncated"
+                else -> "complete"
+            }
+            val status = org.json.JSONObject()
+                .put("kind", "canonical_eval_export")
+                .put("status", statusName)
+                .put("n_outcomes", outcomes.length())
+                .put("n_snapshots", snapshots.length())
+                .put("n_primary", primary)
+                .put("n_primary_joined", primaryWithSnap)
+                .put("page_size", pageSize)
+                .put("capped_or_incomplete", statusName == "incomplete_truncated")
+                .put("training_enabled", false)
+                .put("note", if (statusName == "incomplete_truncated")
+                    "Independent row caps or missing snapshot joins; cohort incomplete — do not train as full set."
+                    else "Joined coverage complete for exported window.")
+            File(File(filesDir, "canonical_eval_export_status.json").absolutePath).writeText(status.toString())
             Log.i(
                 TAG,
-                "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()}"
+                "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()} status=$statusName"
             )
         } catch (e: Exception) {
             Log.w(TAG, "Could not export canonical evaluator inputs: ${e.message}")

@@ -47,8 +47,8 @@ RETRAIN_DISABLED_REASON = 'retrain_disabled_pending_canonical_won_unification'
 # APP TRADE CONVERTER
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _resolve_training_won(trade_dict, pnl=None):
-    """Resolve the training label from the most explicit source available."""
+def _legacy_h2_won(trade_dict, pnl=None):
+    """Diagnostic H2/legacy label only — not the training target (G8)."""
     for key in ('canonical_won', 'outcome_h2', 'won'):
         value = trade_dict.get(key)
         if value is None or value == '':
@@ -60,12 +60,79 @@ def _resolve_training_won(trade_dict, pnl=None):
             return False
     if pnl is None:
         return None
-    return float(pnl) > 0
+    try:
+        return float(pnl) > 0
+    except (TypeError, ValueError):
+        return None
+
+
+def _managed_net_pnl(trade_dict):
+    """Prefer friction-inclusive managed/net fields; never invent zeros."""
+    for key in (
+        'managed_pnl', 'learning_net_pnl', 'net_pnl', 'actual_pnl',
+        'final_pnl', 'pnl',
+    ):
+        value = trade_dict.get(key)
+        if value is None or value == '':
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _annotate_net_training_labels(trade_dict, *, diagnostic_pnl=None):
+    """G8: training label = versioned net target; keep H2/canonical as diagnostics."""
+    try:
+        from position_exit_policy import annotate_legacy_and_net_targets, NET_TARGET_VERSION
+    except ImportError:
+        NET_TARGET_VERSION = 'net_target_v1_gross_minus_costs_once_20260912'
+
+        def annotate_legacy_and_net_targets(**kwargs):
+            return {
+                'canonical_won': kwargs.get('canonical_won'),
+                'outcome_h2': kwargs.get('outcome_h2'),
+                'won': kwargs.get('won'),
+                'learning_won_net': None,
+                'learning_result_net': 'unavailable',
+                'net_target_version': NET_TARGET_VERSION,
+            }
+
+    managed = _managed_net_pnl(trade_dict)
+    h2_won = _legacy_h2_won(trade_dict, diagnostic_pnl)
+    h2_int = None if h2_won is None else (1 if h2_won else 0)
+    annotated = annotate_legacy_and_net_targets(
+        managed_pnl=managed,
+        canonical_won=trade_dict.get('canonical_won', h2_int),
+        outcome_h2=trade_dict.get('outcome_h2', h2_int),
+        won=trade_dict.get('won', h2_won),
+        is_success=trade_dict.get('is_success'),
+        target_was_reached=trade_dict.get('target_was_reached'),
+    )
+    # Prefer explicit learning_won_net if already present on the row.
+    if trade_dict.get('learning_won_net') is not None and trade_dict.get('learning_won_net') != '':
+        text = str(trade_dict.get('learning_won_net')).strip().lower()
+        if text in ('1', 'true', 'yes'):
+            annotated['learning_won_net'] = 1
+        elif text in ('0', 'false', 'no'):
+            annotated['learning_won_net'] = 0
+    return annotated, managed, h2_won
+
+
+def _resolve_training_won(trade_dict, pnl=None):
+    """G8 training label: learning_won_net (net_target_v1). H2 kept as diagnostic only."""
+    annotated, managed, h2_won = _annotate_net_training_labels(trade_dict, diagnostic_pnl=pnl)
+    net_won = annotated.get('learning_won_net')
+    if net_won is not None:
+        return bool(int(net_won))
+    # Fail closed: do not fall back to H2-as-net for the training target.
+    return None
 
 
 def _row_label_value(row):
-    """Read the canonical label from any training/evaluation row shape."""
-    for key in ('canonical_won', 'outcome_h2', 'won'):
+    """Read the G8 net training label; fall back to diagnostics only for display helpers."""
+    for key in ('learning_won_net',):
         value = row.get(key)
         if value is None or value == '':
             continue
@@ -74,6 +141,10 @@ def _row_label_value(row):
             return 1
         if text in ('false', '0', 'no'):
             return 0
+    annotated, _, _ = _annotate_net_training_labels(row)
+    net_won = annotated.get('learning_won_net')
+    if net_won is not None:
+        return int(net_won)
     return None
 
 def _app_trade_to_row(t):
@@ -93,9 +164,11 @@ def _app_trade_to_row(t):
     except:
         return None
 
+    annotated, managed_pnl, h2_won = _annotate_net_training_labels(t, diagnostic_pnl=pnl)
     won = _resolve_training_won(t, pnl)
     if won is None:
         return None
+    diagnostic_h2 = h2_won
 
     # Strategy type normalisation
     stype = str(t.get('strategy', t.get('type', ''))).upper()
@@ -148,10 +221,16 @@ def _app_trade_to_row(t):
         'max_loss': max_loss,
         'paper_pnl': max_profit if won else -max_loss,
         'cost': 0,
-        'net_pnl': pnl,
-        'canonical_won': str(won),
-        'outcome_h2': 1 if won else 0,
+        'net_pnl': managed_pnl if managed_pnl is not None else pnl,
+        'managed_pnl': managed_pnl if managed_pnl is not None else pnl,
+        # G8 training target (net contract); H2/canonical retained as diagnostics only.
+        'learning_won_net': 1 if won else 0,
+        'learning_result_net': annotated.get('learning_result_net'),
+        'net_target_version': annotated.get('net_target_version'),
+        'canonical_won': annotated.get('canonical_won') if annotated.get('canonical_won') is not None else (1 if diagnostic_h2 else 0) if diagnostic_h2 is not None else None,
+        'outcome_h2': annotated.get('outcome_h2') if annotated.get('outcome_h2') is not None else (1 if diagnostic_h2 else 0) if diagnostic_h2 is not None else None,
         'won': str(won),
+        'diagnostic_h2_won': None if diagnostic_h2 is None else (1 if diagnostic_h2 else 0),
         'exit_reason': str(t.get('exit_reason', t.get('exitReason', 'CLOSE'))),
         'target_hit': str(won),
         'stop_hit': str(not won),
@@ -253,9 +332,25 @@ def _snapshot_candidate_to_row(cand, snap_ctx, outcome, snap):
     if not strategy:
         return None
     index = str(cand.get('index') or 'NF').upper()
-    won = _row_label_value(outcome)
+    # Merge outcome + candidate fields for net annotation (G8).
+    label_src = dict(outcome) if isinstance(outcome, dict) else {}
+    for k in ('managed_pnl', 'learning_won_net', 'net_pnl', 'sim_pnl_h2',
+              'canonical_won', 'outcome_h2', 'won', 'is_success'):
+        if k not in label_src and isinstance(cand, dict) and cand.get(k) is not None:
+            label_src[k] = cand.get(k)
+    # Prefer managed/net; keep sim_pnl_h2 only as diagnostic gross/H2 path.
+    if label_src.get('managed_pnl') is None and label_src.get('net_pnl') is None:
+        # Do not treat H2 sim pnl as net — leave managed unset so fail-closed applies
+        # unless learning_won_net already present.
+        pass
+    annotated, managed_pnl, h2_won = _annotate_net_training_labels(
+        label_src,
+        diagnostic_pnl=label_src.get('sim_pnl_h2'),
+    )
+    won = annotated.get('learning_won_net')
     if won is None:
         return None
+    won = int(won)
     mode = str(
         cand.get('trade_mode')
         or cand.get('mode')
@@ -308,11 +403,18 @@ def _snapshot_candidate_to_row(cand, snap_ctx, outcome, snap):
         'max_loss': cand.get('maxLoss') or 0,
         'paper_pnl': pnl,
         'cost': 0,
-        'net_pnl': pnl,
-        'canonical_won': won,
-        'outcome_h2': won,
+        'net_pnl': managed_pnl if managed_pnl is not None else None,
+        'managed_pnl': managed_pnl,
+        'learning_won_net': won,
+        'learning_result_net': annotated.get('learning_result_net'),
+        'net_target_version': annotated.get('net_target_version'),
+        # Diagnostics: H2/sim path preserved, not used as training target.
+        'canonical_won': annotated.get('canonical_won'),
+        'outcome_h2': annotated.get('outcome_h2') if annotated.get('outcome_h2') is not None else (1 if h2_won else 0) if h2_won is not None else None,
         'won': won,
-        'exit_reason': 'H2_EVAL',
+        'diagnostic_h2_won': None if h2_won is None else (1 if h2_won else 0),
+        'diagnostic_sim_pnl_h2': pnl,
+        'exit_reason': 'NET_TARGET_EVAL',
         'target_hit': str(won == 1),
         'stop_hit': str(won == 0),
         'vix': vix,
