@@ -8,7 +8,7 @@
 - `01a4df3` — fix(compaction): CONTRACT_IDENTITY_COMPACTION_KEYS on teacher-research allowlist + `ContractIdentityCompactionTest`
 - `ae61495` — test(persistence): `android_compact_teacher_candidate_v1` mock + rejected `outcome_json` roundtrip
 - `24e3042` — docs: gate status compaction/persistence; primary DB columns blocked/deferred  
-**Tip after Kotlin Gradle confirmation:** pending SHA stamp in this commit.
+**Tip after Kotlin Gradle confirmation:** `4538bdbf079bca596e8ef16ef169cea074b2599f`
 
 ---
 
