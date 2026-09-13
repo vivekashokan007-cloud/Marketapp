@@ -35,6 +35,20 @@ class PaperG9SourceContractTests(unittest.TestCase):
         self.assertIn("atomically", text)
         self.assertIn("saveEvaluationOutcomes", text)
 
+    def test_pwa_exposes_experimental_kelly_advisory_readout(self):
+        text = Path(PWA).read_text(encoding="utf-8")
+        self.assertIn("experimentalKellyAdvisoryReadout", text)
+        self.assertIn("EXPERIMENTAL Kelly", text)
+        self.assertIn("not order qty", text)
+        self.assertIn("p_ml gate unchanged", text)
+        # Must not wire into takeTrade quantity
+        self.assertIn("takeTrade('${cand.id}', false)", text)
+
+    def test_market_ml_service_documents_e3_end_of_run(self):
+        text = Path(ML).read_text(encoding="utf-8")
+        self.assertIn("END-OF-RUN", text)
+        self.assertIn("selectAllPages", text)
+
 
 if __name__ == "__main__":
     unittest.main()

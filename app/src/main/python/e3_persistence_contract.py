@@ -4,6 +4,12 @@ Atomic local checkpoints already exist in MarketMLService. This module
 defines the remaining per-batch persistence cursor and streaming finalization
 invariants as pure, testable contracts so incomplete evenings cannot look
 complete and retries remain idempotent.
+
+RUNTIME HONESTY (2026-09-13):
+  Mid-loop remote upsert is NOT wired into MarketMLService evaluation.
+  The live write path remains end-of-run ``SupabaseClient.saveEvaluationOutcomes``
+  after local checkpoint aggregation. Cursor helpers below are ready for a
+  future per-batch remote path; do not claim mid-run remote persistence today.
 """
 
 from __future__ import annotations
@@ -11,6 +17,9 @@ from __future__ import annotations
 from typing import Any, Optional
 
 E3_PERSISTENCE_CONTRACT_VERSION = "e3_persistence_streaming_v1_20260913"
+RUNTIME_REMOTE_SAVE_PATH = "end_of_run_saveEvaluationOutcomes"
+RUNTIME_MID_LOOP_REMOTE_UPSERT = False
+RUNTIME_LOCAL_CHECKPOINT = True
 PHASE_LOCAL_CHECKPOINT = "local_checkpoint"
 PHASE_BATCH_PERSIST = "batch_persist"
 PHASE_STREAM_AGGREGATE = "stream_aggregate"

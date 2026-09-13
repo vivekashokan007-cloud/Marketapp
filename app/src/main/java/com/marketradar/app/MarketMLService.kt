@@ -2064,32 +2064,40 @@ class MarketMLService : Service() {
 
     // ── Export app trades to JSON file for ml_train.run() ─────────────────────
     // G8: paper is boolean (not REAL string); order by exit_date/created_at.
-    // Write explicit incomplete status when a page hits the cap — never silent truncate.
+    // G8+/G10: multi-page deterministic fetch (replaces page-0 + incomplete-only).
+    // Still write explicit incomplete_truncated when maxPages ceiling is hit.
     private suspend fun exportAppTrades() {
         try {
             val pageSize = 500
-            val resp = SupabaseClient.select(
-                "trades_v2",
+            val maxPages = 40
+            val paged = SupabaseClient.selectAllPages(
+                table = "trades_v2",
                 filter = "status=eq.CLOSED&paper=eq.true",
-                order  = "exit_date.asc,created_at.asc",
-                limit  = pageSize
+                order = "exit_date.asc,created_at.asc",
+                pageSize = pageSize,
+                maxPages = maxPages
             )
+            val resp = paged.optJSONArray("rows") ?: org.json.JSONArray()
             File(appTradesPath(this)).writeText(resp.toString())
-            val incomplete = resp.length() >= pageSize
+            val truncated = paged.optBoolean("truncated_at_max_pages", false)
+            val statusName = paged.optString("status", if (resp.length() == 0) "empty" else "complete")
             val status = org.json.JSONObject()
                 .put("kind", "app_trades_export")
-                .put("status", if (incomplete) "incomplete_truncated" else if (resp.length() == 0) "empty" else "complete")
+                .put("status", statusName)
                 .put("filter", "status=eq.CLOSED&paper=eq.true")
                 .put("order", "exit_date.asc,created_at.asc")
                 .put("page_size", pageSize)
+                .put("max_pages", maxPages)
+                .put("pages_fetched", paged.optInt("pages_fetched", 0))
                 .put("returned", resp.length())
-                .put("truncated_at_cap", incomplete)
+                .put("truncated_at_max_pages", truncated)
+                .put("multi_page", true)
                 .put("training_enabled", false)
-                .put("note", if (incomplete)
-                    "Page filled to cap; do not treat as full closed-paper cohort without further pages."
-                    else "Typed paper boolean export with chronological exit_date order.")
+                .put("note", if (truncated)
+                    "Hit maxPages ceiling; cohort may still be incomplete — raise maxPages or narrow window before training."
+                    else "Multi-page typed paper boolean export with chronological exit_date order.")
             File(File(filesDir, "app_trades_export_status.json").absolutePath).writeText(status.toString())
-            Log.i(TAG, "App trades exported to ${appTradesPath(this)} status=${status.optString("status")}")
+            Log.i(TAG, "App trades exported to ${appTradesPath(this)} status=${status.optString("status")} pages=${paged.optInt("pages_fetched", 0)}")
         } catch (e: Exception) {
             Log.w(TAG, "Could not export app trades: ${e.message}")
         }
@@ -2097,13 +2105,16 @@ class MarketMLService : Service() {
 
     private suspend fun exportCanonicalEvaluationInputs() {
         try {
-            val pageSize = 1000
-            val outcomes = SupabaseClient.fetchRecentEvaluationOutcomes(pageSize)
-            val snapshots = SupabaseClient.fetchRecentBrainSnapshots(pageSize)
+            val pageSize = 500
+            val maxPages = 20
+            val outcomePage = SupabaseClient.fetchRecentEvaluationOutcomesPaged(pageSize, maxPages)
+            val snapshotPage = SupabaseClient.fetchRecentBrainSnapshotsPaged(pageSize, maxPages)
+            val outcomes = outcomePage.optJSONArray("rows") ?: org.json.JSONArray()
+            val snapshots = snapshotPage.optJSONArray("rows") ?: org.json.JSONArray()
             File(evalOutcomesPath(this)).writeText(outcomes.toString())
             File(brainSnapshotsPath(this)).writeText(snapshots.toString())
-            // G8: independent caps do not guarantee joined primary coverage.
-            val capped = outcomes.length() >= pageSize || snapshots.length() >= pageSize
+            val truncated = outcomePage.optBoolean("truncated_at_max_pages", false) ||
+                snapshotPage.optBoolean("truncated_at_max_pages", false)
             var primary = 0
             var primaryWithSnap = 0
             val snapIds = HashSet<String>()
@@ -2126,7 +2137,7 @@ class MarketMLService : Service() {
             }
             val statusName = when {
                 outcomes.length() == 0 && snapshots.length() == 0 -> "empty"
-                capped || (primary > 0 && primaryWithSnap < primary) -> "incomplete_truncated"
+                truncated || (primary > 0 && primaryWithSnap < primary) -> "incomplete_truncated"
                 else -> "complete"
             }
             val status = org.json.JSONObject()
@@ -2137,15 +2148,21 @@ class MarketMLService : Service() {
                 .put("n_primary", primary)
                 .put("n_primary_joined", primaryWithSnap)
                 .put("page_size", pageSize)
+                .put("max_pages", maxPages)
+                .put("outcomes_pages_fetched", outcomePage.optInt("pages_fetched", 0))
+                .put("snapshots_pages_fetched", snapshotPage.optInt("pages_fetched", 0))
+                .put("outcomes_source_table", outcomePage.optString("source_table", ""))
+                .put("truncated_at_max_pages", truncated)
+                .put("multi_page", true)
                 .put("capped_or_incomplete", statusName == "incomplete_truncated")
                 .put("training_enabled", false)
                 .put("note", if (statusName == "incomplete_truncated")
-                    "Independent row caps or missing snapshot joins; cohort incomplete — do not train as full set."
-                    else "Joined coverage complete for exported window.")
+                    "Max-page ceiling and/or missing snapshot joins; cohort incomplete — do not train as full set."
+                    else "Multi-page joined coverage complete for exported window.")
             File(File(filesDir, "canonical_eval_export_status.json").absolutePath).writeText(status.toString())
             Log.i(
                 TAG,
-                "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()} status=$statusName"
+                "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()} status=$statusName multi_page=true"
             )
         } catch (e: Exception) {
             Log.w(TAG, "Could not export canonical evaluator inputs: ${e.message}")
@@ -2850,6 +2867,11 @@ return@withContext
                 running = true
             )
 
+            // E3 honesty (2026-09-13): remote outcome upsert remains END-OF-RUN.
+            // Per-batch local atomic checkpoints exist; mid-loop remote upsert is NOT
+            // wired here because partial remote success mid-evaluation risks false-
+            // complete learning flags. e3_persistence_contract.py encodes the cursor
+            // for a future mid-run path; runtime write path is still this call.
             val saveResult = if (evaluatedOutcomes.length() > 0) {
                 SupabaseClient.saveEvaluationOutcomes(sessionDate, evaluatedOutcomes)
             } else {

@@ -2330,6 +2330,101 @@ object SupabaseClient {
         return normalizeLegacyOutcomeRows(select("ml_decisions", null, "created_at.desc", limit))
     }
 
+    /**
+     * Multi-page evaluation-outcome export for training integrity.
+     * Pages the first table that returns any rows (s1 → legacy → ml_decisions).
+     */
+    fun fetchRecentEvaluationOutcomesPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
+        val candidates = listOf(
+            Triple("ml_evaluation_outcomes_s1", null as String?, "effective_session_date.desc,created_at.desc"),
+            Triple("ml_evaluation_outcomes", null, "created_at.desc"),
+            Triple("ml_decisions", null, "created_at.desc")
+        )
+        for ((table, filter, order) in candidates) {
+            val first = select(table, filter, order, pageSize, 0)
+            if (first.length() == 0) continue
+            val all = JSONArray()
+            for (i in 0 until first.length()) first.optJSONObject(i)?.let(all::put)
+            var pagesFetched = 1
+            var truncated = false
+            if (first.length() >= pageSize) {
+                for (pageIndex in 1 until maxPages) {
+                    val page = select(table, filter, order, pageSize, pageIndex * pageSize)
+                    pagesFetched += 1
+                    for (i in 0 until page.length()) page.optJSONObject(i)?.let(all::put)
+                    if (page.length() < pageSize) break
+                    if (pageIndex == maxPages - 1) truncated = true
+                }
+            }
+            val normalized = if (table == "ml_evaluation_outcomes_s1") {
+                normalizeShadowOutcomeRows(all)
+            } else {
+                normalizeLegacyOutcomeRows(all)
+            }
+            return JSONObject()
+                .put("rows", normalized)
+                .put("source_table", table)
+                .put("pages_fetched", pagesFetched)
+                .put("page_size", pageSize)
+                .put("max_pages", maxPages)
+                .put("returned", normalized.length())
+                .put("truncated_at_max_pages", truncated)
+                .put(
+                    "status",
+                    when {
+                        normalized.length() == 0 -> "empty"
+                        truncated -> "incomplete_truncated"
+                        else -> "complete"
+                    }
+                )
+        }
+        return JSONObject()
+            .put("rows", JSONArray())
+            .put("source_table", "none")
+            .put("pages_fetched", 0)
+            .put("page_size", pageSize)
+            .put("max_pages", maxPages)
+            .put("returned", 0)
+            .put("truncated_at_max_pages", false)
+            .put("status", "empty")
+    }
+
+    fun fetchRecentBrainSnapshotsPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
+        val out = JSONArray()
+        var pagesFetched = 0
+        var truncated = false
+        val safePage = if (pageSize > 0) pageSize else 500
+        val safeMax = if (maxPages > 0) maxPages else 1
+        for (pageIndex in 0 until safeMax) {
+            val page = fetchArray(
+                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=$safePage&offset=${pageIndex * safePage}"
+            ) ?: break
+            pagesFetched += 1
+            if (page.length() == 0) break
+            for (i in 0 until page.length()) page.optJSONObject(i)?.let(out::put)
+            if (page.length() < safePage) {
+                truncated = false
+                break
+            }
+            if (pageIndex == safeMax - 1) truncated = true
+        }
+        return JSONObject()
+            .put("rows", out)
+            .put("pages_fetched", pagesFetched)
+            .put("page_size", safePage)
+            .put("max_pages", safeMax)
+            .put("returned", out.length())
+            .put("truncated_at_max_pages", truncated)
+            .put(
+                "status",
+                when {
+                    out.length() == 0 -> "empty"
+                    truncated -> "incomplete_truncated"
+                    else -> "complete"
+                }
+            )
+    }
+
     fun fetchEvaluationOutcomesForDate(sessionDate: String, limit: Int = 5000): JSONArray {
         val filter = "session_date=eq.$sessionDate"
         val shadowRows = normalizeShadowOutcomeRows(
@@ -2877,15 +2972,22 @@ object SupabaseClient {
         }
     }
 
-    fun select(table: String, filter: String? = null, order: String? = null, limit: Int? = null): JSONArray {
+    fun select(
+        table: String,
+        filter: String? = null,
+        order: String? = null,
+        limit: Int? = null,
+        offset: Int? = null
+    ): JSONArray {
         val queryParams = mutableListOf<String>()
         if (filter != null) queryParams.add(filter)
         if (order != null) queryParams.add("order=$order")
         if (limit != null) queryParams.add("limit=$limit")
-        
+        if (offset != null) queryParams.add("offset=$offset")
+
         val url = if (queryParams.isNotEmpty()) "$table?${queryParams.joinToString("&")}" else table
         val request = getBaseRequest(url).get().build()
-        
+
         val json = fetchSync(request) ?: return JSONArray()
         return try {
             JSONArray(json)
@@ -2893,6 +2995,54 @@ object SupabaseClient {
             Log.e(TAG, "Select from $table failed: ${e.message}")
             JSONArray()
         }
+    }
+
+    /**
+     * G8/G10: deterministic PostgREST pagination. Returns all rows up to
+     * pageSize*maxPages with an explicit truncated_at_max_pages flag so callers
+     * never treat a hard page ceiling as a complete cohort.
+     */
+    fun selectAllPages(
+        table: String,
+        filter: String? = null,
+        order: String? = null,
+        pageSize: Int = 500,
+        maxPages: Int = 40
+    ): JSONObject {
+        val out = JSONArray()
+        var pagesFetched = 0
+        var truncated = false
+        val safePage = if (pageSize > 0) pageSize else 500
+        val safeMax = if (maxPages > 0) maxPages else 1
+        for (pageIndex in 0 until safeMax) {
+            val page = select(table, filter, order, safePage, pageIndex * safePage)
+            pagesFetched += 1
+            for (i in 0 until page.length()) {
+                page.optJSONObject(i)?.let(out::put)
+            }
+            if (page.length() < safePage) {
+                truncated = false
+                break
+            }
+            if (pageIndex == safeMax - 1) {
+                truncated = true
+            }
+        }
+        return JSONObject()
+            .put("rows", out)
+            .put("pages_fetched", pagesFetched)
+            .put("page_size", safePage)
+            .put("max_pages", safeMax)
+            .put("returned", out.length())
+            .put("truncated_at_max_pages", truncated)
+            .put(
+                "status",
+                when {
+                    out.length() == 0 -> "empty"
+                    truncated -> "incomplete_truncated"
+                    else -> "complete"
+                }
+            )
     }
 
     /**

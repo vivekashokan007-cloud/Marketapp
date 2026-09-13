@@ -282,3 +282,54 @@ def build_export_status_payload(
         ],
         "training_enabled": False,
     }
+
+
+
+def collect_all_pages(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    page_size: int = DEFAULT_PAGE_SIZE,
+    max_pages: int = 40,
+) -> dict[str, Any]:
+    """Deterministic multi-page gather mirroring Kotlin selectAllPages.
+
+    Walks chronological pages until exhausted or max_pages ceiling. Never
+    silently treats a hard ceiling as a complete cohort.
+    """
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    if max_pages <= 0:
+        raise ValueError("max_pages must be positive")
+    ordered = sort_trades_chronologically(rows)
+    collected: list[dict[str, Any]] = []
+    pages_fetched = 0
+    truncated = False
+    for page_index in range(max_pages):
+        start = page_index * page_size
+        end = start + page_size
+        page = ordered[start:end]
+        pages_fetched += 1
+        collected.extend(page)
+        if len(page) < page_size:
+            truncated = False
+            break
+        if page_index == max_pages - 1 and end < len(ordered):
+            truncated = True
+    if not collected:
+        status = STATUS_EMPTY
+    elif truncated:
+        status = STATUS_INCOMPLETE
+    else:
+        status = STATUS_COMPLETE
+    return {
+        "rows": collected,
+        "pages_fetched": pages_fetched,
+        "page_size": page_size,
+        "max_pages": max_pages,
+        "returned": len(collected),
+        "total_available": len(ordered),
+        "truncated_at_max_pages": truncated,
+        "multi_page": True,
+        "status": status,
+        "cursor_after": page_cursor_key(collected[-1]) if collected else None,
+    }

@@ -84,6 +84,23 @@ class G8PaginationStatusTests(unittest.TestCase):
         self.assertEqual(cov["status"], tei.STATUS_INCOMPLETE)
 
 
+    def test_collect_all_pages_complete(self):
+        rows = [{"id": i, "exit_date": f"2026-09-{(i % 28) + 1:02d}", "created_at": str(i)} for i in range(12)]
+        got = tei.collect_all_pages(rows, page_size=5, max_pages=10)
+        self.assertEqual(got["status"], tei.STATUS_COMPLETE)
+        self.assertFalse(got["truncated_at_max_pages"])
+        self.assertEqual(got["returned"], 12)
+        self.assertTrue(got["multi_page"])
+        self.assertGreaterEqual(got["pages_fetched"], 3)
+
+    def test_collect_all_pages_hits_max_pages(self):
+        rows = [{"id": i, "exit_date": f"2026-09-{(i % 28) + 1:02d}", "created_at": str(i)} for i in range(30)]
+        got = tei.collect_all_pages(rows, page_size=5, max_pages=2)
+        self.assertEqual(got["status"], tei.STATUS_INCOMPLETE)
+        self.assertTrue(got["truncated_at_max_pages"])
+        self.assertEqual(got["returned"], 10)
+
+
 class G8NetLabelTests(unittest.TestCase):
     def test_training_label_uses_net_not_h2(self):
         # H2 win but net loss — training target must be loss
@@ -280,8 +297,10 @@ class G8KotlinExportSourceTests(unittest.TestCase):
             src = f.read()
         self.assertNotIn('filter = "paper=eq.REAL"', src)
         self.assertIn('filter = "status=eq.CLOSED&paper=eq.true"', src)
-        self.assertIn('order  = "exit_date.asc,created_at.asc"', src)
+        # Named-arg form after multi-page selectAllPages wiring (single space around =).
+        self.assertIn('order = "exit_date.asc,created_at.asc"', src)
         self.assertNotIn('order  = "date.asc"', src)
+        self.assertNotIn('order = "date.asc"', src)
 
     def test_export_writes_incomplete_status(self):
         with open(self.kt, encoding="utf-8") as f:
@@ -289,6 +308,15 @@ class G8KotlinExportSourceTests(unittest.TestCase):
         self.assertIn("incomplete_truncated", src)
         self.assertIn("canonical_eval_export_status.json", src)
         self.assertIn("app_trades_export_status.json", src)
+
+    def test_export_uses_multi_page_fetch(self):
+        with open(self.kt, encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("selectAllPages", src)
+        self.assertIn("fetchRecentEvaluationOutcomesPaged", src)
+        self.assertIn("fetchRecentBrainSnapshotsPaged", src)
+        self.assertIn('"multi_page", true', src)
+        self.assertIn("END-OF-RUN", src)
 
 
 if __name__ == "__main__":
