@@ -20692,148 +20692,52 @@ def _candidate_lot_size(cand):
 
 
 def _candidate_contract_fields(cand, snap=None):
-    """Lot / expiry / calendar+trading DTE / index for outcomes — fail-closed."""
+    """Lot / expiry / calendar+trading DTE / index for outcomes — fail-closed.
+
+    Delegates to resolve_contract_identity so legacy lot_size alone cannot
+    bypass authority conflict detection (Codex B3).
+    """
     snap = snap if isinstance(snap, dict) else {}
     cand = cand if isinstance(cand, dict) else {}
+    merged = dict(snap)
+    merged.update(cand)
+    if snap.get('session_date') and not merged.get('session_date'):
+        merged['session_date'] = snap.get('session_date')
+    # Prefer candidate index, then snap.
+    if not merged.get('index') and not merged.get('index_key'):
+        merged['index'] = snap.get('index_key') or snap.get('index')
     try:
-        from contract_lot_table import normalize_index_key, trading_dte, resolve_contract_lot, ranking_dte_bucket
-        from contract_lot_table import DTE_MEASUREMENT_BUCKET_VERSION, DTE_RANKING_BUCKET_VERSION
-        index_key = normalize_index_key(
-            cand.get('index') or cand.get('index_key') or snap.get('index_key') or snap.get('index')
-        )
+        from canonical_net_profitability import resolve_contract_identity
+        identity = resolve_contract_identity(merged)
     except Exception:
-        normalize_index_key = None
-        raw_index = cand.get('index') or cand.get('index_key') or snap.get('index_key') or snap.get('index')
-        index_key = str(raw_index).strip().upper() if raw_index not in (None, '') else None
-        if index_key not in ('NF', 'BNF'):
-            index_key = None
-        DTE_MEASUREMENT_BUCKET_VERSION = 'dte_measurement_buckets_v1_0_1_2_3_7_8plus_20260913'
-        DTE_RANKING_BUCKET_VERSION = 'dte_ranking_buckets_v1_stage2a_0_1_2_3_4_7_8plus_20260913'
-        ranking_dte_bucket = lambda d: 'unknown'
-        resolve_contract_lot = None
-        trading_dte = None
-    expiry = cand.get('expiry') or cand.get('expiry_date') or snap.get('expiry')
-    expiry_text = str(expiry).strip()[:10] if expiry not in (None, '') else None
-    if expiry_text == '':
-        expiry_text = None
-    session = snap.get('session_date') or cand.get('session_date')
-    calendar_dte_val = None
-    trading_dte_val = None
-    dte_basis = 'unknown'
-    try:
-        from canonical_net_profitability import calendar_dte_from_expiry
-        calendar_dte_val = calendar_dte_from_expiry(session, expiry_text)
-    except Exception:
-        pass
-    explicit_tdte = _float_or_none(cand.get('tDTE'))
-    explicit_dte = _float_or_none(cand.get('dte'))
-    if trading_dte is not None and session and expiry_text:
-        try:
-            pack = trading_dte(session, expiry_text)
-            if calendar_dte_val is None:
-                calendar_dte_val = pack.get('calendar_dte')
-            if explicit_tdte is None:
-                trading_dte_val = pack.get('trading_dte')
-                dte_basis = pack.get('dte_basis') or 'unknown'
-            else:
-                dte_basis = pack.get('dte_basis') or 'unknown'
-        except Exception:
-            pass
-    if explicit_tdte is not None:
-        trading_dte_val = int(explicit_tdte)
-        if dte_basis == 'unknown':
-            dte_basis = 'explicit_tDTE'
-    # Measurement dte: explicit dte > calendar > trading
-    if explicit_dte is not None:
-        dte_value = int(explicit_dte)
-        dte_source = 'explicit'
-    elif calendar_dte_val is not None:
-        dte_value = int(calendar_dte_val)
-        dte_source = 'calendar_expiry_minus_session'
-    elif trading_dte_val is not None:
-        dte_value = int(trading_dte_val)
-        dte_source = 'trading_dte'
-    else:
-        dte_value = None
-        dte_source = 'unknown'
-    explicit_lot = _float_or_none(cand.get('lotSize'))
-    if explicit_lot is None:
-        explicit_lot = _float_or_none(cand.get('lot_size'))
-    n_lots = _float_or_none(cand.get('number_of_lots'))
-    if n_lots is None:
-        n_lots = _float_or_none(cand.get('lots')) or 1.0
-    lot_assumed = False
-    lot_table_version = None
-    lot_as_of = None
-    contract_lot_size = _float_or_none(cand.get('contract_lot_size'))
-    if explicit_lot is not None and explicit_lot > 0:
-        lot_size = explicit_lot
-        lot_source = 'explicit'
-        if contract_lot_size is None:
-            contract_lot_size = lot_size / n_lots if n_lots else lot_size
-    else:
-        lot_size = None
-        lot_source = 'unknown'
-        if resolve_contract_lot is not None:
-            try:
-                dated = resolve_contract_lot(
-                    index_key,
-                    as_of=session,
-                    number_of_lots=n_lots,
-                    expiry=expiry_text,
-                    expiry_cycle=cand.get('expiry_cycle'),
-                    captured_contract_lot=contract_lot_size,
-                    allow_operational_current=(session in (None, '') and expiry_text in (None, '')),
-                )
-                lot_table_version = dated.get('lot_table_version')
-                lot_as_of = dated.get('lot_as_of')
-                if dated.get('resolved'):
-                    lot_size = float(dated['lot_size'])
-                    contract_lot_size = dated.get('contract_lot_size')
-                    lot_source = dated.get('lot_source') or 'authoritative_contract_rule'
-                    lot_assumed = True
-            except Exception:
-                pass
-        if lot_size is None:
-            lot_size = _candidate_lot_size({**cand, 'index': index_key or cand.get('index'), 'session_date': session})
-            lot_assumed = True
-            lot_source = 'contract_default' if lot_size is not None else 'unknown'
-    try:
-        from canonical_net_profitability import measurement_dte_bucket
-        dte_bucket = measurement_dte_bucket(None if dte_value is None else int(dte_value))
-    except Exception:
-        dte_bucket = 'UNKNOWN'
-    identity_complete = bool(
-        index_key in ('NF', 'BNF') and lot_size and expiry_text and dte_value is not None
-    )
-    return {
-        'index_key': index_key or 'UNKNOWN',
-        'index_known': index_key in ('NF', 'BNF'),
-        'expiry': expiry_text,
-        'calendar_dte': calendar_dte_val,
-        'trading_dte': trading_dte_val,
-        'tDTE': trading_dte_val,
-        'dte': None if dte_value is None else int(dte_value),
-        'dte_source': dte_source,
-        'dte_basis': dte_basis,
-        'dte_bucket': dte_bucket,
-        'dte_bucket_version': DTE_MEASUREMENT_BUCKET_VERSION,
-        'dte_ranking_bucket': ranking_dte_bucket(trading_dte_val),
-        'dte_ranking_bucket_version': DTE_RANKING_BUCKET_VERSION,
-        'contract_lot_size': None if contract_lot_size is None else int(contract_lot_size),
-        'number_of_lots': n_lots,
-        'lot_size': lot_size,
-        'lotSize': lot_size,
-        'lot_size_assumed': lot_assumed,
-        'lot_size_source': lot_source,
-        'lot_source': lot_source,
-        'lot_table_version': lot_table_version,
-        'lot_as_of': lot_as_of,
-        'identity_complete': identity_complete,
-        'contract_identity_quarantine': not identity_complete,
-        'evaluation_ineligible': not identity_complete,
-        'calibration_ineligible': not identity_complete,
-    }
+        identity = {
+            'index_key': 'UNKNOWN',
+            'index_known': False,
+            'expiry': None,
+            'calendar_dte': None,
+            'trading_dte': None,
+            'tDTE': None,
+            'dte': None,
+            'dte_source': 'unknown',
+            'dte_basis': 'unknown',
+            'dte_bucket': 'UNKNOWN',
+            'contract_lot_size': None,
+            'number_of_lots': None,
+            'lot_size': None,
+            'lotSize': None,
+            'lot_size_assumed': True,
+            'lot_size_source': 'unknown',
+            'lot_source': 'unknown',
+            'lot_conflict': False,
+            'identity_complete': False,
+            'contract_identity_quarantine': True,
+            'evaluation_ineligible': True,
+            'calibration_ineligible': True,
+        }
+    out = dict(identity)
+    out['lotSize'] = out.get('lot_size')
+    return out
+
 
 
 def _candidate_entry_premium(cand):

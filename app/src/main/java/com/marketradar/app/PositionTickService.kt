@@ -1048,7 +1048,10 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val tradeLot = trade.optDoubleAny("lot_size", "lotSize")
     val entrySnapshotLot = entrySnapshot.optDoubleAny("lot_size", "lotSize")
     val explicitLotSize = tradeLot ?: entrySnapshotLot ?: 0.0
-    val lotsCount = max(trade.optDoubleAny("lots") ?: 1.0, 1.0)
+    val rawLots = trade.opt("number_of_lots") ?: trade.opt("lots") ?: entrySnapshot.opt("number_of_lots")
+    val lotsParsed = ContractLotTable.parseNumberOfLots(rawLots, allowMissingDefaultOne = true)
+    val lotsCount = lotsParsed.first ?: return null
+    if (!lotsParsed.second && rawLots != null) return null
     val asOfText = trade.optStringAny("session_date", "sessionDate", "entry_date", "entryDate")
         .ifBlank { entrySnapshot.optStringAny("session_date", "sessionDate") }
     val asOf = try {
@@ -1062,8 +1065,19 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val cycle = trade.optStringAny("expiry_cycle", "expiryCycle")
         .ifBlank { entrySnapshot.optStringAny("expiry_cycle", "expiryCycle") }
         .ifBlank { null }
-    val capturedCls = trade.optDoubleAny("contract_lot_size", "contractLotSize")
+    val capturedClsExplicit = trade.optDoubleAny("contract_lot_size", "contractLotSize")
         ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
+    val inVerifiedWindow = asOf != null || expiry != null
+    // In a verified rule window, derive captured contract lot from legacy quantity and compare
+    // to authority (B3). Outside that window, prefer explicit trade/snapshot quantity for live ticks.
+    val capturedCls = when {
+        capturedClsExplicit != null -> capturedClsExplicit
+        inVerifiedWindow && explicitLotSize > 0.0 && lotsCount > 0.0 -> {
+            val derived = explicitLotSize / lotsCount
+            ContractLotTable.parsePositiveIntegralLot(derived)?.toDouble()
+        }
+        else -> null
+    }
     val dated = ContractLotTable.resolve(
         indexRaw,
         asOf = asOf,
@@ -1073,19 +1087,23 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
         capturedContractLot = capturedCls,
         allowOperationalCurrent = asOf == null && expiry == null
     )
-    val lotSize = if (explicitLotSize > 0.0) explicitLotSize else (dated.lotSize ?: 0.0)
+    if (dated.lotConflict) return null
+    val lotSize = when {
+        !inVerifiedWindow && explicitLotSize > 0.0 -> explicitLotSize
+        else -> dated.lotSize ?: 0.0
+    }
     if (lotSize <= 0.0) return null
     val source = when {
         (tradeLot ?: 0.0) > 0.0 -> "trade"
         (entrySnapshotLot ?: 0.0) > 0.0 -> "entry_snapshot"
         dated.resolved -> dated.lotSource
-        else -> "unknown"
+        else -> dated.lotSource
     }
     return PositionTickLotMeta(
         lotSize = lotSize,
-        assumed = explicitLotSize <= 0.0,
+        assumed = source !in setOf("trade", "entry_snapshot"),
         source = source,
-        contractLotSize = if (explicitLotSize > 0.0) null else dated.contractLotSize,
+        contractLotSize = if (source in setOf("trade", "entry_snapshot")) null else dated.contractLotSize,
         numberOfLots = lotsCount,
         lotTableVersion = dated.lotTableVersion,
         lotAsOf = dated.lotAsOf

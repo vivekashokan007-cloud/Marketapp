@@ -9,10 +9,12 @@ with different lots. Prefer consistent captured metadata; on conflict flag and
 exclude authoritative calc while retaining original values. Fail closed outside
 the verified supported project-data window.
 
-SSOT file: app/src/main/assets/contract_lot_table_v1.json
+SSOT file: app/src/main/assets/contract_lot_table_v2.json
 """
 
 from __future__ import annotations
+
+import math
 
 import json
 import os
@@ -20,6 +22,81 @@ from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Optional
 
 LOT_TABLE_VERSION_ID = "contract_lot_table_v2_20260913"
+
+ONE_LOT_DEFAULT_POLICY = "one_lot_path_v1_20260913"
+
+
+def parse_positive_integral_lot(value: Any) -> tuple[int | None, str | None]:
+    """Parse a positive integral lot / lot-count. Never truncate fractions.
+
+    Returns (value, error_reason). Missing → (None, None).
+    """
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, bool):
+        return None, "non_numeric_lot"
+    try:
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return None, None
+            # Reject malformed strings that float would partially accept poorly
+            n = float(s)
+        else:
+            n = float(value)
+    except (TypeError, ValueError):
+        return None, "malformed_lot"
+    if not math.isfinite(n):
+        return None, "non_finite_lot"
+    if n <= 0:
+        return None, "non_positive_lot"
+    if abs(n - round(n)) > 1e-9:
+        return None, "fractional_lot"
+    iv = int(round(n))
+    if iv <= 0:
+        return None, "non_positive_lot"
+    return iv, None
+
+
+def parse_number_of_lots(raw: Any, *, allow_missing_default_one: bool = True) -> dict[str, Any]:
+    """Strict number_of_lots: positive integer only.
+
+    Missing may default to 1 only on the versioned one-lot path (stamped).
+    Explicit zero/neg/fractional/malformed → fail closed (valid=False).
+    """
+    parsed, err = parse_positive_integral_lot(raw)
+    if raw is None or raw == "":
+        if allow_missing_default_one:
+            return {
+                "number_of_lots": 1,
+                "valid": True,
+                "number_of_lots_assumed": True,
+                "number_of_lots_default_policy": ONE_LOT_DEFAULT_POLICY,
+                "number_of_lots_error": None,
+            }
+        return {
+            "number_of_lots": None,
+            "valid": False,
+            "number_of_lots_assumed": False,
+            "number_of_lots_default_policy": None,
+            "number_of_lots_error": "missing_number_of_lots",
+        }
+    if err or parsed is None:
+        return {
+            "number_of_lots": None,
+            "valid": False,
+            "number_of_lots_assumed": False,
+            "number_of_lots_default_policy": None,
+            "number_of_lots_error": err or "invalid_number_of_lots",
+        }
+    return {
+        "number_of_lots": parsed,
+        "valid": True,
+        "number_of_lots_assumed": False,
+        "number_of_lots_default_policy": None,
+        "number_of_lots_error": None,
+    }
+
 
 # Ranking DTE buckets (stage2a / teacher prior) — NOT measurement partitions.
 DTE_RANKING_BUCKET_VERSION = "dte_ranking_buckets_v1_stage2a_0_1_2_3_4_7_8plus_20260913"
@@ -163,16 +240,16 @@ def load_lot_table() -> dict[str, Any]:
             os.path.dirname(__file__),
             "..",
             "assets",
-            "contract_lot_table_v1.json",
+            "contract_lot_table_v2.json",
         ),
         os.path.join(
             os.path.dirname(__file__),
             "..",
             "..",
             "assets",
-            "contract_lot_table_v1.json",
+            "contract_lot_table_v2.json",
         ),
-        os.path.join("app", "src", "main", "assets", "contract_lot_table_v1.json"),
+        os.path.join("app", "src", "main", "assets", "contract_lot_table_v2.json"),
     ]
     for path in candidates:
         try:
@@ -345,7 +422,7 @@ def _unavailable(
     *,
     index_key: str | None,
     index_known: bool,
-    n_lots: float,
+    n_lots: float | None,
     as_of_text: str | None,
     reason: str,
     version: str,
@@ -405,21 +482,49 @@ def resolve_contract_lot(
     table = load_lot_table()
     version = str(table.get("version_id") or LOT_TABLE_VERSION_ID)
 
-    try:
-        n_lots = float(number_of_lots) if number_of_lots not in (None, "") else 1.0
-    except (TypeError, ValueError):
-        n_lots = 1.0
-    if n_lots <= 0:
-        n_lots = 1.0
+    n_pack = parse_number_of_lots(number_of_lots, allow_missing_default_one=True)
+    if not n_pack["valid"]:
+        return _unavailable(
+            index_key=normalize_index_key(index_key),
+            index_known=normalize_index_key(index_key) in ("NF", "BNF"),
+            n_lots=None,
+            as_of_text=_parse_date(as_of).isoformat() if _parse_date(as_of) else None,
+            reason=n_pack["number_of_lots_error"] or "invalid_number_of_lots",
+            version=str(load_lot_table().get("version_id") or LOT_TABLE_VERSION_ID),
+            extra={
+                "number_of_lots_error": n_pack["number_of_lots_error"],
+                "captured_contract_lot": None,
+                "exclude_authoritative_calc": True,
+            },
+        )
+    n_lots = float(n_pack["number_of_lots"])
 
     captured = None
+    captured_err = None
     if captured_contract_lot not in (None, ""):
-        try:
-            captured = int(float(captured_contract_lot))
-            if captured <= 0:
-                captured = None
-        except (TypeError, ValueError):
-            captured = None
+        captured, captured_err = parse_positive_integral_lot(captured_contract_lot)
+        if captured_err:
+            # Fail closed on malformed/fractional captured contract lot
+            idx0 = normalize_index_key(index_key)
+            as_of_date0 = _parse_date(as_of)
+            return {
+                "index_key": idx0 or "UNKNOWN",
+                "index_known": idx0 in ("NF", "BNF"),
+                "contract_lot_size": None,
+                "number_of_lots": n_lots,
+                "lot_size": None,
+                "quantity_units": None,
+                "lot_source": captured_err,
+                "lot_table_version": str(load_lot_table().get("version_id") or LOT_TABLE_VERSION_ID),
+                "lot_as_of": as_of_date0.isoformat() if as_of_date0 else None,
+                "resolved": False,
+                "lot_conflict": False,
+                "exclude_authoritative_calc": True,
+                "unavailable_reason": captured_err,
+                "captured_contract_lot": None,
+                "number_of_lots_assumed": n_pack["number_of_lots_assumed"],
+                "number_of_lots_default_policy": n_pack["number_of_lots_default_policy"],
+            }
 
     if idx is None:
         return _unavailable(
@@ -1282,6 +1387,9 @@ def simulate_persistence_boundary_roundtrip(
 
 __all__ = [
     "LOT_TABLE_VERSION_ID",
+    "parse_positive_integral_lot",
+    "parse_number_of_lots",
+    "ONE_LOT_DEFAULT_POLICY",
     "DTE_RANKING_BUCKET_VERSION",
     "DTE_RANKING_BUCKETS",
     "DTE_MEASUREMENT_BUCKET_VERSION",

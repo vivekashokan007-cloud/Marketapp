@@ -413,7 +413,7 @@ def compute_canonical_net_metrics(
 
 
 # ─── Contract identity (lot / DTE / index) — measurement only ───────────────
-# Dated lot table SSOT: contract_lot_table.py / assets/contract_lot_table_v1.json
+# Dated lot table SSOT: contract_lot_table.py / assets/contract_lot_table_v2.json
 # Ranking DTE buckets stay separate from measurement buckets (both versioned).
 
 from contract_lot_table import (  # noqa: E402
@@ -536,51 +536,140 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
 
     dte_basis = src.get("dte_basis") or dte_pack.get("dte_basis") or "unknown"
 
-    explicit_lot = _finite(src.get("lot_size"))
-    if explicit_lot is None:
-        explicit_lot = _finite(src.get("lotSize"))
-    if explicit_lot is None:
-        explicit_lot = _finite(src.get("lot_size_resolved"))
+    from contract_lot_table import (
+        parse_number_of_lots,
+        parse_positive_integral_lot,
+        ONE_LOT_DEFAULT_POLICY,
+    )
 
-    number_of_lots = _finite(src.get("number_of_lots"))
-    if number_of_lots is None:
-        number_of_lots = _finite(src.get("lots"))
-    if number_of_lots is None or number_of_lots <= 0:
-        number_of_lots = 1.0
+    # number_of_lots: positive integer only; missing → versioned one-lot default.
+    raw_n_lots = src.get("number_of_lots")
+    if raw_n_lots in (None, ""):
+        raw_n_lots = src.get("lots")
+    n_pack = parse_number_of_lots(raw_n_lots, allow_missing_default_one=True)
+    number_of_lots = n_pack["number_of_lots"]
+    number_of_lots_assumed = bool(n_pack["number_of_lots_assumed"])
+    number_of_lots_error = n_pack["number_of_lots_error"]
 
-    explicit_contract_lot = _finite(src.get("contract_lot_size"))
+    # Legacy lot_size alone is NOT verified. Prefer explicit contract_lot_size;
+    # else derive captured contract lot from quantity_units / number_of_lots when
+    # both are valid positive integrals (captured trade metadata).
+    explicit_contract_lot_raw = src.get("contract_lot_size")
+    explicit_contract_lot, cls_err = parse_positive_integral_lot(explicit_contract_lot_raw)
+
+    qty_raw = src.get("quantity_units")
+    if qty_raw in (None, ""):
+        qty_raw = src.get("lot_size")
+    if qty_raw in (None, ""):
+        qty_raw = src.get("lotSize")
+    if qty_raw in (None, ""):
+        qty_raw = src.get("lot_size_resolved")
+    qty_units, qty_err = parse_positive_integral_lot(qty_raw)
+
+    derived_contract_lot = None
+    derived_err = None
+    if explicit_contract_lot is None and qty_units is not None and number_of_lots and n_pack["valid"]:
+        if qty_units % int(number_of_lots) != 0:
+            derived_err = "quantity_units_not_divisible_by_number_of_lots"
+        else:
+            derived_contract_lot = qty_units // int(number_of_lots)
+
+    captured_for_compare = explicit_contract_lot if explicit_contract_lot is not None else derived_contract_lot
 
     lot_assumed = False
     expiry_cycle = src.get("expiry_cycle") or src.get("expiration_cycle")
-    dated = resolve_contract_lot(
-        index_key,
-        as_of=session or None,
-        number_of_lots=number_of_lots,
-        expiry=expiry_text,
-        expiry_cycle=expiry_cycle,
-        captured_contract_lot=explicit_contract_lot,
-        instrument_key=src.get("instrument_key") or src.get("instrumentKey"),
-        allow_operational_current=(not session and not expiry_text),
-    )
+
+    if not n_pack["valid"]:
+        dated = {
+            "resolved": False,
+            "lot_conflict": False,
+            "exclude_authoritative_calc": True,
+            "lot_source": number_of_lots_error or "invalid_number_of_lots",
+            "unavailable_reason": number_of_lots_error or "invalid_number_of_lots",
+            "lot_table_version": None,
+            "lot_as_of": None,
+            "contract_lot_size": None,
+            "lot_size": None,
+            "captured_contract_lot": captured_for_compare,
+            "rule_contract_lot": None,
+            "matched_rule_id": None,
+            "source_id": None,
+            "lot_provenance": None,
+            "lot_provenance_quality": None,
+            "expiry_cycle": expiry_cycle,
+            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
+        }
+    elif cls_err and explicit_contract_lot_raw not in (None, ""):
+        dated = {
+            "resolved": False,
+            "lot_conflict": False,
+            "exclude_authoritative_calc": True,
+            "lot_source": cls_err,
+            "unavailable_reason": cls_err,
+            "lot_table_version": None,
+            "lot_as_of": None,
+            "contract_lot_size": None,
+            "lot_size": None,
+            "captured_contract_lot": None,
+            "rule_contract_lot": None,
+            "matched_rule_id": None,
+            "source_id": None,
+            "lot_provenance": None,
+            "lot_provenance_quality": None,
+            "expiry_cycle": expiry_cycle,
+            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
+        }
+    elif derived_err:
+        dated = {
+            "resolved": False,
+            "lot_conflict": True,
+            "exclude_authoritative_calc": True,
+            "lot_source": derived_err,
+            "unavailable_reason": derived_err,
+            "lot_table_version": None,
+            "lot_as_of": None,
+            "contract_lot_size": None,
+            "lot_size": None,
+            "captured_contract_lot": None,
+            "rule_contract_lot": None,
+            "matched_rule_id": None,
+            "source_id": None,
+            "lot_provenance": None,
+            "lot_provenance_quality": None,
+            "expiry_cycle": expiry_cycle,
+            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
+            "retained_quantity_units": qty_units,
+            "retained_number_of_lots": number_of_lots,
+        }
+    else:
+        # Always compare captured/derived contract lot with authority in verified window.
+        dated = resolve_contract_lot(
+            index_key,
+            as_of=session or None,
+            number_of_lots=number_of_lots if number_of_lots is not None else 1,
+            expiry=expiry_text,
+            expiry_cycle=expiry_cycle,
+            captured_contract_lot=captured_for_compare,
+            instrument_key=src.get("instrument_key") or src.get("instrumentKey"),
+            allow_operational_current=(not session and not expiry_text),
+        )
 
     lot_conflict = bool(dated.get("lot_conflict"))
-    exclude_calc = bool(dated.get("exclude_authoritative_calc"))
+    exclude_calc = bool(dated.get("exclude_authoritative_calc")) or lot_conflict
 
-    if explicit_lot is not None and explicit_lot > 0 and not lot_conflict:
-        lot_size = float(explicit_lot)
-        lot_source = "explicit"
-        contract_lot_size = (
-            int(explicit_contract_lot)
-            if explicit_contract_lot is not None and explicit_contract_lot > 0
-            else (int(round(lot_size / number_of_lots)) if number_of_lots else int(lot_size))
-        )
-        lot_table_version = src.get("lot_table_version") or dated.get("lot_table_version")
-        lot_as_of = src.get("lot_as_of") or dated.get("lot_as_of")
+    if lot_conflict:
+        # Retain original observation; identity incomplete / quarantined.
+        lot_size = float(qty_units) if qty_units is not None else None
+        contract_lot_size = captured_for_compare
+        lot_source = dated.get("lot_source") or "captured_vs_rule_conflict"
+        lot_assumed = False
+        lot_table_version = dated.get("lot_table_version")
+        lot_as_of = dated.get("lot_as_of")
     elif dated.get("resolved"):
-        lot_size = float(dated["lot_size"])
+        lot_size = float(dated["lot_size"]) if dated.get("lot_size") is not None else None
         contract_lot_size = dated.get("contract_lot_size")
         lot_source = dated.get("lot_source") or "authoritative_contract_rule"
-        lot_assumed = True
+        lot_assumed = "captured" not in str(lot_source)
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
     else:
@@ -591,18 +680,73 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
 
-    # Measurement may use calendar with explicit dte_source; ranking uses trading only.
+    # Flat vs nested conflict
+    nested = src.get("contract_identity") if isinstance(src.get("contract_identity"), Mapping) else None
+    flat_nested_conflict = False
+    if nested:
+        for key in ("contract_lot_size", "number_of_lots", "index_key", "expiry"):
+            nv = nested.get(key)
+            fv = {
+                "contract_lot_size": contract_lot_size if not lot_conflict else captured_for_compare,
+                "number_of_lots": number_of_lots,
+                "index_key": index_display,
+                "expiry": expiry_text,
+            }.get(key)
+            if nv not in (None, "") and fv not in (None, ""):
+                if key in ("contract_lot_size", "number_of_lots"):
+                    ni, _ = parse_positive_integral_lot(nv)
+                    fi, _ = parse_positive_integral_lot(fv)
+                    if ni is not None and fi is not None and ni != fi:
+                        flat_nested_conflict = True
+                        break
+                elif str(nv).strip() != str(fv).strip():
+                    flat_nested_conflict = True
+                    break
+    if flat_nested_conflict:
+        lot_conflict = True
+        exclude_calc = True
+
+    # Quantity identity: quantity_units == contract_lot_size * number_of_lots
+    qty_ok = False
+    if (
+        contract_lot_size is not None
+        and number_of_lots is not None
+        and n_pack["valid"]
+        and not lot_conflict
+    ):
+        expected_qty = int(contract_lot_size) * int(number_of_lots)
+        if qty_units is not None:
+            qty_ok = qty_units == expected_qty
+            lot_size = float(expected_qty) if qty_ok else float(qty_units)
+        else:
+            lot_size = float(expected_qty)
+            qty_units = expected_qty
+            qty_ok = True
+    elif lot_size is not None and contract_lot_size is not None and number_of_lots is not None and n_pack["valid"]:
+        qty_ok = abs(float(lot_size) - float(contract_lot_size) * float(number_of_lots)) < 1e-9
+
+    dte_ok = dte_value is not None
+    if dte_basis in ("trading", "trading_dte", "explicit_tDTE") and trading_dte_val is None:
+        dte_ok = False
+
     bucket = measurement_dte_bucket(dte_value)
     ranking_bucket = ranking_dte_bucket(trading_dte_val)
+
+    cls_ok = contract_lot_size is not None and int(contract_lot_size) > 0
+    n_ok = n_pack["valid"] and number_of_lots is not None and int(number_of_lots) > 0
     identity_complete = bool(
         index_key in ("NF", "BNF")
-        and lot_size is not None
-        and lot_size > 0
         and expiry_text
-        and dte_value is not None
+        and dte_ok
+        and cls_ok
+        and n_ok
+        and qty_ok
         and not lot_conflict
+        and not flat_nested_conflict
+        and not exclude_calc
+        and dated.get("resolved")
     )
-    quarantine = not identity_complete or exclude_calc
+    quarantine = not identity_complete or exclude_calc or lot_conflict
     return {
         "index_key": index_display,
         "index_known": index_key in ("NF", "BNF"),
@@ -623,19 +767,23 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "dte_ranking_bucket_version": DTE_RANKING_BUCKET_VERSION,
         "contract_lot_size": contract_lot_size,
         "number_of_lots": number_of_lots,
-        "lot_size": None if lot_size is None else round(lot_size, 6),
-        "quantity_units": None if lot_size is None else round(lot_size, 6),
+        "number_of_lots_assumed": number_of_lots_assumed,
+        "number_of_lots_default_policy": n_pack.get("number_of_lots_default_policy"),
+        "number_of_lots_error": number_of_lots_error,
+        "lot_size": None if lot_size is None else round(float(lot_size), 6),
+        "quantity_units": None if (qty_units is None and lot_size is None) else round(float(qty_units if qty_units is not None else lot_size), 6),
         "lot_size_assumed": lot_assumed,
         "lot_size_source": lot_source,
         "lot_source": lot_source,
         "lot_table_version": lot_table_version,
         "lot_as_of": lot_as_of,
         "lot_conflict": lot_conflict,
+        "flat_nested_conflict": flat_nested_conflict,
         "lot_provenance": dated.get("lot_provenance"),
         "lot_provenance_quality": dated.get("lot_provenance_quality"),
         "matched_rule_id": dated.get("matched_rule_id"),
         "source_id": dated.get("source_id"),
-        "captured_contract_lot": dated.get("captured_contract_lot"),
+        "captured_contract_lot": dated.get("captured_contract_lot") if dated.get("captured_contract_lot") is not None else captured_for_compare,
         "rule_contract_lot": dated.get("rule_contract_lot"),
         "exclude_authoritative_calc": exclude_calc,
         "unavailable_reason": dated.get("unavailable_reason"),
@@ -644,9 +792,11 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "contract_identity_quarantine": quarantine,
         "evaluation_ineligible": quarantine,
         "calibration_ineligible": quarantine,
+        "one_lot_default_policy": ONE_LOT_DEFAULT_POLICY,
         "measurement_note": (
             "Measurement DTE buckets ≠ ranking (stage2a) buckets. "
             "Calendar DTE is never silently substituted into trading-DTE ranking. "
+            "Legacy lot_size alone is never verified without authority compare. "
             + CONTRACT_LOT_TABLE_NOTE
         ),
     }
