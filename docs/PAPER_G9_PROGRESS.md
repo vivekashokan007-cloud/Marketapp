@@ -3,15 +3,26 @@
 **Status:** Local implementation on isolated branch. **NOT pushed.**  
 **Publishing pause:** strict — no push, no merge to main, no APK/PWA publish, no production Supabase migrations, no ml_train enablement, no live orders, no sizing promotion.
 
-Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commit).
+Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commit).  
+**Final review:** [`REVIEW_REPORT_G8_G10_20260913.md`](./REVIEW_REPORT_G8_G10_20260913.md)
 
-## Tip SHAs (local only)
+## Tip SHAs (local only) — FINAL
 
 | Repo | Branch | Tip SHA | Note |
 |---|---|---|---|
-| Marketapp | `work/g8-g10-integrity-20260913` | `8cfc326896bac245b495a73b0ffeeaf15f2bc718` | Paper analysis + lineage + G9 advisory |
-| MarketVivi | `work/g8-g10-integrity-20260913` | `97999706c6a771d4fc98968143419b3efc2fc77e` | Paper analysis alternatives UI; cache `app.js?v=1336` |
-| Prior Marketapp G8 | same branch | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | parent |
+| Marketapp | `work/g8-g10-integrity-20260913` | `TIP_MA` | finish gaps + review docs |
+| MarketVivi | `work/g8-g10-integrity-20260913` | `TIP_MV` | Kelly readout + review docs |
+| Marketapp feature (pre-docs) | same | `98a86c25cc2b9d07f785dabc9e55381c92f46dfd` | multi-page export / E3 honesty / champion CLI |
+| MarketVivi feature (pre-docs) | same | `79582db1eabf5e9a291b496c624b5bba3c181a0a` | experimental Kelly PWA |
+| Prior Marketapp G8 | same branch | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | G8 integrity parent |
+
+## Finish pass (2026-09-13 later)
+
+1. **Multi-page deterministic export** — `SupabaseClient.selectAllPages` / `fetchRecentEvaluationOutcomesPaged` / `fetchRecentBrainSnapshotsPaged`; wired into `exportAppTrades` + `exportCanonicalEvaluationInputs` (replaces page-0+incomplete-only).
+2. **E3 honesty** — mid-loop remote upsert **not** wired; runtime remains end-of-run `saveEvaluationOutcomes`; `e3_persistence_contract.RUNTIME_MID_LOOP_REMOTE_UPSERT=False`.
+3. **Champion/challenger CLI** — `tools/champion_challenger_compare.py` (read-only, no promotion).
+4. **Tests** — `python3 -m unittest discover -s app/src/main/python/tests -q` → **742 OK**.
+5. **Optional PWA** — `experimentalKellyAdvisoryReadout` labelled experimental; not order qty; `app.js?v=1337`.
 
 ## A) Paper lane (sole experimental lane)
 
@@ -28,7 +39,7 @@ Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commi
 - `notification_lineage.py`: stable idempotency keys; device-recovery merge of `position_alert_states`.
 - `NotificationAgent.snapshot_state` stamps `notification_lineage_version` and normalizes state shape for restart.
 - Existing MarketMLService atomic checkpoint / upsert-on-conflict paths retained (source-contract tested).
-- **Still incomplete for final review:** live Kotlin per-batch remote persist during evaluation loop (cursor is contract-ready; end-of-run `saveEvaluationOutcomes` remains the write path); on-device restart/notification delivery proof; Gradle/Android suite blocked locally (no JDK).
+- **Runtime write path:** end-of-run `saveEvaluationOutcomes` (documented). Mid-run remote upsert deferred.
 
 ### A4 — ML evaluation lineage (G4/G5/G6)
 - `evaluation_outcome_lineage.py` stamps/verifies session, snapshot, candidate, model hash, feature schema, policy selector, net-target, exit-policy, run ledger, metrics contract versions.
@@ -41,42 +52,18 @@ Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commi
 - Fractional Kelly + Bayesian (Beta prior) Kelly; capped by max-risk %, exposure, concentration, margin, liquidity lot cap, max lots.
 - Output labelled `experimental_advisory_only`; `mutates_trade_quantity=False`, `mutates_risk_limits=False`, `p_ml_gate_unchanged=True`.
 - Live quantity passthrough remains 1-lot operating assumption.
+- PWA experimental Kelly readout mirrors advisory posture only (client heuristic from `p_ml` + R:R).
 - Promotion: `<20` sessions or `<60` closed trades → `no_promotion_insufficient_multi_session_evidence`; even above thresholds `recommend_promote=False` (separate review required).
-- Claude’s original +38,633 / 627-test patch still **not supplied** — this is an independent advisory scaffold, not that patch.
 
 ## Tests
 
 ```text
 python3 -m unittest discover -s app/src/main/python/tests -q
-Ran 731 tests in ~3.5–3.9s
+Ran 742 tests in ~3.6s
 OK
 ```
 
-New focused coverage: paper analysis, outcome lineage, notification/E3 contracts, G9 Kelly, PWA/NativeBridge source contracts (~20 tests).
-
-## Changed files (high level)
-
-**Marketapp**
-- `app/src/main/python/paper_analysis_eligibility.py` *(new)*
-- `app/src/main/python/evaluation_outcome_lineage.py` *(new)*
-- `app/src/main/python/notification_lineage.py` *(new)*
-- `app/src/main/python/e3_persistence_contract.py` *(new)*
-- `app/src/main/python/g9_sizing_kelly.py` *(new)*
-- `app/src/main/python/brain.py`
-- `app/src/main/java/.../NativeBridge.kt`
-- `app/src/main/python/tests/test_paper_analysis_eligibility.py` *(new)*
-- `app/src/main/python/tests/test_evaluation_outcome_lineage.py` *(new)*
-- `app/src/main/python/tests/test_notification_lineage_e3.py` *(new)*
-- `app/src/main/python/tests/test_g9_sizing_kelly.py` *(new)*
-- `app/src/main/python/tests/test_paper_g9_source_contracts.py` *(new)*
-
-**MarketVivi**
-- `app.js` — paper analysis alternatives lane
-- `index.html` — `app.js?v=1336`
-
-**Docs (mr-g8plus workspace)**
-- `PAPER_G9_PROGRESS.md` *(this file)*
-- `G8_PROGRESS.md` — pointer retained
+Kotlin/JDK suite blocked locally (no JAVA_HOME).
 
 ## Explicit non-actions
 
@@ -87,11 +74,6 @@ New focused coverage: paper analysis, outcome lineage, notification/E3 contracts
 - No removal/weakening of live `p_ml` gate
 - No silent live quantity / risk-limit change from G9
 
-## Still incomplete for final review report
+## Recommendation (from review report)
 
-1. Wire E3 batch cursor into Kotlin evaluation loop for mid-run remote upserts (contract exists; runtime still end-of-run save).
-2. Device/CI: NotificationAgent recovery after process kill; PositionTickService lineage delivery evidence.
-3. JDK/Gradle Android unit tests.
-4. Multi-session Real-only sizing evidence inventory (G9 remains no-promote).
-5. Optional: surface advisory Kelly lots in PWA as labelled experimental readout (not wired to order qty).
-6. G8 remaining: multi-page export fetch; champion/challenger offline CLI.
+**Not ready** for next paper phase *promotion* gates. Ready only for continued paper-only observation under publishing pause.
