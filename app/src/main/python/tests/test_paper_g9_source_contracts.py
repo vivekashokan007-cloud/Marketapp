@@ -38,9 +38,11 @@ class PaperG9SourceContractTests(unittest.TestCase):
     def test_pwa_exposes_experimental_kelly_advisory_readout(self):
         text = Path(PWA).read_text(encoding="utf-8")
         self.assertIn("experimentalKellyAdvisoryReadout", text)
-        self.assertIn("EXPERIMENTAL Kelly", text)
-        self.assertIn("not order qty", text)
-        self.assertIn("p_ml gate unchanged", text)
+        # Codex B7: Kelly lot readout hidden until Python G9 sizing is wired safely.
+        self.assertNotIn("EXPERIMENTAL Kelly", text)
+        self.assertNotIn("readout lots", text)
+        fn = text[text.find("function experimentalKellyAdvisoryReadout"):text.find("function experimentalKellyAdvisoryReadout")+200]
+        self.assertIn("return ''", fn)
         # Must not wire into takeTrade quantity
         self.assertIn("takeTrade('${cand.id}', false)", text)
 

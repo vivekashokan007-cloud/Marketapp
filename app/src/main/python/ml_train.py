@@ -6,7 +6,7 @@ Called by Kotlin TrainingService via Chaquopy at 11 PM nightly.
 Usage (Kotlin via Chaquopy):
     Python.getModule("ml_train").callAttr("run",
         "/data/backtest_trades.csv",   # primary training data
-        "/data/app_trades.json",       # live app trades (may be empty)
+        "/data/app_trades.json",       # paper research export path (NOT live; training disabled)
         "/data/ml_model.json",          # current model (replaced if better)
         log_fn,                         # optional Kotlin callback for logs
         "/data/evaluation_outcomes.json",
@@ -331,7 +331,9 @@ def _snapshot_candidate_to_row(cand, snap_ctx, outcome, snap):
     strategy = str(cand.get('type') or cand.get('strategy') or '').upper()
     if not strategy:
         return None
-    index = str(cand.get('index') or 'NF').upper()
+    index = str(cand.get('index') or cand.get('index_key') or 'UNKNOWN').upper()
+    if index not in ('NF', 'BNF'):
+        index = 'UNKNOWN'
     # Merge outcome + candidate fields for net annotation (G8).
     label_src = dict(outcome) if isinstance(outcome, dict) else {}
     for k in ('managed_pnl', 'learning_won_net', 'net_pnl', 'sim_pnl_h2',
@@ -534,7 +536,27 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_pa
 
     try:
         result['reason'] = RETRAIN_DISABLED_REASON
+        result['live_training_eligible'] = False
+        result['paper_contamination_guard'] = 'ml_train_disabled_paper_not_live'
         log(f"ml_train: SKIPPED — {RETRAIN_DISABLED_REASON}")
+        # Even while disabled, refuse incomplete / mismatched paper export manifests.
+        try:
+            import os
+            for status_name in ('paper_trades_export_status.json', 'app_trades_export_status.json'):
+                status_path = os.path.join(os.path.dirname(app_trades_path or '') or '.', status_name)
+                if os.path.isfile(status_path):
+                    with open(status_path, 'r', encoding='utf-8') as fh:
+                        manifest = json.load(fh)
+                    if str(manifest.get('status') or '') != 'complete':
+                        result['reason'] = f"export_manifest_incomplete:{manifest.get('status')}"
+                        log(f"ml_train: ABORT — incomplete export manifest {status_name}")
+                        break
+                    if manifest.get('live_training_eligible') is True:
+                        result['reason'] = 'paper_export_marked_live_training_eligible_blocked'
+                        log('ml_train: ABORT — paper export must not be live-training eligible')
+                        break
+        except Exception as ex:
+            log(f"ml_train: manifest guard error (non-fatal while disabled): {ex}")
         result['duration_sec'] = round(time.time() - t0, 1)
         return json.dumps(result)
 
