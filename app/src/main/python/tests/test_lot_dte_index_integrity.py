@@ -36,8 +36,11 @@ from canonical_net_profitability import (
     assess_unit_eligibility,
 )
 from contract_lot_table import (
+    ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS,
     DTE_RANKING_BUCKET_VERSION,
     LOT_TABLE_VERSION_ID,
+    PRIMARY_SECONDARY_THIN_DB_COLUMNS,
+    android_compact_teacher_candidate_v1,
     clear_lot_table_cache,
     json_round_trip_identity,
     ranking_dte_bucket,
@@ -767,8 +770,8 @@ class CapturedMetadataConflictTests(unittest.TestCase):
 
 
 class PersistenceBoundaryMockTests(unittest.TestCase):
-    def test_roles_roundtrip_preserve_identity(self):
-        identity = resolve_contract_identity({
+    def _identity(self):
+        return resolve_contract_identity({
             "index_key": "NF",
             "expiry": "2026-01-06",
             "expiry_cycle": "weekly",
@@ -779,15 +782,135 @@ class PersistenceBoundaryMockTests(unittest.TestCase):
             "calendar_dte": 66,
             "trading_dte": None,
         })
+
+    def test_android_compact_keeps_identity_drops_unknown(self):
+        identity = self._identity()
+        candidate = {
+            **identity,
+            "index": "NF",
+            "expiry": "2026-01-06",
+            "tDTE": 66,
+            "contract_identity": {
+                "index_key": "NF",
+                "lot_size": 65,
+                "identity_complete": identity.get("identity_complete"),
+            },
+            "bulky_noise": {"drop": True},
+            "pc2_gate_basis": [{"gate": "x"}],
+        }
+        compacted = android_compact_teacher_candidate_v1(candidate)
+        self.assertNotIn("bulky_noise", compacted)
+        self.assertNotIn("pc2_gate_basis", compacted)
+        for key in (
+            "index_key", "expiry_cycle", "calendar_dte", "contract_lot_size",
+            "number_of_lots", "lot_size", "lot_table_version", "identity_complete",
+            "contract_identity", "index", "expiry",
+        ):
+            self.assertIn(key, compacted, key)
+        self.assertEqual(compacted["contract_lot_size"], 65)
+        self.assertEqual(compacted["contract_identity"]["index_key"], "NF")
+        self.assertIn("index_key", ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS)
+        self.assertIn("contract_identity", ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS)
+
+    def test_roles_roundtrip_preserve_identity(self):
+        identity = self._identity()
         for role in ("primary", "secondary", "rejected", "non_primary"):
             result = simulate_persistence_boundary_roundtrip(identity, role=role)
+            self.assertEqual(result["boundary"], "android_compact_teacher_candidate_v1")
+            self.assertTrue(result["compact_identity_survived"], role)
             self.assertTrue(result["fields_preserved"], role)
             self.assertFalse(result["db_boundary_tested"])
             self.assertIn("Supabase", result["untested_db_boundary"])
-            self.assertEqual(result["readback"]["role"], role)
-            self.assertEqual(result["readback"]["index_key"], "NF")
-            self.assertEqual(result["readback"]["contract_lot_size"], identity.get("contract_lot_size"))
+            self.assertIn("blocked", result["primary_db_identity_columns_status"].lower())
+            self.assertEqual(result["readback"]["role"], role if role != "non_primary" else "non_primary")
+            # After android-compact, identity keys survive on compacted candidate
+            compacted = result["android_compacted"]
+            self.assertEqual(compacted.get("index_key"), "NF")
+            self.assertEqual(compacted.get("contract_lot_size"), identity.get("contract_lot_size"))
+            self.assertIn("contract_identity", compacted)
 
+    def test_primary_secondary_intended_upload_has_contract_identity_mock(self):
+        identity = self._identity()
+        for role in ("primary", "secondary"):
+            result = simulate_persistence_boundary_roundtrip(identity, role=role)
+            intended = result["intended_upload"]
+            self.assertIn("contract_identity", intended)
+            self.assertEqual(intended["contract_identity"]["index_key"], "NF")
+            self.assertEqual(intended["contract_identity"]["lot_size"], 65)
+            # Thin prod columns list explicitly excludes lot/DTE identity
+            self.assertIn("index_key", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
+            self.assertNotIn("contract_lot_size", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
+            self.assertNotIn("calendar_dte", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
+            self.assertNotIn("outcome_json", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
+            # Readback mock keeps contract_identity (intended_upload enrichment)
+            self.assertIn("contract_identity", result["readback"])
+            self.assertNotIn("outcome_json", result["readback"])
+
+    def test_rejected_outcome_json_roundtrip_preserves_identity(self):
+        identity = self._identity()
+        result = simulate_persistence_boundary_roundtrip(identity, role="rejected")
+        readback = result["readback"]
+        self.assertIn("outcome_json", readback)
+        oj = readback["outcome_json"]
+        self.assertEqual(oj.get("index_key"), "NF")
+        self.assertEqual(oj.get("contract_lot_size"), 65)
+        self.assertEqual(oj.get("calendar_dte"), identity.get("calendar_dte"))
+        self.assertIn("contract_identity", oj)
+        self.assertEqual(oj["contract_identity"]["lot_table_version"], LOT_TABLE_VERSION_ID)
+        self.assertTrue(result["fields_preserved"])
+
+    def test_unknown_quarantine_retained_after_android_compact(self):
+        identity = self._identity()
+        identity = dict(identity)
+        identity.update({
+            "contract_identity_quarantine": True,
+            "evaluation_ineligible": True,
+            "calibration_ineligible": True,
+            "exclusion_reason": REASON_CONTRACT_IDENTITY_UNKNOWN,
+            "retained_for_recovery": True,
+        })
+        # Direct compact step
+        candidate = {
+            **identity,
+            "index": "NF",
+            "contract_identity": {"index_key": "NF", "identity_complete": False},
+            "unknown_extra_should_drop": 1,
+        }
+        compacted = android_compact_teacher_candidate_v1(candidate)
+        self.assertTrue(compacted["contract_identity_quarantine"])
+        self.assertTrue(compacted["retained_for_recovery"])
+        self.assertEqual(compacted["exclusion_reason"], REASON_CONTRACT_IDENTITY_UNKNOWN)
+        self.assertNotIn("unknown_extra_should_drop", compacted)
+
+        result = simulate_persistence_boundary_roundtrip(identity, role="rejected")
+        self.assertTrue(result["quarantine_retained"])
+        oj = result["readback"]["outcome_json"]
+        self.assertTrue(oj.get("contract_identity_quarantine"))
+        self.assertTrue(oj.get("retained_for_recovery"))
+        self.assertEqual(oj.get("exclusion_reason"), REASON_CONTRACT_IDENTITY_UNKNOWN)
+
+    def test_kotlin_allowlist_source_contains_identity_keys(self):
+        """Cross-check MarketMLService.kt allowlist without requiring Android SDK."""
+        # tests/ → python/ → main/ → java/...
+        ml_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__),
+            "..", "..", "java", "com", "marketradar", "app", "MarketMLService.kt",
+        ))
+        self.assertTrue(os.path.isfile(ml_path), ml_path)
+        with open(ml_path, "r", encoding="utf-8") as handle:
+            source = handle.read()
+        self.assertIn("CONTRACT_IDENTITY_COMPACTION_KEYS", source)
+        fn = source.split("private fun compactTeacherResearchCandidate", 1)[1]
+        fn = fn.split("private fun compactTeacherResearchCandidates", 1)[0]
+        self.assertIn("CONTRACT_IDENTITY_COMPACTION_KEYS", fn)
+        for key in (
+            "index_key", "expiry_cycle", "calendar_dte", "trading_dte",
+            "contract_lot_size", "number_of_lots", "lot_size", "quantity_units",
+            "lot_source", "lot_table_version", "contract_identity",
+            "identity_complete", "exclusion_reason", "retained_for_recovery",
+            "contract_identity_quarantine",
+        ):
+            self.assertIn(f'"{key}"', source, key)
 
 
 if __name__ == "__main__":

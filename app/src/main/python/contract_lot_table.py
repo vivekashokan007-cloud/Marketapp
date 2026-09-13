@@ -922,65 +922,209 @@ def json_round_trip_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(payload, default=str))
 
 
+# Mirrors MarketMLService.CONTRACT_IDENTITY_COMPACTION_KEYS (+ index/expiry/tDTE
+# already present on the Android teacher-research candidate allowlist).
+ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS = (
+    "index",
+    "expiry",
+    "tDTE",
+    "index_key",
+    "expiry_cycle",
+    "calendar_dte",
+    "trading_dte",
+    "dte_basis",
+    "dte_source",
+    "dte_calendar_version",
+    "contract_lot_size",
+    "number_of_lots",
+    "lot_size",
+    "quantity_units",
+    "quantity_unit",
+    "lot_source",
+    "lot_table_version",
+    "lot_as_of",
+    "lot_conflict",
+    "matched_rule_id",
+    "captured_contract_lot",
+    "rule_contract_lot",
+    "contract_identity_quarantine",
+    "evaluation_ineligible",
+    "calibration_ineligible",
+    "contract_identity",
+    "identity_complete",
+    "exclusion_reason",
+    "retained_for_recovery",
+)
+
+# Production primary/secondary teacher outcome tables keep thin columns only —
+# no outcome_json, no contract_lot_size / calendar_dte / trading_dte columns.
+# Migrating those columns is BLOCKED under publishing pause.
+PRIMARY_SECONDARY_THIN_DB_COLUMNS = (
+    "snapshot_id",
+    "session_date",
+    "candidate_id",
+    "lane",
+    "index_key",
+    "trade_mode",
+    "strategy_type",
+    "role",
+    "sim_pnl_h2",
+    "outcome_h2",
+    "canonical_won",
+    "created_at",
+)
+
+
+def android_compact_teacher_candidate_v1(
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Explicit Android allowlist strip (boundary: android_compact_teacher_candidate_v1).
+
+    Mirrors MarketMLService.compactTeacherResearchCandidate retention of
+    CONTRACT_IDENTITY_COMPACTION_KEYS plus index / expiry / tDTE. Unknown keys
+    (bulky diagnostics) are dropped; nested contract_identity is kept whole.
+    """
+    out: dict[str, Any] = {}
+    for key in ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS:
+        if key not in candidate:
+            continue
+        value = candidate[key]
+        if value is None:
+            continue
+        out[key] = value
+    return out
+
+
+def _mock_thin_primary_secondary_row(
+    compacted: Mapping[str, Any],
+    *,
+    role: str,
+) -> dict[str, Any]:
+    """Intended mock upload for primary/secondary under current thin DB schema.
+
+    Adds contract_identity on the *mock intended_upload* for lineage proof.
+    Production buildEvaluationRows / buildRecommendationRows do NOT persist
+    outcome_json or lot/DTE identity columns — that remains blocked/deferred.
+    """
+    stamped = compacted.get("contract_identity")
+    if not isinstance(stamped, Mapping):
+        stamped = {
+            k: compacted.get(k)
+            for k in ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS
+            if k in compacted and k != "contract_identity"
+        }
+    row = {
+        "snapshot_id": compacted.get("snapshot_id"),
+        "session_date": compacted.get("session_date"),
+        "candidate_id": compacted.get("candidate_id"),
+        "lane": compacted.get("lane"),
+        "index_key": compacted.get("index_key") or compacted.get("index"),
+        "trade_mode": compacted.get("trade_mode"),
+        "strategy_type": compacted.get("strategy_type") or compacted.get("type"),
+        "role": role,
+        "sim_pnl_h2": compacted.get("sim_pnl_h2"),
+        "outcome_h2": compacted.get("outcome_h2"),
+        "canonical_won": compacted.get("canonical_won"),
+        "created_at": compacted.get("created_at") or "mock-now",
+        # Mock enrichment only — NOT a production primary/secondary column today.
+        "contract_identity": dict(stamped) if isinstance(stamped, Mapping) else stamped,
+        "_mock_note": (
+            "contract_identity attached on mock intended_upload only; "
+            "prod primary/secondary thin columns lack outcome_json and "
+            "lot/DTE identity fields (blocked/deferred — no prod migrate)."
+        ),
+    }
+    return row
+
+
+def _mock_rejected_row_with_outcome_json(
+    compacted: Mapping[str, Any],
+    *,
+    role: str = "rejected",
+) -> dict[str, Any]:
+    """Rejected path: whole src lands in outcome_json (mirrors buildRejectedEvaluationRows)."""
+    src = dict(compacted)
+    src["role"] = role
+    return {
+        "id": src.get("id") or "mock-rejected-id",
+        "snapshot_id": src.get("snapshot_id") or "snapshot_unknown",
+        "session_date": src.get("session_date"),
+        "candidate_id": src.get("candidate_id") or "candidate_0",
+        "role": "rejected",
+        "index_key": src.get("index_key") or src.get("index"),
+        "outcome_json": src,
+        "created_at": src.get("created_at") or "mock-now",
+    }
+
+
 def simulate_persistence_boundary_roundtrip(
     identity: Mapping[str, Any],
     *,
     role: str = "primary",
 ) -> dict[str, Any]:
-    """Exercise candidate→lineage→upload-payload→JSON storage→readback (mock).
+    """Exercise candidate → android-compact → lineage → intended_upload → store → readback.
 
-    Does not touch production DB. Identifies the untested DB boundary explicitly.
+    Boundary label for the strip step: ``android_compact_teacher_candidate_v1``.
+    Does not touch production DB. Primary/secondary prod columns remain thin
+    (no outcome_json / contract_lot / calendar_dte) — blocked/deferred under
+    publishing pause. Rejected rows prove identity via outcome_json=src.
     """
     stamped = contract_identity_fields_for_json(identity)
+    role_norm = str(role or "primary").strip().lower() or "primary"
+
+    # 1) Candidate / snapshot payload (pre-compact), including nested object
+    #    and quarantine recovery markers when present on the input identity.
+    candidate = {
+        "id": identity.get("id") or identity.get("candidate_id") or "cand-mock",
+        "candidate_id": identity.get("candidate_id") or "cand-mock",
+        "snapshot_id": identity.get("snapshot_id") or 1,
+        "session_date": identity.get("session_date"),
+        "lane": identity.get("lane") or "mock_lane",
+        "trade_mode": identity.get("trade_mode") or "paper",
+        "strategy_type": identity.get("strategy_type") or identity.get("type") or "BULL_PUT",
+        "type": identity.get("type") or identity.get("strategy_type") or "BULL_PUT",
+        "index": identity.get("index") or stamped.get("index_key"),
+        "expiry": stamped.get("expiry") or identity.get("expiry"),
+        "tDTE": stamped.get("tDTE") if stamped.get("tDTE") is not None else stamped.get("trading_dte"),
+        "role": role_norm,
+        "contract_identity": stamped,
+        "bulky_diagnostic_drop_me": {"noise": list(range(20))},
+    }
+    for key in ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS:
+        if key in ("index", "expiry", "tDTE", "contract_identity"):
+            continue
+        if key in identity and identity[key] is not None:
+            candidate[key] = identity[key]
+        elif key in stamped and stamped[key] is not None:
+            candidate[key] = stamped[key]
+
+    # 2) Android allowlist strip (explicit boundary)
+    compacted = android_compact_teacher_candidate_v1(candidate)
+    compacted["role"] = role_norm
+    compacted["snapshot_id"] = candidate["snapshot_id"]
+    compacted["session_date"] = candidate.get("session_date")
+    compacted["candidate_id"] = candidate.get("candidate_id")
+    compacted["lane"] = candidate.get("lane")
+    compacted["trade_mode"] = candidate.get("trade_mode")
+    compacted["strategy_type"] = candidate.get("strategy_type")
+    # Ensure nested contract_identity present after compact when allowlisted
+    if "contract_identity" not in compacted and stamped:
+        # Should not happen once Kotlin/Python allowlists include it; keep defensive.
+        compacted["contract_identity"] = stamped
+
+    assert "bulky_diagnostic_drop_me" not in compacted
+
+    # 3) Evaluation lineage from compacted candidate
     lineage = {
         "evaluation_lineage": {
-            "contract_identity": stamped,
-            "role": role,
+            "contract_identity": compacted.get("contract_identity") or stamped,
+            "role": role_norm,
             "persistence_mock": True,
+            "android_compact_boundary": "android_compact_teacher_candidate_v1",
         },
-        "role": role,
-        **{k: stamped[k] for k in ("index_key", "expiry", "contract_lot_size",
-                                    "number_of_lots", "lot_size", "calendar_dte",
-                                    "trading_dte", "lot_table_version")
-           if k in stamped},
-    }
-    # Kotlin compaction analogue: keep identity keys, drop bulky diagnostics
-    compacted = {
-        "role": role,
-        "contract_identity": stamped,
-        "index_key": stamped.get("index_key"),
-        "expiry": stamped.get("expiry"),
-        "contract_lot_size": stamped.get("contract_lot_size"),
-        "number_of_lots": stamped.get("number_of_lots"),
-        "lot_size": stamped.get("lot_size"),
-        "calendar_dte": stamped.get("calendar_dte"),
-        "trading_dte": stamped.get("trading_dte"),
-        "lot_source": stamped.get("lot_source"),
-        "lot_table_version": stamped.get("lot_table_version"),
-        "identity_complete": stamped.get("identity_complete"),
-    }
-    upload_payload = {"outcomes": [compacted], "schema": "mock_upload_v1"}
-    stored = json.loads(json.dumps(upload_payload, default=str))
-    readback = stored["outcomes"][0]
-    metrics_slice = {
-        "index_key": readback.get("index_key"),
-        "dte_bucket": measurement_dte_bucket(
-            readback.get("calendar_dte")
-            if readback.get("calendar_dte") is not None
-            else readback.get("trading_dte")
-        ),
-        "lot_size": readback.get("lot_size"),
-        "lot_table_version": readback.get("lot_table_version"),
-        "support_definition": "rows_in_mock_slice",
-    }
-    return {
-        "lineage": lineage,
-        "compacted": compacted,
-        "upload_payload": upload_payload,
-        "readback": readback,
-        "metrics_slice": metrics_slice,
-        "fields_preserved": all(
-            readback.get(k) == stamped.get(k)
+        "role": role_norm,
+        **{
+            k: compacted[k]
             for k in (
                 "index_key",
                 "expiry",
@@ -990,13 +1134,135 @@ def simulate_persistence_boundary_roundtrip(
                 "calendar_dte",
                 "trading_dte",
                 "lot_table_version",
+                "identity_complete",
+            )
+            if k in compacted
+        },
+    }
+
+    # 4) Intended upload payload (role-aware mock of SupabaseClient builders)
+    if role_norm == "rejected":
+        intended_row = _mock_rejected_row_with_outcome_json(compacted, role=role_norm)
+        schema = "mock_rejected_outcome_json_v1"
+    else:
+        intended_row = _mock_thin_primary_secondary_row(compacted, role=role_norm)
+        schema = "mock_primary_secondary_intended_upload_v1"
+
+    upload_payload = {
+        "outcomes": [intended_row],
+        "schema": schema,
+        "android_compact_boundary": "android_compact_teacher_candidate_v1",
+    }
+
+    # 5) Mock store + readback (JSON only — not production DB)
+    stored = json.loads(json.dumps(upload_payload, default=str))
+    readback = stored["outcomes"][0]
+
+    # Identity survival proof after android-compact + role-specific payload
+    if role_norm == "rejected":
+        oj = readback.get("outcome_json") or {}
+        identity_source = oj
+        fields_preserved = all(
+            oj.get(k) == stamped.get(k)
+            for k in (
+                "index_key",
+                "expiry",
+                "contract_lot_size",
+                "number_of_lots",
+                "lot_size",
+                "calendar_dte",
+                "trading_dte",
+                "lot_table_version",
+                "identity_complete",
             )
             if k in stamped
+        ) and (oj.get("contract_identity") or {}).get("index_key") == stamped.get("index_key")
+        quarantine_retained = (
+            oj.get("contract_identity_quarantine") == candidate.get("contract_identity_quarantine")
+            and oj.get("exclusion_reason") == candidate.get("exclusion_reason")
+            and oj.get("retained_for_recovery") == candidate.get("retained_for_recovery")
+        ) if candidate.get("contract_identity_quarantine") else None
+    else:
+        ci = readback.get("contract_identity") or {}
+        identity_source = ci
+        # Thin DB columns themselves do not carry lot/DTE; mock intended_upload
+        # carries contract_identity for proof. Prod column persistence blocked.
+        fields_preserved = all(
+            ci.get(k) == stamped.get(k)
+            for k in (
+                "index_key",
+                "expiry",
+                "contract_lot_size",
+                "number_of_lots",
+                "lot_size",
+                "calendar_dte",
+                "trading_dte",
+                "lot_table_version",
+                "identity_complete",
+            )
+            if k in stamped
+        )
+        quarantine_retained = (
+            compacted.get("contract_identity_quarantine") == candidate.get("contract_identity_quarantine")
+            and compacted.get("exclusion_reason") == candidate.get("exclusion_reason")
+            and compacted.get("retained_for_recovery") == candidate.get("retained_for_recovery")
+        ) if candidate.get("contract_identity_quarantine") else None
+
+    # Compact-step proof (before role upload shaping)
+    compact_identity_survived = all(
+        compacted.get(k) == candidate.get(k)
+        for k in ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS
+        if k in candidate and candidate[k] is not None
+    )
+
+    metrics_slice = {
+        "index_key": (identity_source.get("index_key")
+                      if isinstance(identity_source, Mapping)
+                      else readback.get("index_key")),
+        "dte_bucket": measurement_dte_bucket(
+            (identity_source.get("calendar_dte")
+             if isinstance(identity_source, Mapping) else None)
+            if (isinstance(identity_source, Mapping)
+                and identity_source.get("calendar_dte") is not None)
+            else (identity_source.get("trading_dte")
+                  if isinstance(identity_source, Mapping) else None)
+        ),
+        "lot_size": (
+            identity_source.get("lot_size")
+            if isinstance(identity_source, Mapping) else None
+        ),
+        "lot_table_version": (
+            identity_source.get("lot_table_version")
+            if isinstance(identity_source, Mapping) else None
+        ),
+        "support_definition": "rows_in_mock_slice",
+    }
+
+    return {
+        "boundary": "android_compact_teacher_candidate_v1",
+        "candidate": candidate,
+        "android_compacted": compacted,
+        "lineage": lineage,
+        "compacted": compacted,  # alias for older callers/tests
+        "intended_upload": intended_row,
+        "upload_payload": upload_payload,
+        "readback": readback,
+        "metrics_slice": metrics_slice,
+        "compact_identity_survived": compact_identity_survived,
+        "fields_preserved": fields_preserved,
+        "quarantine_retained": quarantine_retained,
+        "primary_secondary_thin_db_columns": list(PRIMARY_SECONDARY_THIN_DB_COLUMNS),
+        "primary_db_identity_columns_status": (
+            "blocked_deferred: prod buildEvaluationRows/buildRecommendationRows "
+            "keep thin columns only — no outcome_json, no contract_lot_size, "
+            "no calendar_dte/trading_dte. Mock intended_upload attaches "
+            "contract_identity for proof; no production migration under pause."
         ),
         "untested_db_boundary": (
             "Production Supabase/Postgres outcome columns and "
             "saveEvaluationOutcomes remote upsert are NOT exercised; "
-            "JSON mock only. Mid-loop remote persistence remains end-of-run."
+            "JSON mock only. Mid-loop remote persistence remains end-of-run. "
+            "Primary/secondary lot/DTE identity DB columns blocked/deferred."
         ),
         "db_boundary_tested": False,
     }
@@ -1025,5 +1291,8 @@ __all__ = [
     "ranking_dte_bucket",
     "contract_identity_fields_for_json",
     "json_round_trip_identity",
+    "ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS",
+    "PRIMARY_SECONDARY_THIN_DB_COLUMNS",
+    "android_compact_teacher_candidate_v1",
     "simulate_persistence_boundary_roundtrip",
 ]
