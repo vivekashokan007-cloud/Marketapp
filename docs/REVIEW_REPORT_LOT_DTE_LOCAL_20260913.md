@@ -9,7 +9,7 @@
 | Branch | `work/g8-g10-integrity-20260913` (local only) |
 | Base (merge-base `origin/main`) | `f03cd2aacd4cadadf013794f3229bdb504c36e8e` |
 | Tip before this finish | `20d15c57fcf965b907384ec220f410e38937ffbc` |
-| Tip after this finish | *(see git log after commit)* |
+| Tip after this finish | `3ba3d5085d5cfe378653462d45f7526306f126d1` |
 
 ## Declaration
 
