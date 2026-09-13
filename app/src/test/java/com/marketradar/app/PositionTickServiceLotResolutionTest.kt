@@ -4,7 +4,9 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 class PositionTickServiceLotResolutionTest {
     @Test
@@ -45,7 +47,7 @@ class PositionTickServiceLotResolutionTest {
         requireNotNull(resolved)
         assertEquals(60.0, resolved.lotSize, 0.0001)
         assertEquals(true, resolved.assumed)
-        assertEquals("dated_contract_table", resolved.source)
+        assertEquals("operational_current_lots", resolved.source)
     }
 
     @Test
@@ -97,8 +99,9 @@ class PositionTickServiceLotResolutionTest {
 
         assertEquals(1134.25, pnl, 0.0001)
     }
+
     @Test
-    fun datedHistoricalLotUsesPeriodTable() {
+    fun unsupportedHistoryAsOfOnlyFailClosed() {
         val trade = JSONObject(
             """
             {
@@ -109,11 +112,7 @@ class PositionTickServiceLotResolutionTest {
             }
             """.trimIndent()
         )
-        val resolved = resolvePositionTickLotMeta(trade)
-        requireNotNull(resolved)
-        assertEquals(25.0, resolved.lotSize, 0.0001)
-        assertEquals(true, resolved.assumed)
-        assertEquals(ContractLotTable.VERSION_ID, resolved.lotTableVersion)
+        assertNull(resolvePositionTickLotMeta(trade))
     }
 
     @Test
@@ -137,7 +136,9 @@ class PositionTickServiceLotResolutionTest {
               "index_key": "NF",
               "strategy_type": "BULL_PUT",
               "lots": 2,
-              "session_date": "2026-09-01"
+              "session_date": "2025-11-01",
+              "expiry": "2026-01-06",
+              "expiry_cycle": "weekly"
             }
             """.trimIndent()
         )
@@ -146,6 +147,44 @@ class PositionTickServiceLotResolutionTest {
         assertEquals(130.0, resolved.lotSize, 0.0001)
         assertEquals(65.0, resolved.contractLotSize ?: -1.0, 0.0001)
         assertEquals(2.0, resolved.numberOfLots, 0.0001)
+        assertEquals("authoritative_contract_rule", resolved.source)
     }
 
+    @Test
+    fun circularAnnexureCoexistenceSameObservation() {
+        val oldWeekly = ContractLotTable.resolve(
+            "NF",
+            asOf = LocalDate.parse("2024-12-01"),
+            expiry = LocalDate.parse("2024-12-19"),
+            expiryCycle = "weekly"
+        )
+        val newWeekly = ContractLotTable.resolve(
+            "NF",
+            asOf = LocalDate.parse("2024-12-01"),
+            expiry = LocalDate.parse("2025-01-02"),
+            expiryCycle = "weekly"
+        )
+        assertTrue(oldWeekly.resolved)
+        assertTrue(newWeekly.resolved)
+        assertEquals(25.0, oldWeekly.contractLotSize ?: -1.0, 0.0001)
+        assertEquals(75.0, newWeekly.contractLotSize ?: -1.0, 0.0001)
+        // Would fail under old blanket 65/30
+        assertTrue(oldWeekly.contractLotSize != 65.0)
+        assertTrue(newWeekly.contractLotSize != 65.0)
+    }
+
+    @Test
+    fun capturedConflictFlagsUnresolved() {
+        val conflict = ContractLotTable.resolve(
+            "NF",
+            asOf = LocalDate.parse("2025-11-01"),
+            expiry = LocalDate.parse("2025-12-23"),
+            expiryCycle = "weekly",
+            capturedContractLot = 65.0
+        )
+        assertFalse(conflict.resolved)
+        assertTrue(conflict.lotConflict)
+        assertEquals(65.0, conflict.capturedContractLot ?: -1.0, 0.0001)
+        assertEquals(75.0, conflict.ruleContractLot ?: -1.0, 0.0001)
+    }
 }

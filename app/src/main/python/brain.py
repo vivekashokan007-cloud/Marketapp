@@ -3672,7 +3672,23 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     dated = None
     try:
         from contract_lot_table import resolve_contract_lot
-        dated = resolve_contract_lot(idx, as_of=session_as_of, number_of_lots=lots_count)
+        expiry_for_lot = (
+            trade.get('expiry') or trade.get('expiry_date')
+            or entry_snapshot.get('expiry') or entry_snapshot.get('expiry_date')
+        )
+        cycle_for_lot = trade.get('expiry_cycle') or entry_snapshot.get('expiry_cycle')
+        captured_cls = (
+            trade.get('contract_lot_size') or entry_snapshot.get('contract_lot_size')
+        )
+        dated = resolve_contract_lot(
+            idx,
+            as_of=session_as_of,
+            number_of_lots=lots_count,
+            expiry=expiry_for_lot,
+            expiry_cycle=cycle_for_lot,
+            captured_contract_lot=captured_cls,
+            allow_operational_current=(session_as_of in (None, '') and expiry_for_lot in (None, '')),
+        )
     except Exception:
         dated = None
     if explicit_lot_size > 0:
@@ -3682,13 +3698,12 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     elif dated and dated.get('resolved'):
         lot_size = float(dated['lot_size'])
         lot_size_assumed = True
-        lot_size_source = dated.get('lot_source') or 'dated_contract_table'
+        lot_size_source = dated.get('lot_source') or 'authoritative_contract_rule'
     else:
-        # Legacy _CONST only when index known; else fail-closed.
-        base_lot = _CONST['BNF_LOT'] if idx == 'BNF' else _CONST['NF_LOT'] if idx == 'NF' else 0
-        lot_size = base_lot * lots_count
+        # Fail-closed: do not invent historical lots from CONST.
+        lot_size = 0
         lot_size_assumed = True
-        lot_size_source = 'contract_default' if base_lot > 0 else 'unknown'
+        lot_size_source = (dated or {}).get('lot_source') or 'unknown'
 
     if not idx:
         # Unknown identity — cannot value position; retain trade elsewhere.
@@ -20640,8 +20655,9 @@ def _index_key_fail_closed(obj, *keys):
 def _candidate_lot_size(cand):
     """Resolve total units (contract_lot_size × number_of_lots).
 
-    Prefer explicit lotSize/lot_size; else dated contract table by (index, as_of).
-    Fail-closed: unknown index with no explicit lot → None (do not invent BNF).
+    Prefer explicit lotSize/lot_size; else contract-specific table by
+    (index, expiry, cycle, as_of). Fail-closed: unknown/unsupported → None.
+    Operational current lots only when no historical as_of/expiry supplied.
     """
     explicit = _float_or_none(cand.get('lotSize'))
     if explicit is None:
@@ -20655,16 +20671,23 @@ def _candidate_lot_size(cand):
         n_lots = _float_or_none(cand.get('number_of_lots'))
         if n_lots is None:
             n_lots = _float_or_none(cand.get('lots')) or 1.0
-        resolved = resolve_contract_lot(idx, as_of=as_of, number_of_lots=n_lots)
+        expiry = cand.get('expiry') or cand.get('expiry_date')
+        cycle = cand.get('expiry_cycle')
+        captured = cand.get('contract_lot_size')
+        allow_ops = as_of in (None, '') and expiry in (None, '')
+        resolved = resolve_contract_lot(
+            idx,
+            as_of=as_of,
+            number_of_lots=n_lots,
+            expiry=expiry,
+            expiry_cycle=cycle,
+            captured_contract_lot=captured,
+            allow_operational_current=allow_ops,
+        )
         if resolved.get('resolved'):
             return float(resolved['lot_size'])
     except Exception:
         pass
-    idx = str(cand.get('index') or cand.get('index_key') or '').strip().upper()
-    if idx == 'BNF':
-        return float(_CONST['BNF_LOT'])
-    if idx == 'NF':
-        return float(_CONST['NF_LOT'])
     return None
 
 
@@ -20753,13 +20776,21 @@ def _candidate_contract_fields(cand, snap=None):
         lot_source = 'unknown'
         if resolve_contract_lot is not None:
             try:
-                dated = resolve_contract_lot(index_key, as_of=session, number_of_lots=n_lots)
+                dated = resolve_contract_lot(
+                    index_key,
+                    as_of=session,
+                    number_of_lots=n_lots,
+                    expiry=expiry_text,
+                    expiry_cycle=cand.get('expiry_cycle'),
+                    captured_contract_lot=contract_lot_size,
+                    allow_operational_current=(session in (None, '') and expiry_text in (None, '')),
+                )
                 lot_table_version = dated.get('lot_table_version')
                 lot_as_of = dated.get('lot_as_of')
                 if dated.get('resolved'):
                     lot_size = float(dated['lot_size'])
                     contract_lot_size = dated.get('contract_lot_size')
-                    lot_source = dated.get('lot_source') or 'dated_contract_table'
+                    lot_source = dated.get('lot_source') or 'authoritative_contract_rule'
                     lot_assumed = True
             except Exception:
                 pass
@@ -20781,13 +20812,13 @@ def _candidate_contract_fields(cand, snap=None):
         'expiry': expiry_text,
         'calendar_dte': calendar_dte_val,
         'trading_dte': trading_dte_val,
-        'tDTE': trading_dte_val if trading_dte_val is not None else (None if dte_value is None else int(dte_value)),
+        'tDTE': trading_dte_val,
         'dte': None if dte_value is None else int(dte_value),
         'dte_source': dte_source,
         'dte_basis': dte_basis,
         'dte_bucket': dte_bucket,
         'dte_bucket_version': DTE_MEASUREMENT_BUCKET_VERSION,
-        'dte_ranking_bucket': ranking_dte_bucket(trading_dte_val if trading_dte_val is not None else dte_value),
+        'dte_ranking_bucket': ranking_dte_bucket(trading_dte_val),
         'dte_ranking_bucket_version': DTE_RANKING_BUCKET_VERSION,
         'contract_lot_size': None if contract_lot_size is None else int(contract_lot_size),
         'number_of_lots': n_lots,

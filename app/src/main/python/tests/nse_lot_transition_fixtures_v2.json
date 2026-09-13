@@ -1,0 +1,138 @@
+{
+  "fixture_version": "nse_lot_transition_fixtures_v2_20260913",
+  "note": "Expected lots are independently sourced from NSE circular annexures / stated present lots \u2014 NOT from contract_lot_table_v1.json under test.",
+  "sources": [
+    {
+      "id": "NSE_FAOP_64625",
+      "sha256": "ee1169239eed9cc06519537c6af53751e031903fe709b2bf296283412dc028f8",
+      "date": "2024-10-18"
+    },
+    {
+      "id": "NSE_FAOP_70616",
+      "sha256": "0718cf0cc7e6c74105dc946497369270fca807f59912586560c9552cad8050ef",
+      "date": "2025-10-03"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "nf_weekly_coexist_old_on_2024-12-01",
+      "index": "NF",
+      "expiry": "2024-12-19",
+      "expiry_cycle": "weekly",
+      "observation": "2024-12-01",
+      "expected_contract_lot": 25,
+      "source_id": "NSE_FAOP_64625",
+      "annexure": "Last weekly expiry with existing lot size",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "nf_weekly_coexist_new_on_2024-12-01",
+      "index": "NF",
+      "expiry": "2025-01-02",
+      "expiry_cycle": "weekly",
+      "observation": "2024-12-01",
+      "expected_contract_lot": 75,
+      "source_id": "NSE_FAOP_64625",
+      "annexure": "First weekly expiry with revised lot size",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "nf_weekly_retain_75_nov2025",
+      "index": "NF",
+      "expiry": "2025-12-23",
+      "expiry_cycle": "weekly",
+      "observation": "2025-11-01",
+      "expected_contract_lot": 75,
+      "source_id": "NSE_FAOP_70616",
+      "annexure": "Last weekly with existing (present 75) through 23-Dec-2025",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "nf_weekly_revised_65_same_obs",
+      "index": "NF",
+      "expiry": "2026-01-06",
+      "expiry_cycle": "weekly",
+      "observation": "2025-11-01",
+      "expected_contract_lot": 65,
+      "source_id": "NSE_FAOP_70616",
+      "annexure": "First weekly with revised lot 65",
+      "fails_under_old_blanket_65_30": false
+    },
+    {
+      "id": "bnf_monthly_existing_15",
+      "index": "BNF",
+      "expiry": "2025-01-29",
+      "expiry_cycle": "monthly",
+      "observation": "2024-12-15",
+      "expected_contract_lot": 15,
+      "source_id": "NSE_FAOP_64625",
+      "annexure": "Last monthly expiry with existing lot size 15",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "bnf_monthly_present35_dec2025",
+      "index": "BNF",
+      "expiry": "2025-12-30",
+      "expiry_cycle": "monthly",
+      "observation": "2025-11-01",
+      "expected_contract_lot": 35,
+      "source_id": "NSE_FAOP_70616",
+      "annexure": "Present market lot 35 retained through 30-Dec-2025 monthly",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "bnf_monthly_revised_30",
+      "index": "BNF",
+      "expiry": "2026-01-27",
+      "expiry_cycle": "monthly",
+      "observation": "2025-11-01",
+      "expected_contract_lot": 30,
+      "source_id": "NSE_FAOP_70616",
+      "annexure": "First monthly with revised lot 30",
+      "fails_under_old_blanket_65_30": false
+    },
+    {
+      "id": "nf_monthly_revised_75_mid2025",
+      "index": "NF",
+      "expiry": "2025-06-26",
+      "expiry_cycle": "monthly",
+      "observation": "2025-06-01",
+      "expected_contract_lot": 75,
+      "source_id": "NSE_FAOP_64625",
+      "annexure": "Monthly on/after 27-Feb-2025 uses revised 75 until Dec-2025 retain",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "unsupported_as_of_only_2025",
+      "index": "NF",
+      "expiry": null,
+      "expiry_cycle": null,
+      "observation": "2025-06-01",
+      "expected_unavailable": true,
+      "unavailable_reason_contains": "as_of_only",
+      "note": "Old blanket assigned 65 for all 2025-01-01\u2192open; must fail closed",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "unsupported_2000_era",
+      "index": "BNF",
+      "expiry": "2000-06-29",
+      "expiry_cycle": "monthly",
+      "observation": "2000-06-01",
+      "expected_unavailable": true,
+      "unavailable_reason_contains": "outside_supported",
+      "fails_under_old_blanket_65_30": true
+    },
+    {
+      "id": "bnf_mid2025_ambiguous_without_intermediate",
+      "index": "BNF",
+      "expiry": "2025-06-26",
+      "expiry_cycle": "monthly",
+      "observation": "2025-06-01",
+      "expected_unavailable": true,
+      "unavailable_reason_contains": "unsupported",
+      "note": "FAOP64625 revised BNF to 30; FAOP70616 present=35 \u2014 gap without intermediate circular",
+      "fails_under_old_blanket_65_30": true
+    }
+  ]
+}

@@ -1,33 +1,273 @@
 {
-  "version_id": "contract_lot_table_v1_20260913",
-  "schema": "contract_lot_table_dated_periods",
+  "version_id": "contract_lot_table_v2_20260913",
+  "schema": "contract_lot_rules_contract_specific_v2",
   "unit": "units_per_lot",
-  "note": "Contract lot size = units per lot. Distinct from number_of_lots (quantity). Resolve by (index, as_of/session_date). Fail-closed when index unknown.",
-  "indices": ["BNF", "NF"],
-  "periods": [
+  "note": "Contract lot size = units per lot. Distinct from number_of_lots (quantity) and quantity_units (total = contract_lot_size * number_of_lots). Resolve by instrument identity (index, expiry, expiry_cycle, observation_date). A (index, as_of)-only resolver is insufficient where contracts coexist. Fail-closed outside verified supported window. Prefer consistent captured metadata; conflict \u2192 flag + exclude calc, keep original.",
+  "indices": [
+    "BNF",
+    "NF"
+  ],
+  "supported_project_data_window": {
+    "start": "2024-11-20",
+    "end": null,
+    "authority": "Authoritative only when matched to NSE circular annexure rules or an instrument-master snapshot scope. Observation-date-only lookups during coexistence windows return unavailable. Mid-2025 BANKNIFTY is ambiguous without the intermediate circular that moved present lot from 30 (FAOP64625 revised) to 35 (FAOP70616 present).",
+    "fail_closed_outside": true
+  },
+  "operational_current_lots": {
+    "BNF": 30,
+    "NF": 65,
+    "note": "Live CONST alignment for as_of=null / current-ops without historical expiry. Not a blanket historical authority for all of 2025.",
+    "verified_by": "upstox_instrument_master_2026-07-19 near-expiry (<=90d) sample + FAOP70616 first revised weekly/monthly expiries"
+  },
+  "sources": [
+    {
+      "id": "NSE_FAOP_64625",
+      "title": "Contract size revision for index derivatives",
+      "circular_ref": "128/2024",
+      "download_ref": "NSE/FAOP/64625",
+      "date": "2024-10-18",
+      "url": "https://nsearchives.nseindia.com/content/circulars/FAOP64625.pdf",
+      "local_path": "/workspace/mr-g8plus/nse-circulars/FAOP64625.pdf",
+      "sha256": "ee1169239eed9cc06519537c6af53751e031903fe709b2bf296283412dc028f8",
+      "capture_date": "2026-09-13",
+      "effective_scope": "New index derivative contracts introduced from 2024-11-20; existing weekly/monthly retain prior lots until annexure expiries; Q/HY transition EOD 2024-12-24 (BNF) / 2024-12-26 (NF)"
+    },
+    {
+      "id": "NSE_FAOP_70616",
+      "title": "Revision in Market Lot of Derivative Contracts on Indices",
+      "circular_ref": "176/2025",
+      "download_ref": "NSE/FAOP/70616",
+      "date": "2025-10-03",
+      "url": "https://nsearchives.nseindia.com/content/circulars/FAOP70616.pdf",
+      "local_path": "/workspace/mr-g8plus/nse-circulars/FAOP70616.pdf",
+      "sha256": "0718cf0cc7e6c74105dc946497369270fca807f59912586560c9552cad8050ef",
+      "capture_date": "2026-09-13",
+      "effective_scope": "Circular effect from 2025-10-28 EOD; existing weekly/monthly retain present lots through Dec-2025 annexure expiries; Q/HY revise 2025-12-30 EOD. Present lots at announcement: NF=75, BNF=35."
+    },
+    {
+      "id": "UPSTOX_MASTER_20260719",
+      "title": "Upstox complete instruments master near-expiry sample",
+      "date": "2026-07-19",
+      "evidence": "reports/lot_size_verification_20260719.json",
+      "capture_date": "2026-07-19",
+      "effective_scope": "Near-active NF/BNF option rows with expiry within 90 days of 2026-07-19 only \u2014 does NOT verify all of 2025"
+    }
+  ],
+  "authoritative_contract_rules": [
+    {
+      "rule_id": "FAOP64625_NF_weekly_existing",
+      "index": "NF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_before": "2024-12-19",
+      "expiry_on_or_after": "2024-11-01",
+      "observation_on_or_after": "2024-10-18",
+      "observation_on_or_before": null,
+      "contract_lot_size": 25,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "Last weekly expiry with existing lot size 25"
+    },
+    {
+      "rule_id": "FAOP64625_NF_weekly_revised_until_70616",
+      "index": "NF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_after": "2025-01-02",
+      "expiry_on_or_before": "2025-12-23",
+      "observation_on_or_after": "2024-11-20",
+      "contract_lot_size": 75,
+      "source_id": "NSE_FAOP_64625",
+      "superseded_by": "FAOP70616_NF_weekly_revised",
+      "annexure_note": "First weekly with revised 75 (64625); last weekly retaining 75 before 70616 transition is 23-Dec-2025"
+    },
+    {
+      "rule_id": "FAOP70616_NF_weekly_revised",
+      "index": "NF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_after": "2026-01-06",
+      "observation_on_or_after": "2025-10-28",
+      "contract_lot_size": 65,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "First weekly expiry with revised lot size 65"
+    },
+    {
+      "rule_id": "FAOP64625_NF_monthly_existing",
+      "index": "NF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_before": "2025-01-30",
+      "contract_lot_size": 25,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "Last monthly expiry with existing lot size 25",
+      "expiry_on_or_after": "2024-11-01",
+      "observation_on_or_after": "2024-10-18"
+    },
+    {
+      "rule_id": "FAOP64625_NF_monthly_revised_until_70616",
+      "index": "NF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_after": "2025-02-27",
+      "expiry_on_or_before": "2025-12-30",
+      "observation_on_or_after": "2024-11-20",
+      "contract_lot_size": 75,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "First monthly with revised 75; monthly through 30-Dec-2025 retain present (75) per 70616"
+    },
+    {
+      "rule_id": "FAOP70616_NF_monthly_revised",
+      "index": "NF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_after": "2026-01-27",
+      "observation_on_or_after": "2025-10-28",
+      "contract_lot_size": 65,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "First monthly expiry with revised lot size 65"
+    },
+    {
+      "rule_id": "FAOP64625_NF_qh_post_transition",
+      "index": "NF",
+      "expiry_cycle": "quarterly_half_yearly",
+      "observation_on_or_after": "2024-12-27",
+      "expiry_on_or_after": "2025-03-27",
+      "expiry_on_or_before": "2025-12-30",
+      "contract_lot_size": 75,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "Q/HY existing contracts revised from 2024-12-26 EOD to lot 75"
+    },
+    {
+      "rule_id": "FAOP70616_NF_qh_post_transition",
+      "index": "NF",
+      "expiry_cycle": "quarterly_half_yearly",
+      "observation_on_or_after": "2025-12-31",
+      "expiry_on_or_after": "2026-03-31",
+      "contract_lot_size": 65,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "Q/HY revised from 2025-12-30 EOD to lot 65"
+    },
+    {
+      "rule_id": "FAOP64625_BNF_monthly_existing",
+      "index": "BNF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_before": "2025-01-29",
+      "contract_lot_size": 15,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "Last monthly expiry with existing lot size 15",
+      "expiry_on_or_after": "2024-11-01",
+      "observation_on_or_after": "2024-10-18"
+    },
+    {
+      "rule_id": "FAOP70616_BNF_monthly_existing_present35",
+      "index": "BNF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_before": "2025-12-30",
+      "expiry_on_or_after": "2025-10-28",
+      "observation_on_or_after": "2025-10-03",
+      "contract_lot_size": 35,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "Present market lot 35 retained for monthly through 30-Dec-2025"
+    },
+    {
+      "rule_id": "FAOP70616_BNF_monthly_revised",
+      "index": "BNF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_after": "2026-01-27",
+      "observation_on_or_after": "2025-10-28",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "First monthly expiry with revised lot size 30"
+    },
+    {
+      "rule_id": "FAOP64625_BNF_qh_post_transition",
+      "index": "BNF",
+      "expiry_cycle": "quarterly",
+      "observation_on_or_after": "2024-12-25",
+      "expiry_on_or_after": "2025-03-26",
+      "expiry_on_or_before": "2025-12-30",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "BNF quarterly revised from 2024-12-24 EOD to lot 30; later present became 35 (70616) \u2014 prefer captured metadata if conflict",
+      "quality": "transition_encoded_gap_risk"
+    },
+    {
+      "rule_id": "FAOP70616_BNF_qh_post_transition",
+      "index": "BNF",
+      "expiry_cycle": "quarterly",
+      "observation_on_or_after": "2025-12-31",
+      "expiry_on_or_after": "2026-03-31",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "BNF quarterly revised from 2025-12-30 EOD to lot 30"
+    },
+    {
+      "rule_id": "FAOP70616_BNF_weekly_revised",
+      "index": "BNF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_after": "2026-01-06",
+      "observation_on_or_after": "2025-10-28",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "Weekly cycle shares first revised expiry date row with NIFTY in 70616 annexure; revised lot 30"
+    },
+    {
+      "rule_id": "FAOP70616_BNF_weekly_existing_present35",
+      "index": "BNF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_before": "2025-12-23",
+      "expiry_on_or_after": "2025-10-28",
+      "observation_on_or_after": "2025-10-03",
+      "contract_lot_size": 35,
+      "source_id": "NSE_FAOP_70616",
+      "annexure_note": "Existing weekly retain present lot 35 through 23-Dec-2025"
+    }
+  ],
+  "instrument_master_snapshots": [
+    {
+      "snapshot_id": "upstox_20260719_near90d",
+      "as_of": "2026-07-19",
+      "expiry_within_days": 90,
+      "lots": {
+        "BNF": 30,
+        "NF": 65
+      },
+      "provenance": "upstox_instrument_master_verified_20260719",
+      "provenance_quality": "verified_snapshot_scope_only",
+      "evidence": "reports/lot_size_verification_20260719.json",
+      "note": "Verifies near-expiry contracts around 2026-07-19 only \u2014 must NOT be applied as blanket 2025-01-01\u2192open authority"
+    }
+  ],
+  "research_only_excluded": [
     {
       "as_of_start": "2025-01-01",
       "as_of_end": null,
-      "lots": {"BNF": 30, "NF": 65},
+      "lots": {
+        "BNF": 30,
+        "NF": 65
+      },
       "provenance": "upstox_instrument_master_verified_20260719",
-      "provenance_quality": "verified",
-      "evidence": "reports/lot_size_verification_20260719.json"
+      "provenance_quality": "excluded_unsupported_blanket",
+      "exclusion_reason": "Upstox master dated 2026-07-19 cannot verify entire 2025 interval or coexisting contracts; FAOP70616 shows NF=75/BNF=35 retained into Dec 2025 for weekly/monthly",
+      "authoritative": false
     },
     {
       "as_of_start": "2024-11-20",
       "as_of_end": "2024-12-31",
-      "lots": {"BNF": 15, "NF": 25},
+      "lots": {
+        "BNF": 15,
+        "NF": 25
+      },
       "provenance": "nse_fo_lot_revision_2024_reconstructive",
-      "provenance_quality": "reconstructive",
-      "evidence": "NSE F&O lot-size revision window (reconstructive; prefer explicit lot_size on trades)"
+      "provenance_quality": "research_only_excluded",
+      "exclusion_reason": "Observation-date blanket ignores coexistence of old and new contracts after 2024-11-20",
+      "authoritative": false
     },
     {
       "as_of_start": "2000-01-01",
       "as_of_end": "2024-11-19",
-      "lots": {"BNF": 25, "NF": 50},
+      "lots": {
+        "BNF": 25,
+        "NF": 50
+      },
       "provenance": "pre_2024_nse_index_lots_reconstructive",
-      "provenance_quality": "reconstructive",
-      "evidence": "Pre-revision NSE index F&O lots (reconstructive; prefer explicit lot_size on trades)"
+      "provenance_quality": "research_only_excluded",
+      "exclusion_reason": "No adequate circular authority in this package for 2000-era reconstructive lots",
+      "authoritative": false
     }
   ],
   "aliases": {
@@ -35,5 +275,18 @@
     "NIFTY BANK": "BNF",
     "NIFTY": "NF",
     "NIFTY 50": "NF"
+  },
+  "cycle_aliases": {
+    "WEEKLY": "weekly",
+    "W": "weekly",
+    "MONTHLY": "monthly",
+    "M": "monthly",
+    "QUARTERLY": "quarterly",
+    "Q": "quarterly",
+    "HALF_YEARLY": "quarterly_half_yearly",
+    "HALF-YEARLY": "quarterly_half_yearly",
+    "HY": "quarterly_half_yearly",
+    "QUARTERLY_HALF_YEARLY": "quarterly_half_yearly",
+    "QH": "quarterly_half_yearly"
   }
 }

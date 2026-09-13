@@ -434,18 +434,30 @@ from contract_lot_table import (  # noqa: E402
 
 CURRENT_CONTRACT_LOT_TABLE = current_declared_lots()
 CONTRACT_LOT_TABLE_NOTE = (
-    f"Dated NSE index F&O lots via {LOT_TABLE_VERSION_ID}. "
-    "Current open-ended period: BNF=30, NF=65 (verified). "
-    "Historical periods are reconstructive — prefer explicit lot_size. "
-    "contract_lot_size = units per lot; number_of_lots = quantity — never conflate."
+    f"Contract-specific NSE lots via {LOT_TABLE_VERSION_ID}. "
+    "Operational current: BNF=30, NF=65 (not blanket 2025 authority). "
+    "Resolve by index+expiry+cycle+observation; fail-closed outside verified rules. "
+    "contract_lot_size = units per lot; number_of_lots = quantity; "
+    "quantity_units = contract_lot_size * number_of_lots — never conflate."
 )
 THIN_SUPPORT_MIN_CONTRACT = 20
 
 
 
-def declared_lot_for_index(index_key, as_of=None):
-    """Return dated declared contract lot for NF/BNF, else None (fail-closed)."""
-    resolved = resolve_contract_lot(index_key, as_of=as_of, number_of_lots=1)
+def declared_lot_for_index(index_key, as_of=None, *, expiry=None, expiry_cycle=None,
+                           captured_contract_lot=None, allow_operational_current=False):
+    """Return contract-specific declared lot for NF/BNF, else None (fail-closed)."""
+    resolved = resolve_contract_lot(
+        index_key,
+        as_of=as_of,
+        number_of_lots=1,
+        expiry=expiry,
+        expiry_cycle=expiry_cycle,
+        captured_contract_lot=captured_contract_lot,
+        allow_operational_current=allow_operational_current or (
+            as_of in (None, "") and expiry in (None, "")
+        ),
+    )
     if not resolved.get("resolved"):
         return None
     return resolved.get("contract_lot_size")
@@ -491,6 +503,8 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "calendar_dte": None,
         "dte_basis": "unknown",
         "holiday_calendar_used": False,
+        "calendar_coverage_ok": False,
+        "calendar_version": None,
     }
     calendar_dte_val = (
         int(explicit_cal) if explicit_cal is not None
@@ -537,9 +551,22 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     explicit_contract_lot = _finite(src.get("contract_lot_size"))
 
     lot_assumed = False
-    dated = resolve_contract_lot(index_key, as_of=session or None, number_of_lots=number_of_lots)
+    expiry_cycle = src.get("expiry_cycle") or src.get("expiration_cycle")
+    dated = resolve_contract_lot(
+        index_key,
+        as_of=session or None,
+        number_of_lots=number_of_lots,
+        expiry=expiry_text,
+        expiry_cycle=expiry_cycle,
+        captured_contract_lot=explicit_contract_lot,
+        instrument_key=src.get("instrument_key") or src.get("instrumentKey"),
+        allow_operational_current=(not session and not expiry_text),
+    )
 
-    if explicit_lot is not None and explicit_lot > 0:
+    lot_conflict = bool(dated.get("lot_conflict"))
+    exclude_calc = bool(dated.get("exclude_authoritative_calc"))
+
+    if explicit_lot is not None and explicit_lot > 0 and not lot_conflict:
         lot_size = float(explicit_lot)
         lot_source = "explicit"
         contract_lot_size = (
@@ -552,40 +579,44 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     elif dated.get("resolved"):
         lot_size = float(dated["lot_size"])
         contract_lot_size = dated.get("contract_lot_size")
-        lot_source = dated.get("lot_source") or "dated_contract_table"
+        lot_source = dated.get("lot_source") or "authoritative_contract_rule"
         lot_assumed = True
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
     else:
         lot_size = None
         contract_lot_size = None
-        lot_source = "unknown"
+        lot_source = dated.get("lot_source") or "unknown"
         lot_assumed = True
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
 
+    # Measurement may use calendar with explicit dte_source; ranking uses trading only.
     bucket = measurement_dte_bucket(dte_value)
-    ranking_bucket = ranking_dte_bucket(
-        trading_dte_val if trading_dte_val is not None else dte_value
-    )
+    ranking_bucket = ranking_dte_bucket(trading_dte_val)
     identity_complete = bool(
         index_key in ("NF", "BNF")
         and lot_size is not None
         and lot_size > 0
         and expiry_text
         and dte_value is not None
+        and not lot_conflict
     )
-    quarantine = not identity_complete
+    quarantine = not identity_complete or exclude_calc
     return {
         "index_key": index_display,
         "index_known": index_key in ("NF", "BNF"),
         "expiry": expiry_text,
+        "expiry_cycle": dated.get("expiry_cycle") or expiry_cycle,
+        "instrument_key": dated.get("instrument_key") or src.get("instrument_key"),
         "calendar_dte": calendar_dte_val,
         "trading_dte": trading_dte_val,
         "dte": dte_value,
-        "tDTE": trading_dte_val if trading_dte_val is not None else dte_value,
+        "tDTE": trading_dte_val,
         "dte_source": dte_source,
         "dte_basis": dte_basis,
+        "calendar_version": dte_pack.get("calendar_version"),
+        "calendar_coverage_ok": dte_pack.get("calendar_coverage_ok"),
         "dte_bucket": bucket,
         "dte_bucket_version": DTE_MEASUREMENT_BUCKET_VERSION,
         "dte_ranking_bucket": ranking_bucket,
@@ -593,11 +624,21 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "contract_lot_size": contract_lot_size,
         "number_of_lots": number_of_lots,
         "lot_size": None if lot_size is None else round(lot_size, 6),
+        "quantity_units": None if lot_size is None else round(lot_size, 6),
         "lot_size_assumed": lot_assumed,
         "lot_size_source": lot_source,
         "lot_source": lot_source,
         "lot_table_version": lot_table_version,
         "lot_as_of": lot_as_of,
+        "lot_conflict": lot_conflict,
+        "lot_provenance": dated.get("lot_provenance"),
+        "lot_provenance_quality": dated.get("lot_provenance_quality"),
+        "matched_rule_id": dated.get("matched_rule_id"),
+        "source_id": dated.get("source_id"),
+        "captured_contract_lot": dated.get("captured_contract_lot"),
+        "rule_contract_lot": dated.get("rule_contract_lot"),
+        "exclude_authoritative_calc": exclude_calc,
+        "unavailable_reason": dated.get("unavailable_reason"),
         "declared_lot_table": dict(CURRENT_CONTRACT_LOT_TABLE),
         "identity_complete": identity_complete,
         "contract_identity_quarantine": quarantine,
@@ -605,6 +646,7 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "calibration_ineligible": quarantine,
         "measurement_note": (
             "Measurement DTE buckets ≠ ranking (stage2a) buckets. "
+            "Calendar DTE is never silently substituted into trading-DTE ranking. "
             + CONTRACT_LOT_TABLE_NOTE
         ),
     }

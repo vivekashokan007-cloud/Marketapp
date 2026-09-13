@@ -115,3 +115,31 @@ Lot, expiry/DTE, and NF/BNF identity are now stamped fail-closed through evaluat
 See `/workspace/mr-g8plus/GATE_LOT_DTE_INDEX_STATUS_20260913.md` § Still unavailable.
 
 **Verdict:** Local integrity extended; **do not publish**. Gate Lot/DTE/NF–BNF stays **OPEN**.
+
+---
+
+## Addendum 2026-09-13b — contract-specific authority (gate still OPEN)
+
+### Defect corrected
+- Removed authoritative blanket `2025-01-01→open` NF=65/BNF=30 (Upstox 2026-07-19 cannot verify all of 2025 / coexisting contracts).
+- Reconstructive 2000-era and late-2024 observation-date rows moved to `research_only_excluded` (never used in resolution).
+
+### Authority model
+- Version `contract_lot_table_v2_20260913`: rules keyed by index + expiry + expiry_cycle + observation from NSE FAOP64625 / FAOP70616 annexures.
+- Prefer consistent captured metadata; conflict → flag + exclude authoritative calc; retain originals.
+- Fail closed for as_of-only lookups and outside supported window.
+- Operational current lots (NF=65/BNF=30) only when no historical as_of/expiry (CONST alignment — not historical authority).
+
+### DTE
+- `calendar_dte` and `trading_dte` separate; trading requires holiday-year coverage across the interval; calendar never silently fills trading/ranking buckets.
+- `_CONST.NSE_HOLIDAYS` covers 2026 only → incomplete coverage outside 2026 is honest.
+
+### Persistence
+- Mock path: candidate identity → lineage → compaction analogue → upload JSON → readback → metrics slice.
+- **Untested:** production DB / `saveEvaluationOutcomes`. No prod writes.
+
+### Tests
+- Independently sourced fixtures in `nse_lot_transition_fixtures_v2.json` (expected lots from circular annexures).
+- Python: 776 OK. Kotlin: not executed (no JDK).
+
+Publishing remains paused. Gate remains OPEN.

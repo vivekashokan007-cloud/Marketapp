@@ -38,9 +38,13 @@ from canonical_net_profitability import (
 from contract_lot_table import (
     DTE_RANKING_BUCKET_VERSION,
     LOT_TABLE_VERSION_ID,
+    clear_lot_table_cache,
     json_round_trip_identity,
     ranking_dte_bucket,
+    research_only_excluded_periods,
     resolve_contract_lot,
+    simulate_persistence_boundary_roundtrip,
+    supported_project_data_window,
     trading_dte,
 )
 from brain import _trade_to_teacher_candidate, _candidate_contract_fields
@@ -415,34 +419,68 @@ class LiveSizingDisabledTests(unittest.TestCase):
 
 
 class DatedLotTableTests(unittest.TestCase):
-    def test_dated_periods_change_contract_lot(self):
+    def setUp(self):
+        clear_lot_table_cache()
+
+    def test_unsupported_history_and_blanket_unavailable(self):
         hist = resolve_contract_lot("BNF", "2024-06-01")
-        mid = resolve_contract_lot("BNF", "2024-12-01")
-        cur = resolve_contract_lot("BNF", "2026-09-01")
-        self.assertEqual(hist["contract_lot_size"], 25)
-        self.assertEqual(mid["contract_lot_size"], 15)
-        self.assertEqual(cur["contract_lot_size"], 30)
-        self.assertEqual(hist["lot_table_version"], LOT_TABLE_VERSION_ID)
-        self.assertEqual(declared_lot_for_index("NF", "2024-06-01"), 50)
-        self.assertEqual(declared_lot_for_index("NF", "2026-09-01"), 65)
+        self.assertFalse(hist["resolved"])
+        self.assertIsNone(hist["contract_lot_size"])
+        as_of_only = resolve_contract_lot("NF", "2025-06-01")
+        self.assertFalse(as_of_only["resolved"])
+        self.assertIn("as_of_only", as_of_only["unavailable_reason"])
+        self.assertIsNone(declared_lot_for_index("NF", "2024-06-01"))
+        # Reconstructive / blanket rows must not be authoritative
+        excluded = research_only_excluded_periods()
+        self.assertTrue(any(
+            str(p.get("provenance_quality", "")).startswith(("excluded", "research_only"))
+            for p in excluded
+        ))
+        self.assertTrue(supported_project_data_window().get("fail_closed_outside"))
 
     def test_lot_size_vs_number_of_lots(self):
-        one = resolve_contract_lot("BNF", "2026-09-01", number_of_lots=1)
-        two = resolve_contract_lot("BNF", "2026-09-01", number_of_lots=2)
+        one = resolve_contract_lot(
+            "BNF", "2025-11-01", number_of_lots=1,
+            expiry="2026-01-27", expiry_cycle="monthly",
+        )
+        two = resolve_contract_lot(
+            "BNF", "2025-11-01", number_of_lots=2,
+            expiry="2026-01-27", expiry_cycle="monthly",
+        )
+        self.assertTrue(one["resolved"])
         self.assertEqual(one["contract_lot_size"], 30)
         self.assertEqual(two["contract_lot_size"], 30)
         self.assertEqual(one["number_of_lots"], 1.0)
         self.assertEqual(two["number_of_lots"], 2.0)
         self.assertAlmostEqual(two["lot_size"], 60.0)
+        self.assertEqual(two["quantity_units"], two["lot_size"])
         self.assertNotEqual(two["contract_lot_size"], two["lot_size"])
 
-    def test_candidate_lot_uses_dated_table(self):
-        self.assertEqual(_candidate_lot_size({"index": "BNF", "session_date": "2024-06-01"}), 25.0)
-        self.assertEqual(_candidate_lot_size({"index": "BNF", "session_date": "2026-09-01"}), 30.0)
+    def test_candidate_lot_contract_specific(self):
+        # as_of-only historical → None (fail closed)
+        self.assertIsNone(_candidate_lot_size({"index": "BNF", "session_date": "2024-06-01"}))
+        # Contract-specific post-70616 revised monthly
         self.assertEqual(
-            _candidate_lot_size({"index": "BNF", "session_date": "2026-09-01", "number_of_lots": 2}),
+            _candidate_lot_size({
+                "index": "BNF",
+                "session_date": "2025-11-01",
+                "expiry": "2026-01-27",
+                "expiry_cycle": "monthly",
+            }),
+            30.0,
+        )
+        self.assertEqual(
+            _candidate_lot_size({
+                "index": "BNF",
+                "session_date": "2025-11-01",
+                "expiry": "2026-01-27",
+                "expiry_cycle": "monthly",
+                "number_of_lots": 2,
+            }),
             60.0,
         )
+        # Operational current when no historical identity
+        self.assertEqual(_candidate_lot_size({"index": "BNF"}), float(_CONST["BNF_LOT"]))
 
 
 class DualDteTests(unittest.TestCase):
@@ -480,6 +518,22 @@ class DualDteTests(unittest.TestCase):
         self.assertEqual(measurement_dte_bucket(2), "DTE_1_2")
         self.assertEqual(ranking_dte_bucket(2), "DTE_2_3")
         self.assertNotEqual(DTE_MEASUREMENT_BUCKET_VERSION, DTE_RANKING_BUCKET_VERSION)
+
+    def test_missing_calendar_coverage_no_trading_substitution(self):
+        # 2024 interval: NSE_HOLIDAYS in _CONST covers 2026 only → trading unavailable
+        pack = trading_dte("2024-12-02", "2024-12-19", holidays=["2026-01-26"])
+        self.assertEqual(pack["calendar_dte"], 17)
+        self.assertIsNone(pack["trading_dte"])
+        self.assertFalse(pack["calendar_coverage_ok"])
+        self.assertIn("incomplete", pack["dte_basis"])
+        # Ranking must not silently use calendar
+        self.assertEqual(ranking_dte_bucket(pack["trading_dte"]), "unknown")
+
+    def test_post_expiry_not_eligible_zero(self):
+        pack = trading_dte("2026-09-12", "2026-09-10")
+        self.assertIsNone(pack["trading_dte"])
+        self.assertIsNone(pack["calendar_dte"])
+        self.assertEqual(pack["dte_basis"], "expiry_before_session")
 
 
 class LegacyUnknownIdentityTests(unittest.TestCase):
@@ -619,6 +673,120 @@ class FullCostMaxLossTests(unittest.TestCase):
         self.assertEqual(cost.get("status"), "OK")
         self.assertEqual(cost.get("lot_size"), 30)
         self.assertGreater(cost.get("entry_turnover", 0), 0)
+
+
+
+
+class NseCircularFixtureTests(unittest.TestCase):
+    """Independently sourced annexure fixtures — must NOT read expected lots from SSOT table."""
+
+    @classmethod
+    def setUpClass(cls):
+        clear_lot_table_cache()
+        fixture_path = os.path.join(
+            os.path.dirname(__file__), "nse_lot_transition_fixtures_v2.json"
+        )
+        with open(fixture_path, "r", encoding="utf-8") as fh:
+            cls.payload = json.load(fh)
+        cls.fixtures = cls.payload["fixtures"]
+
+    def test_fixtures_not_derived_from_lot_table(self):
+        # Guard: fixture file must declare independent sources + sha256
+        sources = self.payload.get("sources") or []
+        self.assertGreaterEqual(len(sources), 2)
+        for s in sources:
+            self.assertIn("sha256", s)
+            self.assertEqual(len(s["sha256"]), 64)
+
+    def test_exchange_transition_fixtures(self):
+        fail_old_blanket = 0
+        for fx in self.fixtures:
+            got = resolve_contract_lot(
+                fx["index"],
+                fx.get("observation"),
+                expiry=fx.get("expiry"),
+                expiry_cycle=fx.get("expiry_cycle"),
+            )
+            if fx.get("expected_unavailable"):
+                self.assertFalse(got["resolved"], fx["id"])
+                self.assertIsNone(got["contract_lot_size"], fx["id"])
+                needle = fx.get("unavailable_reason_contains") or ""
+                if needle:
+                    self.assertIn(needle, str(got.get("unavailable_reason") or ""), fx["id"])
+            else:
+                self.assertTrue(got["resolved"], fx["id"])
+                self.assertEqual(
+                    got["contract_lot_size"],
+                    fx["expected_contract_lot"],
+                    fx["id"],
+                )
+            if fx.get("fails_under_old_blanket_65_30"):
+                fail_old_blanket += 1
+                # Prove divergence from illegal blanket NF=65/BNF=30
+                blanket = 65 if fx["index"] == "NF" else 30
+                if fx.get("expected_unavailable"):
+                    self.assertNotEqual(blanket, None)
+                else:
+                    self.assertNotEqual(fx["expected_contract_lot"], blanket, fx["id"])
+        self.assertGreaterEqual(fail_old_blanket, 5)
+
+    def test_same_observation_different_lots_coexistence(self):
+        a = resolve_contract_lot("NF", "2024-12-01", expiry="2024-12-19", expiry_cycle="weekly")
+        b = resolve_contract_lot("NF", "2024-12-01", expiry="2025-01-02", expiry_cycle="weekly")
+        self.assertEqual(a["contract_lot_size"], 25)
+        self.assertEqual(b["contract_lot_size"], 75)
+        c = resolve_contract_lot("NF", "2025-11-01", expiry="2025-12-23", expiry_cycle="weekly")
+        d = resolve_contract_lot("NF", "2025-11-01", expiry="2026-01-06", expiry_cycle="weekly")
+        self.assertEqual(c["contract_lot_size"], 75)
+        self.assertEqual(d["contract_lot_size"], 65)
+
+
+class CapturedMetadataConflictTests(unittest.TestCase):
+    def test_consistent_captured_survives(self):
+        got = resolve_contract_lot(
+            "NF", "2025-11-01",
+            expiry="2026-01-06", expiry_cycle="weekly",
+            captured_contract_lot=65,
+        )
+        self.assertTrue(got["resolved"])
+        self.assertEqual(got["contract_lot_size"], 65)
+        self.assertFalse(got["lot_conflict"])
+
+    def test_conflict_flags_and_excludes(self):
+        got = resolve_contract_lot(
+            "NF", "2025-11-01",
+            expiry="2025-12-23", expiry_cycle="weekly",
+            captured_contract_lot=65,  # rule says 75
+        )
+        self.assertFalse(got["resolved"])
+        self.assertTrue(got["lot_conflict"])
+        self.assertTrue(got["exclude_authoritative_calc"])
+        self.assertEqual(got["captured_contract_lot"], 65)
+        self.assertEqual(got["rule_contract_lot"], 75)
+        self.assertIsNone(got["contract_lot_size"])
+
+
+class PersistenceBoundaryMockTests(unittest.TestCase):
+    def test_roles_roundtrip_preserve_identity(self):
+        identity = resolve_contract_identity({
+            "index_key": "NF",
+            "expiry": "2026-01-06",
+            "expiry_cycle": "weekly",
+            "session_date": "2025-11-01",
+            "contract_lot_size": 65,
+            "number_of_lots": 1,
+            "lot_size": 65,
+            "calendar_dte": 66,
+            "trading_dte": None,
+        })
+        for role in ("primary", "secondary", "rejected", "non_primary"):
+            result = simulate_persistence_boundary_roundtrip(identity, role=role)
+            self.assertTrue(result["fields_preserved"], role)
+            self.assertFalse(result["db_boundary_tested"])
+            self.assertIn("Supabase", result["untested_db_boundary"])
+            self.assertEqual(result["readback"]["role"], role)
+            self.assertEqual(result["readback"]["index_key"], "NF")
+            self.assertEqual(result["readback"]["contract_lot_size"], identity.get("contract_lot_size"))
 
 
 

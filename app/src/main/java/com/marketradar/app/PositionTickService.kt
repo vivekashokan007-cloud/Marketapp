@@ -1042,7 +1042,7 @@ internal data class PositionTickLotMeta(
 )
 
 internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta? {
-    // Shared dated table with Python contract_lot_table.py — never invent BNF.
+    // Shared contract-specific table with Python contract_lot_table.py — never invent BNF.
     val indexRaw = trade.optStringAny("index_key", "indexKey", "index")
     val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
     val tradeLot = trade.optDoubleAny("lot_size", "lotSize")
@@ -1054,7 +1054,25 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val asOf = try {
         if (asOfText.length >= 10) java.time.LocalDate.parse(asOfText.substring(0, 10)) else null
     } catch (_: Exception) { null }
-    val dated = ContractLotTable.resolve(indexRaw, asOf = asOf, numberOfLots = lotsCount)
+    val expiryText = trade.optStringAny("expiry", "expiry_date", "expiryDate")
+        .ifBlank { entrySnapshot.optStringAny("expiry", "expiry_date", "expiryDate") }
+    val expiry = try {
+        if (expiryText.length >= 10) java.time.LocalDate.parse(expiryText.substring(0, 10)) else null
+    } catch (_: Exception) { null }
+    val cycle = trade.optStringAny("expiry_cycle", "expiryCycle")
+        .ifBlank { entrySnapshot.optStringAny("expiry_cycle", "expiryCycle") }
+        .ifBlank { null }
+    val capturedCls = trade.optDoubleAny("contract_lot_size", "contractLotSize")
+        ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
+    val dated = ContractLotTable.resolve(
+        indexRaw,
+        asOf = asOf,
+        numberOfLots = lotsCount,
+        expiry = expiry,
+        expiryCycle = cycle,
+        capturedContractLot = capturedCls,
+        allowOperationalCurrent = asOf == null && expiry == null
+    )
     val lotSize = if (explicitLotSize > 0.0) explicitLotSize else (dated.lotSize ?: 0.0)
     if (lotSize <= 0.0) return null
     val source = when {

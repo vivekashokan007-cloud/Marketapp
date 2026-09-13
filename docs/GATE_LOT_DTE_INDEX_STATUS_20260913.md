@@ -2,9 +2,18 @@
 
 **Branch:** `work/g8-g10-integrity-20260913` (Marketapp local only)  
 **Publishing:** PAUSED — do NOT push / merge / APK / prod migrate / retrain / size-promote / broker-activate.  
-**Gate:** Lot/DTE/NF–BNF remains **OPEN** until remaining unavailable items are closed.  
-**Implementation tip:** `3a75e453c022d59cbacf88215ae16e82734631c9` (`3a75e45`) — feature commit
-**Tests:** Ran 768, OK  
+**Gate:** Lot/DTE/NF–BNF remains **OPEN**.  
+**Base (pre-this-work tip):** `b9c22c6`  
+**Implementation tip:** *(set after local commit)*  
+**Tests:** Python full suite Ran 776, OK. Kotlin unit tests **not executed** (no JAVA_HOME/Android SDK).  
+
+---
+
+## Critical defect fixed (local)
+
+Removed authoritative blanket `2025-01-01→open` NF=65/BNF=30 and reconstructive 2000-era / late-2024 observation-date rows from resolution. They remain under `research_only_excluded` only.
+
+SSOT now `contract_lot_table_v2_20260913` — **contract-specific** rules from NSE FAOP64625 / FAOP70616 annexures + scope-limited Upstox snapshot.
 
 ---
 
@@ -12,48 +21,51 @@
 
 | Item | Status | Evidence |
 |---|---|---|
-| Remove implicit BNF identity fallback (fail-closed → UNKNOWN/None) | **Done** | `brain._index_key_fail_closed`; `_trade_to_teacher_candidate` → UNKNOWN; `compute_position_live` refuses unknown index; Kotlin `ContractLotTable.normalizeIndexKey` + `MarketWatchService` skip; calibration `unknown_index_identity` |
-| Dated contract lot table (shared Python + Kotlin) | **Done** | `app/src/main/assets/contract_lot_table_v1.json`; `contract_lot_table.py`; `ContractLotTable.kt`; version `contract_lot_table_v1_20260913` |
-| Resolve lot by (index, as_of); stamp provenance | **Done** | `lot_size`, `lot_source`, `lot_table_version`, `lot_as_of`, `contract_lot_size`, `number_of_lots` on outcomes / ticks |
-| Distinguish contract lot size vs number of lots | **Done** | Dated resolver + Kotlin meta; behavioral tests |
-| Calendar DTE vs trading DTE | **Done** | `calendar_dte` + `trading_dte` + `dte_basis` (`nse_trading_calendar` when `_CONST.NSE_HOLIDAYS` present) |
-| Persistence / JSON round-trip of contract identity | **Done** | Lineage stamp + `json_round_trip_identity` tests |
-| Joint underlying × DTE × strategy with distinct sessions | **Done** | `compute_contract_slice_report` dims include `joint`; `n_distinct_sessions` / `support` |
-| Unknown identity quarantines eval/calibration; retains record | **Done** | `quarantine_unknown_identity`; `REASON_CONTRACT_IDENTITY_UNKNOWN`; calibration stamp |
-| Ranking buckets ≠ measurement buckets; both versioned | **Done** | `DTE_RANKING_BUCKET_VERSION` vs `DTE_MEASUREMENT_BUCKET_VERSION` |
-| Behavioral tests (legacy unknown, dated lots, lot vs lots, DTE weekend/holiday/expiry, cost/max-loss, JSON RT) | **Done** | `tests/test_lot_dte_index_integrity.py` |
-
-### Dated lot periods (SSOT)
-
-| as_of range | BNF | NF | quality |
-|---|---|---|---|
-| 2025-01-01 → open | 30 | 65 | verified (Upstox master 2026-07-19) |
-| 2024-11-20 → 2024-12-31 | 15 | 25 | reconstructive |
-| 2000-01-01 → 2024-11-19 | 25 | 50 | reconstructive |
+| A. Contract-specific resolution (index+expiry+cycle+observation) | **Implemented** | `contract_lot_table.py` / `ContractLotTable.kt` / assets JSON |
+| A. Distinct contract_lot_size / number_of_lots / quantity_units | **Implemented** | resolver + stamps |
+| A. Prefer captured metadata; conflict → flag+exclude, keep original | **Implemented / tested** | `CapturedMetadataConflictTests` |
+| A. Fail closed outside verified supported window | **Implemented / tested** | fixtures + DatedLotTableTests |
+| A. Supported project-data window | **Defined** | `2024-11-20→open` but only when rule/snapshot matches; as_of-only → unavailable |
+| B. Explicit calendar_dte vs trading_dte; no silent calendar→trading substitution | **Implemented / tested** | coverage validation; ranking uses trading only |
+| C. Persistence through app boundaries (mock) | **Partial** | `simulate_persistence_boundary_roundtrip`; **DB boundary untested** |
+| D. Joint NF×DTE×strategy + distinct sessions; no silent pool; no new thresholds | **Preserved** | joint slice tests; G9 advisory unchanged |
+| Independently sourced fixtures (fail under old blanket 65/30) | **Done** | `nse_lot_transition_fixtures_v2.json` |
 
 ---
 
 ## Tested
 
-- Focused integrity suite: **26 tests OK**
-- Related: `test_canonical_net_profitability` + `test_g2_calibration_input` OK
-- Full Python unittest discover: **Ran 768 tests, OK**
+- Focused integrity suite: **34 tests OK**
+- Full Python unittest discover: **Ran 776, OK**  
+  Command: `PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -q`
+- Kotlin: **NOT RUN** — `JAVA_HOME` unset / no JDK in this environment. Sources + JVM-style tests updated (`ContractLotTableParityTest`, `PositionTickServiceLotResolutionTest`).
 
 ---
 
-## Still unavailable / gate remains OPEN
+## Blocked / still OPEN (closure criteria)
 
-1. **DB schema columns** for `dte_bucket` / `lot_size` / `lot_table_version` / `calendar_dte` / `trading_dte` — JSON/lineage only; **no prod migration** (publishing pause).
-2. **Historical lot period boundaries** for 15/25 and 25/50 are **reconstructive** — prefer explicit `lot_size` on trades spanning those windows; not circular-verified day-by-day.
-3. **Kotlin unit tests not executed in this environment** (no Gradle/Android SDK run here); sources + JVM-style tests updated; APK build forbidden under pause.
-4. **Some non-identity UI/analytics paths** may still branch on index string for display (walls/profiles); valuation/lot/calibration paths are fail-closed. Residual display defaults should be audited before gate close.
-5. **Live sizing / broker / G9 promotion** remain disabled (`experimental_advisory_only`).
-6. **Mid-loop remote persistence** of stamped identity still end-of-run only (E3 honesty).
+1. **Kotlin parity execution** — run `:app:testDebugUnitTest` for `ContractLotTableParityTest` + `PositionTickServiceLotResolutionTest` when JDK available. APK assemble remains forbidden under pause.
+2. **DB boundary** — production Supabase/`saveEvaluationOutcomes` remote upsert **not** exercised; mock JSON only. Identify as untested; no prod writes authorized.
+3. **E3 mid-loop remote persistence** — still end-of-run only (separate operational blocker).
+4. **BNF mid-2025 gap** — need intermediate circular (30→35 present) before authoritative monthly BNF lots in that window.
+5. **Holiday calendar coverage** — `_CONST.NSE_HOLIDAYS` covers **2026 only**; trading_dte correctly unavailable outside covered years (not labeled full `nse_trading_calendar`).
+6. **Read-only impact counts** for rows previously stamped with unsupported blanket lots — **unknown** in this environment (no prod DB read). Local repair proposal deferred; do not backfill.
+7. **Live sizing / broker / G9 promotion** remain disabled (`experimental_advisory_only`) — required constraint, not a defect to close this gate.
+8. **Device notification recovery** — separate unproven operational requirement.
+
+**Gate stays OPEN** until items 1–2 (minimum) and remaining acceptance evidence land.
+
+---
+
+## Publishing pause — confirmed
+
+No push, merge, APK/PWA publication, production migration/backfill, retraining, online update, sizing promotion, or broker activation.
 
 ---
 
 ## Paths
 
-- Status (this file): `/workspace/mr-g8plus/GATE_LOT_DTE_INDEX_STATUS_20260913.md`
-- Audit addendum: `/workspace/mr-g8plus/AUDIT_LOT_DTE_INDEX_20260913.md` (+ `Marketapp/docs/` copy)
-- SSOT lot table: `Marketapp/app/src/main/assets/contract_lot_table_v1.json`
+- Status: `/workspace/mr-g8plus/GATE_LOT_DTE_INDEX_STATUS_20260913.md`
+- Source register: `/workspace/mr-g8plus/SOURCE_REGISTER_LOT_DTE_20260913.md`
+- Handoff: `/workspace/mr-g8plus/HANDOFF_lot_dte_identity_codex_20260913.md`
+- SSOT: `Marketapp/app/src/main/assets/contract_lot_table_v1.json` (version_id `contract_lot_table_v2_20260913`)
