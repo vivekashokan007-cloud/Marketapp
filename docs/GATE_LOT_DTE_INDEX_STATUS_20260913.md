@@ -8,7 +8,7 @@
 - `01a4df3` — fix(compaction): CONTRACT_IDENTITY_COMPACTION_KEYS on teacher-research allowlist + `ContractIdentityCompactionTest`
 - `ae61495` — test(persistence): `android_compact_teacher_candidate_v1` mock + rejected `outcome_json` roundtrip
 - `24e3042` — docs: gate status compaction/persistence; primary DB columns blocked/deferred  
-**Tip after this pass:** `24e3042` (full `24e3042f2bd254f182f6f2537392efce00ddd577`)
+**Tip after compaction docs:** `f5996d0` (docs stamp). Kotlin harness evidence stamped in follow-up commit.
 
 ---
 
@@ -53,14 +53,15 @@ SSOT now `contract_lot_table_v2_20260913` — **contract-specific** rules from N
 
 - Focused integrity suite (`test_lot_dte_index_integrity`): **Ran 39, OK**  
   Command: `PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_lot_dte_index_integrity.py' -v`
-- Kotlin: **NOT RUN** — `ContractLotTableParityTest`, `PositionTickServiceLotResolutionTest`, `ContractIdentityCompactionTest` still **blocked pending SDK/JDK** (another agent installing SDK). Sources updated.  
+- Kotlin NSE fixture parity (`ContractLotTableParityTest`): **5/5 OK** via standalone kotlinc+JUnit harness at `/workspace/mr-g8plus/kotlin-parity` (same `ContractLotTable.kt` + FAOP64625/70616 fixtures). Command: `java -cp out:lib/json.jar:lib/junit.jar:lib/hamcrest.jar:lib/kotlinc/lib/kotlin-stdlib.jar org.junit.runner.JUnitCore com.marketradar.app.ContractLotTableParityTest`
+- Full Gradle `:app:testDebugUnitTest` / `PositionTickServiceLotResolutionTest` / `ContractIdentityCompactionTest` on device toolchain: **still blocked** (no Android SDK in this environment).
 - Production Supabase: **NOT tested** (pause).
 
 ---
 
 ## Blocked / still OPEN (closure criteria)
 
-1. **Kotlin parity execution** — run `:app:testDebugUnitTest` for lot parity + `ContractIdentityCompactionTest` when JDK/SDK available. APK assemble remains forbidden under pause. **Gate stays OPEN until Kotlin parity tests actually execute.**
+1. **Kotlin parity** — NSE fixture parity **executed** (standalone JVM 5/5). Full Gradle Android unit suite + `ContractIdentityCompactionTest` JVM run still pending SDK. APK assemble remains forbidden under pause.
 2. **Primary/secondary DB identity columns** — **blocked/deferred**. Thin schema has no `outcome_json` / `contract_lot_size` / `calendar_dte`. Adding columns would be a prod migration — **forbidden under publishing pause**. Mock intended_upload only.
 3. **DB boundary** — production Supabase/`saveEvaluationOutcomes` remote upsert **not** exercised; mock JSON only.
 4. **E3 mid-loop remote persistence** — still end-of-run only (separate operational blocker).
@@ -70,7 +71,7 @@ SSOT now `contract_lot_table_v2_20260913` — **contract-specific** rules from N
 8. **Live sizing / broker / G9 promotion** remain disabled (`experimental_advisory_only`).
 9. **Device notification recovery** — separate unproven operational requirement.
 
-**Gate stays OPEN** until Kotlin parity tests execute and remaining acceptance evidence lands. Publishing still paused.
+**Gate stays OPEN** — primary/secondary DB identity columns, prod upsert, BNF mid-2025 circular, and full Gradle suite still open. Publishing still paused.
 
 ---
 
