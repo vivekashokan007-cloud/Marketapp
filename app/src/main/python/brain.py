@@ -3648,9 +3648,9 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             return default
 
     idx = trade.get('index_key', 'BNF')
-    # NSE index F&O lot sizes effective for 2026 contracts: BNF=30, NF=65.
+    # NSE index F&O lot sizes: use _CONST (BNF_LOT/NF_LOT). Explicit lot wins.
     # If a trade does not carry explicit lot_size, expose that fallback as assumed.
-    base_lot = 30 if idx == 'BNF' else 65 if idx == 'NF' else 0
+    base_lot = _CONST['BNF_LOT'] if idx == 'BNF' else _CONST['NF_LOT'] if idx == 'NF' else 0
 
     # `lots` is trade quantity in lots, not lot size. App trades usually store
     # `lots: 1`, so treating it as lot_size under-scales BNF P&L by 30x.
@@ -19421,6 +19421,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'estCost': top_cand.get('estCost'),
             'lotSize': top_cand.get('lotSize'),
             'expiry': top_cand.get('expiry'),
+            'tDTE': top_cand.get('tDTE'),
             'width': top_cand.get('width'),
             'premiumEdge': top_cand.get('premiumEdge'),
             'netPremiumEdge': top_cand.get('netPremiumEdge'),
@@ -20569,7 +20570,78 @@ def _select_rejected_candidates_for_eval(rejected_candidates, cap=REJECTED_EVAL_
 
 
 def _candidate_lot_size(cand):
-    return _float_or_none(cand.get('lotSize')) or (30 if (cand.get('index') or 'BNF') == 'BNF' else 65)
+    """Resolve contract lot size. Prefer explicit lotSize; else declared index lot.
+
+    Fail-closed: unknown index with no explicit lot → None (do not invent BNF).
+    Declared table matches _CONST BNF_LOT/NF_LOT.
+    """
+    explicit = _float_or_none(cand.get('lotSize'))
+    if explicit is None:
+        explicit = _float_or_none(cand.get('lot_size'))
+    if explicit is not None and explicit > 0:
+        return explicit
+    idx = str(cand.get('index') or cand.get('index_key') or '').strip().upper()
+    if idx == 'BNF':
+        return float(_CONST['BNF_LOT'])
+    if idx == 'NF':
+        return float(_CONST['NF_LOT'])
+    return None
+
+
+def _candidate_contract_fields(cand, snap=None):
+    """Lot / expiry / DTE / index for outcome snapshots — fail-closed, no invention."""
+    snap = snap if isinstance(snap, dict) else {}
+    cand = cand if isinstance(cand, dict) else {}
+    raw_index = cand.get('index') or cand.get('index_key') or snap.get('index_key') or snap.get('index')
+    index_key = str(raw_index).strip().upper() if raw_index not in (None, '') else None
+    if index_key == '':
+        index_key = None
+    expiry = cand.get('expiry') or cand.get('expiry_date') or snap.get('expiry')
+    expiry_text = str(expiry).strip()[:10] if expiry not in (None, '') else None
+    if expiry_text == '':
+        expiry_text = None
+    dte_raw = cand.get('tDTE') if cand.get('tDTE') is not None else cand.get('dte')
+    dte_value = _float_or_none(dte_raw)
+    dte_source = 'explicit' if dte_value is not None else 'unknown'
+    if dte_value is None and expiry_text:
+        session = snap.get('session_date') or cand.get('session_date')
+        try:
+            from canonical_net_profitability import calendar_dte_from_expiry
+            cal = calendar_dte_from_expiry(session, expiry_text)
+            if cal is not None:
+                dte_value = float(cal)
+                dte_source = 'calendar_expiry_minus_session'
+        except Exception:
+            pass
+    explicit_lot = _float_or_none(cand.get('lotSize'))
+    if explicit_lot is None:
+        explicit_lot = _float_or_none(cand.get('lot_size'))
+    lot_assumed = False
+    if explicit_lot is not None and explicit_lot > 0:
+        lot_size = explicit_lot
+        lot_source = 'explicit'
+    else:
+        lot_size = _candidate_lot_size({**cand, 'index': index_key or cand.get('index')})
+        lot_assumed = True
+        lot_source = 'contract_default' if lot_size is not None else 'unknown'
+    try:
+        from canonical_net_profitability import measurement_dte_bucket
+        dte_bucket = measurement_dte_bucket(None if dte_value is None else int(dte_value))
+    except Exception:
+        dte_bucket = 'UNKNOWN'
+    return {
+        'index_key': index_key or 'UNKNOWN',
+        'index_known': index_key in ('NF', 'BNF'),
+        'expiry': expiry_text,
+        'tDTE': None if dte_value is None else int(dte_value),
+        'dte': None if dte_value is None else int(dte_value),
+        'dte_source': dte_source,
+        'dte_bucket': dte_bucket,
+        'lot_size': lot_size,
+        'lotSize': lot_size,
+        'lot_size_assumed': lot_assumed,
+        'lot_size_source': lot_source,
+    }
 
 
 def _candidate_entry_premium(cand):
@@ -20702,6 +20774,8 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
 def _teacher_execution_basis(snap, cand, point, entry_point=None):
     is_credit = _teacher_candidate_is_credit(cand)
     lot_size = _candidate_lot_size(cand)
+    if lot_size is None or lot_size <= 0:
+        return None
     entry_point = entry_point if isinstance(entry_point, dict) else _entry_snapshot_point(snap, cand)
     point = _normalize_teacher_quote_point(point, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
@@ -20779,6 +20853,14 @@ def _teacher_execution_basis(snap, cand, point, entry_point=None):
 def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
     rates = _teacher_option_charge_rates(trade_dt, config)
     lot_size = _candidate_lot_size(cand)
+    if lot_size is None or lot_size <= 0:
+        return {
+            'total': None,
+            'status': 'LOT_SIZE_UNKNOWN',
+            'reason': 'lot_size_missing_fail_closed',
+            'version': TEACHER_FRICTION_VERSION,
+            'lot_size': lot_size,
+        }
     entry_point = _entry_snapshot_point(snap, cand)
     point = _normalize_teacher_quote_point(point, cand)
     leg_specs = _teacher_candidate_leg_specs(cand)
@@ -20874,6 +20956,8 @@ def _teacher_round_trip_cost(trade_dt, snap, cand, point, config):
         'close_turnover': round(close_turnover, 2),
         'buy_side_premium': round(buy_side_premium, 2),
         'short_sell_premium': round(short_sell_premium, 2),
+        'lot_size': lot_size,
+        'leg_count': leg_count,
         'missing_spread_labels': [],
         'missing_quote_labels': [],
         'spread_evidence_points': spread_evidence,
@@ -21412,6 +21496,8 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
         'managed_pnl': managed_pnl,
         'managed_gross_pnl': round(managed_gross_pnl or 0.0, 2),
         'friction_cost': round(friction_cost or 0.0, 2),
+        'lot_size': first_basis.get('lot_size'),
+        'lotSize': first_basis.get('lot_size'),
         'exit_reason': exit_reason,
         'exit_step': exit_step,
         'exit_ts': exit_ts,
@@ -21454,7 +21540,11 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     h2 = _legacy_h2_structure_valuation(chain_rows, cand)
     sim_pnl = h2.get('sim_pnl_h2')
 
-    index_key = cand.get('index') or cand.get('index_key') or 'BNF'
+    contract = _candidate_contract_fields(cand, snap)
+    index_key = contract['index_key'] if contract.get('index_known') else (
+        cand.get('index') or cand.get('index_key') or 'UNKNOWN'
+    )
+    index_key = str(index_key or 'UNKNOWN').strip().upper() or 'UNKNOWN'
     lane = cand.get('lane')
     trade_mode = cand.get('trade_mode') or cand.get('mode')
     if not trade_mode and isinstance(lane, str):
@@ -21463,13 +21553,23 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
         elif lane.endswith('_swing'):
             trade_mode = 'swing'
     strategy_type = cand.get('type') or cand.get('strategy_type') or ''
+    lane_index = index_key if index_key in ('NF', 'BNF') else 'BNF'
     outcome = {
         'snapshot_id': snap.get('id'),
         'session_date': snap.get('session_date'),
         'snapshot_poll_ts': snap.get('poll_ts'),
         'candidate_id': cand.get('id'),
-        'lane': lane or _candidate_lane(index_key, trade_mode or 'intraday'),
+        'lane': lane or _candidate_lane(lane_index, trade_mode or 'intraday'),
         'index_key': index_key,
+        'expiry': contract.get('expiry'),
+        'tDTE': contract.get('tDTE'),
+        'dte': contract.get('dte'),
+        'dte_source': contract.get('dte_source'),
+        'dte_bucket': contract.get('dte_bucket'),
+        'lot_size': contract.get('lot_size'),
+        'lotSize': contract.get('lotSize'),
+        'lot_size_assumed': contract.get('lot_size_assumed'),
+        'lot_size_source': contract.get('lot_size_source'),
         'trade_mode': trade_mode or 'unknown',
         'strategy_type': strategy_type,
         'sim_pnl_h2': sim_pnl,

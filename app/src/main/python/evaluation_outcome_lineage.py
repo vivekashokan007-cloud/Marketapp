@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover
     FEATURE_SCHEMA_VERSION = "ml_feature_schema_v2_1_1_n38"
     DEFAULT_POLICY_SELECTOR_VERSION = "pc2_paper_primary_v7"
 
-LINEAGE_CONTRACT_VERSION = "evaluation_outcome_lineage_v1_20260913"
+LINEAGE_CONTRACT_VERSION = "evaluation_outcome_lineage_v1_1_contract_identity_20260913"
 REASON_OK = "LINEAGE_OK"
 REASON_MISSING = "LINEAGE_MISSING_REQUIRED_FIELDS"
 REASON_MISMATCH = "LINEAGE_VERSION_MISMATCH"
@@ -128,6 +128,25 @@ def stamp_outcome_lineage(outcome: dict, **kwargs) -> dict:
     ):
         if outcome.get(key) in (None, "") and lineage.get(key) not in (None, ""):
             outcome[key] = lineage[key]
+    # Contract identity (lot / expiry / DTE / NF|BNF) — fail-closed, no invented values.
+    try:
+        from canonical_net_profitability import attach_contract_identity
+        attach_contract_identity(outcome)
+        ci = outcome.get("contract_identity") if isinstance(outcome.get("contract_identity"), dict) else {}
+        lineage["contract_identity"] = {
+            "index_key": ci.get("index_key"),
+            "expiry": ci.get("expiry"),
+            "dte": ci.get("dte"),
+            "dte_bucket": ci.get("dte_bucket"),
+            "lot_size": ci.get("lot_size"),
+            "lot_size_source": ci.get("lot_size_source"),
+            "lot_size_assumed": ci.get("lot_size_assumed"),
+            "identity_complete": ci.get("identity_complete"),
+            "dte_bucket_version": ci.get("dte_bucket_version"),
+        }
+        outcome["evaluation_lineage"] = lineage
+    except Exception as exc:  # pragma: no cover
+        outcome["contract_identity_error"] = str(exc)
     return outcome
 
 

@@ -627,20 +627,35 @@ def _slice_key(row: dict[str, Any], dim: str) -> str:
     if dim == "strategy":
         return str(row.get("strategy_type") or row.get("type") or "UNKNOWN")
     if dim == "dte":
-        dte = row.get("dte")
-        if dte is None:
-            return "UNKNOWN"
+        # Measurement buckets (0 / 1-2 / 3-7 / 8+) — not trading thresholds.
+        # Prefer explicit dte/tDTE; else calendar expiry−session; else UNKNOWN.
         try:
-            d = int(float(dte))
-        except (TypeError, ValueError):
-            return "UNKNOWN"
-        if d <= 0:
-            return "DTE_0"
-        if d <= 3:
-            return "DTE_1_3"
-        if d <= 7:
-            return "DTE_4_7"
-        return "DTE_8_PLUS"
+            from canonical_net_profitability import (
+                attach_contract_identity,
+                measurement_dte_bucket,
+            )
+            enriched = dict(row)
+            attach_contract_identity(enriched)
+            return str(enriched.get("dte_bucket") or measurement_dte_bucket(enriched.get("dte")))
+        except Exception:
+            dte = row.get("dte")
+            if dte is None:
+                dte = row.get("tDTE")
+            if dte is None:
+                return "UNKNOWN"
+            try:
+                d = int(float(dte))
+            except (TypeError, ValueError):
+                return "UNKNOWN"
+            if d < 0:
+                return "UNKNOWN"
+            if d <= 0:
+                return "DTE_0"
+            if d <= 2:
+                return "DTE_1_2"
+            if d <= 7:
+                return "DTE_3_7"
+            return "DTE_8_PLUS"
     if dim == "regime":
         return str(row.get("regime") or row.get("regime_type") or "UNKNOWN")
     if dim == "execution_mode":

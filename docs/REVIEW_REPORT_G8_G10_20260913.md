@@ -17,7 +17,7 @@
 | `8cfc326…` | feat(paper,G9): paper-analysis lane, E3/notif lineage, advisory Kelly |
 | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | fix(G8): training export/label/temporal integrity + canonical net metrics |
 
-**Branch tip (includes docs):** `d471b4a4927ce27616b8d274d936fd3ef74ba336`  
+**Branch tip (includes docs):** `32aeafdfc21d8278647ccedfc2bf0e7e3683e28d`  
 **Feature tip (pre-docs):** `98a86c25cc2b9d07f785dabc9e55381c92f46dfd`  
 
 Base `origin/main`: `f03cd2aacd4cadadf013794f3229bdb504c36e8e` (2.6.41 / b472).
@@ -30,7 +30,7 @@ Base `origin/main`: `f03cd2aacd4cadadf013794f3229bdb504c36e8e` (2.6.41 / b472).
 | `133350475400f95f07e4557d61336f1fdf809a91` | docs: record Paper/G9 local tip SHAs |
 | `9799970…` | feat(paper): surface non-primary PAPER ANALYSIS alternatives |
 
-**Branch tip (includes docs):** `6163c72d296ea3f5b31246109044af9ca5965ad9`  
+**Branch tip (includes docs):** `cb2cad26d220fed009934c949f6337aea0da1233`  
 **Feature tip (pre-docs):** `79582db1eabf5e9a291b496c624b5bba3c181a0a`  
 PWA cache: `app.js?v=1337`.
 
@@ -157,3 +157,16 @@ Canonical posture (`canonical_net_profitability_v1_20260913` + SPEC in `docs-out
 - This report: `/workspace/mr-g8plus/REVIEW_REPORT_G8_G10_20260913.md`
 - Copies: `Marketapp/docs/REVIEW_REPORT_G8_G10_20260913.md`, `MarketVivi/docs/REVIEW_REPORT_G8_G10_20260913.md`
 - Progress: `/workspace/mr-g8plus/PAPER_G9_PROGRESS.md` (final tip SHAs)
+
+---
+
+## 11. Addendum — Lot / DTE / NF·BNF identity (2026-09-13)
+
+Pre-complete G8/G9 gate: decision → paper → evening evaluation now preserves **contract lot**, **expiry/DTE**, and **NF/BNF** fail-closed through outcomes and lineage.
+
+- Declared lot table: BNF=30, NF=65 (`brain._CONST` / `CURRENT_CONTRACT_LOT_TABLE`) — no historical lot invention.
+- Measurement DTE buckets: `DTE_0` / `DTE_1_2` / `DTE_3_7` / `DTE_8_PLUS` / `UNKNOWN` (not trading thresholds).
+- Slice report by index × DTE bucket × strategy with `thin_support` (min 20); sparse cells not pooled.
+- Behavioral tests: rupee P&L/cost/risk scale with lot/index (`tests/test_lot_dte_index_integrity.py`).
+- Live sizing + broker remain disabled; publishing pause unchanged.
+- Audit: `/workspace/mr-g8plus/AUDIT_LOT_DTE_INDEX_20260913.md`
