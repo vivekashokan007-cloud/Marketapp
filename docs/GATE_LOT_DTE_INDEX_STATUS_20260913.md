@@ -4,7 +4,7 @@
 **Publishing:** PAUSED — do NOT push / merge / APK / prod migrate / retrain / size-promote / broker-activate.
 **Base (merge-base origin/main):** `f03cd2aacd4cadadf013794f3229bdb504c36e8e`
 **Reviewed tip (pre-rectification):** `83c61291e0ada5dba80528f9f10c026ae38cd8f3`
-**Rectification code tip:** `cd0de5ef94f3105c4dc0914f5abea61028060952`  
+**Rectification code tip:** `cd0de5ef94f3105c4dc0914f5abea61028060952`
 **Branch tip (incl. docs):** `f8e42c5cc740ca58958af5295c6641c16c6a740c`
 
 **Lot/DTE local integrity:** **review-blocked / OPEN** (Codex B3 conflict-bypass + B4 SSOT parity reopened the gate)

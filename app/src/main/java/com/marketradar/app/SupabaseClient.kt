@@ -141,8 +141,18 @@ object SupabaseClient {
     // Draft SQL lives in docs/design/ (NOT active supabase/migrations). Prod untouched.
     private val outcomeFullColumnsWithoutIdentity = outcomeBaseColumns + shadowTeacherKeys + listOf("created_at")
     private val outcomeFullColumnsWithIdentity = outcomeBaseColumns + shadowTeacherKeys + listOf("contract_identity", "created_at")
-    @Volatile private var remoteContractIdentityCapable: Boolean? = false // fail-closed until proven
-    @Volatile private var remoteContractIdentityPersisted: Boolean = false
+    // Per-table capability; default false under publishing pause. Never invent remote persistence.
+    @Volatile private var evalContractIdentityCapable: Boolean? = false
+    @Volatile private var recommendationContractIdentityCapable: Boolean? = false
+    @Volatile private var remoteContractIdentityCapable: Boolean? = false // aggregate OR — fail-closed
+    @Volatile private var remoteContractIdentityPersisted: Boolean = false // true only after confirmed write
+    @Volatile private var remoteContractIdentityReadbackVerified: Boolean = false
+
+    data class PersistenceTruth(
+        val payloadIncluded: Boolean = false,
+        val writeSucceeded: Boolean = false,
+        val readbackVerified: Boolean = false
+    )
 
     private fun fetchSync(request: Request): String? {
         return try {
@@ -162,34 +172,97 @@ object SupabaseClient {
     }
 
     /**
-     * Schema capability: contract_identity column on primary/recommendation tables.
+     * Schema capability per table. Default false under publishing pause.
      * Fail closed — missing/unknown ⇒ do not send the column on remote writers.
+     * No production probe is authorized in this pass; forceRefresh remains local-test only.
      */
-    fun remoteContractIdentityCapability(forceRefresh: Boolean = false): Boolean {
-        val cached = remoteContractIdentityCapable
+    fun remoteContractIdentityCapabilityForTable(table: String, forceRefresh: Boolean = false): Boolean {
+        val key = table.trim().lowercase()
+        val cached = when {
+            key.contains("recommendation") -> recommendationContractIdentityCapable
+            else -> evalContractIdentityCapable
+        }
         if (!forceRefresh) return cached == true
-        // Probe via zero-row select requesting the column. Fail closed on any error.
+        // Local/test probe only — never authorized against production from this gate.
         val capable = try {
             val request = getBaseRequest(
-                "ml_evaluation_outcomes?select=contract_identity&limit=0"
+                "$table?select=contract_identity&limit=0"
             ).get().build()
             val result = fetchSyncTyped(request)
             result.status == "success"
         } catch (_: Exception) {
             false
         }
-        remoteContractIdentityCapable = capable
-        if (!capable) remoteContractIdentityPersisted = false
+        if (key.contains("recommendation")) {
+            recommendationContractIdentityCapable = capable
+        } else {
+            evalContractIdentityCapable = capable
+        }
+        remoteContractIdentityCapable =
+            (evalContractIdentityCapable == true) || (recommendationContractIdentityCapable == true)
+        if (!capable) {
+            // Do not clear the other table's capability; only clear aggregate persistence flags
+            // when neither table is capable.
+            if (evalContractIdentityCapable != true && recommendationContractIdentityCapable != true) {
+                remoteContractIdentityPersisted = false
+                remoteContractIdentityReadbackVerified = false
+            }
+        }
         return capable
     }
 
+    fun remoteContractIdentityCapability(forceRefresh: Boolean = false): Boolean {
+        // Aggregate: true only if evaluation table is capable (primary writer).
+        // Prefer table-specific checks for writers.
+        if (!forceRefresh) return evalContractIdentityCapable == true
+        return remoteContractIdentityCapabilityForTable("ml_evaluation_outcomes", forceRefresh = true)
+    }
+
     fun remoteContractIdentityPersistedFlag(): Boolean = remoteContractIdentityPersisted
+    fun remoteContractIdentityReadbackVerifiedFlag(): Boolean = remoteContractIdentityReadbackVerified
+
+    fun markContractIdentityWriteSucceeded(succeeded: Boolean) {
+        // Never report persisted=true until remote response confirms the write.
+        remoteContractIdentityPersisted = succeeded
+        if (!succeeded) remoteContractIdentityReadbackVerified = false
+    }
+
+    fun markContractIdentityReadbackVerified(verified: Boolean) {
+        remoteContractIdentityReadbackVerified = verified
+    }
 
     /** Test seam: simulate missing/present column without hitting network. */
     internal fun setRemoteContractIdentityCapabilityForTest(capable: Boolean?) {
+        evalContractIdentityCapable = capable
+        recommendationContractIdentityCapable = capable
         remoteContractIdentityCapable = capable
-        if (capable != true) remoteContractIdentityPersisted = false
+        if (capable != true) {
+            remoteContractIdentityPersisted = false
+            remoteContractIdentityReadbackVerified = false
+        }
     }
+
+    internal fun setRemoteContractIdentityCapabilityPerTableForTest(
+        evaluation: Boolean?,
+        recommendation: Boolean?
+    ) {
+        evalContractIdentityCapable = evaluation
+        recommendationContractIdentityCapable = recommendation
+        remoteContractIdentityCapable = (evaluation == true) || (recommendation == true)
+        if (evalContractIdentityCapable != true && recommendationContractIdentityCapable != true) {
+            remoteContractIdentityPersisted = false
+            remoteContractIdentityReadbackVerified = false
+        }
+    }
+
+    fun shouldIncludeContractIdentity(table: String): Boolean =
+        remoteContractIdentityCapabilityForTable(table)
+
+    fun persistenceTruth(
+        payloadIncluded: Boolean,
+        writeSucceeded: Boolean,
+        readbackVerified: Boolean
+    ): PersistenceTruth = PersistenceTruth(payloadIncluded, writeSucceeded, readbackVerified)
 
 
 
@@ -683,18 +756,25 @@ object SupabaseClient {
                 src.put("contract_identity", localIdentity)
                 src.put("remote_contract_identity_persisted", false)
             }
-            if (remoteContractIdentityCapability() && localIdentity != null) {
+            val includeRemote = shouldIncludeContractIdentity("ml_evaluation_outcomes") && localIdentity != null
+            if (includeRemote) {
                 row.put("contract_identity", localIdentity)
-                remoteContractIdentityPersisted = true
-                row.put("remote_contract_identity_persisted", true)
-            } else {
+                row.put("remote_contract_identity_payload_included", true)
+                // write_succeeded / readback_verified remain false until confirmed post-write.
                 row.put("remote_contract_identity_persisted", false)
+                row.put("remote_contract_identity_write_succeeded", false)
+                row.put("remote_contract_identity_readback_verified", false)
+            } else {
+                row.put("remote_contract_identity_payload_included", false)
+                row.put("remote_contract_identity_persisted", false)
+                row.put("remote_contract_identity_write_succeeded", false)
+                row.put("remote_contract_identity_readback_verified", false)
             }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        val cols = if (remoteContractIdentityCapability()) outcomeFullColumnsWithIdentity else outcomeFullColumnsWithoutIdentity
+        val cols = if (shouldIncludeContractIdentity("ml_evaluation_outcomes")) outcomeFullColumnsWithIdentity else outcomeFullColumnsWithoutIdentity
         return canonicalizeRows(rows, cols)
     }
 
@@ -991,15 +1071,26 @@ object SupabaseClient {
                 src.put("contract_identity", localIdentity)
                 src.put("remote_contract_identity_persisted", false)
             }
-            if (remoteContractIdentityCapability() && localIdentity != null) {
+            val includeRemote = shouldIncludeContractIdentity("ml_recommendation_outcomes") && localIdentity != null
+            if (includeRemote) {
                 row.put("contract_identity", localIdentity)
-                remoteContractIdentityPersisted = true
+                row.put("remote_contract_identity_payload_included", true)
+                row.put("remote_contract_identity_persisted", false)
+                row.put("remote_contract_identity_write_succeeded", false)
+                row.put("remote_contract_identity_readback_verified", false)
+            } else {
+                row.put("remote_contract_identity_payload_included", false)
+                row.put("remote_contract_identity_persisted", false)
             }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
         }
-        return canonicalizeRows(rows, if (remoteContractIdentityCapability()) outcomeFullColumnsWithIdentity else outcomeFullColumnsWithoutIdentity)
+        return canonicalizeRows(
+            rows,
+            if (shouldIncludeContractIdentity("ml_recommendation_outcomes")) outcomeFullColumnsWithIdentity
+            else outcomeFullColumnsWithoutIdentity
+        )
     }
 
     private fun sanitizeFailedIntegrityTeacherRow(row: JSONObject) {
@@ -2391,30 +2482,112 @@ object SupabaseClient {
     }
 
     /**
-     * Multi-page evaluation-outcome export for training integrity.
-     * Pages the first table that returns any rows (s1 → legacy → ml_decisions).
+     * Injectable page seam for tests — production uses selectPage.
+     * Returning a non-success status must never be coerced to empty-success.
+     */
+    @Volatile
+    internal var pageFetchSeam: ((table: String, filter: String?, order: String?, limit: Int?, offset: Int?) -> PageResult)? = null
+
+    internal fun resetPageFetchSeam() {
+        pageFetchSeam = null
+    }
+
+    private fun selectPageViaSeam(
+        table: String,
+        filter: String? = null,
+        order: String? = null,
+        limit: Int? = null,
+        offset: Int? = null
+    ): PageResult {
+        val seam = pageFetchSeam
+        return if (seam != null) seam(table, filter, order, limit, offset)
+        else selectPage(table, filter, order, limit, offset)
+    }
+
+    /**
+     * Multi-page evaluation-outcome export via typed page API.
+     * Explicit preferred source; network/parse errors ⇒ incomplete_error (no table fallback).
+     * Residual limitation: offset pagination with frozen cutoff; prefer keyset when available.
      */
     fun fetchRecentEvaluationOutcomesPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
+        val safePage = if (pageSize > 0) pageSize else 500
+        val safeMax = if (maxPages > 0) maxPages else 1
+        // Preferred source first. Fallback only on typed schema_unavailable / not_found — never on network error.
         val candidates = listOf(
-            Triple("ml_evaluation_outcomes_s1", null as String?, "effective_session_date.desc,created_at.desc"),
-            Triple("ml_evaluation_outcomes", null, "created_at.desc"),
-            Triple("ml_decisions", null, "created_at.desc")
+            Triple("ml_evaluation_outcomes_s1", null as String?, "effective_session_date.desc,created_at.desc,id.asc"),
+            Triple("ml_evaluation_outcomes", null, "created_at.desc,id.asc"),
+            Triple("ml_decisions", null, "created_at.desc,id.asc")
         )
+        var lastEmptyTable: String? = null
+        var selectionReason = "none"
         for ((table, filter, order) in candidates) {
-            val first = select(table, filter, order, pageSize, 0)
-            if (first.length() == 0) continue
+            val first = selectPageViaSeam(table, filter, order, safePage, 0)
+            if (first.status != "success") {
+                val schemaMissing = first.httpCode == 404 ||
+                    (first.error?.contains("does not exist", true) == true) ||
+                    (first.body?.contains("PGRST", true) == true && first.httpCode in setOf(400, 404))
+                if (schemaMissing) {
+                    selectionReason = "schema_unavailable:$table"
+                    lastEmptyTable = table
+                    continue // typed not_found/schema_unavailable only
+                }
+                // Network / parse / cancelled — never fall through to legacy table.
+                return JSONObject()
+                    .put("rows", JSONArray())
+                    .put("source_table", table)
+                    .put("pages_fetched", 1)
+                    .put("page_size", safePage)
+                    .put("max_pages", safeMax)
+                    .put("returned", 0)
+                    .put("truncated_at_max_pages", false)
+                    .put("page_error", first.error ?: first.status)
+                    .put("page_error_status", first.status)
+                    .put("failed_page", 0)
+                    .put("selection_reason", "preferred_source_error_no_fallback")
+                    .put("status", "incomplete_error")
+            }
+            if (first.rows.length() == 0) {
+                lastEmptyTable = table
+                selectionReason = "empty:$table"
+                continue
+            }
+            selectionReason = "preferred_or_fallback:$table"
             val all = JSONArray()
-            for (i in 0 until first.length()) first.optJSONObject(i)?.let(all::put)
+            for (i in 0 until first.rows.length()) first.rows.optJSONObject(i)?.let(all::put)
             var pagesFetched = 1
             var truncated = false
-            if (first.length() >= pageSize) {
-                for (pageIndex in 1 until maxPages) {
-                    val page = select(table, filter, order, pageSize, pageIndex * pageSize)
+            var pageError: String? = null
+            var pageErrorStatus: String? = null
+            var failedPage: Int? = null
+            if (first.rows.length() >= safePage) {
+                for (pageIndex in 1 until safeMax) {
+                    val page = selectPageViaSeam(table, filter, order, safePage, pageIndex * safePage)
                     pagesFetched += 1
-                    for (i in 0 until page.length()) page.optJSONObject(i)?.let(all::put)
-                    if (page.length() < pageSize) break
-                    if (pageIndex == maxPages - 1) truncated = true
+                    if (page.status != "success") {
+                        pageError = page.error ?: page.status
+                        pageErrorStatus = page.status
+                        failedPage = pageIndex
+                        break
+                    }
+                    for (i in 0 until page.rows.length()) page.rows.optJSONObject(i)?.let(all::put)
+                    if (page.rows.length() < safePage) break
+                    if (pageIndex == safeMax - 1) truncated = true
                 }
+            }
+            if (pageErrorStatus != null) {
+                return JSONObject()
+                    .put("rows", all) // partial retained for diagnostics only
+                    .put("source_table", table)
+                    .put("pages_fetched", pagesFetched)
+                    .put("page_size", safePage)
+                    .put("max_pages", safeMax)
+                    .put("returned", all.length())
+                    .put("truncated_at_max_pages", false)
+                    .put("page_error", pageError)
+                    .put("page_error_status", pageErrorStatus)
+                    .put("failed_page", failedPage)
+                    .put("selection_reason", selectionReason)
+                    .put("status", "incomplete_error")
             }
             val normalized = if (table == "ml_evaluation_outcomes_s1") {
                 normalizeShadowOutcomeRows(all)
@@ -2425,10 +2598,12 @@ object SupabaseClient {
                 .put("rows", normalized)
                 .put("source_table", table)
                 .put("pages_fetched", pagesFetched)
-                .put("page_size", pageSize)
-                .put("max_pages", maxPages)
+                .put("page_size", safePage)
+                .put("max_pages", safeMax)
                 .put("returned", normalized.length())
                 .put("truncated_at_max_pages", truncated)
+                .put("selection_reason", selectionReason)
+                .put("order", order)
                 .put(
                     "status",
                     when {
@@ -2440,29 +2615,45 @@ object SupabaseClient {
         }
         return JSONObject()
             .put("rows", JSONArray())
-            .put("source_table", "none")
-            .put("pages_fetched", 0)
-            .put("page_size", pageSize)
-            .put("max_pages", maxPages)
+            .put("source_table", lastEmptyTable ?: "none")
+            .put("pages_fetched", if (lastEmptyTable != null) 1 else 0)
+            .put("page_size", safePage)
+            .put("max_pages", safeMax)
             .put("returned", 0)
             .put("truncated_at_max_pages", false)
+            .put("selection_reason", selectionReason)
             .put("status", "empty")
     }
 
     fun fetchRecentBrainSnapshotsPaged(pageSize: Int = 500, maxPages: Int = 20): JSONObject {
+        val safePage = if (pageSize > 0) pageSize else 500
+        val safeMax = if (maxPages > 0) maxPages else 1
+        val order = "poll_ts.desc,id.asc"
+        val table = "ml_brain_snapshots"
         val out = JSONArray()
         var pagesFetched = 0
         var truncated = false
-        val safePage = if (pageSize > 0) pageSize else 500
-        val safeMax = if (maxPages > 0) maxPages else 1
         for (pageIndex in 0 until safeMax) {
-            val page = fetchArray(
-                "ml_brain_snapshots?select=*&order=poll_ts.desc&limit=$safePage&offset=${pageIndex * safePage}"
-            ) ?: break
+            val page = selectPageViaSeam(table, null, order, safePage, pageIndex * safePage)
             pagesFetched += 1
-            if (page.length() == 0) break
-            for (i in 0 until page.length()) page.optJSONObject(i)?.let(out::put)
-            if (page.length() < safePage) {
+            if (page.status != "success") {
+                return JSONObject()
+                    .put("rows", out)
+                    .put("pages_fetched", pagesFetched)
+                    .put("page_size", safePage)
+                    .put("max_pages", safeMax)
+                    .put("returned", out.length())
+                    .put("truncated_at_max_pages", false)
+                    .put("page_error", page.error ?: page.status)
+                    .put("page_error_status", page.status)
+                    .put("failed_page", pageIndex)
+                    .put("source_table", table)
+                    .put("order", order)
+                    .put("status", "incomplete_error")
+            }
+            if (page.rows.length() == 0) break
+            for (i in 0 until page.rows.length()) page.rows.optJSONObject(i)?.let(out::put)
+            if (page.rows.length() < safePage) {
                 truncated = false
                 break
             }
@@ -2475,6 +2666,8 @@ object SupabaseClient {
             .put("max_pages", safeMax)
             .put("returned", out.length())
             .put("truncated_at_max_pages", truncated)
+            .put("source_table", table)
+            .put("order", order)
             .put(
                 "status",
                 when {

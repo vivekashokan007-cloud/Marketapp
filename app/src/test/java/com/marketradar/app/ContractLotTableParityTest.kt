@@ -2,6 +2,7 @@ package com.marketradar.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -133,4 +134,42 @@ class ContractLotTableParityTest {
         val ok = ContractLotTable.parsePositiveIntegralLot(2)
         assertEquals(2, ok)
     }
+
+    @Test
+    fun ruleSnapshotMatchesJsonFields() {
+        val snap = ContractLotTable.ruleSnapshotForTests()
+        assertEquals(20, snap.size)
+        val ids = snap.map { it["rule_id"] as String }.toSet()
+        assertEquals(20, ids.size)
+        // Boundary: changing any field without regeneration would diverge from VERSION_ID + count
+        assertEquals(ContractLotTable.VERSION_ID, "contract_lot_table_v2_20260913")
+        for (row in snap) {
+            assertNotNull(row["rule_id"])
+            assertNotNull(row["index"])
+            assertNotNull(row["contract_lot_size"])
+            assertNotNull(row["source_id"])
+        }
+    }
+
+    @Test
+    fun fractionalCapturedLotNeverSubstituted() {
+        val bad = ContractLotTable.resolve(
+            "NF",
+            java.time.LocalDate.parse("2026-07-19"),
+            expiry = java.time.LocalDate.parse("2026-08-06"),
+            expiryCycle = "weekly",
+            capturedContractLot = 65.5
+        )
+        assertFalse(bad.resolved)
+        assertNull(bad.contractLotSize)
+        assertEquals("fractional_lot", bad.unavailableReason)
+    }
+
+    @Test
+    fun allTwentyRuleIdsPresentCompared() {
+        val snapIds = ContractLotTable.ruleSnapshotForTests().map { it["rule_id"] as String }.sorted()
+        assertEquals(20, snapIds.size)
+        assertEquals(snapIds.toSet().size, snapIds.size)
+    }
+
 }

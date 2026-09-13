@@ -177,7 +177,28 @@ internal object ContractLotTable {
             if (numberOfLots > 0.0 && kotlin.math.abs(numberOfLots - kotlin.math.round(numberOfLots)) <= 1e-9) numberOfLots else 1.0
         }
         val cycle = normalizeExpiryCycle(expiryCycle)
-        val capturedInt = parsePositiveIntegralLot(capturedContractLot)
+        val capturedObs = if (capturedContractLot == null) {
+            FieldObservation("field_absent")
+        } else {
+            classifyPositiveIntegralField(capturedContractLot)
+        }
+        if (capturedObs.status == "field_present_but_invalid") {
+            return ResolvedLot(
+                indexKey = idx ?: "UNKNOWN",
+                indexKnown = idx != null,
+                contractLotSize = null,
+                numberOfLots = nLots,
+                lotSize = null,
+                lotSource = capturedObs.error ?: "invalid_captured_contract_lot",
+                lotTableVersion = VERSION_ID,
+                lotAsOf = asOfText,
+                resolved = false,
+                unavailableReason = capturedObs.error ?: "invalid_captured_contract_lot",
+                expiry = expiry?.toString(),
+                expiryCycle = cycle
+            )
+        }
+        val capturedInt = capturedObs.value
         val captured = capturedInt?.toDouble()
 
         if (idx == null) {
@@ -378,6 +399,67 @@ internal object ContractLotTable {
         if (kotlin.math.abs(n - rounded) > 1e-9) return null
         val iv = rounded.toInt()
         return if (iv > 0) iv else null
+    }
+
+    /** Distinguish field_absent from field_present_but_invalid. */
+    data class FieldObservation(
+        val status: String, // field_absent | field_present | field_present_but_invalid
+        val value: Int? = null,
+        val error: String? = null,
+        val raw: Any? = null
+    )
+
+    fun classifyPositiveIntegralField(raw: Any?): FieldObservation {
+        if (raw == null) return FieldObservation("field_absent")
+        if (raw is String && raw.isBlank()) return FieldObservation("field_absent")
+        val n = when (raw) {
+            is Number -> raw.toDouble()
+            is String -> raw.trim().toDoubleOrNull()
+            else -> null
+        }
+        if (n == null) return FieldObservation("field_present_but_invalid", error = "malformed_lot", raw = raw)
+        if (!n.isFinite()) return FieldObservation("field_present_but_invalid", error = "non_finite_lot", raw = raw)
+        if (n <= 0.0) return FieldObservation("field_present_but_invalid", error = "non_positive_lot", raw = raw)
+        val rounded = kotlin.math.round(n)
+        if (kotlin.math.abs(n - rounded) > 1e-9) {
+            return FieldObservation("field_present_but_invalid", error = "fractional_lot", raw = raw)
+        }
+        val iv = rounded.toInt()
+        if (iv <= 0) return FieldObservation("field_present_but_invalid", error = "non_positive_lot", raw = raw)
+        return FieldObservation("field_present", value = iv, raw = raw)
+    }
+
+    fun parseNonNegativeIntegralDte(raw: Any?): FieldObservation {
+        if (raw == null) return FieldObservation("field_absent")
+        if (raw is String && raw.isBlank()) return FieldObservation("field_absent")
+        val n = when (raw) {
+            is Number -> raw.toDouble()
+            is String -> raw.trim().toDoubleOrNull()
+            else -> null
+        }
+        if (n == null) return FieldObservation("field_present_but_invalid", error = "malformed_dte", raw = raw)
+        if (!n.isFinite()) return FieldObservation("field_present_but_invalid", error = "non_finite_dte", raw = raw)
+        if (n < 0.0) return FieldObservation("field_present_but_invalid", error = "negative_dte", raw = raw)
+        val rounded = kotlin.math.round(n)
+        if (kotlin.math.abs(n - rounded) > 1e-9) {
+            return FieldObservation("field_present_but_invalid", error = "fractional_dte", raw = raw)
+        }
+        return FieldObservation("field_present", value = rounded.toInt(), raw = raw)
+    }
+
+    /** Read-only rule snapshot for parity tests (does not weaken runtime encapsulation). */
+    fun ruleSnapshotForTests(): List<Map<String, Any?>> = rules.map { r ->
+        mapOf(
+            "rule_id" to r.ruleId,
+            "index" to r.index,
+            "expiry_cycle" to r.expiryCycle,
+            "expiry_on_or_after" to r.expiryOnOrAfter?.toString(),
+            "expiry_on_or_before" to r.expiryOnOrBefore?.toString(),
+            "observation_on_or_after" to r.observationOnOrAfter?.toString(),
+            "observation_on_or_before" to r.observationOnOrBefore?.toString(),
+            "contract_lot_size" to r.contractLotSize,
+            "source_id" to r.sourceId,
+        )
     }
 
     fun parseNumberOfLots(raw: Any?, allowMissingDefaultOne: Boolean = true): Pair<Double?, Boolean> {

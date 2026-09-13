@@ -1,9 +1,9 @@
 # PAPER + G9 Progress — 2026-09-13
 
-**Status:** Local implementation on isolated branch. **NOT pushed.**  
+**Status:** Local implementation on isolated branch. **NOT pushed.**
 **Publishing pause:** strict — no push, no merge to main, no APK/PWA publish, no production Supabase migrations, no ml_train enablement, no live orders, no sizing promotion.
 
-Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commit).  
+Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commit).
 **Final review:** [`REVIEW_REPORT_G8_G10_20260913.md`](./REVIEW_REPORT_G8_G10_20260913.md)
 
 ## Tip SHAs (local only) — FINAL

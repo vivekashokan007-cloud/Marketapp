@@ -1,7 +1,7 @@
 # AUDIT — Lot / DTE / NF·BNF identity (2026-09-13)
 
-**Branch:** `work/g8-g10-integrity-20260913` (Marketapp)  
-**Scope:** decision → paper trade → evening evaluation  
+**Branch:** `work/g8-g10-integrity-20260913` (Marketapp)
+**Scope:** decision → paper trade → evening evaluation
 **Publishing:** PAUSED — no push / merge / APK / prod migrate / live sizing / broker.
 
 ---
@@ -56,7 +56,7 @@ Full suite: **`python3 -m unittest discover -s app/src/main/python/tests -q` →
 
 ## D) Performance reporting sample
 
-Measurement DTE buckets (not trading thresholds): `DTE_0`, `DTE_1_2`, `DTE_3_7`, `DTE_8_PLUS`, `UNKNOWN`  
+Measurement DTE buckets (not trading thresholds): `DTE_0`, `DTE_1_2`, `DTE_3_7`, `DTE_8_PLUS`, `UNKNOWN`
 (`dte_measurement_buckets_v1_0_1_2_3_7_8plus_20260913`)
 
 Lot table (current declared only): `{BNF: 30, NF: 65}` — historical 25/50 or 15/25 **not** used.

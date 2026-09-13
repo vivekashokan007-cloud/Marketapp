@@ -1,7 +1,7 @@
 # Review Report — G8 / Paper / G9 / G10 integrity finish
 
-**Date:** 2026-09-13  
-**Lane:** `work/g8-g10-integrity-20260913` (local only)  
+**Date:** 2026-09-13
+**Lane:** `work/g8-g10-integrity-20260913` (local only)
 **Publishing pause:** STRICT — no push, no merge to main, no APK/PWA publish, no production Supabase migrations, no `ml_train` / `online_update` enablement, no live broker orders, no sizing promotion.
 
 ---
@@ -17,8 +17,8 @@
 | `8cfc326…` | feat(paper,G9): paper-analysis lane, E3/notif lineage, advisory Kelly |
 | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | fix(G8): training export/label/temporal integrity + canonical net metrics |
 
-**Branch tip (includes docs):** `32aeafdfc21d8278647ccedfc2bf0e7e3683e28d`  
-**Feature tip (pre-docs):** `98a86c25cc2b9d07f785dabc9e55381c92f46dfd`  
+**Branch tip (includes docs):** `32aeafdfc21d8278647ccedfc2bf0e7e3683e28d`
+**Feature tip (pre-docs):** `98a86c25cc2b9d07f785dabc9e55381c92f46dfd`
 
 Base `origin/main`: `f03cd2aacd4cadadf013794f3229bdb504c36e8e` (2.6.41 / b472).
 
@@ -30,8 +30,8 @@ Base `origin/main`: `f03cd2aacd4cadadf013794f3229bdb504c36e8e` (2.6.41 / b472).
 | `133350475400f95f07e4557d61336f1fdf809a91` | docs: record Paper/G9 local tip SHAs |
 | `9799970…` | feat(paper): surface non-primary PAPER ANALYSIS alternatives |
 
-**Branch tip (includes docs):** `cb2cad26d220fed009934c949f6337aea0da1233`  
-**Feature tip (pre-docs):** `79582db1eabf5e9a291b496c624b5bba3c181a0a`  
+**Branch tip (includes docs):** `cb2cad26d220fed009934c949f6337aea0da1233`
+**Feature tip (pre-docs):** `79582db1eabf5e9a291b496c624b5bba3c181a0a`
 PWA cache: `app.js?v=1337`.
 
 ---

@@ -1824,84 +1824,15 @@ class MarketMLService : Service() {
                 RETRAIN_DISABLED_REASON,
                 "info"
             )
-            if (!prefs.getBoolean("ml_retrain_force_enable", false)) {
-                return@withContext
-            }
-
-            val py   = Python.getInstance()
-            val mod  = py.getModule("ml_train")
-
-            // 1. Export closed trades and evaluator-backed labels to disk
+            // R2.9: hard-disable. Preference-based force bypass removed from production path.
+            // A future separate authorization commit is required to re-enable training.
+            // Export paper research artifacts only — never pass paper to live trainer.
             exportAppTrades()
             exportCanonicalEvaluationInputs()
-
-            // 2. Run training (MLS5: Timeout increased to 300s for large NN/GBT datasets)
-            val result = withTimeoutOrNull(300_000L) {
-                mod.callAttr(
-                    "run",
-                    backtestPath(this@MarketMLService),
-                    appTradesPath(this@MarketMLService),
-                    modelPath(this@MarketMLService),
-                    py.builtins.callAttr("print"),         // log_fn = print → logcat
-                    evalOutcomesPath(this@MarketMLService),
-                    brainSnapshotsPath(this@MarketMLService)
-                ).toString()
-            }
-            
-            if (result == null) {
-                Log.w(TAG, "TRAINING_TIMEOUT: ml_train.run timed out after 60s")
-                NotificationHelper.send(this@MarketMLService, "❌ Training Timeout", "Python trainer took too long", "urgent")
-                return@withContext
-            }
-
-            val json    = org.json.JSONObject(result)
-            val success = json.optBoolean("success", false)
-            val deployed = json.optBoolean("deployed", false)
-            val accGbt  = json.optDouble("acc_gbt", 0.0) // MLS7: Distinct accuracy fields
-            val accEns  = json.optDouble("acc_ens", 0.0)
-            val nTrain  = json.optInt("n_train", 0)
-            val elapsed = json.optDouble("duration_sec", 0.0)
-            val reason  = json.optString("reason", "")
-
-            Log.i(TAG, "Training result: success=$success deployed=$deployed " +
-                       "accEns=$accEns n=$nTrain ${elapsed}s")
-
-            // 3. Store result in Supabase ml_models table
-            if (success) {
-                val pyEngine = py.getModule("ml_engine")
-                val currentVersion = pyEngine.get("ML_VERSION")?.toString() ?: "2.2.0" // MLS6: Read from Python
-                
-                saveModelMetaToSupabase(
-                    version   = currentVersion,
-                    nTrain    = nTrain,
-                    accGbt    = accGbt,
-                    accEns    = accEns,
-                    deployed  = deployed,
-                    reason    = reason,
-                    topFeatures = json.optJSONArray("top_features")?.toString() ?: "[]"
-                )
-                
-                // MLS8: Cleanup old model files after successful training
-                cleanupOldModels()
-
-                // 4. Update ml_performance table
-                savePerformanceToSupabase(accEns)
-
-                // 5. Also train temporal model while we're awake
-                runTemporalTraining()
-
-                // 6. Hot-reload ML engine in Chaquopy (reload module)
-                reloadMLEngine(py)
-
-                // Notify user of success
-                NotificationHelper.send(this@MarketMLService,
-                    "✅ ML Model Updated",
-                    "Accuracy: ${String.format("%.1f", accEns * 100)}% on $nTrain trades (${String.format("%.0f", elapsed)}s)",
-                    "info")
-            }
-
-            val totalMs = System.currentTimeMillis() - startMs
-            Log.i(TAG, "=== ML training complete in ${totalMs/1000}s ===")
+            return@withContext
+            // Live trainer remains hard-disabled. Paper exports above are research-only
+            // (paper_trades.json) and must never be passed to a live-model trainer interface.
+            // Re-enable requires a dedicated authorization commit — no preference bypass.
 
         } catch (e: Exception) {
             Log.e(TAG, "ML training ERROR: ${e.message}", e)
@@ -2132,7 +2063,8 @@ class MarketMLService : Service() {
                 .put("truncated_at_max_pages", truncated)
                 .put("multi_page", true)
                 .put("training_enabled", false)
-                .put("checksum_sha256", org.json.JSONObject().put("rows", resp.length()))
+                .put("row_count", resp.length())
+                .put("checksum_sha256", sha256Hex(resp.toString().toByteArray(Charsets.UTF_8)))
                 .put("note", when (statusName) {
                     "incomplete_error" -> "Page failure — retained last good export; do not train."
                     "incomplete_truncated" -> "Hit maxPages ceiling; incomplete cohort."
@@ -2165,7 +2097,37 @@ class MarketMLService : Service() {
         }
     }
 
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { b -> "%02x".format(b) }
+    }
+
+    private fun atomicReplace(target: File, content: String): Boolean {
+        val tmp = File(target.absolutePath + ".tmp")
+        tmp.writeText(content)
+        return if (tmp.renameTo(target)) {
+            true
+        } else {
+            try {
+                target.writeText(content)
+                tmp.delete()
+                true
+            } catch (_: Exception) {
+                tmp.delete()
+                false
+            }
+        }
+    }
+
+    /**
+     * Export canonical evaluation inputs with fail-closed completeness.
+     * Calculate/validate complete manifest BEFORE replacing last-good files.
+     * Atomic replace of outcomes+snapshots+manifest only when both datasets complete
+     * and join coverage passes. On error, write attempt/status only — preserve last-good.
+     */
     private suspend fun exportCanonicalEvaluationInputs() {
+        val statusPath = File(filesDir, "canonical_eval_export_status.json")
+        val attemptPath = File(filesDir, "canonical_eval_export_attempt.json")
         try {
             val pageSize = 500
             val maxPages = 20
@@ -2173,8 +2135,8 @@ class MarketMLService : Service() {
             val snapshotPage = SupabaseClient.fetchRecentBrainSnapshotsPaged(pageSize, maxPages)
             val outcomes = outcomePage.optJSONArray("rows") ?: org.json.JSONArray()
             val snapshots = snapshotPage.optJSONArray("rows") ?: org.json.JSONArray()
-            File(evalOutcomesPath(this)).writeText(outcomes.toString())
-            File(brainSnapshotsPath(this)).writeText(snapshots.toString())
+            val outcomeStatus = outcomePage.optString("status", "empty")
+            val snapshotStatus = snapshotPage.optString("status", "empty")
             val truncated = outcomePage.optBoolean("truncated_at_max_pages", false) ||
                 snapshotPage.optBoolean("truncated_at_max_pages", false)
             var primary = 0
@@ -2197,11 +2159,18 @@ class MarketMLService : Service() {
                     if (sid.isNotBlank() && snapIds.contains(sid)) primaryWithSnap++
                 }
             }
+            val pageError = outcomeStatus == "incomplete_error" || snapshotStatus == "incomplete_error"
+            val joinIncomplete = primary > 0 && primaryWithSnap < primary
             val statusName = when {
+                pageError -> "incomplete_error"
                 outcomes.length() == 0 && snapshots.length() == 0 -> "empty"
-                truncated || (primary > 0 && primaryWithSnap < primary) -> "incomplete_truncated"
+                truncated || joinIncomplete -> "incomplete_truncated"
+                outcomeStatus != "complete" && outcomeStatus != "empty" -> outcomeStatus
+                snapshotStatus != "complete" && snapshotStatus != "empty" -> snapshotStatus
                 else -> "complete"
             }
+            val outcomesBytes = outcomes.toString().toByteArray(Charsets.UTF_8)
+            val snapshotsBytes = snapshots.toString().toByteArray(Charsets.UTF_8)
             val status = org.json.JSONObject()
                 .put("kind", "canonical_eval_export")
                 .put("status", statusName)
@@ -2214,19 +2183,66 @@ class MarketMLService : Service() {
                 .put("outcomes_pages_fetched", outcomePage.optInt("pages_fetched", 0))
                 .put("snapshots_pages_fetched", snapshotPage.optInt("pages_fetched", 0))
                 .put("outcomes_source_table", outcomePage.optString("source_table", ""))
+                .put("outcomes_status", outcomeStatus)
+                .put("snapshots_status", snapshotStatus)
+                .put("outcomes_page_error", outcomePage.opt("page_error") ?: org.json.JSONObject.NULL)
+                .put("snapshots_page_error", snapshotPage.opt("page_error") ?: org.json.JSONObject.NULL)
+                .put("selection_reason", outcomePage.optString("selection_reason", ""))
                 .put("truncated_at_max_pages", truncated)
                 .put("multi_page", true)
-                .put("capped_or_incomplete", statusName == "incomplete_truncated")
+                .put("capped_or_incomplete", statusName != "complete" && statusName != "empty")
                 .put("training_enabled", false)
-                .put("note", if (statusName == "incomplete_truncated")
-                    "Max-page ceiling and/or missing snapshot joins; cohort incomplete — do not train as full set."
-                    else "Multi-page joined coverage complete for exported window.")
-            File(File(filesDir, "canonical_eval_export_status.json").absolutePath).writeText(status.toString())
+                .put("row_count", org.json.JSONObject()
+                    .put("outcomes", outcomes.length())
+                    .put("snapshots", snapshots.length()))
+                .put("checksum_sha256", org.json.JSONObject()
+                    .put("outcomes", sha256Hex(outcomesBytes))
+                    .put("snapshots", sha256Hex(snapshotsBytes)))
+                .put("note", when (statusName) {
+                    "incomplete_error" -> "Page failure — retained last good export; do not train."
+                    "incomplete_truncated" -> "Max-page ceiling and/or missing snapshot joins; cohort incomplete — do not train as full set."
+                    "empty" -> "Empty export window."
+                    else -> "Multi-page joined coverage complete for exported window."
+                })
+
+            // Always record the attempt; only replace last-good on complete/empty.
+            attemptPath.writeText(status.toString())
+            if (statusName == "complete" || statusName == "empty") {
+                val outFile = File(evalOutcomesPath(this))
+                val snapFile = File(brainSnapshotsPath(this))
+                val outTmp = File(outFile.absolutePath + ".tmp")
+                val snapTmp = File(snapFile.absolutePath + ".tmp")
+                val statusTmp = File(statusPath.absolutePath + ".tmp")
+                outTmp.writeBytes(outcomesBytes)
+                snapTmp.writeBytes(snapshotsBytes)
+                statusTmp.writeText(status.toString())
+                val okOut = outTmp.renameTo(outFile) || run { outFile.writeBytes(outcomesBytes); outTmp.delete(); true }
+                val okSnap = snapTmp.renameTo(snapFile) || run { snapFile.writeBytes(snapshotsBytes); snapTmp.delete(); true }
+                val okStatus = statusTmp.renameTo(statusPath) || run { statusPath.writeText(status.toString()); statusTmp.delete(); true }
+                if (!okOut || !okSnap || !okStatus) {
+                    Log.w(TAG, "Canonical export atomic replace partially failed")
+                }
+            } else {
+                // Retain prior complete last-good bytes; status/attempt only.
+                statusPath.writeText(status.toString())
+                Log.w(TAG, "Canonical export incomplete ($statusName); last-good outcome/snapshot files unchanged")
+            }
             Log.i(
                 TAG,
                 "Canonical evaluator inputs exported: outcomes=${outcomes.length()} snapshots=${snapshots.length()} status=$statusName multi_page=true"
             )
         } catch (e: Exception) {
+            try {
+                val err = org.json.JSONObject()
+                    .put("kind", "canonical_eval_export")
+                    .put("status", "incomplete_error")
+                    .put("error", e.message ?: "exception")
+                    .put("training_enabled", false)
+                    .put("note", "Exception during export — last-good files unchanged")
+                attemptPath.writeText(err.toString())
+                statusPath.writeText(err.toString())
+            } catch (_: Exception) {
+            }
             Log.w(TAG, "Could not export canonical evaluator inputs: ${e.message}")
         }
     }

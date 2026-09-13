@@ -53,6 +53,51 @@ def _finite(value: Any) -> float | None:
     return n
 
 
+def parse_non_negative_integral_dte(value: Any) -> dict[str, Any]:
+    """Explicit DTE must be finite, integral, and non-negative.
+
+    Distinguishes field_absent from field_present_but_invalid.
+    Never silently truncates fractional values.
+    """
+    if value is None or value == "":
+        return {"status": "field_absent", "value": None, "error": None, "raw": None}
+    raw = value
+    try:
+        if isinstance(value, bool):
+            raise ValueError("bool")
+        if isinstance(value, str):
+            s = value.strip()
+            if not s:
+                return {"status": "field_absent", "value": None, "error": None, "raw": None}
+            n = float(s)
+        else:
+            n = float(value)
+    except (TypeError, ValueError):
+        return {"status": "field_present_but_invalid", "value": None, "error": "malformed_dte", "raw": raw}
+    if not math.isfinite(n):
+        return {"status": "field_present_but_invalid", "value": None, "error": "non_finite_dte", "raw": raw}
+    if n < 0:
+        return {"status": "field_present_but_invalid", "value": None, "error": "negative_dte", "raw": raw}
+    if abs(n - round(n)) > 1e-9:
+        return {"status": "field_present_but_invalid", "value": None, "error": "fractional_dte", "raw": raw}
+    return {"status": "field_present", "value": int(round(n)), "error": None, "raw": raw}
+
+
+def classify_integral_field(raw: Any, *, parser) -> dict[str, Any]:
+    """Track field_absent vs field_present_but_invalid for lot/quantity fields."""
+    if raw is None or raw == "":
+        return {"status": "field_absent", "value": None, "error": None, "raw": None}
+    parsed, err = parser(raw)
+    if err or parsed is None:
+        return {
+            "status": "field_present_but_invalid",
+            "value": None,
+            "error": err or "invalid_integral",
+            "raw": raw,
+        }
+    return {"status": "field_present", "value": parsed, "error": None, "raw": raw}
+
+
 def _session_date(unit: Mapping[str, Any]) -> str:
     for k in ("session_date", "date", "effective_session_date"):
         v = unit.get(k)
@@ -492,11 +537,36 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
 
     session = _session_date(src)
 
-    # Explicit DTE fields (producer trading-DTE often on tDTE)
-    explicit_tdte = _finite(src.get("tDTE"))
-    explicit_dte = _finite(src.get("dte"))
-    explicit_cal = _finite(src.get("calendar_dte"))
-    explicit_trading = _finite(src.get("trading_dte"))
+    # Explicit DTE fields — fail closed on negative/fractional/malformed; never truncate.
+    tdte_obs = parse_non_negative_integral_dte(src.get("tDTE"))
+    dte_obs = parse_non_negative_integral_dte(src.get("dte"))
+    cal_obs = parse_non_negative_integral_dte(src.get("calendar_dte"))
+    trading_obs = parse_non_negative_integral_dte(src.get("trading_dte"))
+
+    explicit_dte_invalid = any(
+        obs["status"] == "field_present_but_invalid"
+        for obs in (tdte_obs, dte_obs, cal_obs, trading_obs)
+    )
+    dte_field_errors = {
+        key: obs["error"]
+        for key, obs in (
+            ("tDTE", tdte_obs),
+            ("dte", dte_obs),
+            ("calendar_dte", cal_obs),
+            ("trading_dte", trading_obs),
+        )
+        if obs["status"] == "field_present_but_invalid"
+    }
+    retained_explicit_dte = {
+        key: obs["raw"]
+        for key, obs in (
+            ("tDTE", tdte_obs),
+            ("dte", dte_obs),
+            ("calendar_dte", cal_obs),
+            ("trading_dte", trading_obs),
+        )
+        if obs["status"] != "field_absent"
+    }
 
     dte_pack = _trading_dte_impl(session, expiry_text) if (session and expiry_text) else {
         "trading_dte": None,
@@ -506,26 +576,37 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "calendar_coverage_ok": False,
         "calendar_version": None,
     }
-    calendar_dte_val = (
-        int(explicit_cal) if explicit_cal is not None
-        else dte_pack.get("calendar_dte")
-    )
-    if calendar_dte_val is None and expiry_text and session:
-        calendar_dte_val = calendar_dte_from_expiry(session, expiry_text)
 
-    if explicit_trading is not None:
-        trading_dte_val = int(explicit_trading)
-    elif explicit_tdte is not None:
-        trading_dte_val = int(explicit_tdte)
+    # Never substitute another DTE basis when an explicit field was present-but-invalid.
+    if cal_obs["status"] == "field_present_but_invalid":
+        calendar_dte_val = None
+    elif cal_obs["status"] == "field_present":
+        calendar_dte_val = cal_obs["value"]
     else:
-        trading_dte_val = dte_pack.get("trading_dte")
+        calendar_dte_val = dte_pack.get("calendar_dte")
+        if calendar_dte_val is None and expiry_text and session:
+            calendar_dte_val = calendar_dte_from_expiry(session, expiry_text)
 
-    # Measurement dte: explicit dte wins; else calendar; else trading.
-    if explicit_dte is not None:
-        dte_value = int(explicit_dte)
+    if trading_obs["status"] == "field_present_but_invalid" or tdte_obs["status"] == "field_present_but_invalid":
+        trading_dte_val = None
+    elif trading_obs["status"] == "field_present":
+        trading_dte_val = trading_obs["value"]
+    elif tdte_obs["status"] == "field_present":
+        trading_dte_val = tdte_obs["value"]
+    else:
+        trading_dte_val = None if explicit_dte_invalid else dte_pack.get("trading_dte")
+
+    if dte_obs["status"] == "field_present_but_invalid":
+        dte_value = None
+        dte_source = "explicit_invalid"
+    elif dte_obs["status"] == "field_present":
+        dte_value = dte_obs["value"]
         dte_source = "explicit"
+    elif explicit_dte_invalid:
+        dte_value = None
+        dte_source = "explicit_invalid"
     elif calendar_dte_val is not None:
-        dte_value = int(calendar_dte_val)
+        dte_value = int(calendar_dte_val) if int(calendar_dte_val) >= 0 else None
         dte_source = "calendar_expiry_minus_session"
     elif trading_dte_val is not None:
         dte_value = int(trading_dte_val)
@@ -533,6 +614,20 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     else:
         dte_value = None
         dte_source = "unknown"
+
+    # Expiry-before-session remains invalid.
+    if (
+        calendar_dte_val is not None
+        and isinstance(calendar_dte_val, (int, float))
+        and float(calendar_dte_val) < 0
+        and cal_obs["status"] == "field_absent"
+    ):
+        explicit_dte_invalid = True
+        dte_field_errors["calendar_dte_computed"] = "expiry_before_session"
+        dte_value = None
+        trading_dte_val = None
+        calendar_dte_val = int(calendar_dte_val)
+        dte_source = "expiry_before_session"
 
     dte_basis = src.get("dte_basis") or dte_pack.get("dte_basis") or "unknown"
 
@@ -550,99 +645,135 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
     number_of_lots = n_pack["number_of_lots"]
     number_of_lots_assumed = bool(n_pack["number_of_lots_assumed"])
     number_of_lots_error = n_pack["number_of_lots_error"]
+    n_lots_status = (
+        "field_absent"
+        if (src.get("number_of_lots") in (None, "") and src.get("lots") in (None, ""))
+        else ("field_present" if n_pack["valid"] else "field_present_but_invalid")
+    )
 
-    # Legacy lot_size alone is NOT verified. Prefer explicit contract_lot_size;
-    # else derive captured contract lot from quantity_units / number_of_lots when
-    # both are valid positive integrals (captured trade metadata).
-    explicit_contract_lot_raw = src.get("contract_lot_size")
-    explicit_contract_lot, cls_err = parse_positive_integral_lot(explicit_contract_lot_raw)
+    # Field presence for lot/quantity — explicit invalid NEVER treated as absent.
+    # Policy (lot_size_interpretation_v1_20260913):
+    #   contract_lot_size = units per lot
+    #   quantity_units = total units = contract_lot_size * number_of_lots
+    #   legacy lot_size / lotSize alone = units per lot (contract), NOT total quantity,
+    #   even when number_of_lots > 1 (never silently divide into fractional lots).
+    lot_size_interpretation = "lot_size_interpretation_v1_20260913"
+    cls_field = classify_integral_field(src.get("contract_lot_size"), parser=parse_positive_integral_lot)
+    qty_field = classify_integral_field(src.get("quantity_units"), parser=parse_positive_integral_lot)
+    legacy_lot_raw = src.get("lot_size")
+    if legacy_lot_raw in (None, ""):
+        legacy_lot_raw = src.get("lotSize")
+    if legacy_lot_raw in (None, ""):
+        legacy_lot_raw = src.get("lot_size_resolved")
+    legacy_lot_field = classify_integral_field(legacy_lot_raw, parser=parse_positive_integral_lot)
 
-    qty_raw = src.get("quantity_units")
-    if qty_raw in (None, ""):
-        qty_raw = src.get("lot_size")
-    if qty_raw in (None, ""):
-        qty_raw = src.get("lotSize")
-    if qty_raw in (None, ""):
-        qty_raw = src.get("lot_size_resolved")
-    qty_units, qty_err = parse_positive_integral_lot(qty_raw)
+    field_diagnostics = {
+        "contract_lot_size": cls_field,
+        "quantity_units": qty_field,
+        "lot_size": legacy_lot_field,
+        "number_of_lots": {
+            "status": n_lots_status,
+            "value": number_of_lots if n_pack["valid"] else None,
+            "error": number_of_lots_error,
+            "raw": raw_n_lots if n_lots_status != "field_absent" else None,
+        },
+    }
+
+    explicit_lot_invalid = any(
+        field_diagnostics[k]["status"] == "field_present_but_invalid"
+        for k in ("contract_lot_size", "quantity_units", "lot_size", "number_of_lots")
+    )
+
+    explicit_contract_lot = cls_field["value"] if cls_field["status"] == "field_present" else None
+    cls_err = cls_field["error"] if cls_field["status"] == "field_present_but_invalid" else None
+
+    qty_units = qty_field["value"] if qty_field["status"] == "field_present" else None
+    qty_err = qty_field["error"] if qty_field["status"] == "field_present_but_invalid" else None
 
     derived_contract_lot = None
     derived_err = None
-    if explicit_contract_lot is None and qty_units is not None and number_of_lots and n_pack["valid"]:
+    if explicit_contract_lot is None and legacy_lot_field["status"] == "field_present":
+        # Explicit policy: legacy lotSize = per-contract units, not total quantity.
+        derived_contract_lot = legacy_lot_field["value"]
+        if qty_units is None and n_pack["valid"] and number_of_lots is not None:
+            qty_units = int(derived_contract_lot) * int(number_of_lots)
+    elif (
+        explicit_contract_lot is None
+        and qty_units is not None
+        and number_of_lots
+        and n_pack["valid"]
+        and legacy_lot_field["status"] == "field_absent"
+    ):
         if qty_units % int(number_of_lots) != 0:
             derived_err = "quantity_units_not_divisible_by_number_of_lots"
         else:
             derived_contract_lot = qty_units // int(number_of_lots)
 
-    captured_for_compare = explicit_contract_lot if explicit_contract_lot is not None else derived_contract_lot
+    captured_for_compare = (
+        explicit_contract_lot if explicit_contract_lot is not None else derived_contract_lot
+    )
 
     lot_assumed = False
     expiry_cycle = src.get("expiry_cycle") or src.get("expiration_cycle")
 
+    def _invalid_dated(reason, **extra):
+        base = {
+            "resolved": False,
+            "lot_conflict": False,
+            "exclude_authoritative_calc": True,
+            "lot_source": reason,
+            "unavailable_reason": reason,
+            "lot_table_version": None,
+            "lot_as_of": None,
+            "contract_lot_size": None,
+            "lot_size": None,
+            "captured_contract_lot": None,
+            "rule_contract_lot": None,
+            "matched_rule_id": None,
+            "source_id": None,
+            "lot_provenance": None,
+            "lot_provenance_quality": None,
+            "expiry_cycle": expiry_cycle,
+            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
+            "original_retained": True,
+            "lot_size_interpretation": lot_size_interpretation,
+        }
+        base.update(extra)
+        return base
+
     if not n_pack["valid"]:
-        dated = {
-            "resolved": False,
-            "lot_conflict": False,
-            "exclude_authoritative_calc": True,
-            "lot_source": number_of_lots_error or "invalid_number_of_lots",
-            "unavailable_reason": number_of_lots_error or "invalid_number_of_lots",
-            "lot_table_version": None,
-            "lot_as_of": None,
-            "contract_lot_size": None,
-            "lot_size": None,
-            "captured_contract_lot": captured_for_compare,
-            "rule_contract_lot": None,
-            "matched_rule_id": None,
-            "source_id": None,
-            "lot_provenance": None,
-            "lot_provenance_quality": None,
-            "expiry_cycle": expiry_cycle,
-            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
-        }
-    elif cls_err and explicit_contract_lot_raw not in (None, ""):
-        dated = {
-            "resolved": False,
-            "lot_conflict": False,
-            "exclude_authoritative_calc": True,
-            "lot_source": cls_err,
-            "unavailable_reason": cls_err,
-            "lot_table_version": None,
-            "lot_as_of": None,
-            "contract_lot_size": None,
-            "lot_size": None,
-            "captured_contract_lot": None,
-            "rule_contract_lot": None,
-            "matched_rule_id": None,
-            "source_id": None,
-            "lot_provenance": None,
-            "lot_provenance_quality": None,
-            "expiry_cycle": expiry_cycle,
-            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
-        }
+        dated = _invalid_dated(
+            number_of_lots_error or "invalid_number_of_lots",
+            retained_number_of_lots_raw=field_diagnostics["number_of_lots"]["raw"],
+            captured_contract_lot=captured_for_compare,
+        )
+    elif cls_field["status"] == "field_present_but_invalid":
+        dated = _invalid_dated(
+            cls_err or "invalid_contract_lot_size",
+            retained_contract_lot_size_raw=cls_field["raw"],
+        )
+    elif qty_field["status"] == "field_present_but_invalid":
+        dated = _invalid_dated(
+            qty_err or "invalid_quantity_units",
+            retained_quantity_units_raw=qty_field["raw"],
+        )
+    elif (
+        legacy_lot_field["status"] == "field_present_but_invalid"
+        and cls_field["status"] == "field_absent"
+        and qty_field["status"] == "field_absent"
+    ):
+        dated = _invalid_dated(
+            legacy_lot_field["error"] or "invalid_lot_size",
+            retained_lot_size_raw=legacy_lot_field["raw"],
+        )
     elif derived_err:
-        dated = {
-            "resolved": False,
-            "lot_conflict": True,
-            "exclude_authoritative_calc": True,
-            "lot_source": derived_err,
-            "unavailable_reason": derived_err,
-            "lot_table_version": None,
-            "lot_as_of": None,
-            "contract_lot_size": None,
-            "lot_size": None,
-            "captured_contract_lot": None,
-            "rule_contract_lot": None,
-            "matched_rule_id": None,
-            "source_id": None,
-            "lot_provenance": None,
-            "lot_provenance_quality": None,
-            "expiry_cycle": expiry_cycle,
-            "instrument_key": src.get("instrument_key") or src.get("instrumentKey"),
-            "retained_quantity_units": qty_units,
-            "retained_number_of_lots": number_of_lots,
-        }
+        dated = _invalid_dated(
+            derived_err,
+            lot_conflict=True,
+            retained_quantity_units=qty_units,
+            retained_number_of_lots=number_of_lots,
+        )
     else:
-        # Always compare captured/derived contract lot with authority in verified window.
         dated = resolve_contract_lot(
             index_key,
             as_of=session or None,
@@ -653,19 +784,20 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
             instrument_key=src.get("instrument_key") or src.get("instrumentKey"),
             allow_operational_current=(not session and not expiry_text),
         )
+        dated = dict(dated)
+        dated["lot_size_interpretation"] = lot_size_interpretation
 
     lot_conflict = bool(dated.get("lot_conflict"))
-    exclude_calc = bool(dated.get("exclude_authoritative_calc")) or lot_conflict
+    exclude_calc = bool(dated.get("exclude_authoritative_calc")) or lot_conflict or explicit_lot_invalid
 
-    if lot_conflict:
-        # Retain original observation; identity incomplete / quarantined.
+    if lot_conflict and not explicit_lot_invalid:
         lot_size = float(qty_units) if qty_units is not None else None
         contract_lot_size = captured_for_compare
         lot_source = dated.get("lot_source") or "captured_vs_rule_conflict"
         lot_assumed = False
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
-    elif dated.get("resolved"):
+    elif dated.get("resolved") and not explicit_lot_invalid:
         lot_size = float(dated["lot_size"]) if dated.get("lot_size") is not None else None
         contract_lot_size = dated.get("contract_lot_size")
         lot_source = dated.get("lot_source") or "authoritative_contract_rule"
@@ -673,17 +805,18 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
     else:
+        # Explicit invalid: never substitute authoritative/operational lot.
         lot_size = None
         contract_lot_size = None
         lot_source = dated.get("lot_source") or "unknown"
-        lot_assumed = True
+        lot_assumed = False
         lot_table_version = dated.get("lot_table_version")
         lot_as_of = dated.get("lot_as_of")
 
     # Flat vs nested conflict
     nested = src.get("contract_identity") if isinstance(src.get("contract_identity"), Mapping) else None
     flat_nested_conflict = False
-    if nested:
+    if nested and not explicit_lot_invalid:
         for key in ("contract_lot_size", "number_of_lots", "index_key", "expiry"):
             nv = nested.get(key)
             fv = {
@@ -713,19 +846,26 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         and number_of_lots is not None
         and n_pack["valid"]
         and not lot_conflict
+        and not explicit_lot_invalid
     ):
         expected_qty = int(contract_lot_size) * int(number_of_lots)
-        if qty_units is not None:
+        if qty_field["status"] == "field_present":
             qty_ok = qty_units == expected_qty
             lot_size = float(expected_qty) if qty_ok else float(qty_units)
         else:
             lot_size = float(expected_qty)
             qty_units = expected_qty
             qty_ok = True
-    elif lot_size is not None and contract_lot_size is not None and number_of_lots is not None and n_pack["valid"]:
+    elif (
+        lot_size is not None
+        and contract_lot_size is not None
+        and number_of_lots is not None
+        and n_pack["valid"]
+        and not explicit_lot_invalid
+    ):
         qty_ok = abs(float(lot_size) - float(contract_lot_size) * float(number_of_lots)) < 1e-9
 
-    dte_ok = dte_value is not None
+    dte_ok = dte_value is not None and not explicit_dte_invalid
     if dte_basis in ("trading", "trading_dte", "explicit_tDTE") and trading_dte_val is None:
         dte_ok = False
 
@@ -744,9 +884,17 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         and not lot_conflict
         and not flat_nested_conflict
         and not exclude_calc
+        and not explicit_lot_invalid
+        and not explicit_dte_invalid
         and dated.get("resolved")
     )
-    quarantine = not identity_complete or exclude_calc or lot_conflict
+    quarantine = (
+        not identity_complete
+        or exclude_calc
+        or lot_conflict
+        or explicit_lot_invalid
+        or explicit_dte_invalid
+    )
     return {
         "index_key": index_display,
         "index_known": index_key in ("NF", "BNF"),
@@ -793,13 +941,27 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
         "evaluation_ineligible": quarantine,
         "calibration_ineligible": quarantine,
         "one_lot_default_policy": ONE_LOT_DEFAULT_POLICY,
+        "lot_size_interpretation": lot_size_interpretation,
+        "field_diagnostics": field_diagnostics,
+        "explicit_lot_invalid": explicit_lot_invalid,
+        "explicit_dte_invalid": explicit_dte_invalid,
+        "dte_field_errors": dte_field_errors or None,
+        "retained_explicit_dte": retained_explicit_dte or None,
+        "retained_invalid_observations": {
+            k: v["raw"]
+            for k, v in field_diagnostics.items()
+            if v.get("status") == "field_present_but_invalid"
+        } or None,
         "measurement_note": (
             "Measurement DTE buckets ≠ ranking (stage2a) buckets. "
             "Calendar DTE is never silently substituted into trading-DTE ranking. "
-            "Legacy lot_size alone is never verified without authority compare. "
+            "Explicit invalid lot/quantity/DTE is retained diagnostically and never "
+            "replaced by authoritative or operational-current values. "
+            "Legacy lot_size alone means units-per-lot under lot_size_interpretation_v1_20260913. "
             + CONTRACT_LOT_TABLE_NOTE
         ),
     }
+
 
 
 def attach_contract_identity(row: dict[str, Any]) -> dict[str, Any]:

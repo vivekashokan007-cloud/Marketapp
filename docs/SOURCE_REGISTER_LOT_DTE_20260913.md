@@ -22,7 +22,7 @@ Extracted text: `FAOP64625.txt`, `FAOP67372.txt`, `FAOP70616.txt` (pdftotext).
 
 ## Independently sourced fixtures
 
-`Marketapp/app/src/test/resources/contracts/nse_lot_transition_fixtures_v2.json`  
+`Marketapp/app/src/test/resources/contracts/nse_lot_transition_fixtures_v2.json`
 (also `docs/contracts/fixtures/`, `app/src/main/python/tests/`)
 
 Expected lots taken from circular annexures / stated present lots — **not** from `contract_lot_table_v1.json`.

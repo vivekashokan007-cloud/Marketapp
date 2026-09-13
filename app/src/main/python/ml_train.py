@@ -539,24 +539,97 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_pa
         result['live_training_eligible'] = False
         result['paper_contamination_guard'] = 'ml_train_disabled_paper_not_live'
         log(f"ml_train: SKIPPED — {RETRAIN_DISABLED_REASON}")
-        # Even while disabled, refuse incomplete / mismatched paper export manifests.
+        # Fail-closed on missing/malformed/stale/incomplete/source-mismatched/checksum-mismatched manifests.
+        # Manifest parsing errors are fatal for trainer eligibility — never "non-fatal".
         try:
             import os
-            for status_name in ('paper_trades_export_status.json', 'app_trades_export_status.json'):
-                status_path = os.path.join(os.path.dirname(app_trades_path or '') or '.', status_name)
+            import hashlib
+            manifest_paths = []
+            base_dir = os.path.dirname(app_trades_path or '') or '.'
+            for status_name in (
+                'paper_trades_export_status.json',
+                'app_trades_export_status.json',
+                'canonical_eval_export_status.json',
+            ):
+                status_path = os.path.join(base_dir, status_name)
                 if os.path.isfile(status_path):
+                    manifest_paths.append((status_name, status_path))
+            # If a paper status file is expected beside paper_trades.json and missing → fail closed.
+            paper_json = os.path.join(base_dir, 'paper_trades.json')
+            paper_status = os.path.join(base_dir, 'paper_trades_export_status.json')
+            if os.path.isfile(paper_json) and not os.path.isfile(paper_status):
+                result['reason'] = 'export_manifest_missing:paper_trades_export_status.json'
+                result['success'] = False
+                result['deployed'] = False
+                log('ml_train: ABORT — missing paper export manifest (fail-closed)')
+                result['duration_sec'] = round(time.time() - t0, 1)
+                return json.dumps(result)
+            for status_name, status_path in manifest_paths:
+                try:
                     with open(status_path, 'r', encoding='utf-8') as fh:
                         manifest = json.load(fh)
-                    if str(manifest.get('status') or '') != 'complete':
-                        result['reason'] = f"export_manifest_incomplete:{manifest.get('status')}"
-                        log(f"ml_train: ABORT — incomplete export manifest {status_name}")
-                        break
-                    if manifest.get('live_training_eligible') is True:
-                        result['reason'] = 'paper_export_marked_live_training_eligible_blocked'
-                        log('ml_train: ABORT — paper export must not be live-training eligible')
-                        break
+                except Exception as parse_ex:
+                    result['reason'] = f"export_manifest_malformed:{status_name}:{parse_ex}"
+                    result['success'] = False
+                    result['deployed'] = False
+                    log(f"ml_train: ABORT — malformed export manifest {status_name} (fail-closed)")
+                    result['duration_sec'] = round(time.time() - t0, 1)
+                    return json.dumps(result)
+                status_val = str(manifest.get('status') or '')
+                if status_val != 'complete':
+                    result['reason'] = f"export_manifest_incomplete:{status_val or 'missing_status'}"
+                    result['success'] = False
+                    result['deployed'] = False
+                    log(f"ml_train: ABORT — incomplete export manifest {status_name}")
+                    result['duration_sec'] = round(time.time() - t0, 1)
+                    return json.dumps(result)
+                if manifest.get('live_training_eligible') is True:
+                    result['reason'] = 'paper_export_marked_live_training_eligible_blocked'
+                    result['success'] = False
+                    result['deployed'] = False
+                    log('ml_train: ABORT — paper export must not be live-training eligible')
+                    result['duration_sec'] = round(time.time() - t0, 1)
+                    return json.dumps(result)
+                # Source mismatch / checksum mismatch when declared.
+                declared_ck = manifest.get('checksum_sha256')
+                if isinstance(declared_ck, dict):
+                    # For paper file, verify against paper_trades.json when present.
+                    target = None
+                    if 'paper' in status_name:
+                        target = os.path.join(base_dir, 'paper_trades.json')
+                    if target and os.path.isfile(target) and declared_ck.get('file'):
+                        digest = hashlib.sha256(open(target, 'rb').read()).hexdigest()
+                        if digest != declared_ck.get('file'):
+                            result['reason'] = f"export_manifest_checksum_mismatch:{status_name}"
+                            result['success'] = False
+                            result['deployed'] = False
+                            log(f"ml_train: ABORT — checksum mismatch {status_name}")
+                            result['duration_sec'] = round(time.time() - t0, 1)
+                            return json.dumps(result)
+                    elif isinstance(declared_ck, str) and status_name.startswith('paper') and os.path.isfile(paper_json):
+                        digest = hashlib.sha256(open(paper_json, 'rb').read()).hexdigest()
+                        if digest != declared_ck:
+                            result['reason'] = f"export_manifest_checksum_mismatch:{status_name}"
+                            result['success'] = False
+                            result['deployed'] = False
+                            log(f"ml_train: ABORT — checksum mismatch {status_name}")
+                            result['duration_sec'] = round(time.time() - t0, 1)
+                            return json.dumps(result)
+                kind = str(manifest.get('kind') or '')
+                if kind and 'paper' in status_name and 'paper' not in kind and kind != 'canonical_eval_export':
+                    result['reason'] = f"export_manifest_source_mismatch:{status_name}:{kind}"
+                    result['success'] = False
+                    result['deployed'] = False
+                    log(f"ml_train: ABORT — source mismatch {status_name}")
+                    result['duration_sec'] = round(time.time() - t0, 1)
+                    return json.dumps(result)
         except Exception as ex:
-            log(f"ml_train: manifest guard error (non-fatal while disabled): {ex}")
+            result['reason'] = f"export_manifest_guard_error:{ex}"
+            result['success'] = False
+            result['deployed'] = False
+            log(f"ml_train: ABORT — manifest guard error (fail-closed): {ex}")
+            result['duration_sec'] = round(time.time() - t0, 1)
+            return json.dumps(result)
         result['duration_sec'] = round(time.time() - t0, 1)
         return json.dumps(result)
 
@@ -565,7 +638,7 @@ def run(backtest_csv_path, app_trades_path, model_path, log_fn=None, outcomes_pa
         bt_rows   = _load_csv_rows(backtest_csv_path)
         log(f"ml_train: {len(bt_rows)} backtest rows loaded")
 
-        log("ml_train: loading app trades …")
+        log("ml_train: loading paper research rows (not live) …")
         app_rows  = _load_app_trades(app_trades_path)
         log(f"ml_train: {len(app_rows)} app trades loaded")
         result['n_app'] = len(app_rows)

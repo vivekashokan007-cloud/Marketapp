@@ -764,7 +764,7 @@ def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
     is_bear = 'BEAR' in stype
     is_ic = stype in ('IRON_CONDOR', 'IRON_BUTTERFLY')
     is_bull = 'BULL' in stype
-    
+
     # IC/IB: check BOTH sides
     if is_ic:
         insights = []
@@ -796,7 +796,7 @@ def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
                     "detail": f"CE: wall {cw} above sell. PE: wall {pw} above sell.",
                     "impact": "bullish", "strength": 4}
         return None
-    
+
     # Bear Call: call wall should be ABOVE sell CE
     if is_bear and cw:
         dist = cw - sell
@@ -808,7 +808,7 @@ def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
             return {"icon": "🛡️", "label": "Wall-protected",
                     "detail": f"Call wall {cw} {'AT' if dist == 0 else f'{dist}pts above'} sell {sell}.",
                     "impact": "bullish", "strength": 4 if dist == 0 else 3}
-    
+
     # Bull Put: put wall should be ABOVE sell PE (between spot and sell)
     if is_bull and pw:
         dist = pw - sell  # positive = wall above sell = protected
@@ -820,7 +820,7 @@ def position_wall_proximity(trade, polls, baseline, regime, strike_oi):
             return {"icon": "🛡️", "label": "Wall-protected",
                     "detail": f"Put wall {pw} {'AT' if dist == 0 else f'{dist}pts above'} sell {sell}.",
                     "impact": "bullish", "strength": 4 if dist == 0 else 3}
-    
+
     # OI trend at sell strike
     if len(strike_oi) >= 3:
         oi_field = 'sellCOI' if is_bear else 'sellPOI'
@@ -1007,7 +1007,7 @@ def candidate_wall_protection(cand, polls, baseline, regime):
     last = polls[-1] if polls else {}
     cw = last.get('cw' if idx == 'BNF' else 'nfCW')
     pw = last.get('pw' if idx == 'BNF' else 'nfPW')
-    
+
     # 4-leg: check BOTH sides independently
     if is_4leg and cw and pw:
         ce_exposed = cw < sell if sell else False  # call wall below CE sell = exposed
@@ -1032,7 +1032,7 @@ def candidate_wall_protection(cand, polls, baseline, regime):
                     "detail": f"CE: wall {cw} ({ce_dist}pts above). PE: wall {pw} ({pe_dist}pts above sell).",
                     "impact": "bullish", "strength": 4}
         return None
-    
+
     # 2-leg directional: check relevant wall
     if is_bear and cw:
         dist = cw - sell
@@ -1117,7 +1117,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
             insights.append({"icon": "💸", "label": f"Cost trap ({cost_ratio*100:.0f}% of profit)",
                     "detail": f"Net after cost: ₹{net:.0f}. Risk ₹{max_l:.0f} for ₹{net:.0f}.",
                     "impact": "caution", "strength": 5 if cost_ratio > 0.5 else 4})
-    
+
     # 2. R:R SANITY — maxLoss > 2× maxProfit is dangerous
     if max_p > 0 and max_l > 0:
         rr = max_p / max_l
@@ -1125,7 +1125,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
             insights.append({"icon": "⚖️", "label": f"Poor R:R (1:{1/rr:.1f})",
                     "detail": f"Risk ₹{max_l:.0f} to make ₹{max_p:.0f}. Need {1/(rr+0.001):.0f}x wins per loss.",
                     "impact": "caution", "strength": 3})
-    
+
     # 3. OPEN TRADE CONFLICT — already have a struggling position in same type/index?
     # BR22: Check for struggling trade and index exposure separately.
     struggling_found = False
@@ -1133,7 +1133,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
         if t.get('index_key') != idx or t.get('paper'): continue
         if (t.get('current_pnl') or 0) < 0 or (t.get('controlIndex') or 0) < -20:
             struggling_found = True; break
-    
+
     if struggling_found:
         insights.append({"icon": "🔄", "label": f"Existing {idx} position struggling",
                 "detail": "Market currently fighting your open trade. Don't double down until bounce confirmed.",
@@ -1142,14 +1142,14 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
         insights.append({"icon": "📋", "label": f"Already in {idx}",
                 "detail": f"Adding more {idx} exposure. Ensure total capital/index limit safe.",
                 "impact": "neutral", "strength": 2})
-    
+
     # 4. FORCE COHERENCE — forces say one thing, context says another
     aligned = forces.get('aligned', 0)
     if aligned >= 3 and ctx_score < -0.3:
         insights.append({"icon": "⚠️", "label": "Forces aligned but context negative",
                 "detail": f"3/3 forces but contextScore {ctx_score:.2f}. Gap/VIX conflict?",
                 "impact": "caution", "strength": 3})
-    
+
     # 5. WIDTH ADEQUACY — narrow widths at high VIX = stop loss hunting
     width = cand.get('width', 0)
     if width and width > 0:
@@ -1158,7 +1158,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
             insights.append({"icon": "📏", "label": f"Narrow width ({width})",
                     "detail": f"Width {width} < recommended {min_w}. Stop-loss hunting risk.",
                     "impact": "caution", "strength": 2})
-    
+
     # 6. THETA-TO-FRICTION — b93: how long to break even on costs?
     net_theta = cand.get('netTheta', 0)
     if not net_theta or net_theta <= 0:
@@ -1168,7 +1168,7 @@ def evaluate_candidate_risk(cand, ctx, open_trades, regime):
         insights.append({"icon": "⏳", "label": f"Slow payback ({be_mins:.0f}min to break even)",
                 "detail": f"Cost ₹{est_cost:.0f} takes {be_mins:.0f}min of theta to recover. Trade may be dead.",
                 "impact": "caution", "strength": 4 if be_mins > 180 else 3})
-    
+
     return insights
 
 # ═══════════════════════════════════════════
@@ -1229,10 +1229,10 @@ def risk_kelly_headroom(polls, baseline, open_trades, closed_trades):
         wins = [t for t in admitted if is_learning_win(t)]
         losses = [t for t in admitted if not is_learning_win(t)]
         w = len(wins) / len(admitted)
-        
+
         avg_w = sum((learning_pnl_of(t) or 0) for t in wins) / len(wins) if wins else 0
         avg_l = abs(sum((learning_pnl_of(t) or 0) for t in losses) / len(losses)) if losses else 1
-        
+
         r = avg_w / avg_l if avg_l > 0 else 1
         kelly = max(0, w - ((1 - w) / r)) if r > 0 else 0
         kelly_pct = kelly * 100
@@ -1860,7 +1860,7 @@ def fii_short_trend(ctx):
     current_short = morning.get('fiiShortPct')
     if current_short is None or current_short == '':
         return None
-    
+
     try:
         current_short = float(current_short)
     except:
@@ -1877,7 +1877,7 @@ def fii_short_trend(ctx):
                 vals.append(float(val))
             except (ValueError, TypeError):
                 pass
-    
+
     if len(vals) < 2:
         return None
 
@@ -1908,7 +1908,7 @@ def fii_short_trend(ctx):
     accel = False
     if len(changes) >= 2 and abs(changes[0]) > abs(changes[1]) * 1.3:
         accel = True
-    
+
     aggressive = len(changes) > 0 and abs(changes[0]) >= 3
 
     return {
@@ -1975,28 +1975,28 @@ def validate_yesterday_signal(ctx):
     gap = ctx.get('gap')
     if not gap or gap.get('type') == 'UNKNOWN':
         return None
-    
+
     yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
     if not yday_hist:
         return None
-    
+
     yday_date = yday_hist[0].get('date')
     if not yday_date:
         return None
-    
+
     yday_signal = ctx.get('yesterdaySignal')
     if not yday_signal or not yday_signal.get('tomorrow_signal'):
         return None
-    
+
     predicted = yday_signal.get('tomorrow_signal')
     actual_gap = gap.get('gap', 0)
     actual_dir = 'BULLISH' if actual_gap > 50 else 'BEARISH' if actual_gap < -50 else 'NEUTRAL'
-    
+
     correct = (predicted == actual_dir) or (predicted == 'NEUTRAL' and abs(actual_gap) < 100)
-    
+
     accuracy_stats = ctx.get('signalAccuracy') or {}
     total_signals = accuracy_stats.get('total', 0)
-    
+
     return {
         'date': yday_date,
         'predicted': predicted,
@@ -2377,12 +2377,12 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     Morning data = where we came from (context). Intraday polls = what's happening now.
     By sweet spot (11 AM), intraday dominates 80%. Morning never disappears (20% floor).
     Returns: {bias, strength, net, morning_weight, signals, drift_reasons}"""
-    
+
     morning_bias = ctx.get('morningBias') or {}
     morning_net = morning_bias.get('net', 0)
     poll_count = len(polls)
     TOTAL_SIGNALS = 8
-    
+
     # ═══ MORNING WEIGHT DECAY (time-aware) ═══
     # Keep morning thesis dominant until entry window (~11:00 IST), then decay.
     mins_since_open = ctx.get('mins_since_open', 0) or 0
@@ -2393,7 +2393,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     else:                           # post-noon
         morning_weight = max(0.25, 0.45 - (mins_since_open - 165) * 0.002)
     intraday_weight = 1.0 - morning_weight
-    
+
     # ═══ FIRST 15 MINUTES SUPPRESSION ═══
     # Opening noise — gap repricing, market maker activity. Signals unreliable.
     if poll_count < 3:
@@ -2408,13 +2408,13 @@ def compute_effective_bias(polls, baseline, ctx, regime):
             'signals': [0] * TOTAL_SIGNALS,
             'drift_reasons': ['Too early — morning dominant']
         }
-    
+
     # ═══ 7 INTRADAY SIGNALS (each -2/-1/0/+1/+2) ═══
     signals = []
     drift_reasons = []
     last = polls[-1] if polls else {}
     first = polls[0] if polls else {}
-    
+
     # --- 1. Spot σ from morning (3-poll smoothed) ---
     base_spot = baseline.get('bnfSpot', 0)
     base_vix = baseline.get('vix', 18)
@@ -2430,7 +2430,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         else: signals.append(0)
     else:
         signals.append(0)
-    
+
     # --- 2. VIX from morning (3-poll smoothed) ---
     recent_vix = [p.get('vix') for p in polls[-4:] if p.get('vix')]
     if len(recent_vix) >= 3:
@@ -2443,7 +2443,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         else: signals.append(0)
     else:
         signals.append(0)
-    
+
     # --- 3. PCR from morning (3-poll smoothed) ---
     recent_pcr = [p.get('pcr') for p in polls[-4:] if p.get('pcr')]
     pcr_morning = first.get('pcr', 0) if first else 0
@@ -2457,7 +2457,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         else: signals.append(0)
     else:
         signals.append(0)
-    
+
     # --- 4. Straddle direction (last 4 polls) ---
     straddles = [p.get('straddle') for p in polls[-4:] if p.get('straddle')]
     if len(straddles) >= 3:
@@ -2469,7 +2469,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         else: signals.append(0)
     else:
         signals.append(0)
-    
+
     # --- 5. Wall movement from morning ---
     cw_now = last.get('cw', 0)
     pw_now = last.get('pw', 0)
@@ -2487,7 +2487,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         if pw_move > 200: wall_signal = max(wall_signal, 1)  # put wall rising = BULL
         elif pw_move < -200: wall_signal = min(wall_signal, -1)
     signals.append(wall_signal)
-    
+
     # --- 6. Breadth ---
     breadth_pct = (ctx.get('bnfBreadth') or {}).get('pct', 50)
     if breadth_pct > 65: signals.append(2); drift_reasons.append(f"Breadth {breadth_pct:.0f}%")
@@ -2495,7 +2495,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     elif breadth_pct < 35: signals.append(-2); drift_reasons.append(f"Breadth {breadth_pct:.0f}%")
     elif breadth_pct < 45: signals.append(-1)
     else: signals.append(0)
-    
+
     # --- 7. NF50 breadth (macro market breadth) ---
     nf50_pct = (ctx.get('nf50Breadth') or {}).get('pct', 50)
     if nf50_pct > 65: signals.append(2); drift_reasons.append(f"NF50 {nf50_pct:.0f}%")
@@ -2503,7 +2503,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     elif nf50_pct < 35: signals.append(-2); drift_reasons.append(f"NF50 {nf50_pct:.0f}%")
     elif nf50_pct < 45: signals.append(-1)
     else: signals.append(0)
-    
+
     # --- 8. Regime (range pushes opposite to morning direction) ---
     regime_type = regime.get('type', 'unknown') if regime else 'unknown'
     regime_dir = regime.get('direction', 0) if regime else 0
@@ -2527,7 +2527,7 @@ def compute_effective_bias(polls, baseline, ctx, regime):
             signals.append(1 if regime_dir > 0 else -1)
         else: signals.append(0)
     else: signals.append(0)
-    
+
     # ═══ BLEND: morning prior × intraday evidence ═══
     intraday_net = sum(signals)
     # BR51: Proper normalization. Previous (intraday_net / 7) * 3 could hit ±6 with
@@ -2535,19 +2535,19 @@ def compute_effective_bias(polls, baseline, ctx, regime):
     # BR52: Classification thresholds (2=STRONG, 1=MILD) stay — fire less often post-fix.
     max_possible_intraday = TOTAL_SIGNALS * 2  # each signal is -2..+2
     intraday_normalized = (intraday_net / max_possible_intraday) * 3
-    
+
     effective_net = morning_net * morning_weight + intraday_normalized * intraday_weight
     # Hysteresis: avoid flip-flop around neutral unless opposing evidence is meaningful.
     if poll_count < 30 and abs(effective_net) < 1.0 and abs(morning_net) >= 1:
         effective_net = morning_net * 0.9
-    
+
     # Classify
     if effective_net >= 2: bias, strength = 'BULL', 'STRONG'
     elif effective_net >= 1: bias, strength = 'BULL', 'MILD'
     elif effective_net <= -2: bias, strength = 'BEAR', 'STRONG'
     elif effective_net <= -1: bias, strength = 'BEAR', 'MILD'
     else: bias, strength = 'NEUTRAL', ''
-    
+
     return {
         'bias': bias,
         'strength': strength,
@@ -2568,13 +2568,13 @@ def compute_morning_bias(ctx, polls):
     morning = ctx.get('morning_input') or {}
     chain_data = ctx.get('chain_data') or ctx.get('bnfChain') or {}
     yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
-    
+
     if not morning:
         return {'bias': 'NEUTRAL', 'strength': '', 'net': 0,
                 'votes': votes, 'signals': signals,
                 'label': 'NEUTRAL', 'upstoxAgrees': None,
                 'chainValidation': 'NONE'}
-    
+
     def _to_float(v):
         if v is None or v == '':
             return None
@@ -2583,7 +2583,7 @@ def compute_morning_bias(ctx, polls):
             return f if f == f else None  # NaN check
         except (ValueError, TypeError):
             return None
-    
+
     # 1. FII Cash
     fc = _to_float(morning.get('fiiCash'))
     if fc is not None:
@@ -2595,7 +2595,7 @@ def compute_morning_bias(ctx, polls):
             signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'BEAR'})
         else:
             signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'NEUTRAL'})
-    
+
     # 2. FII Short%
     fsp = _to_float(morning.get('fiiShortPct'))
     if fsp is not None:
@@ -2634,7 +2634,7 @@ def compute_morning_bias(ctx, polls):
             signals.append({'name': 'Close Char', 'value': f'{cc} (auto)', 'dir': 'BEAR'})
         else:
             signals.append({'name': 'Close Char', 'value': f'{cc} (auto)', 'dir': 'NEUTRAL'})
-            
+
     # 4. PCR
     pcr = _to_float(chain_data.get('nearAtmPCR'))
     if pcr is not None:
@@ -2684,7 +2684,7 @@ def compute_morning_bias(ctx, polls):
         y_abs = round(ydc / abs(yfc), 2) if (ydc is not None and yfc is not None and abs(yfc) > 100) else None
         change = round(today_abs - y_abs, 2) if y_abs is not None else None
         c_str = f' (was {y_abs}×, Δ{"+" if change > 0 else ""}{change})' if change is not None else ''
-        
+
         if change is not None:
             if change < -0.2 and today_abs <= 1.0:
                 votes['bear'] += 1
@@ -2718,24 +2718,24 @@ def compute_morning_bias(ctx, polls):
         o_bulls = len([s for s in overnight['signals'] if s['dir'] == 'BULL'])
         o_bears = len([s for s in overnight['signals'] if s['dir'] == 'BEAR'])
         o_dir = 'BEAR' if o_bears >= 2 else 'BULL' if o_bulls >= 2 else 'MIXED'
-        
+
         gap_sigma = gap.get('sigma', 0) if gap else 0
         g_dir = ('BEAR' if gap_sigma < -0.5 else 'BULL' if gap_sigma > 0.5 else 'NEUTRAL') if gap else 'NEUTRAL'
-        
+
         g_confirms = (o_dir == g_dir)
         g_conflicts = (o_dir == 'BULL' and g_dir == 'BEAR') or (o_dir == 'BEAR' and g_dir == 'BULL')
-        
+
         if o_dir != 'MIXED' and g_confirms:
             chain_validation = 'CONFIRMED'
         elif o_dir != 'MIXED' and g_dir == 'NEUTRAL':
             chain_validation = 'LIKELY'
         elif o_dir != 'MIXED' and g_conflicts:
             chain_validation = 'UNCERTAIN'
-            
+
         for s in overnight['signals']:
             v_str = f"{s['pct']:.2f}σ" if s.get('isSigma') else f"{'+' if s['pct'] > 0 else ''}{s['pct']}%"
             signals.append({'name': f"🌙 {s['name']}", 'value': f"{s['from']}→{s.get('to') or '?'} ({v_str})", 'dir': s['dir']})
-            
+
         if chain_validation == 'CONFIRMED':
             confirmed_dir = o_dir
             stale_neutralized = 0
@@ -2765,14 +2765,14 @@ def compute_morning_bias(ctx, polls):
     elif net <= -3: bias, strength = 'BEAR', 'STRONG'
     elif net <= -1: bias, strength = 'BEAR', 'MILD'
     else: bias, strength = 'NEUTRAL', ''
-    
+
     ub = morning.get('upstoxBias')
     u_agrees = None
     if ub and ub != '':
         u_dir = 'BULL' if ub == 'Bullish' else 'BEAR' if ub == 'Bearish' else 'NEUTRAL'
         u_agrees = (bias == u_dir) or (bias == 'NEUTRAL' and u_dir == 'NEUTRAL')
         signals.append({'name': 'Upstox', 'value': f"{ub} {'✅ agrees' if u_agrees else '⚠️ DISAGREES'}", 'dir': u_dir, 'isComparison': True})
-        
+
     return {
         'bias': bias, 'strength': strength, 'net': net, 'votes': votes,
         'signals': signals, 'label': f'{strength} {bias}'.strip(),
@@ -2786,17 +2786,17 @@ def compute_overnight_delta(ctx):
     dow_threshold = _CONST.get('DOW_THRESHOLD', 0.5)
     crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
     gift_threshold = _CONST.get('GIFT_THRESHOLD', 0.3)
-    
+
     eve = ctx.get('eveningClose')
     if not eve:
         return None
-        
+
     morning_global = ctx.get('globalDirection') or {}
     m_dow = morning_global.get('dowClose')
     m_crude = morning_global.get('crudeSettle')
-    
+
     delta = {'signals': [], 'summary': ''}
-    
+
     if eve.get('dow') and m_dow:
         e_dow = float(eve['dow'])
         pct = round((m_dow - e_dow) / e_dow * 100, 2)
@@ -2811,7 +2811,7 @@ def compute_overnight_delta(ctx):
             'threshold': dow_context.get('threshold_value'),
             'pc2CrossMarketContext': dow_context,
         })
-        
+
     if eve.get('crude') and m_crude:
         e_crude = float(eve['crude'])
         pct = round((m_crude - e_crude) / e_crude * 100, 2)
@@ -2827,7 +2827,7 @@ def compute_overnight_delta(ctx):
             'threshold': crude_context.get('threshold_value'),
             'pc2CrossMarketContext': crude_context,
         })
-        
+
     gift_spot = ctx.get('morning_input', {}).get('giftSpot')
     if eve.get('gift') and gift_spot:
         e_gift = float(eve['gift'])
@@ -2849,10 +2849,10 @@ def compute_overnight_delta(ctx):
         gap_sigma = ctx['gap'].get('sigma', 0)
         g_dir = 'BULL' if gap_sigma > 0.3 else 'BEAR' if gap_sigma < -0.3 else 'NEUTRAL'
         delta['signals'].append({'name': 'GIFT', 'from': eve['gift'], 'to': '?', 'pct': gap_sigma, 'dir': g_dir, 'isSigma': True})
-        
+
     bulls = len([s for s in delta['signals'] if s['dir'] == 'BULL'])
     bears = len([s for s in delta['signals'] if s['dir'] == 'BEAR'])
-    
+
     if bears >= 2: delta['summary'] = '🔴 OVERNIGHT BEARISH'
     elif bulls >= 2: delta['summary'] = '🟢 OVERNIGHT BULLISH'
     elif bears > bulls: delta['summary'] = '🟡 OVERNIGHT MILDLY BEARISH'
@@ -3636,7 +3636,7 @@ def build_explanation_audit_agent(result, ctx, open_trades):
 
 def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     """Phase D: brain.py becomes sole producer of position P&L.
-    Replaces JS updateOpenTradePnL (2-leg only) and Kotlin 
+    Replaces JS updateOpenTradePnL (2-leg only) and Kotlin
     updateOpenTradesPnL (silently skipped on missing lot_size).
     """
     def _num(value, default=0):
@@ -3711,7 +3711,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     if lot_size <= 0:
         return None
     # idx string for downstream chain selection
-    idx = idx or 'UNKNOWN' 
+    idx = idx or 'UNKNOWN'
 
     sell_s   = trade.get('sell_strike', 0)
     buy_s    = trade.get('buy_strike', 0)
@@ -3865,7 +3865,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         import json
         try: journey = json.loads(journey)
         except: journey = []
-    
+
     last = journey[-1] if journey else None
     add_point = True
     if last:
@@ -4120,7 +4120,7 @@ def compute_wall_drift(trade, chain):
 
     # Decision #6 / Phase D Item 2: Use 200/100 for consistency
     step = 200 if trade.get('index_key') == 'BNF' else 100
-    
+
     e_snapshot = trade.get('entry_snapshot') or {}
     e_cw = e_snapshot.get('call_wall') or trade.get('entry_call_wall')
     e_pw = e_snapshot.get('put_wall') or trade.get('entry_put_wall')
@@ -4158,7 +4158,7 @@ def compute_wall_drift(trade, chain):
 
 def update_watchlist_forces(watchlist, ctx, vix, iv_pctl, regime=None):
     """Decision #19. Mutates watchlist in place."""
-    bias = (ctx.get('effective_bias') or ctx.get('morningBias') 
+    bias = (ctx.get('effective_bias') or ctx.get('morningBias')
             or {'bias': 'NEUTRAL', 'strength': '', 'net': 0})
     for c in watchlist:
         try:
@@ -4173,7 +4173,7 @@ def get_contrarian_pcr(chain):
         return {'flags': flags}
     pcr = chain.get('nearAtmPCR') or chain.get('pcr')
     if pcr is None: return {'flags': flags}
-    
+
     # Directive: 1.6 (corrected to 1.5 per JS L2839)
     if pcr < 0.6:
         flags.append({
@@ -4194,27 +4194,27 @@ def get_contrarian_pcr(chain):
 def get_institutional_pcr(current_pcr, vix, gap_info, history, afternoon_baseline, live_chain):
     """Decision #21. High calibration institutional PCR read."""
     if not current_pcr: return None
-    
+
     pcr = current_pcr
     is_high = pcr > 1.3
     is_low = pcr < 0.7
     is_extreme = pcr > 1.5 or pcr < 0.6
     high_vix = vix >= 20
     very_high_vix = vix >= 24
-    
+
     gap_sigma = gap_info.get('sigma', 0) if gap_info else 0
     big_gap_down = gap_sigma <= -1
     big_gap_up = gap_sigma >= 1
-    
+
     yday_pcr = history[0].get('pcr') if history and len(history) > 0 else None
     pcr_rising = (pcr - yday_pcr > 0.05) if yday_pcr else False
     pcr_falling = (pcr - yday_pcr < -0.05) if yday_pcr else False
-    
+
     reading = ''
     bias = 'NEUTRAL'
     confidence = 'LOW'
     severity = 3 # medium
-    
+
     # 9-branch decision tree from JS L2893
     if is_high and very_high_vix and big_gap_down:
         reading = f"PCR {pcr:.2f} — Fear hedging (VIX {vix:.1f}, {gap_sigma}σ gap-down). Panic puts, not institutional conviction."
@@ -4249,7 +4249,7 @@ def get_institutional_pcr(current_pcr, vix, gap_info, history, afternoon_baselin
     else:
         reading = f"PCR {pcr:.2f} — Normal range. No extreme institutional signal."
         bias = 'NEUTRAL'; confidence = 'LOW'; severity = 2
-        
+
     # Phase B: 2pm OI enrichment
     oi_delta = None
     if afternoon_baseline and live_chain:
@@ -4257,14 +4257,14 @@ def get_institutional_pcr(current_pcr, vix, gap_info, history, afternoon_baselin
         b_p_oi = afternoon_baseline.get('bnfTotalPutOi') or afternoon_baseline.get('bnf_total_put_oi') or 0
         l_c_oi = live_chain.get('totalCallOI') or 0
         l_p_oi = live_chain.get('totalPutOI') or 0
-        
+
         if b_c_oi > 0 and b_p_oi > 0:
             c_delta = l_c_oi - b_c_oi
             p_delta = l_p_oi - b_p_oi
             oi_delta = {'callDelta': c_delta, 'putDelta': p_delta}
-            
+
             def fmt(v): return f"{'+' if v>0 else '-'}{abs(v)/100000:.1f}L"
-            
+
             if c_delta > p_delta * 1.5 and c_delta > 50000:
                 reading += f" Since 2PM: Calls {fmt(c_delta)} vs Puts {fmt(p_delta)} — ceiling building."
             elif p_delta > c_delta * 1.5 and p_delta > 50000:
@@ -4341,16 +4341,16 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     """
     if not chain or not chain.get('strikes') or not chain.get('atm') or not chain.get('allStrikes'):
         return None
-        
+
     strikes = chain['strikes']
     all_k = chain['allStrikes']
     vix = vix if vix is not None else 20
-    
+
     # daily_sigma preference: ctx-provided > computed
     daily_sigma = chain.get('dailySigma') or _daily_sigma(spot, vix)
     if not daily_sigma or daily_sigma <= 0:
         return None
-        
+
     step = (all_k[1] - all_k[0]) if len(all_k) > 1 else (100 if spot > 30000 else 50)
     if step <= 0:
         step = 100 if spot > 30000 else 50
@@ -4358,7 +4358,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     # IV Skew: OTM put IV vs OTM call IV at ~0.5σ
     otm_dist_raw = round(daily_sigma * 0.5 / step) * step
     otm_dist = otm_dist_raw if otm_dist_raw else step
-    
+
     atm = chain['atm']
     c_iv = (get_strike(strikes, atm + otm_dist) or {}).get('CE', {}).get('iv', 0) or 0
     p_iv = (get_strike(strikes, atm - otm_dist) or {}).get('PE', {}).get('iv', 0) or 0
@@ -4392,12 +4392,12 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     atm_data = get_strike(strikes, atm) or {}
     atm_ce = atm_data.get('CE') or {}
     atm_pe = atm_data.get('PE') or {}
-    
+
     # Day range
     day_range = 0.5
     if ohlc and ohlc.get('high', 0) > ohlc.get('low', 0):
         day_range = round((spot - ohlc['low']) / (ohlc['high'] - ohlc['low']), 2)
-        
+
     # Concentration (top 3)
     near_k = [k for k in all_k if abs(k - atm) / daily_sigma < 1.5]
     c_ois = sorted([(get_strike(strikes, k) or {}).get('CE', {}).get('oi', 0) or 0 for k in near_k], reverse=True)
@@ -4410,14 +4410,14 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     gap_fill = None
     if ohlc and gap_val and abs(gap_val) > 10:
         gap_fill = round(min(1.0, abs(spot - ohlc.get('open', spot)) / abs(gap_val)), 2)
-        
+
     # Greeks
     # 1. IV Slope
     otm_dist2_raw = round(daily_sigma * 1.0 / step) * step
     otm_dist2 = otm_dist2_raw if otm_dist2_raw else step * 2
     far_p_iv = (get_strike(strikes, atm - otm_dist2) or {}).get('PE', {}).get('iv', 0) or 0
     iv_slope = round((far_p_iv - c_iv) / 2, 1) if far_p_iv > 0 and c_iv > 0 else 0.0
-    
+
     # 2. Gamma Cluster
     g_total, g_near = 0.0, 0.0
     for k in near_k:
@@ -4427,7 +4427,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         if abs(k - atm) / daily_sigma < 0.3:
             g_near += g
     gamma_cluster = round(g_near / g_total, 3) if g_total > 0 else 0.0
-    
+
     # 3. Volume Ratio
     c_vol, p_vol = 0, 0
     for k in near_k:
@@ -4438,7 +4438,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         vol_ratio = round(c_vol / p_vol, 2)
     else:
         vol_ratio = 5.0 if c_vol > 0 else 1.0
-        
+
     # 4. Net Delta
     n_delta = 0.0
     for k in near_k:
@@ -4447,7 +4447,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         pe = sd.get('PE') or {}
         n_delta += (ce.get('oi', 0) or 0) * (ce.get('delta', 0) or 0) + (pe.get('oi', 0) or 0) * (pe.get('delta', 0) or 0)
     norm_delta = round(n_delta / 100000, 2)
-    
+
     # 5. Avg Theta/Vega
     n_len = len(near_k)
     t_sum, v_sum = 0.0, 0.0
@@ -4457,7 +4457,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         v_sum += abs(sd.get('CE', {}).get('vega', 0) or 0) + abs(sd.get('PE', {}).get('vega', 0) or 0)
     avg_theta = round(t_sum / n_len, 2) if n_len > 0 else 0.0
     avg_vega = round(v_sum / n_len, 2) if n_len > 0 else 0.0
-    
+
     # 7. OI Velocity
     v_oi = 0
     top_c_k = sorted(near_k, key=lambda k: (get_strike(strikes, k) or {}).get('CE', {}).get('oi', 0) or 0, reverse=True)[:5]
@@ -4469,7 +4469,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
         d = (get_strike(strikes, k) or {}).get('PE') or {}
         if d.get('prev_oi') is not None: v_oi += (d.get('oi', 0) or 0) - d['prev_oi']
     norm_v_oi = round(v_oi / 10000, 2)
-    
+
     # 8. Bid-Ask Quality
     s_sum, s_cnt = 0.0, 0
     for k in near_k:
@@ -4483,7 +4483,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
                 s_sum += (ask - bid) / ltp
                 s_cnt += 1
     ba_quality = round(s_sum / s_cnt * 100, 2) if s_cnt > 0 else 0.0
-    
+
     # 9. Cluster Depth
     radius = 5 if spot > 30000 else 4
     cw_k = chain.get('callWallStrike')
@@ -4492,7 +4492,7 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     all_p_oi = [(get_strike(strikes, k) or {}).get('PE', {}).get('oi', 0) or 0 for k in all_k]
     c_med = statistics.median([v for v in all_c_oi if v > 0]) if any(v > 0 for v in all_c_oi) else 0
     p_med = statistics.median([v for v in all_p_oi if v > 0]) if any(v > 0 for v in all_p_oi) else 0
-    
+
     cc_depth, pc_depth = 0, 0
     for k in all_k:
         sd = get_strike(strikes, k) or {}
@@ -4524,7 +4524,7 @@ def chain_profile_insights(ctx):
     """
     profile = ctx.get('bnfProfile') or {}
     insights = []
-    
+
     # 1. IV Smile Slope — steepness indicates fear/hedging
     iv_slope = profile.get('ivSlope', 0)
     if iv_slope > 3:
@@ -4535,14 +4535,14 @@ def chain_profile_insights(ctx):
         insights.append({"type": "market", "icon": "📈", "label": f"Call skew unusual ({iv_slope:.1f})",
                 "detail": "Call IV higher than put. Unusual bullish positioning.",
                 "impact": "bullish", "strength": 2})
-    
+
     # 2. Gamma Clustering — market coiled for move
     gamma_c = profile.get('gammaCluster', 0)
     if gamma_c > 0.6:
         insights.append({"type": "market", "icon": "⚡", "label": f"Gamma concentrated ({gamma_c:.0%} near ATM)",
                 "detail": "High gamma at ATM. Coiled for sharp move.",
                 "impact": "caution", "strength": 4})
-    
+
     # 3. Volume Ratio — real-time institutional flow
     vol_r = profile.get('volRatio', 1.0)
     if vol_r > 2.0:
@@ -4553,7 +4553,7 @@ def chain_profile_insights(ctx):
         insights.append({"type": "market", "icon": "📉", "label": f"Put buying surge ({vol_r:.1f}x)",
                 "detail": "Put volume 2x call. Aggressive bearish flow.",
                 "impact": "bearish", "strength": 3})
-    
+
     # 4. OI Velocity — wall building speed
     oi_vel = profile.get('oiVelocity', 0)
     if abs(oi_vel) > 5:
@@ -4561,14 +4561,14 @@ def chain_profile_insights(ctx):
         insights.append({"type": "market", "icon": "🏗️", "label": f"OI {direction} fast ({oi_vel:.1f}L)",
                 "detail": f"Institutional {'conviction' if oi_vel > 0 else 'exit'}.",
                 "impact": "neutral", "strength": 3})
-    
+
     # 5. Bid-Ask Quality — liquidity warning
     baq = profile.get('bidAskQuality', 0)
     if baq > 15:
         insights.append({"type": "market", "icon": "⚠️", "label": f"Poor liquidity ({baq:.1f}% spread)",
                 "detail": "Wide spreads. Entry/exit costly.",
                 "impact": "caution", "strength": 3})
-    
+
     # 6. Net Delta — institutional directional bias
     nd = profile.get('netDelta', 0)
     if nd > 3.0:
@@ -4579,7 +4579,7 @@ def chain_profile_insights(ctx):
         insights.append({"type": "market", "icon": "📊", "label": f"Net delta bearish ({nd:.1f})",
                 "detail": "OI weighted bearish. Institutions positioned for down.",
                 "impact": "bearish", "strength": 2})
-    
+
     # 7. Wall Cluster Depth — fortress vs fragile walls
     cc_depth = profile.get('callClusterDepth', 0)
     pc_depth = profile.get('putClusterDepth', 0)
@@ -4601,7 +4601,7 @@ def chain_profile_insights(ctx):
         insights.append({"type": "market", "icon": "⚠️", "label": f"Fragile {fragile} wall (depth {depth})",
                 "detail": f"Single-strike {fragile} wall. One unwind breaks it.",
                 "impact": "caution", "strength": 3})
-    
+
     return insights
 
 def _daily_risk_state(closed_trades, open_trades, ctx):
@@ -4976,7 +4976,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     # b93: STRADDLE VETO — Premium is King
     _, straddle_chg, straddle_expanding = straddle_velocity(polls)
-    
+
     # Strategy selection. WAIT authority is classified so a preliminary market
     # thesis cannot silently veto a fully eligible PC2 paper candidate.
     conflicts = []
@@ -7312,7 +7312,7 @@ REJECTED_EVAL_STAGE_PRIORITY = {
 # TASK 5.1 — Fresh trace skeleton for each analyze() call
 def _new_trace(source='live'):
     """Return a fresh trace dict with full schema pre-populated.
-    
+
     All sections present so downstream code can append without
     checking existence. candidates keyed by index (BNF/NF) because
     generate_candidates is called once per index.
@@ -7353,16 +7353,16 @@ def _new_trace(source='live'):
 # TASK 5.1 — Safe JSON serialization (handles nan, inf, non-finite floats)
 def _safe_json(obj):
     """Serialize dict to JSON string, replacing nan/inf with None.
-    
+
     Standard json.dumps raises ValueError on nan/inf. Brain's BS math
     occasionally produces these on edge cases (near-expiry, zero-vol inputs).
     Without this wrapper, trace persistence would crash on those polls.
-    
+
     Returns: (json_str, had_unsafe_values: bool)
     """
     import json as _json
     import math as _math
-    
+
     def _sanitize(v):
         if isinstance(v, float):
             if _math.isnan(v) or _math.isinf(v):
@@ -7373,7 +7373,7 @@ def _safe_json(obj):
         if isinstance(v, (list, tuple)):
             return [_sanitize(vv) for vv in v]
         return v
-    
+
     had_unsafe = False
     try:
         # Fast path — assume safe (allow_nan=False ensures we catch non-standard JSON)
@@ -7387,10 +7387,10 @@ def _safe_json(obj):
 # TASK 5.1 — Bounded append to trace array with truncation flag
 def _trace_append(trace_dict, array_key, entry):
     """Append entry to trace_dict[array_key]; set trace.meta.truncated if cap hit.
-    
+
     Every trace array append goes through this wrapper. Prevents any single
     poll from producing unbounded trace payload.
-    
+
     If trace_dict is None or falsy, no-op (zero-cost guard for disabled mode).
     """
     if not trace_dict:
@@ -7418,15 +7418,15 @@ def _trace_append(trace_dict, array_key, entry):
 # TASK 5.1 — Verdict flip detection (accepts dict or JSON string — R2 fix)
 def _detect_flip(current_verdict, previous_verdict):
     """Compare current vs previous verdict. Returns flip descriptor or None.
-    
+
     Accepts dict or JSON string for both arguments — Kotlin calls via Chaquopy
     typically pass JSON strings (brain.callAttr stringifies JSONObject args),
     Python callers pass dicts. Parses as needed.
-    
+
     Returns dict with 'event': 'flip' and changed fields, or None if no flip.
     """
     import json as _json
-    
+
     def _coerce(v):
         """Accept dict pass-through or JSON string parse. None/malformed → None."""
         if isinstance(v, str):
@@ -7435,13 +7435,13 @@ def _detect_flip(current_verdict, previous_verdict):
             except (ValueError, TypeError):
                 return None
         return v
-    
+
     current = _coerce(current_verdict)
     previous = _coerce(previous_verdict)
-    
+
     if not isinstance(current, dict) or not isinstance(previous, dict):
         return None
-    
+
     changed = {}
     for field in ('direction', 'action', 'strategy'):
         prev_v = previous.get(field)
@@ -8131,14 +8131,14 @@ def _get_forces(stype, bias, vix, iv_pctl, regime=None, ctx=None):
 def _interpolate_strike_value(strikes, price, opt_type, field):
     """
     Linear interpolation of a chain greek (delta or theta) at an off-strike price.
-    
+
     Mirrors JS chainDeltaAtPrice (app.js L4111-4140). Used by both _chain_delta
     and _chain_theta to honor "API first, BS fallback only" principle (Decision #13a).
-    
+
     Returns:
         float — interpolated or single-bracket value if chain data sufficient.
         None  — if chain unusable; caller falls back to BS computation.
-    
+
     Behavior:
         - Empty/single-strike chain → None (fall to BS).
         - Exact strike hit (price equals a chain key) → return chain value directly
@@ -8156,16 +8156,16 @@ def _interpolate_strike_value(strikes, price, opt_type, field):
         return None
     if len(all_k) < 2:
         return None
-    
+
     p = float(price)
-    
+
     # Exact strike hit — bypass interpolation
     if int(p) in all_k and float(int(p)) == p:
         v = strikes.get(str(int(p)), {}).get(opt_type, {}).get(field)
         if v is not None:
             return v
         # Exact strike but value missing — fall through to bracket logic
-    
+
     # Find bracketing strikes
     lo = None
     hi = None
@@ -8174,16 +8174,16 @@ def _interpolate_strike_value(strikes, price, opt_type, field):
             lo = all_k[i]
             hi = all_k[i + 1]
             break
-    
+
     if lo is None or hi is None:
         # Price outside chain — use nearest strike
         nearest = min(all_k, key=lambda k: abs(k - p))
         v = strikes.get(str(nearest), {}).get(opt_type, {}).get(field)
         return v  # may be None — caller falls to BS
-    
+
     v_lo = strikes.get(str(lo), {}).get(opt_type, {}).get(field)
     v_hi = strikes.get(str(hi), {}).get(opt_type, {}).get(field)
-    
+
     if v_lo is not None and v_hi is not None:
         # Both brackets — interpolate
         if hi == lo:
@@ -15558,14 +15558,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     result["position_live"] = {}
     spots = {'bnfSpot': bnf_spot, 'nfSpot': nf_spot}
     bnf_breadth = ctx.get('bnfBreadth')
-    
+
     for t in open_trades:
         tid = t.get("id", "")
         # Decision #17/#18/#Issue9: Live metrics
         idx = ( _index_key_fail_closed(t) or 'UNKNOWN')
         chain = result["bnfProfile"] if idx == 'BNF' else result["nfProfile"]
         spot = bnf_spot if idx == 'BNF' else nf_spot
-        
+
         pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, vix, ctx, bnf_breadth)
         if pl_data:
             result["position_live"][tid] = pl_data
@@ -15586,7 +15586,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 spot=spot,
                 reason='missing_required_chain_quotes',
             )
-        
+
         ci_detail = compute_control_index(t, chain, spot, bnf_breadth, return_detail=True)
         t['controlIndex'] = ci_detail.get('score', 0)
         t['controlIndexMeta'] = ci_detail
@@ -15779,7 +15779,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 print(f"analyze: {chain_key} missing atm — skipping {idx_key}")
                 _record_generation_skip(idx_key, chain_key, 'missing_atm', f'{chain_key} missing atm')
                 continue
-            
+
             spot = _latest_spot_value(idx_key)
             if spot <= 0:
                 print(f"analyze: {idx_key} spot resolved to {spot} — skipping candidate generation")
@@ -16247,7 +16247,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 c['executionReady'] = readiness.get('ready', False)
                 c['executionGate'] = readiness.get('gate', 'WAIT')
                 annotate_candidate_entry_eligibility(c, market_confidence, regime)
-            
+
             # Decision #19: Refresh forces for the top picks
             result["watchlist"] = update_watchlist_forces(watchlist, ctx, cur_vix, iv_pctl, regime)
             for c in result["watchlist"]:
@@ -20212,7 +20212,7 @@ def _entry_snapshot_point(snap, cand):
     index_key = cand.get('index') or cand.get('index_key') or 'UNKNOWN'
     if str(index_key).upper() not in ('NF', 'BNF'):
         return {}
-    chain_key = 'nfChain' if str(index_key).upper() == 'NF' else 'bnfChain' 
+    chain_key = 'nfChain' if str(index_key).upper() == 'NF' else 'bnfChain'
     chain = ctx.get(chain_key) if isinstance(ctx.get(chain_key), dict) else {}
     strikes = chain.get('strikes') if isinstance(chain.get('strikes'), dict) else {}
     leg_specs = _teacher_candidate_leg_specs(cand)

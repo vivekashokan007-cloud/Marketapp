@@ -14,7 +14,7 @@
 
 ## Declaration
 
-**Local contract-identity implementation verified.**  
+**Local contract-identity implementation verified.**
 **Overall gate: OPEN-with-residuals** (production rollout + operational evidence).
 
 Publishing / production writes / retraining / sizing promotion / broker activation remain **PAUSED**.
@@ -27,7 +27,7 @@ Publishing / production writes / retraining / sizing promotion / broker activati
 
 ## Source register
 
-`/workspace/mr-g8plus/SOURCE_REGISTER_LOT_DTE_20260913.md`  
+`/workspace/mr-g8plus/SOURCE_REGISTER_LOT_DTE_20260913.md`
 FAOP67372 sha256 `d001ec91677b0904daaace74da3c68e98e8694759f5d98ea3661c6557906ba35`.
 
 ## Independently sourced fixtures
@@ -63,7 +63,7 @@ Rejected identity remains in `ml_rejected_candidate_outcomes.outcome_json`.
 ## Isolated persistence evidence
 
 `IsolatedJsonbPersistenceTests.test_sqlite_jsonb_roundtrip_primary_and_rejected`:
-candidate → android_compact → lineage → upload with `contract_identity` → sqlite store → readback → metrics slice.  
+candidate → android_compact → lineage → upload with `contract_identity` → sqlite store → readback → metrics slice.
 **Production DB upsert: UNTESTED.**
 
 ## Bounded impact (2026-07-01..2026-09-13) — read-only
