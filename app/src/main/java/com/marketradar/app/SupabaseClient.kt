@@ -137,7 +137,9 @@ object SupabaseClient {
         "outcome_h2",
         "canonical_won"
     )
-    private val outcomeFullColumns = outcomeBaseColumns + shadowTeacherKeys + "created_at"
+    // Local additive contract_identity jsonb (migration 20260913054400 — NOT applied to prod).
+    // Writers carry the column in the payload; prod upsert remains untested / paused.
+    private val outcomeFullColumns = outcomeBaseColumns + shadowTeacherKeys + listOf("contract_identity", "created_at")
 
     private fun fetchSync(request: Request): String? {
         return try {
@@ -640,6 +642,8 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
+            // Additive jsonb — never strip on canonicalize; incompatible schema retained with schema_error.
+            ContractIdentityPayload.extractForUpload(src)?.let { row.put("contract_identity", it) }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)
@@ -935,6 +939,7 @@ object SupabaseClient {
             shadowTeacherKeys.forEach { key ->
                 if (!src.isNull(key)) row.put(key, src.opt(key))
             }
+            ContractIdentityPayload.extractForUpload(src)?.let { row.put("contract_identity", it) }
             sanitizeFailedIntegrityTeacherRow(row)
             row.put("created_at", nowIso)
             rows.put(row)

@@ -71,6 +71,7 @@ internal object ContractLotTable {
     private val operationalCurrent = mapOf("BNF" to 30, "NF" to 65)
 
     // Keep rules mirrored with assets/contract_lot_table_v1.json (authoritative only).
+    // Includes FAOP67372 BNF 30→35 transition (effect 2025-04-25).
     private val rules = listOf(
         ContractRule("FAOP64625_NF_weekly_existing", "NF", "weekly", LocalDate.parse("2024-11-01"), LocalDate.parse("2024-12-19"), LocalDate.parse("2024-10-18"), null, 25, "NSE_FAOP_64625"),
         ContractRule("FAOP64625_NF_weekly_revised_until_70616", "NF", "weekly", LocalDate.parse("2025-01-02"), LocalDate.parse("2025-12-23"), LocalDate.parse("2024-11-20"), null, 75, "NSE_FAOP_64625"),
@@ -79,6 +80,11 @@ internal object ContractLotTable {
         ContractRule("FAOP64625_NF_monthly_revised_until_70616", "NF", "monthly", LocalDate.parse("2025-02-27"), LocalDate.parse("2025-12-30"), LocalDate.parse("2024-11-20"), null, 75, "NSE_FAOP_64625"),
         ContractRule("FAOP70616_NF_monthly_revised", "NF", "monthly", LocalDate.parse("2026-01-27"), null, LocalDate.parse("2025-10-28"), null, 65, "NSE_FAOP_70616"),
         ContractRule("FAOP64625_BNF_monthly_existing", "BNF", "monthly", LocalDate.parse("2024-11-01"), LocalDate.parse("2025-01-29"), LocalDate.parse("2024-10-18"), null, 15, "NSE_FAOP_64625"),
+        ContractRule("FAOP64625_BNF_monthly_revised_30_until_67372", "BNF", "monthly", LocalDate.parse("2025-02-26"), LocalDate.parse("2025-06-26"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
+        ContractRule("FAOP67372_BNF_monthly_revised_35", "BNF", "monthly", LocalDate.parse("2025-07-31"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
+        ContractRule("FAOP64625_BNF_weekly_revised_30_pre_67372", "BNF", "weekly", LocalDate.parse("2024-11-20"), LocalDate.parse("2025-04-24"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
+        ContractRule("FAOP67372_BNF_weekly_revised_35", "BNF", "weekly", LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
+        ContractRule("FAOP67372_BNF_quarterly_revised_35", "BNF", "quarterly", LocalDate.parse("2025-06-26"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-30"), 35, "NSE_FAOP_67372"),
         ContractRule("FAOP70616_BNF_monthly_existing_present35", "BNF", "monthly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616"),
         ContractRule("FAOP70616_BNF_monthly_revised", "BNF", "monthly", LocalDate.parse("2026-01-27"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616"),
         ContractRule("FAOP70616_BNF_weekly_existing_present35", "BNF", "weekly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616"),

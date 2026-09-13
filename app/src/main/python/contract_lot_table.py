@@ -956,9 +956,9 @@ ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS = (
     "retained_for_recovery",
 )
 
-# Production primary/secondary teacher outcome tables keep thin columns only —
-# no outcome_json, no contract_lot_size / calendar_dte / trading_dte columns.
-# Migrating those columns is BLOCKED under publishing pause.
+# Local intended schema after additive migration 20260913054400 (NOT applied to prod):
+# thin base columns + nullable contract_identity jsonb.
+# Production still thin without contract_identity — prod upsert untested / paused.
 PRIMARY_SECONDARY_THIN_DB_COLUMNS = (
     "snapshot_id",
     "session_date",
@@ -971,6 +971,7 @@ PRIMARY_SECONDARY_THIN_DB_COLUMNS = (
     "sim_pnl_h2",
     "outcome_h2",
     "canonical_won",
+    "contract_identity",
     "created_at",
 )
 
@@ -1000,11 +1001,11 @@ def _mock_thin_primary_secondary_row(
     *,
     role: str,
 ) -> dict[str, Any]:
-    """Intended mock upload for primary/secondary under current thin DB schema.
+    """Intended upload for primary/secondary with local additive contract_identity jsonb.
 
-    Adds contract_identity on the *mock intended_upload* for lineage proof.
-    Production buildEvaluationRows / buildRecommendationRows do NOT persist
-    outcome_json or lot/DTE identity columns — that remains blocked/deferred.
+    Mirrors updated SupabaseClient.buildEvaluationRows / buildRecommendationRows.
+    Local migration file present but NOT applied to production. Rejected path
+    keeps identity in outcome_json (ml_rejected_candidate_outcomes).
     """
     stamped = compacted.get("contract_identity")
     if not isinstance(stamped, Mapping):
@@ -1013,6 +1014,19 @@ def _mock_thin_primary_secondary_row(
             for k in ANDROID_COMPACT_TEACHER_CANDIDATE_V1_IDENTITY_KEYS
             if k in compacted and k != "contract_identity"
         }
+    try:
+        from contract_identity_schema import build_canonical_contract_identity, validate_contract_identity
+        canonical = build_canonical_contract_identity(compacted, resolved=stamped if isinstance(stamped, Mapping) else None)
+        checked = validate_contract_identity(canonical)
+        if checked.get("schema_compatible") is False:
+            # Retain identity + schema_error; never drop fields to retry.
+            stamped = checked.get("payload") or canonical
+        else:
+            stamped = checked.get("payload") or canonical
+    except Exception as exc:  # pragma: no cover
+        if isinstance(stamped, Mapping):
+            stamped = dict(stamped)
+            stamped["schema_error"] = f"canonical_build_failed:{exc}"
     row = {
         "snapshot_id": compacted.get("snapshot_id"),
         "session_date": compacted.get("session_date"),
@@ -1026,12 +1040,11 @@ def _mock_thin_primary_secondary_row(
         "outcome_h2": compacted.get("outcome_h2"),
         "canonical_won": compacted.get("canonical_won"),
         "created_at": compacted.get("created_at") or "mock-now",
-        # Mock enrichment only — NOT a production primary/secondary column today.
         "contract_identity": dict(stamped) if isinstance(stamped, Mapping) else stamped,
         "_mock_note": (
-            "contract_identity attached on mock intended_upload only; "
-            "prod primary/secondary thin columns lack outcome_json and "
-            "lot/DTE identity fields (blocked/deferred — no prod migrate)."
+            "contract_identity jsonb on local intended schema "
+            "(migration 20260913054400 NOT applied to production). "
+            "Production DB upsert path remains untested."
         ),
     }
     return row
@@ -1253,10 +1266,9 @@ def simulate_persistence_boundary_roundtrip(
         "quarantine_retained": quarantine_retained,
         "primary_secondary_thin_db_columns": list(PRIMARY_SECONDARY_THIN_DB_COLUMNS),
         "primary_db_identity_columns_status": (
-            "blocked_deferred: prod buildEvaluationRows/buildRecommendationRows "
-            "keep thin columns only — no outcome_json, no contract_lot_size, "
-            "no calendar_dte/trading_dte. Mock intended_upload attaches "
-            "contract_identity for proof; no production migration under pause."
+            "local_implemented: writers carry contract_identity jsonb; "
+            "migration 20260913054400 present and marked NOT APPLIED TO PRODUCTION. "
+            "Production schema still thin (no contract_identity column) — prod upsert untested."
         ),
         "untested_db_boundary": (
             "Production Supabase/Postgres outcome columns and "

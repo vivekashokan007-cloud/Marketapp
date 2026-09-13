@@ -653,11 +653,27 @@ def resolve_contract_identity(unit: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def attach_contract_identity(row: dict[str, Any]) -> dict[str, Any]:
-    """Stamp contract identity onto an outcome/metrics row (additive, fail-closed)."""
+    """Stamp contract identity onto an outcome/metrics row (additive, fail-closed).
+
+    Emits canonical contract_identity jsonb (schema contract_identity_v1_20260913).
+    Incompatible prior schema is retained with schema_error — never stripped.
+    """
     if not isinstance(row, dict):
         raise TypeError("row must be a dict")
     identity = resolve_contract_identity(row)
-    row["contract_identity"] = identity
+    try:
+        from contract_identity_schema import attach_canonical_to_row, build_canonical_contract_identity
+        row["contract_identity"] = identity
+        attach_canonical_to_row(row)
+        # Keep diagnostic fields from resolve on the canonical object.
+        identity = row["contract_identity"]
+    except Exception as exc:  # pragma: no cover
+        # Retain resolved identity; surface schema attach error without dropping fields.
+        flagged = dict(identity)
+        flagged["schema_error"] = f"canonical_attach_failed:{exc}"
+        flagged["schema_compatible"] = False
+        row["contract_identity"] = flagged
+        identity = flagged
     if row.get("index_key") in (None, "") and row.get("index") in (None, ""):
         row["index_key"] = identity["index_key"]
     elif row.get("index_key") in (None, "") and row.get("index") not in (None, ""):

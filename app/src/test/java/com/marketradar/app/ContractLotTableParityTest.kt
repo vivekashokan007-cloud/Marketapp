@@ -42,6 +42,28 @@ class ContractLotTableParityTest {
     }
 
     @Test
+    fun faop67372BnfMonthlyCoexistenceSameObservation() {
+        val obs = LocalDate.parse("2025-05-02")
+        val retainApr = ContractLotTable.resolve("BNF", obs, expiry = LocalDate.parse("2025-04-24"), expiryCycle = "monthly")
+        val retainMay = ContractLotTable.resolve("BNF", obs, expiry = LocalDate.parse("2025-05-29"), expiryCycle = "monthly")
+        val retainJun = ContractLotTable.resolve("BNF", obs, expiry = LocalDate.parse("2025-06-26"), expiryCycle = "monthly")
+        val revisedJul = ContractLotTable.resolve("BNF", obs, expiry = LocalDate.parse("2025-07-31"), expiryCycle = "monthly")
+        assertEquals(30, retainApr.contractLotSize?.toInt())
+        assertEquals(30, retainMay.contractLotSize?.toInt())
+        assertEquals(30, retainJun.contractLotSize?.toInt())
+        assertEquals(35, revisedJul.contractLotSize?.toInt())
+        assertTrue(revisedJul.resolved)
+    }
+
+    @Test
+    fun faop67372BnfQuarterlyAndNewWeeklyRevised35() {
+        val q = ContractLotTable.resolve("BNF", LocalDate.parse("2025-05-02"), expiry = LocalDate.parse("2025-09-25"), expiryCycle = "quarterly")
+        val w = ContractLotTable.resolve("BNF", LocalDate.parse("2025-05-02"), expiry = LocalDate.parse("2025-05-08"), expiryCycle = "weekly")
+        assertEquals(35, q.contractLotSize?.toInt())
+        assertEquals(35, w.contractLotSize?.toInt())
+    }
+
+    @Test
     fun unsupportedAsOfOnlyAndHistory() {
         val asOfOnly = ContractLotTable.resolve("NF", LocalDate.parse("2025-06-01"))
         assertFalse(asOfOnly.resolved)

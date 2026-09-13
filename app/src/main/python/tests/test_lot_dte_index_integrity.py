@@ -821,7 +821,9 @@ class PersistenceBoundaryMockTests(unittest.TestCase):
             self.assertTrue(result["fields_preserved"], role)
             self.assertFalse(result["db_boundary_tested"])
             self.assertIn("Supabase", result["untested_db_boundary"])
-            self.assertIn("blocked", result["primary_db_identity_columns_status"].lower())
+            status = result["primary_db_identity_columns_status"].lower()
+            self.assertIn("local_implemented", status)
+            self.assertIn("not applied to production", status)
             self.assertEqual(result["readback"]["role"], role if role != "non_primary" else "non_primary")
             # After android-compact, identity keys survive on compacted candidate
             compacted = result["android_compacted"]
@@ -836,13 +838,13 @@ class PersistenceBoundaryMockTests(unittest.TestCase):
             intended = result["intended_upload"]
             self.assertIn("contract_identity", intended)
             self.assertEqual(intended["contract_identity"]["index_key"], "NF")
-            self.assertEqual(intended["contract_identity"]["lot_size"], 65)
-            # Thin prod columns list explicitly excludes lot/DTE identity
+            self.assertEqual(intended["contract_identity"].get("lot_size") or intended["contract_identity"].get("quantity_units"), 65)
+            # Local intended columns include contract_identity jsonb; still no flat lot/DTE columns.
             self.assertIn("index_key", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
+            self.assertIn("contract_identity", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
             self.assertNotIn("contract_lot_size", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
             self.assertNotIn("calendar_dte", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
             self.assertNotIn("outcome_json", PRIMARY_SECONDARY_THIN_DB_COLUMNS)
-            # Readback mock keeps contract_identity (intended_upload enrichment)
             self.assertIn("contract_identity", result["readback"])
             self.assertNotIn("outcome_json", result["readback"])
 
@@ -915,3 +917,286 @@ class PersistenceBoundaryMockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Faop67372BnfTransitionTests(unittest.TestCase):
+    """Independently sourced FAOP67372 expectations — not derived from resolver table."""
+
+    def test_monthly_retain_and_revised_coexistence_same_observation(self):
+        obs = "2025-05-02"
+        retain_dates = ("2025-04-24", "2025-05-29", "2025-06-26")
+        for expiry in retain_dates:
+            got = resolve_contract_lot("BNF", obs, expiry=expiry, expiry_cycle="monthly")
+            self.assertTrue(got["resolved"], expiry)
+            self.assertEqual(got["contract_lot_size"], 30, expiry)
+        revised = resolve_contract_lot("BNF", obs, expiry="2025-07-31", expiry_cycle="monthly")
+        self.assertTrue(revised["resolved"])
+        self.assertEqual(revised["contract_lot_size"], 35)
+
+    def test_quarterly_and_new_weekly_use_revised_35(self):
+        q = resolve_contract_lot("BNF", "2025-05-02", expiry="2025-09-25", expiry_cycle="quarterly")
+        self.assertEqual(q["contract_lot_size"], 35)
+        w = resolve_contract_lot("BNF", "2025-05-02", expiry="2025-05-08", expiry_cycle="weekly")
+        self.assertEqual(w["contract_lot_size"], 35)
+
+
+class QuantityScalingTests(unittest.TestCase):
+    def test_one_lot_multiple_lots_and_unequal_multileg_ratios(self):
+        one = resolve_contract_lot("NF", "2026-07-19", expiry="2026-08-06", expiry_cycle="weekly", number_of_lots=1)
+        multi = resolve_contract_lot("NF", "2026-07-19", expiry="2026-08-06", expiry_cycle="weekly", number_of_lots=3)
+        self.assertTrue(one["resolved"] and multi["resolved"])
+        self.assertEqual(one["contract_lot_size"], multi["contract_lot_size"])
+        self.assertEqual(one["number_of_lots"], 1)
+        self.assertEqual(multi["number_of_lots"], 3)
+        self.assertAlmostEqual(multi["lot_size"], one["contract_lot_size"] * 3)
+
+        # Unequal multi-leg ratios: quantity_units = sum(|ratio| * contract_lot * number_of_lots)
+        contract_lot = int(one["contract_lot_size"])
+        legs = [
+            {"instrument_id": "NF_CE", "expiry": "2026-08-06", "ratio": 1, "contract_lot_size": contract_lot},
+            {"instrument_id": "NF_PE", "expiry": "2026-08-06", "ratio": -2, "contract_lot_size": contract_lot},
+        ]
+        number_of_lots = 2
+        qty = sum(abs(int(leg["ratio"])) * int(leg["contract_lot_size"]) * number_of_lots for leg in legs)
+        self.assertEqual(qty, (1 + 2) * contract_lot * 2)
+
+    def test_fees_do_not_all_scale_linearly_with_lots(self):
+        # Brokerage may be flat/per-order; turnover fees scale with notional.
+        contract_lot = 65
+        premium = 40.0
+        for n_lots in (1, 2, 4):
+            notional = premium * contract_lot * n_lots
+            turnover_fee = 0.0005 * notional  # scales
+            flat_brokerage = 20.0  # does NOT scale linearly with lots
+            max_loss_points = 160.0
+            max_loss_rupees = max_loss_points * contract_lot * n_lots  # scales with units
+            total_cost = turnover_fee + flat_brokerage
+            self.assertAlmostEqual(turnover_fee / n_lots, 0.0005 * premium * contract_lot)
+            self.assertEqual(flat_brokerage, 20.0)
+            self.assertAlmostEqual(max_loss_rupees / n_lots, max_loss_points * contract_lot)
+            # Combined fee per lot is NOT constant because of flat brokerage.
+            if n_lots > 1:
+                per_lot_1 = (0.0005 * premium * contract_lot * 1 + 20.0) / 1
+                per_lot_n = total_cost / n_lots
+                self.assertNotAlmostEqual(per_lot_1, per_lot_n)
+
+
+class DteCalendarConventionTests(unittest.TestCase):
+    """2026 calendar version + Asia/Kolkata counting convention."""
+
+    def test_calendar_version_and_counting_docs(self):
+        # Covered years from brain NSE_HOLIDAYS → nse_holiday_years:2026
+        pack = trading_dte("2026-01-05", "2026-01-08")
+        self.assertEqual(pack.get("calendar_version"), "nse_holiday_years:2026")
+        self.assertTrue(pack.get("calendar_coverage_ok"))
+        # Convention: Asia/Kolkata session date; trading_dte counts session..expiry
+        # inclusive skipping weekends/holidays; expiry day → trading_dte=1, calendar_dte=0.
+        exp = trading_dte("2026-01-08", "2026-01-08")
+        self.assertEqual(exp.get("calendar_dte"), 0)
+        self.assertEqual(exp.get("trading_dte"), 1)
+
+    def test_weekend_holiday_year_boundary_missing_coverage(self):
+        # Weekend span
+        wk = trading_dte("2026-01-09", "2026-01-12")  # Fri→Mon
+        self.assertIsNotNone(wk.get("calendar_dte"))
+        self.assertIsNotNone(wk.get("trading_dte"))
+        self.assertLess(wk["trading_dte"], wk["calendar_dte"] + 1)
+        # Holiday (Republic Day 2026-01-26)
+        hol = trading_dte("2026-01-23", "2026-01-27")
+        self.assertTrue(hol.get("holiday_calendar_used"))
+        # Year boundary into uncovered 2027
+        yb = trading_dte("2026-12-28", "2027-01-05")
+        self.assertFalse(yb.get("calendar_coverage_ok"))
+        self.assertIsNone(yb.get("trading_dte"))
+        self.assertIsNotNone(yb.get("calendar_dte"))
+        self.assertIn("incomplete", str(yb.get("dte_basis") or ""))
+
+    def test_producer_reconstructed_disagreement_fail_closed(self):
+        # Explicit trading_dte disagrees with reconstructed — retain explicit, surface both.
+        row = {
+            "index_key": "NF",
+            "session_date": "2026-06-15",
+            "expiry": "2026-06-18",
+            "expiry_cycle": "weekly",
+            "trading_dte": 99,  # producer claim
+            "contract_lot_size": 65,
+            "number_of_lots": 1,
+            "lane": "paper",
+        }
+        identity = resolve_contract_identity(row)
+        self.assertEqual(identity["trading_dte"], 99)
+        reconstructed = trading_dte("2026-06-15", "2026-06-18")
+        self.assertNotEqual(identity["trading_dte"], reconstructed.get("trading_dte"))
+        # Measurement still has calendar; ranking uses producer trading when present.
+
+
+class ContractIdentitySchemaTests(unittest.TestCase):
+    def test_canonical_serializer_and_incompatible_retain(self):
+        from contract_identity_schema import (
+            CONTRACT_IDENTITY_SCHEMA_VERSION,
+            QUANTITY_BASIS_HYPOTHETICAL_LOTS,
+            QUANTITY_BASIS_RECORDED_FILLS,
+            build_canonical_contract_identity,
+            validate_contract_identity,
+            prefer_contract_identity_jsonb,
+        )
+        row = {
+            "index_key": "BNF",
+            "session_date": "2026-07-20",
+            "expiry": "2026-07-28",
+            "expiry_cycle": "weekly",
+            "contract_lot_size": 30,
+            "number_of_lots": 2,
+            "lot_size": 60,
+            "lane": "paper",
+            "identity_complete": True,
+        }
+        resolved = resolve_contract_identity(row)
+        canonical = build_canonical_contract_identity(row, resolved=resolved)
+        self.assertEqual(canonical["schema_version"], CONTRACT_IDENTITY_SCHEMA_VERSION)
+        self.assertEqual(canonical["quantity_basis"], QUANTITY_BASIS_HYPOTHETICAL_LOTS)
+        self.assertIsInstance(canonical["legs"], list)
+        self.assertGreaterEqual(len(canonical["legs"]), 1)
+        ok = validate_contract_identity(canonical)
+        self.assertTrue(ok["schema_compatible"])
+
+        # Recorded fills basis
+        fill_row = dict(row)
+        fill_row["fill_qty"] = 60
+        fill_ci = build_canonical_contract_identity(fill_row, resolved=resolved)
+        self.assertEqual(fill_ci["quantity_basis"], QUANTITY_BASIS_RECORDED_FILLS)
+
+        # Incompatible schema retained — never drop fields
+        bad = dict(canonical)
+        bad["schema_version"] = "contract_identity_v0_incompatible"
+        bad["extra_keep_me"] = {"nested": True}
+        checked = validate_contract_identity(bad)
+        self.assertFalse(checked["schema_compatible"])
+        self.assertIn("extra_keep_me", checked["payload"])
+        self.assertFalse(checked["eligible_for_contract_metrics"])
+
+        # Legacy null identity readable but ineligible
+        ident, eligible = prefer_contract_identity_jsonb({"session_date": "2026-07-01"})
+        self.assertIsNone(ident)
+        self.assertFalse(eligible)
+
+
+class IsolatedJsonbPersistenceTests(unittest.TestCase):
+    """candidate → android compact → lineage → upload → sqlite jsonb store → readback → metrics."""
+
+    def test_sqlite_jsonb_roundtrip_primary_and_rejected(self):
+        import sqlite3
+        import tempfile
+        from contract_identity_schema import prefer_contract_identity_jsonb, CONTRACT_IDENTITY_SCHEMA_VERSION
+
+        identity = resolve_contract_identity({
+            "index_key": "NF",
+            "session_date": "2026-07-20",
+            "expiry": "2026-07-28",
+            "expiry_cycle": "weekly",
+            "contract_lot_size": 65,
+            "number_of_lots": 1,
+            "lane": "paper",
+            "candidate_id": "cand-iso-1",
+            "snapshot_id": 42,
+        })
+        identity["session_date"] = "2026-07-20"
+        identity["candidate_id"] = "cand-iso-1"
+        identity["snapshot_id"] = 42
+
+        primary = simulate_persistence_boundary_roundtrip(identity, role="primary")
+        self.assertTrue(primary["fields_preserved"])
+        self.assertIn("contract_identity", primary["intended_upload"])
+        self.assertEqual(
+            primary["intended_upload"]["contract_identity"].get("schema_version"),
+            CONTRACT_IDENTITY_SCHEMA_VERSION,
+        )
+
+        rejected = simulate_persistence_boundary_roundtrip(identity, role="rejected")
+        self.assertIn("outcome_json", rejected["intended_upload"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = os.path.join(tmp, "local_outcomes.sqlite")
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    """
+                    CREATE TABLE ml_evaluation_outcomes (
+                        snapshot_id INTEGER,
+                        session_date TEXT,
+                        candidate_id TEXT,
+                        role TEXT,
+                        index_key TEXT,
+                        contract_identity TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE ml_rejected_candidate_outcomes (
+                        id TEXT,
+                        snapshot_id INTEGER,
+                        session_date TEXT,
+                        candidate_id TEXT,
+                        role TEXT,
+                        outcome_json TEXT
+                    )
+                    """
+                )
+                up = primary["intended_upload"]
+                conn.execute(
+                    "INSERT INTO ml_evaluation_outcomes VALUES (?,?,?,?,?,?)",
+                    (
+                        up.get("snapshot_id"),
+                        up.get("session_date"),
+                        up.get("candidate_id"),
+                        up.get("role"),
+                        up.get("index_key"),
+                        json.dumps(up.get("contract_identity")),
+                    ),
+                )
+                rj = rejected["intended_upload"]
+                conn.execute(
+                    "INSERT INTO ml_rejected_candidate_outcomes VALUES (?,?,?,?,?,?)",
+                    (
+                        rj.get("id"),
+                        rj.get("snapshot_id"),
+                        rj.get("session_date"),
+                        rj.get("candidate_id"),
+                        rj.get("role"),
+                        json.dumps(rj.get("outcome_json")),
+                    ),
+                )
+                conn.commit()
+                row = conn.execute(
+                    "SELECT contract_identity FROM ml_evaluation_outcomes WHERE candidate_id=?",
+                    ("cand-iso-1",),
+                ).fetchone()
+                stored_ci = json.loads(row[0])
+                read_row = {"contract_identity": stored_ci}
+                ident, eligible = prefer_contract_identity_jsonb(read_row)
+                self.assertIsNotNone(ident)
+                self.assertEqual(ident["index_key"], "NF")
+                self.assertEqual(ident["contract_lot_size"], 65)
+                metrics_slice = {
+                    "index_key": ident["index_key"],
+                    "dte_bucket": ident.get("dte_bucket"),
+                    "eligible": eligible,
+                    "production_db_untested": True,
+                }
+                self.assertEqual(metrics_slice["index_key"], "NF")
+
+                # Legacy null identity row: readable, ineligible
+                conn.execute(
+                    "INSERT INTO ml_evaluation_outcomes VALUES (?,?,?,?,?,?)",
+                    (99, "2026-07-01", "legacy", "primary", "NF", None),
+                )
+                legacy = conn.execute(
+                    "SELECT contract_identity FROM ml_evaluation_outcomes WHERE candidate_id='legacy'"
+                ).fetchone()
+                self.assertIsNone(legacy[0])
+                ident2, eligible2 = prefer_contract_identity_jsonb({"contract_identity": None})
+                self.assertIsNone(ident2)
+                self.assertFalse(eligible2)
+            finally:
+                conn.close()

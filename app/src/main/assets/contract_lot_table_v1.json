@@ -10,7 +10,7 @@
   "supported_project_data_window": {
     "start": "2024-11-20",
     "end": null,
-    "authority": "Authoritative only when matched to NSE circular annexure rules or an instrument-master snapshot scope. Observation-date-only lookups during coexistence windows return unavailable. Mid-2025 BANKNIFTY is ambiguous without the intermediate circular that moved present lot from 30 (FAOP64625 revised) to 35 (FAOP70616 present).",
+    "authority": "Authoritative only when matched to NSE circular annexure rules or an instrument-master snapshot scope. Observation-date-only lookups during coexistence windows return unavailable. BANKNIFTY mid-2025 encoded via NSE/FAOP/67372 (30\u219235 with monthly retain Apr/May/Jun 2025).",
     "fail_closed_outside": true
   },
   "operational_current_lots": {
@@ -31,6 +31,18 @@
       "sha256": "ee1169239eed9cc06519537c6af53751e031903fe709b2bf296283412dc028f8",
       "capture_date": "2026-09-13",
       "effective_scope": "New index derivative contracts introduced from 2024-11-20; existing weekly/monthly retain prior lots until annexure expiries; Q/HY transition EOD 2024-12-24 (BNF) / 2024-12-26 (NF)"
+    },
+    {
+      "id": "NSE_FAOP_67372",
+      "title": "Revision in Market Lot of Derivative Contracts on Indices",
+      "circular_ref": "50/2025",
+      "download_ref": "NSE/FAOP/67372",
+      "date": "2025-03-28",
+      "url": "https://nsearchives.nseindia.com/content/circulars/FAOP67372.pdf",
+      "local_path": "/workspace/mr-g8plus/nse-circulars/FAOP67372.pdf",
+      "sha256": "d001ec91677b0904daaace74da3c68e98e8694759f5d98ea3661c6557906ba35",
+      "capture_date": "2026-09-13",
+      "effective_scope": "Effect from 2025-04-25. BNF present 30\u2192revised 35. Existing monthly expiries 2025-04-24, 2025-05-29, 2025-06-26 retain 30. First revised monthly 2025-07-31 lot 35. Quarterly available from 2025-04-25 use 35. New contracts from EOD 2025-04-24 / trade 2025-04-25 use 35."
     },
     {
       "id": "NSE_FAOP_70616",
@@ -153,6 +165,66 @@
       "observation_on_or_after": "2024-10-18"
     },
     {
+      "rule_id": "FAOP64625_BNF_monthly_revised_30_until_67372",
+      "index": "BNF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_after": "2025-02-26",
+      "expiry_on_or_before": "2025-06-26",
+      "observation_on_or_after": "2024-11-20",
+      "observation_on_or_before": "2025-10-02",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "First monthly revised lot 30 (26-Feb-2025 per 64625). FAOP67372 retains Apr/May/Jun 2025 monthlies at present 30; Jul-2025+ use 67372 revised 35.",
+      "related_circular": "NSE_FAOP_67372"
+    },
+    {
+      "rule_id": "FAOP67372_BNF_monthly_revised_35",
+      "index": "BNF",
+      "expiry_cycle": "monthly",
+      "expiry_on_or_after": "2025-07-31",
+      "expiry_on_or_before": "2025-12-30",
+      "observation_on_or_after": "2025-04-25",
+      "contract_lot_size": 35,
+      "source_id": "NSE_FAOP_67372",
+      "annexure_note": "First monthly expiry with revised market lot 35 is 31-Jul-2025; present lot retained through Dec-2025 monthlies per FAOP70616 (same lot 35)."
+    },
+    {
+      "rule_id": "FAOP67372_BNF_weekly_revised_35",
+      "index": "BNF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_after": "2025-04-25",
+      "expiry_on_or_before": "2025-12-23",
+      "observation_on_or_after": "2025-04-25",
+      "contract_lot_size": 35,
+      "source_id": "NSE_FAOP_67372",
+      "annexure_note": "New weekly contracts generated from EOD 2025-04-24 / trade from 2025-04-25 use revised lot 35; Dec-2025 weeklies retain present 35 under FAOP70616."
+    },
+    {
+      "rule_id": "FAOP64625_BNF_weekly_revised_30_pre_67372",
+      "index": "BNF",
+      "expiry_cycle": "weekly",
+      "expiry_on_or_after": "2024-11-20",
+      "expiry_on_or_before": "2025-04-24",
+      "observation_on_or_after": "2024-11-20",
+      "observation_on_or_before": "2025-10-02",
+      "contract_lot_size": 30,
+      "source_id": "NSE_FAOP_64625",
+      "annexure_note": "New BNF weeklies from 2024-11-20 use revised lot 30 (64625). Coexist with FAOP67372 new weeklies (35) after 2025-04-25 by expiry identity.",
+      "related_circular": "NSE_FAOP_67372"
+    },
+    {
+      "rule_id": "FAOP67372_BNF_quarterly_revised_35",
+      "index": "BNF",
+      "expiry_cycle": "quarterly",
+      "expiry_on_or_after": "2025-06-26",
+      "expiry_on_or_before": "2025-12-30",
+      "observation_on_or_after": "2025-04-25",
+      "observation_on_or_before": "2025-12-30",
+      "contract_lot_size": 35,
+      "source_id": "NSE_FAOP_67372",
+      "annexure_note": "All quarterly contracts available for trading from 2025-04-25 onwards use revised market lot 35."
+    },
+    {
       "rule_id": "FAOP70616_BNF_monthly_existing_present35",
       "index": "BNF",
       "expiry_cycle": "monthly",
@@ -179,11 +251,12 @@
       "expiry_cycle": "quarterly",
       "observation_on_or_after": "2024-12-25",
       "expiry_on_or_after": "2025-03-26",
-      "expiry_on_or_before": "2025-12-30",
+      "expiry_on_or_before": "2025-06-26",
       "contract_lot_size": 30,
       "source_id": "NSE_FAOP_64625",
-      "annexure_note": "BNF quarterly revised from 2024-12-24 EOD to lot 30; later present became 35 (70616) \u2014 prefer captured metadata if conflict",
-      "quality": "transition_encoded_gap_risk"
+      "annexure_note": "BNF quarterly revised from 2024-12-24 EOD to lot 30; superseded for trade-from 2025-04-25 by FAOP67372 revised 35",
+      "observation_on_or_before": "2025-04-24",
+      "superseded_by": "FAOP67372_BNF_quarterly_revised_35"
     },
     {
       "rule_id": "FAOP70616_BNF_qh_post_transition",

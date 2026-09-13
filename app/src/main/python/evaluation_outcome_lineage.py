@@ -133,28 +133,36 @@ def stamp_outcome_lineage(outcome: dict, **kwargs) -> dict:
         from canonical_net_profitability import attach_contract_identity
         attach_contract_identity(outcome)
         ci = outcome.get("contract_identity") if isinstance(outcome.get("contract_identity"), dict) else {}
-        lineage["contract_identity"] = {
-            "index_key": ci.get("index_key"),
-            "expiry": ci.get("expiry"),
-            "dte": ci.get("dte"),
-            "calendar_dte": ci.get("calendar_dte"),
-            "trading_dte": ci.get("trading_dte"),
-            "dte_basis": ci.get("dte_basis"),
-            "dte_bucket": ci.get("dte_bucket"),
-            "dte_bucket_version": ci.get("dte_bucket_version"),
-            "dte_ranking_bucket": ci.get("dte_ranking_bucket"),
-            "dte_ranking_bucket_version": ci.get("dte_ranking_bucket_version"),
-            "contract_lot_size": ci.get("contract_lot_size"),
-            "number_of_lots": ci.get("number_of_lots"),
-            "lot_size": ci.get("lot_size"),
-            "lot_size_source": ci.get("lot_size_source"),
-            "lot_source": ci.get("lot_source"),
-            "lot_table_version": ci.get("lot_table_version"),
-            "lot_as_of": ci.get("lot_as_of"),
-            "lot_size_assumed": ci.get("lot_size_assumed"),
-            "identity_complete": ci.get("identity_complete"),
-            "contract_identity_quarantine": ci.get("contract_identity_quarantine"),
-        }
+        # Prefer full canonical object when present; never strip identity fields.
+        if ci.get("schema_version"):
+            lineage["contract_identity"] = dict(ci)
+        else:
+            try:
+                from contract_identity_schema import build_canonical_contract_identity
+                lineage["contract_identity"] = build_canonical_contract_identity(outcome, resolved=ci)
+            except Exception:
+                lineage["contract_identity"] = {
+                    "index_key": ci.get("index_key"),
+                    "expiry": ci.get("expiry"),
+                    "dte": ci.get("dte"),
+                    "calendar_dte": ci.get("calendar_dte"),
+                    "trading_dte": ci.get("trading_dte"),
+                    "dte_basis": ci.get("dte_basis"),
+                    "dte_bucket": ci.get("dte_bucket"),
+                    "dte_bucket_version": ci.get("dte_bucket_version"),
+                    "dte_ranking_bucket": ci.get("dte_ranking_bucket"),
+                    "dte_ranking_bucket_version": ci.get("dte_ranking_bucket_version"),
+                    "contract_lot_size": ci.get("contract_lot_size"),
+                    "number_of_lots": ci.get("number_of_lots"),
+                    "lot_size": ci.get("lot_size"),
+                    "lot_size_source": ci.get("lot_size_source"),
+                    "lot_source": ci.get("lot_source"),
+                    "lot_table_version": ci.get("lot_table_version"),
+                    "lot_as_of": ci.get("lot_as_of"),
+                    "lot_size_assumed": ci.get("lot_size_assumed"),
+                    "identity_complete": ci.get("identity_complete"),
+                    "contract_identity_quarantine": ci.get("contract_identity_quarantine"),
+                }
         outcome["evaluation_lineage"] = lineage
     except Exception as exc:  # pragma: no cover
         outcome["contract_identity_error"] = str(exc)
