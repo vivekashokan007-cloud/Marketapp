@@ -4,7 +4,7 @@
 **Publishing:** PAUSED — do NOT push / merge / APK / prod migrate / retrain / size-promote / broker-activate.  
 **Gate:** Lot/DTE/NF–BNF remains **OPEN**.  
 **Base (pre-this-work tip):** `b9c22c6`  
-**Implementation tip:** *(set after local commit)*  
+**Implementation tip:** `0cd2cc0a3f36270922106c1cf226c93c378d0cce` (`0cd2cc0`) — contract-specific lot authority  
 **Tests:** Python full suite Ran 776, OK. Kotlin unit tests **not executed** (no JAVA_HOME/Android SDK).  
 
 ---
