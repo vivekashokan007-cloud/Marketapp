@@ -9,8 +9,8 @@ Successor to / continuation of `G8_PROGRESS.md` (G8 tip retained as parent commi
 
 | Repo | Branch | Tip SHA | Note |
 |---|---|---|---|
-| Marketapp | `work/g8-g10-integrity-20260913` | *(see git log after commit)* | Paper analysis + lineage + G9 advisory |
-| MarketVivi | `work/g8-g10-integrity-20260913` | *(see git log after commit)* | Paper analysis alternatives UI; cache `app.js?v=1336` |
+| Marketapp | `work/g8-g10-integrity-20260913` | `8cfc326896bac245b495a73b0ffeeaf15f2bc718` | Paper analysis + lineage + G9 advisory |
+| MarketVivi | `work/g8-g10-integrity-20260913` | `97999706c6a771d4fc98968143419b3efc2fc77e` | Paper analysis alternatives UI; cache `app.js?v=1336` |
 | Prior Marketapp G8 | same branch | `531b77e4ca21769250ad8cdaa5e1f941cb0433a3` | parent |
 
 ## A) Paper lane (sole experimental lane)
