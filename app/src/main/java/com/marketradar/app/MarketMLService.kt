@@ -146,6 +146,39 @@ class MarketMLService : Service() {
         private const val TEACHER_RESEARCH_RANKED_CANDIDATE_CAP = 30
         private const val TEACHER_RESEARCH_REJECTED_CANDIDATE_CAP = 12
         private const val TEACHER_RESEARCH_REJECTED_OUTCOME_CAP = 500
+        /**
+         * Contract-identity / lot / DTE keys retained by compactTeacherResearchCandidate.
+         * Nested `contract_identity` object is kept whole when present.
+         * index / expiry / tDTE remain in the main allowlist below.
+         */
+        internal val CONTRACT_IDENTITY_COMPACTION_KEYS = arrayOf(
+            "index_key",
+            "expiry_cycle",
+            "calendar_dte",
+            "trading_dte",
+            "dte_basis",
+            "dte_source",
+            "dte_calendar_version",
+            "contract_lot_size",
+            "number_of_lots",
+            "lot_size",
+            "quantity_units",
+            "quantity_unit",
+            "lot_source",
+            "lot_table_version",
+            "lot_as_of",
+            "lot_conflict",
+            "matched_rule_id",
+            "captured_contract_lot",
+            "rule_contract_lot",
+            "contract_identity_quarantine",
+            "evaluation_ineligible",
+            "calibration_ineligible",
+            "contract_identity",
+            "identity_complete",
+            "exclusion_reason",
+            "retained_for_recovery"
+        )
         internal val IST: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
         internal const val EVAL_STALE_AFTER_MS = 15 * 60 * 1000L
         private const val EVAL_REMINDER_START_MIN = 16 * 60 + 30
@@ -1135,7 +1168,7 @@ class MarketMLService : Service() {
             "upstoxSpanMargin",
             "upstoxExposureMargin",
             "upstoxNetBuyPremium"
-        )
+        ) + CONTRACT_IDENTITY_COMPACTION_KEYS
         for (key in keys) {
             val value = cand.opt(key)
             if (value != null && value != org.json.JSONObject.NULL) {
