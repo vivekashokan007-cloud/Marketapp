@@ -71,4 +71,66 @@ class ContractLotTableParityTest {
         val ancient = ContractLotTable.resolve("BNF", LocalDate.parse("2000-06-01"), expiry = LocalDate.parse("2000-06-29"), expiryCycle = "monthly")
         assertFalse(ancient.resolved)
     }
+
+    @Test
+    fun allTwentyRuleIdsPresent() {
+        val expected = listOf(
+            "FAOP64625_NF_weekly_existing",
+            "FAOP64625_NF_weekly_revised_until_70616",
+            "FAOP70616_NF_weekly_revised",
+            "FAOP64625_NF_monthly_existing",
+            "FAOP64625_NF_monthly_revised_until_70616",
+            "FAOP70616_NF_monthly_revised",
+            "FAOP64625_NF_qh_post_transition",
+            "FAOP70616_NF_qh_post_transition",
+            "FAOP64625_BNF_monthly_existing",
+            "FAOP64625_BNF_monthly_revised_30_until_67372",
+            "FAOP67372_BNF_monthly_revised_35",
+            "FAOP67372_BNF_weekly_revised_35",
+            "FAOP64625_BNF_weekly_revised_30_pre_67372",
+            "FAOP67372_BNF_quarterly_revised_35",
+            "FAOP70616_BNF_monthly_existing_present35",
+            "FAOP70616_BNF_monthly_revised",
+            "FAOP64625_BNF_qh_post_transition",
+            "FAOP70616_BNF_qh_post_transition",
+            "FAOP70616_BNF_weekly_revised",
+            "FAOP70616_BNF_weekly_existing_present35"
+        )
+        // Resolve representative fixtures for each missing Q/HY rule
+        val nfQh = ContractLotTable.resolve("NF", LocalDate.parse("2025-06-01"), expiry = LocalDate.parse("2025-06-26"), expiryCycle = "quarterly_half_yearly")
+        assertEquals(75, nfQh.contractLotSize?.toInt())
+        assertEquals("FAOP64625_NF_qh_post_transition", nfQh.matchedRuleId)
+        val nfQh2 = ContractLotTable.resolve("NF", LocalDate.parse("2026-01-15"), expiry = LocalDate.parse("2026-03-31"), expiryCycle = "quarterly_half_yearly")
+        assertEquals(65, nfQh2.contractLotSize?.toInt())
+        assertEquals("FAOP70616_NF_qh_post_transition", nfQh2.matchedRuleId)
+        val bnfQh = ContractLotTable.resolve("BNF", LocalDate.parse("2025-03-01"), expiry = LocalDate.parse("2025-03-26"), expiryCycle = "quarterly")
+        assertEquals(30, bnfQh.contractLotSize?.toInt())
+        assertEquals("FAOP64625_BNF_qh_post_transition", bnfQh.matchedRuleId)
+        val bnfQh2 = ContractLotTable.resolve("BNF", LocalDate.parse("2026-01-15"), expiry = LocalDate.parse("2026-03-31"), expiryCycle = "quarterly")
+        assertEquals(30, bnfQh2.contractLotSize?.toInt())
+        assertEquals("FAOP70616_BNF_qh_post_transition", bnfQh2.matchedRuleId)
+        assertEquals(20, expected.size)
+    }
+
+    @Test
+    fun capturedLotMismatchConflictsWithoutTruncation() {
+        val bad = ContractLotTable.resolve(
+            "NF", LocalDate.parse("2025-06-10"),
+            numberOfLots = 1.0,
+            expiry = LocalDate.parse("2025-06-12"),
+            expiryCycle = "weekly",
+            capturedContractLot = 65.0
+        )
+        assertTrue(bad.lotConflict)
+        assertFalse(bad.resolved)
+        assertEquals(65.0, bad.capturedContractLot)
+        assertEquals(75.0, bad.ruleContractLot)
+
+        val frac = ContractLotTable.parsePositiveIntegralLot(65.5)
+        assertNull(frac)
+        val badCount = ContractLotTable.parsePositiveIntegralLot(0)
+        assertNull(badCount)
+        val ok = ContractLotTable.parsePositiveIntegralLot(2)
+        assertEquals(2, ok)
+    }
 }

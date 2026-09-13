@@ -6,7 +6,7 @@ import java.util.Locale
 
 /**
  * Contract-specific lot table — mirrored from
- * app/src/main/assets/contract_lot_table_v1.json and Python contract_lot_table.py.
+ * app/src/main/assets/contract_lot_table_v2.json and Python contract_lot_table.py.
  *
  * Contract lot size = units per lot. Distinct from number_of_lots (quantity)
  * and quantity_units (contract_lot_size * number_of_lots).
@@ -70,8 +70,9 @@ internal object ContractLotTable {
 
     private val operationalCurrent = mapOf("BNF" to 30, "NF" to 65)
 
-    // Keep rules mirrored with assets/contract_lot_table_v1.json (authoritative only).
-    // Includes FAOP67372 BNF 30→35 transition (effect 2025-04-25).
+    // GENERATED/mirrored from assets/contract_lot_table_v2.json (SSOT).
+    // Regenerate: python3 scripts/generate_contract_lot_table_kt.py
+    // Drift-checked by ContractLotTableParityTest.
     private val rules = listOf(
         ContractRule("FAOP64625_NF_weekly_existing", "NF", "weekly", LocalDate.parse("2024-11-01"), LocalDate.parse("2024-12-19"), LocalDate.parse("2024-10-18"), null, 25, "NSE_FAOP_64625"),
         ContractRule("FAOP64625_NF_weekly_revised_until_70616", "NF", "weekly", LocalDate.parse("2025-01-02"), LocalDate.parse("2025-12-23"), LocalDate.parse("2024-11-20"), null, 75, "NSE_FAOP_64625"),
@@ -79,16 +80,20 @@ internal object ContractLotTable {
         ContractRule("FAOP64625_NF_monthly_existing", "NF", "monthly", LocalDate.parse("2024-11-01"), LocalDate.parse("2025-01-30"), LocalDate.parse("2024-10-18"), null, 25, "NSE_FAOP_64625"),
         ContractRule("FAOP64625_NF_monthly_revised_until_70616", "NF", "monthly", LocalDate.parse("2025-02-27"), LocalDate.parse("2025-12-30"), LocalDate.parse("2024-11-20"), null, 75, "NSE_FAOP_64625"),
         ContractRule("FAOP70616_NF_monthly_revised", "NF", "monthly", LocalDate.parse("2026-01-27"), null, LocalDate.parse("2025-10-28"), null, 65, "NSE_FAOP_70616"),
+        ContractRule("FAOP64625_NF_qh_post_transition", "NF", "quarterly_half_yearly", LocalDate.parse("2025-03-27"), LocalDate.parse("2025-12-30"), LocalDate.parse("2024-12-27"), null, 75, "NSE_FAOP_64625"),
+        ContractRule("FAOP70616_NF_qh_post_transition", "NF", "quarterly_half_yearly", LocalDate.parse("2026-03-31"), null, LocalDate.parse("2025-12-31"), null, 65, "NSE_FAOP_70616"),
         ContractRule("FAOP64625_BNF_monthly_existing", "BNF", "monthly", LocalDate.parse("2024-11-01"), LocalDate.parse("2025-01-29"), LocalDate.parse("2024-10-18"), null, 15, "NSE_FAOP_64625"),
         ContractRule("FAOP64625_BNF_monthly_revised_30_until_67372", "BNF", "monthly", LocalDate.parse("2025-02-26"), LocalDate.parse("2025-06-26"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
         ContractRule("FAOP67372_BNF_monthly_revised_35", "BNF", "monthly", LocalDate.parse("2025-07-31"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
-        ContractRule("FAOP64625_BNF_weekly_revised_30_pre_67372", "BNF", "weekly", LocalDate.parse("2024-11-20"), LocalDate.parse("2025-04-24"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
         ContractRule("FAOP67372_BNF_weekly_revised_35", "BNF", "weekly", LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
+        ContractRule("FAOP64625_BNF_weekly_revised_30_pre_67372", "BNF", "weekly", LocalDate.parse("2024-11-20"), LocalDate.parse("2025-04-24"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
         ContractRule("FAOP67372_BNF_quarterly_revised_35", "BNF", "quarterly", LocalDate.parse("2025-06-26"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-30"), 35, "NSE_FAOP_67372"),
         ContractRule("FAOP70616_BNF_monthly_existing_present35", "BNF", "monthly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616"),
         ContractRule("FAOP70616_BNF_monthly_revised", "BNF", "monthly", LocalDate.parse("2026-01-27"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616"),
-        ContractRule("FAOP70616_BNF_weekly_existing_present35", "BNF", "weekly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616"),
-        ContractRule("FAOP70616_BNF_weekly_revised", "BNF", "weekly", LocalDate.parse("2026-01-06"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616")
+        ContractRule("FAOP64625_BNF_qh_post_transition", "BNF", "quarterly", LocalDate.parse("2025-03-26"), LocalDate.parse("2025-06-26"), LocalDate.parse("2024-12-25"), LocalDate.parse("2025-04-24"), 30, "NSE_FAOP_64625"),
+        ContractRule("FAOP70616_BNF_qh_post_transition", "BNF", "quarterly", LocalDate.parse("2026-03-31"), null, LocalDate.parse("2025-12-31"), null, 30, "NSE_FAOP_70616"),
+        ContractRule("FAOP70616_BNF_weekly_revised", "BNF", "weekly", LocalDate.parse("2026-01-06"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616"),
+        ContractRule("FAOP70616_BNF_weekly_existing_present35", "BNF", "weekly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616")
     )
 
     fun normalizeIndexKey(raw: String?): String? {
@@ -150,9 +155,30 @@ internal object ContractLotTable {
     ): ResolvedLot {
         val idx = normalizeIndexKey(indexRaw)
         val asOfText = asOf?.toString()
-        val nLots = if (numberOfLots > 0.0) numberOfLots else 1.0
+        val nLotsParsed = parsePositiveIntegralLot(numberOfLots)
+        val nLots = if (nLotsParsed != null) nLotsParsed.toDouble() else {
+            // Invalid explicit count fails closed below via early return when numberOfLots was provided non-default.
+            if (numberOfLots != 1.0 && !(numberOfLots > 0.0 && kotlin.math.abs(numberOfLots - kotlin.math.round(numberOfLots)) <= 1e-9)) {
+                return ResolvedLot(
+                    indexKey = idx ?: "UNKNOWN",
+                    indexKnown = idx != null,
+                    contractLotSize = null,
+                    numberOfLots = numberOfLots,
+                    lotSize = null,
+                    lotSource = "invalid_number_of_lots",
+                    lotTableVersion = VERSION_ID,
+                    lotAsOf = asOfText,
+                    resolved = false,
+                    unavailableReason = "invalid_number_of_lots",
+                    expiry = expiry?.toString(),
+                    expiryCycle = normalizeExpiryCycle(expiryCycle)
+                )
+            }
+            if (numberOfLots > 0.0 && kotlin.math.abs(numberOfLots - kotlin.math.round(numberOfLots)) <= 1e-9) numberOfLots else 1.0
+        }
         val cycle = normalizeExpiryCycle(expiryCycle)
-        val captured = if (capturedContractLot != null && capturedContractLot > 0.0) capturedContractLot else null
+        val capturedInt = parsePositiveIntegralLot(capturedContractLot)
+        val captured = capturedInt?.toDouble()
 
         if (idx == null) {
             return ResolvedLot(
@@ -243,7 +269,7 @@ internal object ContractLotTable {
         }
 
         if (captured != null) {
-            if (authLot != null && captured.toInt() != authLot) {
+            if (authLot != null && capturedInt != null && capturedInt != authLot) {
                 return ResolvedLot(
                     indexKey = idx,
                     indexKnown = true,
@@ -336,6 +362,30 @@ internal object ContractLotTable {
             expiry = expiry?.toString(),
             expiryCycle = cycle
         )
+    }
+
+
+    /** Positive integral lot / lot-count. Never truncates fractions — returns null on fractional/malformed. */
+    fun parsePositiveIntegralLot(raw: Any?): Int? {
+        if (raw == null) return null
+        val n = when (raw) {
+            is Number -> raw.toDouble()
+            is String -> raw.trim().toDoubleOrNull() ?: return null
+            else -> return null
+        }
+        if (!n.isFinite() || n <= 0.0) return null
+        val rounded = kotlin.math.round(n)
+        if (kotlin.math.abs(n - rounded) > 1e-9) return null
+        val iv = rounded.toInt()
+        return if (iv > 0) iv else null
+    }
+
+    fun parseNumberOfLots(raw: Any?, allowMissingDefaultOne: Boolean = true): Pair<Double?, Boolean> {
+        if (raw == null || (raw is String && raw.isBlank())) {
+            return if (allowMissingDefaultOne) Pair(1.0, true) else Pair(null, false)
+        }
+        val v = parsePositiveIntegralLot(raw) ?: return Pair(null, false)
+        return Pair(v.toDouble(), true)
     }
 
     fun stampOnto(tradeMeta: JSONObject, resolved: ResolvedLot) {
