@@ -3,7 +3,8 @@
 **Branch:** `work/g8-g10-integrity-20260913` (Marketapp local only)  
 **Publishing:** PAUSED — do NOT push / merge / APK / prod migrate / retrain / size-promote / broker-activate.  
 **Gate:** Lot/DTE/NF–BNF remains **OPEN** until remaining unavailable items are closed.  
-**Tip SHA:** `0175354a31764a6aea5fee2f41b99793d3002ffe` (`0175354`)  
+**Implementation tip:** `3a75e453c022d59cbacf88215ae16e82734631c9` (`3a75e45`) — feature commit
+**Branch HEAD:** `45f5a9744d98fac6f9562c15ca5cd89a346e8a55` (`45f5a97`) — includes status doc stamps  
 **Tests:** Ran 768, OK  
 
 ---
