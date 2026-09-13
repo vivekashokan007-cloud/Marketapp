@@ -35,3 +35,5 @@
 - Training / profitability: OPEN / NOT PROVEN
 - G9 sizing / G10 broker: DISABLED / PAUSED
 - Merge to main: FORBIDDEN pending final review
+
+**MarketVivi rectification tip:** 
