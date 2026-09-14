@@ -17,6 +17,7 @@ on:
     branches:
       - main
       - work/g8-g10-integrity-20260913
+      - review/codex-corrective-20260914
     paths:
       - 'app/**'
       - 'tools/**'
