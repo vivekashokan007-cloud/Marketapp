@@ -1,7 +1,7 @@
 # RECTIFICATION R4 STOP REPORT — Paper authorization and export integrity
 
-Date: 2026-09-13  
-Branch: `work/g8-g10-integrity-20260913` (existing review branches only)  
+Date: 2026-09-13
+Branch: `work/g8-g10-integrity-20260913` (existing review branches only)
 Status: implementation complete; stopped for review; **not cleared for main**
 
 ## Frozen feature tips

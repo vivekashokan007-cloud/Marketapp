@@ -1,7 +1,7 @@
 # Main merge gate — R4 integrity finish
 
-Date: 2026-09-14  
-Scope: Marketapp + MarketVivi review branches  
+Date: 2026-09-14
+Scope: Marketapp + MarketVivi review branches
 Decision: do not merge until both test-only review workflows are green
 
 ## Safety changes made before merge
@@ -65,5 +65,5 @@ This device smoke test is a publication gate, not a source-merge requirement, pr
 - G10 broker/live execution
 - profitability or autonomous-trading readiness
 
-Source-merge verdict after both CI workflows are green: **eligible to merge under publishing pause**.  
+Source-merge verdict after both CI workflows are green: **eligible to merge under publishing pause**.
 Publication verdict: **not eligible until the manual device smoke gate passes and publication is separately authorized**.
