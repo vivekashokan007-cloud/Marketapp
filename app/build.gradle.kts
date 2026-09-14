@@ -15,6 +15,7 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
+        // b473 / 2.6.42: Paper integrity, contract identity, export, and review gates.
         // b472 / 2.6.41: G6 versioned performance ledger + shadow comparisons.
         // b471 / 2.6.40: G5 durable evening-stage ledger + truthful completion.
         // b470 / 2.6.39: G4 net-target + executable exit-policy contract.
@@ -23,8 +24,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 472
-        versionName = "2.6.41"
+        versionCode = 473
+        versionName = "2.6.42"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
