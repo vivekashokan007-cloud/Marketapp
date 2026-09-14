@@ -1,22 +1,20 @@
 name: Market Radar Signed Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'app/**'
-      - 'build.gradle.kts'
-      - 'settings.gradle.kts'
-      - 'gradle/**'
-      - 'gradlew'
-      - '.github/workflows/release.yml'
+  workflow_dispatch:
+    inputs:
+      confirm_release:
+        description: 'Explicitly confirm signed APK build and GitHub release'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: ${{ inputs.confirm_release == true }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code

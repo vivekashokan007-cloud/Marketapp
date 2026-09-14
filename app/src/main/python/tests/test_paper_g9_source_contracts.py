@@ -17,6 +17,7 @@ ML = os.path.join(MARKETAPP, "app", "src", "main", "java", "com", "marketradar",
 
 
 class PaperG9SourceContractTests(unittest.TestCase):
+    @unittest.skipUnless(os.path.exists(PWA), "MarketVivi checkout not present; PWA runs its own CI")
     def test_pwa_exposes_paper_analysis_alternatives(self):
         self.assertTrue(os.path.exists(PWA), PWA)
         text = Path(PWA).read_text(encoding="utf-8")
@@ -36,6 +37,7 @@ class PaperG9SourceContractTests(unittest.TestCase):
         self.assertIn("atomically", text)
         self.assertIn("saveEvaluationOutcomes", text)
 
+    @unittest.skipUnless(os.path.exists(PWA), "MarketVivi checkout not present; PWA runs its own CI")
     def test_pwa_exposes_experimental_kelly_advisory_readout(self):
         text = Path(PWA).read_text(encoding="utf-8")
         self.assertIn("experimentalKellyAdvisoryReadout", text)
