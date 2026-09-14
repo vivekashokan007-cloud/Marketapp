@@ -28,6 +28,7 @@ class PositionTickServiceLotResolutionTest {
         assertEquals(60.0, resolved.lotSize, 0.0001)
         assertFalse(resolved.assumed)
         assertEquals("trade", resolved.source)
+        assertFalse(resolved.authoritative)
     }
 
     @Test
@@ -48,6 +49,7 @@ class PositionTickServiceLotResolutionTest {
         assertEquals(60.0, resolved.lotSize, 0.0001)
         assertEquals(true, resolved.assumed)
         assertEquals("operational_current_lots", resolved.source)
+        assertFalse(resolved.authoritative)
     }
 
     @Test
@@ -138,6 +140,34 @@ class PositionTickServiceLotResolutionTest {
         assertEquals(130.0, resolved.lotSize, 0.0001)
         assertEquals(2.0, resolved.numberOfLots, 0.0001)
         assertFalse(resolved.numberOfLotsAssumed)
+        assertTrue(resolved.authoritative)
+    }
+
+    @Test
+    fun undatedTripletCannotAuthorizeArbitraryCapturedLot() {
+        val arbitraryBnf = JSONObject(
+            """
+            {
+              "index_key": "BNF",
+              "contract_lot_size": 999,
+              "number_of_lots": 1,
+              "quantity_units": 999
+            }
+            """.trimIndent()
+        )
+        assertNull(resolvePositionTickLotMeta(arbitraryBnf))
+
+        val staleNf = JSONObject(
+            """
+            {
+              "index_key": "NF",
+              "contract_lot_size": 25,
+              "number_of_lots": 2,
+              "quantity_units": 50
+            }
+            """.trimIndent()
+        )
+        assertNull(resolvePositionTickLotMeta(staleNf))
     }
 
     @Test

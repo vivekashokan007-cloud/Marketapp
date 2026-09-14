@@ -475,6 +475,7 @@ class PositionTickService : Service() {
                 put("lot_size_assumed", lotMeta.assumed)
                 put("lot_size_source", lotMeta.source)
                 put("lot_table_version", lotMeta.lotTableVersion)
+                put("lot_identity_authoritative", lotMeta.authoritative)
                 if (lotMeta.lotAsOf != null) put("lot_as_of", lotMeta.lotAsOf)
                 put("number_of_lots", lotMeta.numberOfLots)
                 put("number_of_lots_assumed", lotMeta.numberOfLotsAssumed)
@@ -1044,7 +1045,8 @@ internal data class PositionTickLotMeta(
     val numberOfLotsAssumed: Boolean = false,
     val numberOfLotsDefaultPolicy: String? = null,
     val lotTableVersion: String = ContractLotTable.VERSION_ID,
-    val lotAsOf: String? = null
+    val lotAsOf: String? = null,
+    val authoritative: Boolean = false
 )
 
 internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta? {
@@ -1101,7 +1103,7 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
                 capturedContractLot = clsParsed.toDouble(),
                 allowOperationalCurrent = asOf == null && expiry == null
             )
-            if (!identity.resolved || identity.lotConflict) return null
+            if (!identity.resolved || identity.lotConflict || !identity.authoritative) return null
             return PositionTickLotMeta(
                 lotSize = qtyParsed.toDouble(), // total units for P&L
                 assumed = false,
@@ -1111,7 +1113,8 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
                 numberOfLotsAssumed = identity.numberOfLotsAssumed,
                 numberOfLotsDefaultPolicy = identity.numberOfLotsDefaultPolicy,
                 lotTableVersion = identity.lotTableVersion,
-                lotAsOf = identity.lotAsOf
+                lotAsOf = identity.lotAsOf,
+                authoritative = identity.authoritative
             )
         }
         if (clsParsed != null && tripletLots != null && qtyParsed == null) {
@@ -1125,7 +1128,7 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
                 capturedContractLot = clsParsed.toDouble(),
                 allowOperationalCurrent = asOf == null && expiry == null
             )
-            if (!identity.resolved || identity.lotConflict) return null
+            if (!identity.resolved || identity.lotConflict || !identity.authoritative) return null
             return PositionTickLotMeta(
                 lotSize = total.toDouble(),
                 assumed = false,
@@ -1135,7 +1138,8 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
                 numberOfLotsAssumed = identity.numberOfLotsAssumed,
                 numberOfLotsDefaultPolicy = identity.numberOfLotsDefaultPolicy,
                 lotTableVersion = identity.lotTableVersion,
-                lotAsOf = identity.lotAsOf
+                lotAsOf = identity.lotAsOf,
+                authoritative = identity.authoritative
             )
         }
         // Partial/conflicting triplet without enough fields to derive safely → fail closed
@@ -1201,7 +1205,8 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
         numberOfLotsAssumed = dated.numberOfLotsAssumed,
         numberOfLotsDefaultPolicy = dated.numberOfLotsDefaultPolicy,
         lotTableVersion = dated.lotTableVersion,
-        lotAsOf = dated.lotAsOf
+        lotAsOf = dated.lotAsOf,
+        authoritative = dated.authoritative
     )
 }
 

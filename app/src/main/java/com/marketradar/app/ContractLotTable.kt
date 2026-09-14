@@ -48,6 +48,7 @@ internal object ContractLotTable {
         val lotTableVersion: String,
         val lotAsOf: String?,
         val resolved: Boolean,
+        val authoritative: Boolean = false,
         val lotConflict: Boolean = false,
         val unavailableReason: String? = null,
         val matchedRuleId: String? = null,
@@ -381,6 +382,7 @@ internal object ContractLotTable {
                 lotTableVersion = VERSION_ID,
                 lotAsOf = asOfText,
                 resolved = true,
+                authoritative = authLot != null,
                 matchedRuleId = ruleId,
                 capturedContractLot = captured,
                 expiry = expiry?.toString(),
@@ -402,6 +404,7 @@ internal object ContractLotTable {
                 lotTableVersion = VERSION_ID,
                 lotAsOf = asOfText,
                 resolved = true,
+                authoritative = true,
                 matchedRuleId = ruleId,
                 expiry = expiry?.toString(),
                 expiryCycle = cycle
