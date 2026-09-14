@@ -65,7 +65,7 @@ def parse_number_of_lots(raw: Any, *, allow_missing_default_one: bool = True) ->
     Explicit zero/neg/fractional/malformed → fail closed (valid=False).
     """
     parsed, err = parse_positive_integral_lot(raw)
-    if raw is None or raw == "":
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
         if allow_missing_default_one:
             return {
                 "number_of_lots": 1,
@@ -500,7 +500,7 @@ def resolve_contract_lot(
     index_key: Any,
     as_of: Any = None,
     *,
-    number_of_lots: Any = 1,
+    number_of_lots: Any = None,
     expiry: Any = None,
     expiry_cycle: Any = None,
     captured_contract_lot: Any = None,
@@ -537,11 +537,17 @@ def resolve_contract_lot(
             version=str(load_lot_table().get("version_id") or LOT_TABLE_VERSION_ID),
             extra={
                 "number_of_lots_error": n_pack["number_of_lots_error"],
+                "number_of_lots_assumed": n_pack["number_of_lots_assumed"],
+                "number_of_lots_default_policy": n_pack["number_of_lots_default_policy"],
                 "captured_contract_lot": None,
                 "exclude_authoritative_calc": True,
             },
         )
     n_lots = float(n_pack["number_of_lots"])
+    count_meta = {
+        "number_of_lots_assumed": n_pack["number_of_lots_assumed"],
+        "number_of_lots_default_policy": n_pack["number_of_lots_default_policy"],
+    }
 
     captured = None
     captured_err = None
@@ -554,6 +560,7 @@ def resolve_contract_lot(
             return {
                 "index_key": idx0 or "UNKNOWN",
                 "index_known": idx0 in ("NF", "BNF"),
+                **count_meta,
                 "contract_lot_size": None,
                 "number_of_lots": n_lots,
                 "lot_size": None,
@@ -579,6 +586,7 @@ def resolve_contract_lot(
             reason="unknown_index",
             version=version,
             extra={
+                **count_meta,
                 "instrument_key": instrument_key,
                 "expiry": expiry_date.isoformat() if expiry_date else None,
                 "expiry_cycle": cycle,
@@ -602,6 +610,7 @@ def resolve_contract_lot(
             reason=cycle_refusal["reason"],
             version=version,
             extra={
+                **count_meta,
                 "instrument_key": instrument_key,
                 "expiry": expiry_date.isoformat() if expiry_date else None,
                 "expiry_cycle": cycle,
@@ -643,6 +652,7 @@ def resolve_contract_lot(
                 reason="ambiguous_expiry_cycle_coexistence",
                 version=version,
                 extra={
+                    **count_meta,
                     "instrument_key": instrument_key,
                     "expiry": expiry_date.isoformat(),
                     "expiry_cycle": None,
@@ -671,6 +681,7 @@ def resolve_contract_lot(
                 reason="conflicting_authoritative_rules",
                 version=version,
                 extra={
+                    **count_meta,
                     "instrument_key": instrument_key,
                     "expiry": expiry_date.isoformat() if expiry_date else None,
                     "expiry_cycle": cycle,
@@ -698,6 +709,7 @@ def resolve_contract_lot(
             return {
                 "index_key": idx,
                 "index_known": True,
+                **count_meta,
                 "contract_lot_size": None,
                 "number_of_lots": n_lots,
                 "lot_size": None,
@@ -733,6 +745,7 @@ def resolve_contract_lot(
         return {
             "index_key": idx,
             "index_known": True,
+            **count_meta,
             "contract_lot_size": int(contract_lot),
             "number_of_lots": n_lots,
             "lot_size": float(contract_lot) * n_lots,
@@ -760,6 +773,7 @@ def resolve_contract_lot(
         return {
             "index_key": idx,
             "index_known": True,
+            **count_meta,
             "contract_lot_size": int(authoritative_lot),
             "number_of_lots": n_lots,
             "lot_size": float(authoritative_lot) * n_lots,
@@ -791,6 +805,7 @@ def resolve_contract_lot(
             return {
                 "index_key": idx,
                 "index_known": True,
+                **count_meta,
                 "contract_lot_size": contract_lot,
                 "number_of_lots": n_lots,
                 "lot_size": float(contract_lot) * n_lots,
@@ -833,6 +848,7 @@ def resolve_contract_lot(
         reason=reason,
         version=version,
         extra={
+            **count_meta,
             "instrument_key": instrument_key,
             "expiry": expiry_date.isoformat() if expiry_date else None,
             "expiry_cycle": cycle,

@@ -91,6 +91,21 @@ class SchemaCapabilityAndExportTest {
     }
 
     @Test
+    fun pageFailurePreservesStructuredResponseBody() {
+        val body = "{\"code\":\"PGRST205\",\"message\":\"missing relation\"}"
+        val preserved = SupabaseClient.preservePageFailure(
+            SupabaseClient.PageResult(
+                status = "http_error",
+                httpCode = 404,
+                error = "Not Found",
+                body = body
+            )
+        )
+        assertEquals(body, preserved.body)
+        assertTrue(SupabaseClient.isExactMissingTableError(preserved))
+    }
+
+    @Test
     fun page2HttpErrorIncompleteNoFallback() {
         var calls = 0
         SupabaseClient.pageFetchSeam = { table, _, _, limit, offset ->

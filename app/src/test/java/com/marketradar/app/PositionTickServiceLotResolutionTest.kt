@@ -89,6 +89,58 @@ class PositionTickServiceLotResolutionTest {
     }
 
     @Test
+    fun consistentTripletStillRequiresContractIdentity() {
+        val unknown = JSONObject(
+            """
+            {
+              "index_key": "UNKNOWN",
+              "contract_lot_size": 65,
+              "number_of_lots": 1,
+              "quantity_units": 65,
+              "session_date": "2026-07-19",
+              "expiry": "2026-08-06",
+              "expiry_cycle": "weekly"
+            }
+            """.trimIndent()
+        )
+        assertNull(resolvePositionTickLotMeta(unknown))
+
+        val discontinued = JSONObject(
+            """
+            {
+              "index_key": "BNF",
+              "contract_lot_size": 35,
+              "number_of_lots": 1,
+              "quantity_units": 35,
+              "session_date": "2025-05-02",
+              "expiry": "2025-05-22",
+              "expiry_cycle": "weekly"
+            }
+            """.trimIndent()
+        )
+        assertNull(resolvePositionTickLotMeta(discontinued))
+
+        val valid = JSONObject(
+            """
+            {
+              "index_key": "NF",
+              "contract_lot_size": 65,
+              "number_of_lots": 2,
+              "quantity_units": 130,
+              "session_date": "2026-07-19",
+              "expiry": "2026-08-06",
+              "expiry_cycle": "weekly"
+            }
+            """.trimIndent()
+        )
+        val resolved = resolvePositionTickLotMeta(valid)
+        requireNotNull(resolved)
+        assertEquals(130.0, resolved.lotSize, 0.0001)
+        assertEquals(2.0, resolved.numberOfLots, 0.0001)
+        assertFalse(resolved.numberOfLotsAssumed)
+    }
+
+    @Test
     fun currentPnlIsRupeesNotPointsForTrade179Numbers() {
         val pnl = computePositionTickCurrentPnl(
             entryPremium = 37.9,

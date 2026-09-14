@@ -2504,6 +2504,15 @@ object SupabaseClient {
         else selectPage(table, filter, order, limit, offset)
     }
 
+    internal fun preservePageFailure(fetched: PageResult): PageResult {
+        return PageResult(
+            status = fetched.status,
+            httpCode = fetched.httpCode,
+            error = fetched.error,
+            body = fetched.body
+        )
+    }
+
 
     /**
      * R3.4: Permit table fallback ONLY for exact missing-table / schema-cache codes.
@@ -3343,7 +3352,11 @@ object SupabaseClient {
         val request = getBaseRequest(url).get().build()
         val fetched = fetchSyncTyped(request)
         if (fetched.status != "success") {
-            return PageResult(status = fetched.status, httpCode = fetched.httpCode, error = fetched.error)
+            // Preserve the structured PostgREST body. Missing-table fallback
+            // is authorized only from a top-level code in this body; dropping
+            // it turns a known schema error into an indistinguishable generic
+            // failure and can also make tests miss unsafe fallback behavior.
+            return preservePageFailure(fetched)
         }
         val raw = fetched.body
         return try {

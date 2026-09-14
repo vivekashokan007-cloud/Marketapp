@@ -1053,6 +1053,19 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     // validate multiplication; fail closed on conflict. Legacy lot_size = TOTAL units.
     val indexRaw = trade.optStringAny("index_key", "indexKey", "index")
     val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
+    val asOfText = trade.optStringAny("session_date", "sessionDate", "entry_date", "entryDate")
+        .ifBlank { entrySnapshot.optStringAny("session_date", "sessionDate") }
+    val asOf = try {
+        if (asOfText.length >= 10) java.time.LocalDate.parse(asOfText.substring(0, 10)) else null
+    } catch (_: Exception) { null }
+    val expiryText = trade.optStringAny("expiry", "expiry_date", "expiryDate")
+        .ifBlank { entrySnapshot.optStringAny("expiry", "expiry_date", "expiryDate") }
+    val expiry = try {
+        if (expiryText.length >= 10) java.time.LocalDate.parse(expiryText.substring(0, 10)) else null
+    } catch (_: Exception) { null }
+    val cycle = trade.optStringAny("expiry_cycle", "expiryCycle")
+        .ifBlank { entrySnapshot.optStringAny("expiry_cycle", "expiryCycle") }
+        .ifBlank { null }
 
     val tripletCls = trade.optDoubleAny("contract_lot_size", "contractLotSize")
         ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
@@ -1079,26 +1092,50 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
         if (clsParsed != null && tripletLots != null && qtyParsed != null) {
             val expected = clsParsed.toLong() * tripletLots.toLong()
             if (expected != qtyParsed.toLong()) return null // fail closed on disagreement
+            val identity = ContractLotTable.resolve(
+                indexRaw,
+                asOf = asOf,
+                numberOfLots = tripletLots,
+                expiry = expiry,
+                expiryCycle = cycle,
+                capturedContractLot = clsParsed.toDouble(),
+                allowOperationalCurrent = asOf == null && expiry == null
+            )
+            if (!identity.resolved || identity.lotConflict) return null
             return PositionTickLotMeta(
                 lotSize = qtyParsed.toDouble(), // total units for P&L
                 assumed = false,
                 source = "entry_snapshot_triplet",
                 contractLotSize = clsParsed.toDouble(),
                 numberOfLots = tripletLots,
-                lotTableVersion = ContractLotTable.VERSION_ID,
-                lotAsOf = null
+                numberOfLotsAssumed = identity.numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = identity.numberOfLotsDefaultPolicy,
+                lotTableVersion = identity.lotTableVersion,
+                lotAsOf = identity.lotAsOf
             )
         }
         if (clsParsed != null && tripletLots != null && qtyParsed == null) {
             val total = clsParsed.toLong() * tripletLots.toLong()
+            val identity = ContractLotTable.resolve(
+                indexRaw,
+                asOf = asOf,
+                numberOfLots = tripletLots,
+                expiry = expiry,
+                expiryCycle = cycle,
+                capturedContractLot = clsParsed.toDouble(),
+                allowOperationalCurrent = asOf == null && expiry == null
+            )
+            if (!identity.resolved || identity.lotConflict) return null
             return PositionTickLotMeta(
                 lotSize = total.toDouble(),
                 assumed = false,
                 source = "entry_snapshot_triplet_derived",
                 contractLotSize = clsParsed.toDouble(),
                 numberOfLots = tripletLots,
-                lotTableVersion = ContractLotTable.VERSION_ID,
-                lotAsOf = null
+                numberOfLotsAssumed = identity.numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = identity.numberOfLotsDefaultPolicy,
+                lotTableVersion = identity.lotTableVersion,
+                lotAsOf = identity.lotAsOf
             )
         }
         // Partial/conflicting triplet without enough fields to derive safely → fail closed
@@ -1117,19 +1154,6 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val lotsParsed = ContractLotTable.parseNumberOfLots(rawLots, allowMissingDefaultOne = true)
     val lotsCount = lotsParsed.first ?: return null
     if (!lotsParsed.second && rawLots != null) return null
-    val asOfText = trade.optStringAny("session_date", "sessionDate", "entry_date", "entryDate")
-        .ifBlank { entrySnapshot.optStringAny("session_date", "sessionDate") }
-    val asOf = try {
-        if (asOfText.length >= 10) java.time.LocalDate.parse(asOfText.substring(0, 10)) else null
-    } catch (_: Exception) { null }
-    val expiryText = trade.optStringAny("expiry", "expiry_date", "expiryDate")
-        .ifBlank { entrySnapshot.optStringAny("expiry", "expiry_date", "expiryDate") }
-    val expiry = try {
-        if (expiryText.length >= 10) java.time.LocalDate.parse(expiryText.substring(0, 10)) else null
-    } catch (_: Exception) { null }
-    val cycle = trade.optStringAny("expiry_cycle", "expiryCycle")
-        .ifBlank { entrySnapshot.optStringAny("expiry_cycle", "expiryCycle") }
-        .ifBlank { null }
     val capturedClsExplicit = trade.optDoubleAny("contract_lot_size", "contractLotSize")
         ?: entrySnapshot.optDoubleAny("contract_lot_size", "contractLotSize")
     val inVerifiedWindow = asOf != null || expiry != null

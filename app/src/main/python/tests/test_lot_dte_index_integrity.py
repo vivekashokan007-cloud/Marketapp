@@ -423,6 +423,42 @@ class LiveSizingDisabledTests(unittest.TestCase):
 
 
 class DatedLotTableTests(unittest.TestCase):
+    def test_one_lot_assumption_is_stamped_on_resolved_rows(self):
+        omitted = resolve_contract_lot(
+            "NF", "2026-07-19", expiry="2026-08-06", expiry_cycle="weekly"
+        )
+        self.assertTrue(omitted["resolved"])
+        self.assertEqual(omitted["number_of_lots"], 1.0)
+        self.assertTrue(omitted["number_of_lots_assumed"])
+        self.assertEqual(
+            omitted["number_of_lots_default_policy"],
+            "one_lot_path_v1_20260913",
+        )
+
+        explicit = resolve_contract_lot(
+            "NF", "2026-07-19", number_of_lots=1,
+            expiry="2026-08-06", expiry_cycle="weekly"
+        )
+        self.assertTrue(explicit["resolved"])
+        self.assertFalse(explicit["number_of_lots_assumed"])
+        self.assertIsNone(explicit["number_of_lots_default_policy"])
+
+        blank = resolve_contract_lot(
+            "NF", "2026-07-19", number_of_lots=" ",
+            expiry="2026-08-06", expiry_cycle="weekly"
+        )
+        self.assertTrue(blank["resolved"])
+        self.assertTrue(blank["number_of_lots_assumed"])
+
+    def test_triplet_authority_cannot_revive_discontinued_bnf_weekly(self):
+        discontinued = resolve_contract_lot(
+            "BNF", "2025-05-02", number_of_lots=1,
+            expiry="2025-05-22", expiry_cycle="weekly",
+            captured_contract_lot=35,
+        )
+        self.assertFalse(discontinued["resolved"])
+        self.assertEqual(discontinued["unavailable_reason"], "contract_cycle_discontinued")
+
     def setUp(self):
         clear_lot_table_cache()
 
