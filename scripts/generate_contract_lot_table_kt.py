@@ -44,13 +44,38 @@ def render_rules(rules):
     return "\n".join(lines)
 
 
+def render_cycle_availability(rows):
+    lines = []
+    for row in rows:
+        lines.append(
+            '        CycleAvailability("{idx}", "{cyc}", {cutoff}, "{reason}", "{source}"),'.format(
+                idx=row["index"],
+                cyc=row["expiry_cycle"],
+                cutoff=ld(row["unavailable_on_or_after"]),
+                reason=row.get("reason") or "contract_cycle_discontinued",
+                source=row["source_id"],
+            )
+        )
+    if lines:
+        lines[-1] = lines[-1].rstrip(",")
+    return "\n".join(lines)
+
+
 def extract_kt_rules_block(text: str) -> str:
-    start = text.find("    private val rules = listOf(")
+    return extract_kt_list_block(text, "    private val rules = listOf(")
+
+
+def extract_kt_cycle_availability_block(text: str) -> str:
+    return extract_kt_list_block(text, "    private val cycleAvailability = listOf(")
+
+
+def extract_kt_list_block(text: str, marker: str) -> str:
+    start = text.find(marker)
     if start < 0:
-        raise SystemExit("rules block start not found")
+        raise SystemExit(f"list block start not found: {marker}")
     end = text.find("\n    )", start)
     if end < 0:
-        raise SystemExit("rules block end not found")
+        raise SystemExit(f"list block end not found: {marker}")
     return text[start:end + len("\n    )")]
 
 
@@ -97,11 +122,15 @@ def main():
     args = ap.parse_args()
     data = json.loads(JSON_PATH.read_text())
     rules = data["authoritative_contract_rules"]
+    cycle_availability = data.get("contract_cycle_availability") or []
     version = str(data.get("version_id") or "")
     kt_text = KT_PATH.read_text()
     expected_block_inner = render_rules(rules)
     expected_block = "    private val rules = listOf(\n" + expected_block_inner + "\n    )"
+    expected_cycle_inner = render_cycle_availability(cycle_availability)
+    expected_cycle_block = "    private val cycleAvailability = listOf(\n" + expected_cycle_inner + "\n    )"
     actual_block = extract_kt_rules_block(kt_text)
+    actual_cycle_block = extract_kt_cycle_availability_block(kt_text)
     kt_version = extract_kt_version(kt_text)
     kt_rules = parse_kt_rule_fields(kt_text)
 
@@ -113,6 +142,9 @@ def main():
             # Structure/byte compare of rendered block
             if actual_block != expected_block:
                 errors.append("rules block structure/byte mismatch vs regenerated JSON")
+        if actual_cycle_block.replace(" ", "").replace("\n", "") != expected_cycle_block.replace(" ", "").replace("\n", ""):
+            if actual_cycle_block != expected_cycle_block:
+                errors.append("cycle availability block structure/byte mismatch vs regenerated JSON")
         if len(rules) != len(kt_rules):
             errors.append(f"rule count json={len(rules)} kt={len(kt_rules)}")
         for i, (jr, kr) in enumerate(zip(rules, kt_rules)):
@@ -131,16 +163,23 @@ def main():
                     errors.append(f"field drift rule[{i}] {jr.get('rule_id')} {field}: json={jv!r} kt={kv!r}")
         if errors:
             raise SystemExit("DRIFT:\n  - " + "\n  - ".join(errors[:40]))
-        print(f"OK full-block drift-free: {len(rules)} rules version={version or kt_version}")
+        print(
+            f"OK full-block drift-free: {len(rules)} rules, "
+            f"{len(cycle_availability)} cycle constraints version={version or kt_version}"
+        )
         return
 
-    start = kt_text.find("    private val rules = listOf(")
-    end = kt_text.find("\n    )", start)
-    if start < 0 or end < 0:
-        raise SystemExit("rules block not found")
-    new = kt_text[: start + len("    private val rules = listOf(")] + "\n" + expected_block_inner + kt_text[end:]
+    def replace_block(text, marker, inner):
+        start = text.find(marker)
+        end = text.find("\n    )", start)
+        if start < 0 or end < 0:
+            raise SystemExit(f"list block not found: {marker}")
+        return text[: start + len(marker)] + "\n" + inner + text[end:]
+
+    new = replace_block(kt_text, "    private val rules = listOf(", expected_block_inner)
+    new = replace_block(new, "    private val cycleAvailability = listOf(", expected_cycle_inner)
     KT_PATH.write_text(new)
-    print(f"wrote {len(rules)} rules into ContractLotTable.kt")
+    print(f"wrote {len(rules)} rules and {len(cycle_availability)} cycle constraints into ContractLotTable.kt")
 
 
 if __name__ == "__main__":

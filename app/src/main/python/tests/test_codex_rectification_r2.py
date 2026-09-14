@@ -63,9 +63,9 @@ class R2InvalidLotQuantityTests(unittest.TestCase):
         self.assertEqual(nf["contract_lot_size"], 65)
         bnf = resolve_contract_identity({
             "index": "BNF",
-            "session_date": "2026-07-19",
-            "expiry": "2026-07-21",
-            "expiry_cycle": "weekly",
+            "session_date": "2026-07-26",
+            "expiry": "2026-07-28",
+            "expiry_cycle": "monthly",
             "contract_lot_size": 30,
             "number_of_lots": 1,
             "quantity_units": 30,

@@ -15,6 +15,7 @@ on:
       - '.github/workflows/review-validation.yml'
   push:
     branches:
+      - main
       - work/g8-g10-integrity-20260913
     paths:
       - 'app/**'

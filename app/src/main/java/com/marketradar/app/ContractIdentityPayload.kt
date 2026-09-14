@@ -12,7 +12,7 @@ import org.json.JSONObject
  */
 internal object ContractIdentityPayload {
     const val SCHEMA_VERSION = "contract_identity_v1_20260913"
-    const val LOT_TABLE_VERSION = "contract_lot_table_v2_20260913"
+    const val LOT_TABLE_VERSION = "contract_lot_table_v3_20260914"
 
     private val VERIFIED_LOT_PROVENANCE_REQUIREMENTS = mapOf(
         "authoritative_contract_rule" to listOf("lot_table_version", "source_ref"),

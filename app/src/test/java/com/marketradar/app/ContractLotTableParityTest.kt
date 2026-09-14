@@ -14,8 +14,8 @@ import java.time.LocalDate
  */
 class ContractLotTableParityTest {
     @Test
-    fun versionIsV2() {
-        assertEquals("contract_lot_table_v2_20260913", ContractLotTable.VERSION_ID)
+    fun versionIsV3() {
+        assertEquals("contract_lot_table_v3_20260914", ContractLotTable.VERSION_ID)
     }
 
     @Test
@@ -57,11 +57,19 @@ class ContractLotTableParityTest {
     }
 
     @Test
-    fun faop67372BnfQuarterlyAndNewWeeklyRevised35() {
+    fun faop67372BnfQuarterlyRevised35ButWeeklyCycleDiscontinued() {
         val q = ContractLotTable.resolve("BNF", LocalDate.parse("2025-05-02"), expiry = LocalDate.parse("2025-09-25"), expiryCycle = "quarterly")
         val w = ContractLotTable.resolve("BNF", LocalDate.parse("2025-05-02"), expiry = LocalDate.parse("2025-05-08"), expiryCycle = "weekly")
         assertEquals(35, q.contractLotSize?.toInt())
-        assertEquals(35, w.contractLotSize?.toInt())
+        assertFalse(w.resolved)
+        assertNull(w.contractLotSize)
+        assertEquals("contract_cycle_discontinued", w.unavailableReason)
+        val captured = ContractLotTable.resolve(
+            "BNF", LocalDate.parse("2025-05-02"), expiry = LocalDate.parse("2025-05-08"),
+            expiryCycle = "weekly", capturedContractLot = 35.0
+        )
+        assertFalse(captured.resolved)
+        assertEquals("contract_cycle_discontinued", captured.unavailableReason)
     }
 
     @Test
@@ -74,7 +82,7 @@ class ContractLotTableParityTest {
     }
 
     @Test
-    fun allTwentyRuleIdsPresent() {
+    fun allSixteenRuleIdsPresent() {
         val expected = listOf(
             "FAOP64625_NF_weekly_existing",
             "FAOP64625_NF_weekly_revised_until_70616",
@@ -87,15 +95,11 @@ class ContractLotTableParityTest {
             "FAOP64625_BNF_monthly_existing",
             "FAOP64625_BNF_monthly_revised_30_until_67372",
             "FAOP67372_BNF_monthly_revised_35",
-            "FAOP67372_BNF_weekly_revised_35",
-            "FAOP64625_BNF_weekly_revised_30_pre_67372",
             "FAOP67372_BNF_quarterly_revised_35",
             "FAOP70616_BNF_monthly_existing_present35",
             "FAOP70616_BNF_monthly_revised",
             "FAOP64625_BNF_qh_post_transition",
-            "FAOP70616_BNF_qh_post_transition",
-            "FAOP70616_BNF_weekly_revised",
-            "FAOP70616_BNF_weekly_existing_present35"
+            "FAOP70616_BNF_qh_post_transition"
         )
         // Resolve representative fixtures for each missing Q/HY rule
         val nfQh = ContractLotTable.resolve("NF", LocalDate.parse("2025-06-01"), expiry = LocalDate.parse("2025-06-26"), expiryCycle = "quarterly_half_yearly")
@@ -110,7 +114,7 @@ class ContractLotTableParityTest {
         val bnfQh2 = ContractLotTable.resolve("BNF", LocalDate.parse("2026-01-15"), expiry = LocalDate.parse("2026-03-31"), expiryCycle = "quarterly")
         assertEquals(30, bnfQh2.contractLotSize?.toInt())
         assertEquals("FAOP70616_BNF_qh_post_transition", bnfQh2.matchedRuleId)
-        assertEquals(20, expected.size)
+        assertEquals(16, expected.size)
     }
 
     @Test
@@ -138,11 +142,11 @@ class ContractLotTableParityTest {
     @Test
     fun ruleSnapshotMatchesJsonFields() {
         val snap = ContractLotTable.ruleSnapshotForTests()
-        assertEquals(20, snap.size)
+        assertEquals(16, snap.size)
         val ids = snap.map { it["rule_id"] as String }.toSet()
-        assertEquals(20, ids.size)
+        assertEquals(16, ids.size)
         // Boundary: changing any field without regeneration would diverge from VERSION_ID + count
-        assertEquals(ContractLotTable.VERSION_ID, "contract_lot_table_v2_20260913")
+        assertEquals(ContractLotTable.VERSION_ID, "contract_lot_table_v3_20260914")
         for (row in snap) {
             assertNotNull(row["rule_id"])
             assertNotNull(row["index"])
@@ -166,9 +170,76 @@ class ContractLotTableParityTest {
     }
 
     @Test
-    fun allTwentyRuleIdsPresentCompared() {
+    fun adversarialIdentityMatrixFailsClosed() {
+        val valid = ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly"
+        )
+        assertTrue(valid.resolved)
+        assertEquals(65.0, valid.contractLotSize)
+
+        assertFalse(ContractLotTable.resolve(
+            "XYZ", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly"
+        ).resolved)
+        assertFalse(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2000-07-19"),
+            expiry = LocalDate.parse("2000-08-06"), expiryCycle = "weekly"
+        ).resolved)
+        assertFalse(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly",
+            numberOfLots = 0.0
+        ).resolved)
+        assertFalse(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly",
+            numberOfLots = 1.5
+        ).resolved)
+        assertFalse(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly",
+            capturedContractLot = -65.0
+        ).resolved)
+        assertFalse(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly",
+            capturedContractLot = 65.5
+        ).resolved)
+        assertTrue(ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly",
+            capturedContractLot = 65.0
+        ).resolved)
+    }
+
+    @Test
+    fun parserRejectsHostileUntypedValues() {
+        val invalid = listOf<Any?>(0, -1, 65.5, "abc", "", Double.NaN, Double.POSITIVE_INFINITY, true)
+        invalid.forEach { value -> assertNull(ContractLotTable.parsePositiveIntegralLot(value)) }
+        assertEquals(65, ContractLotTable.parsePositiveIntegralLot("65"))
+        assertEquals(1.0, ContractLotTable.parseNumberOfLots(null).first)
+        assertEquals(1.0, ContractLotTable.parseNumberOfLots(" ").first)
+        val assumed = ContractLotTable.resolve(
+            "NF", LocalDate.parse("2026-07-19"),
+            expiry = LocalDate.parse("2026-08-06"), expiryCycle = "weekly"
+        )
+        assertTrue(assumed.numberOfLotsAssumed)
+        assertEquals("one_lot_path_v1_20260913", assumed.numberOfLotsDefaultPolicy)
+        assertNull(ContractLotTable.parseNumberOfLots("abc").first)
+    }
+
+    @Test
+    fun discontinuedBnfWeeklyRefusesWithoutAnExpiryAnchor() {
+        val row = ContractLotTable.resolve("BNF", LocalDate.parse("2026-07-19"), expiryCycle = "weekly")
+        assertFalse(row.resolved)
+        assertEquals("contract_cycle_discontinued", row.unavailableReason)
+    }
+
+    @Test
+    fun allSixteenRuleIdsPresentCompared() {
         val snapIds = ContractLotTable.ruleSnapshotForTests().map { it["rule_id"] as String }.sorted()
-        assertEquals(20, snapIds.size)
+        assertEquals(16, snapIds.size)
         assertEquals(snapIds.toSet().size, snapIds.size)
     }
 

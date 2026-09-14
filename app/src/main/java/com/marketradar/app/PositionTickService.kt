@@ -477,6 +477,10 @@ class PositionTickService : Service() {
                 put("lot_table_version", lotMeta.lotTableVersion)
                 if (lotMeta.lotAsOf != null) put("lot_as_of", lotMeta.lotAsOf)
                 put("number_of_lots", lotMeta.numberOfLots)
+                put("number_of_lots_assumed", lotMeta.numberOfLotsAssumed)
+                if (lotMeta.numberOfLotsDefaultPolicy != null) {
+                    put("number_of_lots_default_policy", lotMeta.numberOfLotsDefaultPolicy)
+                }
                 if (lotMeta.contractLotSize != null) put("contract_lot_size", lotMeta.contractLotSize)
             }
         )
@@ -1037,6 +1041,8 @@ internal data class PositionTickLotMeta(
     val source: String,
     val contractLotSize: Double? = null,
     val numberOfLots: Double = 1.0,
+    val numberOfLotsAssumed: Boolean = false,
+    val numberOfLotsDefaultPolicy: String? = null,
     val lotTableVersion: String = ContractLotTable.VERSION_ID,
     val lotAsOf: String? = null
 )
@@ -1139,7 +1145,7 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
     val dated = ContractLotTable.resolve(
         indexRaw,
         asOf = asOf,
-        numberOfLots = lotsCount,
+        numberOfLots = if (rawLots == null || (rawLots is String && rawLots.isBlank())) null else lotsCount,
         expiry = expiry,
         expiryCycle = cycle,
         capturedContractLot = capturedCls,
@@ -1167,7 +1173,9 @@ internal fun resolvePositionTickLotMeta(trade: JSONObject): PositionTickLotMeta?
             }
             else -> dated.contractLotSize
         },
-        numberOfLots = lotsCount,
+        numberOfLots = dated.numberOfLots,
+        numberOfLotsAssumed = dated.numberOfLotsAssumed,
+        numberOfLotsDefaultPolicy = dated.numberOfLotsDefaultPolicy,
         lotTableVersion = dated.lotTableVersion,
         lotAsOf = dated.lotAsOf
     )

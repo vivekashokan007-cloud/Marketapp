@@ -14,7 +14,7 @@ import java.util.Locale
  * (index, as_of)-only is insufficient where contracts coexist.
  */
 internal object ContractLotTable {
-    const val VERSION_ID = "contract_lot_table_v2_20260913"
+    const val VERSION_ID = "contract_lot_table_v3_20260914"
 
     data class ContractRule(
         val ruleId: String,
@@ -28,11 +28,21 @@ internal object ContractLotTable {
         val sourceId: String
     )
 
+    data class CycleAvailability(
+        val index: String,
+        val expiryCycle: String,
+        val unavailableOnOrAfter: LocalDate,
+        val reason: String,
+        val sourceId: String
+    )
+
     data class ResolvedLot(
         val indexKey: String,
         val indexKnown: Boolean,
         val contractLotSize: Double?,
         val numberOfLots: Double,
+        val numberOfLotsAssumed: Boolean = false,
+        val numberOfLotsDefaultPolicy: String? = null,
         val lotSize: Double?,
         val lotSource: String,
         val lotTableVersion: String,
@@ -69,6 +79,9 @@ internal object ContractLotTable {
     )
 
     private val operationalCurrent = mapOf("BNF" to 30, "NF" to 65)
+    // Missing is allowed only for the explicit, conservative one-lot path.
+    // Invalid present values still fail closed and the assumption is stamped.
+    private const val ONE_LOT_DEFAULT_POLICY = "one_lot_path_v1_20260913"
 
     // GENERATED/mirrored from assets/contract_lot_table_v2.json (SSOT).
     // Regenerate: python3 scripts/generate_contract_lot_table_kt.py
@@ -85,15 +98,18 @@ internal object ContractLotTable {
         ContractRule("FAOP64625_BNF_monthly_existing", "BNF", "monthly", LocalDate.parse("2024-11-01"), LocalDate.parse("2025-01-29"), LocalDate.parse("2024-10-18"), null, 15, "NSE_FAOP_64625"),
         ContractRule("FAOP64625_BNF_monthly_revised_30_until_67372", "BNF", "monthly", LocalDate.parse("2025-02-26"), LocalDate.parse("2025-06-26"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
         ContractRule("FAOP67372_BNF_monthly_revised_35", "BNF", "monthly", LocalDate.parse("2025-07-31"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
-        ContractRule("FAOP67372_BNF_weekly_revised_35", "BNF", "weekly", LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-04-25"), null, 35, "NSE_FAOP_67372"),
-        ContractRule("FAOP64625_BNF_weekly_revised_30_pre_67372", "BNF", "weekly", LocalDate.parse("2024-11-20"), LocalDate.parse("2025-04-24"), LocalDate.parse("2024-11-20"), LocalDate.parse("2025-10-02"), 30, "NSE_FAOP_64625"),
         ContractRule("FAOP67372_BNF_quarterly_revised_35", "BNF", "quarterly", LocalDate.parse("2025-06-26"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-04-25"), LocalDate.parse("2025-12-30"), 35, "NSE_FAOP_67372"),
         ContractRule("FAOP70616_BNF_monthly_existing_present35", "BNF", "monthly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-30"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616"),
         ContractRule("FAOP70616_BNF_monthly_revised", "BNF", "monthly", LocalDate.parse("2026-01-27"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616"),
         ContractRule("FAOP64625_BNF_qh_post_transition", "BNF", "quarterly", LocalDate.parse("2025-03-26"), LocalDate.parse("2025-06-26"), LocalDate.parse("2024-12-25"), LocalDate.parse("2025-04-24"), 30, "NSE_FAOP_64625"),
-        ContractRule("FAOP70616_BNF_qh_post_transition", "BNF", "quarterly", LocalDate.parse("2026-03-31"), null, LocalDate.parse("2025-12-31"), null, 30, "NSE_FAOP_70616"),
-        ContractRule("FAOP70616_BNF_weekly_revised", "BNF", "weekly", LocalDate.parse("2026-01-06"), null, LocalDate.parse("2025-10-28"), null, 30, "NSE_FAOP_70616"),
-        ContractRule("FAOP70616_BNF_weekly_existing_present35", "BNF", "weekly", LocalDate.parse("2025-10-28"), LocalDate.parse("2025-12-23"), LocalDate.parse("2025-10-03"), null, 35, "NSE_FAOP_70616")
+        ContractRule("FAOP70616_BNF_qh_post_transition", "BNF", "quarterly", LocalDate.parse("2026-03-31"), null, LocalDate.parse("2025-12-31"), null, 30, "NSE_FAOP_70616")
+    )
+
+    // Generated from contract_lot_table_v2.json. Product availability is
+    // checked before lot rules so a size revision cannot authorize a contract
+    // cycle that NSE has discontinued.
+    private val cycleAvailability = listOf(
+        CycleAvailability("BNF", "weekly", LocalDate.parse("2024-11-14"), "contract_cycle_discontinued", "NSE_FAOP_64506")
     )
 
     fun normalizeIndexKey(raw: String?): String? {
@@ -144,10 +160,24 @@ internal object ContractLotTable {
         return true
     }
 
+    private fun unavailableCycle(
+        index: String,
+        cycle: String?,
+        expiry: LocalDate?,
+        observation: LocalDate?
+    ): CycleAvailability? {
+        if (cycle == null) return null
+        val anchor = expiry ?: observation
+        return cycleAvailability.firstOrNull {
+            it.index == index && it.expiryCycle == cycle &&
+                (anchor == null || !anchor.isBefore(it.unavailableOnOrAfter))
+        }
+    }
+
     fun resolve(
         indexRaw: String?,
         asOf: LocalDate? = null,
-        numberOfLots: Double = 1.0,
+        numberOfLots: Double? = null,
         expiry: LocalDate? = null,
         expiryCycle: String? = null,
         capturedContractLot: Double? = null,
@@ -155,26 +185,25 @@ internal object ContractLotTable {
     ): ResolvedLot {
         val idx = normalizeIndexKey(indexRaw)
         val asOfText = asOf?.toString()
-        val nLotsParsed = parsePositiveIntegralLot(numberOfLots)
-        val nLots = if (nLotsParsed != null) nLotsParsed.toDouble() else {
-            // Invalid explicit count fails closed below via early return when numberOfLots was provided non-default.
-            if (numberOfLots != 1.0 && !(numberOfLots > 0.0 && kotlin.math.abs(numberOfLots - kotlin.math.round(numberOfLots)) <= 1e-9)) {
-                return ResolvedLot(
-                    indexKey = idx ?: "UNKNOWN",
-                    indexKnown = idx != null,
-                    contractLotSize = null,
-                    numberOfLots = numberOfLots,
-                    lotSize = null,
-                    lotSource = "invalid_number_of_lots",
-                    lotTableVersion = VERSION_ID,
-                    lotAsOf = asOfText,
-                    resolved = false,
-                    unavailableReason = "invalid_number_of_lots",
-                    expiry = expiry?.toString(),
-                    expiryCycle = normalizeExpiryCycle(expiryCycle)
-                )
-            }
-            if (numberOfLots > 0.0 && kotlin.math.abs(numberOfLots - kotlin.math.round(numberOfLots)) <= 1e-9) numberOfLots else 1.0
+        val numberOfLotsAssumed = numberOfLots == null
+        val nLotsParsed = numberOfLots?.let { parsePositiveIntegralLot(it) }
+        val nLots = if (numberOfLotsAssumed) 1.0 else nLotsParsed?.toDouble()
+        if (nLots == null) {
+            return ResolvedLot(
+                indexKey = idx ?: "UNKNOWN",
+                indexKnown = idx != null,
+                contractLotSize = null,
+                numberOfLots = numberOfLots ?: 1.0,
+                numberOfLotsAssumed = false,
+                lotSize = null,
+                lotSource = "invalid_number_of_lots",
+                lotTableVersion = VERSION_ID,
+                lotAsOf = asOfText,
+                resolved = false,
+                unavailableReason = "invalid_number_of_lots",
+                expiry = expiry?.toString(),
+                expiryCycle = normalizeExpiryCycle(expiryCycle)
+            )
         }
         val cycle = normalizeExpiryCycle(expiryCycle)
         val capturedObs = if (capturedContractLot == null) {
@@ -188,6 +217,8 @@ internal object ContractLotTable {
                 indexKnown = idx != null,
                 contractLotSize = null,
                 numberOfLots = nLots,
+                numberOfLotsAssumed = numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                 lotSize = null,
                 lotSource = capturedObs.error ?: "invalid_captured_contract_lot",
                 lotTableVersion = VERSION_ID,
@@ -207,12 +238,34 @@ internal object ContractLotTable {
                 indexKnown = false,
                 contractLotSize = null,
                 numberOfLots = nLots,
+                numberOfLotsAssumed = numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                 lotSize = null,
                 lotSource = "unknown_index",
                 lotTableVersion = VERSION_ID,
                 lotAsOf = asOfText,
                 resolved = false,
                 unavailableReason = "unknown_index",
+                expiry = expiry?.toString(),
+                expiryCycle = cycle
+            )
+        }
+
+        unavailableCycle(idx, cycle, expiry, asOf)?.let { unavailable ->
+            return ResolvedLot(
+                indexKey = idx,
+                indexKnown = true,
+                contractLotSize = null,
+                numberOfLots = nLots,
+                numberOfLotsAssumed = numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
+                lotSize = null,
+                lotSource = unavailable.reason,
+                lotTableVersion = VERSION_ID,
+                lotAsOf = asOfText,
+                resolved = false,
+                unavailableReason = unavailable.reason,
+                capturedContractLot = captured,
                 expiry = expiry?.toString(),
                 expiryCycle = cycle
             )
@@ -234,6 +287,8 @@ internal object ContractLotTable {
                     indexKnown = true,
                     contractLotSize = null,
                     numberOfLots = nLots,
+                    numberOfLotsAssumed = numberOfLotsAssumed,
+                    numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                     lotSize = null,
                     lotSource = "ambiguous_expiry_cycle_coexistence",
                     lotTableVersion = VERSION_ID,
@@ -269,6 +324,8 @@ internal object ContractLotTable {
                     indexKnown = true,
                     contractLotSize = null,
                     numberOfLots = nLots,
+                    numberOfLotsAssumed = numberOfLotsAssumed,
+                    numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                     lotSize = null,
                     lotSource = "conflicting_authoritative_rules",
                     lotTableVersion = VERSION_ID,
@@ -296,6 +353,8 @@ internal object ContractLotTable {
                     indexKnown = true,
                     contractLotSize = null,
                     numberOfLots = nLots,
+                    numberOfLotsAssumed = numberOfLotsAssumed,
+                    numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                     lotSize = null,
                     lotSource = "captured_vs_rule_conflict",
                     lotTableVersion = VERSION_ID,
@@ -315,6 +374,8 @@ internal object ContractLotTable {
                 indexKnown = true,
                 contractLotSize = captured,
                 numberOfLots = nLots,
+                numberOfLotsAssumed = numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                 lotSize = captured * nLots,
                 lotSource = if (authLot != null) "captured_metadata_consistent" else "captured_metadata",
                 lotTableVersion = VERSION_ID,
@@ -334,6 +395,8 @@ internal object ContractLotTable {
                 indexKnown = true,
                 contractLotSize = c,
                 numberOfLots = nLots,
+                numberOfLotsAssumed = numberOfLotsAssumed,
+                numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                 lotSize = c * nLots,
                 lotSource = "authoritative_contract_rule",
                 lotTableVersion = VERSION_ID,
@@ -354,6 +417,8 @@ internal object ContractLotTable {
                     indexKnown = true,
                     contractLotSize = c,
                     numberOfLots = nLots,
+                    numberOfLotsAssumed = numberOfLotsAssumed,
+                    numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
                     lotSize = c * nLots,
                     lotSource = "operational_current_lots",
                     lotTableVersion = VERSION_ID,
@@ -374,6 +439,8 @@ internal object ContractLotTable {
             indexKnown = true,
             contractLotSize = null,
             numberOfLots = nLots,
+            numberOfLotsAssumed = numberOfLotsAssumed,
+            numberOfLotsDefaultPolicy = if (numberOfLotsAssumed) ONE_LOT_DEFAULT_POLICY else null,
             lotSize = null,
             lotSource = reason,
             lotTableVersion = VERSION_ID,
@@ -478,6 +545,10 @@ internal object ContractLotTable {
             tradeMeta.put("contract_lot_size", resolved.contractLotSize)
         }
         tradeMeta.put("number_of_lots", resolved.numberOfLots)
+        tradeMeta.put("number_of_lots_assumed", resolved.numberOfLotsAssumed)
+        if (resolved.numberOfLotsDefaultPolicy != null) {
+            tradeMeta.put("number_of_lots_default_policy", resolved.numberOfLotsDefaultPolicy)
+        }
         if (resolved.lotSize != null) {
             tradeMeta.put("lot_size", resolved.lotSize)
             tradeMeta.put("quantity_units", resolved.lotSize)

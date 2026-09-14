@@ -4,6 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.After
 import org.junit.Test
@@ -68,6 +69,25 @@ class SchemaCapabilityAndExportTest {
         assertTrue(truth.payloadIncluded)
         assertTrue(truth.writeSucceeded)
         assertFalse(truth.readbackVerified)
+    }
+
+    @Test
+    fun missingTableFallbackRequiresTopLevelPostgrestCode() {
+        val nested = SupabaseClient.PageResult(
+            status = "http_error",
+            httpCode = 404,
+            body = "{\"details\":{\"code\":\"PGRST205\"}}"
+        )
+        assertNull(SupabaseClient.extractPostgrestCode(nested))
+        assertFalse(SupabaseClient.isExactMissingTableError(nested))
+
+        val topLevel = SupabaseClient.PageResult(
+            status = "http_error",
+            httpCode = 404,
+            body = "{\"code\":\"PGRST205\",\"message\":\"missing relation\"}"
+        )
+        assertEquals("PGRST205", SupabaseClient.extractPostgrestCode(topLevel))
+        assertTrue(SupabaseClient.isExactMissingTableError(topLevel))
     }
 
     @Test

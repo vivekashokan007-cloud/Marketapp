@@ -1,6 +1,6 @@
 {
-  "version_id": "contract_lot_table_v2_20260913",
-  "schema": "contract_lot_rules_contract_specific_v2",
+  "version_id": "contract_lot_table_v3_20260914",
+  "schema": "contract_lot_rules_and_cycle_availability_v3",
   "unit": "units_per_lot",
   "note": "Contract lot size = units per lot. Distinct from number_of_lots (quantity) and quantity_units (total = contract_lot_size * number_of_lots). Resolve by instrument identity (index, expiry, expiry_cycle, observation_date). A (index, as_of)-only resolver is insufficient where contracts coexist. Fail-closed outside verified supported window. Prefer consistent captured metadata; conflict \u2192 flag + exclude calc, keep original.",
   "indices": [
@@ -20,6 +20,15 @@
     "verified_by": "upstox_instrument_master_2026-07-19 near-expiry (<=90d) sample + FAOP70616 first revised weekly/monthly expiries"
   },
   "sources": [
+    {
+      "id": "NSE_FAOP_64506",
+      "title": "Discontinuation of weekly Derivatives contracts on BANKNIFTY, MIDCPNIFTY and FINNIFTY index",
+      "circular_ref": "123/2024",
+      "download_ref": "NSE/FAOP/64506",
+      "date": "2024-10-10",
+      "url": "https://nsearchives.nseindia.com/content/circulars/FAOP64506.pdf",
+      "effective_scope": "BANKNIFTY weekly option contracts end with the 2024-11-13 expiry; no later BANKNIFTY weekly contract may be generated. NIFTY 50 remains the NSE weekly-index option product."
+    },
     {
       "id": "NSE_FAOP_64625",
       "title": "Contract size revision for index derivatives",
@@ -189,30 +198,6 @@
       "annexure_note": "First monthly expiry with revised market lot 35 is 31-Jul-2025; present lot retained through Dec-2025 monthlies per FAOP70616 (same lot 35)."
     },
     {
-      "rule_id": "FAOP67372_BNF_weekly_revised_35",
-      "index": "BNF",
-      "expiry_cycle": "weekly",
-      "expiry_on_or_after": "2025-04-25",
-      "expiry_on_or_before": "2025-12-23",
-      "observation_on_or_after": "2025-04-25",
-      "contract_lot_size": 35,
-      "source_id": "NSE_FAOP_67372",
-      "annexure_note": "New weekly contracts generated from EOD 2025-04-24 / trade from 2025-04-25 use revised lot 35; Dec-2025 weeklies retain present 35 under FAOP70616."
-    },
-    {
-      "rule_id": "FAOP64625_BNF_weekly_revised_30_pre_67372",
-      "index": "BNF",
-      "expiry_cycle": "weekly",
-      "expiry_on_or_after": "2024-11-20",
-      "expiry_on_or_before": "2025-04-24",
-      "observation_on_or_after": "2024-11-20",
-      "observation_on_or_before": "2025-10-02",
-      "contract_lot_size": 30,
-      "source_id": "NSE_FAOP_64625",
-      "annexure_note": "New BNF weeklies from 2024-11-20 use revised lot 30 (64625). Coexist with FAOP67372 new weeklies (35) after 2025-04-25 by expiry identity.",
-      "related_circular": "NSE_FAOP_67372"
-    },
-    {
       "rule_id": "FAOP67372_BNF_quarterly_revised_35",
       "index": "BNF",
       "expiry_cycle": "quarterly",
@@ -267,27 +252,16 @@
       "contract_lot_size": 30,
       "source_id": "NSE_FAOP_70616",
       "annexure_note": "BNF quarterly revised from 2025-12-30 EOD to lot 30"
-    },
+    }
+  ],
+  "contract_cycle_availability": [
     {
-      "rule_id": "FAOP70616_BNF_weekly_revised",
       "index": "BNF",
       "expiry_cycle": "weekly",
-      "expiry_on_or_after": "2026-01-06",
-      "observation_on_or_after": "2025-10-28",
-      "contract_lot_size": 30,
-      "source_id": "NSE_FAOP_70616",
-      "annexure_note": "Weekly cycle shares first revised expiry date row with NIFTY in 70616 annexure; revised lot 30"
-    },
-    {
-      "rule_id": "FAOP70616_BNF_weekly_existing_present35",
-      "index": "BNF",
-      "expiry_cycle": "weekly",
-      "expiry_on_or_before": "2025-12-23",
-      "expiry_on_or_after": "2025-10-28",
-      "observation_on_or_after": "2025-10-03",
-      "contract_lot_size": 35,
-      "source_id": "NSE_FAOP_70616",
-      "annexure_note": "Existing weekly retain present lot 35 through 23-Dec-2025"
+      "unavailable_on_or_after": "2024-11-14",
+      "reason": "contract_cycle_discontinued",
+      "source_id": "NSE_FAOP_64506",
+      "note": "BANKNIFTY weekly options ended with the 2024-11-13 expiry. A captured lot must not authorize a nonexistent post-cutover contract."
     }
   ],
   "instrument_master_snapshots": [

@@ -141,25 +141,27 @@
       "fails_under_old_blanket_65_30": true
     },
     {
-      "id": "bnf_67372_weekly_new_35",
+      "id": "bnf_weekly_discontinued_after_2024_11_13",
       "index": "BNF",
       "expiry": "2025-05-08",
       "expiry_cycle": "weekly",
       "observation": "2025-05-02",
-      "expected_contract_lot": 35,
-      "source_id": "NSE_FAOP_67372",
-      "annexure": "New contracts from EOD 24-Apr-2025 / trade 25-Apr-2025 use revised lot 35",
+      "expected_unavailable": true,
+      "unavailable_reason_contains": "contract_cycle_discontinued",
+      "source_id": "NSE_FAOP_64506",
+      "annexure": "BANKNIFTY weekly options ended with the 13-Nov-2024 expiry; a later weekly contract is impossible",
       "fails_under_old_blanket_65_30": true
     },
     {
-      "id": "bnf_weekly_pre_67372_retain_30",
+      "id": "bnf_weekly_discontinued_before_67372",
       "index": "BNF",
       "expiry": "2025-04-17",
       "expiry_cycle": "weekly",
       "observation": "2025-04-10",
-      "expected_contract_lot": 30,
-      "source_id": "NSE_FAOP_64625",
-      "annexure": "BNF weekly generated under 64625 revised lot 30 before 67372 new-contract cutover",
+      "expected_unavailable": true,
+      "unavailable_reason_contains": "contract_cycle_discontinued",
+      "source_id": "NSE_FAOP_64506",
+      "annexure": "FAOP64625 could revise lots only for active cycles; BANKNIFTY weekly contracts had already ended",
       "fails_under_old_blanket_65_30": false
     },
     {

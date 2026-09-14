@@ -934,11 +934,20 @@ class Faop67372BnfTransitionTests(unittest.TestCase):
         self.assertTrue(revised["resolved"])
         self.assertEqual(revised["contract_lot_size"], 35)
 
-    def test_quarterly_and_new_weekly_use_revised_35(self):
+    def test_quarterly_uses_revised_35_but_discontinued_weekly_is_refused(self):
         q = resolve_contract_lot("BNF", "2025-05-02", expiry="2025-09-25", expiry_cycle="quarterly")
         self.assertEqual(q["contract_lot_size"], 35)
         w = resolve_contract_lot("BNF", "2025-05-02", expiry="2025-05-08", expiry_cycle="weekly")
-        self.assertEqual(w["contract_lot_size"], 35)
+        self.assertFalse(w["resolved"])
+        self.assertIsNone(w["contract_lot_size"])
+        self.assertEqual(w["unavailable_reason"], "contract_cycle_discontinued")
+        # Captured metadata cannot bring a discontinued cycle back to life.
+        captured = resolve_contract_lot(
+            "BNF", "2025-05-02", expiry="2025-05-08", expiry_cycle="weekly",
+            captured_contract_lot=35,
+        )
+        self.assertFalse(captured["resolved"])
+        self.assertEqual(captured["unavailable_reason"], "contract_cycle_discontinued")
 
 
 class QuantityScalingTests(unittest.TestCase):

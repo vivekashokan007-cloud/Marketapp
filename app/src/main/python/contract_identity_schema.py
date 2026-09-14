@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Mapping, MutableMapping, Optional, Sequence
 
 CONTRACT_IDENTITY_SCHEMA_VERSION = "contract_identity_v1_20260913"
-CONTRACT_LOT_TABLE_VERSION = "contract_lot_table_v2_20260913"
+CONTRACT_LOT_TABLE_VERSION = "contract_lot_table_v3_20260914"
 
 VERIFIED_LOT_PROVENANCE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "authoritative_contract_rule": ("lot_table_version", "source_ref"),

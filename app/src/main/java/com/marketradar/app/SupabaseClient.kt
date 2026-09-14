@@ -2511,9 +2511,16 @@ object SupabaseClient {
      */
     internal fun extractPostgrestCode(page: PageResult): String? {
         val body = page.body ?: page.error ?: return null
-        val pattern = "\"code\"\\s*:\\s*\"([A-Z0-9]+)\""
-        return Regex(pattern, RegexOption.IGNORE_CASE)
-            .find(body)?.groupValues?.getOrNull(1)
+        // Only a top-level PostgREST error code can authorize schema fallback.
+        // A regex would also match arbitrary nested/user payloads such as
+        // {"details":{"code":"PGRST205"}}, which is not an error contract.
+        return try {
+            JSONObject(body).optString("code", "")
+                .trim()
+                .takeIf { it.matches(Regex("^[A-Za-z0-9]+$")) }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     internal fun isExactMissingTableError(page: PageResult): Boolean {

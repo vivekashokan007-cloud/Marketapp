@@ -145,11 +145,11 @@ class VerifiedIdentityR4Tests(unittest.TestCase):
     def test_every_recognized_verified_lot_source_and_dte_basis_is_covered(self):
         lot_sources = {
             "authoritative_contract_rule": {
-                "lot_table_version": "contract_lot_table_v2_20260913",
+                "lot_table_version": "contract_lot_table_v3_20260914",
                 "source_ref": "NSE_FAOP_70616",
             },
             "captured_metadata_consistent": {
-                "lot_table_version": "contract_lot_table_v2_20260913",
+                "lot_table_version": "contract_lot_table_v3_20260914",
                 "source_ref": "NSE_FAOP_70616",
             },
             "captured_metadata": {

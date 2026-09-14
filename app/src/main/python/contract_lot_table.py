@@ -21,7 +21,7 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Optional
 
-LOT_TABLE_VERSION_ID = "contract_lot_table_v2_20260913"
+LOT_TABLE_VERSION_ID = "contract_lot_table_v3_20260914"
 
 ONE_LOT_DEFAULT_POLICY = "one_lot_path_v1_20260913"
 
@@ -122,6 +122,15 @@ _EMBEDDED_TABLE: dict[str, Any] = {
     },
     "operational_current_lots": {"BNF": 30, "NF": 65},
     "authoritative_contract_rules": [],
+    "contract_cycle_availability": [
+        {
+            "index": "BNF",
+            "expiry_cycle": "weekly",
+            "unavailable_on_or_after": "2024-11-14",
+            "reason": "contract_cycle_discontinued",
+            "source_id": "NSE_FAOP_64506",
+        }
+    ],
     "instrument_master_snapshots": [
         {
             "snapshot_id": "upstox_20260719_near90d",
@@ -386,6 +395,41 @@ def _match_authoritative_rules(
     return matches
 
 
+def _unavailable_contract_cycle(
+    *,
+    index: str,
+    cycle: str | None,
+    expiry: date | None,
+    observation: date | None,
+    table: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return an explicit product-cycle refusal before lot authority is used.
+
+    Lot-size circulars describe lots for listed contracts. They cannot create a
+    contract cycle that the exchange separately discontinued. This check occurs
+    before rules, instrument snapshots, and captured metadata so a plausible
+    lot value can never authorize an impossible contract.
+    """
+    if cycle is None:
+        return None
+    for raw in table.get("contract_cycle_availability") or []:
+        if str(raw.get("index") or "") != index:
+            continue
+        if normalize_expiry_cycle(raw.get("expiry_cycle")) != cycle:
+            continue
+        cutover = _parse_date(raw.get("unavailable_on_or_after"))
+        if cutover is None:
+            continue
+        anchor = expiry or observation
+        if anchor is None or anchor >= cutover:
+            return {
+                "reason": str(raw.get("reason") or "contract_cycle_discontinued"),
+                "source_id": raw.get("source_id"),
+                "unavailable_on_or_after": cutover.isoformat(),
+            }
+    return None
+
+
 def _match_instrument_master_snapshot(
     *,
     index: str,
@@ -539,6 +583,33 @@ def resolve_contract_lot(
                 "expiry": expiry_date.isoformat() if expiry_date else None,
                 "expiry_cycle": cycle,
                 "captured_contract_lot": captured,
+            },
+        )
+
+    cycle_refusal = _unavailable_contract_cycle(
+        index=idx,
+        cycle=cycle,
+        expiry=expiry_date,
+        observation=as_of_date,
+        table=table,
+    )
+    if cycle_refusal is not None:
+        return _unavailable(
+            index_key=idx,
+            index_known=True,
+            n_lots=n_lots,
+            as_of_text=as_of_text,
+            reason=cycle_refusal["reason"],
+            version=version,
+            extra={
+                "instrument_key": instrument_key,
+                "expiry": expiry_date.isoformat() if expiry_date else None,
+                "expiry_cycle": cycle,
+                "captured_contract_lot": captured,
+                "source_id": cycle_refusal.get("source_id"),
+                "unavailable_on_or_after": cycle_refusal.get("unavailable_on_or_after"),
+                "exclude_authoritative_calc": True,
+                "research_only_excluded_consulted": False,
             },
         )
 
