@@ -311,6 +311,29 @@ class MarketMLService : Service() {
             Log.i(TAG, "Next evaluation reminder scheduled in 30 min at ${cal.time}")
         }
 
+        // A long evaluation must continue automatically from its atomic
+        // checkpoint.  Waiting for the normal 30-minute reminder makes a
+        // recoverable timeout look like a failed day and invites duplicate
+        // manual retries.
+        fun scheduleEvaluationContinuation(context: Context, sessionDate: String) {
+            val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
+            if (prefs.getString("evaluation_done_date", null) == sessionDate) {
+                cancelDayEvaluationReminder(context)
+                return
+            }
+            val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
+            val intent = PendingIntent.getBroadcast(
+                context, 1002,
+                Intent(context, EvaluationAlarmReceiver::class.java).apply {
+                    putExtra("session_date", sessionDate)
+                    putExtra("continuation", true)
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            am.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 60_000L, intent)
+            Log.i(TAG, "Evaluation continuation scheduled in 1 min for $sessionDate")
+        }
+
         fun cancelDayEvaluationReminder(context: Context) {
             val am = context.getSystemService(ALARM_SERVICE) as AlarmManager
             val intent = PendingIntent.getBroadcast(
@@ -605,7 +628,12 @@ class MarketMLService : Service() {
                         runC3PercentileFinalization(sessionDate)
                     } catch (t: Throwable) {
                         Log.e(TAG, "C3_FINALIZE_ACTION_FAIL: ${t.message}", t)
-                        updateC3FinalizationState(sessionDate, "FAILED", "C3 finalization failed: ${t.message}", running = false, lastError = t.message)
+                        // Do not overwrite a terminal, evidence-based
+                        // INELIGIBLE/DONE result with a late service exception.
+                        val phase = prefs.getString("c3_finalization_phase", "") ?: ""
+                        if (phase !in setOf("DONE", "INELIGIBLE")) {
+                            updateC3FinalizationState(sessionDate, "FAILED", "C3 finalization failed: ${t.message}", running = false, lastError = t.message)
+                        }
                     } finally {
                         finishServiceAction(startId)
                     }
@@ -3149,7 +3177,11 @@ return@withContext
                 sessionDate = sessionDate,
                 allowRetry = true
             )
-            scheduleNextEvaluationReminder(this@MarketMLService)
+            if ((e.message ?: "").contains("EVALUATION_TIME_BUDGET_EXCEEDED")) {
+                scheduleEvaluationContinuation(this@MarketMLService, sessionDate)
+            } else {
+                scheduleNextEvaluationReminder(this@MarketMLService)
+            }
         } finally {
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)
