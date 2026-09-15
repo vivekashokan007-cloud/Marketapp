@@ -34,6 +34,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action defaults to the removed legacy `tools` package on some
+          # runners. Install only the supported platform-tools here; API 35
+          # and build-tools are installed explicitly in the next step.
+          packages: platform-tools
 
       - name: Install Android SDK 35
         run: |
