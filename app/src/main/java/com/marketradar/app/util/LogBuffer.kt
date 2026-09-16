@@ -7,9 +7,11 @@ import java.io.File
 import java.util.concurrent.ConcurrentLinkedDeque
 
 object LogBuffer {
-    private const val MAX_ENTRIES = 2000
-    private const val MAX_AGE_MS = 30 * 60 * 1000L  // 30 minutes
-    private const val MAX_PERSISTED_BYTES = 768 * 1024L
+    // Retain enough history for a complete NSE session and process-restart
+    // forensics. The previous 30-minute age cap discarded earlier exits.
+    private const val MAX_ENTRIES = 12000
+    private const val MAX_AGE_MS = 12 * 60 * 60 * 1000L  // 12 hours
+    private const val MAX_PERSISTED_BYTES = 8 * 1024 * 1024L
     private const val MAX_CRASH_LOG_ROWS = 160
 
     enum class CaptureMode { UNINITIALIZED, LOGCAT, LOGTAP }
@@ -178,7 +180,7 @@ object LogBuffer {
     private fun trimPersistentFile(file: File) {
         if (!file.exists() || file.length() <= MAX_PERSISTED_BYTES) return
         try {
-            val kept = file.readLines().takeLast(MAX_ENTRIES / 2)
+            val kept = file.readLines().takeLast(MAX_ENTRIES)
             file.writeText(if (kept.isEmpty()) "" else kept.joinToString("\n", postfix = "\n"))
         } catch (_: Exception) {
         }

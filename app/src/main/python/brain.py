@@ -3351,6 +3351,32 @@ def evaluate_alerts(open_trades: list, watchlist: list, result: dict, ctx: dict)
                 'pc2_alert_timing_context': alert_timing_context,
             })
 
+        # Structural BOOK/EXIT verdicts (for example expiry-day survival or a
+        # broken thesis) do not necessarily cross P&L/force thresholds. Bridge
+        # only urgent verdicts into the brain-owned notification stream; the
+        # tick service lacks the DTE/force context needed to reproduce them.
+        positions_map = result.get('positions') or {}
+        position_entry = positions_map.get(t_id) or positions_map.get(str(t_id)) or {}
+        verdict = position_entry.get('verdict') or {}
+        verdict_action = str(verdict.get('action') or '').strip().upper()
+        verdict_urgency = str(verdict.get('urgency') or '').strip().upper()
+        if verdict_action in ('BOOK', 'EXIT') and verdict_urgency == 'NOW':
+            verdict_reason = str(verdict.get('reason') or '').strip()
+            alerts.append({
+                'key': f'POS_VERDICT_{verdict_action}_{t_id}',
+                'category': 'POSITION',
+                'priority': 'urgent',
+                'title': '⚡ Book Profit — Now' if verdict_action == 'BOOK' else '🛑 Exit — Now',
+                'body': _position_alert_body(
+                    trade, current_pnl,
+                    verdict_reason or f'Brain says {verdict_action} now.',
+                    quality_note=quality_note,
+                ),
+                'position_verdict_action': verdict_action,
+                'position_verdict_urgency': verdict_urgency,
+                'pc2_alert_timing_context': alert_timing_context,
+            })
+
     if not suppress_non_position_alerts and significant_move:
         if sigma_move_context.get('triggered'):
             live = ctx.get('live', {}) or {}
@@ -23747,7 +23773,7 @@ class NotificationAgent:
 
     def _position_alert_decision_type(self, alert):
         key = str((alert or {}).get('key') or '')
-        if key.startswith('POS_TARGET_') or key.startswith('POS_BOOK_'):
+        if key.startswith('POS_TARGET_') or key.startswith('POS_BOOK_') or key.startswith('POS_VERDICT_'):
             return 'POSITION_EXIT'
         return 'POSITION_RISK'
 
