@@ -17,6 +17,7 @@ android {
         // workflow is path-filtered to app/build.gradle.kts.
         // b473 / 2.6.42: Paper integrity, contract identity, export, and review gates.
         // b472 / 2.6.41: G6 versioned performance ledger + shadow comparisons.
+        // b479 / 2.6.48: ML eval lease recovery (stable holder + releaseLease + historical continuation session_date)
         // b471 / 2.6.40: G5 durable evening-stage ledger + truthful completion.
         // b470 / 2.6.39: G4 net-target + executable exit-policy contract.
         // b460: Notification audit fixes — Book Profit force_alignment, entry 09:15,
@@ -24,8 +25,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 478
-        versionName = "2.6.47"
+        versionCode = 479
+        versionName = "2.6.48"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
