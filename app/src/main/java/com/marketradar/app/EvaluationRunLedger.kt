@@ -329,6 +329,28 @@ object EvaluationRunLedger {
         }
     }
 
+    /**
+     * Stable per-device, per-session lease identity.
+     * Avoids unique per-attempt run IDs that self-block after a handled timeout.
+     */
+    fun stableLeaseHolder(deviceModel: String, sessionDate: String): String =
+        "device:${deviceModel.trim()}:${sessionDate.trim()}"
+
+    /** Family key "device:<model>" used to detect same-device reclaim candidates. */
+    fun deviceLeaseFamily(holder: String): String? {
+        if (!holder.startsWith("device:")) return null
+        val rest = holder.removePrefix("device:")
+        val idx = rest.indexOf(':')
+        if (idx <= 0) return null
+        return "device:" + rest.substring(0, idx)
+    }
+
+    fun sameDeviceLeaseHolders(current: String, incoming: String): Boolean {
+        val a = deviceLeaseFamily(current) ?: return false
+        val b = deviceLeaseFamily(incoming) ?: return false
+        return a == b
+    }
+
     fun acquireLease(
         run: JSONObject,
         holder: String,
@@ -339,13 +361,32 @@ object EvaluationRunLedger {
         val expires = run.optLong("lease_expires_at_ms", 0L)
         val current = if (run.isNull("lease_holder")) "" else run.optString("lease_holder", "")
         if (current.isNotBlank() && current != holder && expires > nowMs && !force) {
-            return Triple(run, false, REASON_DUPLICATE_LEASE)
+            // Same device may reclaim an abandoned older per-attempt lease
+            // (device:<model>:<runId> → device:<model>:<session_date>).
+            // A different device remains protected until expiry.
+            if (!sameDeviceLeaseHolders(current, holder)) {
+                return Triple(run, false, REASON_DUPLICATE_LEASE)
+            }
         }
         run.put("lease_holder", holder)
         run.put("lease_expires_at_ms", nowMs + leaseMs)
         run.put("updated_at", java.time.Instant.now().toString())
         run.put("active", true)
         return Triple(run, true, "")
+    }
+
+    /**
+     * Release only when [holder] currently owns the lease.
+     * Wrong holders leave the lease untouched.
+     */
+    fun releaseLease(run: JSONObject, holder: String): JSONObject {
+        val current = if (run.isNull("lease_holder")) "" else run.optString("lease_holder", "")
+        if (current.isNotBlank() && current == holder) {
+            run.put("lease_holder", JSONObject.NULL)
+            run.put("lease_expires_at_ms", 0L)
+            run.put("updated_at", java.time.Instant.now().toString())
+        }
+        return run
     }
 
     private fun mirrorFile(context: Context, sessionDate: String): File {

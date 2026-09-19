@@ -68,6 +68,52 @@ class EvaluationIdentityContractTests(unittest.TestCase):
         self.assertEqual(outcome['snapshot_poll_ts'], snapshot['poll_ts'])
         self.assertEqual(outcome['snapshot_id'], 5688)
 
+    def test_stable_lease_holder_and_release_in_finally(self):
+        source = (JAVA / 'MarketMLService.kt').read_text()
+        ledger = (JAVA / 'EvaluationRunLedger.kt').read_text()
+        self.assertIn('stableLeaseHolder', ledger)
+        self.assertIn('fun releaseLease(', ledger)
+        self.assertIn('EvaluationRunLedger.stableLeaseHolder(android.os.Build.MODEL, sessionDate)', source)
+        start = source.index('} finally {')
+        # Prefer the runDayEvaluation finally that finalizes the python job.
+        frag_start = source.index('brain?.callAttr("evaluation_job_finalize", runId)')
+        fragment = source[frag_start:frag_start + 900]
+        self.assertIn('EvaluationRunLedger.releaseLease(', fragment)
+        self.assertIn('leaseAcquired', source)
+        # In-process concurrency guard must remain.
+        self.assertIn('claimEvaluationSession(sessionDate)', source)
+        self.assertIn('activeEvaluationSession', source)
+
+    def test_alarm_receiver_preserves_historical_continuation_date(self):
+        source = (JAVA / 'MarketMLService.kt').read_text()
+        start = source.index('class EvaluationAlarmReceiver')
+        end = source.index('class MarketMLService', start)
+        receiver = source[start:end]
+        self.assertIn('getBooleanExtra("continuation"', receiver)
+        self.assertIn('getStringExtra("session_date")', receiver)
+        self.assertIn('resolveEvaluationAlarmSessionDate(', receiver)
+        self.assertIn('shouldBypassEvaluationReminderWindow(isContinuation)', receiver)
+        self.assertIn('putExtra("session_date", targetDate)', receiver)
+        # Ordinary path still uses reminder window; bypass only for continuation.
+        self.assertIn('shouldBypassEvaluationReminderWindow', receiver)
+        # Assert against the helper definition (not the call site).
+        defn = source.split('internal fun resolveEvaluationAlarmSessionDate(')[1].split(
+            'internal fun shouldBypassEvaluationReminderWindow('
+        )[0]
+        self.assertIn('if (isContinuation && requested.isNotEmpty()) requested else todayIst', defn)
+        bypass = source.split('internal fun shouldBypassEvaluationReminderWindow(')[1].split(
+            'private fun nextEvaluationReminderAt('
+        )[0]
+        self.assertIn('isContinuation', bypass)
+
+    def test_completed_session_not_rerun_guard_present(self):
+        source = (JAVA / 'MarketMLService.kt').read_text()
+        self.assertIn('evaluation_done_date', source)
+        self.assertIn('EVAL_SKIP: already done for $sessionDate', source)
+        # Idempotent upload path still validates distinct outcomes.
+        supabase = (JAVA / 'SupabaseClient.kt').read_text()
+        self.assertIn('EvaluationIdentity.validatedDistinctOutcomes(sessionDate, body)', supabase)
+
 
 if __name__ == '__main__':
     unittest.main()

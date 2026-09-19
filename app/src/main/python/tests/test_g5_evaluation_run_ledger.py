@@ -16,6 +16,7 @@ from evaluation_run_ledger import (
     REASON_PROMOTION_DISABLED,
     REASON_TRAINING_FROZEN,
     InMemoryRunStore,
+    acquire_lease,
     apply_c3_assessment,
     apply_performance_metrics_result,
     assess_c3_frames,
@@ -24,7 +25,10 @@ from evaluation_run_ledger import (
     new_run,
     next_resumable_stage,
     reject_cross_date_outcome,
+    release_lease,
+    same_device_lease_holders,
     set_stage,
+    stable_lease_holder,
     summarize_stages_ran,
 )
 
@@ -216,6 +220,51 @@ class EvaluationRunLedgerTests(unittest.TestCase):
             "learning_complete",
         ):
             self.assertIn(key, run)
+
+    def test_handled_exit_releases_lease_and_immediate_resume_succeeds(self):
+        run = self._base_run("2026-09-18")
+        holder = stable_lease_holder("Pixel 8", "2026-09-18")
+        leased, ok, _ = acquire_lease(run, holder, now_ms=1_000)
+        self.assertTrue(ok)
+        self.assertEqual(leased["lease_holder"], holder)
+        released = release_lease(leased, holder)
+        self.assertIsNone(released["lease_holder"])
+        self.assertEqual(released["lease_expires_at_ms"], 0)
+        resumed, ok2, reason = acquire_lease(released, holder, now_ms=2_000)
+        self.assertTrue(ok2, reason)
+        self.assertEqual(resumed["lease_holder"], holder)
+
+    def test_different_device_lease_protected(self):
+        run = self._base_run("2026-09-18")
+        a = stable_lease_holder("Pixel 8", "2026-09-18")
+        b = stable_lease_holder("Samsung S24", "2026-09-18")
+        held, ok, _ = acquire_lease(run, a, now_ms=1_000, lease_ms=45 * 60_000)
+        self.assertTrue(ok)
+        _, ok2, reason = acquire_lease(held, b, now_ms=2_000)
+        self.assertFalse(ok2)
+        self.assertEqual(reason, REASON_DUPLICATE_LEASE)
+
+    def test_wrong_holder_cannot_release(self):
+        run = self._base_run("2026-09-18")
+        owner = stable_lease_holder("Pixel 8", "2026-09-18")
+        other = stable_lease_holder("Samsung S24", "2026-09-18")
+        held, ok, _ = acquire_lease(run, owner, now_ms=1_000)
+        self.assertTrue(ok)
+        after_wrong = release_lease(held, other)
+        self.assertEqual(after_wrong["lease_holder"], owner)
+        after_owner = release_lease(after_wrong, owner)
+        self.assertIsNone(after_owner["lease_holder"])
+
+    def test_same_device_reclaims_abandoned_per_attempt_lease(self):
+        run = self._base_run("2026-09-18")
+        abandoned = "device:Pixel 8:eval-2026-09-18-999"
+        stable = stable_lease_holder("Pixel 8", "2026-09-18")
+        held, ok, _ = acquire_lease(run, abandoned, now_ms=1_000, lease_ms=45 * 60_000)
+        self.assertTrue(ok)
+        reclaimed, ok2, reason = acquire_lease(held, stable, now_ms=2_000)
+        self.assertTrue(ok2, reason)
+        self.assertEqual(reclaimed["lease_holder"], stable)
+        self.assertTrue(same_device_lease_holders(abandoned, stable))
 
 
 if __name__ == "__main__":

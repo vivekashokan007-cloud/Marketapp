@@ -270,6 +270,28 @@ def next_resumable_stage(run: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def stable_lease_holder(device_model: str, session_date: str) -> str:
+    """Stable per-device, per-session lease identity (Kotlin parity)."""
+    return f"device:{str(device_model).strip()}:{str(session_date).strip()}"
+
+
+def device_lease_family(holder: str) -> str | None:
+    text = str(holder or "")
+    if not text.startswith("device:"):
+        return None
+    rest = text[len("device:") :]
+    idx = rest.find(":")
+    if idx <= 0:
+        return None
+    return "device:" + rest[:idx]
+
+
+def same_device_lease_holders(current: str, incoming: str) -> bool:
+    a = device_lease_family(current)
+    b = device_lease_family(incoming)
+    return bool(a and b and a == b)
+
+
 def acquire_lease(
     run: dict[str, Any],
     holder: str,
@@ -278,13 +300,19 @@ def acquire_lease(
     lease_ms: int = LEASE_DEFAULT_MS,
     force: bool = False,
 ) -> tuple[dict[str, Any], bool, str]:
-    """One active run per identity. Returns (run, acquired, reason)."""
+    """One active run per identity. Returns (run, acquired, reason).
+
+    Same-device reclaim is allowed for abandoned older per-attempt holders
+    (device:<model>:<runId> → device:<model>:<session_date>). Different devices
+    remain protected until lease expiry.
+    """
     now = int(now_ms if now_ms is not None else time.time() * 1000)
     out = deepcopy(run)
     expires = int(out.get("lease_expires_at_ms") or 0)
     current = out.get("lease_holder")
     if current and current != holder and expires > now and not force:
-        return out, False, REASON_DUPLICATE_LEASE
+        if not same_device_lease_holders(str(current), str(holder)):
+            return out, False, REASON_DUPLICATE_LEASE
     out["lease_holder"] = holder
     out["lease_expires_at_ms"] = now + int(lease_ms)
     out["updated_at"] = _utc_now_iso()
@@ -293,6 +321,7 @@ def acquire_lease(
 
 
 def release_lease(run: dict[str, Any], holder: str) -> dict[str, Any]:
+    """Release only when holder currently owns the lease."""
     out = deepcopy(run)
     if out.get("lease_holder") == holder:
         out["lease_holder"] = None

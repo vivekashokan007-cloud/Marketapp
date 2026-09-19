@@ -53,42 +53,71 @@ class MLAlarmReceiver : BroadcastReceiver() {
 
 class EvaluationAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        val isContinuation = intent.getBooleanExtra("continuation", false)
+        val requestedSessionDate = intent.getStringExtra("session_date")
         val istToday = MarketMLService.todayIstDate()
+        val targetDate = MarketMLService.resolveEvaluationAlarmSessionDate(
+            isContinuation = isContinuation,
+            requestedSessionDate = requestedSessionDate,
+            todayIst = istToday
+        )
         val prefs = context.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
         val firedAt = System.currentTimeMillis()
         prefs.edit()
-            .putString("evaluation_alarm_fired_date", istToday)
+            .putString("evaluation_alarm_fired_date", targetDate)
             .putLong("evaluation_alarm_fired_at_ms", firedAt)
+            .putBoolean("evaluation_alarm_continuation", isContinuation)
             .commit()
-        if (istToday == prefs.getString("evaluation_done_date", null)) {
-            Log.i("EvaluationAlarmReceiver", "Skipping — evaluation already done today")
+        if (targetDate == prefs.getString("evaluation_done_date", null)) {
+            Log.i(
+                "EvaluationAlarmReceiver",
+                "Skipping — evaluation already done for $targetDate (continuation=$isContinuation)"
+            )
             MarketMLService.clearEvaluationStatusNotification(context)
             return
         }
-        val nowIst = Calendar.getInstance(MarketMLService.IST)
-        val marketStatus = MarketOpenScheduler.currentStatus(nowIst)
-        if (!MarketMLService.isEvaluationReminderWindow(nowIst, marketStatus)) {
-            Log.i("EvaluationAlarmReceiver", "Skipping — outside evaluation reminder window")
-            MarketMLService.scheduleDayEvaluationReminder(context)
-            return
+        // Ordinary daily alarms still obey the same-day reminder window.
+        // True continuations must resume historical sessions even outside it.
+        if (!MarketMLService.shouldBypassEvaluationReminderWindow(isContinuation)) {
+            val nowIst = Calendar.getInstance(MarketMLService.IST)
+            val marketStatus = MarketOpenScheduler.currentStatus(nowIst)
+            if (!MarketMLService.isEvaluationReminderWindow(nowIst, marketStatus)) {
+                Log.i("EvaluationAlarmReceiver", "Skipping — outside evaluation reminder window")
+                MarketMLService.scheduleDayEvaluationReminder(context)
+                return
+            }
         }
-        if (istToday == prefs.getString("evaluation_running_date", null)) {
-            Log.i("EvaluationAlarmReceiver", "Evaluation already running; retaining a retry reminder")
+        if (targetDate == prefs.getString("evaluation_running_date", null)) {
+            Log.i(
+                "EvaluationAlarmReceiver",
+                "Evaluation already running for $targetDate; retaining a retry reminder"
+            )
             MarketMLService.publishEvaluationStatus(
                 context,
                 "Day Evaluation Running",
-                "Today's evaluation is still running. Progress is available in ML status.",
-                sessionDate = istToday,
+                if (isContinuation) {
+                    "Historical evaluation for $targetDate is still running. Progress is available in ML status."
+                } else {
+                    "Today's evaluation is still running. Progress is available in ML status."
+                },
+                sessionDate = targetDate,
                 allowRetry = false
             )
-            MarketMLService.scheduleNextEvaluationReminder(context)
+            if (isContinuation) {
+                MarketMLService.scheduleEvaluationContinuation(context, targetDate)
+            } else {
+                MarketMLService.scheduleNextEvaluationReminder(context)
+            }
             return
         }
 
-        Log.i("EvaluationAlarmReceiver", "4:30 PM+ alarm fired — starting evaluation and showing reminder")
+        Log.i(
+            "EvaluationAlarmReceiver",
+            "Evaluation alarm fired — starting evaluation for $targetDate (continuation=$isContinuation)"
+        )
         val runIntent = Intent(context, MarketMLService::class.java).apply {
             action = "ACTION_DAY_EVALUATION"
-            putExtra("session_date", istToday)
+            putExtra("session_date", targetDate)
         }
         var autoStartStatus = "STARTED"
         var autoStartError = ""
@@ -100,25 +129,40 @@ class EvaluationAlarmReceiver : BroadcastReceiver() {
             Log.e("EvaluationAlarmReceiver", "DAY_EVAL_AUTO_START_FAIL: $autoStartError")
         }
         prefs.edit()
-            .putString("evaluation_auto_start_date", istToday)
+            .putString("evaluation_auto_start_date", targetDate)
             .putLong("evaluation_auto_start_at_ms", System.currentTimeMillis())
             .putString("evaluation_auto_start_status", autoStartStatus)
             .putString("evaluation_auto_start_error", autoStartError)
+            .putBoolean("evaluation_auto_start_continuation", isContinuation)
             .commit()
         MarketMLService.publishEvaluationStatus(
             context,
             if (autoStartStatus == "STARTED") "Day Evaluation Running" else "Day Evaluation Needs Retry",
             if (autoStartStatus == "STARTED") {
-                "Today's evaluation started automatically. Open ML status to follow progress."
+                if (isContinuation) {
+                    "Continuing evaluation for $targetDate from the saved checkpoint. Open ML status to follow progress."
+                } else {
+                    "Today's evaluation started automatically. Open ML status to follow progress."
+                }
             } else {
-                "Automatic start failed. Tap to retry today's evaluation."
+                if (isContinuation) {
+                    "Automatic continuation for $targetDate failed. Tap to retry from the saved checkpoint."
+                } else {
+                    "Automatic start failed. Tap to retry today's evaluation."
+                }
             },
-            sessionDate = istToday,
+            sessionDate = targetDate,
             allowRetry = autoStartStatus != "STARTED"
         )
 
-        // Schedule next reminder in 30 min
-        MarketMLService.scheduleNextEvaluationReminder(context)
+        // Continuations already own the one-minute resume path; ordinary alarms
+        // keep the 30-minute reminder cadence.
+        if (isContinuation) {
+            // Do not overwrite the continuation with a same-day reminder that
+            // would discard the historical session_date.
+        } else {
+            MarketMLService.scheduleNextEvaluationReminder(context)
+        }
     }
 }
 
@@ -420,6 +464,23 @@ class MarketMLService : Service() {
             val minutes = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
             return minutes in EVAL_REMINDER_START_MIN..EVAL_REMINDER_END_MIN
         }
+
+        /**
+         * Continuations preserve the historical session_date from the intent.
+         * Ordinary alarms always target today IST.
+         */
+        internal fun resolveEvaluationAlarmSessionDate(
+            isContinuation: Boolean,
+            requestedSessionDate: String?,
+            todayIst: String
+        ): String {
+            val requested = requestedSessionDate?.trim().orEmpty()
+            return if (isContinuation && requested.isNotEmpty()) requested else todayIst
+        }
+
+        /** Only true continuations may bypass the same-day reminder window. */
+        internal fun shouldBypassEvaluationReminderWindow(isContinuation: Boolean): Boolean =
+            isContinuation
 
         private fun nextEvaluationReminderAt(from: Calendar = Calendar.getInstance(IST)): Calendar {
             val next = Calendar.getInstance(IST).apply {
@@ -2552,6 +2613,8 @@ return@withContext
         val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
         var evalPhase = "PREPARING"
         var runId = "eval-$sessionDate-${System.currentTimeMillis()}"
+        val leaseHolder = EvaluationRunLedger.stableLeaseHolder(android.os.Build.MODEL, sessionDate)
+        var leaseAcquired = false
         var totalSnapshots = 0
         var completedSnapshots = 0
         var producedCount = 0
@@ -2630,7 +2693,7 @@ return@withContext
                 this@MarketMLService,
                 prefs,
                 sessionDate,
-                holder = "device:${android.os.Build.MODEL}:$runId",
+                holder = leaseHolder,
                 inputManifest = inputManifest
             )
             if (!leaseOk) {
@@ -2641,9 +2704,10 @@ return@withContext
                     running = false,
                     lastError = leaseReason
                 )
-                Log.w(TAG, "EVAL_LEASE_DENIED: date=$sessionDate reason=$leaseReason runId=${begunRun.optString("run_id")}")
+                Log.w(TAG, "EVAL_LEASE_DENIED: date=$sessionDate reason=$leaseReason holder=$leaseHolder runId=${begunRun.optString("run_id")}")
                 return@withContext
             }
+            leaseAcquired = true
             activeEvaluationRun = begunRun
             val resumeStage = EvaluationRunLedger.nextResumableStage(begunRun)
             Log.i(TAG, "EVAL_RUN_LEASED: runId=${begunRun.optString("run_id")} resumeStage=$resumeStage labelsSaved=${begunRun.optBoolean("labels_saved")} learningComplete=${begunRun.optBoolean("learning_complete")}")
@@ -3186,6 +3250,24 @@ return@withContext
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)
             } catch (_: Exception) {
+            }
+            // Release after Python job finalization so a handled timeout's
+            // one-minute continuation can reclaim immediately on this device.
+            if (leaseAcquired) {
+                try {
+                    val current = activeEvaluationRun
+                        ?: EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
+                    if (current != null) {
+                        val released = EvaluationRunLedger.releaseLease(current, leaseHolder)
+                        persistEvaluationRun(released)
+                        Log.i(
+                            TAG,
+                            "EVAL_LEASE_RELEASED: date=$sessionDate holder=$leaseHolder runId=${released.optString("run_id")}"
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "EVAL_LEASE_RELEASE_FAIL: date=$sessionDate holder=$leaseHolder err=${e.message}")
+                }
             }
             clearPostCloseHandoffState(reason = "day_evaluation_complete")
         }

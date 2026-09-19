@@ -121,4 +121,81 @@ class EvaluationRunLedgerTest {
         assertNotEquals(a, b)
         assertTrue(a.startsWith("erun_"))
     }
+
+    @Test
+    fun handledExitReleasesLeaseAndImmediateResumeSucceeds() {
+        val run = baseRun()
+        val holder = EvaluationRunLedger.stableLeaseHolder("Pixel 8", "2026-09-18")
+        val (leased, ok, _) = EvaluationRunLedger.acquireLease(run, holder, nowMs = 1_000L)
+        assertTrue(ok)
+        assertEquals(holder, leased.optString("lease_holder"))
+        val released = EvaluationRunLedger.releaseLease(leased, holder)
+        assertTrue(released.isNull("lease_holder") || released.opt("lease_holder") == JSONObject.NULL)
+        assertEquals(0L, released.optLong("lease_expires_at_ms"))
+        val (resumed, okResume, reason) = EvaluationRunLedger.acquireLease(
+            released,
+            holder,
+            nowMs = 2_000L
+        )
+        assertTrue(reason, okResume)
+        assertEquals(holder, resumed.optString("lease_holder"))
+    }
+
+    @Test
+    fun differentDeviceLeaseRemainsProtectedUntilExpiry() {
+        val run = baseRun()
+        val a = EvaluationRunLedger.stableLeaseHolder("Pixel 8", "2026-09-18")
+        val b = EvaluationRunLedger.stableLeaseHolder("Samsung S24", "2026-09-18")
+        val (held, okA, _) = EvaluationRunLedger.acquireLease(run, a, nowMs = 1_000L, leaseMs = 45 * 60_000L)
+        assertTrue(okA)
+        val (_, okB, reason) = EvaluationRunLedger.acquireLease(held, b, nowMs = 2_000L)
+        assertFalse(okB)
+        assertEquals(EvaluationRunLedger.REASON_DUPLICATE_LEASE, reason)
+    }
+
+    @Test
+    fun wrongHolderCannotReleaseAnothersLease() {
+        val run = baseRun()
+        val owner = EvaluationRunLedger.stableLeaseHolder("Pixel 8", "2026-09-18")
+        val other = EvaluationRunLedger.stableLeaseHolder("Samsung S24", "2026-09-18")
+        val (held, ok, _) = EvaluationRunLedger.acquireLease(run, owner, nowMs = 1_000L)
+        assertTrue(ok)
+        val afterWrong = EvaluationRunLedger.releaseLease(held, other)
+        assertEquals(owner, afterWrong.optString("lease_holder"))
+        assertTrue(afterWrong.optLong("lease_expires_at_ms") > 0L)
+        val afterOwner = EvaluationRunLedger.releaseLease(afterWrong, owner)
+        assertTrue(afterOwner.isNull("lease_holder") || afterOwner.opt("lease_holder") == JSONObject.NULL)
+    }
+
+    @Test
+    fun sameDeviceReclaimsAbandonedPerAttemptLease() {
+        val run = baseRun()
+        val abandoned = "device:Pixel 8:eval-2026-09-18-999"
+        val stable = EvaluationRunLedger.stableLeaseHolder("Pixel 8", "2026-09-18")
+        val (held, okA, _) = EvaluationRunLedger.acquireLease(run, abandoned, nowMs = 1_000L, leaseMs = 45 * 60_000L)
+        assertTrue(okA)
+        val (reclaimed, okB, reason) = EvaluationRunLedger.acquireLease(held, stable, nowMs = 2_000L)
+        assertTrue(reason, okB)
+        assertEquals(stable, reclaimed.optString("lease_holder"))
+    }
+
+    @Test
+    fun stableLeaseHolderUsesDeviceAndSessionDate() {
+        assertEquals(
+            "device:Pixel 8:2026-09-18",
+            EvaluationRunLedger.stableLeaseHolder("Pixel 8", "2026-09-18")
+        )
+        assertTrue(
+            EvaluationRunLedger.sameDeviceLeaseHolders(
+                "device:Pixel 8:eval-old",
+                "device:Pixel 8:2026-09-18"
+            )
+        )
+        assertFalse(
+            EvaluationRunLedger.sameDeviceLeaseHolders(
+                "device:Pixel 8:2026-09-18",
+                "device:Samsung:2026-09-18"
+            )
+        )
+    }
 }
