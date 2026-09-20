@@ -3674,16 +3674,25 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             return default
 
     # Fail-closed index: never invent BNF. Dated lot table for contract defaults.
+    # Batch A (2026-09-20): EVERY quantity path must verify the contract lot against
+    # the dated authoritative table. Internally consistent but contractually wrong
+    # lots fail closed (no trusted P&L). Paper capture still proceeds via the
+    # caller stamping valuation unavailable — we never block observation.
     try:
-        from contract_lot_table import normalize_index_key, resolve_contract_lot
+        from contract_lot_table import (
+            normalize_index_key,
+            resolve_contract_lot,
+            parse_positive_integral_lot,
+            parse_number_of_lots,
+        )
         idx = normalize_index_key(trade.get('index_key') or trade.get('indexKey') or trade.get('index'))
     except Exception:
         raw_idx = str(trade.get('index_key') or trade.get('indexKey') or trade.get('index') or '').strip().upper()
         idx = raw_idx if raw_idx in ('BNF', 'NF') else None
+        resolve_contract_lot = None
+        parse_positive_integral_lot = None
+        parse_number_of_lots = None
 
-    # R3.1: prefer explicit triplet (contract_lot_size, number_of_lots, quantity_units).
-    # Validate multiplication identity; fail closed on conflict.
-    # Legacy lot_size means TOTAL position units (not per-contract).
     entry_snapshot = trade.get('entry_snapshot') or {}
     if not isinstance(entry_snapshot, dict):
         entry_snapshot = {}
@@ -3694,11 +3703,22 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
                 return v
         return None
 
-    try:
-        from contract_lot_table import parse_positive_integral_lot, parse_number_of_lots
-    except Exception:
-        parse_positive_integral_lot = None
-        parse_number_of_lots = None
+    if not idx or resolve_contract_lot is None or parse_positive_integral_lot is None:
+        return None
+
+    session_as_of = _first(
+        trade.get('session_date'), trade.get('entry_date'),
+        entry_snapshot.get('session_date'), entry_snapshot.get('entry_date'),
+    )
+    expiry_for_lot = _first(
+        trade.get('expiry'), trade.get('expiry_date'),
+        entry_snapshot.get('expiry'), entry_snapshot.get('expiry_date'),
+    )
+    cycle_for_lot = _first(
+        trade.get('expiry_cycle'), entry_snapshot.get('expiry_cycle'),
+        trade.get('expiryCycle'), entry_snapshot.get('expiryCycle'),
+    )
+    allow_operational = (session_as_of in (None, '') and expiry_for_lot in (None, ''))
 
     triplet_cls_raw = _first(
         trade.get('contract_lot_size'), entry_snapshot.get('contract_lot_size'),
@@ -3711,107 +3731,179 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     triplet_qty_raw = _first(
         trade.get('quantity_units'), entry_snapshot.get('quantity_units'),
     )
+    explicit_total_raw = _first(
+        trade.get('lot_size'), trade.get('lotSize'),
+        entry_snapshot.get('lot_size'), entry_snapshot.get('lotSize'),
+    )
 
     lot_size = 0
     lot_size_assumed = True
     lot_size_source = 'unknown'
     lots_count = 1
     resolved_contract_lot = None
+    supplied_contract_lot = None
+    path_kind = None
 
-    if parse_positive_integral_lot is not None and (
-        triplet_cls_raw is not None or triplet_qty_raw is not None
-        or (triplet_lots_raw is not None and trade.get('number_of_lots') not in (None, ''))
+    def _authorize_contract_lot(captured_cls, n_lots):
+        """Verify supplied/derived contract lot against dated authority.
+
+        Returns (dated_dict_or_None). Fail closed on conflict, unresolved
+        historical identity, or captured lot that disagrees with operational
+        current when no dated rule applies. Never substitutes NF/BNF constants
+        for missing historical identity.
+        """
+        try:
+            dated = resolve_contract_lot(
+                idx,
+                as_of=session_as_of,
+                number_of_lots=n_lots,
+                expiry=expiry_for_lot,
+                expiry_cycle=cycle_for_lot,
+                captured_contract_lot=captured_cls,
+                allow_operational_current=allow_operational,
+            )
+        except Exception:
+            return None
+        if not dated:
+            return None
+        if dated.get('lot_conflict') or dated.get('exclude_authoritative_calc'):
+            return None
+        if not dated.get('resolved'):
+            return None
+        auth_cls = dated.get('contract_lot_size')
+        if captured_cls is not None and auth_cls is not None:
+            try:
+                if int(captured_cls) != int(auth_cls):
+                    return None
+            except (TypeError, ValueError):
+                return None
+        # Undated captured_metadata can "resolve" without an authoritative rule.
+        # Require either authoritative identity OR an exact match to operational
+        # current — never accept an arbitrary positive integer as contract lot.
+        if not dated.get('authoritative'):
+            if not allow_operational:
+                return None
+            try:
+                op = resolve_contract_lot(
+                    idx,
+                    number_of_lots=n_lots,
+                    allow_operational_current=True,
+                )
+            except Exception:
+                return None
+            if not op or not op.get('resolved') or op.get('contract_lot_size') is None:
+                return None
+            if captured_cls is not None:
+                try:
+                    if int(captured_cls) != int(op['contract_lot_size']):
+                        return None
+                except (TypeError, ValueError):
+                    return None
+            # Prefer operational stamp for provenance clarity.
+            dated = dict(dated)
+            dated['contract_lot_size'] = op.get('contract_lot_size')
+            dated['lot_size'] = op.get('lot_size')
+            dated['quantity_units'] = op.get('quantity_units')
+            dated['lot_source'] = op.get('lot_source') or 'operational_current_lots'
+            dated['authoritative'] = False
+        return dated
+
+    # --- Path 1: complete / derived triplet ---
+    if triplet_cls_raw is not None or triplet_qty_raw is not None or (
+        triplet_lots_raw is not None and trade.get('number_of_lots') not in (None, '')
     ):
-        cls_v, cls_err = parse_positive_integral_lot(triplet_cls_raw) if triplet_cls_raw is not None else (None, None)
+        cls_v, _cls_err = (
+            parse_positive_integral_lot(triplet_cls_raw) if triplet_cls_raw is not None else (None, None)
+        )
         if triplet_cls_raw is not None and cls_v is None:
-            return None  # fail closed
-        n_pack = parse_number_of_lots(triplet_lots_raw, allow_missing_default_one=(triplet_lots_raw in (None, '')))
+            return None
+        n_pack = parse_number_of_lots(
+            triplet_lots_raw, allow_missing_default_one=(triplet_lots_raw in (None, ''))
+        )
         if triplet_lots_raw not in (None, '') and not n_pack.get('valid'):
             return None
-        lots_count = int(n_pack['number_of_lots']) if n_pack.get('valid') and n_pack.get('number_of_lots') else None
-        qty_v, qty_err = parse_positive_integral_lot(triplet_qty_raw) if triplet_qty_raw is not None else (None, None)
+        lots_count = (
+            int(n_pack['number_of_lots'])
+            if n_pack.get('valid') and n_pack.get('number_of_lots') else None
+        )
+        qty_v, _qty_err = (
+            parse_positive_integral_lot(triplet_qty_raw) if triplet_qty_raw is not None else (None, None)
+        )
         if triplet_qty_raw is not None and qty_v is None:
             return None
         if cls_v is not None and lots_count is not None and qty_v is not None:
             if int(cls_v) * int(lots_count) != int(qty_v):
-                return None  # disagreement — never substitute one lot
+                return None
+            supplied_contract_lot = int(cls_v)
+            dated = _authorize_contract_lot(supplied_contract_lot, lots_count)
+            if dated is None:
+                return None
             lot_size = float(qty_v)
-            resolved_contract_lot = float(cls_v)
+            resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
             lot_size_source = 'entry_snapshot_triplet'
+            path_kind = 'triplet'
         elif cls_v is not None and lots_count is not None and qty_v is None:
-            lot_size = float(int(cls_v) * int(lots_count))
-            resolved_contract_lot = float(cls_v)
+            supplied_contract_lot = int(cls_v)
+            dated = _authorize_contract_lot(supplied_contract_lot, lots_count)
+            if dated is None:
+                return None
+            lot_size = float(int(dated['contract_lot_size']) * int(lots_count))
+            resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
             lot_size_source = 'entry_snapshot_triplet_derived'
+            path_kind = 'triplet_derived'
         elif triplet_cls_raw is not None or triplet_qty_raw is not None:
             return None  # partial triplet → fail closed
 
+    # --- Path 2: legacy explicit total units / snapshot-only lot_size ---
     if lot_size <= 0:
-        explicit_total_units = _num(
-            _first(
-                trade.get('lot_size'), trade.get('lotSize'),
-                entry_snapshot.get('lot_size'), entry_snapshot.get('lotSize'),
-            ),
-            0,
+        explicit_total_units = _num(explicit_total_raw, 0)
+        n_pack2 = parse_number_of_lots(
+            _first(trade.get('number_of_lots'), trade.get('lots'), entry_snapshot.get('number_of_lots')),
+            allow_missing_default_one=True,
         )
-        n_pack2 = None
-        if parse_number_of_lots is not None:
-            n_pack2 = parse_number_of_lots(
-                _first(trade.get('number_of_lots'), trade.get('lots'), entry_snapshot.get('number_of_lots')),
-                allow_missing_default_one=True,
-            )
-            lots_count = int(n_pack2['number_of_lots']) if n_pack2.get('valid') else 1
-        else:
-            lots_count = max(int(_num(trade.get('lots'), 1)), 1)
-        session_as_of = (
-            trade.get('session_date') or trade.get('entry_date')
-            or entry_snapshot.get('session_date') or entry_snapshot.get('entry_date')
-        )
-        dated = None
-        try:
-            from contract_lot_table import resolve_contract_lot
-            expiry_for_lot = (
-                trade.get('expiry') or trade.get('expiry_date')
-                or entry_snapshot.get('expiry') or entry_snapshot.get('expiry_date')
-            )
-            cycle_for_lot = trade.get('expiry_cycle') or entry_snapshot.get('expiry_cycle')
-            captured_cls = _first(
-                trade.get('contract_lot_size'), entry_snapshot.get('contract_lot_size'),
-            )
-            dated = resolve_contract_lot(
-                idx,
-                as_of=session_as_of,
-                number_of_lots=lots_count,
-                expiry=expiry_for_lot,
-                expiry_cycle=cycle_for_lot,
-                captured_contract_lot=captured_cls,
-                allow_operational_current=(session_as_of in (None, '') and expiry_for_lot in (None, '')),
-            )
-        except Exception:
-            dated = None
+        if not n_pack2.get('valid'):
+            return None
+        lots_count = int(n_pack2['number_of_lots']) if n_pack2.get('number_of_lots') else 1
         if explicit_total_units > 0:
-            lot_size = explicit_total_units
+            # Derive implied per-contract lot from total / n_lots; must be integral
+            # and must match authority. Do not trust an arbitrary total.
+            if lots_count <= 0:
+                return None
+            implied = explicit_total_units / float(lots_count)
+            implied_int, implied_err = parse_positive_integral_lot(implied)
+            if implied_int is None:
+                # Also try treating explicit_total as already being one-lot units
+                # when number_of_lots was defaulted — still must match authority.
+                return None
+            dated = _authorize_contract_lot(implied_int, lots_count)
+            if dated is None:
+                return None
+            # Quantity must equal authoritative contract_lot * n_lots
+            expected_qty = float(int(dated['contract_lot_size']) * int(lots_count))
+            if abs(float(explicit_total_units) - expected_qty) > 1e-9:
+                return None
+            lot_size = expected_qty
+            resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
             lot_size_source = (
                 'trade' if _num(trade.get('lot_size') or trade.get('lotSize'), 0) > 0 else 'entry_snapshot'
             )
-        elif dated and dated.get('resolved'):
+            path_kind = 'legacy_explicit'
+        else:
+            # --- Path 3: resolver-only ---
+            dated = _authorize_contract_lot(None, lots_count)
+            if dated is None:
+                return None
             lot_size = float(dated['lot_size'])
             resolved_contract_lot = dated.get('contract_lot_size')
             lot_size_assumed = True
             lot_size_source = dated.get('lot_source') or 'authoritative_contract_rule'
-        else:
-            lot_size = 0
-            lot_size_assumed = True
-            lot_size_source = (dated or {}).get('lot_source') or 'unknown'
+            path_kind = 'resolver_only'
 
-    if not idx:
+    if lot_size <= 0 or resolved_contract_lot in (None, 0, 0.0):
         return None
-    if lot_size <= 0:
-        return None
-    # idx string for downstream chain selection
-    idx = idx or 'UNKNOWN'
 
     sell_s   = trade.get('sell_strike', 0)
     buy_s    = trade.get('buy_strike', 0)

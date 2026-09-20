@@ -168,6 +168,14 @@ def new_run(
         "stages": stages,
         "labels_saved": False,
         "learning_complete": False,
+        "expected_identity_ids": [],
+        "expected_identity_count": 0,
+        "persisted_identity_ids": [],
+        "persisted_identity_count": 0,
+        "nonlabelable_identity_ids": [],
+        "nonlabelable_identity_count": 0,
+        "missing_identity_ids": [],
+        "missing_identity_count": 0,
         "active": True,
     }
 
@@ -231,14 +239,26 @@ def set_stage(
 
 
 def refresh_completion_flags(run: dict[str, Any]) -> dict[str, Any]:
-    """Labels saved ≠ learning complete. C3 failure/ineligible blocks learning_complete."""
+    """Labels saved ≠ learning complete. C3 failure/ineligible blocks learning_complete.
+
+    Batch C: labels_saved is true only when every expected identity from the
+    frozen input manifest is either persisted+verified or explicitly
+    nonlabelable. A contiguous suffix/prefix with a nonzero row count is not
+    sufficient.
+    """
     stages = run.get("stages") or {}
     persistence = stages.get("outcome_persistence") or {}
-    labels_saved = persistence.get("state") == "verified" and int(persistence.get("verified_count") or 0) >= 0
-    # Even zero-outcome verified sessions count as labels-saved (truthfully empty).
-    if persistence.get("state") == "verified":
-        labels_saved = True
-    run["labels_saved"] = bool(labels_saved)
+    expected = {str(x) for x in (run.get("expected_identity_ids") or []) if str(x)}
+    persisted = {str(x) for x in (run.get("persisted_identity_ids") or []) if str(x)}
+    nonlabelable = {str(x) for x in (run.get("nonlabelable_identity_ids") or []) if str(x)}
+    missing = sorted(expected - persisted - nonlabelable) if expected else []
+    run["missing_identity_ids"] = missing
+    run["missing_identity_count"] = len(missing)
+    identity_complete = (not expected) or (len(missing) == 0)
+    stage_verified = persistence.get("state") == "verified"
+    # Empty expected set with verified stage (no labelable snapshots) is labels-saved.
+    labels_saved = bool(stage_verified and identity_complete)
+    run["labels_saved"] = labels_saved
 
     learning_ok = True
     for name in STAGE_ORDER:
@@ -258,6 +278,58 @@ def refresh_completion_flags(run: dict[str, Any]) -> dict[str, Any]:
         learning_ok = False
     run["learning_complete"] = bool(learning_ok and labels_saved)
     return run
+
+
+
+def set_expected_identities(
+    run: dict[str, Any],
+    expected_ids: list[Any] | None,
+    nonlabelable_ids: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Freeze the evaluation identity set from the run input manifest."""
+    out = run
+    expected = [str(x) for x in (expected_ids or []) if str(x)]
+    nonlabelable = [str(x) for x in (nonlabelable_ids or []) if str(x)]
+    # Preserve order but unique.
+    seen = set()
+    ordered = []
+    for i in expected:
+        if i not in seen:
+            seen.add(i)
+            ordered.append(i)
+    out["expected_identity_ids"] = ordered
+    out["expected_identity_count"] = len(ordered)
+    seen_nl = set()
+    ordered_nl = []
+    for i in nonlabelable:
+        if i not in seen_nl:
+            seen_nl.add(i)
+            ordered_nl.append(i)
+    out["nonlabelable_identity_ids"] = ordered_nl
+    out["nonlabelable_identity_count"] = len(ordered_nl)
+    return refresh_completion_flags(out)
+
+
+def record_persisted_identities(run: dict[str, Any], persisted_ids: list[Any] | None) -> dict[str, Any]:
+    """Union acknowledged persisted identities; idempotent."""
+    out = run
+    existing = [str(x) for x in (out.get("persisted_identity_ids") or []) if str(x)]
+    seen = set(existing)
+    for i in persisted_ids or []:
+        s = str(i)
+        if s and s not in seen:
+            seen.add(s)
+            existing.append(s)
+    out["persisted_identity_ids"] = existing
+    out["persisted_identity_count"] = len(existing)
+    return refresh_completion_flags(out)
+
+
+def missing_identities(run: dict[str, Any]) -> list[str]:
+    expected = {str(x) for x in (run.get("expected_identity_ids") or []) if str(x)}
+    persisted = {str(x) for x in (run.get("persisted_identity_ids") or []) if str(x)}
+    nonlabelable = {str(x) for x in (run.get("nonlabelable_identity_ids") or []) if str(x)}
+    return sorted(expected - persisted - nonlabelable)
 
 
 def next_resumable_stage(run: dict[str, Any]) -> Optional[str]:

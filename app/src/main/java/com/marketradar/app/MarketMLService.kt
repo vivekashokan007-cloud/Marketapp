@@ -796,19 +796,60 @@ class MarketMLService : Service() {
         rowCount: Int? = null,
         verifiedRows: Int? = null,
         running: Boolean,
-        lastError: String? = null
+        lastError: String? = null,
+        reasonCode: String? = null,
+        reason: String? = null
     ) {
+        // Batch B: phase / reason / error / sessionDate are separate fields.
+        // INELIGIBLE and SKIPPED_NO_FRAMES must never populate c3_finalization_last_error.
+        // FAILED retains a real exception/failure error. DONE clears obsolete error/reason.
+        val normalizedPhase = phase.trim().uppercase(Locale.US)
         val editor = prefs.edit()
             .putString("c3_finalization_date", sessionDate)
-            .putString("c3_finalization_phase", phase)
+            .putString("c3_finalization_session_date", sessionDate)
+            .putString("c3_finalization_phase", normalizedPhase)
             .putString("c3_finalization_message", message)
             .putLong("c3_finalization_updated_at_ms", System.currentTimeMillis())
             .putBoolean("c3_finalization_running", running)
         if (frameCount != null) editor.putInt("c3_finalization_frame_count", frameCount)
         if (rowCount != null) editor.putInt("c3_finalization_row_count", rowCount)
         if (verifiedRows != null) editor.putInt("c3_finalization_verified_rows", verifiedRows)
-        if (lastError.isNullOrBlank()) editor.remove("c3_finalization_last_error") else editor.putString("c3_finalization_last_error", lastError)
+
+        when (normalizedPhase) {
+            "INELIGIBLE", "SKIPPED_NO_FRAMES" -> {
+                editor.remove("c3_finalization_last_error")
+                val code = reasonCode?.takeIf { it.isNotBlank() } ?: "C3_INELIGIBLE"
+                val text = reason?.takeIf { it.isNotBlank() } ?: message
+                editor.putString("c3_finalization_reason_code", code)
+                editor.putString("c3_finalization_reason", text)
+            }
+            "DONE" -> {
+                editor.remove("c3_finalization_last_error")
+                editor.remove("c3_finalization_reason_code")
+                editor.remove("c3_finalization_reason")
+            }
+            "FAILED" -> {
+                val err = lastError?.takeIf { it.isNotBlank() } ?: message
+                editor.putString("c3_finalization_last_error", err)
+                if (!reasonCode.isNullOrBlank()) editor.putString("c3_finalization_reason_code", reasonCode)
+                else editor.putString("c3_finalization_reason_code", "C3_FAILED")
+                if (!reason.isNullOrBlank()) editor.putString("c3_finalization_reason", reason)
+                else editor.putString("c3_finalization_reason", message)
+            }
+            else -> {
+                // PENDING/RUNNING/QUEUED/PREPARING/BUILDING/UPLOADING: keep reason optional, never invent error.
+                if (lastError.isNullOrBlank()) editor.remove("c3_finalization_last_error")
+                else editor.putString("c3_finalization_last_error", lastError)
+                if (!reasonCode.isNullOrBlank()) editor.putString("c3_finalization_reason_code", reasonCode)
+                if (!reason.isNullOrBlank()) editor.putString("c3_finalization_reason", reason)
+            }
+        }
         editor.commit()
+        Log.i(
+            TAG,
+            "C3_STATE: date=$sessionDate phase=$normalizedPhase reasonCode=${prefs.getString("c3_finalization_reason_code","")} " +
+                "hasError=${!prefs.getString("c3_finalization_last_error","").isNullOrBlank()}"
+        )
     }
 
     private fun startC3PercentileFinalization(sessionDate: String) {
@@ -2452,9 +2493,11 @@ class MarketMLService : Service() {
         }
         if (frames.length() == 0) {
             updateC3FinalizationState(
-                sessionDate, "INELIGIBLE",
+                sessionDate, "SKIPPED_NO_FRAMES",
                 "No C3 recording frames were captured for $sessionDate. Labels may be saved; learning is not complete until C3 is verified or explicitly ineligible.",
-                frameCount = 0, rowCount = 0, verifiedRows = 0, running = false
+                frameCount = 0, rowCount = 0, verifiedRows = 0, running = false,
+                reasonCode = "NO_C3_FRAMES",
+                reason = "No C3 recording frames were captured for this session."
             )
             updateRunStage(
                 "percentile_finalization",
@@ -2463,7 +2506,7 @@ class MarketMLService : Service() {
                 expectedCount = 0,
                 writtenCount = 0,
                 verifiedCount = 0,
-                lastError = "NO_C3_FRAMES"
+                lastError = ""
             )
             Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=$snapshotCount")
                         maybeRunPerformanceMetricsStage(sessionDate)
@@ -2478,7 +2521,9 @@ return@withContext
             val message = assessment.optString("message", "C3 provenance ineligible")
             updateC3FinalizationState(
                 sessionDate, "INELIGIBLE", message,
-                frameCount = frames.length(), rowCount = 0, verifiedRows = 0, running = false, lastError = reason
+                frameCount = frames.length(), rowCount = 0, verifiedRows = 0, running = false,
+                reasonCode = reason,
+                reason = message
             )
             val run = activeEvaluationRun ?: EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
             if (run != null) {
@@ -2489,7 +2534,7 @@ return@withContext
                     "ineligible",
                     reasonCode = reason,
                     expectedCount = frames.length(),
-                    lastError = message,
+                    lastError = "",
                     detail = assessment
                 )
             }
@@ -2780,6 +2825,19 @@ return@withContext
                     .put("nonlabelable", nonlabelable)
                     .put("reconciled_snapshot_ids", evaluationSnapshotIds.size)
             )
+            // Batch C: freeze expected evaluation identities from the input manifest.
+            // Do not hardcode 75 — derive from this run's labelable snapshot set.
+            val expectedIdentityIds = labelableMap.filterValues { it }.keys.map { it.toString() }
+            val nonlabelableIdentityIds = labelableMap.filterValues { !it }.keys.map { it.toString() }
+            activeEvaluationRun?.let { run ->
+                val stamped = EvaluationRunLedger.setExpectedIdentities(run, expectedIdentityIds, nonlabelableIdentityIds)
+                persistEvaluationRun(stamped)
+                Log.i(
+                    TAG,
+                    "EVAL_IDENTITY_EXPECTATIONS: date=$sessionDate expected=${expectedIdentityIds.size} " +
+                        "nonlabelable=${nonlabelableIdentityIds.size} runId=${stamped.optString("run_id")}"
+                )
+            }
             updateRunStage("outcome_computation", "running", expectedCount = totalSnapshots)
 
             if (totalSnapshots == 0) {
@@ -3102,17 +3160,61 @@ return@withContext
                 return@withContext
             }
 
-            updateRunStage(
-                "outcome_persistence",
-                "verified",
-                expectedCount = saveResult.producedCount,
-                writtenCount = saveResult.persistedCount,
-                verifiedCount = saveResult.persistedCount,
-                detail = org.json.JSONObject()
-                    .put("primary_persisted", saveResult.primaryPersistedCount)
-                    .put("evaluation_persisted", saveResult.evaluationPersistedCount)
-                    .put("rejected_persisted", saveResult.rejectedPersistedCount)
-            )
+            // Batch C: acknowledge persisted snapshot identities and only mark labels_saved
+            // when the frozen expected set is fully covered (or explicitly nonlabelable).
+            val persistedIdentityIds = linkedSetOf<String>()
+            for (i in 0 until evaluatedOutcomes.length()) {
+                val row = evaluatedOutcomes.optJSONObject(i) ?: continue
+                val sid = row.opt("snapshot_id")?.toString()?.trim().orEmpty()
+                if (sid.isNotEmpty() && sid != "null") persistedIdentityIds.add(sid)
+            }
+            activeEvaluationRun?.let { run ->
+                val stamped = EvaluationRunLedger.recordPersistedIdentities(run, persistedIdentityIds)
+                persistEvaluationRun(stamped)
+                val missing = EvaluationRunLedger.missingIdentities(stamped)
+                Log.i(
+                    TAG,
+                    "EVAL_IDENTITY_PERSISTED: date=$sessionDate persisted=${persistedIdentityIds.size} " +
+                        "expected=${stamped.optInt("expected_identity_count")} missing=${missing.size} " +
+                        "labelsSaved=${stamped.optBoolean("labels_saved")}"
+                )
+                if (missing.isNotEmpty()) {
+                    Log.w(
+                        TAG,
+                        "EVAL_IDENTITY_INCOMPLETE: date=$sessionDate missingCount=${missing.size} " +
+                            "missingPreview=${missing.take(12).joinToString(",")}"
+                    )
+                }
+            }
+            val identityMissing = activeEvaluationRun?.let { EvaluationRunLedger.missingIdentities(it) } ?: emptyList()
+            if (identityMissing.isNotEmpty()) {
+                updateRunStage(
+                    "outcome_persistence",
+                    "running",
+                    reasonCode = "PARTIAL_IDENTITY_COVERAGE",
+                    expectedCount = activeEvaluationRun?.optInt("expected_identity_count") ?: saveResult.producedCount,
+                    writtenCount = saveResult.persistedCount,
+                    verifiedCount = saveResult.persistedCount,
+                    detail = org.json.JSONObject()
+                        .put("primary_persisted", saveResult.primaryPersistedCount)
+                        .put("evaluation_persisted", saveResult.evaluationPersistedCount)
+                        .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                        .put("missing_identity_count", identityMissing.size)
+                        .put("missing_identity_preview", identityMissing.take(20).joinToString(","))
+                )
+            } else {
+                updateRunStage(
+                    "outcome_persistence",
+                    "verified",
+                    expectedCount = activeEvaluationRun?.optInt("expected_identity_count") ?: saveResult.producedCount,
+                    writtenCount = saveResult.persistedCount,
+                    verifiedCount = saveResult.persistedCount,
+                    detail = org.json.JSONObject()
+                        .put("primary_persisted", saveResult.primaryPersistedCount)
+                        .put("evaluation_persisted", saveResult.evaluationPersistedCount)
+                        .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                )
+            }
             val reportableOutcomes = sanitizedTeacherOutcomesForReporting(evaluatedOutcomes)
             val gradeableTeacherRows = countGradeableTeacherRows(reportableOutcomes)
             var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)

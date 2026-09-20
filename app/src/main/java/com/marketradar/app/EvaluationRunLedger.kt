@@ -143,13 +143,31 @@ object EvaluationRunLedger {
             .put("stages", stages)
             .put("labels_saved", false)
             .put("learning_complete", false)
+            .put("expected_identity_ids", JSONArray())
+            .put("expected_identity_count", 0)
+            .put("persisted_identity_ids", JSONArray())
+            .put("persisted_identity_count", 0)
+            .put("nonlabelable_identity_ids", JSONArray())
+            .put("nonlabelable_identity_count", 0)
+            .put("missing_identity_ids", JSONArray())
+            .put("missing_identity_count", 0)
             .put("active", true)
     }
 
     fun refreshCompletionFlags(run: JSONObject): JSONObject {
         val stages = run.optJSONObject("stages") ?: JSONObject()
         val persistence = stages.optJSONObject("outcome_persistence") ?: JSONObject()
-        val labelsSaved = persistence.optString("state") == "verified"
+        // Batch C: labels_saved requires every expected frozen-manifest identity to be
+        // persisted+verified or explicitly nonlabelable. Row-count alone is insufficient.
+        val expected = jsonStringSet(run.optJSONArray("expected_identity_ids"))
+        val persisted = jsonStringSet(run.optJSONArray("persisted_identity_ids"))
+        val nonlabelable = jsonStringSet(run.optJSONArray("nonlabelable_identity_ids"))
+        val missing = expected.filterNot { it in persisted || it in nonlabelable }.sorted()
+        run.put("missing_identity_ids", JSONArray(missing))
+        run.put("missing_identity_count", missing.size)
+        val identityComplete = expected.isEmpty() || missing.isEmpty()
+        val stageVerified = persistence.optString("state") == "verified"
+        val labelsSaved = stageVerified && identityComplete
         run.put("labels_saved", labelsSaved)
 
         var learningOk = labelsSaved
@@ -214,6 +232,53 @@ object EvaluationRunLedger {
         stages.put(name, stage)
         run.put("updated_at", now)
         return refreshCompletionFlags(run)
+    }
+
+
+    private fun jsonStringSet(arr: JSONArray?): Set<String> {
+        if (arr == null) return emptySet()
+        val out = linkedSetOf<String>()
+        for (i in 0 until arr.length()) {
+            val v = arr.opt(i)?.toString()?.trim().orEmpty()
+            if (v.isNotEmpty() && v != "null") out.add(v)
+        }
+        return out
+    }
+
+    fun setExpectedIdentities(
+        run: JSONObject,
+        expectedIds: Collection<String>,
+        nonlabelableIds: Collection<String> = emptyList()
+    ): JSONObject {
+        val expected = expectedIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        val nonlabelable = nonlabelableIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        run.put("expected_identity_ids", JSONArray(expected))
+        run.put("expected_identity_count", expected.size)
+        run.put("nonlabelable_identity_ids", JSONArray(nonlabelable))
+        run.put("nonlabelable_identity_count", nonlabelable.size)
+        return refreshCompletionFlags(run)
+    }
+
+    fun recordPersistedIdentities(run: JSONObject, persistedIds: Collection<String>): JSONObject {
+        val existing = jsonStringSet(run.optJSONArray("persisted_identity_ids")).toMutableList()
+        val seen = existing.toMutableSet()
+        for (raw in persistedIds) {
+            val id = raw.trim()
+            if (id.isNotEmpty() && id !in seen) {
+                seen.add(id)
+                existing.add(id)
+            }
+        }
+        run.put("persisted_identity_ids", JSONArray(existing))
+        run.put("persisted_identity_count", existing.size)
+        return refreshCompletionFlags(run)
+    }
+
+    fun missingIdentities(run: JSONObject): List<String> {
+        val expected = jsonStringSet(run.optJSONArray("expected_identity_ids"))
+        val persisted = jsonStringSet(run.optJSONArray("persisted_identity_ids"))
+        val nonlabelable = jsonStringSet(run.optJSONArray("nonlabelable_identity_ids"))
+        return expected.filterNot { it in persisted || it in nonlabelable }.sorted()
     }
 
     fun nextResumableStage(run: JSONObject): String? {

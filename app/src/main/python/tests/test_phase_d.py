@@ -90,24 +90,24 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(res['current_pnl'], 5100)
 
     def test_d1_07_bull_call_win(self):
-        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 50, "lot_size": 50, "is_credit": False}
+        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 50, "lot_size": 65, "is_credit": False}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['current_pnl'], 2250)
+        self.assertEqual(res['current_pnl'], 2925)
 
     def test_d1_08_bull_call_loss(self):
-        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 150, "lot_size": 50, "is_credit": False}
+        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 150, "lot_size": 65, "is_credit": False}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['current_pnl'], -2750)
+        self.assertEqual(res['current_pnl'], -3575)
 
     def test_d1_09_bear_put_win(self):
-        trade = {"index_key": "NF", "strategy_type": "BEAR_PUT", "buy_strike": 22200, "sell_strike": 22000, "entry_premium": 40, "lot_size": 50, "is_credit": False}
+        trade = {"index_key": "NF", "strategy_type": "BEAR_PUT", "buy_strike": 22200, "sell_strike": 22000, "entry_premium": 40, "lot_size": 65, "is_credit": False}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['current_pnl'], 1750)
+        self.assertEqual(res['current_pnl'], 2275)
 
     def test_d1_10_bear_put_loss(self):
-        trade = {"index_key": "NF", "strategy_type": "BEAR_PUT", "buy_strike": 22200, "sell_strike": 22000, "entry_premium": 100, "lot_size": 50, "is_credit": False}
+        trade = {"index_key": "NF", "strategy_type": "BEAR_PUT", "buy_strike": 22200, "sell_strike": 22000, "entry_premium": 100, "lot_size": 65, "is_credit": False}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['current_pnl'], -1250)
+        self.assertEqual(res['current_pnl'], -1625)
 
     def test_d1_11_lot_size_nf_fallback(self):
         trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "lot_size": 0, "entry_premium": 50, "buy_strike": 22200, "sell_strike": 22400}
@@ -132,7 +132,8 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(res['current_pnl'], 3600)
 
     def test_d1_12d_entry_snapshot_lot_size_wins_after_restart(self):
-        trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 1, "entry_snapshot": {"lot_size": 60}, "is_credit": True}
+        # lot_size is TOTAL units: 2 BNF lots × 30 = 60. Must agree with authority.
+        trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 2, "number_of_lots": 2, "entry_snapshot": {"lot_size": 60, "number_of_lots": 2}, "is_credit": True}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
         self.assertEqual(res['lot_size_resolved'], 60)
         self.assertEqual(res['current_pnl'], 3600)
@@ -559,7 +560,7 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(res['current_pnl'], 5100)
 
     def test_d1_27_nf_ltp_map_fallback(self):
-        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 50, "lot_size": 50}
+        trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "buy_strike": 22200, "sell_strike": 22400, "entry_premium": 50, "lot_size": 65}
         ctx = {"bnfLtpMap": {}}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, ctx, None)
         self.assertIsNotNone(res)

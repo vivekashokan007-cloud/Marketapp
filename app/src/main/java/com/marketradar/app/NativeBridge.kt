@@ -1381,12 +1381,16 @@ class NativeBridge(private val context: Context) {
             val lastEvaluationMessage = prefs.getString("last_evaluation_message", "") ?: ""
             status.put("lastEvaluationMessage", lastEvaluationMessage)
             status.put("c3FinalizationDate", prefs.getString("c3_finalization_date", "") ?: "")
+            status.put("c3FinalizationSessionDate", prefs.getString("c3_finalization_session_date", prefs.getString("c3_finalization_date", "") ?: "") ?: "")
             status.put("c3FinalizationPhase", prefs.getString("c3_finalization_phase", "") ?: "")
             status.put("c3FinalizationMessage", prefs.getString("c3_finalization_message", "") ?: "")
+            status.put("c3FinalizationReasonCode", prefs.getString("c3_finalization_reason_code", "") ?: "")
+            status.put("c3FinalizationReason", prefs.getString("c3_finalization_reason", "") ?: "")
             status.put("c3FinalizationRunning", prefs.getBoolean("c3_finalization_running", false))
             status.put("c3FinalizationFrames", prefs.getInt("c3_finalization_frame_count", 0))
             status.put("c3FinalizationRows", prefs.getInt("c3_finalization_row_count", 0))
             status.put("c3FinalizationVerifiedRows", prefs.getInt("c3_finalization_verified_rows", 0))
+            // Error is only meaningful for FAILED. INELIGIBLE reasons live in reason fields.
             status.put("c3FinalizationError", prefs.getString("c3_finalization_last_error", "") ?: "")
             status.put("c3FinalizationUpdatedAtMs", prefs.getLong("c3_finalization_updated_at_ms", 0L))
             // G5: Labels saved ≠ learning complete
