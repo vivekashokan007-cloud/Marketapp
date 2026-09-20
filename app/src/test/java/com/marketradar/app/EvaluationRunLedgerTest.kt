@@ -67,7 +67,10 @@ class EvaluationRunLedgerTest {
             run = EvaluationRunLedger.setStage(run, name, "verified")
         }
         run = EvaluationRunLedger.applyC3Assessment(run, assessment)
-        assertEquals("ineligible", run.getJSONObject("stages").getJSONObject("percentile_finalization").optString("state"))
+        val c3Stage = run.getJSONObject("stages").getJSONObject("percentile_finalization")
+        assertEquals("ineligible", c3Stage.optString("state"))
+        assertEquals(EvaluationRunLedger.REASON_CAPPED_POPULATION, c3Stage.optString("reason_code"))
+        assertEquals("", c3Stage.optString("last_error"))
         assertTrue(run.optBoolean("labels_saved"))
         assertFalse(run.optBoolean("learning_complete")) // G6 metrics still pending
         run = EvaluationRunLedger.applyPerformanceMetricsResult(

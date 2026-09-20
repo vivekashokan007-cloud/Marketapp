@@ -388,7 +388,6 @@ object EvaluationRunLedger {
                 expectedCount = assessment.optInt("frame_count", 0),
                 writtenCount = 0,
                 verifiedCount = 0,
-                lastError = assessment.optString("message", ""),
                 detail = assessment
             )
         }
