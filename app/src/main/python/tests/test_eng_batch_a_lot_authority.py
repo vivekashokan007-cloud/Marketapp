@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import unittest
 
-from brain import compute_position_live, _stamp_unavailable_position_valuation
+from brain import compute_position_live, _stamp_unavailable_position_valuation, is_position_live_available
 
 
 def _ctx_nf():
@@ -60,14 +60,14 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
             _base_nf(contract_lot_size=75, number_of_lots=1, quantity_units=75),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_absurd_positive_integer_fail_closed(self):
         live = compute_position_live(
             _base_nf(contract_lot_size=9999, number_of_lots=1, quantity_units=9999),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_complete_triplet_wrong_lot_fail_closed(self):
         live = compute_position_live(
@@ -77,28 +77,28 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
             ),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_derived_quantity_wrong_lot_fail_closed(self):
         live = compute_position_live(
             _base_nf(contract_lot_size=75, number_of_lots=2),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_legacy_explicit_wrong_lot_fail_closed(self):
         live = compute_position_live(
             _base_nf(lot_size=75, lots=1),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_snapshot_only_wrong_lot_fail_closed(self):
         live = compute_position_live(
             _base_nf(entry_snapshot={"lot_size": 75}),
             {}, {}, SPOTS, 14, _ctx_nf(), {},
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
     def test_broken_triplet_zero_negative_fractional_nonnumeric(self):
         cases = [
@@ -110,9 +110,9 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
         ]
         for over in cases:
             with self.subTest(over=over):
-                self.assertIsNone(
-                    compute_position_live(_base_nf(**over), {}, {}, SPOTS, 14, _ctx_nf(), {})
-                )
+                live = compute_position_live(_base_nf(**over), {}, {}, SPOTS, 14, _ctx_nf(), {})
+                self.assertFalse(is_position_live_available(live))
+                self.assertEqual(live.get("failure_reason"), "invalid_quantity_identity")
 
     def test_bnf_chain_correct_and_wrong(self):
         ok = compute_position_live(
@@ -132,7 +132,7 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
             ),
             {}, {}, SPOTS, 14, _ctx_bnf(), {},
         )
-        self.assertIsNone(bad)
+        self.assertFalse(is_position_live_available(bad))
 
     def test_multi_lot_quantity_correct(self):
         one = compute_position_live(
@@ -162,7 +162,7 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
     def test_unresolved_observation_saveable_but_ineligible_valuation(self):
         trade = _base_nf(contract_lot_size=75, number_of_lots=1, quantity_units=75)
         live = compute_position_live(trade, {}, {}, SPOTS, 14, _ctx_nf(), {})
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
         result = {"position_live": {}}
         stamped = _stamp_unavailable_position_valuation(
             trade, result, "T-unresolved", spot=24900, reason="lot_authority_conflict"
@@ -171,6 +171,27 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
         self.assertIs(result["position_live"]["T-unresolved"], stamped)
         # Trade record itself remains (Paper capture not blocked).
         self.assertEqual(trade["index_key"], "NF")
+
+
+    def test_wrong_lot_reason_is_lot_not_quotes(self):
+        live = compute_position_live(
+            _base_nf(contract_lot_size=75, number_of_lots=1, quantity_units=75),
+            {}, {}, SPOTS, 14, _ctx_nf(), {},
+        )
+        self.assertFalse(is_position_live_available(live))
+        self.assertIn(live.get('failure_reason'), {
+            'contract_lot_conflict', 'contract_lot_unresolved', 'invalid_quantity_identity'
+        })
+        self.assertNotEqual(live.get('failure_reason'), 'missing_required_chain_quotes')
+
+    def test_missing_quotes_reason_distinct(self):
+        # Correct lot but empty chain/spot context → quote failure reason.
+        live = compute_position_live(
+            _base_nf(contract_lot_size=65, number_of_lots=1, quantity_units=65),
+            {}, {}, {"nfSpot": 0, "bnfSpot": 0}, 14, {}, {},
+        )
+        self.assertFalse(is_position_live_available(live))
+        self.assertEqual(live.get('failure_reason'), 'missing_required_chain_quotes')
 
 
 if __name__ == "__main__":

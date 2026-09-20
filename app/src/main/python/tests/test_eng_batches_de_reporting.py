@@ -3,6 +3,8 @@ import unittest
 from teacher_reporting_metrics import (
     comparable_for_teacher_pool,
     derive_holding_horizon,
+    filter_chosen_teacher_rows,
+    filter_paper_for_same_session_teacher_comparison,
     summarize_teacher_reporting,
 )
 
@@ -100,6 +102,36 @@ class BatchEHoldingHorizon(unittest.TestCase):
         self.assertTrue(comparable_for_teacher_pool("SAME_SESSION"))
         self.assertFalse(comparable_for_teacher_pool("OVERNIGHT"))
         self.assertFalse(comparable_for_teacher_pool("MULTIDAY"))
+
+
+
+class BatchDChosenPopulation(unittest.TestCase):
+    def test_mixed_roles_same_population(self):
+        rows = [
+            {"session_date": "2026-09-08", "role": "primary", "label_version": "teacher_v1", "is_success": False, "exit_reason": "EOD", "managed_pnl": 1200.0, "r_multiple": 0.4},
+            {"session_date": "2026-09-09", "role": "primary", "label_version": "teacher_v1", "is_success": True, "exit_reason": "TP", "managed_pnl": -50.0, "r_multiple": 1.0},
+            {"session_date": "2026-09-09", "role": "secondary", "label_version": "teacher_v1", "is_success": True, "exit_reason": "TP", "managed_pnl": 9999.0, "r_multiple": 9.0},
+        ]
+        chosen = filter_chosen_teacher_rows(rows)
+        summary = summarize_teacher_reporting(chosen)
+        self.assertEqual(summary["row_count"], 2)
+        self.assertEqual(summary["distinct_session_count"], 2)
+        self.assertEqual(summary["teacher_target_hit_count"], 1)
+        self.assertEqual(summary["net_profitable_count"], 1)
+
+
+class BatchEComparisonFilter(unittest.TestCase):
+    def test_friday_monday_multiday_excluded_with_counts(self):
+        paper = [
+            {"entry_date": "2026-09-08T10:15:00+05:30", "exit_date": "2026-09-08T14:50:00+05:30", "status": "CLOSED", "trade_mode": "intraday"},
+            {"entry_date": "2026-09-11T14:50:00+05:30", "exit_date": "2026-09-14T10:05:00+05:30", "status": "CLOSED", "trade_mode": "intraday"},
+            {"entry_date": "2026-09-08T10:15:00+05:30", "status": "OPEN", "trade_mode": "intraday"},
+        ]
+        got = filter_paper_for_same_session_teacher_comparison(paper)
+        self.assertEqual(got["kept_count"], 1)
+        self.assertEqual(got["excluded_counts"]["MULTIDAY"], 1)
+        self.assertEqual(got["excluded_counts"]["OPEN"], 1)
+        self.assertTrue(got["filter_applied"])
 
 
 if __name__ == "__main__":

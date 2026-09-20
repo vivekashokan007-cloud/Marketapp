@@ -1396,13 +1396,30 @@ class NativeBridge(private val context: Context) {
             // G5: Labels saved ≠ learning complete
             val g5Session = targetDate ?: today
             val g5Run = EvaluationRunLedger.loadLocal(context, prefs, g5Session)
-            val labelsSaved = g5Run?.optBoolean("labels_saved", false)
-                ?: prefs.getBoolean("g5_labels_saved", false)
-            val learningComplete = g5Run?.optBoolean("learning_complete", false)
-                ?: prefs.getBoolean("g5_learning_complete", false)
+            // Absent/stale ledger must not look like success. Only an exact run
+            // for the selected session may assert true/false labelsSaved.
+            if (g5Run != null) {
+                status.put("labelsSaved", g5Run.optBoolean("labels_saved", false))
+                status.put("learningComplete", g5Run.optBoolean("learning_complete", false))
+                status.put("labelsSavedKnown", true)
+                status.put("missingIdentityCount", g5Run.optInt("missing_identity_count", 0))
+                val missingArr = g5Run.optJSONArray("missing_identity_ids")
+                val preview = mutableListOf<String>()
+                if (missingArr != null) {
+                    for (i in 0 until minOf(12, missingArr.length())) {
+                        val v = missingArr.opt(i)?.toString()?.trim().orEmpty()
+                        if (v.isNotEmpty()) preview.add(v)
+                    }
+                }
+                status.put("missingIdentityPreview", preview.joinToString(","))
+            } else {
+                status.put("labelsSaved", JSONObject.NULL)
+                status.put("learningComplete", JSONObject.NULL)
+                status.put("labelsSavedKnown", false)
+                status.put("missingIdentityCount", 0)
+                status.put("missingIdentityPreview", "")
+            }
             status.put("evaluationRunId", g5Run?.optString("run_id") ?: (prefs.getString("g5_evaluation_run_id", "") ?: ""))
-            status.put("labelsSaved", labelsSaved)
-            status.put("learningComplete", learningComplete)
             status.put(
                 "evaluationStages",
                 if (g5Run != null) EvaluationRunLedger.stagesSummaryJson(g5Run) else JSONObject()
@@ -1985,7 +2002,7 @@ class NativeBridge(private val context: Context) {
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate == targetDate) return
-        if (doneDate != targetDate && phase !in setOf("DONE", "FAILED_RESEARCH", "FAILED", "FAILED_SAVE", "STALLED", "")) return
+        if (doneDate != targetDate && phase !in setOf("DONE", "FAILED_RESEARCH", "FAILED", "FAILED_SAVE", "STALLED", "INCOMPLETE_IDENTITY", "FAILED_IDENTITY_COVERAGE", "")) return
         val issue = currentCoverageIntegrityIssue(targetDate).ifBlank { "INTEGRITY_BROKEN" }
         prefs.edit()
             .remove("evaluation_done_date")
@@ -2017,7 +2034,14 @@ class NativeBridge(private val context: Context) {
     private fun shouldRetryDayEvaluation(targetDate: String): Boolean {
         clearStaleEvaluationRunningIfNeeded()
         val phase = (prefs.getString("evaluation_phase", "") ?: "").uppercase(Locale.US)
-        if (phase == "FAILED" || phase == "FAILED_SAVE" || phase == "FAILED_RESEARCH" || phase == "STALLED") {
+        if (
+            phase == "FAILED" ||
+            phase == "FAILED_SAVE" ||
+            phase == "FAILED_RESEARCH" ||
+            phase == "STALLED" ||
+            phase == "INCOMPLETE_IDENTITY" ||
+            phase == "FAILED_IDENTITY_COVERAGE"
+        ) {
             return true
         }
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""

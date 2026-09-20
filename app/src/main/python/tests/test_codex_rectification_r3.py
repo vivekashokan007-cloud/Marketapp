@@ -16,7 +16,7 @@ from contract_identity_schema import (
 
 class R31MultiLotValuation(unittest.TestCase):
     def test_pnl_scales_with_lots_nf_bnf(self):
-        from brain import compute_position_live
+        from brain import is_position_live_available, compute_position_live
 
         def trade(index, cls, n_lots):
             qty = cls * n_lots
@@ -60,7 +60,7 @@ class R31MultiLotValuation(unittest.TestCase):
             self.assertAlmostEqual(results[(index, 4)], 4 * results[(index, 1)], places=4)
 
     def test_triplet_mismatch_fail_closed(self):
-        from brain import compute_position_live
+        from brain import compute_position_live, is_position_live_available
         trade = {
             "index_key": "NF",
             "strategy_type": "BEAR_CALL",
@@ -81,7 +81,7 @@ class R31MultiLotValuation(unittest.TestCase):
             trade, {}, {}, {"nfSpot": 24900}, 14,
             {"nfLtpMap": {"25000": {"CE": 30}, "25100": {"CE": 10}}}, {}
         )
-        self.assertIsNone(live)
+        self.assertFalse(is_position_live_available(live))
 
 
 class R32SemanticValidator(unittest.TestCase):

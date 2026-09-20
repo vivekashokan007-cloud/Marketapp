@@ -2660,6 +2660,9 @@ return@withContext
         var runId = "eval-$sessionDate-${System.currentTimeMillis()}"
         val leaseHolder = EvaluationRunLedger.stableLeaseHolder(android.os.Build.MODEL, sessionDate)
         var leaseAcquired = false
+        // When identity coverage is incomplete, keep post-close handoff/recovery
+        // so continuation can resume the same frozen session manifest.
+        var preserveRecoveryState = false
         var totalSnapshots = 0
         var completedSnapshots = 0
         var producedCount = 0
@@ -2810,7 +2813,75 @@ return@withContext
                 "EVAL_PREPARED: date=$sessionDate totalSnapshots=$totalSnapshots " +
                     "outputsBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
-            val labelableMap = try { buildSnapshotLabelableMap(snapshotsFile) } catch (_: Exception) { emptyMap() }
+            val labelableMap = try {
+                buildSnapshotLabelableMap(snapshotsFile)
+            } catch (e: Exception) {
+                Log.e(TAG, "EVAL_IDENTITY_MANIFEST_PARSE_FAIL: ${e.message}", e)
+                updateRunStage(
+                    "input_coverage",
+                    "failed",
+                    reasonCode = EvaluationIdentityCoverage.REASON_MANIFEST_PARSE_FAILED,
+                    lastError = e.message ?: "identity_manifest_parse_failed"
+                )
+                if (prefs.getString("evaluation_done_date", null) == sessionDate) {
+                    prefs.edit().remove("evaluation_done_date").commit()
+                }
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = EvaluationIdentityCoverage.PHASE_FAILED_IDENTITY_COVERAGE,
+                    message = "Evaluation for $sessionDate failed closed: identity manifest could not be parsed. Labels are NOT saved.",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = 0,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    running = false,
+                    lastError = e.message ?: "identity_manifest_parse_failed"
+                )
+                preserveRecoveryState = true
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Needs Retry",
+                    "Identity manifest parse failed. Tap to retry the same session.",
+                    sessionDate = sessionDate,
+                    allowRetry = true
+                )
+                scheduleNextEvaluationReminder(this@MarketMLService)
+                return@withContext
+            }
+            if (labelableMap.isEmpty() && totalSnapshots > 0) {
+                Log.e(TAG, "EVAL_IDENTITY_MANIFEST_EMPTY: date=$sessionDate totalSnapshots=$totalSnapshots")
+                updateRunStage(
+                    "input_coverage",
+                    "failed",
+                    reasonCode = EvaluationIdentityCoverage.REASON_EMPTY_EXPECTED_NONEMPTY_SNAPSHOTS,
+                    expectedCount = totalSnapshots,
+                    lastError = "empty_labelable_map_with_nonzero_snapshots"
+                )
+                if (prefs.getString("evaluation_done_date", null) == sessionDate) {
+                    prefs.edit().remove("evaluation_done_date").commit()
+                }
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = EvaluationIdentityCoverage.PHASE_FAILED_IDENTITY_COVERAGE,
+                    message = "Evaluation for $sessionDate failed closed: identity manifest was empty while snapshots were present. Labels are NOT saved.",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = 0,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    running = false,
+                    lastError = "empty_labelable_map_with_nonzero_snapshots"
+                )
+                preserveRecoveryState = true
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Needs Retry",
+                    "Identity manifest was empty while snapshots existed. Tap to retry.",
+                    sessionDate = sessionDate,
+                    allowRetry = true
+                )
+                scheduleNextEvaluationReminder(this@MarketMLService)
+                return@withContext
+            }
             val nonlabelable = labelableMap.values.count { !it }
             val labelable = labelableMap.values.count { it }
             updateRunStage(
@@ -3160,61 +3231,146 @@ return@withContext
                 return@withContext
             }
 
-            // Batch C: acknowledge persisted snapshot identities and only mark labels_saved
-            // when the frozen expected set is fully covered (or explicitly nonlabelable).
-            val persistedIdentityIds = linkedSetOf<String>()
-            for (i in 0 until evaluatedOutcomes.length()) {
-                val row = evaluatedOutcomes.optJSONObject(i) ?: continue
-                val sid = row.opt("snapshot_id")?.toString()?.trim().orEmpty()
-                if (sid.isNotEmpty() && sid != "null") persistedIdentityIds.add(sid)
+            // Batch C corrective (R1): persisted identities come ONLY from Supabase
+            // readback of snapshot_id+candidate_id+role. Local evaluatedOutcomes are
+            // the produced set, never the persisted proof. Aggregate counts are not proof.
+            val expectedSnapshotIds = activeEvaluationRun?.let { run ->
+                val arr = run.optJSONArray("expected_identity_ids")
+                val out = mutableListOf<String>()
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val v = arr.opt(i)?.toString()?.trim().orEmpty()
+                        if (v.isNotEmpty() && v != "null") out.add(v)
+                    }
+                }
+                out
+            } ?: emptyList()
+            val identityReadback = try {
+                SupabaseClient.readEvaluationOutcomeIdentityKeys(sessionDate)
+            } catch (e: Exception) {
+                Log.e(TAG, "EVAL_IDENTITY_READBACK_EXCEPTION: ${e.message}", e)
+                SupabaseClient.OutcomeIdentityReadback(
+                    ok = false,
+                    status = "exception",
+                    error = e.message ?: "identity_readback_exception"
+                )
             }
+            val assessment = EvaluationIdentityCoverage.assess(
+                expectedSnapshotIds = expectedSnapshotIds,
+                producedOutcomes = evaluatedOutcomes,
+                serverCompositeKeys = if (identityReadback.ok) identityReadback.compositeKeys else emptySet(),
+                readbackOk = identityReadback.ok,
+                readbackError = identityReadback.error
+            )
             activeEvaluationRun?.let { run ->
-                val stamped = EvaluationRunLedger.recordPersistedIdentities(run, persistedIdentityIds)
+                // Record only identities proven present by server readback ∩ produced set.
+                val stamped = EvaluationRunLedger.recordPersistedIdentities(
+                    run,
+                    assessment.verifiedSnapshotIds
+                )
                 persistEvaluationRun(stamped)
-                val missing = EvaluationRunLedger.missingIdentities(stamped)
                 Log.i(
                     TAG,
-                    "EVAL_IDENTITY_PERSISTED: date=$sessionDate persisted=${persistedIdentityIds.size} " +
-                        "expected=${stamped.optInt("expected_identity_count")} missing=${missing.size} " +
+                    "EVAL_IDENTITY_READBACK: date=$sessionDate ok=${identityReadback.ok} " +
+                        "serverKeys=${identityReadback.compositeKeys.size} " +
+                        "verifiedSnaps=${assessment.verifiedSnapshotIds.size} " +
+                        "expectedSnaps=${expectedSnapshotIds.size} " +
+                        "missing=${assessment.missingCount} " +
+                        "pages=${identityReadback.pagesFetched} status=${identityReadback.status} " +
                         "labelsSaved=${stamped.optBoolean("labels_saved")}"
                 )
-                if (missing.isNotEmpty()) {
+            }
+            var finalAssessment = assessment
+            if (assessment.complete && saveResult.primaryPersistedCount > 0) {
+                val producedPrimary = assessment.producedCompositeKeys.filter { it.endsWith("|primary") }
+                val missingReco = producedPrimary.filter { it !in identityReadback.recommendationCompositeKeys }
+                if (missingReco.isNotEmpty()) {
                     Log.w(
                         TAG,
-                        "EVAL_IDENTITY_INCOMPLETE: date=$sessionDate missingCount=${missing.size} " +
-                            "missingPreview=${missing.take(12).joinToString(",")}"
+                        "EVAL_RECO_IDENTITY_INCOMPLETE: date=$sessionDate missing=${missingReco.size} " +
+                            "preview=${missingReco.take(12).joinToString(",")}"
+                    )
+                    finalAssessment = assessment.copy(
+                        complete = false,
+                        missingCompositeKeys = (assessment.missingCompositeKeys + missingReco).distinct().sorted(),
+                        missingCount = assessment.missingCount + missingReco.size,
+                        missingPreview = (assessment.missingPreview + missingReco.map { "reco:$it" }).distinct().take(20),
+                        reasonCode = EvaluationIdentityCoverage.REASON_PARTIAL_IDENTITY,
+                        phase = EvaluationIdentityCoverage.PHASE_INCOMPLETE_IDENTITY
                     )
                 }
             }
-            val identityMissing = activeEvaluationRun?.let { EvaluationRunLedger.missingIdentities(it) } ?: emptyList()
-            if (identityMissing.isNotEmpty()) {
+            val identityTransition = EvaluationIdentityCoverage.transitionFor(finalAssessment)
+            if (!identityTransition.labelsSaved) {
+                val assessment = finalAssessment
+                val detail = EvaluationIdentityCoverage.detailJson(assessment, identityReadback.error)
+                    .put("primary_persisted", saveResult.primaryPersistedCount)
+                    .put("evaluation_persisted", saveResult.evaluationPersistedCount)
+                    .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                    .put("aggregate_count_not_identity_proof", true)
+                    .put("recommendation_readback_keys", identityReadback.recommendationCompositeKeys.size)
                 updateRunStage(
                     "outcome_persistence",
-                    "running",
-                    reasonCode = "PARTIAL_IDENTITY_COVERAGE",
-                    expectedCount = activeEvaluationRun?.optInt("expected_identity_count") ?: saveResult.producedCount,
+                    "failed",
+                    reasonCode = assessment.reasonCode.ifBlank { EvaluationIdentityCoverage.REASON_PARTIAL_IDENTITY },
+                    expectedCount = expectedSnapshotIds.size,
                     writtenCount = saveResult.persistedCount,
-                    verifiedCount = saveResult.persistedCount,
-                    detail = org.json.JSONObject()
-                        .put("primary_persisted", saveResult.primaryPersistedCount)
-                        .put("evaluation_persisted", saveResult.evaluationPersistedCount)
-                        .put("rejected_persisted", saveResult.rejectedPersistedCount)
-                        .put("missing_identity_count", identityMissing.size)
-                        .put("missing_identity_preview", identityMissing.take(20).joinToString(","))
+                    verifiedCount = assessment.verifiedSnapshotIds.size,
+                    lastError = "missing_identities=${assessment.missingCount}",
+                    detail = detail
                 )
-            } else {
-                updateRunStage(
-                    "outcome_persistence",
-                    "verified",
-                    expectedCount = activeEvaluationRun?.optInt("expected_identity_count") ?: saveResult.producedCount,
-                    writtenCount = saveResult.persistedCount,
-                    verifiedCount = saveResult.persistedCount,
-                    detail = org.json.JSONObject()
-                        .put("primary_persisted", saveResult.primaryPersistedCount)
-                        .put("evaluation_persisted", saveResult.evaluationPersistedCount)
-                        .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                // Ensure labels_saved stays false (persistence stage not verified).
+                activeEvaluationRun?.let { persistEvaluationRun(it) }
+                val phase = identityTransition.phase
+                val preview = assessment.missingPreview.joinToString(",")
+                if (prefs.getString("evaluation_done_date", null) == sessionDate) {
+                    prefs.edit().remove("evaluation_done_date").commit()
+                }
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = phase,
+                    message = "Evaluation for $sessionDate is incomplete: identity coverage missing ${assessment.missingCount} required identities (preview=$preview). Labels are NOT saved; learning is incomplete. Retry will reuse the same session date and frozen input manifest.",
+                    totalSnapshots = totalSnapshots,
+                    completedSnapshots = completedSnapshots,
+                    producedCount = saveResult.producedCount,
+                    persistedCount = saveResult.persistedCount,
+                    running = false,
+                    lastError = "missing_identities=${assessment.missingCount}"
                 )
+                // Explicitly do NOT write evaluation_done_date, do NOT LABELS_SAVED,
+                // do NOT start C3, do NOT cancel reminder, do NOT EVAL_COMPLETE.
+                preserveRecoveryState = true
+                Log.w(
+                    TAG,
+                    "EVAL_IDENTITY_INCOMPLETE: date=$sessionDate phase=$phase missingCount=${assessment.missingCount} " +
+                        "missingPreview=$preview readbackOk=${identityReadback.ok} " +
+                        "sessionPreserved=$sessionDate manifestPreserved=true"
+                )
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Incomplete Identity",
+                    "Missing ${assessment.missingCount} required identities. Labels not saved. Tap to retry the same session.",
+                    sessionDate = sessionDate,
+                    allowRetry = true
+                )
+                if (identityTransition.scheduleContinuation) {
+                    scheduleEvaluationContinuation(this@MarketMLService, sessionDate)
+                }
+                return@withContext
             }
+            updateRunStage(
+                "outcome_persistence",
+                "verified",
+                expectedCount = expectedSnapshotIds.size,
+                writtenCount = saveResult.persistedCount,
+                verifiedCount = finalAssessment.verifiedSnapshotIds.size,
+                detail = EvaluationIdentityCoverage.detailJson(finalAssessment)
+                    .put("primary_persisted", saveResult.primaryPersistedCount)
+                    .put("evaluation_persisted", saveResult.evaluationPersistedCount)
+                    .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                    .put("recommendation_readback_keys", identityReadback.recommendationCompositeKeys.size)
+            )
+
             val reportableOutcomes = sanitizedTeacherOutcomesForReporting(evaluatedOutcomes)
             val gradeableTeacherRows = countGradeableTeacherRows(reportableOutcomes)
             var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
@@ -3371,7 +3527,11 @@ return@withContext
                     Log.w(TAG, "EVAL_LEASE_RELEASE_FAIL: date=$sessionDate holder=$leaseHolder err=${e.message}")
                 }
             }
-            clearPostCloseHandoffState(reason = "day_evaluation_complete")
+            if (preserveRecoveryState) {
+                Log.i(TAG, "DAY_EVAL_HANDOFF_STATE_PRESERVED: date=$sessionDate reason=incomplete_or_failed_identity_coverage")
+            } else {
+                clearPostCloseHandoffState(reason = "day_evaluation_complete")
+            }
         }
     }
 

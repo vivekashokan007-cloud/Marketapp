@@ -2471,6 +2471,116 @@ object SupabaseClient {
         )
     }
 
+
+    data class OutcomeIdentityReadback(
+        val ok: Boolean,
+        val compositeKeys: Set<String> = emptySet(),
+        val recommendationCompositeKeys: Set<String> = emptySet(),
+        val pagesFetched: Int = 0,
+        val status: String = "",
+        val error: String? = null,
+        val httpStatus: Int? = null,
+        val failedPage: Int? = null
+    )
+
+    /**
+     * Exact post-upsert identity proof for Batch C.
+     * Reads snapshot_id+candidate_id+role with fail-closed pagination.
+     * Aggregate session counts are intentionally not used here.
+     * Injectable via [pageFetchSeam] for unit tests — never writes.
+     */
+    fun readEvaluationOutcomeIdentityKeys(sessionDate: String): OutcomeIdentityReadback {
+        val date = sessionDate.trim()
+        if (date.isEmpty()) {
+            return OutcomeIdentityReadback(ok = false, status = "invalid_session", error = "empty_session_date")
+        }
+        // Column projection travels in the filter query string (PostgREST select=).
+        val evalFilter = "session_date=eq.$date&select=snapshot_id,candidate_id,role"
+        val evalPaged = selectAllPages(
+            table = "ml_evaluation_outcomes",
+            filter = evalFilter,
+            order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc",
+            pageSize = 500,
+            maxPages = 40
+        )
+        val evalStatus = evalPaged.optString("status", "")
+        if (evalStatus == "incomplete_error" || evalStatus == "incomplete_truncated") {
+            return OutcomeIdentityReadback(
+                ok = false,
+                pagesFetched = evalPaged.optInt("pages_fetched", 0),
+                status = evalStatus,
+                error = evalPaged.opt("page_error")?.toString() ?: evalStatus,
+                httpStatus = if (evalPaged.isNull("http_status")) null else evalPaged.optInt("http_status"),
+                failedPage = if (evalPaged.isNull("failed_page")) null else evalPaged.optInt("failed_page")
+            )
+        }
+        if (evalStatus !in setOf("complete", "empty")) {
+            return OutcomeIdentityReadback(
+                ok = false,
+                pagesFetched = evalPaged.optInt("pages_fetched", 0),
+                status = evalStatus.ifBlank { "unknown" },
+                error = "unexpected_readback_status:$evalStatus"
+            )
+        }
+        val evalKeys = linkedSetOf<String>()
+        val evalRows = evalPaged.optJSONArray("rows") ?: JSONArray()
+        for (i in 0 until evalRows.length()) {
+            val row = evalRows.optJSONObject(i) ?: continue
+            EvaluationIdentityCoverage.fromRowOrNull(row)?.let { evalKeys.add(it.encoded()) }
+        }
+
+        // Companion recommendation identities — fail closed on page errors, but an
+        // empty companion table is allowed when no recommendation rows were expected.
+        val recoFilter = "session_date=eq.$date&select=snapshot_id,candidate_id,role"
+        val recoPaged = selectAllPages(
+            table = "ml_recommendation_outcomes",
+            filter = recoFilter,
+            order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc",
+            pageSize = 500,
+            maxPages = 40
+        )
+        val recoStatus = recoPaged.optString("status", "")
+        if (recoStatus == "incomplete_error" || recoStatus == "incomplete_truncated") {
+            return OutcomeIdentityReadback(
+                ok = false,
+                compositeKeys = evalKeys,
+                pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
+                status = recoStatus,
+                error = "recommendation_readback:" + (recoPaged.opt("page_error")?.toString() ?: recoStatus),
+                httpStatus = if (recoPaged.isNull("http_status")) null else recoPaged.optInt("http_status"),
+                failedPage = if (recoPaged.isNull("failed_page")) null else recoPaged.optInt("failed_page")
+            )
+        }
+        // Missing recommendation table is not auto-OK — only exact missing-table
+        // codes may be treated as empty companion when evaluation rows exist.
+        if (recoStatus !in setOf("complete", "empty")) {
+            val code = recoPaged.opt("postgrest_code")?.toString()
+            val missingTable = code.equals("PGRST205", true) || code.equals("42P01", true)
+            if (!missingTable) {
+                return OutcomeIdentityReadback(
+                    ok = false,
+                    compositeKeys = evalKeys,
+                    pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
+                    status = recoStatus.ifBlank { "unknown" },
+                    error = "recommendation_readback_status:$recoStatus"
+                )
+            }
+        }
+        val recoKeys = linkedSetOf<String>()
+        val recoRows = recoPaged.optJSONArray("rows") ?: JSONArray()
+        for (i in 0 until recoRows.length()) {
+            val row = recoRows.optJSONObject(i) ?: continue
+            EvaluationIdentityCoverage.fromRowOrNull(row)?.let { recoKeys.add(it.encoded()) }
+        }
+        return OutcomeIdentityReadback(
+            ok = true,
+            compositeKeys = evalKeys,
+            recommendationCompositeKeys = recoKeys,
+            pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
+            status = evalStatus
+        )
+    }
+
     fun fetchRecentEvaluationOutcomes(limit: Int = 1000): JSONArray {
         val shadowRows = normalizeShadowOutcomeRows(
             select("ml_evaluation_outcomes_s1", null, "effective_session_date.desc,created_at.desc", limit)
@@ -2894,48 +3004,8 @@ object SupabaseClient {
             else -> null
         }
 
-        fun buildTeacherSummary(items: List<JSONObject>): JSONObject {
-            var rowCount = 0
-            var successCount = 0
-            var sumR = 0.0
-            var sumCaptured = 0.0
-            var capturedCount = 0
-            val winRs = mutableListOf<Double>()
-            val lossRs = mutableListOf<Double>()
-            for (row in items) {
-                val r = normalizeDouble(row.opt("r_multiple")) ?: continue
-                rowCount += 1
-                sumR += r
-                if (r > 0) winRs += r
-                if (r < 0) lossRs += kotlin.math.abs(r)
-                val success = normalizeBool(row.opt("is_success"))
-                if (success == true) successCount += 1
-                val captured = normalizeDouble(row.opt("captured_pct"))
-                if (captured != null) {
-                    sumCaptured += captured
-                    capturedCount += 1
-                }
-            }
-            val expectancyR = if (rowCount > 0) sumR / rowCount else 0.0
-            val successRatePct = if (rowCount > 0) (successCount * 100.0) / rowCount else 0.0
-            val avgWinR = if (winRs.isNotEmpty()) winRs.average() else 0.0
-            val avgLossR = if (lossRs.isNotEmpty()) lossRs.average() else 0.0
-            val breakEvenWinRatePct = if (avgWinR > 0.0 && avgLossR > 0.0) {
-                (avgLossR / (avgLossR + avgWinR)) * 100.0
-            } else {
-                0.0
-            }
-            val avgCapturedPct = if (capturedCount > 0) (sumCaptured / capturedCount) * 100.0 else 0.0
-            val worthTrading = rowCount >= 30 && expectancyR > 0.0 && successRatePct > breakEvenWinRatePct
-            return JSONObject()
-                .put("rows", rowCount)
-                .put("successes", successCount)
-                .put("successRatePct", String.format(Locale.US, "%.2f", successRatePct).toDouble())
-                .put("expectancyR", String.format(Locale.US, "%.4f", expectancyR).toDouble())
-                .put("avgCapturedPct", String.format(Locale.US, "%.2f", avgCapturedPct).toDouble())
-                .put("breakEvenWinRatePct", String.format(Locale.US, "%.2f", breakEvenWinRatePct).toDouble())
-                .put("worthTrading", worthTrading)
-        }
+        fun buildTeacherSummary(items: List<JSONObject>): JSONObject =
+            TeacherReportingSummary.build(items)
 
         var attributedRows = 0
         var teacherRows = 0
@@ -2991,10 +3061,7 @@ object SupabaseClient {
                 }
             }
 
-            val labelVersion = row.optString("label_version", "").trim()
-            val rMultiple = normalizeDouble(row.opt("r_multiple"))
-            val isPrimary = role == "primary"
-            if (labelVersion == TeacherTruthConfig.LABEL_VERSION && rMultiple != null && isPrimary) {
+            if (TeacherReportingSummary.isChosenTeacherRow(row)) {
                 teacherRows += 1
                 teacherLaneAggregates[lane]?.add(row)
                 val strategyType = row.optString("strategy_type", "unknown").ifBlank { "unknown" }

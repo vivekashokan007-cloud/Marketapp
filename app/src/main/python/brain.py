@@ -3660,6 +3660,11 @@ def build_explanation_audit_agent(result, ctx, open_trades):
     return agent
 
 
+def is_position_live_available(pl_data):
+    """True only for a successful live valuation payload."""
+    return bool(pl_data) and not (isinstance(pl_data, dict) and pl_data.get('_valuation_unavailable'))
+
+
 def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     """Phase D: brain.py becomes sole producer of position P&L.
     Replaces JS updateOpenTradePnL (2-leg only) and Kotlin
@@ -3704,7 +3709,11 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         return None
 
     if not idx or resolve_contract_lot is None or parse_positive_integral_lot is None:
-        return None
+        return {
+            '_valuation_unavailable': True,
+            'failure_reason': 'invalid_quantity_identity',
+            'valuation_quality': 'unavailable',
+        }
 
     session_as_of = _first(
         trade.get('session_date'), trade.get('entry_date'),
@@ -3743,14 +3752,28 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     resolved_contract_lot = None
     supplied_contract_lot = None
     path_kind = None
+    # Batch A/C6: distinguish lot-authority failures from missing quotes.
+    lot_failure_reason = None
+
+    def _lot_fail(reason):
+        nonlocal lot_failure_reason
+        lot_failure_reason = reason
+        return None
+
+    def _unavailable(reason):
+        return {
+            '_valuation_unavailable': True,
+            'failure_reason': reason,
+            'valuation_quality': 'unavailable',
+        }
 
     def _authorize_contract_lot(captured_cls, n_lots):
         """Verify supplied/derived contract lot against dated authority.
 
-        Returns (dated_dict_or_None). Fail closed on conflict, unresolved
+        Returns dated_dict_or_None. Fail closed on conflict, unresolved
         historical identity, or captured lot that disagrees with operational
         current when no dated rule applies. Never substitutes NF/BNF constants
-        for missing historical identity.
+        for missing historical identity. Sets lot_failure_reason on failure.
         """
         try:
             dated = resolve_contract_lot(
@@ -3763,26 +3786,26 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
                 allow_operational_current=allow_operational,
             )
         except Exception:
-            return None
+            return _lot_fail('contract_lot_unresolved')
         if not dated:
-            return None
+            return _lot_fail('contract_lot_unresolved')
         if dated.get('lot_conflict') or dated.get('exclude_authoritative_calc'):
-            return None
+            return _lot_fail('contract_lot_conflict')
         if not dated.get('resolved'):
-            return None
+            return _lot_fail('contract_lot_unresolved')
         auth_cls = dated.get('contract_lot_size')
         if captured_cls is not None and auth_cls is not None:
             try:
                 if int(captured_cls) != int(auth_cls):
-                    return None
+                    return _lot_fail('contract_lot_conflict')
             except (TypeError, ValueError):
-                return None
+                return _lot_fail('invalid_quantity_identity')
         # Undated captured_metadata can "resolve" without an authoritative rule.
         # Require either authoritative identity OR an exact match to operational
         # current — never accept an arbitrary positive integer as contract lot.
         if not dated.get('authoritative'):
             if not allow_operational:
-                return None
+                return _lot_fail('contract_lot_unresolved')
             try:
                 op = resolve_contract_lot(
                     idx,
@@ -3790,15 +3813,15 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
                     allow_operational_current=True,
                 )
             except Exception:
-                return None
+                return _lot_fail('contract_lot_unresolved')
             if not op or not op.get('resolved') or op.get('contract_lot_size') is None:
-                return None
+                return _lot_fail('contract_lot_unresolved')
             if captured_cls is not None:
                 try:
                     if int(captured_cls) != int(op['contract_lot_size']):
-                        return None
+                        return _lot_fail('contract_lot_conflict')
                 except (TypeError, ValueError):
-                    return None
+                    return _lot_fail('invalid_quantity_identity')
             # Prefer operational stamp for provenance clarity.
             dated = dict(dated)
             dated['contract_lot_size'] = op.get('contract_lot_size')
@@ -3816,12 +3839,12 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             parse_positive_integral_lot(triplet_cls_raw) if triplet_cls_raw is not None else (None, None)
         )
         if triplet_cls_raw is not None and cls_v is None:
-            return None
+            return _unavailable('invalid_quantity_identity')
         n_pack = parse_number_of_lots(
             triplet_lots_raw, allow_missing_default_one=(triplet_lots_raw in (None, ''))
         )
         if triplet_lots_raw not in (None, '') and not n_pack.get('valid'):
-            return None
+            return _unavailable('invalid_quantity_identity')
         lots_count = (
             int(n_pack['number_of_lots'])
             if n_pack.get('valid') and n_pack.get('number_of_lots') else None
@@ -3830,14 +3853,14 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             parse_positive_integral_lot(triplet_qty_raw) if triplet_qty_raw is not None else (None, None)
         )
         if triplet_qty_raw is not None and qty_v is None:
-            return None
+            return _unavailable('invalid_quantity_identity')
         if cls_v is not None and lots_count is not None and qty_v is not None:
             if int(cls_v) * int(lots_count) != int(qty_v):
-                return None
+                return _unavailable('invalid_quantity_identity')
             supplied_contract_lot = int(cls_v)
             dated = _authorize_contract_lot(supplied_contract_lot, lots_count)
             if dated is None:
-                return None
+                return _unavailable(lot_failure_reason or 'contract_lot_unresolved')
             lot_size = float(qty_v)
             resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
@@ -3847,14 +3870,14 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             supplied_contract_lot = int(cls_v)
             dated = _authorize_contract_lot(supplied_contract_lot, lots_count)
             if dated is None:
-                return None
+                return _unavailable(lot_failure_reason or 'contract_lot_unresolved')
             lot_size = float(int(dated['contract_lot_size']) * int(lots_count))
             resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
             lot_size_source = 'entry_snapshot_triplet_derived'
             path_kind = 'triplet_derived'
         elif triplet_cls_raw is not None or triplet_qty_raw is not None:
-            return None  # partial triplet → fail closed
+            return _unavailable('invalid_quantity_identity')  # partial triplet → fail closed
 
     # --- Path 2: legacy explicit total units / snapshot-only lot_size ---
     if lot_size <= 0:
@@ -3864,26 +3887,26 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             allow_missing_default_one=True,
         )
         if not n_pack2.get('valid'):
-            return None
+            return _unavailable('invalid_quantity_identity')
         lots_count = int(n_pack2['number_of_lots']) if n_pack2.get('number_of_lots') else 1
         if explicit_total_units > 0:
             # Derive implied per-contract lot from total / n_lots; must be integral
             # and must match authority. Do not trust an arbitrary total.
             if lots_count <= 0:
-                return None
+                return _unavailable('invalid_quantity_identity')
             implied = explicit_total_units / float(lots_count)
             implied_int, implied_err = parse_positive_integral_lot(implied)
             if implied_int is None:
                 # Also try treating explicit_total as already being one-lot units
                 # when number_of_lots was defaulted — still must match authority.
-                return None
+                return _unavailable('invalid_quantity_identity')
             dated = _authorize_contract_lot(implied_int, lots_count)
             if dated is None:
-                return None
+                return _unavailable(lot_failure_reason or 'contract_lot_unresolved')
             # Quantity must equal authoritative contract_lot * n_lots
             expected_qty = float(int(dated['contract_lot_size']) * int(lots_count))
             if abs(float(explicit_total_units) - expected_qty) > 1e-9:
-                return None
+                return _unavailable('invalid_quantity_identity')
             lot_size = expected_qty
             resolved_contract_lot = float(dated['contract_lot_size'])
             lot_size_assumed = False
@@ -3895,7 +3918,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             # --- Path 3: resolver-only ---
             dated = _authorize_contract_lot(None, lots_count)
             if dated is None:
-                return None
+                return _unavailable(lot_failure_reason or 'contract_lot_unresolved')
             lot_size = float(dated['lot_size'])
             resolved_contract_lot = dated.get('contract_lot_size')
             lot_size_assumed = True
@@ -3903,7 +3926,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             path_kind = 'resolver_only'
 
     if lot_size <= 0 or resolved_contract_lot in (None, 0, 0.0):
-        return None
+        return _unavailable(lot_failure_reason or 'invalid_quantity_identity')
 
     sell_s   = trade.get('sell_strike', 0)
     buy_s    = trade.get('buy_strike', 0)
@@ -3911,7 +3934,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     buy_s2   = trade.get('buy_strike2', 0)
     stype    = trade.get('strategy_type')
     if not stype:
-        return None
+        return _unavailable('invalid_quantity_identity')
 
     is_credit = trade.get('is_credit', False) or stype in (
         'BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'IRON_BUTTERFLY'
@@ -3994,7 +4017,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             f"POSITION_VALUATION_FAIL_CLOSED: trade={trade.get('id')} "
             f"quoted=0/{quote_audit['legs_required']} reason=missing_required_chain_quotes"
         )
-        return None
+        return _unavailable('missing_required_chain_quotes')
 
     current_net = 0.0
     if stype == 'BEAR_CALL':
@@ -4011,7 +4034,7 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
 
     has_any_chain_leg = any(_quote_present(s) for s, _ in required_legs)
     if not has_any_chain_leg and spot <= 0:
-        return None  # neither chain nor spot fallback available
+        return _unavailable('missing_required_chain_quotes')  # neither chain nor spot fallback available
 
     if quote_audit['legs_required'] > quote_audit['legs_quoted']:
         quote_audit['valuation_quality'] = 'degraded'
@@ -15763,7 +15786,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         spot = bnf_spot if idx == 'BNF' else nf_spot
 
         pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, vix, ctx, bnf_breadth)
-        if pl_data:
+        if pl_data and not pl_data.get('_valuation_unavailable'):
             result["position_live"][tid] = pl_data
             # Update trade object for downstream insights
             t['current_pnl'] = pl_data['current_pnl']
@@ -15775,12 +15798,15 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             t['legs_quoted'] = pl_data.get('legs_quoted')
             t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
         else:
+            reason = 'missing_required_chain_quotes'
+            if isinstance(pl_data, dict) and pl_data.get('failure_reason'):
+                reason = str(pl_data.get('failure_reason'))
             _stamp_unavailable_position_valuation(
                 t,
                 result,
                 tid,
                 spot=spot,
-                reason='missing_required_chain_quotes',
+                reason=reason,
             )
 
         ci_detail = compute_control_index(t, chain, spot, bnf_breadth, return_detail=True)
@@ -23629,6 +23655,34 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         ),
     }
 
+    # Batch D corrective: wire teacher_reporting_metrics into the real research
+    # artifact consumed by the PWA (not test-only). Same filtered population for
+    # all chosen-teacher metrics: role=primary, label_version=teacher_v1, gradeable.
+    try:
+        from teacher_reporting_metrics import (
+            filter_chosen_teacher_rows,
+            summarize_teacher_reporting,
+        )
+        chosen_population = filter_chosen_teacher_rows(
+            primary_rows,
+            session_date=session_date_str,
+            require_gradeable=True,
+        )
+        chosen_teacher_reporting = summarize_teacher_reporting(chosen_population)
+        chosen_teacher_reporting['population_filter'] = {
+            'role': 'primary',
+            'label_version': 'teacher_v1',
+            'session_date': session_date_str,
+            'gradeable': True,
+        }
+    except Exception as _teacher_rep_exc:
+        chosen_teacher_reporting = {
+            'ok': False,
+            'error': str(_teacher_rep_exc),
+            'row_count': 0,
+            'sample_uncertain': True,
+        }
+
     return json.dumps({
         'ok': True,
         'schema_version': 2,
@@ -23637,6 +23691,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'snapshot_count': len(snapshots),
         'outcome_count': len(primary_rows) + len(secondary_rows),
         'rejected_research_outcome_count': len(rejected_outcome_rows),
+        'chosen_teacher_reporting': chosen_teacher_reporting,
         'class_a_gate': class_a_gate,
         'market': {
             'vix': series_summary(vix_values),

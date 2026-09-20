@@ -117,7 +117,7 @@ class TestPhaseD(unittest.TestCase):
     def test_d1_12_lot_size_unknown_fallback(self):
         trade = {"index_key": "UNKNOWN", "strategy_type": "BULL_CALL", "lot_size": 0}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertIsNone(res)
+        self.assertFalse(brain.is_position_live_available(res))
 
     def test_d1_12b_lots_one_uses_index_lot_size(self):
         trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 1, "is_credit": True}
@@ -393,13 +393,13 @@ class TestPhaseD(unittest.TestCase):
     def test_d1_23_missing_chain_data(self):
         trade = {"id": "M1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 99999, "buy_strike": 88888}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertIsNone(res)
+        self.assertFalse(brain.is_position_live_available(res))
 
     def test_d1_23b_missing_chain_data_stamps_unavailable_and_blocks_exit(self):
         trade = {"id": "M1", "index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 99999, "buy_strike": 88888}
         result = {"position_live": {}}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertIsNone(res)
+        self.assertFalse(brain.is_position_live_available(res))
 
         stamped = brain._stamp_unavailable_position_valuation(
             trade,
@@ -568,7 +568,7 @@ class TestPhaseD(unittest.TestCase):
     def test_d1_28_strategy_type_missing(self):
         trade = {"index_key": "BNF", "lot_size": 30}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertIsNone(res)
+        self.assertFalse(brain.is_position_live_available(res))
 
     def test_d1_29_bull_put_loss_breached(self):
         trade = {"index_key": "BNF", "strategy_type": "BULL_PUT", "sell_strike": 48500, "buy_strike": 48000, "entry_premium": 100, "lot_size": 30, "is_credit": True}

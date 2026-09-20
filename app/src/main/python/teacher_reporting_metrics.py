@@ -225,3 +225,86 @@ def summarize_teacher_reporting(rows: Iterable[dict[str, Any]]) -> dict[str, Any
 def comparable_for_teacher_pool(holding_horizon: str) -> bool:
     """Overnight/multiday Paper results must not pool with same-session teacher."""
     return holding_horizon == HOLDING_SAME_SESSION
+
+
+
+def is_gradeable_teacher_row(row: dict[str, Any]) -> bool:
+    """Integrity contract: gradeable when r_multiple is present after sanitization."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("price_integrity") or "").strip().upper() == "FAIL":
+        return False
+    return _as_float(row.get("r_multiple") if row.get("r_multiple") is not None else row.get("rMultiple")) is not None
+
+
+def filter_chosen_teacher_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    lane: Optional[str] = None,
+    session_date: Optional[str] = None,
+    require_gradeable: bool = True,
+) -> list[dict[str, Any]]:
+    """Chosen-teacher population: primary + teacher_v1 + optional lane/session + gradeable."""
+    out: list[dict[str, Any]] = []
+    lane_norm = str(lane or "").strip()
+    session_norm = str(session_date or "").strip()[:10]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role") or "").strip().lower() != "primary":
+            continue
+        if str(row.get("label_version") or "").strip() != "teacher_v1":
+            continue
+        if lane_norm and str(row.get("lane") or "").strip() != lane_norm:
+            continue
+        row_session = str(row.get("session_date") or row.get("sessionDate") or "").strip()[:10]
+        if session_norm and row_session and row_session != session_norm:
+            continue
+        if require_gradeable and not is_gradeable_teacher_row(row):
+            continue
+        out.append(row)
+    return out
+
+
+def filter_paper_for_same_session_teacher_comparison(
+    paper_rows: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    """Admit only SAME_SESSION Paper rows into a same-session teacher comparison pool.
+
+    Returns kept rows plus auditable excluded counts/reasons. Does not rewrite trade_mode.
+    """
+    kept: list[dict[str, Any]] = []
+    excluded: dict[str, int] = {
+        "OVERNIGHT": 0,
+        "MULTIDAY": 0,
+        "OPEN": 0,
+        "UNKNOWN": 0,
+        "OTHER": 0,
+    }
+    for row in paper_rows:
+        if not isinstance(row, dict):
+            excluded["OTHER"] += 1
+            continue
+        meta = derive_holding_horizon(
+            entry_ts=row.get("entry_date") or row.get("entry_ts") or row.get("entryDate"),
+            exit_ts=row.get("exit_date") or row.get("exit_ts") or row.get("exitDate"),
+            status=row.get("status"),
+            trade_mode=row.get("trade_mode") or row.get("tradeMode"),
+        )
+        horizon = meta.get("holding_horizon") or HOLDING_UNKNOWN
+        if comparable_for_teacher_pool(horizon):
+            enriched = dict(row)
+            enriched["holding_horizon"] = horizon
+            enriched["comparable_for_teacher_pool"] = True
+            kept.append(enriched)
+        else:
+            key = horizon if horizon in excluded else "OTHER"
+            excluded[key] = excluded.get(key, 0) + 1
+    return {
+        "kept": kept,
+        "kept_count": len(kept),
+        "excluded_counts": excluded,
+        "excluded_total": sum(excluded.values()),
+        "filter_applied": True,
+        "rule": "SAME_SESSION_ONLY",
+    }
