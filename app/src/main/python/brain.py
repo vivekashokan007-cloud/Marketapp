@@ -3916,6 +3916,12 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
             path_kind = 'legacy_explicit'
         else:
             # --- Path 3: resolver-only ---
+            # No captured quantity and no dated contract identity is not enough
+            # evidence to value a position. Operational-current lot sizes must
+            # never be silently substituted for an undated/possibly historical
+            # Paper record.
+            if session_as_of in (None, '') and expiry_for_lot in (None, ''):
+                return _unavailable('contract_lot_identity_missing')
             dated = _authorize_contract_lot(None, lots_count)
             if dated is None:
                 return _unavailable(lot_failure_reason or 'contract_lot_unresolved')
@@ -6569,7 +6575,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.50"
+BRAIN_VERSION = "2.6.51"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged

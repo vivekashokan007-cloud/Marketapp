@@ -109,27 +109,28 @@ class TestPhaseD(unittest.TestCase):
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
         self.assertEqual(res['current_pnl'], -1625)
 
-    def test_d1_11_lot_size_nf_fallback(self):
+    def test_d1_11_zero_lot_without_identity_fails_closed(self):
         trade = {"index_key": "NF", "strategy_type": "BULL_CALL", "lot_size": 0, "entry_premium": 50, "buy_strike": 22200, "sell_strike": 22400}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['lot_size_resolved'], 65)
+        self.assertFalse(brain.is_position_live_available(res))
+        self.assertEqual(res.get('failure_reason'), 'contract_lot_identity_missing')
 
     def test_d1_12_lot_size_unknown_fallback(self):
         trade = {"index_key": "UNKNOWN", "strategy_type": "BULL_CALL", "lot_size": 0}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
         self.assertFalse(brain.is_position_live_available(res))
 
-    def test_d1_12b_lots_one_uses_index_lot_size(self):
+    def test_d1_12b_lots_one_without_contract_identity_fails_closed(self):
         trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 1, "is_credit": True}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['lot_size_resolved'], 30)
-        self.assertEqual(res['current_pnl'], 1800)
+        self.assertFalse(brain.is_position_live_available(res))
+        self.assertEqual(res.get('failure_reason'), 'contract_lot_identity_missing')
 
-    def test_d1_12c_lots_two_scales_index_lot_size(self):
+    def test_d1_12c_lots_two_without_contract_identity_fails_closed(self):
         trade = {"index_key": "BNF", "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "entry_premium": 250, "lots": 2, "is_credit": True}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 20, self.ctx, None)
-        self.assertEqual(res['lot_size_resolved'], 60)
-        self.assertEqual(res['current_pnl'], 3600)
+        self.assertFalse(brain.is_position_live_available(res))
+        self.assertEqual(res.get('failure_reason'), 'contract_lot_identity_missing')
 
     def test_d1_12d_entry_snapshot_lot_size_wins_after_restart(self):
         # lot_size is TOTAL units: 2 BNF lots × 30 = 60. Must agree with authority.
@@ -386,7 +387,7 @@ class TestPhaseD(unittest.TestCase):
         self.assertEqual(res['peak_erosion'], 85.0)
 
     def test_d1_22_vix_change(self):
-        trade = {"id": "V1", "index_key": "BNF", "entry_vix": 18, "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000}
+        trade = {"id": "V1", "index_key": "BNF", "entry_vix": 18, "strategy_type": "BEAR_CALL", "sell_strike": 48500, "buy_strike": 49000, "lot_size": 30}
         res = brain.compute_position_live(trade, self.bnf_chain, self.nf_chain, self.spots, 21.5, self.ctx, None)
         self.assertEqual(res['vix_change'], 3.5)
 

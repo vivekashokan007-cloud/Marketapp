@@ -20,6 +20,7 @@ android {
         // b479 / 2.6.48: ML eval lease recovery (stable holder + releaseLease + historical continuation session_date)
         // b480 / 2.6.49: Eng batches A–E (lot authority, C3 honesty, eval completeness, teacher reporting, holding horizon)
         // b481 / 2.6.50: Codex R1 fix — identity completeness gates, Supabase identity readback, PWA labelsSaved truth, teacher_summary, lot failure reasons
+        // b482 / 2.6.51: exact frozen-primary completion, fail-closed resolver-only lots, uncertain teacher verdict suppression
         // b471 / 2.6.40: G5 durable evening-stage ledger + truthful completion.
         // b470 / 2.6.39: G4 net-target + executable exit-policy contract.
         // b460: Notification audit fixes — Book Profit force_alignment, entry 09:15,
@@ -27,8 +28,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 481
-        versionName = "2.6.50"
+        versionCode = 482
+        versionName = "2.6.51"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

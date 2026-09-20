@@ -1184,6 +1184,38 @@ class MarketMLService : Service() {
         return map
     }
 
+    private data class EvaluationIdentityManifest(
+        val labelableBySnapshot: Map<Int, Boolean>,
+        val expectedPrimaryCompositeKeys: List<String>
+    )
+
+    /**
+     * Freeze both labelability and the exact chosen-primary identity from the
+     * saved snapshot input. A labelable snapshot without a primary candidate is
+     * malformed evidence and must not be satisfiable by a secondary outcome.
+     */
+    private fun buildEvaluationIdentityManifest(file: File): EvaluationIdentityManifest {
+        val labelable = linkedMapOf<Int, Boolean>()
+        val expectedPrimary = mutableListOf<String>()
+        streamJsonArrayFile(file) { row ->
+            val sid = row.optInt("id", -1)
+            if (sid <= 0) return@streamJsonArrayFile
+            val isLabelable = row.optBoolean("is_labelable", false)
+            labelable[sid] = isLabelable
+            if (!isLabelable) return@streamJsonArrayFile
+            val primary = parseJsonObject(row.opt("primary_candidate_json"))
+                ?: throw IllegalStateException("Labelable snapshot $sid has no parseable primary_candidate_json")
+            val candidateId = primary.opt("id")?.toString()?.trim().orEmpty().ifBlank {
+                primary.opt("candidate_id")?.toString()?.trim().orEmpty()
+            }
+            if (candidateId.isBlank() || candidateId == "null") {
+                throw IllegalStateException("Labelable snapshot $sid has no primary candidate identity")
+            }
+            expectedPrimary.add("$sid|$candidateId|primary")
+        }
+        return EvaluationIdentityManifest(labelable, expectedPrimary.distinct().sorted())
+    }
+
     private fun compactTeacherResearchCandidate(raw: Any?): org.json.JSONObject? {
         val cand = parseJsonObject(raw) ?: return null
         val compact = org.json.JSONObject()
@@ -2813,8 +2845,8 @@ return@withContext
                 "EVAL_PREPARED: date=$sessionDate totalSnapshots=$totalSnapshots " +
                     "outputsBytes=${outputsFile.length()} ${evalHeapLine()}"
             )
-            val labelableMap = try {
-                buildSnapshotLabelableMap(snapshotsFile)
+            val identityManifest = try {
+                buildEvaluationIdentityManifest(snapshotsFile)
             } catch (e: Exception) {
                 Log.e(TAG, "EVAL_IDENTITY_MANIFEST_PARSE_FAIL: ${e.message}", e)
                 updateRunStage(
@@ -2848,6 +2880,8 @@ return@withContext
                 scheduleNextEvaluationReminder(this@MarketMLService)
                 return@withContext
             }
+            val labelableMap = identityManifest.labelableBySnapshot
+            val expectedPrimaryCompositeKeys = identityManifest.expectedPrimaryCompositeKeys
             if (labelableMap.isEmpty() && totalSnapshots > 0) {
                 Log.e(TAG, "EVAL_IDENTITY_MANIFEST_EMPTY: date=$sessionDate totalSnapshots=$totalSnapshots")
                 updateRunStage(
@@ -3260,7 +3294,8 @@ return@withContext
                 producedOutcomes = evaluatedOutcomes,
                 serverCompositeKeys = if (identityReadback.ok) identityReadback.compositeKeys else emptySet(),
                 readbackOk = identityReadback.ok,
-                readbackError = identityReadback.error
+                readbackError = identityReadback.error,
+                expectedPrimaryCompositeKeys = expectedPrimaryCompositeKeys
             )
             activeEvaluationRun?.let { run ->
                 // Record only identities proven present by server readback ∩ produced set.
@@ -3281,9 +3316,10 @@ return@withContext
                 )
             }
             var finalAssessment = assessment
-            if (assessment.complete && saveResult.primaryPersistedCount > 0) {
+            if (assessment.complete) {
                 val producedPrimary = assessment.producedCompositeKeys.filter { it.endsWith("|primary") }
-                val missingReco = producedPrimary.filter { it !in identityReadback.recommendationCompositeKeys }
+                val requiredRecommendationKeys = (expectedPrimaryCompositeKeys + producedPrimary).distinct()
+                val missingReco = requiredRecommendationKeys.filter { it !in identityReadback.recommendationCompositeKeys }
                 if (missingReco.isNotEmpty()) {
                     Log.w(
                         TAG,

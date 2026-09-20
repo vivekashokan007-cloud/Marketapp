@@ -61,5 +61,17 @@ class EngBatchDR1TeacherReportingTest {
         ))
         assertTrue(summary.getBoolean("sampleUncertain"))
         assertTrue(summary.isNull("profitabilityVerdict"))
+        assertFalse(summary.getBoolean("worthTrading"))
+    }
+
+    @Test
+    fun thirtyPositiveRowsFromOneSessionStillCannotClaimWorthTrading() {
+        val rows = (1..30).map {
+            row("2026-09-08", "primary", true, "TP", 100.0, 1.0)
+        }
+        val summary = TeacherReportingSummary.build(rows)
+        assertTrue(summary.getBoolean("sampleUncertain"))
+        assertFalse(summary.getBoolean("worthTrading"))
+        assertTrue(summary.isNull("profitabilityVerdict"))
     }
 }

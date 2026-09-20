@@ -26,6 +26,14 @@ class EngBatchCR1IdentityCoverageTest {
 
     private fun key(sid: Int) = "$sid|candidate_$sid|primary"
 
+    private fun outcome(snapshotId: Int, candidateId: String, role: String) = JSONArray().put(
+        JSONObject()
+            .put("snapshot_id", snapshotId)
+            .put("candidate_id", candidateId)
+            .put("role", role)
+            .put("session_date", "2026-09-17")
+    )
+
     @Test
     fun expected2To76ServerOnly46To76BlocksEveryCompletionSideEffect() {
         val assessment = EvaluationIdentityCoverage.assess(
@@ -118,5 +126,35 @@ class EngBatchCR1IdentityCoverageTest {
         assertFalse(assessment.complete)
         assertEquals("FAILED_IDENTITY_COVERAGE", assessment.phase)
         assertFalse(EvaluationIdentityCoverage.transitionFor(assessment).labelsSaved)
+    }
+
+    @Test
+    fun persistedSecondaryCannotSubstituteForRequiredPrimary() {
+        val secondaryKey = "2|secondary_2|secondary"
+        val assessment = EvaluationIdentityCoverage.assess(
+            expectedSnapshotIds = listOf("2"),
+            producedOutcomes = outcome(2, "secondary_2", "secondary"),
+            serverCompositeKeys = listOf(secondaryKey),
+            readbackOk = true,
+            expectedPrimaryCompositeKeys = listOf("2|candidate_2|primary")
+        )
+        assertFalse(assessment.complete)
+        assertEquals(listOf("2"), assessment.missingSnapshotIds)
+        assertFalse(EvaluationIdentityCoverage.transitionFor(assessment).labelsSaved)
+    }
+
+    @Test
+    fun wrongPrimaryCandidateCannotSatisfyFrozenManifestIdentity() {
+        val wrongKey = "2|wrong_candidate|primary"
+        val assessment = EvaluationIdentityCoverage.assess(
+            expectedSnapshotIds = listOf("2"),
+            producedOutcomes = outcome(2, "wrong_candidate", "primary"),
+            serverCompositeKeys = listOf(wrongKey),
+            readbackOk = true,
+            expectedPrimaryCompositeKeys = listOf("2|candidate_2|primary")
+        )
+        assertFalse(assessment.complete)
+        assertTrue(assessment.missingPreview.any { it.contains("candidate_2") })
+        assertTrue(assessment.unexpectedServerCompositeKeys.isEmpty())
     }
 }

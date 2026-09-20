@@ -193,6 +193,14 @@ class BatchAAuthoritativeLotGate(unittest.TestCase):
         self.assertFalse(is_position_live_available(live))
         self.assertEqual(live.get('failure_reason'), 'missing_required_chain_quotes')
 
+    def test_resolver_only_without_dated_or_captured_identity_fails_closed(self):
+        live = compute_position_live(
+            _base_nf(), {}, {}, SPOTS, 14, _ctx_nf(), {},
+        )
+        self.assertFalse(is_position_live_available(live))
+        self.assertEqual(live.get('failure_reason'), 'contract_lot_identity_missing')
+        self.assertEqual(live.get('valuation_quality'), 'unavailable')
+
 
 if __name__ == "__main__":
     unittest.main()

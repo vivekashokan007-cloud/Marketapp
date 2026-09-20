@@ -96,7 +96,7 @@ object TeacherReportingSummary {
             .put("mean_r_multiple", if (rowCount > 0) rounded(expectancyR, "%.4f") else JSONObject.NULL)
             .put("avgCapturedPct", rounded(avgCaptured, "%.2f"))
             .put("breakEvenWinRatePct", rounded(breakEven, "%.2f"))
-            .put("worthTrading", rowCount >= 30 && expectancyR > 0.0 && hitRate > breakEven)
+            .put("worthTrading", !uncertain && rowCount >= 30 && expectancyR > 0.0 && hitRate > breakEven)
             .put("distinctSessionCount", distinctSessions)
             .put("distinct_session_count", distinctSessions)
             .put("netProfitableCount", netProfitable)
