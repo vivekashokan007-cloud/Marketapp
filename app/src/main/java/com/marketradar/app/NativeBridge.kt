@@ -2544,6 +2544,16 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    /**
+     * Strict executable position marks owned by PositionTickService. Kept
+     * separate from open_trades because a Brain chain gap must not overwrite a
+     * previously validated Paper mark. Consumers receive an explicit
+     * display-only state and must never treat STALE_LAST_VALID as an order or
+     * close authority.
+     */
+    @JavascriptInterface
+    fun getPositionMarkStates(): String = PositionMarkStore.presentationJson(prefs)
+
     @JavascriptInterface
     fun getClosedTrades(limit: Int): String {
         return try {

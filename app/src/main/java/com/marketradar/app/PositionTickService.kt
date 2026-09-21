@@ -162,6 +162,12 @@ class PositionTickService : Service() {
             maybeNotifyShadowExit(row, trade)
             rows.put(row)
         }
+        // The 60-second service is the only path that obtains a complete
+        // executable bid/ask book for every position leg. Keep its last accepted
+        // mark locally so a later Brain/WebView payload gap cannot erase a
+        // verified Paper valuation from the screen. The store never turns a
+        // stale mark into an execution decision; it is presentation/audit state.
+        PositionMarkStore.recordRows(prefs, rows)
         enqueueRows(rows)
         flushPending(force = false)
         return true
