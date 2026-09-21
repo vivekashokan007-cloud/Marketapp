@@ -64,7 +64,11 @@ class MainActivity : AppCompatActivity() {
 
     private val pollReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            Log.d("MainActivity", "BROADCAST_RECEIVED: POLL_TICK")
+            val source = when (intent?.action) {
+                PositionTickService.ACTION_POSITION_MARK_TICK -> "POSITION_MARK_TICK"
+                else -> "POLL_TICK"
+            }
+            Log.d("MainActivity", "BROADCAST_RECEIVED: $source")
             if (!::webView.isInitialized) return
 
             val data = intent?.getStringExtra("data")
@@ -77,7 +81,7 @@ class MainActivity : AppCompatActivity() {
                         .replace("'", "\\'")
                         .replace("\n", "")
                         .replace("\r", "")
-                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative with data")
+                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative with data ($source)")
                     webView.evaluateJavascript(
                         "(function(){ if(typeof syncFromNative==='function') syncFromNative('$escaped'); else console.warn('[APK] syncFromNative not found'); })()",
                         null
@@ -85,7 +89,7 @@ class MainActivity : AppCompatActivity() {
                     lastNativeSyncElapsedMs = android.os.SystemClock.elapsedRealtime()
                 } else {
                     // Brain failed or no data, but still wake the UI to refresh poll badge
-                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative (no data, poll-only wake)")
+                    Log.d("MainActivity", "EVALUATE_JS_CALLED: syncFromNative (no data, $source wake)")
                     webView.evaluateJavascript(
                         "(function(){ if(typeof syncFromNative==='function') syncFromNative(null); })()",
                         null
@@ -464,8 +468,12 @@ class MainActivity : AppCompatActivity() {
 
         handleIntent(intent)
 
-        // Register poll receiver — wakes WebView every 5 min from service
-        val filter = IntentFilter("com.marketradar.POLL_TICK")
+        // Refresh on both the five-minute Brain cycle and each accepted 60-second
+        // P1 position mark. P1 does not make execution decisions; this only lets
+        // the WebView render its verified Paper valuation without a five-minute lag.
+        val filter = IntentFilter("com.marketradar.POLL_TICK").apply {
+            addAction(PositionTickService.ACTION_POSITION_MARK_TICK)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pollReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
@@ -572,6 +580,7 @@ class MainActivity : AppCompatActivity() {
                     getCandidates: function() { return AndroidBridge.getCandidates(); },
                     getSignalAccuracyStats: function() { return AndroidBridge.getSignalAccuracyStats(); },
                     getOpenTrades: function() { return AndroidBridge.getOpenTrades(); },
+                    getPositionMarkStates: function() { return AndroidBridge.getPositionMarkStates(); },
                     getClosedTrades: function(limit) { return AndroidBridge.getClosedTrades(limit || 200); },
                     getPremiumHistory: function(days) { return AndroidBridge.getPremiumHistory(days || 5); },
                     getMorningSnapshot: function(date) { return AndroidBridge.getMorningSnapshot(date || ""); },

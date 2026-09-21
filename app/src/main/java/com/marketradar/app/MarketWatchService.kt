@@ -2765,16 +2765,19 @@ class MarketWatchService : Service() {
                 // but has no access to poll history or context percentiles. Stored
                 // with commit() because PositionTickService reads it from its own
                 // tick loop, which can run before an apply() has flushed.
-                resultObj.optJSONObject("position_exit_thresholds")?.let { thresholds ->
-                    prefs.edit()
-                        .putString(PREF_POSITION_EXIT_THRESHOLDS, thresholds.toString())
-                        .commit()
-                    LogBuffer.add(
-                        'I',
-                        TAG,
-                        "POSITION_EXIT_THRESHOLDS_PUBLISHED: trades=${thresholds.length()}"
-                    )
-                }
+                // Replace the whole threshold map after every successful Brain
+                // result. Keeping an older non-empty map when the current result
+                // intentionally has no thresholds leaves P1 evaluating days-old
+                // levels. An empty map is the explicit, safe fallback signal.
+                val thresholds = resultObj.optJSONObject("position_exit_thresholds") ?: JSONObject()
+                prefs.edit()
+                    .putString(PREF_POSITION_EXIT_THRESHOLDS, thresholds.toString())
+                    .commit()
+                LogBuffer.add(
+                    'I',
+                    TAG,
+                    "POSITION_EXIT_THRESHOLDS_PUBLISHED: trades=${thresholds.length()}"
+                )
 
                 val posLive = resultObj.optJSONObject("position_live")
                 if (posLive != null) {

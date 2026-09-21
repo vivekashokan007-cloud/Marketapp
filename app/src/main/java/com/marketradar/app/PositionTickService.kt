@@ -168,6 +168,14 @@ class PositionTickService : Service() {
         // verified Paper valuation from the screen. The store never turns a
         // stale mark into an execution decision; it is presentation/audit state.
         PositionMarkStore.recordRows(prefs, rows)
+        if (rows.length() > 0) {
+            // MainActivity receives this package-scoped wake-up and asks the PWA
+            // to pull the same native snapshot. This keeps verified Paper marks
+            // visible between the five-minute Brain polls without granting P1
+            // any execution authority.
+            sendBroadcast(Intent(ACTION_POSITION_MARK_TICK).setPackage(packageName))
+            LogBuffer.add('D', TAG, "POSITION_MARK_BROADCAST_SENT: rows=${rows.length()}")
+        }
         enqueueRows(rows)
         flushPending(force = false)
         return true
@@ -876,6 +884,7 @@ class PositionTickService : Service() {
 
     companion object {
         private const val TAG = "PositionTickService"
+        const val ACTION_POSITION_MARK_TICK = "com.marketradar.POSITION_MARK_TICK"
         private const val PREFS_NAME = "market_radar"
         private const val PREF_OPEN_TRADES = "open_trades"
         private const val PREF_DAILY_TOKEN = "auth_token"
