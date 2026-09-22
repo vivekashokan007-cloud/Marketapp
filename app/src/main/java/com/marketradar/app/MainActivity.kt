@@ -66,6 +66,7 @@ class MainActivity : AppCompatActivity() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val source = when (intent?.action) {
                 PositionTickService.ACTION_POSITION_MARK_TICK -> "POSITION_MARK_TICK"
+                PositionTickService.ACTION_PAPER_CLOSE_QUOTE_READY -> "PAPER_CLOSE_QUOTE_READY"
                 else -> "POLL_TICK"
             }
             Log.d("MainActivity", "BROADCAST_RECEIVED: $source")
@@ -473,6 +474,7 @@ class MainActivity : AppCompatActivity() {
         // the WebView render its verified Paper valuation without a five-minute lag.
         val filter = IntentFilter("com.marketradar.POLL_TICK").apply {
             addAction(PositionTickService.ACTION_POSITION_MARK_TICK)
+            addAction(PositionTickService.ACTION_PAPER_CLOSE_QUOTE_READY)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(pollReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -581,6 +583,8 @@ class MainActivity : AppCompatActivity() {
                     getSignalAccuracyStats: function() { return AndroidBridge.getSignalAccuracyStats(); },
                     getOpenTrades: function() { return AndroidBridge.getOpenTrades(); },
                     getPositionMarkStates: function() { return AndroidBridge.getPositionMarkStates(); },
+                    requestPaperCloseQuote: function(tradeId) { return AndroidBridge.requestPaperCloseQuote(String(tradeId || '')); },
+                    getPaperCloseQuote: function(requestId) { return AndroidBridge.getPaperCloseQuote(String(requestId || '')); },
                     getClosedTrades: function(limit) { return AndroidBridge.getClosedTrades(limit || 200); },
                     getPremiumHistory: function(days) { return AndroidBridge.getPremiumHistory(days || 5); },
                     getMorningSnapshot: function(date) { return AndroidBridge.getMorningSnapshot(date || ""); },

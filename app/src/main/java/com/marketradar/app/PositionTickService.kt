@@ -29,6 +29,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.max
 import kotlin.math.min
@@ -38,6 +39,7 @@ class PositionTickService : Service() {
     private lateinit var prefs: SharedPreferences
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var loopJob: Job? = null
+    private val paperCloseJobs = ConcurrentHashMap<String, Job>()
     private var foregroundReady = false
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -68,7 +70,23 @@ class PositionTickService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!foregroundReady) return START_NOT_STICKY
-        if (loopJob?.isActive != true) {
+        if (intent?.action == ACTION_CAPTURE_PAPER_CLOSE_QUOTE) {
+            val requestId = intent.getStringExtra(EXTRA_PAPER_CLOSE_REQUEST_ID)?.trim().orEmpty()
+            val tradeId = intent.getStringExtra(EXTRA_PAPER_CLOSE_TRADE_ID)?.trim().orEmpty()
+            if (requestId.isNotEmpty() && tradeId.isNotEmpty() && !paperCloseJobs.containsKey(requestId)) {
+                paperCloseJobs[requestId] = serviceScope.launch {
+                    try {
+                        capturePaperCloseQuote(requestId, tradeId)
+                    } finally {
+                        paperCloseJobs.remove(requestId)
+                        if (loopJob?.isActive != true) stopSelf()
+                    }
+                }
+            } else if (requestId.isBlank() || tradeId.isBlank()) {
+                Log.w(TAG, "PAPER_CLOSE_QUOTE_REJECTED: REQUEST_MISMATCH")
+            }
+        }
+        if (intent?.action != ACTION_CAPTURE_PAPER_CLOSE_QUOTE && loopJob?.isActive != true) {
             loopJob = serviceScope.launch { runLoop() }
         }
         return START_STICKY
@@ -121,8 +139,12 @@ class PositionTickService : Service() {
         while (serviceScope.coroutineContext.isActive) {
             val shouldContinue = captureOnce()
             if (!shouldContinue) {
-                stopSelf()
-                return
+                if (paperCloseJobs.isEmpty()) {
+                    stopSelf()
+                    return
+                }
+                delay(500L)
+                continue
             }
             val jitterMs = Random.nextLong(-JITTER_MS, JITTER_MS + 1)
             delay(max(15_000L, TICK_MS + jitterMs))
@@ -179,6 +201,118 @@ class PositionTickService : Service() {
         enqueueRows(rows)
         flushPending(force = false)
         return true
+    }
+
+    /** Capture one fresh, strict P1 quote for a manual Paper close. */
+    private fun capturePaperCloseQuote(requestId: String, tradeId: String) {
+        fun fail(reason: String, detail: String? = null) {
+            PaperCloseQuoteStore.completeFailed(prefs, requestId, tradeId, reason, detail)
+            sendBroadcast(
+                Intent(ACTION_PAPER_CLOSE_QUOTE_READY)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_PAPER_CLOSE_REQUEST_ID, requestId)
+                    .putExtra(EXTRA_PAPER_CLOSE_TRADE_ID, tradeId)
+            )
+        }
+
+        try {
+            PaperCloseQuoteStore.prune(prefs)
+            val openTrades = parseOpenTradesFromPrefs()
+                ?: return fail(PAPER_CLOSE_INTERNAL_ERROR, "open_trades_parse_failed")
+            val matches = (0 until openTrades.length())
+                .mapNotNull { openTrades.optJSONObject(it) }
+                .filter { it.optStringAny("id").trim() == tradeId }
+            if (matches.size != 1) return fail(PAPER_CLOSE_TRADE_NOT_FOUND)
+
+            val trade = matches.single()
+            val tradeStatus = trade.optStringAny("status", "state").trim()
+            if (tradeStatus.isNotEmpty() && !tradeStatus.equals("OPEN", ignoreCase = true)) {
+                return fail(PAPER_CLOSE_TRADE_NOT_FOUND)
+            }
+            if (!trade.optBoolean("paper", false)) return fail(PAPER_CLOSE_PAPER_ONLY)
+            if (!isMarketSessionActive()) return fail(PAPER_CLOSE_MARKET_SESSION_INACTIVE)
+
+            val lotMeta = resolvePositionTickLotMeta(trade)
+                ?: return fail(PAPER_CLOSE_LOT_AUTHORITY_UNRESOLVED)
+            if (!lotMeta.authoritative || lotMeta.contractLotSize == null || lotMeta.numberOfLots <= 0.0) {
+                return fail(PAPER_CLOSE_LOT_AUTHORITY_UNRESOLVED)
+            }
+
+            val strategyType = trade.optStringAny("strategy_type", "strategyType")
+            val expectedLegs = expectedLegCount(strategyType)
+                ?: return fail(PAPER_CLOSE_STRUCTURE_INVALID)
+            val legs = extractLegs(trade)
+            if (legs.size != expectedLegs) return fail(PAPER_CLOSE_STRUCTURE_INVALID)
+            if (legs.any { it.instrumentKey.isNullOrBlank() }) {
+                return fail(PAPER_CLOSE_INSTRUMENT_KEY_MISSING)
+            }
+            val structure = validateStructure(strategyType, legs)
+            if (structure.status != STRUCTURE_ROLES_OK) {
+                return fail(PAPER_CLOSE_STRUCTURE_INVALID, structure.problems.joinToString(",").take(180))
+            }
+
+            val keys = legs.mapNotNull { it.instrumentKey }.distinct()
+            val quoteFetch = fetchQuotesWithFallback(keys)
+            val quotes = legs.mapNotNull { leg ->
+                leg.instrumentKey?.let { key ->
+                    quoteFetch.quotes[key]?.let { quote ->
+                        key to LegQuote(quote.bid, quote.ask, quote.ltp)
+                    }
+                }
+            }.toMap()
+            val valuation = valuePositionTick(
+                strategyType = strategyType,
+                legs = legs,
+                quotes = quotes,
+                isCredit = isCreditTrade(trade, strategyType),
+                entryPremium = trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium"),
+                maxProfit = trade.optDoubleAny("max_profit", "maxProfit"),
+                maxLoss = trade.optDoubleAny("max_loss", "maxLoss"),
+                lotSize = lotMeta.lotSize
+            )
+            when {
+                valuation.crossedQuoteLegs > 0 -> return fail(PAPER_CLOSE_CROSSED_QUOTE)
+                valuation.nonPositiveQuoteLegs > 0 -> return fail(PAPER_CLOSE_NON_POSITIVE_EXECUTABLE_QUOTE)
+                valuation.legValuations.any { it.bid == null || it.ask == null || it.executablePrice == null } ->
+                    return fail(PAPER_CLOSE_QUOTE_INCOMPLETE)
+                !valuation.valuationAccepted || valuation.valuationQuality != "OK" ||
+                    valuation.executableMark == null || valuation.currentPnl == null ->
+                    return fail(PAPER_CLOSE_VALUATION_NOT_ACCEPTED)
+            }
+
+            val quotedAt = System.currentTimeMillis()
+            val payload = JSONObject().apply {
+                put("trade_id", tradeId)
+                put("requested_at_ms", PaperCloseQuoteStore.read(prefs, requestId, quotedAt)
+                    .optLong("requested_at_ms", quotedAt))
+                put("quoted_at_ms", quotedAt)
+                put("expires_at_ms", quotedAt + PAPER_CLOSE_QUOTE_TTL_MS)
+                put("source", PAPER_CLOSE_SOURCE)
+                put("valuation_quality", valuation.valuationQuality)
+                put("mark_basis", "EXECUTABLE")
+                put("executable_close_premium", valuation.executableMark)
+                put("gross_close_pnl", valuation.currentPnl)
+                put("leg_count", legs.size)
+                put("expected_leg_count", expectedLegs)
+                put("index_key", trade.optStringAny("index_key", "indexKey", "index"))
+                put("strategy_type", strategyType)
+                put("contract_lot_size", lotMeta.contractLotSize)
+                put("number_of_lots", lotMeta.numberOfLots)
+                put("quantity_units", lotMeta.lotSize)
+                put("position_tick_guards_version", POSITION_TICK_GUARDS_VERSION)
+            }
+            PaperCloseQuoteStore.completeReady(prefs, requestId, payload)
+            sendBroadcast(
+                Intent(ACTION_PAPER_CLOSE_QUOTE_READY)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_PAPER_CLOSE_REQUEST_ID, requestId)
+                    .putExtra(EXTRA_PAPER_CLOSE_TRADE_ID, tradeId)
+            )
+        } catch (t: Throwable) {
+            Log.e(TAG, "PAPER_CLOSE_QUOTE_FAILED: ${t.javaClass.simpleName}")
+            LogBuffer.add('W', TAG, "PAPER_CLOSE_QUOTE_FAILED: ${t.javaClass.simpleName}")
+            fail(PAPER_CLOSE_INTERNAL_ERROR, t.javaClass.simpleName)
+        }
     }
 
     private fun getOpenTradesFromPrefs(): JSONArray = parseOpenTradesFromPrefs() ?: JSONArray()
@@ -885,6 +1019,23 @@ class PositionTickService : Service() {
     companion object {
         private const val TAG = "PositionTickService"
         const val ACTION_POSITION_MARK_TICK = "com.marketradar.POSITION_MARK_TICK"
+        const val ACTION_CAPTURE_PAPER_CLOSE_QUOTE = "com.marketradar.CAPTURE_PAPER_CLOSE_QUOTE"
+        const val ACTION_PAPER_CLOSE_QUOTE_READY = "com.marketradar.PAPER_CLOSE_QUOTE_READY"
+        const val EXTRA_PAPER_CLOSE_REQUEST_ID = "paper_close_request_id"
+        const val EXTRA_PAPER_CLOSE_TRADE_ID = "paper_close_trade_id"
+        const val PAPER_CLOSE_SOURCE = "P1_REST_60S_MANUAL_CLOSE"
+        const val PAPER_CLOSE_QUOTE_TTL_MS = 30_000L
+        const val PAPER_CLOSE_TRADE_NOT_FOUND = "TRADE_NOT_FOUND"
+        const val PAPER_CLOSE_PAPER_ONLY = "PAPER_ONLY"
+        const val PAPER_CLOSE_MARKET_SESSION_INACTIVE = "MARKET_SESSION_INACTIVE"
+        const val PAPER_CLOSE_LOT_AUTHORITY_UNRESOLVED = "LOT_AUTHORITY_UNRESOLVED"
+        const val PAPER_CLOSE_STRUCTURE_INVALID = "STRUCTURE_INVALID"
+        const val PAPER_CLOSE_INSTRUMENT_KEY_MISSING = "INSTRUMENT_KEY_MISSING"
+        const val PAPER_CLOSE_QUOTE_INCOMPLETE = "QUOTE_INCOMPLETE"
+        const val PAPER_CLOSE_CROSSED_QUOTE = "CROSSED_QUOTE"
+        const val PAPER_CLOSE_NON_POSITIVE_EXECUTABLE_QUOTE = "NON_POSITIVE_EXECUTABLE_QUOTE"
+        const val PAPER_CLOSE_VALUATION_NOT_ACCEPTED = "VALUATION_NOT_ACCEPTED"
+        const val PAPER_CLOSE_INTERNAL_ERROR = "INTERNAL_ERROR"
         private const val PREFS_NAME = "market_radar"
         private const val PREF_OPEN_TRADES = "open_trades"
         private const val PREF_DAILY_TOKEN = "auth_token"

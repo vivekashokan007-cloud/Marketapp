@@ -2554,6 +2554,58 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getPositionMarkStates(): String = PositionMarkStore.presentationJson(prefs)
 
+    /** Start a request-scoped fresh Paper-close quote capture. */
+    @JavascriptInterface
+    fun requestPaperCloseQuote(tradeId: String): String {
+        val cleanTradeId = tradeId.trim()
+        if (cleanTradeId.isBlank()) {
+            return JSONObject().apply {
+                put("ok", false)
+                put("status", "FAILED")
+                put("reason_code", PositionTickService.PAPER_CLOSE_TRADE_NOT_FOUND)
+            }.toString()
+        }
+        val requestId = java.util.UUID.randomUUID().toString()
+        PaperCloseQuoteStore.createPending(prefs, requestId, cleanTradeId, System.currentTimeMillis())
+        return try {
+            val intent = Intent(context, PositionTickService::class.java).apply {
+                action = PositionTickService.ACTION_CAPTURE_PAPER_CLOSE_QUOTE
+                putExtra(PositionTickService.EXTRA_PAPER_CLOSE_REQUEST_ID, requestId)
+                putExtra(PositionTickService.EXTRA_PAPER_CLOSE_TRADE_ID, cleanTradeId)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            JSONObject().apply {
+                put("ok", true)
+                put("request_id", requestId)
+                put("trade_id", cleanTradeId)
+                put("status", "PENDING")
+            }.toString()
+        } catch (t: Throwable) {
+            PaperCloseQuoteStore.completeFailed(
+                prefs,
+                requestId,
+                cleanTradeId,
+                PositionTickService.PAPER_CLOSE_INTERNAL_ERROR,
+                t.javaClass.simpleName
+            )
+            JSONObject().apply {
+                put("ok", false)
+                put("request_id", requestId)
+                put("trade_id", cleanTradeId)
+                put("status", "FAILED")
+                put("reason_code", PositionTickService.PAPER_CLOSE_INTERNAL_ERROR)
+            }.toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun getPaperCloseQuote(requestId: String): String =
+        PaperCloseQuoteStore.read(prefs, requestId.trim()).toString()
+
     @JavascriptInterface
     fun getClosedTrades(limit: Int): String {
         return try {
