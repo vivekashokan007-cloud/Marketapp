@@ -1,0 +1,29 @@
+{
+  "auto_deploy": false,
+  "bnf_cycles_review_gate": 3,
+  "gate_kind": "REVIEW",
+  "gates_version": "review_gates_v1_batch_d_20260923",
+  "nf_cycles_review_gate": 8,
+  "promotion_requires_human_review": true,
+  "regimes": [
+    {
+      "note": "Requires research fill before use as promotion gate.",
+      "numeric_thresholds": null,
+      "regime_id": "regime_low_vol_placeholder",
+      "status": "UNVALIDATED"
+    },
+    {
+      "note": "Requires research fill before use as promotion gate.",
+      "numeric_thresholds": null,
+      "regime_id": "regime_high_vol_placeholder",
+      "status": "UNVALIDATED"
+    },
+    {
+      "note": "Requires research fill before use as promotion gate.",
+      "numeric_thresholds": null,
+      "regime_id": "regime_event_risk_placeholder",
+      "status": "UNVALIDATED"
+    }
+  ],
+  "statistical_sufficiency_claimed": false
+}
