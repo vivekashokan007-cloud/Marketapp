@@ -3818,11 +3818,18 @@ def _should_append_journey_point(journey, now_dt, session_date, min_gap_minutes=
 
 
 def _bridge_position_verdict_inputs(trade, pl_data=None, prefer_fresh=True):
-    """Bridge producer snake_case onto consumer camelCase for position_verdict.
+    """Compute provenance-aware VIX/erosion values for observation-only output.
 
-    Fresh poll values beat stale persisted values. Conflicting aliases are
-    resolved explicitly with provenance. Does not change exit economics —
-    wiring only.
+    Batch A REJECT response (2026-09-23): bridged values must NOT be written onto
+    trade keys that position_verdict reads (vixChange / peakErosion / vix_change /
+    peak_erosion / peak_pnl used for danger). Live analyze() keeps pre-bridge
+    advice behavior; corrected values attach to result["position_live"] and
+    result["position_verdict_inputs_observed"] only. Advice rollout of bridged
+    inputs is a later reviewed change.
+
+    Fresh poll values beat stale persisted aliases. Conflicting aliases resolve
+    explicitly with provenance. Missing VIX stays fail-closed (no +3 fabricate)
+    except frozen historical mode=legacy_missing_vix_fallback_15.
     """
     trade = trade if isinstance(trade, dict) else {}
     pl_data = pl_data if isinstance(pl_data, dict) else {}
@@ -3856,20 +3863,8 @@ def _bridge_position_verdict_inputs(trade, pl_data=None, prefer_fresh=True):
         vix_available = vix_change is not None
         vix_provenance = vix_src or 'unavailable'
 
-    trade['vix_change'] = vix_change
-    trade['vixChange'] = vix_change
-    trade['peak_erosion'] = peak_erosion if peak_erosion is not None else 0.0
-    trade['peakErosion'] = trade['peak_erosion']
-    if peak_pnl is not None:
-        trade['peak_pnl'] = peak_pnl
-    if trough_pnl is not None:
-        trade['trough_pnl'] = trough_pnl
-    if pl_data.get('journey') is not None:
-        trade['journey'] = pl_data.get('journey')
-
-    trade['vix_change_available'] = bool(vix_available)
-    trade['vix_change_provenance'] = vix_provenance
-    trade['position_verdict_input_bridge'] = {
+    peak_erosion_obs = peak_erosion if peak_erosion is not None else 0.0
+    meta = {
         'vix_change_source': vix_src,
         'peak_erosion_source': erosion_src,
         'peak_pnl_source': peak_src,
@@ -3877,8 +3872,28 @@ def _bridge_position_verdict_inputs(trade, pl_data=None, prefer_fresh=True):
         'prefer_fresh': prefer_fresh,
         'vix_change_available': bool(vix_available),
         'vix_change_provenance': vix_provenance,
+        'observation_only': True,
+        'live_advice_bridged': False,
     }
-    return trade
+    observed = {
+        'vix_change': vix_change,
+        'vixChange': vix_change,
+        'peak_erosion': peak_erosion_obs,
+        'peakErosion': peak_erosion_obs,
+        'peak_pnl': peak_pnl,
+        'trough_pnl': trough_pnl,
+        'vix_change_available': bool(vix_available),
+        'vix_change_provenance': vix_provenance,
+        'current_vix': pl_data.get('current_vix'),
+        'entry_vix_used': pl_data.get('entry_vix_used'),
+        'position_verdict_input_bridge': meta,
+        'observation_only': True,
+        'live_advice_bridged': False,
+    }
+    if pl_data.get('journey') is not None:
+        observed['journey'] = pl_data.get('journey')
+    # Intentionally do NOT mutate trade advice keys consumed by position_verdict.
+    return observed
 
 
 def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
@@ -16034,9 +16049,19 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             t['legs_required'] = pl_data.get('legs_required')
             t['legs_quoted'] = pl_data.get('legs_quoted')
             t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
-            # Batch A evidence contract: bridge producer→consumer keys on the
-            # REAL analyze() path before position_verdict reads camelCase.
-            _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
+            # Batch A A2 REJECT response: compute bridged VIX/erosion for
+            # observation-only evidence. Do NOT feed into trade keys that
+            # position_verdict reads — that would change live BOOK/EXIT advice.
+            observed = _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
+            result.setdefault('position_verdict_inputs_observed', {})[tid] = observed
+            live_row = result['position_live'].get(tid)
+            if isinstance(live_row, dict):
+                live_row['vixChange'] = observed.get('vixChange')
+                live_row['peakErosion'] = observed.get('peakErosion')
+                live_row['position_verdict_input_bridge'] = observed.get(
+                    'position_verdict_input_bridge'
+                )
+                live_row['observation_only_vix_erosion'] = True
         else:
             reason = 'missing_required_chain_quotes'
             if isinstance(pl_data, dict) and pl_data.get('failure_reason'):

@@ -158,7 +158,7 @@ class VixErosionBridgeTests(unittest.TestCase):
         trade.update(over)
         return trade
 
-    def test_bridge_maps_snake_to_camel_for_verdict(self):
+    def test_bridge_observation_has_snake_and_camel_aliases(self):
         trade = self._credit_trade()
         pl = {
             "vix_change": 2.5,
@@ -167,28 +167,37 @@ class VixErosionBridgeTests(unittest.TestCase):
             "vix_change_available": True,
             "vix_change_provenance": "observed_current_minus_entry",
         }
-        brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
-        self.assertEqual(trade["vixChange"], 2.5)
-        self.assertEqual(trade["peakErosion"], 60.0)
+        observed = brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
+        self.assertEqual(observed["vixChange"], 2.5)
+        self.assertEqual(observed["peakErosion"], 60.0)
+        self.assertEqual(observed["vix_change"], 2.5)
+        self.assertEqual(observed["peak_erosion"], 60.0)
+        self.assertTrue(observed.get("observation_only"))
+        self.assertFalse(observed.get("live_advice_bridged"))
+        # Must not mutate live advice keys on the trade object.
+        self.assertNotIn("vixChange", trade)
+        self.assertNotIn("peakErosion", trade)
+        self.assertNotIn("vix_change", trade)
+        self.assertNotIn("peak_erosion", trade)
 
-    def test_repro_key_mismatch_production_vs_consumer(self):
+    def test_live_verdict_does_not_see_bridged_observation_values(self):
+        """Observation bridge must not change position_verdict danger path."""
         base = self._credit_trade(current_pnl=800, peak_pnl=2500, is_credit=True)
-        prod = dict(base)
-        prod["vix_change"] = 2.5
-        prod["peak_erosion"] = 55.0
+        # Production-shaped trade: snake producer keys only (no camel).
+        live = dict(base)
+        live["vix_change"] = 2.5
+        live["peak_erosion"] = 55.0
+        # Explicit consumer-shaped trade (camel) — what a later advice rollout
+        # would feed; used only to prove observation ≠ live advice yet.
         cons = dict(base)
         cons["vixChange"] = 2.5
         cons["peakErosion"] = 55.0
 
-        v_cons = brain.position_verdict(
-            cons, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
+        v_before = brain.position_verdict(
+            live, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
         )
-
-        bridged = dict(base)
-        bridged["vix_change"] = 2.5
-        bridged["peak_erosion"] = 55.0
-        brain._bridge_position_verdict_inputs(
-            bridged,
+        observed = brain._bridge_position_verdict_inputs(
+            live,
             {
                 "vix_change": 2.5,
                 "peak_erosion": 55.0,
@@ -197,19 +206,24 @@ class VixErosionBridgeTests(unittest.TestCase):
             },
             prefer_fresh=True,
         )
-        v_bridged = brain.position_verdict(
-            bridged, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
+        v_after = brain.position_verdict(
+            live, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
         )
-
-        self.assertEqual(v_bridged.get("action"), v_cons.get("action"))
-        self.assertEqual(v_bridged.get("urgency"), v_cons.get("urgency"))
-        self.assertEqual(bridged.get("vixChange"), 2.5)
-        self.assertEqual(bridged.get("peakErosion"), 55.0)
-        # Unbridged production keys are the known broken baseline.
-        v_prod = brain.position_verdict(
-            prod, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
+        # Live danger path unchanged by observation bridge.
+        self.assertEqual(v_after.get("action"), v_before.get("action"))
+        self.assertEqual(v_after.get("urgency"), v_before.get("urgency"))
+        self.assertEqual(v_after.get("reason"), v_before.get("reason"))
+        self.assertNotIn("vixChange", live)
+        self.assertNotIn("peakErosion", live)
+        # Observation payload DOES contain corrected bridged values.
+        self.assertEqual(observed.get("vixChange"), 2.5)
+        self.assertEqual(observed.get("peakErosion"), 55.0)
+        # Consumer-shaped camel inputs still differ from production snake-only
+        # (documents the deferred advice-rollout gap; Batch A does not close it).
+        v_cons = brain.position_verdict(
+            cons, [], {"type": "range"}, {"nfDTE": 3, "marketPhase": "MIDDAY"}
         )
-        self.assertNotEqual(v_prod.get("reason"), v_cons.get("reason"))
+        self.assertNotEqual(v_before.get("reason"), v_cons.get("reason"))
 
     def test_missing_vix_does_not_fabricate_plus3_spike(self):
         info = brain._compute_vix_change_for_verdict(None, 12.0, mode="corrected")
@@ -224,8 +238,11 @@ class VixErosionBridgeTests(unittest.TestCase):
             "vix_change_available": False,
             "vix_change_provenance": info["vix_change_provenance"],
         }
-        brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
-        self.assertIsNone(trade.get("vixChange"))
+        observed = brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
+        self.assertIsNone(observed.get("vixChange"))
+        self.assertIsNone(observed.get("vix_change"))
+        self.assertFalse(observed.get("vix_change_available"))
+        self.assertNotIn("vixChange", trade)
         verdict = brain.position_verdict(trade, [], {"type": "range"}, {"nfDTE": 3})
         reason = (verdict.get("reason") or "") + " " + (verdict.get("urgency") or "")
         self.assertNotIn("+3", reason)
@@ -239,7 +256,7 @@ class VixErosionBridgeTests(unittest.TestCase):
             info["vix_change_provenance"], "legacy_missing_vix_fallback_15"
         )
 
-    def test_fresh_poll_beats_stale_persisted_alias(self):
+    def test_fresh_poll_beats_stale_persisted_alias_in_observation(self):
         trade = self._credit_trade(
             vixChange=0.1, peakErosion=5.0, vix_change=0.1, peak_erosion=5.0
         )
@@ -249,19 +266,26 @@ class VixErosionBridgeTests(unittest.TestCase):
             "peak_pnl": 2500,
             "vix_change_available": True,
         }
-        brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
-        self.assertEqual(trade["vixChange"], 2.2)
-        self.assertEqual(trade["peakErosion"], 40.0)
+        observed = brain._bridge_position_verdict_inputs(trade, pl, prefer_fresh=True)
+        self.assertEqual(observed["vixChange"], 2.2)
+        self.assertEqual(observed["peakErosion"], 40.0)
+        # Stale camel on trade must remain untouched (observation-only).
+        self.assertEqual(trade["vixChange"], 0.1)
+        self.assertEqual(trade["peakErosion"], 5.0)
 
-    def test_conflicting_aliases_prefer_snake_producer(self):
+    def test_conflicting_aliases_prefer_snake_producer_in_observation(self):
         trade = self._credit_trade(
             vix_change=1.5, vixChange=9.9, peak_erosion=33.0, peakErosion=1.0
         )
-        brain._bridge_position_verdict_inputs(trade, {}, prefer_fresh=True)
-        self.assertEqual(trade["vixChange"], 1.5)
-        self.assertEqual(trade["peakErosion"], 33.0)
-        meta = trade["position_verdict_input_bridge"]
+        observed = brain._bridge_position_verdict_inputs(trade, {}, prefer_fresh=True)
+        self.assertEqual(observed["vixChange"], 1.5)
+        self.assertEqual(observed["peakErosion"], 33.0)
+        meta = observed["position_verdict_input_bridge"]
         self.assertEqual(meta["vix_change_source"], "conflict_prefer_snake_producer")
+        self.assertTrue(meta.get("observation_only"))
+        # Trade camel aliases unchanged by observation bridge.
+        self.assertEqual(trade["vixChange"], 9.9)
+        self.assertEqual(trade["peakErosion"], 1.0)
 
 
 class JourneySessionAwareTests(unittest.TestCase):
