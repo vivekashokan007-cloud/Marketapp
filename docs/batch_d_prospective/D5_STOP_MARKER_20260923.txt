@@ -1,0 +1,4 @@
+# Batch D D5 — in-repo stop marker
+
+See /workspace/mr-batch-cd-review/STOP_REPORT_BATCH_D_20260923.txt for full STOP/handoff.
+BNF_2026-09-29 remains PENDING_UNTIL_EXPIRY. No fabricated results. No version bump.
