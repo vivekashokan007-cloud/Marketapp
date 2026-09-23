@@ -270,6 +270,11 @@ class C4RunnerTests(unittest.TestCase):
             self.assertFalse(report["ranking_changed"])
             self.assertFalse(report["supabase_write"])
             self.assertIsNone(report["summary"]["collapsed_success_percent"])
+            self.assertTrue(report.get("SYNTHETIC_FIXTURE_ONLY"))
+            self.assertTrue(report["summary"].get("SYNTHETIC_FIXTURE_ONLY"))
+            self.assertFalse(report["summary"].get("performance_comparison_allowed"))
+            self.assertIsNone(report.get("performance_report"))
+            self.assertTrue(report.get("research_performance_comparisons_suppressed"))
             # Structural entry produces STRUCTURAL outcomes
             struct_rows = [
                 o for o in report["outcomes"] if o["entry_identity"] == "entry_struct_004"

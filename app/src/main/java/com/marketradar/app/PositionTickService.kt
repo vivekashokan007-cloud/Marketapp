@@ -500,6 +500,18 @@ class PositionTickService : Service() {
             put("batch_b_shadow_reason", policy.reason)
             put("batch_b_observation_only", true)
             put("batch_b_notification_authority_selected", false)
+
+            put("batch_b_parity_source", "kotlin_evaluateShadowPolicy")
+            put("batch_b_parity_trade_id", tradeId)
+            put("batch_b_parity_session_id", sessionDate)
+            put("batch_b_parity_event_ts", tickTs)
+            put("batch_b_parity_quote_ts", tickTs)
+            put("batch_b_parity_action", policy.action)
+            put("batch_b_parity_reason", policy.reason)
+            // Join is performed offline against python parity_observations.jsonl;
+            // unmatched/late/incomplete => unavailable, never agreement.
+            put("batch_b_parity_join_authority", "offline_python_join_stored_observations")
+
         }
 
         return JSONObject().apply {

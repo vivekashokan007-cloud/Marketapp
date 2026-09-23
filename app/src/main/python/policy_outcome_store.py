@@ -69,7 +69,20 @@ class PolicyOutcomeStore:
 
         key = outcome_key(entry_identity, policy_id, policy_version)
         pin_key = (policy_id, policy_version)
-        fp = behavior_fingerprint or f"{policy_id}::{policy_version}"
+        fp = behavior_fingerprint
+        fingerprint_note = None
+        if not fp:
+            fp = f"PLACEHOLDER_NO_IMPL::{policy_id}::{policy_version}"
+            fingerprint_note = (
+                "No real policy implementation hash available; "
+                "process-local id::version is NOT a behavior fingerprint."
+            )
+        elif isinstance(fp, str) and fp == f"{policy_id}::{policy_version}":
+            fingerprint_note = (
+                "Caller supplied id::version placeholder — not an immutable "
+                "code/config hash of a policy implementation."
+            )
+            fp = f"PLACEHOLDER_NO_IMPL::{fp}"
         if pin_key in self._version_pins and self._version_pins[pin_key] != fp:
             raise ValueError(
                 "policy_version_immutability_guard:"
@@ -88,12 +101,17 @@ class PolicyOutcomeStore:
         safe_metrics = dict(metrics or {})
         if is_structural:
             # Do not invent neutral zeros for absent economics.
-            for k in ("net_rupees", "R_max_loss_norm", "R_legacy_configured_risk"):
-                if k in safe_metrics and safe_metrics[k] == 0 and k not in (
-                    safe_metrics.get("_explicit_zero_fields") or []
-                ):
-                    # Leave explicit zeros only when caller marks them; otherwise drop.
-                    pass
+            for k in ("net_rupees", "R_max_loss_norm", "R_legacy_configured_risk",
+                      "net_profitable", "tp_hit", "drawdown", "capital_usage"):
+                explicit = set(safe_metrics.get("_explicit_zero_fields") or [])
+                if k in safe_metrics and k not in explicit:
+                    # Remove unmarked economic fields (including unmarked zeros).
+                    if safe_metrics.get(k) in (0, 0.0, False, None):
+                        safe_metrics[k] = None
+            # Drop keys that are None after scrub so STRUCTURAL rows do not look economic.
+            for k in list(safe_metrics.keys()):
+                if k in ("net_rupees", "R_max_loss_norm", "R_legacy_configured_risk") and safe_metrics[k] is None:
+                    del safe_metrics[k]
             safe_metrics["label"] = LABEL_STRUCTURAL
             safe_metrics["missing_not_neutral_zero"] = True
 
@@ -120,6 +138,7 @@ class PolicyOutcomeStore:
             "membership": deepcopy(membership) if membership else None,
             "selection_mode": selection_mode,
             "behavior_fingerprint": fp,
+            "behavior_fingerprint_note": fingerprint_note,
             "supabase_write": False,
             "economics_row_count": 1,
         }

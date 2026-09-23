@@ -136,7 +136,7 @@ def run_fixture_eval(
                 metrics=metrics,
                 membership=membership,
                 selection_mode=entry.get("selection_mode", "retrospective"),
-                behavior_fingerprint=f"{pol['policy_id']}::{pol['policy_version']}",
+                behavior_fingerprint=None,  # explicit placeholder — no real policy impl to hash
             )
             # Attach slice dims for reporting.
             store._rows[pos.outcome_key(eid, pol["policy_id"], pol["policy_version"])][
@@ -164,6 +164,11 @@ def run_fixture_eval(
         by_policy[pol["policy_id"]] = pem.summarize_separate_metrics(subset)
 
     report = {
+        "SYNTHETIC_FIXTURE_ONLY": True,
+        "research_performance_comparisons_suppressed": True,
+        "executable_historical_replay_implemented": False,
+        "real_policy_replay_status": "NOT_IMPLEMENTED",
+        "performance_sections_gated": True,
         "runner_version": POLICY_EVAL_RUNNER_VERSION,
         "registry_version": pr.POLICY_REGISTRY_VERSION,
         "generated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -175,10 +180,24 @@ def run_fixture_eval(
         "teacher_production_changed": False,
         "ranking_changed": False,
         "supabase_write": False,
-        "summary": summary,
-        "by_policy": by_policy,
+        "summary": {
+            **(summary if isinstance(summary, dict) else {}),
+            "SYNTHETIC_FIXTURE_ONLY": True,
+            "note": "Metrics below are hardcoded fixture deltas — NOT real research improvement.",
+            "sum_net_rupees_is_not_real_research_improvement": True,
+            "performance_comparison_allowed": False,
+        },
+        "by_policy": {
+            **{k: {**(v if isinstance(v, dict) else {}), "SYNTHETIC_FIXTURE_ONLY": True,
+                    "performance_comparison_allowed": False} for k, v in (by_policy or {}).items()},
+            "SYNTHETIC_FIXTURE_ONLY": True,
+        },
+        "performance_report": None,  # suppressed outside testing — synthetic fixtures only
+
         "outcomes": outcomes,
+        "synthetic_fixture_deltas_applied": True,
         "notes": [
+            "SYNTHETIC_FIXTURE_ONLY — whole report is synthetic; do not treat as policy research performance.",
             "Research-only fixture eval. Not production advice.",
             "Noon in expiry_time_grid is a hypothesis, not an optimum.",
             "corrected_data_contract_position_verdict remains RESEARCH.",
@@ -199,3 +218,20 @@ def run_fixture_eval(
 if __name__ == "__main__":
     r = run_fixture_eval()
     print(json.dumps({"n_outcomes": r["n_outcomes"], "report_path": r.get("report_path")}, indent=2))
+
+
+def run_real_policy_replay(*_args, **_kwargs):
+    """Stub for future version-pinned executable historical replay.
+
+    NOT_IMPLEMENTED. Research-only marker. Registry of names is not replay.
+    """
+    return {
+        "status": "NOT_IMPLEMENTED",
+        "research_only": True,
+        "executable_historical_replay_exists": False,
+        "note": (
+            "Real research requires version-pinned policy replay with event clock, "
+            "correct valuation/cost basis, quote coverage, forced exits, censoring, "
+            "and independent input/expected-output evidence."
+        ),
+    }

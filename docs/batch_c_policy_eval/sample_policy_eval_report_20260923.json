@@ -1,6 +1,8 @@
 {
+  "SYNTHETIC_FIXTURE_ONLY": true,
   "by_policy": {
     "H0_fixed_exit": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": -16.581666666666667,
       "mean_R_max_loss_norm": -16.581666666666667,
@@ -11,12 +13,14 @@
       "net_profitable_count": 2,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 550.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "H1_fixed_exit": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 8.435833333333333,
       "mean_R_max_loss_norm": 8.435833333333333,
@@ -27,12 +31,14 @@
       "net_profitable_count": 3,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 775.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "H2_fixed_exit": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 3.4323333333333337,
       "mean_R_max_loss_norm": 3.4323333333333337,
@@ -43,12 +49,15 @@
       "net_profitable_count": 3,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 730.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
+    "SYNTHETIC_FIXTURE_ONLY": true,
     "corrected_data_contract_position_verdict": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 5.1001666666666665,
       "mean_R_max_loss_norm": 5.1001666666666665,
@@ -59,12 +68,14 @@
       "net_profitable_count": 3,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 745.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "deployed_position_verdict": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 0.09666666666666666,
       "mean_R_max_loss_norm": 0.09666666666666666,
@@ -75,12 +86,14 @@
       "net_profitable_count": 2,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 700.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "expiry_time_grid": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 1.7645,
       "mean_R_max_loss_norm": 1.7645,
@@ -91,12 +104,14 @@
       "net_profitable_count": 3,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 715.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "forced_exit_only_control": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": -33.26,
       "mean_R_max_loss_norm": -33.26,
@@ -107,12 +122,14 @@
       "net_profitable_count": 2,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 400.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "kotlin_tick_shadow_policy": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": -3.2390000000000003,
       "mean_R_max_loss_norm": -3.2390000000000003,
@@ -123,12 +140,14 @@
       "net_profitable_count": 2,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 670.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     },
     "legacy_teacher_v_frozen": {
+      "SYNTHETIC_FIXTURE_ONLY": true,
       "collapsed_success_percent": null,
       "mean_R_legacy_configured_risk": 0.09666666666666666,
       "mean_R_max_loss_norm": 0.09666666666666666,
@@ -139,18 +158,21 @@
       "net_profitable_count": 2,
       "net_profitable_known": 3,
       "note": "Metrics reported separately; do not collapse into one success %.",
+      "performance_comparison_allowed": false,
       "success_percent_forbidden": true,
       "sum_net_rupees": 700.0,
       "tp_hit_count": 1,
       "tp_hit_known": 3
     }
   },
-  "generated_at_utc": "2026-09-23T06:01:21Z",
+  "executable_historical_replay_implemented": false,
+  "generated_at_utc": "2026-09-23T09:42:55Z",
   "live_advice_changed": false,
   "n_entries": 4,
   "n_outcomes": 36,
   "n_policies": 9,
   "notes": [
+    "SYNTHETIC_FIXTURE_ONLY \u2014 whole report is synthetic; do not treat as policy research performance.",
     "Research-only fixture eval. Not production advice.",
     "Noon in expiry_time_grid is a hypothesis, not an optimum.",
     "corrected_data_contract_position_verdict remains RESEARCH.",
@@ -159,7 +181,8 @@
   "notifications_changed": false,
   "outcomes": [
     {
-      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -233,7 +256,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -307,7 +331,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -381,7 +406,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -455,7 +481,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -529,7 +556,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -603,7 +631,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -677,7 +706,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -751,7 +781,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -825,7 +856,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -897,7 +929,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -969,7 +1002,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1041,7 +1075,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1113,7 +1148,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1185,7 +1221,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1257,7 +1294,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1329,7 +1367,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1401,7 +1440,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1473,7 +1513,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1535,7 +1576,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1597,7 +1639,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1659,7 +1702,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1721,7 +1765,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1783,7 +1828,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1845,7 +1891,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1907,7 +1954,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -1969,7 +2017,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2031,7 +2080,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2068,8 +2118,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2079,7 +2127,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2105,7 +2152,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2142,8 +2190,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2153,7 +2199,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2179,7 +2224,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2216,8 +2262,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2227,7 +2271,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2253,7 +2296,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2290,8 +2334,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2301,7 +2343,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2327,7 +2368,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::expiry_time_grid::expiry_time_grid_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2364,8 +2406,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2375,7 +2415,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2401,7 +2440,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2438,8 +2478,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2449,7 +2487,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2475,7 +2512,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2512,8 +2550,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2523,7 +2559,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2549,7 +2584,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2586,8 +2622,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2597,7 +2631,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2623,7 +2656,8 @@
       "supabase_write": false
     },
     {
-      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint": "PLACEHOLDER_NO_IMPL::forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "behavior_fingerprint_note": "No real policy implementation hash available; process-local id::version is NOT a behavior fingerprint.",
       "censoring": "NONE",
       "code_version": "policy_eval_runner_v1_batch_c_20260923",
       "cost_version": "cost_v1",
@@ -2660,8 +2694,6 @@
         ]
       },
       "metrics": {
-        "R_legacy_configured_risk": null,
-        "R_max_loss_norm": null,
         "capital_usage": null,
         "collapsed_success_percent": null,
         "drawdown": null,
@@ -2671,7 +2703,6 @@
         "missing_not_neutral_zero": true,
         "missingness": null,
         "net_profitable": null,
-        "net_rupees": null,
         "selection_mode": "retrospective",
         "structural": true,
         "success_percent_forbidden": true,
@@ -2697,10 +2728,15 @@
       "supabase_write": false
     }
   ],
+  "performance_report": null,
+  "performance_sections_gated": true,
   "ranking_changed": false,
+  "real_policy_replay_status": "NOT_IMPLEMENTED",
   "registry_version": "policy_registry_batch_c_v1_20260923",
+  "research_performance_comparisons_suppressed": true,
   "runner_version": "policy_eval_runner_v1_batch_c_20260923",
   "summary": {
+    "SYNTHETIC_FIXTURE_ONLY": true,
     "collapsed_success_percent": null,
     "mean_R_legacy_configured_risk": -3.7949444444444445,
     "mean_R_max_loss_norm": -3.7949444444444445,
@@ -2710,12 +2746,15 @@
     "n_with_net_rupees": 27,
     "net_profitable_count": 22,
     "net_profitable_known": 27,
-    "note": "Metrics reported separately; do not collapse into one success %.",
+    "note": "Metrics below are hardcoded fixture deltas \u2014 NOT real research improvement.",
+    "performance_comparison_allowed": false,
     "success_percent_forbidden": true,
     "sum_net_rupees": 5985.0,
+    "sum_net_rupees_is_not_real_research_improvement": true,
     "tp_hit_count": 9,
     "tp_hit_known": 27
   },
   "supabase_write": false,
+  "synthetic_fixture_deltas_applied": true,
   "teacher_production_changed": false
 }

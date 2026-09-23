@@ -95,6 +95,8 @@ class B2PathQualityEvaluatorTests(unittest.TestCase):
             "vix": 12,
             "breadth": 1,
             "quote_timestamps": ["a"],
+            "leg_quotes": [{"bid": 1, "ask": 2}],
+            "leg_quote_ages": [0.5],
         }
 
     def test_full_when_complete(self):
@@ -205,6 +207,11 @@ class B4ParityInstrumentationTests(unittest.TestCase):
             trade_id="t1",
             python_verdict=py,
             kotlin_summary=kt,
+            session_id="2026-09-23",
+            python_event_ts="2026-09-23T10:00:00+00:00",
+            python_quote_ts="2026-09-23T10:00:00+00:00",
+            kotlin_event_ts="2026-09-23T10:00:00Z",
+            kotlin_quote_ts="2026-09-23T10:00:00Z",
         )
         self.assertTrue(rec["observation_only"])
         self.assertFalse(rec["notification_authority_selected"])
@@ -272,6 +279,7 @@ class B5ReplayGuardsTests(unittest.TestCase):
                 "path_points": True,
                 "quote_timestamps": ["a"],
                 "leg_quotes": [{"bid": 1, "ask": 2}],
+                "leg_quote_ages": [0.5],
                 "oi": None,
                 "momentum": None,
                 "vix": 12,
@@ -291,6 +299,7 @@ class B5ReplayGuardsTests(unittest.TestCase):
                 "path_points": True,
                 "quote_timestamps": ["a", "b"],
                 "leg_quotes": [{"bid": 1, "ask": 2}],
+                "leg_quote_ages": [0.4, 0.6],
                 "oi": [1],
                 "momentum": [1],
                 "vix": 12,

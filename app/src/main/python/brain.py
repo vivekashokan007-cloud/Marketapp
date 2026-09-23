@@ -4303,9 +4303,14 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     # VIX change since entry — corrected availability (no missing-VIX spike).
     # Frozen historical callers may pass ctx['vix_change_mode'] =
     # 'legacy_missing_vix_fallback_15' to preserve the deployed fabricate-15 path.
+    # VIX change since entry — live path always uses corrected availability.
+    # Legacy fabricate-15 is NOT selectable via ambient ctx; offline/frozen
+    # replay must call _compute_vix_change_for_verdict(..., mode='legacy_missing_vix_fallback_15')
+    # or _vix_change_legacy_missing_fallback(...) explicitly.
     vix_mode = 'corrected'
     if isinstance(ctx, dict) and ctx.get('vix_change_mode'):
-        vix_mode = str(ctx.get('vix_change_mode'))
+        # Ambient ctx mode is ignored on the live valuation path (REJECT fix).
+        print(f"DEBUG: ignoring ambient ctx vix_change_mode={ctx.get('vix_change_mode')!r} on live path")
     entry_vix_raw = trade.get('entry_vix')
     vix_info = _compute_vix_change_for_verdict(vix, entry_vix_raw, mode=vix_mode)
     vix_change = vix_info['vix_change']
@@ -16143,13 +16148,34 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 ],
             )
             attach_position_state_observation(result, tid, state)
+            event_ts = ctx.get("poll_ts") or ctx.get("now_iso") or ctx.get("scan_id")
+            quote_ts = ctx.get("quote_ts") or ctx.get("poll_ts") or ctx.get("now_iso")
+            session_id = ctx.get("session_id") or ctx.get("today_ist") or ctx.get("session_date")
             rec = build_parity_record(
-                event_id=ctx.get("poll_ts") or ctx.get("scan_id") or f"python_scan:{tid}",
+                event_id=event_ts or f"python_scan:{tid}",
                 trade_id=tid,
                 python_verdict=pv,
                 kotlin_summary=None,
+                session_id=session_id,
+                python_event_ts=event_ts,
+                python_quote_ts=quote_ts,
             )
             attach_parity_observation(result, tid, rec)
+            # Persist python-path observation for later join (observation-only).
+            try:
+                from advice_parity_instrumentation import persist_path_observation
+                persist_path_observation(
+                    source="python_position_verdict",
+                    trade_id=tid,
+                    session_id=session_id,
+                    event_ts=event_ts,
+                    quote_ts=quote_ts,
+                    action=(pv or {}).get("action") if isinstance(pv, dict) else None,
+                    reason=(pv or {}).get("reason") or (pv or {}).get("reasoning") if isinstance(pv, dict) else None,
+                    extra={"urgency": (pv or {}).get("urgency") if isinstance(pv, dict) else None},
+                )
+            except Exception as _parity_persist_err:
+                print(f"DEBUG: parity persist failed for tid {tid}: {_parity_persist_err}")
         except Exception as e:
             print(f"DEBUG: Batch B observation attach failed for tid {tid}: {e}")
 
@@ -19872,6 +19898,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'nfDTE', 'bnfDTE',
         'snapshot_open_trades_json', 'snapshot_closed_trades_json',
         'snapshot_capture_completeness',
+        'snapshot_capture_failure_reason',
     )
     object_keys = (
         'effective_bias',
@@ -19911,7 +19938,10 @@ def _compact_android_snapshot_context(snapshot_context):
         'marketPhase',
         'snapshot_position_verdicts',
         'snapshot_position_marks',
+        'advice_parity_observed',
+        'position_state_observed',
         'snapshot_manual_exit_provenance',
+        'snapshot_capture_field_status',
         'snapshot_market_profiles',
         'bnfDteMeta', 'nfDteMeta',
     )
@@ -20038,6 +20068,38 @@ def _compact_android_snapshot_context(snapshot_context):
         'context_byte_cap': context_byte_cap,
         'removed': removed,
     }
+    
+    # Batch A REJECT: if still over cap after all shrinks, FAIL completeness —
+    # do not silently claim forward_capture_v1_batch_a on an over-budget payload.
+    if encoded_bytes > context_byte_cap:
+        compact['snapshot_capture_completeness'] = 'forward_capture_budget_exceeded_batch_a'
+        compact['snapshot_capture_failure_reason'] = (
+            f'context_bytes_exceed_cap:{encoded_bytes}>{context_byte_cap}'
+        )
+        # Drop the largest remaining evidence blob rather than claim completeness.
+        for _drop_key in (
+            'snapshot_open_trades_json',
+            'snapshot_closed_trades_json',
+            'snapshot_open_trades',
+            'snapshot_watchlist',
+        ):
+            if _drop_key in compact:
+                compact.pop(_drop_key, None)
+                removed.append(f'{_drop_key}:dropped_over_budget')
+                compact.setdefault('snapshot_capture_field_status', {}).setdefault('fields', {})
+                if isinstance(compact.get('snapshot_capture_field_status'), dict):
+                    fields = compact['snapshot_capture_field_status'].setdefault('fields', {})
+                    if isinstance(fields, dict):
+                        fields[_drop_key] = 'truncated'
+                encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
+                if encoded_bytes <= context_byte_cap:
+                    break
+        if encoded_bytes > context_byte_cap:
+            # Still over: keep failure marker; never restore complete-capture token.
+            compact['snapshot_capture_completeness'] = 'forward_capture_budget_exceeded_batch_a'
+    elif str(compact.get('snapshot_capture_completeness') or '').startswith('forward_capture_v1_batch_a'):
+        # Preserve complete marker only when not over budget.
+        pass
     compact['snapshot_android_compaction'] = compaction_meta
     compaction_meta['context_bytes'] = len(
         json.dumps(compact, separators=(',', ':')).encode('utf-8')
@@ -20542,7 +20604,43 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         for tid, row in position_live.items()
     }
     # Honesty marker: schema survival does NOT rewrite historical rows.
-    snapshot_context['snapshot_capture_completeness'] = 'forward_capture_v1_batch_a'
+    
+    # Batch B REJECT: lift parity / position-state observations into snapshot so
+    # android compaction whitelist can retain them. Observation-only.
+    if isinstance(result.get('advice_parity_observed'), dict):
+        snapshot_context['advice_parity_observed'] = result.get('advice_parity_observed')
+    if isinstance(result.get('position_state_observed'), dict):
+        snapshot_context['position_state_observed'] = result.get('position_state_observed')
+    # Honesty: complete-capture marker only when required fields present.
+    _capture_required = {
+        'nfDTE': snapshot_context.get('nfDTE'),
+        'bnfDTE': snapshot_context.get('bnfDTE'),
+        'snapshot_open_trades_json': snapshot_context.get('snapshot_open_trades_json'),
+        'marketPhase': snapshot_context.get('marketPhase'),
+        'snapshot_position_verdicts': snapshot_context.get('snapshot_position_verdicts'),
+        'snapshot_position_marks': snapshot_context.get('snapshot_position_marks'),
+    }
+    _capture_fields = {}
+    for _fk, _fv in _capture_required.items():
+        if _fv is None:
+            _capture_fields[_fk] = 'missing'
+        elif _fv == '' or _fv == {} or _fv == []:
+            _capture_fields[_fk] = 'missing'
+        else:
+            _capture_fields[_fk] = 'present'
+    snapshot_context['snapshot_capture_field_status'] = {
+        'schema_version': 'capture_field_status_v1_batch_a_reject_fix_20260923',
+        'fields': _capture_fields,
+    }
+    _missing_required = [k for k, st in _capture_fields.items() if st == 'missing']
+    if _missing_required:
+        snapshot_context['snapshot_capture_completeness'] = 'forward_capture_incomplete_batch_a'
+        snapshot_context['snapshot_capture_failure_reason'] = (
+            'required_fields_missing:' + ','.join(_missing_required)
+        )
+    else:
+        snapshot_context['snapshot_capture_completeness'] = 'forward_capture_v1_batch_a'
+
     snapshot_context['snapshot_manual_exit_provenance'] = {
         'book_profit_button_reason_is_brain_proof': False,
         'note': (
