@@ -63,14 +63,18 @@ class Blocker1ParityJoinTests(unittest.TestCase):
         api.persist_path_observation(
             source="python_position_verdict",
             trade_id="t2",
+            session_id="sess-A",
             event_ts="2026-09-23T10:00:00+05:30",
+            quote_ts="2026-09-23T10:00:00+05:30",
             action="HOLD",
             store=store,
         )
         api.persist_path_observation(
             source="kotlin_shadow_policy",
             trade_id="t2",
+            session_id="sess-A",
             event_ts="2026-09-23T10:05:00+05:30",
+            quote_ts="2026-09-23T10:05:00+05:30",
             action="HOLD",
             store=store,
         )
@@ -85,14 +89,18 @@ class Blocker1ParityJoinTests(unittest.TestCase):
         api.persist_path_observation(
             source="python_position_verdict",
             trade_id="t3",
+            session_id="sess-2026-09-23",
             event_ts="2026-09-23T10:00:00+00:00",
+            quote_ts="2026-09-23T10:00:00+00:00",
             action="HOLD",
             store=store,
         )
         api.persist_path_observation(
             source="kotlin_shadow_policy",
             trade_id="t3",
+            session_id="sess-2026-09-23",
             event_ts="2026-09-23T10:00:30+00:00",
+            quote_ts="2026-09-23T10:00:30+00:00",
             action="EXIT",
             store=store,
         )
@@ -253,7 +261,7 @@ class Blocker4SyntheticRunnerTests(unittest.TestCase):
 
 class Blocker5TimestampFreezePinTests(unittest.TestCase):
     def test_mixed_offset_backdated_outcome_rejected(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         store.freeze_entry(
             entry_identity="rej-mixed",
             freeze_ts="2026-09-23T11:00:00+00:00",
@@ -265,7 +273,11 @@ class Blocker5TimestampFreezePinTests(unittest.TestCase):
                 outcome={"net_rupees": 10},
                 outcome_ts="2026-09-23T16:00:00+05:30",
             )
-        self.assertIn("before_freeze", str(ctx.exception))
+        self.assertTrue(
+            ("before_freeze" in str(ctx.exception))
+            or ("before_creation" in str(ctx.exception)),
+            str(ctx.exception),
+        )
 
     def test_holdout_orders_by_utc_instant(self):
         split = ch.split_chronological(
@@ -279,7 +291,7 @@ class Blocker5TimestampFreezePinTests(unittest.TestCase):
         self.assertEqual([r["entry_identity"] for r in split["holdout"]], ["b"])
 
     def test_naive_timestamp_rejected(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         with self.assertRaises(ValueError):
             store.freeze_entry(
                 entry_identity="naive",

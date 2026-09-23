@@ -101,7 +101,7 @@ class B2PathQualityEvaluatorTests(unittest.TestCase):
 
     def test_full_when_complete(self):
         r = pqe.evaluate_path_quality(
-            points=[{"poll_ts": f"t{i}"} for i in range(3)],
+            points=[{"poll_ts": f"2026-09-23T10:0{i}:00+00:00"} for i in range(3)],
             required_interval_count=3,
             evidence=self._full_evidence(),
             quote_classifications=[{"classification": "OK"}],
@@ -112,7 +112,7 @@ class B2PathQualityEvaluatorTests(unittest.TestCase):
 
     def test_limited_on_missing_intervals(self):
         r = pqe.evaluate_path_quality(
-            points=[{"poll_ts": "t1"}],
+            points=[{"poll_ts": "2026-09-23T10:00:00+00:00"}],
             required_interval_count=5,
             missing_intervals=["gap1", "gap2"],
             evidence=self._full_evidence(),
@@ -125,7 +125,7 @@ class B2PathQualityEvaluatorTests(unittest.TestCase):
 
     def test_structural_missing_is_limited_not_neutral(self):
         r = pqe.evaluate_path_quality(
-            points=[{"poll_ts": "t1"}],
+            points=[{"poll_ts": "2026-09-23T10:00:00+00:00"}],
             required_interval_count=1,
             evidence={
                 "oi": None,
@@ -274,7 +274,7 @@ class B5ReplayGuardsTests(unittest.TestCase):
 
     def test_structural_label_when_oi_absent(self):
         g = rpg.guard_replay_fidelity(
-            path_points=[{"poll_ts": "t1"}],
+            path_points=[{"poll_ts": "2026-09-23T10:00:00+00:00"}],
             evidence={
                 "path_points": True,
                 "quote_timestamps": ["a"],
@@ -294,18 +294,22 @@ class B5ReplayGuardsTests(unittest.TestCase):
 
     def test_full_honored_when_evidence_complete(self):
         g = rpg.guard_replay_fidelity(
-            path_points=[{"poll_ts": "t1"}, {"poll_ts": "t2"}],
+            path_points=[
+                {"poll_ts": "2026-09-23T10:00:00+00:00"},
+                {"poll_ts": "2026-09-23T10:01:00+00:00"},
+                {"poll_ts": "2026-09-23T10:02:00+00:00"},
+            ],
             evidence={
                 "path_points": True,
-                "quote_timestamps": ["a", "b"],
+                "quote_timestamps": ["a", "b", "c"],
                 "leg_quotes": [{"bid": 1, "ask": 2}],
-                "leg_quote_ages": [0.4, 0.6],
+                "leg_quote_ages": [0.4, 0.6, 0.5],
                 "oi": [1],
                 "momentum": [1],
                 "vix": 12,
                 "breadth": 1,
             },
-            required_interval_count=2,
+            required_interval_count=3,
             quote_classifications=[{"classification": "OK"}],
             claim_full=True,
         )

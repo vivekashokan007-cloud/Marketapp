@@ -2,14 +2,18 @@
 """Batch B B2 — versioned path-quality evaluator alongside legacy teacher.
 
 REJECT fix 2026-09-23: empty / missing-key inputs must NEVER certify FULL.
-Explicit required-evidence contracts per valuation basis (LTP/gross vs executable/net).
-Missing keys count as absent.
+REJECT-fix R2 2026-09-23:
+- Require explicit minimum interval/point counts per contract for FULL.
+- Reject placeholder/synthetic evidence markers (never FULL).
+- Compare timezone-aware UTC instants (not strings) for time-ordering;
+  reverse UTC order => not FULL.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-PATH_QUALITY_EVALUATOR_VERSION = "path_quality_evaluator_v2_batch_b_reject_fix_20260923"
+PATH_QUALITY_EVALUATOR_VERSION = "path_quality_evaluator_v3_batch_b_reject_fix_r2_20260923"
 
 FIDELITY_FULL = "FULL"
 FIDELITY_LIMITED_FIXTURE = "LIMITED_FIXTURE"
@@ -46,12 +50,49 @@ REQUIRED_EVIDENCE_BY_BASIS: Dict[str, Tuple[str, ...]] = {
 
 STRUCTURAL_EVIDENCE_KEYS = ("oi", "momentum", "vix", "breadth", "quote_timestamps")
 
+# Explicit minimum point/interval counts required before FULL is allowed.
+MIN_POINTS_FOR_FULL_BY_BASIS: Dict[str, int] = {
+    VALUATION_BASIS_LTP_GROSS: 3,
+    VALUATION_BASIS_EXECUTABLE_NET: 3,
+}
+
+PLACEHOLDER_MARKERS = (
+    "PLACEHOLDER",
+    "SYNTHETIC",
+    "DUMMY",
+    "FIXTURE_ONLY",
+    "TODO",
+    "NOT_REAL",
+)
+
 
 def _is_empty(value: Any) -> bool:
     return value in (None, "", [], {}, False)
 
 
+def _parse_aware_utc(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return None
+        return value.astimezone(timezone.utc)
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return dt.astimezone(timezone.utc)
+
+
 def _path_time_ordered(points: Sequence[Dict[str, Any]]) -> bool:
+    """Order by timezone-aware UTC instants — never lexicographic strings."""
     if len(points) <= 1:
         return True
     prev = None
@@ -59,12 +100,29 @@ def _path_time_ordered(points: Sequence[Dict[str, Any]]) -> bool:
         if not isinstance(pt, dict):
             return False
         ts = pt.get("poll_ts") or pt.get("ts") or pt.get("quote_ts")
-        if ts is None:
+        instant = _parse_aware_utc(ts)
+        if instant is None:
             return False
-        if prev is not None and str(ts) < str(prev):
+        if prev is not None and instant < prev:
             return False
-        prev = ts
+        prev = instant
     return True
+
+
+def _contains_placeholder(value: Any) -> bool:
+    if isinstance(value, dict):
+        if value.get("placeholder") is True or value.get("synthetic") is True:
+            return True
+        marker = value.get("evidence_marker") or value.get("marker") or value.get("kind")
+        if isinstance(marker, str) and marker.upper() in PLACEHOLDER_MARKERS:
+            return True
+        return any(_contains_placeholder(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_placeholder(v) for v in value)
+    if isinstance(value, str):
+        upper = value.upper()
+        return any(m in upper for m in PLACEHOLDER_MARKERS)
+    return False
 
 
 def evaluate_path_quality(
@@ -86,6 +144,7 @@ def evaluate_path_quality(
 
     basis = valuation_basis if valuation_basis in REQUIRED_EVIDENCE_BY_BASIS else VALUATION_BASIS_LTP_GROSS
     required_keys = REQUIRED_EVIDENCE_BY_BASIS[basis]
+    min_points = MIN_POINTS_FOR_FULL_BY_BASIS[basis]
 
     absent_required: List[str] = []
     for key in required_keys:
@@ -121,6 +180,32 @@ def evaluate_path_quality(
         return _result(
             FIDELITY_NOT_POSSIBLE, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
+        )
+
+    # Placeholder / synthetic evidence may never certify FULL.
+    if _contains_placeholder(evidence) or _contains_placeholder(points):
+        reasons.append("placeholder_or_synthetic_evidence_rejected")
+        fidelity = FIDELITY_NOT_POSSIBLE if not points else FIDELITY_LIMITED_FIXTURE
+        return _result(
+            fidelity, reasons, points, missing, structural_missing, malformed, wide, stale,
+            absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
+        )
+
+    # required_interval_count must be explicit for FULL; missing count => not FULL.
+    if required_interval_count is None:
+        reasons.append("required_interval_count_missing")
+        if absent_required:
+            reasons.append(f"required_evidence_absent:{','.join(absent_required)}")
+            reasons.append(f"valuation_basis:{basis}")
+        fidelity = FIDELITY_NOT_POSSIBLE if not points else FIDELITY_LIMITED_FIXTURE
+        if not points:
+            fidelity = FIDELITY_NOT_POSSIBLE
+        return _result(
+            fidelity, reasons, points, missing, structural_missing, malformed, wide, stale,
+            absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     # REJECT counterexample: bare call / any missing required key refuses FULL.
@@ -131,6 +216,7 @@ def evaluate_path_quality(
         return _result(
             fidelity, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     if not points:
@@ -138,13 +224,15 @@ def evaluate_path_quality(
         return _result(
             FIDELITY_NOT_POSSIBLE, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     if not _path_time_ordered(points):
-        reasons.append("path_not_time_ordered")
+        reasons.append("path_not_time_ordered_utc")
         return _result(
             FIDELITY_LIMITED_FIXTURE, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     if malformed:
@@ -153,15 +241,22 @@ def evaluate_path_quality(
         return _result(
             fidelity, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
-    if missing or structural_missing or stale or (
-        required_interval_count is not None and len(points) < int(required_interval_count)
+    if (
+        missing
+        or structural_missing
+        or stale
+        or len(points) < int(required_interval_count)
+        or len(points) < int(min_points)
     ):
         if missing:
             reasons.append(f"missing_intervals:{len(missing)}")
-        if required_interval_count is not None and len(points) < int(required_interval_count):
+        if len(points) < int(required_interval_count):
             reasons.append(f"point_count<{required_interval_count}:{len(points)}")
+        if len(points) < int(min_points):
+            reasons.append(f"point_count_below_contract_min<{min_points}:{len(points)}")
         if stale:
             reasons.append(f"stale_quotes:{len(stale)}")
         if wide:
@@ -169,6 +264,7 @@ def evaluate_path_quality(
         return _result(
             FIDELITY_LIMITED_FIXTURE, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     # Wide-but-uncrossed: LIMITED (not FULL) — REJECT asks for this case.
@@ -177,6 +273,7 @@ def evaluate_path_quality(
         return _result(
             FIDELITY_LIMITED_FIXTURE, reasons, points, missing, structural_missing, malformed, wide, stale,
             absent_required=absent_required, valuation_basis=basis,
+            required_interval_count=required_interval_count, min_points_for_full=min_points,
         )
 
     if not reasons:
@@ -210,6 +307,8 @@ def _result(
     *,
     absent_required: Optional[Sequence[str]] = None,
     valuation_basis: str = VALUATION_BASIS_LTP_GROSS,
+    required_interval_count: Optional[int] = None,
+    min_points_for_full: int = 3,
 ) -> Dict[str, Any]:
     return {
         "contract_version": PATH_QUALITY_EVALUATOR_VERSION,
@@ -220,6 +319,8 @@ def _result(
         "structural_missing": list(structural_missing),
         "absent_required": list(absent_required or []),
         "valuation_basis": valuation_basis,
+        "required_interval_count": required_interval_count,
+        "min_points_for_full": min_points_for_full,
         "malformed_quote_count": len(malformed),
         "wide_but_possible_count": len(wide),
         "stale_quote_count": len(stale),

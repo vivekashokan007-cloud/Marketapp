@@ -114,7 +114,7 @@ class D2ReviewGatesAndHoldoutTests(unittest.TestCase):
 
 class D3EntryFreezeTests(unittest.TestCase):
     def test_outcome_before_freeze_rejected(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         with self.assertRaises(ValueError) as ctx:
             store.populate_outcome(
                 entry_identity="missing",
@@ -124,7 +124,7 @@ class D3EntryFreezeTests(unittest.TestCase):
         self.assertIn("outcome_before_freeze_rejected", str(ctx.exception))
 
     def test_freeze_then_outcome_ok(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         store.freeze_entry(
             entry_identity="e1",
             freeze_ts="2026-09-21T10:00:00+05:30",
@@ -132,16 +132,19 @@ class D3EntryFreezeTests(unittest.TestCase):
             policy_id="H0_fixed_exit",
             policy_version="H0_fixed_exit_v1_20260923",
         )
+        # R2: gate on recorded creation_time — outcome must be after created_at_utc (now).
+        from datetime import datetime, timedelta, timezone
+        outcome_ts = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
         row = store.populate_outcome(
             entry_identity="e1",
             outcome={"net_rupees": 50},
-            outcome_ts="2026-09-22T15:00:00+05:30",
+            outcome_ts=outcome_ts,
         )
         self.assertTrue(row["outcome_populated"])
         self.assertEqual(row["outcome"]["net_rupees"], 50)
 
     def test_outcome_ts_before_freeze_rejected(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         store.freeze_entry(
             entry_identity="e2",
             freeze_ts="2026-09-21T10:00:00+05:30",
@@ -155,7 +158,7 @@ class D3EntryFreezeTests(unittest.TestCase):
             )
 
     def test_cannot_freeze_with_outcome_fields(self):
-        store = edf.EntryDecisionFreezeStore()
+        store = edf.EntryDecisionFreezeStore(memory_only=True)
         with self.assertRaises(ValueError):
             store.freeze_entry(
                 entry_identity="e3",

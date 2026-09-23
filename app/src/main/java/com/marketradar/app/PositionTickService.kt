@@ -495,7 +495,7 @@ class PositionTickService : Service() {
             // Batch B B4: silent same-event parity observation. Recording only —
             // does NOT change maybeNotifyShadowExit gating or select an authority.
             put("batch_b_parity_observation", true)
-            put("batch_b_parity_contract_version", "advice_parity_v1_batch_b_20260923")
+            put("batch_b_parity_contract_version", "advice_parity_v3_batch_b_reject_fix_r2_20260923")
             put("batch_b_shadow_action", policy.action)
             put("batch_b_shadow_reason", policy.reason)
             put("batch_b_observation_only", true)
@@ -510,7 +510,7 @@ class PositionTickService : Service() {
             put("batch_b_parity_reason", policy.reason)
             // Join is performed offline against python parity_observations.jsonl;
             // unmatched/late/incomplete => unavailable, never agreement.
-            put("batch_b_parity_join_authority", "offline_python_join_stored_observations")
+            put("batch_b_parity_join_authority", "python_import_kotlin_parity_from_policy_trace+join_stored_observations")
 
         }
 

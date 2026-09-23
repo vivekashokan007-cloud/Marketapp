@@ -20068,35 +20068,84 @@ def _compact_android_snapshot_context(snapshot_context):
         'context_byte_cap': context_byte_cap,
         'removed': removed,
     }
-    
-    # Batch A REJECT: if still over cap after all shrinks, FAIL completeness —
-    # do not silently claim forward_capture_v1_batch_a on an over-budget payload.
+
+    # Batch A REJECT / R2: if still over cap after all shrinks, FAIL CLOSED.
+    # Marker alone is insufficient — never return an oversized success payload.
     if encoded_bytes > context_byte_cap:
         compact['snapshot_capture_completeness'] = 'forward_capture_budget_exceeded_batch_a'
         compact['snapshot_capture_failure_reason'] = (
             f'context_bytes_exceed_cap:{encoded_bytes}>{context_byte_cap}'
         )
-        # Drop the largest remaining evidence blob rather than claim completeness.
+        # Drop largest remaining evidence blobs (including parity observations).
         for _drop_key in (
+            'advice_parity_observed',
+            'position_state_observed',
             'snapshot_open_trades_json',
             'snapshot_closed_trades_json',
             'snapshot_open_trades',
             'snapshot_watchlist',
+            'snapshot_ranked_candidates_full',
+            'snapshot_generated_candidates',
+            'snapshot_rejected_candidates_full',
+            'snapshot_rejected_candidates',
+            'candidate_generation_trace',
+            'snapshot_position_verdicts',
+            'snapshot_position_marks',
         ):
             if _drop_key in compact:
                 compact.pop(_drop_key, None)
                 removed.append(f'{_drop_key}:dropped_over_budget')
-                compact.setdefault('snapshot_capture_field_status', {}).setdefault('fields', {})
                 if isinstance(compact.get('snapshot_capture_field_status'), dict):
                     fields = compact['snapshot_capture_field_status'].setdefault('fields', {})
                     if isinstance(fields, dict):
                         fields[_drop_key] = 'truncated'
+                elif 'snapshot_capture_field_status' not in compact:
+                    compact['snapshot_capture_field_status'] = {
+                        'fields': {_drop_key: 'truncated'}
+                    }
                 encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
                 if encoded_bytes <= context_byte_cap:
                     break
+        # R2 fail-closed: if STILL over cap, replace with a bounded failure stub
+        # that is guaranteed under the byte cap. Callers must never receive an
+        # oversized "success" context.
+        encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
         if encoded_bytes > context_byte_cap:
-            # Still over: keep failure marker; never restore complete-capture token.
-            compact['snapshot_capture_completeness'] = 'forward_capture_budget_exceeded_batch_a'
+            stub = {
+                'snapshot_capture_completeness': 'forward_capture_budget_exceeded_batch_a',
+                'snapshot_capture_failure_reason': (
+                    f'context_bytes_exceed_cap_fail_closed:{encoded_bytes}>{context_byte_cap}'
+                ),
+                'snapshot_capture_field_status': {
+                    'fields': {'context': 'truncated_over_budget_fail_closed'},
+                    'complete': False,
+                },
+                'nfDTE': compact.get('nfDTE'),
+                'bnfDTE': compact.get('bnfDTE'),
+                'snapshot_android_compaction': {
+                    'schema_version': 'android_compact_v3_fail_closed',
+                    'context_byte_cap': context_byte_cap,
+                    'context_bytes_before_stub': encoded_bytes,
+                    'removed': removed + ['ALL:replaced_with_bounded_failure_stub'],
+                    'fail_closed': True,
+                },
+            }
+            stub_bytes = len(json.dumps(stub, separators=(',', ':')).encode('utf-8'))
+            if stub_bytes > context_byte_cap:
+                # Extremely defensive: drop even DTE scalars if somehow over.
+                stub = {
+                    'snapshot_capture_completeness': 'forward_capture_budget_exceeded_batch_a',
+                    'snapshot_capture_failure_reason': 'fail_closed_minimal_stub',
+                    'snapshot_android_compaction': {
+                        'schema_version': 'android_compact_v3_fail_closed',
+                        'context_byte_cap': context_byte_cap,
+                        'fail_closed': True,
+                    },
+                }
+            stub['snapshot_android_compaction']['context_bytes'] = len(
+                json.dumps(stub, separators=(',', ':')).encode('utf-8')
+            )
+            return stub
     elif str(compact.get('snapshot_capture_completeness') or '').startswith('forward_capture_v1_batch_a'):
         # Preserve complete marker only when not over budget.
         pass
@@ -20104,6 +20153,22 @@ def _compact_android_snapshot_context(snapshot_context):
     compaction_meta['context_bytes'] = len(
         json.dumps(compact, separators=(',', ':')).encode('utf-8')
     )
+    # Final safety: never return over-cap payload even on the happy path.
+    final_bytes = compaction_meta['context_bytes']
+    if final_bytes > context_byte_cap:
+        return {
+            'snapshot_capture_completeness': 'forward_capture_budget_exceeded_batch_a',
+            'snapshot_capture_failure_reason': (
+                f'context_bytes_exceed_cap_final_guard:{final_bytes}>{context_byte_cap}'
+            ),
+            'snapshot_android_compaction': {
+                'schema_version': 'android_compact_v3_fail_closed',
+                'context_byte_cap': context_byte_cap,
+                'context_bytes': 0,
+                'fail_closed': True,
+                'removed': removed + ['ALL:final_guard_stub'],
+            },
+        }
     return compact
 
 
@@ -20604,7 +20669,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         for tid, row in position_live.items()
     }
     # Honesty marker: schema survival does NOT rewrite historical rows.
-    
+
     # Batch B REJECT: lift parity / position-state observations into snapshot so
     # android compaction whitelist can retain them. Observation-only.
     if isinstance(result.get('advice_parity_observed'), dict):

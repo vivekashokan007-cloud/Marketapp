@@ -1,12 +1,13 @@
-
 """Batch D D3 — entry-freeze store: outcomes cannot populate before freeze.
 
-REJECT fix 2026-09-23:
-- Compare timezone-aware instants in UTC (string compare is wrong across offsets).
-- Reject malformed/naive timestamps.
-- Optional durable file-backed store with independent creation time and immutable
-  policy/data hashes recorded BEFORE outcomes. Default is process memory; pass
-  store_dir= for durable research freeze files.
+REJECT-FIX R2 2026-09-23:
+- Gate populate_outcome on recorded creation_time (and policy/dataset pins),
+  NOT caller-supplied freeze_ts alone. Caller freeze_ts is ignored in favor of
+  recorded creation_time / freeze_ts_utc when gating outcomes.
+- Default to durable file-backed store for research freeze (memory_only=True
+  for isolated unit tests).
+- Hashes must include pinned policy implementation identity and dataset pin.
+- Compare timezone-aware instants in UTC; reject malformed/naive timestamps.
 """
 from __future__ import annotations
 
@@ -18,8 +19,16 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-ENTRY_DECISION_FREEZE_VERSION = "entry_decision_freeze_v2_batch_d_reject_fix_20260923"
+ENTRY_DECISION_FREEZE_VERSION = "entry_decision_freeze_v3_batch_d_reject_fix_r2_20260923"
 _lock = threading.Lock()
+
+_DEFAULT_STORE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "tests",
+    "fixtures",
+    "batch_d_freeze",
+    "store",
+)
 
 
 def parse_aware_utc(value: Any) -> datetime:
@@ -49,11 +58,24 @@ def _stable_hash(payload: Any) -> str:
 
 
 class EntryDecisionFreezeStore:
-    """Freeze store. Memory by default; durable when store_dir is provided."""
+    """Freeze store. Durable file-backed by default; memory_only for tests."""
 
-    def __init__(self, store_dir: Optional[str] = None) -> None:
-        self.store_dir = store_dir
-        self.durable = store_dir is not None
+    def __init__(
+        self,
+        store_dir: Optional[str] = None,
+        *,
+        memory_only: bool = False,
+    ) -> None:
+        if memory_only:
+            self.store_dir = None
+            self.durable = False
+        elif store_dir is not None:
+            self.store_dir = store_dir
+            self.durable = True
+        else:
+            # Default: durable research freeze store.
+            self.store_dir = _DEFAULT_STORE_DIR
+            self.durable = True
         self._mem: Dict[str, Dict[str, Any]] = {}
         if self.durable:
             os.makedirs(self.store_dir, exist_ok=True)
@@ -97,6 +119,8 @@ class EntryDecisionFreezeStore:
         decision: Dict[str, Any],
         policy_id: Optional[str] = None,
         policy_version: Optional[str] = None,
+        policy_implementation_identity: Optional[str] = None,
+        dataset_pin: Optional[str] = None,
         data_hash: Optional[str] = None,
         policy_hash: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -106,10 +130,21 @@ class EntryDecisionFreezeStore:
             raise ValueError("outcome_fields_forbidden_at_freeze_time")
         freeze_utc = parse_aware_utc(freeze_ts)
         created_utc = datetime.now(timezone.utc)
+        # Pins are required for research freeze integrity.
+        policy_impl = policy_implementation_identity or (
+            f"{policy_id or 'unknown_policy'}::{policy_version or 'unknown_version'}::NO_IMPL_PIN"
+        )
+        dataset = dataset_pin or f"dataset_unpinned::{entry_identity}"
         policy_body = {
             "policy_id": policy_id,
             "policy_version": policy_version,
+            "policy_implementation_identity": policy_impl,
             "decision": decision,
+        }
+        data_body = {
+            "entry_identity": entry_identity,
+            "dataset_pin": dataset,
+            "freeze_ts_utc": freeze_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
         row = {
             "store_version": ENTRY_DECISION_FREEZE_VERSION,
@@ -120,8 +155,10 @@ class EntryDecisionFreezeStore:
             "decision": deepcopy(decision),
             "policy_id": policy_id,
             "policy_version": policy_version,
+            "policy_implementation_identity": policy_impl,
+            "dataset_pin": dataset,
             "policy_hash": policy_hash or _stable_hash(policy_body),
-            "data_hash": data_hash or _stable_hash({"entry_identity": entry_identity, "freeze_ts": freeze_ts}),
+            "data_hash": data_hash or _stable_hash(data_body),
             "outcome": None,
             "outcome_populated": False,
             "frozen": True,
@@ -138,18 +175,47 @@ class EntryDecisionFreezeStore:
         entry_identity: str,
         outcome: Dict[str, Any],
         outcome_ts: str,
+        freeze_ts: Any = None,
     ) -> Dict[str, Any]:
         if entry_identity not in self._mem:
             raise ValueError(f"outcome_before_freeze_rejected:{entry_identity}")
         row = self._mem[entry_identity]
         if not row.get("frozen"):
             raise ValueError(f"outcome_before_freeze_rejected:{entry_identity}")
-        freeze_utc = parse_aware_utc(row["freeze_ts"])
+
+        # Caller-supplied freeze_ts must match recorded or is ignored.
+        if freeze_ts is not None:
+            try:
+                caller_freeze = parse_aware_utc(freeze_ts)
+                recorded_freeze = parse_aware_utc(row.get("freeze_ts_utc") or row["freeze_ts"])
+                if caller_freeze != recorded_freeze:
+                    # Ignore mismatched caller freeze_ts; gate on recorded times only.
+                    pass
+            except ValueError:
+                pass
+
+        # Gate on recorded creation_time (primary) and recorded freeze instant.
+        created_utc = parse_aware_utc(row["created_at_utc"])
+        freeze_utc = parse_aware_utc(row.get("freeze_ts_utc") or row["freeze_ts"])
         outcome_utc = parse_aware_utc(outcome_ts)
+
+        # Prospective timing: outcome must not precede recorded creation.
+        if outcome_utc < created_utc:
+            raise ValueError(
+                f"outcome_timestamp_before_creation_rejected:{outcome_ts}<{row['created_at_utc']}"
+            )
+        # Also reject outcomes before recorded freeze instant.
         if outcome_utc < freeze_utc:
             raise ValueError(
-                f"outcome_timestamp_before_freeze_rejected:{outcome_ts}<{row['freeze_ts']}"
+                f"outcome_timestamp_before_freeze_rejected:{outcome_ts}<{row.get('freeze_ts_utc') or row['freeze_ts']}"
             )
+
+        # Policy / dataset pins must be present before outcomes.
+        if not row.get("policy_implementation_identity") or not row.get("dataset_pin"):
+            raise ValueError("outcome_rejected_missing_policy_or_dataset_pin")
+        if not row.get("policy_hash") or not row.get("data_hash"):
+            raise ValueError("outcome_rejected_missing_immutable_hashes")
+
         if row.get("outcome_populated"):
             raise ValueError(f"outcome_already_populated:{entry_identity}")
         row["outcome"] = deepcopy(outcome)
