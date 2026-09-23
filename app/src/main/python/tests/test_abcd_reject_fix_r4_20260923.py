@@ -238,7 +238,10 @@ class R4Gap2IdempotentPersistedTickImport(unittest.TestCase):
 
 class R4ContractPinned(unittest.TestCase):
     def test_contract_version_r4(self):
-        self.assertIn("r4_20260923", api.ADVICE_PARITY_CONTRACT_VERSION)
+        self.assertTrue(
+            "r4_20260923" in api.ADVICE_PARITY_CONTRACT_VERSION
+            or "r5_20260923" in api.ADVICE_PARITY_CONTRACT_VERSION
+        )
 
     def test_freshness_helper_signature_documents_order(self):
         src = inspect.getsource(api._quote_fresh_vs_event)

@@ -1,16 +1,13 @@
 """Batch B B4 — silent same-event Python ↔ Kotlin advice parity instrumentation.
 
-REJECT-FIX R4 2026-09-23:
-- Require explicit source quote_ts on each side (missing → unavailable,
-  NEVER agreement). Do not substitute event_ts / tick_ts / poll_ts.
-- Freshness: quote_ts MUST be <= event_ts AND (event_ts - quote_ts) <= max age.
-  Quotes dated AFTER their event → unavailable (quote_ts_after_event_ts).
-- Persisted-tick import is idempotent (stable observation identity); re-reading
-  the same dump must not duplicate observations or change coverage counts.
-- Join workflow reads persisted position_ticks.policy_trace_json
-  (read_persisted_position_ticks_policy_traces → import → join).
-- Matching session_id still required. Stale / missing / cross-session /
-  future-quote → unavailable, NEVER agreement.
+REJECT-FIX R5 2026-09-23:
+- Per-leg quote source timing: EVERY required valued leg must carry a
+  trustworthy bid/ask source timestamp; missing/stale/future → unavailable.
+  Compare parsed UTC instants. last_trade_time is NOT bid/ask source time.
+- Real read-only position_ticks path: page actual rows via research adapter
+  (position_ticks_readonly_export) → idempotent import → join. Never label
+  fixture-only evidence as production readback.
+- R4 retained: quote_ts <= event_ts, idempotent import, explicit quote_ts.
 Does NOT change either notifier or select a notification authority.
 """
 from __future__ import annotations
@@ -22,7 +19,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v5_batch_b_reject_fix_r4_20260923"
+ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v5_batch_b_reject_fix_r5_20260923"
 DEFAULT_MAX_QUOTE_AGE_SECONDS = 90.0
 OBSERVATION_RESULT_KEY = "advice_parity_observed"
 POSITION_STATE_RESULT_KEY = "position_state_observed"
@@ -141,6 +138,113 @@ def _quote_fresh_vs_event(
     if age > float(max_quote_age_seconds):
         return False, f"quote_stale_vs_event_seconds:{age}", age
     return True, f"quote_fresh_vs_event_seconds:{age}", age
+
+
+def validate_per_leg_quote_timing(
+    required_leg_keys: Iterable[Any],
+    source_ts_by_key: Dict[Any, Any],
+    event_ts: Any,
+    *,
+    max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+) -> Dict[str, Any]:
+    """R5: every required valued leg must have trustworthy source timing.
+
+    Mirrors Kotlin ``resolveParitySourceQuoteTiming``. Missing / unparseable /
+    stale / future-dated (vs event) for ANY leg => parity unavailable.
+    Compares parsed UTC instants, not timestamp strings.
+    """
+    keys = [str(k).strip() for k in (required_leg_keys or []) if str(k).strip()]
+    event = _parse_aware_instant(event_ts)
+    leg_results: List[Dict[str, Any]] = []
+    if not keys:
+        return {
+            "available": False,
+            "quote_ts": None,
+            "reason": "missing_required_valued_legs",
+            "leg_timings": leg_results,
+        }
+    if event is None:
+        return {
+            "available": False,
+            "quote_ts": None,
+            "reason": "missing_or_naive_event_ts",
+            "leg_timings": leg_results,
+        }
+    parsed_ok: List[Tuple[datetime, str]] = []
+    for key in keys:
+        raw = None
+        if isinstance(source_ts_by_key, dict):
+            raw = source_ts_by_key.get(key)
+            if raw is None:
+                # allow either str keys already
+                raw = source_ts_by_key.get(str(key))
+        quote = _parse_aware_instant(raw)
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            leg_results.append(
+                {"instrument_key": key, "source_ts": raw, "ok": False, "reason": "leg_source_ts_missing"}
+            )
+            return {
+                "available": False,
+                "quote_ts": None,
+                "reason": f"leg_source_ts_missing:{key}",
+                "leg_timings": leg_results,
+            }
+        if quote is None:
+            leg_results.append(
+                {
+                    "instrument_key": key,
+                    "source_ts": raw,
+                    "ok": False,
+                    "reason": "leg_source_ts_unparseable",
+                }
+            )
+            return {
+                "available": False,
+                "quote_ts": None,
+                "reason": f"leg_source_ts_unparseable:{key}",
+                "leg_timings": leg_results,
+            }
+        if quote > event:
+            after = (quote - event).total_seconds()
+            reason = f"leg_quote_ts_after_event:{key}:{after}"
+            leg_results.append(
+                {"instrument_key": key, "source_ts": str(raw), "ok": False, "reason": reason}
+            )
+            return {
+                "available": False,
+                "quote_ts": None,
+                "reason": reason,
+                "leg_timings": leg_results,
+            }
+        age = (event - quote).total_seconds()
+        if age > float(max_quote_age_seconds):
+            reason = f"leg_quote_stale_vs_event:{key}:{age}"
+            leg_results.append(
+                {"instrument_key": key, "source_ts": str(raw), "ok": False, "reason": reason}
+            )
+            return {
+                "available": False,
+                "quote_ts": None,
+                "reason": reason,
+                "leg_timings": leg_results,
+            }
+        leg_results.append(
+            {
+                "instrument_key": key,
+                "source_ts": str(raw),
+                "ok": True,
+                "reason": f"leg_quote_fresh_vs_event_seconds:{age}",
+            }
+        )
+        parsed_ok.append((quote, str(raw)))
+    earliest_dt, earliest_raw = min(parsed_ok, key=lambda t: t[0])
+    return {
+        "available": True,
+        "quote_ts": earliest_raw,
+        "reason": "all_required_legs_fresh",
+        "leg_timings": leg_results,
+        "earliest_quote_ts_utc": earliest_dt.isoformat(),
+    }
 
 
 def build_parity_record(
@@ -592,6 +696,90 @@ def import_kotlin_parity_from_fixture(
     Delegates to the same persisted-ticks reader used by the join workflow.
     """
     return import_kotlin_parity_from_persisted_ticks(fixture_path, store=store)
+
+
+def import_kotlin_parity_from_readonly_client(
+    client: Any,
+    *,
+    store: Optional[ParityObservationStore] = None,
+    session_date: Any = None,
+    trade_id: Any = None,
+    page_size: int = 100,
+    source_label: str = "readonly_page_client",
+    live_production_readback: bool = False,
+) -> Dict[str, Any]:
+    """Production research path: page actual position_ticks → idempotent import.
+
+    Uses ``position_ticks_readonly_export.fetch_all_position_ticks_readonly``.
+    Does not embed credentials; the caller supplies the authorized adapter.
+    """
+    from position_ticks_readonly_export import fetch_all_position_ticks_readonly
+
+    manifest = fetch_all_position_ticks_readonly(
+        client,
+        session_date=str(session_date) if session_date is not None else None,
+        trade_id=str(trade_id) if trade_id is not None else None,
+        page_size=page_size,
+        source_label=source_label,
+        live_production_readback=live_production_readback,
+    )
+    result = import_kotlin_parity_records(manifest.get("rows") or [], store=store)
+    result["read_via"] = "fetch_all_position_ticks_readonly"
+    result["readonly_manifest"] = {k: v for k, v in manifest.items() if k != "rows"}
+    result["db_reachable"] = manifest.get("db_reachable")
+    result["live_production_readback"] = manifest.get("live_production_readback")
+    result["fixture_only"] = False
+    result["ordering"] = manifest.get("ordering")
+    result["source"] = manifest.get("source")
+    result["row_count"] = manifest.get("count")
+    return result
+
+
+def join_parity_from_readonly_position_ticks(
+    client: Any,
+    *,
+    store: Optional[ParityObservationStore] = None,
+    session_date: Any = None,
+    trade_id: Any = None,
+    page_size: int = 100,
+    source_label: str = "readonly_page_client",
+    live_production_readback: bool = False,
+    join_tolerance_seconds: float = DEFAULT_JOIN_TOLERANCE_SECONDS,
+    max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+) -> Dict[str, Any]:
+    """Read-only client → import → join. Labels live vs non-live honestly."""
+    store = store or ParityObservationStore()
+    import_meta = import_kotlin_parity_from_readonly_client(
+        client,
+        store=store,
+        session_date=session_date,
+        trade_id=trade_id,
+        page_size=page_size,
+        source_label=source_label,
+        live_production_readback=live_production_readback,
+    )
+    cov = join_stored_observations(
+        store=store,
+        join_tolerance_seconds=join_tolerance_seconds,
+        max_quote_age_seconds=max_quote_age_seconds,
+        trade_id=trade_id,
+    )
+    cov["persisted_kotlin_import"] = {
+        "imported": import_meta.get("imported"),
+        "skipped": import_meta.get("skipped"),
+        "duplicates": import_meta.get("duplicates"),
+        "read_via": import_meta.get("read_via"),
+        "idempotent": import_meta.get("idempotent", True),
+        "db_reachable": import_meta.get("db_reachable"),
+        "live_production_readback": import_meta.get("live_production_readback"),
+        "fixture_only": False,
+        "ordering": import_meta.get("ordering"),
+        "source": import_meta.get("source"),
+        "row_count": import_meta.get("row_count"),
+        "session_date": session_date,
+        "trade_id": trade_id,
+    }
+    return cov
 
 
 def _sessions_compatible(a: Any, b: Any) -> Tuple[bool, str]:
