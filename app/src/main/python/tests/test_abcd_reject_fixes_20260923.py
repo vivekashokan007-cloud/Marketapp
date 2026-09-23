@@ -266,6 +266,8 @@ class Blocker5TimestampFreezePinTests(unittest.TestCase):
             entry_identity="rej-mixed",
             freeze_ts="2026-09-23T11:00:00+00:00",
             decision={"action": "ENTER"},
+            policy_implementation_identity="impl:rej-mixed",
+            dataset_pin="dataset:rej-mixed",
         )
         with self.assertRaises(ValueError) as ctx:
             store.populate_outcome(
@@ -308,6 +310,8 @@ class Blocker5TimestampFreezePinTests(unittest.TestCase):
                 decision={"action": "ENTER"},
                 policy_id="H0",
                 policy_version="v1",
+                policy_implementation_identity="impl:H0_v1",
+                dataset_pin="dataset:dur1",
             )
             self.assertTrue(row["durable"])
             self.assertTrue(row["created_at_utc"])

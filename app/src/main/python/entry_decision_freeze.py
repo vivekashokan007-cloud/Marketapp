@@ -1,13 +1,12 @@
 """Batch D D3 — entry-freeze store: outcomes cannot populate before freeze.
 
-REJECT-FIX R2 2026-09-23:
-- Gate populate_outcome on recorded creation_time (and policy/dataset pins),
-  NOT caller-supplied freeze_ts alone. Caller freeze_ts is ignored in favor of
-  recorded creation_time / freeze_ts_utc when gating outcomes.
-- Default to durable file-backed store for research freeze (memory_only=True
-  for isolated unit tests).
-- Hashes must include pinned policy implementation identity and dataset pin.
-- Compare timezone-aware instants in UTC; reject malformed/naive timestamps.
+REJECT-FIX R3 2026-09-23:
+- Reject missing policy_implementation_identity / dataset_pin at freeze_entry
+  (no NO_IMPL_PIN / dataset_unpinned fallbacks).
+- Verify supplied hashes against pinned inputs before treating the record as
+  prospectively frozen. Outcomes must not populate on unpinned/mismatched hashes.
+- Gate populate_outcome on recorded creation_time; default durable store;
+  timezone-aware UTC instants only.
 """
 from __future__ import annotations
 
@@ -19,7 +18,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-ENTRY_DECISION_FREEZE_VERSION = "entry_decision_freeze_v3_batch_d_reject_fix_r2_20260923"
+ENTRY_DECISION_FREEZE_VERSION = "entry_decision_freeze_v4_batch_d_reject_fix_r3_20260923"
+UNPINNED_IMPL_MARKER = "NO_IMPL_PIN"
+UNPINNED_DATASET_MARKER = "dataset_unpinned"
 _lock = threading.Lock()
 
 _DEFAULT_STORE_DIR = os.path.join(
@@ -111,6 +112,17 @@ class EntryDecisionFreezeStore:
                 fh.write("\n")
             os.replace(tmp, path)
 
+    @staticmethod
+    def _pin_present(value: Any) -> bool:
+        if value is None:
+            return False
+        s = str(value).strip()
+        if not s:
+            return False
+        if UNPINNED_IMPL_MARKER in s or s.startswith(UNPINNED_DATASET_MARKER):
+            return False
+        return True
+
     def freeze_entry(
         self,
         *,
@@ -130,11 +142,13 @@ class EntryDecisionFreezeStore:
             raise ValueError("outcome_fields_forbidden_at_freeze_time")
         freeze_utc = parse_aware_utc(freeze_ts)
         created_utc = datetime.now(timezone.utc)
-        # Pins are required for research freeze integrity.
-        policy_impl = policy_implementation_identity or (
-            f"{policy_id or 'unknown_policy'}::{policy_version or 'unknown_version'}::NO_IMPL_PIN"
-        )
-        dataset = dataset_pin or f"dataset_unpinned::{entry_identity}"
+        # R3: reject missing pins at freeze_entry — no NO_IMPL_PIN / dataset_unpinned fallbacks.
+        if not self._pin_present(policy_implementation_identity):
+            raise ValueError("freeze_rejected_missing_policy_implementation_identity")
+        if not self._pin_present(dataset_pin):
+            raise ValueError("freeze_rejected_missing_dataset_pin")
+        policy_impl = str(policy_implementation_identity).strip()
+        dataset = str(dataset_pin).strip()
         policy_body = {
             "policy_id": policy_id,
             "policy_version": policy_version,
@@ -146,6 +160,17 @@ class EntryDecisionFreezeStore:
             "dataset_pin": dataset,
             "freeze_ts_utc": freeze_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
+        computed_policy_hash = _stable_hash(policy_body)
+        computed_data_hash = _stable_hash(data_body)
+        # Verify supplied hashes against pinned inputs before treating as frozen.
+        if policy_hash is not None and str(policy_hash) != computed_policy_hash:
+            raise ValueError(
+                f"freeze_rejected_policy_hash_mismatch:supplied!={computed_policy_hash[:16]}"
+            )
+        if data_hash is not None and str(data_hash) != computed_data_hash:
+            raise ValueError(
+                f"freeze_rejected_data_hash_mismatch:supplied!={computed_data_hash[:16]}"
+            )
         row = {
             "store_version": ENTRY_DECISION_FREEZE_VERSION,
             "entry_identity": entry_identity,
@@ -157,13 +182,14 @@ class EntryDecisionFreezeStore:
             "policy_version": policy_version,
             "policy_implementation_identity": policy_impl,
             "dataset_pin": dataset,
-            "policy_hash": policy_hash or _stable_hash(policy_body),
-            "data_hash": data_hash or _stable_hash(data_body),
+            "policy_hash": computed_policy_hash,
+            "data_hash": computed_data_hash,
             "outcome": None,
             "outcome_populated": False,
             "frozen": True,
             "durable": self.durable,
             "store_path": self._path(entry_identity) if self.durable else None,
+            "pins_verified_at_freeze": True,
         }
         self._mem[entry_identity] = row
         self._persist(row)
@@ -176,6 +202,8 @@ class EntryDecisionFreezeStore:
         outcome: Dict[str, Any],
         outcome_ts: str,
         freeze_ts: Any = None,
+        expected_policy_hash: Any = None,
+        expected_data_hash: Any = None,
     ) -> Dict[str, Any]:
         if entry_identity not in self._mem:
             raise ValueError(f"outcome_before_freeze_rejected:{entry_identity}")
@@ -210,11 +238,36 @@ class EntryDecisionFreezeStore:
                 f"outcome_timestamp_before_freeze_rejected:{outcome_ts}<{row.get('freeze_ts_utc') or row['freeze_ts']}"
             )
 
-        # Policy / dataset pins must be present before outcomes.
-        if not row.get("policy_implementation_identity") or not row.get("dataset_pin"):
-            raise ValueError("outcome_rejected_missing_policy_or_dataset_pin")
+        # Policy / dataset pins must be present and not unpinned fallbacks.
+        if not self._pin_present(row.get("policy_implementation_identity")):
+            raise ValueError("outcome_rejected_missing_or_unpinned_policy_implementation_identity")
+        if not self._pin_present(row.get("dataset_pin")):
+            raise ValueError("outcome_rejected_missing_or_unpinned_dataset_pin")
         if not row.get("policy_hash") or not row.get("data_hash"):
             raise ValueError("outcome_rejected_missing_immutable_hashes")
+
+        # Recompute hashes from pinned inputs; reject mismatch / tamper.
+        policy_body = {
+            "policy_id": row.get("policy_id"),
+            "policy_version": row.get("policy_version"),
+            "policy_implementation_identity": row.get("policy_implementation_identity"),
+            "decision": row.get("decision"),
+        }
+        data_body = {
+            "entry_identity": row.get("entry_identity"),
+            "dataset_pin": row.get("dataset_pin"),
+            "freeze_ts_utc": row.get("freeze_ts_utc"),
+        }
+        recomputed_policy = _stable_hash(policy_body)
+        recomputed_data = _stable_hash(data_body)
+        if recomputed_policy != row.get("policy_hash"):
+            raise ValueError("outcome_rejected_policy_hash_mismatch")
+        if recomputed_data != row.get("data_hash"):
+            raise ValueError("outcome_rejected_data_hash_mismatch")
+        if expected_policy_hash is not None and str(expected_policy_hash) != row.get("policy_hash"):
+            raise ValueError("outcome_rejected_expected_policy_hash_mismatch")
+        if expected_data_hash is not None and str(expected_data_hash) != row.get("data_hash"):
+            raise ValueError("outcome_rejected_expected_data_hash_mismatch")
 
         if row.get("outcome_populated"):
             raise ValueError(f"outcome_already_populated:{entry_identity}")

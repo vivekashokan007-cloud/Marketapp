@@ -131,6 +131,8 @@ class D3EntryFreezeTests(unittest.TestCase):
             decision={"action": "SELL_PREMIUM", "confidence": 70},
             policy_id="H0_fixed_exit",
             policy_version="H0_fixed_exit_v1_20260923",
+            policy_implementation_identity="impl:H0_fixed_exit_v1",
+            dataset_pin="dataset:batch_d_fixture_v1",
         )
         # R2: gate on recorded creation_time — outcome must be after created_at_utc (now).
         from datetime import datetime, timedelta, timezone
@@ -149,6 +151,8 @@ class D3EntryFreezeTests(unittest.TestCase):
             entry_identity="e2",
             freeze_ts="2026-09-21T10:00:00+05:30",
             decision={"action": "WAIT"},
+            policy_implementation_identity="impl:H0_wait",
+            dataset_pin="dataset:batch_d_fixture_v1",
         )
         with self.assertRaises(ValueError):
             store.populate_outcome(

@@ -1,12 +1,14 @@
 """Batch B B4 — silent same-event Python ↔ Kotlin advice parity instrumentation.
 
-REJECT-fix R2 2026-09-23:
-- Production-shaped importer loads Kotlin parity evidence from
-  position_ticks.policy_trace_json (or a fixture dump of that shape) into the
-  Python join store. Tests must exercise importer → join → readback.
-- Join REQUIRES matching session_id AND quote freshness within declared
-  tolerance. Different sessions or stale quotes → unavailable/disagreement,
-  NEVER agreement.
+REJECT-FIX R3 2026-09-23:
+- Require explicit quote_ts on each side (missing quote_ts → unavailable,
+  NEVER agreement). Do not substitute event_ts for quote_ts.
+- Enforce freshness of EACH quote against ITS event time (declared max age),
+  not only quote-vs-quote proximity.
+- Join workflow can read persisted position_ticks.policy_trace_json
+  (persistence → import → join), not only fixture injection in tests.
+- Matching session_id still required. Stale / missing / cross-session →
+  unavailable, NEVER agreement.
 Does NOT change either notifier or select a notification authority.
 """
 from __future__ import annotations
@@ -18,7 +20,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v3_batch_b_reject_fix_r2_20260923"
+ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v4_batch_b_reject_fix_r3_20260923"
+DEFAULT_MAX_QUOTE_AGE_SECONDS = 90.0
 OBSERVATION_RESULT_KEY = "advice_parity_observed"
 POSITION_STATE_RESULT_KEY = "position_state_observed"
 DEFAULT_JOIN_TOLERANCE_SECONDS = 90.0
@@ -112,6 +115,25 @@ def _parse_aware_instant(value: Any) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _quote_fresh_vs_event(
+    quote_ts: Any,
+    event_ts: Any,
+    *,
+    max_quote_age_seconds: float,
+) -> Tuple[bool, str, Optional[float]]:
+    """Require explicit quote_ts and |quote - event| <= max age. Never use event as quote."""
+    quote = _parse_aware_instant(quote_ts)
+    event = _parse_aware_instant(event_ts)
+    if quote is None:
+        return False, "missing_or_naive_quote_ts", None
+    if event is None:
+        return False, "missing_or_naive_event_ts", None
+    age = abs((quote - event).total_seconds())
+    if age > float(max_quote_age_seconds):
+        return False, f"quote_stale_vs_event_seconds:{age}", age
+    return True, f"quote_fresh_vs_event_seconds:{age}", age
+
+
 def build_parity_record(
     *,
     event_id: Any,
@@ -125,6 +147,7 @@ def build_parity_record(
     kotlin_quote_ts: Any = None,
     kotlin_session_id: Any = None,
     join_tolerance_seconds: float = DEFAULT_JOIN_TOLERANCE_SECONDS,
+    max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
 ) -> Dict[str, Any]:
     py = summarize_python_verdict(python_verdict)
     kt = kotlin_summary if isinstance(kotlin_summary, dict) else summarize_kotlin_shadow_policy()
@@ -136,8 +159,9 @@ def build_parity_record(
 
     join_status = "unavailable"
     join_reason = "incomplete_sides"
-    py_quote = _parse_aware_instant(python_quote_ts or python_event_ts)
-    kt_quote = _parse_aware_instant(kotlin_quote_ts or kotlin_event_ts or kt.get("tick_ts"))
+    # R3: explicit quote_ts only — never substitute event_ts / tick_ts.
+    py_quote = _parse_aware_instant(python_quote_ts)
+    kt_quote = _parse_aware_instant(kotlin_quote_ts)
     py_session = str(session_id).strip() if session_id is not None and str(session_id).strip() else None
     kt_session = (
         str(kotlin_session_id).strip()
@@ -165,14 +189,28 @@ def build_parity_record(
             join_reason = "missing_or_naive_quote_ts"
             both_available = False
         else:
-            delta = abs((py_quote - kt_quote).total_seconds())
-            if delta > float(join_tolerance_seconds):
+            py_ok, py_reason, _ = _quote_fresh_vs_event(
+                python_quote_ts, python_event_ts, max_quote_age_seconds=max_quote_age_seconds
+            )
+            kt_ok, kt_reason, _ = _quote_fresh_vs_event(
+                kotlin_quote_ts, kotlin_event_ts, max_quote_age_seconds=max_quote_age_seconds
+            )
+            if not py_ok or not kt_ok:
                 join_status = "unavailable"
-                join_reason = f"quote_stale_outside_tolerance_seconds:{delta}"
+                join_reason = py_reason if not py_ok else kt_reason
                 both_available = False
             else:
-                join_status = "joined"
-                join_reason = f"session_match_quote_within_tolerance_seconds:{delta}"
+                delta = abs((py_quote - kt_quote).total_seconds())
+                if delta > float(join_tolerance_seconds):
+                    join_status = "unavailable"
+                    join_reason = f"quote_stale_outside_tolerance_seconds:{delta}"
+                    both_available = False
+                else:
+                    join_status = "joined"
+                    join_reason = (
+                        f"session_match_quote_within_tolerance_seconds:{delta};"
+                        f"{py_reason};{kt_reason}"
+                    )
 
     actions_agree = False
     if join_status == "joined" and both_available:
@@ -197,12 +235,15 @@ def build_parity_record(
         "kotlin_quote_ts": kotlin_quote_ts,
         "kotlin_session_id": kotlin_session_id,
         "join_tolerance_seconds": float(join_tolerance_seconds),
+        "max_quote_age_seconds": float(max_quote_age_seconds),
         "join_status": join_status,
         "join_reason": join_reason,
         "actions_agree": actions_agree,
         "observation_only": True,
         "notification_authority_selected": False,
         "notify_behavior_changed": False,
+        "requires_explicit_quote_ts": True,
+        "requires_quote_fresh_vs_event": True,
     }
 
 
@@ -330,7 +371,8 @@ def extract_kotlin_parity_from_policy_trace(
     trade_id = trace.get("batch_b_parity_trade_id") or trade_id_fallback
     session_id = trace.get("batch_b_parity_session_id") or session_id_fallback
     event_ts = trace.get("batch_b_parity_event_ts") or tick_ts_fallback
-    quote_ts = trace.get("batch_b_parity_quote_ts") or event_ts
+    # R3: never substitute event_ts for missing quote_ts.
+    quote_ts = trace.get("batch_b_parity_quote_ts")
     action = trace.get("batch_b_parity_action") or trace.get("batch_b_shadow_action")
     reason = trace.get("batch_b_parity_reason") or trace.get("batch_b_shadow_reason")
     source = trace.get("batch_b_parity_source") or "kotlin_evaluateShadowPolicy"
@@ -394,27 +436,55 @@ def import_kotlin_parity_records(
     }
 
 
+def read_persisted_position_ticks_policy_traces(
+    persisted_path: str,
+) -> List[Any]:
+    """Read persisted position_ticks rows that carry policy_trace_json.
+
+    Production-shaped file read (JSONL or JSON array). Used by the join
+    workflow itself — not only by tests injecting a fixture importer.
+    """
+    with open(persisted_path, "r", encoding="utf-8") as fh:
+        raw = fh.read().strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        records = json.loads(raw)
+        if not isinstance(records, list):
+            raise ValueError("persisted_position_ticks_must_be_list_or_jsonl")
+        return records
+    records = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        records.append(json.loads(line))
+    return records
+
+
+def import_kotlin_parity_from_persisted_ticks(
+    persisted_path: str,
+    *,
+    store: Optional[ParityObservationStore] = None,
+) -> Dict[str, Any]:
+    """Import Kotlin parity from a real persisted position_ticks.policy_trace_json dump."""
+    records = read_persisted_position_ticks_policy_traces(persisted_path)
+    result = import_kotlin_parity_records(records, store=store)
+    result["persisted_path"] = persisted_path
+    result["read_via"] = "read_persisted_position_ticks_policy_traces"
+    return result
+
+
 def import_kotlin_parity_from_fixture(
     fixture_path: str,
     *,
     store: Optional[ParityObservationStore] = None,
 ) -> Dict[str, Any]:
-    """Load a fixture dump of position_ticks / policy_trace_json shape and import."""
-    with open(fixture_path, "r", encoding="utf-8") as fh:
-        raw = fh.read().strip()
-    if not raw:
-        return import_kotlin_parity_records([], store=store)
-    if raw.startswith("["):
-        records = json.loads(raw)
-    else:
-        # JSONL
-        records = []
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            records.append(json.loads(line))
-    return import_kotlin_parity_records(records, store=store)
+    """Load a fixture dump of position_ticks / policy_trace_json shape and import.
+
+    Delegates to the same persisted-ticks reader used by the join workflow.
+    """
+    return import_kotlin_parity_from_persisted_ticks(fixture_path, store=store)
 
 
 def _sessions_compatible(a: Any, b: Any) -> Tuple[bool, str]:
@@ -431,13 +501,24 @@ def join_stored_observations(
     *,
     store: Optional[ParityObservationStore] = None,
     join_tolerance_seconds: float = DEFAULT_JOIN_TOLERANCE_SECONDS,
+    max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
     trade_id: Any = None,
+    kotlin_persisted_ticks_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Read back stored single-path rows and join with session + quote freshness.
+    """Read back stored single-path rows and join with session + per-side quote freshness.
 
-    Unmatched / late / cross-session / incomplete => unavailable (never agreement).
+    When ``kotlin_persisted_ticks_path`` is set, reads persisted
+    position_ticks.policy_trace_json into the store first (persistence → import → join).
+
+    Unmatched / late / cross-session / missing quote_ts / quote stale vs event
+    => unavailable (never agreement).
     """
     store = store or ParityObservationStore()
+    import_meta: Optional[Dict[str, Any]] = None
+    if kotlin_persisted_ticks_path:
+        import_meta = import_kotlin_parity_from_persisted_ticks(
+            kotlin_persisted_ticks_path, store=store
+        )
     rows = store.read_all()
     if trade_id is not None:
         rows = [r for r in rows if str(r.get("trade_id")) == str(trade_id)]
@@ -473,8 +554,13 @@ def join_stored_observations(
             continue
         used_kt = set()
         for py in py_rows:
-            # Quote freshness is authoritative for join; event_ts alone is not enough.
-            py_quote = _parse_aware_instant(py.get("quote_ts") or py.get("event_ts"))
+            # R3: explicit quote_ts required; freshness checked vs each side's event_ts.
+            py_ok, py_fresh_reason, _ = _quote_fresh_vs_event(
+                py.get("quote_ts"),
+                py.get("event_ts"),
+                max_quote_age_seconds=max_quote_age_seconds,
+            )
+            py_quote = _parse_aware_instant(py.get("quote_ts"))
             best = None
             best_delta = None
             for i, kt in enumerate(kt_rows):
@@ -485,19 +571,27 @@ def join_stored_observations(
                 )
                 if not ok_session:
                     continue
-                kt_quote = _parse_aware_instant(kt.get("quote_ts") or kt.get("event_ts"))
+                kt_ok, kt_fresh_reason, _ = _quote_fresh_vs_event(
+                    kt.get("quote_ts"),
+                    kt.get("event_ts"),
+                    max_quote_age_seconds=max_quote_age_seconds,
+                )
+                if not py_ok or not kt_ok:
+                    continue
+                kt_quote = _parse_aware_instant(kt.get("quote_ts"))
                 if py_quote is None or kt_quote is None:
                     continue
                 delta = abs((py_quote - kt_quote).total_seconds())
                 if delta <= float(join_tolerance_seconds) and (
                     best_delta is None or delta < best_delta
                 ):
-                    best = (i, kt, delta, session_reason)
+                    best = (i, kt, delta, session_reason, py_fresh_reason, kt_fresh_reason)
                     best_delta = delta
             if best is None:
-                # Diagnose why: session mismatch vs stale quote vs missing ts.
                 reasons = []
                 any_kt_same_session = False
+                if not py_ok:
+                    reasons.append(py_fresh_reason)
                 for kt in kt_rows:
                     ok_session, session_reason = _sessions_compatible(
                         py.get("session_id"), kt.get("session_id")
@@ -506,17 +600,25 @@ def join_stored_observations(
                         reasons.append(session_reason)
                         continue
                     any_kt_same_session = True
-                    kt_quote = _parse_aware_instant(kt.get("quote_ts") or kt.get("event_ts"))
+                    kt_ok, kt_fresh_reason, _ = _quote_fresh_vs_event(
+                        kt.get("quote_ts"),
+                        kt.get("event_ts"),
+                        max_quote_age_seconds=max_quote_age_seconds,
+                    )
+                    if not kt_ok:
+                        reasons.append(kt_fresh_reason)
+                        continue
+                    kt_quote = _parse_aware_instant(kt.get("quote_ts"))
                     if py_quote is None or kt_quote is None:
                         reasons.append("missing_or_naive_quote_ts")
                     else:
                         delta = abs((py_quote - kt_quote).total_seconds())
                         if delta > float(join_tolerance_seconds):
                             reasons.append(f"quote_stale_outside_tolerance_seconds:{delta}")
-                if not any_kt_same_session and reasons:
+                if reasons:
                     join_reason = reasons[0]
-                elif reasons:
-                    join_reason = reasons[0]
+                elif not any_kt_same_session:
+                    join_reason = "no_kotlin_same_session"
                 else:
                     join_reason = "no_kotlin_within_tolerance_or_naive_ts"
                 unavailable += 1
@@ -528,7 +630,7 @@ def join_stored_observations(
                     "python": py,
                 })
                 continue
-            i, kt, delta, session_reason = best
+            i, kt, delta, session_reason, py_fresh_reason, kt_fresh_reason = best
             used_kt.add(i)
             py_a = py.get("action")
             kt_a = kt.get("action")
@@ -544,7 +646,10 @@ def join_stored_observations(
                 "trade_id": tid,
                 "session_id": py.get("session_id"),
                 "join_status": "joined",
-                "join_reason": f"{session_reason};quote_within_tolerance_seconds:{delta}",
+                "join_reason": (
+                    f"{session_reason};quote_within_tolerance_seconds:{delta};"
+                    f"{py_fresh_reason};{kt_fresh_reason}"
+                ),
                 "actions_agree": agree,
                 "python": py,
                 "kotlin": kt,
@@ -561,9 +666,10 @@ def join_stored_observations(
                 })
 
     total = agreements + disagreements + unavailable
-    return {
+    out = {
         "contract_version": ADVICE_PARITY_CONTRACT_VERSION,
         "join_tolerance_seconds": float(join_tolerance_seconds),
+        "max_quote_age_seconds": float(max_quote_age_seconds),
         "n_python_rows": sum(len(v["python"]) for v in by_trade.values()),
         "n_kotlin_rows": sum(len(v["kotlin"]) for v in by_trade.values()),
         "n_agreement": agreements,
@@ -578,7 +684,35 @@ def join_stored_observations(
         "notification_authority_selected": False,
         "requires_matching_session_id": True,
         "requires_quote_freshness": True,
+        "requires_explicit_quote_ts": True,
+        "requires_quote_fresh_vs_event": True,
     }
+    if import_meta is not None:
+        out["persisted_kotlin_import"] = {
+            "imported": import_meta.get("imported"),
+            "skipped": import_meta.get("skipped"),
+            "persisted_path": import_meta.get("persisted_path"),
+            "read_via": import_meta.get("read_via"),
+        }
+    return out
+
+
+def join_parity_from_persisted_kotlin_ticks(
+    persisted_ticks_path: str,
+    *,
+    store: Optional[ParityObservationStore] = None,
+    join_tolerance_seconds: float = DEFAULT_JOIN_TOLERANCE_SECONDS,
+    max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
+    trade_id: Any = None,
+) -> Dict[str, Any]:
+    """Persistence → import → join boundary for Kotlin policy_trace_json dumps."""
+    return join_stored_observations(
+        store=store,
+        join_tolerance_seconds=join_tolerance_seconds,
+        max_quote_age_seconds=max_quote_age_seconds,
+        trade_id=trade_id,
+        kotlin_persisted_ticks_path=persisted_ticks_path,
+    )
 
 
 # Back-compat aliases used by some call sites / tests
