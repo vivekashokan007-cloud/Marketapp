@@ -1,7 +1,9 @@
 {
   "auto_deploy_forbidden": true,
-  "code_sha": "30bff7b0f9d17568e259330df7e5c4b49c2c2c31",
-  "code_sha_note": "Pinned to final work/abcd-reject-fix-20260923 tip including this pin commit.",
+  "branch_tip_sha": "df4fea90c569dd5eb86e173fc47aa65c1dfdb09a",
+  "code_sha": "397d55c54c57dbaa1e2b655109113a2b5a9e470b",
+  "code_sha_note": "code_sha pins the reject-fix implementation commit 397d55c (runtime code). branch tip df4fea90c569dd5eb86e173fc47aa65c1dfdb09a may include docs-only pin commits after that. code_tree=cd6a0552baddbcfbb4efdf0fba838f973f65f09f.",
+  "code_tree": "cd6a0552baddbcfbb4efdf0fba838f973f65f09f",
   "dataset_cutoff_rule": "Entries with entry_ts <= freeze_ts are eligible; outcomes with event_ts > freeze_ts must not backfill into pre-freeze decisions.",
   "entry_decision_freeze_protocol": "Record candidate entry decisions with timestamp BEFORE outcome fields may populate. Holding-duration selection must not manufacture winners.",
   "experiment_id": "batch_d_prospective_framework_20260923",
@@ -11,7 +13,7 @@
     "Framework only \u2014 does not claim statistical proof.",
     "Sep29 BNF cycle must remain PENDING until real expiry."
   ],
-  "pin_kind": "git_commit_sha",
+  "pin_kind": "git_commit_sha_of_reject_fix_code",
   "policy_versions_frozen": [
     {
       "live_advice": false,
