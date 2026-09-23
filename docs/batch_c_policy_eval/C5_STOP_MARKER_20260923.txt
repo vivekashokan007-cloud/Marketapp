@@ -1,0 +1,4 @@
+# Batch C C5 — in-repo stop marker
+
+See /workspace/mr-batch-cd-review/STOP_REPORT_BATCH_C_20260923.txt for full STOP/handoff.
+No version bump. No push. No live advice change.
