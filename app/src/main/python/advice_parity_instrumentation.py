@@ -1,14 +1,16 @@
 """Batch B B4 — silent same-event Python ↔ Kotlin advice parity instrumentation.
 
-REJECT-FIX R3 2026-09-23:
-- Require explicit quote_ts on each side (missing quote_ts → unavailable,
-  NEVER agreement). Do not substitute event_ts for quote_ts.
-- Enforce freshness of EACH quote against ITS event time (declared max age),
-  not only quote-vs-quote proximity.
-- Join workflow can read persisted position_ticks.policy_trace_json
-  (persistence → import → join), not only fixture injection in tests.
-- Matching session_id still required. Stale / missing / cross-session →
-  unavailable, NEVER agreement.
+REJECT-FIX R4 2026-09-23:
+- Require explicit source quote_ts on each side (missing → unavailable,
+  NEVER agreement). Do not substitute event_ts / tick_ts / poll_ts.
+- Freshness: quote_ts MUST be <= event_ts AND (event_ts - quote_ts) <= max age.
+  Quotes dated AFTER their event → unavailable (quote_ts_after_event_ts).
+- Persisted-tick import is idempotent (stable observation identity); re-reading
+  the same dump must not duplicate observations or change coverage counts.
+- Join workflow reads persisted position_ticks.policy_trace_json
+  (read_persisted_position_ticks_policy_traces → import → join).
+- Matching session_id still required. Stale / missing / cross-session /
+  future-quote → unavailable, NEVER agreement.
 Does NOT change either notifier or select a notification authority.
 """
 from __future__ import annotations
@@ -20,7 +22,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v4_batch_b_reject_fix_r3_20260923"
+ADVICE_PARITY_CONTRACT_VERSION = "advice_parity_v5_batch_b_reject_fix_r4_20260923"
 DEFAULT_MAX_QUOTE_AGE_SECONDS = 90.0
 OBSERVATION_RESULT_KEY = "advice_parity_observed"
 POSITION_STATE_RESULT_KEY = "position_state_observed"
@@ -121,14 +123,21 @@ def _quote_fresh_vs_event(
     *,
     max_quote_age_seconds: float,
 ) -> Tuple[bool, str, Optional[float]]:
-    """Require explicit quote_ts and |quote - event| <= max age. Never use event as quote."""
+    """Require explicit source quote_ts, quote_ts <= event_ts, and age <= max.
+
+    Never use event_ts as a quote substitute. Quotes dated AFTER the event are
+    rejected (R4: 10:01 quote / 10:00 event must NOT agree).
+    """
     quote = _parse_aware_instant(quote_ts)
     event = _parse_aware_instant(event_ts)
     if quote is None:
         return False, "missing_or_naive_quote_ts", None
     if event is None:
         return False, "missing_or_naive_event_ts", None
-    age = abs((quote - event).total_seconds())
+    if quote > event:
+        after = (quote - event).total_seconds()
+        return False, f"quote_ts_after_event_ts:{after}", after
+    age = (event - quote).total_seconds()
     if age > float(max_quote_age_seconds):
         return False, f"quote_stale_vs_event_seconds:{age}", age
     return True, f"quote_fresh_vs_event_seconds:{age}", age
@@ -244,6 +253,7 @@ def build_parity_record(
         "notify_behavior_changed": False,
         "requires_explicit_quote_ts": True,
         "requires_quote_fresh_vs_event": True,
+        "requires_quote_not_after_event": True,
     }
 
 
@@ -301,6 +311,52 @@ class ParityObservationStore:
             if os.path.exists(self.path):
                 os.remove(self.path)
 
+    def known_observation_keys(self) -> set:
+        keys = set()
+        for row in self.read_all():
+            key = row.get("observation_key") or build_observation_key(row)
+            if key:
+                keys.add(key)
+        return keys
+
+    def append_if_absent(self, record: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+        """Append only when observation_key is new. Returns (row, inserted)."""
+        row = deepcopy(record)
+        key = row.get("observation_key") or build_observation_key(row)
+        row["observation_key"] = key
+        known = self.known_observation_keys()
+        if key in known:
+            return row, False
+        return self.append(row), True
+
+
+def build_observation_key(record: Dict[str, Any]) -> str:
+    """Stable idempotency key: session + event_ts + path/side + tick/obs identity."""
+    source = str(record.get("source") or "")
+    trade_id = str(record.get("trade_id") or "")
+    session_id = str(record.get("session_id") or "")
+    event_ts = str(record.get("event_ts") or "")
+    quote_ts = str(record.get("quote_ts") or "")
+    action = str(record.get("action") or "")
+    extra = record.get("extra") if isinstance(record.get("extra"), dict) else {}
+    tick_row_id = (
+        record.get("tick_row_id")
+        or extra.get("tick_row_id")
+        or extra.get("position_tick_id")
+        or ""
+    )
+    return "|".join(
+        [
+            source,
+            trade_id,
+            session_id,
+            event_ts,
+            quote_ts,
+            action,
+            str(tick_row_id),
+        ]
+    )
+
 
 def persist_path_observation(
     *,
@@ -316,6 +372,7 @@ def persist_path_observation(
 ) -> Dict[str, Any]:
     """Persist a single-path observation (python or kotlin). Observation only."""
     store = store or ParityObservationStore()
+    extra_dict = dict(extra or {})
     row = {
         "contract_version": ADVICE_PARITY_CONTRACT_VERSION,
         "source": source,
@@ -327,9 +384,12 @@ def persist_path_observation(
         "reason": (str(reason)[:240] if reason is not None else None),
         "observation_only": True,
         "notification_authority_selected": False,
-        "extra": dict(extra or {}),
+        "extra": extra_dict,
+        "tick_row_id": extra_dict.get("tick_row_id") or extra_dict.get("position_tick_id"),
     }
-    return store.append(row)
+    row["observation_key"] = build_observation_key(row)
+    persisted, _inserted = store.append_if_absent(row)
+    return persisted
 
 
 def extract_kotlin_parity_from_policy_trace(
@@ -361,7 +421,12 @@ def extract_kotlin_parity_from_policy_trace(
         trade_id_fallback = trade_id_fallback or trace.get("trade_id")
         session_id_fallback = session_id_fallback or trace.get("session_date") or trace.get("session_id")
         tick_ts_fallback = tick_ts_fallback or trace.get("tick_ts")
+        outer_tick_id = trace.get("id") or trace.get("position_tick_id")
         trace = nested if isinstance(nested, dict) else trace
+        if isinstance(trace, dict) and outer_tick_id and not trace.get("id"):
+            # Preserve tick row identity for idempotent import keys.
+            trace = dict(trace)
+            trace["id"] = outer_tick_id
     if not isinstance(trace, dict):
         return None
     if not trace.get("batch_b_parity_observation") and not trace.get("batch_b_parity_action"):
@@ -371,13 +436,22 @@ def extract_kotlin_parity_from_policy_trace(
     trade_id = trace.get("batch_b_parity_trade_id") or trade_id_fallback
     session_id = trace.get("batch_b_parity_session_id") or session_id_fallback
     event_ts = trace.get("batch_b_parity_event_ts") or tick_ts_fallback
-    # R3: never substitute event_ts for missing quote_ts.
+    # R3/R4: never substitute event_ts for missing quote_ts.
+    # Only the recorded source quote timestamp counts; null → unavailable.
     quote_ts = trace.get("batch_b_parity_quote_ts")
+    if quote_ts in ("", None) or (isinstance(quote_ts, str) and not quote_ts.strip()):
+        quote_ts = None
     action = trace.get("batch_b_parity_action") or trace.get("batch_b_shadow_action")
     reason = trace.get("batch_b_parity_reason") or trace.get("batch_b_shadow_reason")
     source = trace.get("batch_b_parity_source") or "kotlin_evaluateShadowPolicy"
     if trade_id is None:
         return None
+    tick_row_id = (
+        trace.get("id")
+        or trace.get("position_tick_id")
+        or trace.get("batch_b_parity_tick_row_id")
+    )
+    # When policy_trace was nested under a position_ticks-shaped row, prefer that id.
     return {
         "source": source if str(source).startswith("kotlin") else f"kotlin_{source}",
         "trade_id": trade_id,
@@ -389,6 +463,15 @@ def extract_kotlin_parity_from_policy_trace(
         "extra": {
             "imported_from": "position_ticks.policy_trace_json",
             "parity_contract_version": trace.get("batch_b_parity_contract_version"),
+            "tick_row_id": tick_row_id,
+            "quote_ts_unavailable_reason": (
+                None
+                if quote_ts is not None
+                else (
+                    trace.get("batch_b_parity_quote_ts_unavailable_reason")
+                    or "source_quote_ts_unavailable"
+                )
+            ),
         },
     }
 
@@ -401,17 +484,31 @@ def import_kotlin_parity_records(
     """Production-shaped importer: Kotlin policy_trace rows → Python join store.
 
     ``records`` may be position_ticks-shaped dicts, raw policy_trace_json dicts,
-    or JSON strings. Each successful extract is appended via persist_path_observation.
+    or JSON strings. Each successful extract is upserted via persist_path_observation
+    (idempotent on observation_key — re-importing the same dump does not duplicate).
     """
     store = store or ParityObservationStore()
     imported = 0
     skipped = 0
+    duplicates = 0
     rows_out: List[Dict[str, Any]] = []
+    before_keys = store.known_observation_keys()
     for rec in records:
         extracted = extract_kotlin_parity_from_policy_trace(rec)
         if extracted is None:
             skipped += 1
             continue
+        candidate = {
+            "source": extracted["source"],
+            "trade_id": extracted["trade_id"],
+            "session_id": extracted.get("session_id"),
+            "event_ts": extracted.get("event_ts"),
+            "quote_ts": extracted.get("quote_ts"),
+            "action": extracted.get("action"),
+            "extra": extracted.get("extra") or {},
+        }
+        key = build_observation_key(candidate)
+        already = key in before_keys
         row = persist_path_observation(
             source=extracted["source"],
             trade_id=extracted["trade_id"],
@@ -423,14 +520,20 @@ def import_kotlin_parity_records(
             extra=extracted.get("extra"),
             store=store,
         )
-        imported += 1
+        if already or key in before_keys:
+            duplicates += 1
+        else:
+            imported += 1
+            before_keys.add(key)
         rows_out.append(row)
     return {
         "contract_version": ADVICE_PARITY_CONTRACT_VERSION,
         "imported": imported,
         "skipped": skipped,
+        "duplicates": duplicates,
         "rows": rows_out,
         "store_path": store.path,
+        "idempotent": True,
         "observation_only": True,
         "notification_authority_selected": False,
     }
@@ -467,7 +570,11 @@ def import_kotlin_parity_from_persisted_ticks(
     *,
     store: Optional[ParityObservationStore] = None,
 ) -> Dict[str, Any]:
-    """Import Kotlin parity from a real persisted position_ticks.policy_trace_json dump."""
+    """Import Kotlin parity from a real persisted position_ticks.policy_trace_json dump.
+
+    Read-only path: read_persisted_position_ticks_policy_traces → extract →
+    idempotent import. Re-importing the same dump must not change coverage.
+    """
     records = read_persisted_position_ticks_policy_traces(persisted_path)
     result = import_kotlin_parity_records(records, store=store)
     result["persisted_path"] = persisted_path
@@ -686,13 +793,16 @@ def join_stored_observations(
         "requires_quote_freshness": True,
         "requires_explicit_quote_ts": True,
         "requires_quote_fresh_vs_event": True,
+        "requires_quote_not_after_event": True,
     }
     if import_meta is not None:
         out["persisted_kotlin_import"] = {
             "imported": import_meta.get("imported"),
             "skipped": import_meta.get("skipped"),
+            "duplicates": import_meta.get("duplicates"),
             "persisted_path": import_meta.get("persisted_path"),
             "read_via": import_meta.get("read_via"),
+            "idempotent": import_meta.get("idempotent", True),
         }
     return out
 

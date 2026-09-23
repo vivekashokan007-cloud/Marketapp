@@ -16149,7 +16149,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             )
             attach_position_state_observation(result, tid, state)
             event_ts = ctx.get("poll_ts") or ctx.get("now_iso") or ctx.get("scan_id")
-            quote_ts = ctx.get("quote_ts") or ctx.get("poll_ts") or ctx.get("now_iso")
+            # R4: record actual source quote timestamp only. Never invent/substitute
+            # event_ts, poll_ts, or now_iso — missing source quote_ts => unavailable.
+            quote_ts = ctx.get("quote_ts") or ctx.get("source_quote_ts")
+            if isinstance(quote_ts, str) and not quote_ts.strip():
+                quote_ts = None
             session_id = ctx.get("session_id") or ctx.get("today_ist") or ctx.get("session_date")
             rec = build_parity_record(
                 event_id=event_ts or f"python_scan:{tid}",

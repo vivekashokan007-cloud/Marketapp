@@ -495,7 +495,7 @@ class PositionTickService : Service() {
             // Batch B B4: silent same-event parity observation. Recording only —
             // does NOT change maybeNotifyShadowExit gating or select an authority.
             put("batch_b_parity_observation", true)
-            put("batch_b_parity_contract_version", "advice_parity_v3_batch_b_reject_fix_r2_20260923")
+            put("batch_b_parity_contract_version", "advice_parity_v5_batch_b_reject_fix_r4_20260923")
             put("batch_b_shadow_action", policy.action)
             put("batch_b_shadow_reason", policy.reason)
             put("batch_b_observation_only", true)
@@ -505,7 +505,17 @@ class PositionTickService : Service() {
             put("batch_b_parity_trade_id", tradeId)
             put("batch_b_parity_session_id", sessionDate)
             put("batch_b_parity_event_ts", tickTs)
-            put("batch_b_parity_quote_ts", tickTs)
+            // R4: record actual source quote timestamp(s) from the quote fetch.
+            // If unavailable, leave null (do NOT substitute tickTs/event_ts).
+            val sourceQuoteTs = legs.mapNotNull { leg ->
+                leg.instrumentKey?.let { k -> quoteFetch.quotes[k]?.sourceTs?.takeIf { it.isNotBlank() } }
+            }.minOrNull()
+            if (sourceQuoteTs != null) {
+                put("batch_b_parity_quote_ts", sourceQuoteTs)
+            } else {
+                put("batch_b_parity_quote_ts", JSONObject.NULL)
+                put("batch_b_parity_quote_ts_unavailable_reason", "source_quote_ts_unavailable")
+            }
             put("batch_b_parity_action", policy.action)
             put("batch_b_parity_reason", policy.reason)
             // Join is performed offline against python parity_observations.jsonl;
@@ -782,7 +792,10 @@ class PositionTickService : Service() {
             val quote = Quote(
                 bid = quoteObj.bestDepthPrice("buy") ?: quoteObj.optDoubleAny("best_bid_price", "bid_price", "bid"),
                 ask = quoteObj.bestDepthPrice("sell") ?: quoteObj.optDoubleAny("best_ask_price", "ask_price", "ask"),
-                ltp = quoteObj.optDoubleAny("last_price", "ltp", "last_traded_price")
+                ltp = quoteObj.optDoubleAny("last_price", "ltp", "last_traded_price"),
+                // R4: actual source quote timestamp when Upstox provides one.
+                // Never invent tickTs here — missing => parity marks unavailable.
+                sourceTs = quoteObj.sourceQuoteTimestamp()
             )
             out[instrumentKey] = quote
             out[responseKey] = quote
@@ -1028,7 +1041,7 @@ class PositionTickService : Service() {
     /* PositionLeg / CloseSide live at file level (bottom of this file) so the
        structure validator that consumes them can be unit-tested. */
 
-    private data class Quote(val bid: Double?, val ask: Double?, val ltp: Double?)
+    private data class Quote(val bid: Double?, val ask: Double?, val ltp: Double?, val sourceTs: String? = null)
 
     private data class QuoteFetch(val authSource: String, val quotes: Map<String, Quote>)
 
@@ -1491,6 +1504,23 @@ internal data class StructureCheck(
 )
 
 /** A raw quote for one leg, as returned by the market-data fetch. */
+
+/** R4: extract actual source quote timestamp when the vendor provides one. */
+private fun JSONObject.sourceQuoteTimestamp(): String? {
+    val raw = sequenceOf(
+        optStringAny("last_trade_time", "last_trade_timestamp", "ltt"),
+        optStringAny("timestamp", "ts", "quote_ts", "exchange_timestamp")
+    ).map { it.trim() }.firstOrNull { it.isNotEmpty() && it != "null" && it != "0" }
+        ?: return null
+    // Epoch millis / seconds → ISO-8601 UTC; otherwise pass through ISO-like strings.
+    val asLong = raw.toLongOrNull()
+    if (asLong != null) {
+        val millis = if (asLong < 100_000_000_000L) asLong * 1000L else asLong
+        return java.time.Instant.ofEpochMilli(millis).toString()
+    }
+    return raw
+}
+
 internal data class LegQuote(val bid: Double?, val ask: Double?, val ltp: Double?)
 
 /** Per-leg valuation outcome, serialized into `legs_json`. */
