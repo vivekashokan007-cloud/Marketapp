@@ -1,6 +1,6 @@
 {
   "auto_deploy_forbidden": true,
-  "code_sha": "LOCAL_PENDING_COMMIT",
+  "code_sha": "5befb8264f8a255a0c690cdebbe7face5ba93dc6",
   "dataset_cutoff_rule": "Entries with entry_ts <= freeze_ts are eligible; outcomes with event_ts > freeze_ts must not backfill into pre-freeze decisions.",
   "entry_decision_freeze_protocol": "Record candidate entry decisions with timestamp BEFORE outcome fields may populate. Holding-duration selection must not manufacture winners.",
   "experiment_id": "batch_d_prospective_framework_20260923",
