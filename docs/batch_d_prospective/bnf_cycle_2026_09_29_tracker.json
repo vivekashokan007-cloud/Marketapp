@@ -1,0 +1,33 @@
+{
+  "adds_one_cycle_not_proof": true,
+  "completed_metrics": null,
+  "cycle_id": "BNF_2026-09-29",
+  "entries_frozen": false,
+  "expiry_date": "2026-09-29",
+  "fabricated_pnl_forbidden": true,
+  "note": "Today is before 2026-09-29 expiry. Status remains PENDING/IN_PROGRESS. Do NOT invent completed metrics for this cycle.",
+  "post_expiry_rerun_checklist": [
+    {
+      "detail": "Freeze dataset cutoff and code SHA after expiry settlement/data available.",
+      "status": "PENDING",
+      "step": "1_freeze_dataset"
+    },
+    {
+      "detail": "Rerun Batch C policy_eval_runner on frozen dataset.",
+      "status": "PENDING",
+      "step": "2_rerun_batch_c_reports"
+    },
+    {
+      "detail": "Attach this single completed cycle to prospective ledger. Explicitly: adds one cycle, not proof.",
+      "status": "PENDING",
+      "step": "3_attach_one_cycle"
+    },
+    {
+      "detail": "Do not auto-deploy policies or change sizing from one cycle.",
+      "status": "PENDING",
+      "step": "4_no_auto_deploy"
+    }
+  ],
+  "status": "PENDING_UNTIL_EXPIRY",
+  "tracker_version": "bnf_cycle_2026_09_29_v1_batch_d_20260923"
+}
