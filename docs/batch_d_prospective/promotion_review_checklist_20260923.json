@@ -1,0 +1,50 @@
+{
+  "authority_selection": {
+    "note": "Batch B parity observation only; no authority selected.",
+    "status": "DEFERRED"
+  },
+  "auto_promote_forbidden": true,
+  "capture_coverage": {
+    "notes": "Awaiting prospective data.",
+    "status": "PENDING",
+    "value": null
+  },
+  "checklist_version": "promotion_review_checklist_v1_batch_d_20260923",
+  "cycle_gates_review": {
+    "bnf_completed": null,
+    "bnf_target": 3,
+    "nf_completed": null,
+    "nf_target": 8,
+    "note": "REVIEW gates only; not auto-deploy.",
+    "status": "PENDING"
+  },
+  "effect_uncertainty": {
+    "notes": "Awaiting prospective data.",
+    "status": "PENDING",
+    "value": null
+  },
+  "execution_realism": {
+    "notes": "Awaiting prospective data.",
+    "status": "PENDING",
+    "value": null
+  },
+  "experiment_id": "batch_d_prospective_framework_20260923",
+  "overall_status": "PENDING",
+  "ranking_or_model_swap": {
+    "status": "DEFERRED"
+  },
+  "risk": {
+    "notes": "Awaiting prospective data.",
+    "status": "PENDING",
+    "value": null
+  },
+  "sep29_bnf_cycle": {
+    "completed_metrics": null,
+    "cycle_id": "BNF_2026-09-29",
+    "status": "PENDING_UNTIL_EXPIRY"
+  },
+  "sizing": {
+    "note": "Sizing patch rejected / deferred.",
+    "status": "DEFERRED"
+  }
+}
