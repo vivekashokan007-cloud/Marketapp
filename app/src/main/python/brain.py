@@ -3665,6 +3665,222 @@ def is_position_live_available(pl_data):
     return bool(pl_data) and not (isinstance(pl_data, dict) and pl_data.get('_valuation_unavailable'))
 
 
+
+def _finite_float_or_none(value):
+    """Return a finite float, or None when missing/non-numeric/non-finite."""
+    if value is None or value == '':
+        return None
+    try:
+        import math
+        num = float(value)
+        if not math.isfinite(num):
+            return None
+        return num
+    except (TypeError, ValueError):
+        return None
+
+
+def _vix_change_legacy_missing_fallback(current_vix, entry_vix):
+    """FROZEN historical variant only: missing current VIX becomes 15.
+
+    Do not call this on the live analyze() path. Batch A corrected availability
+    handling must not fabricate a +3 spike into danger from missing VIX.
+    """
+    entry = _finite_float_or_none(entry_vix)
+    if entry is None or entry <= 0:
+        return {
+            'vix_change': 0.0,
+            'vixChange': 0.0,
+            'current_vix': 15.0 if _finite_float_or_none(current_vix) is None else float(current_vix),
+            'entry_vix': entry,
+            'vix_change_available': False,
+            'vix_change_provenance': 'legacy_missing_vix_fallback_15',
+        }
+    curr = _finite_float_or_none(current_vix)
+    if curr is None:
+        curr = 15.0
+        available = False
+        provenance = 'legacy_missing_vix_fallback_15'
+    else:
+        available = True
+        provenance = 'legacy_observed'
+    change = round(curr - entry, 2)
+    return {
+        'vix_change': change,
+        'vixChange': change,
+        'current_vix': curr,
+        'entry_vix': entry,
+        'vix_change_available': available,
+        'vix_change_provenance': provenance,
+    }
+
+
+def _compute_vix_change_for_verdict(current_vix, entry_vix, mode='corrected'):
+    """VIX change contract for position_verdict.
+
+    mode='corrected' (live): missing/null/nonfinite current or entry VIX does NOT
+    fabricate a spike; change is unavailable/None.
+    mode='legacy_missing_vix_fallback_15': frozen historical variant only.
+    """
+    if mode == 'legacy_missing_vix_fallback_15':
+        return _vix_change_legacy_missing_fallback(current_vix, entry_vix)
+    entry = _finite_float_or_none(entry_vix)
+    curr = _finite_float_or_none(current_vix)
+    if entry is None or entry <= 0 or curr is None:
+        return {
+            'vix_change': None,
+            'vixChange': None,
+            'current_vix': curr,
+            'entry_vix': entry,
+            'vix_change_available': False,
+            'vix_change_provenance': 'unavailable_missing_or_nonfinite_vix',
+        }
+    change = round(curr - entry, 2)
+    return {
+        'vix_change': change,
+        'vixChange': change,
+        'current_vix': curr,
+        'entry_vix': entry,
+        'vix_change_available': True,
+        'vix_change_provenance': 'observed_current_minus_entry',
+    }
+
+
+def _parse_journey_timestamp(token, session_date=None, now_dt=None):
+    """Parse journey point timestamps.
+
+    Supports legacy bare HH:MM (interpreted against session_date when provided)
+    and session-aware ISO-like stamps written by Batch A.
+    """
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if token is None:
+        return None
+    raw = str(token).strip()
+    if not raw:
+        return None
+    # Session-aware: YYYY-MM-DDTHH:MM[:SS][+0530|/…]
+    for fmt in (
+        '%Y-%m-%dT%H:%M:%S%z',
+        '%Y-%m-%dT%H:%M%z',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%dT%H:%M',
+    ):
+        try:
+            dt = datetime.strptime(raw.replace('Z', '+0000'), fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ist)
+            return dt.astimezone(ist)
+        except ValueError:
+            pass
+    # Legacy bare HH:MM
+    if ':' in raw and 'T' not in raw and len(raw) <= 5:
+        try:
+            h, m = map(int, raw.split(':'))
+        except ValueError:
+            return None
+        base_date = None
+        if session_date:
+            try:
+                base_date = datetime.strptime(str(session_date)[:10], '%Y-%m-%d').date()
+            except ValueError:
+                base_date = None
+        if base_date is None and now_dt is not None:
+            base_date = now_dt.astimezone(ist).date()
+        if base_date is None:
+            return None
+        return datetime(base_date.year, base_date.month, base_date.day, h, m, tzinfo=ist)
+    return None
+
+
+def _should_append_journey_point(journey, now_dt, session_date, min_gap_minutes=10):
+    """Session-aware journey throttle. Overnight/weekend gaps always allow a point."""
+    if not journey:
+        return True
+    last = journey[-1] if isinstance(journey[-1], dict) else None
+    if not last:
+        return True
+    last_session = last.get('session_date')
+    if last_session and session_date and str(last_session)[:10] != str(session_date)[:10]:
+        return True
+    last_dt = _parse_journey_timestamp(
+        last.get('t_session') or last.get('t'),
+        session_date=last_session or session_date,
+        now_dt=now_dt,
+    )
+    if last_dt is None:
+        return True
+    delta_min = (now_dt - last_dt).total_seconds() / 60.0
+    # Negative delta (clock skew / cross-midnight legacy HH:MM) => allow
+    if delta_min < 0:
+        return True
+    return delta_min >= float(min_gap_minutes)
+
+
+def _bridge_position_verdict_inputs(trade, pl_data=None, prefer_fresh=True):
+    """Bridge producer snake_case onto consumer camelCase for position_verdict.
+
+    Fresh poll values beat stale persisted values. Conflicting aliases are
+    resolved explicitly with provenance. Does not change exit economics —
+    wiring only.
+    """
+    trade = trade if isinstance(trade, dict) else {}
+    pl_data = pl_data if isinstance(pl_data, dict) else {}
+
+    def _pick(fresh_key, snake_key, camel_key):
+        fresh = pl_data.get(fresh_key) if prefer_fresh else None
+        snake = trade.get(snake_key)
+        camel = trade.get(camel_key)
+        chosen = None
+        source = None
+        if fresh is not None:
+            chosen, source = fresh, 'fresh_poll'
+        elif snake is not None and camel is not None and snake != camel:
+            # Prefer producer snake_case (Kotlin persistence / compute_position_live)
+            chosen, source = snake, 'conflict_prefer_snake_producer'
+        elif snake is not None:
+            chosen, source = snake, 'persisted_snake'
+        elif camel is not None:
+            chosen, source = camel, 'persisted_camel'
+        return chosen, source
+
+    vix_change, vix_src = _pick('vix_change', 'vix_change', 'vixChange')
+    peak_erosion, erosion_src = _pick('peak_erosion', 'peak_erosion', 'peakErosion')
+    peak_pnl, peak_src = _pick('peak_pnl', 'peak_pnl', 'peakPnl')
+    trough_pnl, trough_src = _pick('trough_pnl', 'trough_pnl', 'troughPnl')
+
+    # Availability block from live compute when present
+    vix_available = pl_data.get('vix_change_available')
+    vix_provenance = pl_data.get('vix_change_provenance')
+    if vix_available is None:
+        vix_available = vix_change is not None
+        vix_provenance = vix_src or 'unavailable'
+
+    trade['vix_change'] = vix_change
+    trade['vixChange'] = vix_change
+    trade['peak_erosion'] = peak_erosion if peak_erosion is not None else 0.0
+    trade['peakErosion'] = trade['peak_erosion']
+    if peak_pnl is not None:
+        trade['peak_pnl'] = peak_pnl
+    if trough_pnl is not None:
+        trade['trough_pnl'] = trough_pnl
+    if pl_data.get('journey') is not None:
+        trade['journey'] = pl_data.get('journey')
+
+    trade['vix_change_available'] = bool(vix_available)
+    trade['vix_change_provenance'] = vix_provenance
+    trade['position_verdict_input_bridge'] = {
+        'vix_change_source': vix_src,
+        'peak_erosion_source': erosion_src,
+        'peak_pnl_source': peak_src,
+        'trough_pnl_source': trough_src,
+        'prefer_fresh': prefer_fresh,
+        'vix_change_available': bool(vix_available),
+        'vix_change_provenance': vix_provenance,
+    }
+    return trade
+
+
 def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     """Phase D: brain.py becomes sole producer of position P&L.
     Replaces JS updateOpenTradePnL (2-leg only) and Kotlin
@@ -4069,39 +4285,50 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     else:
         erosion = 0.0
 
-    # VIX change since entry
-    entry_vix = trade.get('entry_vix', 0) or 0
-    v_curr = vix or 15
-    vix_change = round(v_curr - entry_vix, 2) if entry_vix > 0 else 0.0
+    # VIX change since entry — corrected availability (no missing-VIX spike).
+    # Frozen historical callers may pass ctx['vix_change_mode'] =
+    # 'legacy_missing_vix_fallback_15' to preserve the deployed fabricate-15 path.
+    vix_mode = 'corrected'
+    if isinstance(ctx, dict) and ctx.get('vix_change_mode'):
+        vix_mode = str(ctx.get('vix_change_mode'))
+    entry_vix_raw = trade.get('entry_vix')
+    vix_info = _compute_vix_change_for_verdict(vix, entry_vix_raw, mode=vix_mode)
+    vix_change = vix_info['vix_change']
 
-    # Journey point (10-min throttle)
-    import time
+    # Journey point — session-aware timestamps (legacy HH:MM still readable)
     from datetime import datetime, timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))
     now_dt = datetime.now(ist)
     now_str = now_dt.strftime("%H:%M")
+    session_date = None
+    if isinstance(ctx, dict):
+        session_date = ctx.get('today_ist') or ctx.get('session_date')
+    if not session_date:
+        session_date = now_dt.strftime('%Y-%m-%d')
+    session_date = str(session_date)[:10]
+    t_session = now_dt.strftime('%Y-%m-%dT%H:%M:%S%z')
 
     journey = trade.get('journey', []) or []
-    if isinstance(journey, str): # Handle possible json string
+    if isinstance(journey, str):  # Handle possible json string
         import json
-        try: journey = json.loads(journey)
-        except: journey = []
-
-    last = journey[-1] if journey else None
-    add_point = True
-    if last:
         try:
-            last_t = last.get('t', '')
-            h1, m1 = map(int, last_t.split(':'))
-            h2, m2 = map(int, now_str.split(':'))
-            diff = (h2*60 + m2) - (h1*60 + m1)
-            if diff < 10:
-                add_point = False
-        except: add_point = True
+            journey = json.loads(journey)
+        except Exception:
+            journey = []
+    if not isinstance(journey, list):
+        journey = []
+
+    add_point = _should_append_journey_point(journey, now_dt, session_date, min_gap_minutes=10)
 
     journey_point = None
     if add_point:
-        journey_point = {'t': now_str, 'pnl': round(pnl), 'spot': round(spot, 2)}
+        journey_point = {
+            't': t_session,  # session-aware primary stamp
+            't_hhmm': now_str,  # backward-compatible display
+            'session_date': session_date,
+            'pnl': round(pnl),
+            'spot': round(spot, 2),
+        }
         journey.append(journey_point)
         if len(journey) > 100:
             journey = journey[-100:]
@@ -4121,6 +4348,10 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
         'trough_pnl': round(new_trough),
         'peak_erosion': erosion,
         'vix_change': vix_change,
+        'vix_change_available': vix_info.get('vix_change_available'),
+        'vix_change_provenance': vix_info.get('vix_change_provenance'),
+        'current_vix': vix_info.get('current_vix'),
+        'entry_vix_used': vix_info.get('entry_vix'),
         'lot_size_resolved': lot_size,
         'lot_size_assumed': lot_size_assumed,
         'lot_size_source': lot_size_source,
@@ -15791,7 +16022,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         chain = result["bnfProfile"] if idx == 'BNF' else result["nfProfile"]
         spot = bnf_spot if idx == 'BNF' else nf_spot
 
-        pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, vix, ctx, bnf_breadth)
+        pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, ctx.get('vix'), ctx, bnf_breadth)
         if pl_data and not pl_data.get('_valuation_unavailable'):
             result["position_live"][tid] = pl_data
             # Update trade object for downstream insights
@@ -15803,6 +16034,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             t['legs_required'] = pl_data.get('legs_required')
             t['legs_quoted'] = pl_data.get('legs_quoted')
             t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
+            # Batch A evidence contract: bridge producer→consumer keys on the
+            # REAL analyze() path before position_verdict reads camelCase.
+            _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
         else:
             reason = 'missing_required_chain_quotes'
             if isinstance(pl_data, dict) and pl_data.get('failure_reason'):
@@ -19499,6 +19733,61 @@ def _compute_b1b_historical_multi_horizon_rv(polls):
     }
 
 
+
+def _watchlist_evidence_view(candidate):
+    """Bounded watchlist evidence: order, membership, identity — not full body.
+
+    Full candidate bodies already live in snapshot_ranked_candidates_full.
+    Batch A requires watchlist *survival*, not a second copy of fat rows.
+    """
+    if not isinstance(candidate, dict):
+        return candidate
+    entry_elig = candidate.get('entryEligibility') if isinstance(candidate.get('entryEligibility'), dict) else {}
+    legs_in = candidate.get('legs') if isinstance(candidate.get('legs'), list) else []
+    legs = []
+    for leg in legs_in[:6]:
+        if not isinstance(leg, dict):
+            continue
+        legs.append({
+            'action': leg.get('action'),
+            'option_type': leg.get('option_type') or leg.get('type'),
+            'strike': leg.get('strike'),
+            'expiry': leg.get('expiry'),
+            'instrument_key': leg.get('instrument_key'),
+        })
+    contract_identity = candidate.get('contract_identity')
+    if not isinstance(contract_identity, dict):
+        contract_identity = {
+            'expiry': candidate.get('expiry'),
+            'index': candidate.get('index'),
+            'type': candidate.get('type') or candidate.get('strategy_type'),
+            'legs': legs,
+        }
+    membership = (
+        candidate.get('membership_reason')
+        or candidate.get('watchlist_reason')
+        or entry_elig.get('gate')
+        or candidate.get('entry_gate')
+    )
+    return {
+        'id': candidate.get('id') or candidate.get('candidate_id'),
+        'index': candidate.get('index'),
+        'type': candidate.get('type') or candidate.get('strategy_type'),
+        'expiry': candidate.get('expiry'),
+        'tDTE': candidate.get('tDTE'),
+        'watchlist_rank': candidate.get('watchlist_rank') or candidate.get('rank'),
+        'membership_reason': membership,
+        'pc2PaperRank': candidate.get('pc2PaperRank'),
+        'pc2PaperResearchRank': candidate.get('pc2PaperResearchRank'),
+        'entryEligible': candidate.get('entryEligible'),
+        'entryConfidence': candidate.get('entryConfidence') or entry_elig.get('entry_confidence'),
+        'contract_identity': contract_identity,
+        'netPremium': candidate.get('netPremium'),
+        'maxProfit': candidate.get('maxProfit'),
+        'maxLoss': candidate.get('maxLoss'),
+    }
+
+
 def _compact_android_snapshot_context(snapshot_context):
     """Drop live-only bulk while retaining replay, PC2, and C3 evidence."""
     source = snapshot_context if isinstance(snapshot_context, dict) else {}
@@ -19507,6 +19796,10 @@ def _compact_android_snapshot_context(snapshot_context):
         'vix', 'bnfSpot', 'nfSpot', 'significant_move',
         'bias_net', 'morningBias', 'snapshot_generation_skip_reason',
         'snapshot_brain_version', 'snapshot_supply_state',
+        # Batch A evidence-contract survivors (producer→compact→upload)
+        'nfDTE', 'bnfDTE',
+        'snapshot_open_trades_json', 'snapshot_closed_trades_json',
+        'snapshot_capture_completeness',
     )
     object_keys = (
         'effective_bias',
@@ -19542,6 +19835,13 @@ def _compact_android_snapshot_context(snapshot_context):
         'candidate_generation_trace',
         'context_percentiles',
         'c3_finalization_frame',
+        # Batch A evidence-contract survivors
+        'marketPhase',
+        'snapshot_position_verdicts',
+        'snapshot_position_marks',
+        'snapshot_manual_exit_provenance',
+        'snapshot_market_profiles',
+        'bnfDteMeta', 'nfDteMeta',
     )
     array_keys = (
         'snapshot_generation_skip_reasons',
@@ -19551,6 +19851,9 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_pc2_authority_decisions',
         'snapshot_supply_states',
         'snapshot_evaluation_legs',
+        # Batch A evidence-contract survivors
+        'snapshot_watchlist',
+        'snapshot_open_trades',
     )
     for key in scalar_keys:
         if source.get(key) is not None:
@@ -19631,6 +19934,32 @@ def _compact_android_snapshot_context(snapshot_context):
             encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
             if encoded_bytes <= context_payload_target:
                 break
+    # Batch A: if still over budget, shrink watchlist evidence rows rather than
+    # dropping the key. Historical completeness is NOT claimed by shrinking.
+    if encoded_bytes > context_payload_target and isinstance(compact.get('snapshot_watchlist'), list):
+        slim = []
+        for row in compact.get('snapshot_watchlist') or []:
+            if not isinstance(row, dict):
+                continue
+            slim.append({
+                'id': row.get('id'),
+                'index': row.get('index'),
+                'type': row.get('type'),
+                'expiry': row.get('expiry'),
+                'tDTE': row.get('tDTE'),
+                'watchlist_rank': row.get('watchlist_rank'),
+                'membership_reason': row.get('membership_reason'),
+                'pc2PaperRank': row.get('pc2PaperRank'),
+                'pc2PaperResearchRank': row.get('pc2PaperResearchRank'),
+                'entryEligible': row.get('entryEligible'),
+            })
+        compact['snapshot_watchlist'] = slim
+        removed.append('snapshot_watchlist:shrunk_to_identity_membership')
+        encoded_bytes = len(json.dumps(compact, separators=(',', ':')).encode('utf-8'))
+        compact['snapshot_capture_completeness'] = (
+            str(compact.get('snapshot_capture_completeness') or 'forward_capture_v1_batch_a')
+            + '+watchlist_shrunk_for_budget'
+        )
     compaction_meta = {
         'schema_version': 'android_compact_v3',
         'context_bytes': encoded_bytes,
@@ -20105,7 +20434,51 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         if isinstance(result.get('dailyRiskState'), dict)
         else ctx.get('dailyRiskState') if isinstance(ctx.get('dailyRiskState'), dict) else {}
     )
-    snapshot_context['snapshot_watchlist'] = clean_cands
+    snapshot_context['snapshot_watchlist'] = [
+        _watchlist_evidence_view(c) if isinstance(c, dict) else c
+        for c in clean_cands
+    ]
+    # Batch A: lift identity / DTE / phase / position evidence so compaction
+    # retains them. marketPhase is merged into ctx by Kotlin only AFTER this
+    # snapshot call, so lift from result here.
+    if snapshot_context.get('nfDTE') is None and ctx.get('nfDTE') is not None:
+        snapshot_context['nfDTE'] = ctx.get('nfDTE')
+    if snapshot_context.get('bnfDTE') is None and ctx.get('bnfDTE') is not None:
+        snapshot_context['bnfDTE'] = ctx.get('bnfDTE')
+    if snapshot_context.get('snapshot_open_trades_json') is None and ctx.get('snapshot_open_trades_json') is not None:
+        snapshot_context['snapshot_open_trades_json'] = ctx.get('snapshot_open_trades_json')
+    market_phase = result.get('marketPhase') if isinstance(result.get('marketPhase'), dict) else None
+    if market_phase is None and isinstance(ctx.get('marketPhase'), dict):
+        market_phase = ctx.get('marketPhase')
+    if market_phase is not None:
+        snapshot_context['marketPhase'] = market_phase
+    positions_block = result.get('positions') if isinstance(result.get('positions'), dict) else {}
+    snapshot_context['snapshot_position_verdicts'] = {
+        str(tid): (row.get('verdict') if isinstance(row, dict) else row)
+        for tid, row in positions_block.items()
+    }
+    position_live = result.get('position_live') if isinstance(result.get('position_live'), dict) else {}
+    snapshot_context['snapshot_position_marks'] = {
+        str(tid): {
+            'valuation_quality': (row or {}).get('valuation_quality') if isinstance(row, dict) else None,
+            'current_pnl': (row or {}).get('current_pnl') if isinstance(row, dict) else None,
+            'vix_change': (row or {}).get('vix_change') if isinstance(row, dict) else None,
+            'vix_change_available': (row or {}).get('vix_change_available') if isinstance(row, dict) else None,
+            'peak_erosion': (row or {}).get('peak_erosion') if isinstance(row, dict) else None,
+            'peak_pnl': (row or {}).get('peak_pnl') if isinstance(row, dict) else None,
+        }
+        for tid, row in position_live.items()
+    }
+    # Honesty marker: schema survival does NOT rewrite historical rows.
+    snapshot_context['snapshot_capture_completeness'] = 'forward_capture_v1_batch_a'
+    snapshot_context['snapshot_manual_exit_provenance'] = {
+        'book_profit_button_reason_is_brain_proof': False,
+        'note': (
+            'UI Book Profit may pass a wording token such as '
+            '"manual_book_profit_button"; that is button provenance, not proof '
+            'the Brain emitted BOOK.'
+        ),
+    }
     snapshot_context['snapshot_generation_skip_reason'] = result.get('generation_skip_reason')
     snapshot_context['snapshot_generation_skip_reasons'] = result.get('generation_skip_reasons') or []
     snapshot_context['snapshot_supply_states'] = ctx.get('_supply_states') or []

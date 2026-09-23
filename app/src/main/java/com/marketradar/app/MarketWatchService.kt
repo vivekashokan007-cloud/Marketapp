@@ -2622,6 +2622,14 @@ class MarketWatchService : Service() {
                             )
                         }
 
+                        // Batch A: lift marketPhase onto ctx before snapshot so
+                        // producer→compact→upload can retain session phase evidence.
+                        // (The later A1 ctx merge still runs for the next poll.)
+                        try {
+                            val marketPhaseForSnap = resultObj.optJSONObject("marketPhase")
+                            if (marketPhaseForSnap != null) ctxObj.put("marketPhase", marketPhaseForSnap)
+                        } catch (_: Exception) { /* non-fatal */ }
+
                         // Take poll snapshot and save to ml_brain_snapshots
                         val snapResult = runBlocking {
                             withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
