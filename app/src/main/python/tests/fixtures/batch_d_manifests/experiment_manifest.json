@@ -1,0 +1,79 @@
+{
+  "auto_deploy_forbidden": true,
+  "code_sha": "LOCAL_PENDING_COMMIT",
+  "dataset_cutoff_rule": "Entries with entry_ts <= freeze_ts are eligible; outcomes with event_ts > freeze_ts must not backfill into pre-freeze decisions.",
+  "entry_decision_freeze_protocol": "Record candidate entry decisions with timestamp BEFORE outcome fields may populate. Holding-duration selection must not manufacture winners.",
+  "experiment_id": "batch_d_prospective_framework_20260923",
+  "holding_duration_selection_must_not_manufacture_winners": true,
+  "manifest_version": "prospective_experiment_manifest_v1_batch_d_20260923",
+  "notes": [
+    "Framework only \u2014 does not claim statistical proof.",
+    "Sep29 BNF cycle must remain PENDING until real expiry."
+  ],
+  "policy_versions_frozen": [
+    {
+      "live_advice": false,
+      "policy_id": "legacy_teacher_v_frozen",
+      "policy_version": "legacy_teacher_v_frozen_20260923",
+      "research_only": true,
+      "valuation_basis": "deployed_gross_ltp"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "H0_fixed_exit",
+      "policy_version": "H0_fixed_exit_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "H1_fixed_exit",
+      "policy_version": "H1_fixed_exit_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "H2_fixed_exit",
+      "policy_version": "H2_fixed_exit_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "expiry_time_grid",
+      "policy_version": "expiry_time_grid_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "deployed_position_verdict",
+      "policy_version": "deployed_position_verdict_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "deployed_gross_ltp"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "corrected_data_contract_position_verdict",
+      "policy_version": "corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "kotlin_tick_shadow_policy",
+      "policy_version": "kotlin_tick_shadow_policy_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    },
+    {
+      "live_advice": false,
+      "policy_id": "forced_exit_only_control",
+      "policy_version": "forced_exit_only_control_v1_20260923",
+      "research_only": true,
+      "valuation_basis": "experimental_executable_net"
+    }
+  ],
+  "sizing_forbidden": true
+}
