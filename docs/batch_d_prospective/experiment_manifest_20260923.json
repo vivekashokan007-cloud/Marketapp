@@ -1,6 +1,7 @@
 {
   "auto_deploy_forbidden": true,
-  "code_sha": "5befb8264f8a255a0c690cdebbe7face5ba93dc6",
+  "code_sha": "397d55c54c57dbaa1e2b655109113a2b5a9e470b",
+  "code_sha_note": "Pinned to work/abcd-reject-fix-20260923 tip after REJECT fixes landed (tree at this commit).",
   "dataset_cutoff_rule": "Entries with entry_ts <= freeze_ts are eligible; outcomes with event_ts > freeze_ts must not backfill into pre-freeze decisions.",
   "entry_decision_freeze_protocol": "Record candidate entry decisions with timestamp BEFORE outcome fields may populate. Holding-duration selection must not manufacture winners.",
   "experiment_id": "batch_d_prospective_framework_20260923",
@@ -10,6 +11,7 @@
     "Framework only \u2014 does not claim statistical proof.",
     "Sep29 BNF cycle must remain PENDING until real expiry."
   ],
+  "pin_kind": "git_commit_sha",
   "policy_versions_frozen": [
     {
       "live_advice": false,
