@@ -1,0 +1,2721 @@
+{
+  "by_policy": {
+    "H0_fixed_exit": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": -16.581666666666667,
+      "mean_R_max_loss_norm": -16.581666666666667,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 2,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 550.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "H1_fixed_exit": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 8.435833333333333,
+      "mean_R_max_loss_norm": 8.435833333333333,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 3,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 775.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "H2_fixed_exit": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 3.4323333333333337,
+      "mean_R_max_loss_norm": 3.4323333333333337,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 3,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 730.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "corrected_data_contract_position_verdict": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 5.1001666666666665,
+      "mean_R_max_loss_norm": 5.1001666666666665,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 3,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 745.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "deployed_position_verdict": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 0.09666666666666666,
+      "mean_R_max_loss_norm": 0.09666666666666666,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 2,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 700.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "expiry_time_grid": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 1.7645,
+      "mean_R_max_loss_norm": 1.7645,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 3,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 715.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "forced_exit_only_control": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": -33.26,
+      "mean_R_max_loss_norm": -33.26,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 2,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 400.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "kotlin_tick_shadow_policy": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": -3.2390000000000003,
+      "mean_R_max_loss_norm": -3.2390000000000003,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 2,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 670.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    },
+    "legacy_teacher_v_frozen": {
+      "collapsed_success_percent": null,
+      "mean_R_legacy_configured_risk": 0.09666666666666666,
+      "mean_R_max_loss_norm": 0.09666666666666666,
+      "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+      "n_outcomes": 4,
+      "n_structural_excluded_from_economic_sums": 1,
+      "n_with_net_rupees": 3,
+      "net_profitable_count": 2,
+      "net_profitable_known": 3,
+      "note": "Metrics reported separately; do not collapse into one success %.",
+      "success_percent_forbidden": true,
+      "sum_net_rupees": 700.0,
+      "tp_hit_count": 1,
+      "tp_hit_known": 3
+    }
+  },
+  "generated_at_utc": "2026-09-23T06:01:21Z",
+  "live_advice_changed": false,
+  "n_entries": 4,
+  "n_outcomes": 36,
+  "n_policies": 9,
+  "notes": [
+    "Research-only fixture eval. Not production advice.",
+    "Noon in expiry_time_grid is a hypothesis, not an optimum.",
+    "corrected_data_contract_position_verdict remains RESEARCH.",
+    "Sep29 BNF cycle is NOT claimed complete inside Batch C."
+  ],
+  "notifications_changed": false,
+  "outcomes": [
+    {
+      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.25,
+        "R_max_loss_norm": 0.25,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 500.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "legacy_teacher_v_frozen",
+      "policy_version": "legacy_teacher_v_frozen_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.225,
+        "R_max_loss_norm": 0.225,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 450.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "H0_fixed_exit",
+      "policy_version": "H0_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.2625,
+        "R_max_loss_norm": 0.2625,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 525.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "H1_fixed_exit",
+      "policy_version": "H1_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.255,
+        "R_max_loss_norm": 0.255,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 510.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "H2_fixed_exit",
+      "policy_version": "H2_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.2525,
+        "R_max_loss_norm": 0.2525,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 505.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "expiry_time_grid",
+      "policy_version": "expiry_time_grid_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.25,
+        "R_max_loss_norm": 0.25,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 500.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "deployed_position_verdict",
+      "policy_version": "deployed_position_verdict_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.2575,
+        "R_max_loss_norm": 0.2575,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 515.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "corrected_data_contract_position_verdict",
+      "policy_version": "corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.245,
+        "R_max_loss_norm": 0.245,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 490.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "kotlin_tick_shadow_policy",
+      "policy_version": "kotlin_tick_shadow_policy_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_nf_001",
+      "entry_ts": "2026-09-21T10:15:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "FULL",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 25000
+        },
+        {
+          "side": "BUY",
+          "strike": 25100
+        }
+      ],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_nf_001",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top",
+          "entry_top_global"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.2,
+        "R_max_loss_norm": 0.2,
+        "capital_usage": 40000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 100.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 400.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": true
+      },
+      "policy_id": "forced_exit_only_control",
+      "policy_version": "forced_exit_only_control_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 2,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "BEAR_CALL",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.04,
+        "R_max_loss_norm": 0.04,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 200.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "legacy_teacher_v_frozen",
+      "policy_version": "legacy_teacher_v_frozen_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.03,
+        "R_max_loss_norm": 0.03,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 150.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H0_fixed_exit",
+      "policy_version": "H0_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.045,
+        "R_max_loss_norm": 0.045,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 225.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H1_fixed_exit",
+      "policy_version": "H1_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.042,
+        "R_max_loss_norm": 0.042,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 210.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H2_fixed_exit",
+      "policy_version": "H2_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.041,
+        "R_max_loss_norm": 0.041,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 205.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "expiry_time_grid",
+      "policy_version": "expiry_time_grid_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.04,
+        "R_max_loss_norm": 0.04,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 200.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "deployed_position_verdict",
+      "policy_version": "deployed_position_verdict_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.043,
+        "R_max_loss_norm": 0.043,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 215.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "corrected_data_contract_position_verdict",
+      "policy_version": "corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.038,
+        "R_max_loss_norm": 0.038,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 190.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "kotlin_tick_shadow_policy",
+      "policy_version": "kotlin_tick_shadow_policy_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_bnf_002",
+      "entry_ts": "2026-09-21T11:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture_mid",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 52000
+        },
+        {
+          "side": "BUY",
+          "strike": 51500
+        }
+      ],
+      "maturity": "NOT_YET_MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_bnf_002",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE55",
+        "roles": [
+          "entry_top_per_index"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.02,
+        "R_max_loss_norm": 0.02,
+        "capital_usage": 80000.0,
+        "collapsed_success_percent": null,
+        "drawdown": 300.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 100.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "forced_exit_only_control",
+      "policy_version": "forced_exit_only_control_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 8,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BULL_PUT",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.0,
+        "R_max_loss_norm": 0.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": false,
+        "net_rupees": 0.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "legacy_teacher_v_frozen",
+      "policy_version": "legacy_teacher_v_frozen_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": -50.0,
+        "R_max_loss_norm": -50.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": false,
+        "net_rupees": -50.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H0_fixed_exit",
+      "policy_version": "H0_fixed_exit_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 25.0,
+        "R_max_loss_norm": 25.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 25.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H1_fixed_exit",
+      "policy_version": "H1_fixed_exit_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 10.0,
+        "R_max_loss_norm": 10.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 10.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "H2_fixed_exit",
+      "policy_version": "H2_fixed_exit_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 5.0,
+        "R_max_loss_norm": 5.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 5.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "expiry_time_grid",
+      "policy_version": "expiry_time_grid_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 0.0,
+        "R_max_loss_norm": 0.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": false,
+        "net_rupees": 0.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "deployed_position_verdict",
+      "policy_version": "deployed_position_verdict_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": 15.0,
+        "R_max_loss_norm": 15.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": true,
+        "net_rupees": 15.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "corrected_data_contract_position_verdict",
+      "policy_version": "corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": -10.0,
+        "R_max_loss_norm": -10.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": false,
+        "net_rupees": -10.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "kotlin_tick_shadow_policy",
+      "policy_version": "kotlin_tick_shadow_policy_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_wait_003",
+      "entry_ts": "2026-09-22T09:30:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-23",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "none",
+      "legs": [],
+      "maturity": "MATURE",
+      "membership": {
+        "cohort_memberships": [
+          "WAIT_CONTROL"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_wait_003",
+        "notification_delivered": false,
+        "notification_modeled_separately": true,
+        "primary_cohort": "WAIT_CONTROL",
+        "roles": [
+          "paper_user_exit_observed"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": -100.0,
+        "R_max_loss_norm": -100.0,
+        "capital_usage": 0.0,
+        "collapsed_success_percent": null,
+        "drawdown": 0.0,
+        "gaps": null,
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missingness": null,
+        "net_profitable": false,
+        "net_rupees": -100.0,
+        "selection_mode": "retrospective",
+        "structural": false,
+        "success_percent_forbidden": true,
+        "tp_hit": false
+      },
+      "policy_id": "forced_exit_only_control",
+      "policy_version": "forced_exit_only_control_v1_20260923",
+      "qty": 0,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 1,
+        "expiry_cycle": "NF_2026-09-23",
+        "strategy": "NONE",
+        "tenor": "weekly",
+        "underlying": "NIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": false,
+      "structural_reasons": [],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "legacy_teacher_v_frozen::legacy_teacher_v_frozen_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "legacy_teacher_v_frozen",
+      "policy_version": "legacy_teacher_v_frozen_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H0_fixed_exit::H0_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "H0_fixed_exit",
+      "policy_version": "H0_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H1_fixed_exit::H1_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "H1_fixed_exit",
+      "policy_version": "H1_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "H2_fixed_exit::H2_fixed_exit_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "H2_fixed_exit",
+      "policy_version": "H2_fixed_exit_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "expiry_time_grid::expiry_time_grid_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "expiry_time_grid",
+      "policy_version": "expiry_time_grid_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "deployed_position_verdict::deployed_position_verdict_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "deployed_position_verdict",
+      "policy_version": "deployed_position_verdict_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "corrected_data_contract_position_verdict::corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "corrected_data_contract_position_verdict",
+      "policy_version": "corrected_data_contract_position_verdict_RESEARCH_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "kotlin_tick_shadow_policy::kotlin_tick_shadow_policy_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "kotlin_tick_shadow_policy",
+      "policy_version": "kotlin_tick_shadow_policy_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    },
+    {
+      "behavior_fingerprint": "forced_exit_only_control::forced_exit_only_control_v1_20260923",
+      "censoring": "NONE",
+      "code_version": "policy_eval_runner_v1_batch_c_20260923",
+      "cost_version": "cost_v1",
+      "data_version": "fixture_v1",
+      "economics_row_count": 1,
+      "entry_identity": "entry_struct_004",
+      "entry_ts": "2026-09-22T14:00:00+05:30",
+      "experiment_version": "batch_c_fixture_eval_20260923",
+      "expiry": "2026-09-29",
+      "fidelity": "LIMITED_FIXTURE",
+      "fill_basis": "fixture",
+      "legs": [
+        {
+          "side": "SELL",
+          "strike": 53000
+        }
+      ],
+      "maturity": "IRRECOVERABLE",
+      "membership": {
+        "cohort_memberships": [
+          "SELL_PREMIUM",
+          "SELL_PREMIUM_GE55",
+          "SELL_PREMIUM_GE70"
+        ],
+        "contract_version": "entry_cohort_memberships_v1_batch_c_20260923",
+        "double_count_forbidden": true,
+        "economics_row_count": 1,
+        "entry_identity": "entry_struct_004",
+        "notification_delivered": true,
+        "notification_modeled_separately": true,
+        "primary_cohort": "SELL_PREMIUM_GE70",
+        "roles": [
+          "research_top"
+        ]
+      },
+      "metrics": {
+        "R_legacy_configured_risk": null,
+        "R_max_loss_norm": null,
+        "capital_usage": null,
+        "collapsed_success_percent": null,
+        "drawdown": null,
+        "gaps": null,
+        "label": "STRUCTURAL",
+        "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+        "missing_not_neutral_zero": true,
+        "missingness": null,
+        "net_profitable": null,
+        "net_rupees": null,
+        "selection_mode": "retrospective",
+        "structural": true,
+        "success_percent_forbidden": true,
+        "tp_hit": null
+      },
+      "policy_id": "forced_exit_only_control",
+      "policy_version": "forced_exit_only_control_v1_20260923",
+      "qty": 1,
+      "selection_mode": "retrospective",
+      "slice_dims": {
+        "dte": 6,
+        "expiry_cycle": "BNF_2026-09-29",
+        "strategy": "BEAR_CALL",
+        "tenor": "monthly",
+        "underlying": "BANKNIFTY"
+      },
+      "store_version": "policy_outcome_store_v1_batch_c_20260923",
+      "structural": true,
+      "structural_reasons": [
+        "oi_absent",
+        "momentum_history_absent"
+      ],
+      "supabase_write": false
+    }
+  ],
+  "ranking_changed": false,
+  "registry_version": "policy_registry_batch_c_v1_20260923",
+  "runner_version": "policy_eval_runner_v1_batch_c_20260923",
+  "summary": {
+    "collapsed_success_percent": null,
+    "mean_R_legacy_configured_risk": -3.7949444444444445,
+    "mean_R_max_loss_norm": -3.7949444444444445,
+    "metrics_version": "policy_eval_metrics_v1_batch_c_20260923",
+    "n_outcomes": 36,
+    "n_structural_excluded_from_economic_sums": 9,
+    "n_with_net_rupees": 27,
+    "net_profitable_count": 22,
+    "net_profitable_known": 27,
+    "note": "Metrics reported separately; do not collapse into one success %.",
+    "success_percent_forbidden": true,
+    "sum_net_rupees": 5985.0,
+    "tp_hit_count": 9,
+    "tp_hit_known": 27
+  },
+  "supabase_write": false,
+  "teacher_production_changed": false
+}
