@@ -16107,6 +16107,53 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "wallDrift": t.get("wallDrift")
         }
 
+        # Batch B (observation-only): position-state + parity records.
+        # Must NOT alter live BOOK/EXIT math or bridge into trade keys.
+        try:
+            from position_state_contract import (
+                build_position_state,
+                attach_position_state_observation,
+            )
+            from advice_parity_instrumentation import (
+                build_parity_record,
+                attach_parity_observation,
+            )
+            live = (result.get("position_live") or {}).get(tid) or {}
+            state = build_position_state(
+                trade_id=tid,
+                indicative_gross_ltp_pnl=live.get("current_pnl", t.get("current_pnl")),
+                executable_net_liquidation_pnl=None,
+                quote_time=ctx.get("poll_ts") or ctx.get("now_iso"),
+                leg_completeness={
+                    "legs_quoted": t.get("legs_quoted"),
+                    "legs_required": t.get("legs_required"),
+                    "valuation_quality": t.get("valuation_quality"),
+                },
+                quantity_authority={
+                    "lot_size": t.get("lot_size") or live.get("lot_size_resolved"),
+                    "lot_size_assumed": t.get("lot_size_assumed"),
+                },
+                provenance={
+                    "gross_producer": "compute_position_live",
+                    "exec_producer": None,
+                    "exec_unavailable_reason": "executable_mark_owned_by_kotlin_tick",
+                },
+                unavailable_reasons=[
+                    "executable_net_liquidation_pnl_not_on_python_scan_path"
+                ],
+            )
+            attach_position_state_observation(result, tid, state)
+            rec = build_parity_record(
+                event_id=ctx.get("poll_ts") or ctx.get("scan_id") or f"python_scan:{tid}",
+                trade_id=tid,
+                python_verdict=pv,
+                kotlin_summary=None,
+            )
+            attach_parity_observation(result, tid, rec)
+        except Exception as e:
+            print(f"DEBUG: Batch B observation attach failed for tid {tid}: {e}")
+
+
 
     # ═══════════════════════════════════════════════════════════════
     # PHASE E — Snapshot / Positioning / Alerts (Decisions #24-27)

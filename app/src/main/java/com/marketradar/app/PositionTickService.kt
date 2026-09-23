@@ -492,6 +492,14 @@ class PositionTickService : Service() {
             putOptNumber("raw_executable_mark", valuation.rawExecutableMark)
             putOptNumber("max_profit_ref", maxProfit)
             putOptNumber("max_loss_ref", maxLoss)
+            // Batch B B4: silent same-event parity observation. Recording only —
+            // does NOT change maybeNotifyShadowExit gating or select an authority.
+            put("batch_b_parity_observation", true)
+            put("batch_b_parity_contract_version", "advice_parity_v1_batch_b_20260923")
+            put("batch_b_shadow_action", policy.action)
+            put("batch_b_shadow_reason", policy.reason)
+            put("batch_b_observation_only", true)
+            put("batch_b_notification_authority_selected", false)
         }
 
         return JSONObject().apply {
