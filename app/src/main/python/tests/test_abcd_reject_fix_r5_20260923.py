@@ -75,7 +75,7 @@ class R5Gap1ReadonlyPagedPositionTicks(unittest.TestCase):
             live_production_readback=False,
         )
         self.assertTrue(manifest["db_reachable"])
-        self.assertFalse(manifest["fixture_only"])
+        self.assertTrue(manifest["fixture_only"])
         self.assertFalse(manifest["live_production_readback"])
         self.assertEqual(manifest["ordering"], ptx.ORDERING)
         self.assertEqual(manifest["count"], 3)
@@ -95,7 +95,7 @@ class R5Gap1ReadonlyPagedPositionTicks(unittest.TestCase):
             cov1["persisted_kotlin_import"]["read_via"],
             "fetch_all_position_ticks_readonly",
         )
-        self.assertFalse(cov1["persisted_kotlin_import"]["fixture_only"])
+        self.assertTrue(cov1["persisted_kotlin_import"]["fixture_only"])
         self.assertTrue(cov1["persisted_kotlin_import"]["db_reachable"])
         self.assertGreaterEqual(cov1["persisted_kotlin_import"]["row_count"], 3)
 
@@ -135,7 +135,7 @@ class R5Gap1ReadonlyPagedPositionTicks(unittest.TestCase):
             source_label="fixture_shaped_mock_not_live",
         )
         self.assertFalse(result["live_production_readback"])
-        self.assertFalse(result["fixture_only"])
+        self.assertTrue(result["fixture_only"])
         self.assertEqual(result["read_via"], "fetch_all_position_ticks_readonly")
 
 

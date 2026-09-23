@@ -723,15 +723,27 @@ def import_kotlin_parity_from_readonly_client(
         source_label=source_label,
         live_production_readback=live_production_readback,
     )
-    result = import_kotlin_parity_records(manifest.get("rows") or [], store=store)
+    # Fail closed: never import partial dumps after a later page failed.
+    rows_for_import = [] if manifest.get("partial_read_rejected") else (manifest.get("rows") or [])
+    if manifest.get("error") and manifest.get("status") in (
+        "partial_read_rejected",
+        "page_fetch_failed",
+    ):
+        rows_for_import = []
+    result = import_kotlin_parity_records(rows_for_import, store=store)
     result["read_via"] = "fetch_all_position_ticks_readonly"
     result["readonly_manifest"] = {k: v for k, v in manifest.items() if k != "rows"}
     result["db_reachable"] = manifest.get("db_reachable")
-    result["live_production_readback"] = manifest.get("live_production_readback")
-    result["fixture_only"] = False
+    result["live_production_readback"] = bool(manifest.get("live_production_readback"))
+    result["fixture_only"] = bool(manifest.get("fixture_only"))
     result["ordering"] = manifest.get("ordering")
     result["source"] = manifest.get("source")
-    result["row_count"] = manifest.get("count")
+    result["row_count"] = 0 if rows_for_import == [] and manifest.get("partial_read_rejected") else manifest.get("count")
+    if manifest.get("partial_read_rejected") or manifest.get("status") == "page_fetch_failed":
+        result["row_count"] = 0
+    result["status"] = manifest.get("status")
+    result["partial_read_rejected"] = bool(manifest.get("partial_read_rejected"))
+    result["error"] = manifest.get("error")
     return result
 
 
@@ -772,13 +784,23 @@ def join_parity_from_readonly_position_ticks(
         "idempotent": import_meta.get("idempotent", True),
         "db_reachable": import_meta.get("db_reachable"),
         "live_production_readback": import_meta.get("live_production_readback"),
-        "fixture_only": False,
+        "fixture_only": bool(import_meta.get("fixture_only")),
         "ordering": import_meta.get("ordering"),
         "source": import_meta.get("source"),
         "row_count": import_meta.get("row_count"),
+        "status": import_meta.get("status"),
+        "partial_read_rejected": bool(import_meta.get("partial_read_rejected")),
+        "error": import_meta.get("error"),
         "session_date": session_date,
         "trade_id": trade_id,
     }
+    # Surface fail-closed readonly status; empty import already prevents
+    # agreement from a partial dump (no kotlin rows added this call).
+    if import_meta.get("partial_read_rejected") or import_meta.get("status") in (
+        "partial_read_rejected",
+        "page_fetch_failed",
+    ):
+        cov["readonly_status"] = import_meta.get("status")
     return cov
 
 

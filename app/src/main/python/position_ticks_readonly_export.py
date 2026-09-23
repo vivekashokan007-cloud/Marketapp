@@ -40,8 +40,44 @@ class PositionTicksPageClient(Protocol):
         """Return the next page ordered by (tick_ts, id), strictly after cursor."""
 
 
-def _row_sort_key(row: Dict[str, Any]) -> Tuple[str, str]:
-    return (str(row.get("tick_ts") or ""), str(row.get("id") or ""))
+def _coerce_id_sort_key(id_val: Any) -> Tuple[int, Any]:
+    """Prefer numeric ID ordering so 1,2,10 not 1,10,2 (string sort bug)."""
+    if id_val is None:
+        return (2, "")
+    if isinstance(id_val, bool):
+        return (1, str(id_val))
+    if isinstance(id_val, int):
+        return (0, id_val)
+    try:
+        s = str(id_val).strip()
+        if s and (s.isdigit() or (s[0] == "-" and s[1:].isdigit())):
+            return (0, int(s))
+        # Accept plain decimal integers without float coercion surprises.
+        as_int = int(s)
+        return (0, as_int)
+    except (TypeError, ValueError):
+        return (1, str(id_val))
+
+
+def _row_sort_key(row: Dict[str, Any]) -> Tuple[Any, ...]:
+    return (str(row.get("tick_ts") or ""), _coerce_id_sort_key(row.get("id")))
+
+
+def _is_mock_or_fixture_client(client: Any) -> bool:
+    if isinstance(client, MockMultiPagePositionTicksClient):
+        return True
+    if getattr(client, "fixture_only_client", False) or getattr(client, "is_fixture_client", False):
+        return True
+    return False
+
+
+def _client_supports_live_production_readback(client: Any) -> bool:
+    """Live label requires real live/production client capability — never flag alone."""
+    if _is_mock_or_fixture_client(client):
+        return False
+    if isinstance(client, EnvSupabaseRestPositionTicksClient):
+        return True
+    return bool(getattr(client, "supports_live_production_readback", False))
 
 
 def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,7 +101,10 @@ def fetch_all_position_ticks_readonly(
     """Page every matching position_ticks row via ``client`` in stable order.
 
     Returns a manifest with rows + provenance. ``db_reachable`` is True when
-    at least one page fetch completed without raising (including empty result).
+    every requested page completed without raising (including empty result).
+    Mid-pagination failures fail closed (``status=partial_read_rejected``,
+    empty rows). Mock/fixture clients are never labeled live regardless of the
+    ``live_production_readback`` caller flag.
     """
     if page_size < 1:
         raise ValueError("page_size must be >= 1")
@@ -102,7 +141,26 @@ def fetch_all_position_ticks_readonly(
                 raise RuntimeError("position_ticks_readonly_pagination_guard")
     except Exception as exc:  # noqa: BLE001 — research tooling surfaces reachability
         error = f"{type(exc).__name__}:{exc}"
+        # Fail closed on mid-pagination failure: never return partial rows for
+        # import/join (reviewer reproduced false parity agreement from page-1-only).
+        if pages > 0 and rows:
+            status = "partial_read_rejected"
+            rows = []
+        else:
+            status = "page_fetch_failed"
         db_reachable = False
+    else:
+        status = "ok"
+
+    fixture_only = _is_mock_or_fixture_client(client)
+    live_ok = bool(
+        live_production_readback
+        and _client_supports_live_production_readback(client)
+        and (not fixture_only)
+        and db_reachable
+        and error is None
+        and status == "ok"
+    )
 
     # Enforce stable order even if a buggy adapter returns unsorted pages.
     rows.sort(key=_row_sort_key)
@@ -116,8 +174,10 @@ def fetch_all_position_ticks_readonly(
         "trade_id": trade_id,
         "page_size": page_size,
         "db_reachable": db_reachable,
-        "live_production_readback": bool(live_production_readback and db_reachable and error is None),
-        "fixture_only": False,
+        "live_production_readback": live_ok,
+        "fixture_only": fixture_only,
+        "status": status,
+        "partial_read_rejected": status == "partial_read_rejected",
         "error": error,
         "required_columns": list(REQUIRED_COLUMNS),
     }
@@ -146,7 +206,8 @@ class MockMultiPagePositionTicksClient:
                 continue
             key = _row_sort_key(row)
             if after_tick_ts is not None and after_id is not None:
-                if key <= (str(after_tick_ts), str(after_id)):
+                cursor = (str(after_tick_ts), _coerce_id_sort_key(after_id))
+                if key <= cursor:
                     continue
             out.append(dict(row))
             if len(out) >= limit:
