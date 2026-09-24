@@ -3330,8 +3330,13 @@ object SupabaseClient {
     /**
      * Insert pending position_ticks. Returns a privacy-safe diagnostic result.
      * Queue drain must use [PositionTickInsertResult.persisted] — HTTP/transport
-     * failure is never reported as persisted. Duplicate-safe when server returns
-     * 409 (treated as already-present). Does not clear caller queues.
+     * failure is never reported as persisted.
+     *
+     * HTTP 409 is fail-closed ([POSITION_TICK_FLUSH_CONFLICT_UNVERIFIED]) unless the
+     * caller can prove every requested tick is already persisted with matching
+     * immutable contents. This path does NOT perform production readback or add
+     * schema constraints; without that proof, 409 retains the queue.
+     * Does not clear caller queues. Never logs raw response bodies or tick values.
      */
     fun insertPositionTicks(rows: JSONArray): Boolean {
         return insertPositionTicksDetailed(rows).persisted
@@ -3345,7 +3350,7 @@ object SupabaseClient {
                 failureClass = POSITION_TICK_FLUSH_OK,
                 httpStatus = null,
                 exceptionType = null,
-                detail = "empty",
+                detail = POSITION_TICK_DETAIL_EMPTY,
                 rowCount = 0
             )
         }
@@ -3357,31 +3362,35 @@ object SupabaseClient {
         return try {
             client.newCall(request).execute().use { response ->
                 val rawBody = response.body?.string().orEmpty()
+                // Privacy: extract allowlisted server code only — never pass raw body
+                // (even truncated) into diagnostics or LogBuffer.
+                val serverCode = extractAllowlistedServerErrorCode(rawBody)
                 val diag = classifyPositionTickFlushFailure(
                     httpStatus = response.code,
                     httpMessage = response.message,
                     exceptionType = null,
                     exceptionMessage = null,
-                    responseBodySnippet = rawBody,
-                    rowCount = rows.length()
+                    allowlistedServerErrorCode = serverCode,
+                    rowCount = rows.length(),
+                    // No safe exact-identity readback against current schema (no unique
+                    // (trade_id, tick_ts) constraint). Fail closed on 409.
+                    verifiedExactDuplicates = false
                 )
                 if (!diag.persisted) {
-                    Log.e(
-                        TAG,
-                        "Position tick insert failed: class=${diag.failureClass} status=${diag.httpStatus} detail=${diag.detail}"
-                    )
-                    LogBuffer.add(
-                        'E',
-                        TAG,
-                        "POSITION_TICK_INSERT_FAIL: class=${diag.failureClass} status=${diag.httpStatus ?: -1} " +
-                            "rows=${diag.rowCount} detail=${diag.detail}"
-                    )
+                    val line = formatPositionTickInsertFailLog(diag)
+                    Log.e(TAG, line)
+                    LogBuffer.add('E', TAG, line)
                 } else if (diag.failureClass == POSITION_TICK_FLUSH_IDEMPOTENT_CONFLICT) {
-                    Log.w(TAG, "Position tick insert conflict treated as persisted: rows=${diag.rowCount}")
+                    Log.w(
+                        TAG,
+                        "POSITION_TICK_INSERT_IDEMPOTENT: class=${diag.failureClass} " +
+                            "status=${diag.httpStatus} rows=${diag.rowCount} server_code=${diag.allowlistedServerCode ?: "-"}"
+                    )
                     LogBuffer.add(
                         'W',
                         TAG,
-                        "POSITION_TICK_INSERT_IDEMPOTENT: class=${diag.failureClass} status=${diag.httpStatus} rows=${diag.rowCount}"
+                        "POSITION_TICK_INSERT_IDEMPOTENT: class=${diag.failureClass} " +
+                            "status=${diag.httpStatus} rows=${diag.rowCount} server_code=${diag.allowlistedServerCode ?: "-"}"
                     )
                 }
                 diag
@@ -3392,16 +3401,13 @@ object SupabaseClient {
                 httpMessage = null,
                 exceptionType = e.javaClass.name,
                 exceptionMessage = e.message,
-                responseBodySnippet = null,
-                rowCount = rows.length()
+                allowlistedServerErrorCode = null,
+                rowCount = rows.length(),
+                verifiedExactDuplicates = false
             )
-            Log.e(TAG, "Position tick insert exception: class=${diag.failureClass} ex=${diag.exceptionType} detail=${diag.detail}")
-            LogBuffer.add(
-                'E',
-                TAG,
-                "POSITION_TICK_INSERT_FAIL: class=${diag.failureClass} status=-1 " +
-                    "ex=${diag.exceptionType} rows=${diag.rowCount} detail=${diag.detail}"
-            )
+            val line = formatPositionTickInsertFailLog(diag)
+            Log.e(TAG, line)
+            LogBuffer.add('E', TAG, line)
             diag
         }
     }

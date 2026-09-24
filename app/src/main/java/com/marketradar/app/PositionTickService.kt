@@ -843,10 +843,37 @@ class PositionTickService : Service() {
     }
 
     private fun enqueueRows(rows: JSONArray) {
-        val queue = loadPendingQueue()
-        for (i in 0 until rows.length()) queue.put(rows.optJSONObject(i))
-        recordDroppedTicks(trimQueue(queue))
-        prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
+        val existing = loadPendingQueue()
+        val admission = admitPositionTicksToBoundedQueue(existing, rows, MAX_PENDING_TICKS)
+        val editor = prefs.edit().putString(PREF_PENDING_QUEUE, admission.queue.toString())
+        if (admission.overflowActive || admission.rejected > 0) {
+            val rejectedTotal = prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) + admission.rejected
+            editor
+                .putBoolean(PREF_OVERFLOW_ACTIVE, true)
+                .putBoolean(PREF_TRACKING_COMPLETE, false)
+                .putLong(PREF_OVERFLOW_REJECTED_COUNT, rejectedTotal)
+            Log.w(
+                TAG,
+                "Position tick queue overflow: admitted=${admission.admitted} rejected=${admission.rejected} " +
+                    "pending=${admission.queue.length()} max=$MAX_PENDING_TICKS tracking_complete=false"
+            )
+            LogBuffer.add(
+                'W',
+                TAG,
+                "POSITION_TICK_QUEUE_OVERFLOW: admitted=${admission.admitted} rejected=${admission.rejected} " +
+                    "pending=${admission.queue.length()} max=$MAX_PENDING_TICKS " +
+                    "rejected_total=$rejectedTotal tracking_complete=false"
+            )
+        } else if (admission.queue.length() < MAX_PENDING_TICKS) {
+            // Capacity available again — clear active overflow flag but keep totals.
+            editor.putBoolean(PREF_OVERFLOW_ACTIVE, false)
+            if (!prefs.getBoolean(PREF_TRACKING_COMPLETE, true) &&
+                prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) == 0L
+            ) {
+                editor.putBoolean(PREF_TRACKING_COMPLETE, true)
+            }
+        }
+        editor.apply()
     }
 
     private fun flushPending(force: Boolean) {
@@ -876,52 +903,67 @@ class PositionTickService : Service() {
             prefs.edit().putLong(PREF_LAST_FLUSH_MS, now).apply()
             return
         }
-        val dropped = trimQueue(queue)
-        if (dropped > 0) {
-            recordDroppedTicks(dropped)
+        // Never silently trim unpersisted rows before flush. Capacity is enforced at
+        // enqueue via admitPositionTicksToBoundedQueue (reject new, preserve old).
+        val dedupe = dedupePositionTicksByTradeTs(queue)
+        queue = dedupe.queue
+        if (dedupe.exactDupDropped > 0 || dedupe.contentConflicts > 0) {
             prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
-        }
-        val (deduped, dupDropped) = dedupePositionTicksByTradeTs(queue)
-        if (dupDropped > 0) {
-            queue = deduped
-            prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
-            LogBuffer.add('I', TAG, "POSITION_TICK_QUEUE_DEDUPE: dropped=$dupDropped pending=${queue.length()}")
-        } else {
-            queue = deduped
+            LogBuffer.add(
+                'I',
+                TAG,
+                "POSITION_TICK_QUEUE_DEDUPE: exact_dropped=${dedupe.exactDupDropped} " +
+                    "content_conflicts=${dedupe.contentConflicts} pending=${queue.length()}"
+            )
+            if (dedupe.contentConflicts > 0) {
+                LogBuffer.add(
+                    'W',
+                    TAG,
+                    "POSITION_TICK_QUEUE_CONTENT_CONFLICT: conflicts=${dedupe.contentConflicts} " +
+                        "pending=${queue.length()} retained_all=true"
+                )
+            }
         }
         val pendingBefore = queue.length()
+        val overflowActive = prefs.getBoolean(PREF_OVERFLOW_ACTIVE, false) ||
+            prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) > 0L
+        val trackingComplete = prefs.getBoolean(PREF_TRACKING_COMPLETE, true) && !overflowActive
         val result = SupabaseClient.insertPositionTicksDetailed(queue)
         val (pendingAfter, drained) = applyPositionTickFlushDecision(pendingBefore, result)
         if (drained) {
-            prefs.edit()
+            // Drain confirmed-persisted rows only. Overflow totals remain visible so we
+            // never claim complete tracking after rejected admits.
+            val editor = prefs.edit()
                 .putString(PREF_PENDING_QUEUE, "[]")
                 .putLong(PREF_LAST_FLUSH_MS, now)
                 .putInt(PREF_FLUSH_FAILURE_COUNT, 0)
                 .putString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_OK)
-                .apply()
+                .putBoolean(PREF_OVERFLOW_ACTIVE, false)
+            if (!overflowActive) {
+                editor.putBoolean(PREF_TRACKING_COMPLETE, true)
+            }
+            editor.apply()
             LogBuffer.add(
                 'I',
                 TAG,
                 "POSITION_TICK_FLUSH_OK: cleared=$pendingBefore class=${result.failureClass} " +
-                    "status=${result.httpStatus ?: -1} persisted=true"
+                    "status=${result.httpStatus ?: -1} persisted=true " +
+                    "tracking_complete=$trackingComplete overflow_had_rejects=$overflowActive"
             )
         } else {
             // Preserve queued ticks on rejection — do not clear, drop, or fabricate.
             val failures = priorFailures + 1
             val nextBackoff = computePositionTickFlushBackoffMs(failures, result.failureClass)
-            Log.w(
-                TAG,
-                "Position tick flush failed; class=${result.failureClass} status=${result.httpStatus} " +
-                    "consecutive_failures=$failures pending_rows=$pendingAfter"
+            val line = formatPositionTickFlushFailLog(
+                consecutive = failures,
+                pending = pendingAfter,
+                result = result,
+                backoffMs = nextBackoff,
+                overflowActive = overflowActive,
+                trackingComplete = trackingComplete
             )
-            LogBuffer.add(
-                'W',
-                TAG,
-                "POSITION_TICK_FLUSH_FAIL: consecutive=$failures pending=$pendingAfter " +
-                    "class=${result.failureClass} status=${result.httpStatus ?: -1} " +
-                    "ex=${result.exceptionType ?: "-"} backoff_ms=$nextBackoff " +
-                    "persisted=false detail=${result.detail}"
-            )
+            Log.w(TAG, line)
+            LogBuffer.add('W', TAG, line)
             prefs.edit()
                 .putString(PREF_PENDING_QUEUE, queue.toString())
                 .putLong(PREF_LAST_FLUSH_MS, now)
@@ -929,23 +971,6 @@ class PositionTickService : Service() {
                 .putString(PREF_FLUSH_LAST_CLASS, result.failureClass)
                 .apply()
         }
-    }
-
-    private fun trimQueue(queue: JSONArray): Int {
-        var dropped = 0
-        while (queue.length() > MAX_PENDING_TICKS) {
-            queue.remove(0)
-            dropped += 1
-        }
-        return dropped
-    }
-
-    private fun recordDroppedTicks(dropped: Int) {
-        if (dropped <= 0) return
-        val total = prefs.getLong(PREF_DROPPED_TICK_COUNT, 0L) + dropped
-        prefs.edit().putLong(PREF_DROPPED_TICK_COUNT, total).apply()
-        Log.w(TAG, "Dropped $dropped old position tick rows from bounded queue; total_dropped=$total")
-        LogBuffer.add('W', TAG, "POSITION_TICK_QUEUE_DROP: dropped=$dropped total=$total")
     }
 
     private fun loadPendingQueue(): JSONArray {
@@ -1163,6 +1188,12 @@ class PositionTickService : Service() {
         private const val PREF_RUNNING_STATE = "position_tick_running_state"
         private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
         private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
+        /** True while new ticks were refused because the bounded queue is full. */
+        private const val PREF_OVERFLOW_ACTIVE = "position_tick_overflow_active"
+        /** Cumulative count of ticks refused at enqueue (never silently deleted). */
+        private const val PREF_OVERFLOW_REJECTED_COUNT = "position_tick_overflow_rejected_count"
+        /** False after overflow refuses new ticks until explicitly restored. */
+        private const val PREF_TRACKING_COMPLETE = "position_tick_tracking_complete"
         private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
         private const val PREF_FLUSH_LAST_CLASS = "position_tick_flush_last_class"
         private const val PREF_FGS_BLOCKED_UNTIL_MS = "position_tick_fgs_blocked_until_ms"
