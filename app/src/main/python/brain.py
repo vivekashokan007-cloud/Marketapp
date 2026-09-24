@@ -4386,6 +4386,266 @@ def compute_position_live(trade, bnf_chain, nf_chain, spots, vix, ctx, breadth):
     }
 
 
+
+def _parse_p1_mark_instant(raw):
+    """Parse P1 mark timestamp to aware UTC datetime; naive/unparseable → None."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        from datetime import datetime, timezone, timedelta
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        # Space-separated Postgres style
+        if " " in text and "T" not in text:
+            text = text.replace(" ", "T", 1)
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            return None
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        try:
+            from datetime import datetime, timezone
+            as_long = int(text)
+            millis = as_long * 1000 if as_long < 100_000_000_000 else as_long
+            return datetime.fromtimestamp(millis / 1000.0, tz=timezone.utc)
+        except Exception:
+            return None
+
+
+def _validate_p1_legs_for_brain(legs_json, expected_leg_count=None):
+    """Fail-closed checks on P1 legs_json for Paper Brain valuation.
+
+    Returns (ok: bool, reason: str).
+    """
+    if legs_json is None:
+        # Legs optional only when caller already proved PnL acceptance; still
+        # require them when expected_leg_count is known (4-leg IB/IC).
+        if expected_leg_count and int(expected_leg_count) > 0:
+            return False, "missing_leg"
+        return True, "legs_not_required"
+    if isinstance(legs_json, str):
+        try:
+            import json as _json
+            legs_json = _json.loads(legs_json)
+        except Exception:
+            return False, "unparseable_legs_json"
+    if not isinstance(legs_json, list):
+        return False, "unparseable_legs_json"
+    if expected_leg_count is not None and int(expected_leg_count) > 0:
+        if len(legs_json) != int(expected_leg_count):
+            return False, f"missing_leg:got={len(legs_json)}:expected={expected_leg_count}"
+    for leg in legs_json:
+        if not isinstance(leg, dict):
+            return False, "unparseable_leg"
+        key = leg.get("instrument_key") or leg.get("instrumentKey")
+        if key is None or str(key).strip() == "":
+            return False, "missing_leg"
+        bid = leg.get("bid")
+        ask = leg.get("ask")
+        try:
+            bid_f = float(bid) if bid is not None else None
+            ask_f = float(ask) if ask is not None else None
+        except (TypeError, ValueError):
+            return False, "unparseable_quote"
+        if bid_f is not None and ask_f is not None and bid_f > ask_f:
+            return False, "crossed"
+        status = str(leg.get("quote_status") or "").upper()
+        if status in ("CROSSED", "CROSSED_QUOTE"):
+            return False, "crossed"
+        exec_px = leg.get("executable_price")
+        if exec_px is None:
+            return False, "incomplete"
+        try:
+            if not (float(exec_px) > 0):
+                return False, "incomplete"
+        except (TypeError, ValueError):
+            return False, "incomplete"
+    return True, "legs_ok"
+
+
+def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
+    """Paper only: apply LIVE_FULL P1 validated mark as Brain valuation source.
+
+    Authority: P1 is the valuation source for Paper Brain only. Does not select
+    BOOK/EXIT notification authority. Does not invent current_premium.
+    STALE_LAST_VALID / incomplete / wrong-lot / future / crossed → reject (fail closed).
+    Returns True when the mark was applied into trade + position_live.
+    """
+    if not isinstance(trade, dict) or not trade.get("paper"):
+        return False
+    marks = None
+    if isinstance(ctx, dict):
+        marks = ctx.get("p1_position_marks")
+    if isinstance(marks, str):
+        try:
+            import json as _json
+            marks = _json.loads(marks)
+        except Exception:
+            marks = None
+    if not isinstance(marks, dict):
+        return False
+    mark = marks.get(str(tid))
+    if mark is None:
+        mark = marks.get(tid)
+    if not isinstance(mark, dict):
+        return False
+
+    state = str(mark.get("display_state") or "").upper()
+    # Stale display must never become actionable via Brain BOOK/EXIT.
+    if state != "LIVE_FULL":
+        return False
+
+    pnl_raw = mark.get("last_valid_current_pnl")
+    try:
+        pnl = float(pnl_raw)
+        if pnl != pnl:  # NaN
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    tick_ts = mark.get("last_valid_tick_ts")
+    tick_dt = _parse_p1_mark_instant(tick_ts)
+    if tick_dt is None:
+        return False
+
+    # Freshness: prefer store-reported age; else compare to now.
+    max_age_ms = mark.get("fresh_mark_max_age_ms")
+    try:
+        max_age_ms = int(max_age_ms) if max_age_ms is not None else 150_000
+    except (TypeError, ValueError):
+        max_age_ms = 150_000
+    age_ms = mark.get("last_valid_age_ms")
+    try:
+        if age_ms is not None and int(age_ms) > max_age_ms:
+            return False
+    except (TypeError, ValueError):
+        return False
+
+    # Future-dated mark vs wall clock → reject.
+    try:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if tick_dt > now:
+            return False
+    except Exception:
+        pass
+
+    # Lot authority: when P1 recorded a lot, it must agree with the trade.
+    mark_qty = mark.get("last_valid_quantity_units")
+    trade_qty = trade.get("lot_size") or trade.get("lotSize") or trade.get("quantity_units")
+    if mark_qty is not None and trade_qty is not None:
+        try:
+            if abs(float(mark_qty) - float(trade_qty)) > 1e-9:
+                return False
+        except (TypeError, ValueError):
+            return False
+    mark_cls = mark.get("last_valid_contract_lot_size")
+    trade_cls = trade.get("contract_lot_size") or trade.get("contractLotSize")
+    if mark_cls is not None and trade_cls is not None:
+        try:
+            if int(float(mark_cls)) != int(float(trade_cls)):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if mark.get("last_valid_lot_authoritative") is False:
+        # Explicit non-authoritative lot on the accepted tick → fail closed.
+        return False
+
+    stype = str(trade.get("strategy_type") or trade.get("strategyType") or "").upper()
+    expected_legs = 4 if stype in ("IRON_CONDOR", "IRON_BUTTERFLY") else (
+        2 if stype in ("BEAR_CALL", "BULL_CALL", "BULL_PUT", "BEAR_PUT") else None
+    )
+    mark_leg_count = mark.get("leg_count")
+    if expected_legs is not None and mark_leg_count is not None:
+        try:
+            if int(mark_leg_count) != int(expected_legs):
+                return False
+        except (TypeError, ValueError):
+            return False
+
+    legs_json = mark.get("last_valid_legs_json")
+    legs_ok, legs_reason = _validate_p1_legs_for_brain(
+        legs_json if legs_json not in (None, "", {}) else None,
+        expected_leg_count=expected_legs if legs_json not in (None, "", {}) else (
+            expected_legs if mark_leg_count is None else None
+        ),
+    )
+    # If legs_json is present, it must pass. If absent but leg_count matches, allow
+    # (older store rows before enrichment) — still fail when expected and count mismatch.
+    if legs_json not in (None, "", {}) and not legs_ok:
+        return False
+    if legs_json in (None, "", {}) and expected_legs is not None and mark_leg_count is None:
+        # Incomplete provenance for multi-leg — fail closed rather than invent.
+        if expected_legs >= 4:
+            return False
+
+    # Executable premium — only set when P1 provided a real mark (never invent).
+    exec_mark = mark.get("last_valid_mark")
+    current_net_premium = None
+    if exec_mark is not None:
+        try:
+            current_net_premium = float(exec_mark)
+            if current_net_premium != current_net_premium:
+                current_net_premium = None
+        except (TypeError, ValueError):
+            current_net_premium = None
+
+    source = mark.get("source") or "P1_REST_60S"
+    legs_quoted = None
+    try:
+        if mark_leg_count is not None:
+            legs_quoted = int(mark_leg_count)
+        elif isinstance(legs_json, list):
+            legs_quoted = len(legs_json)
+    except Exception:
+        legs_quoted = None
+
+    row = {
+        "trade_id": tid,
+        "current_pnl": round(pnl, 2),
+        "current_spot": round(spot, 2) if spot is not None else trade.get("current_spot"),
+        "valuation_quality": "full",
+        "positionDataDegraded": False,
+        "legs_required": expected_legs,
+        "legs_quoted": legs_quoted if legs_quoted is not None else expected_legs,
+        "legs_intrinsic_fallback": 0,
+        "valuation_source": source,
+        "valuation_provenance": "p1_position_mark_store",
+        "p1_display_state": state,
+        "p1_tick_ts": tick_ts,
+        "p1_mark_basis": mark.get("last_valid_mark_basis") or "EXECUTABLE",
+        "p1_legs_json": legs_json if legs_json not in (None, "") else None,
+        "p1_quantity_units": mark_qty,
+        "p1_contract_lot_size": mark_cls,
+        "p1_apply_reason": "p1_live_full_accepted",
+    }
+    if current_net_premium is not None:
+        row["current_net_premium"] = round(current_net_premium, 2)
+
+    if isinstance(result, dict):
+        result.setdefault("position_live", {})[tid] = row
+
+    trade["current_pnl"] = row["current_pnl"]
+    trade["current_spot"] = row["current_spot"]
+    trade["valuation_quality"] = "full"
+    trade["positionDataDegraded"] = False
+    trade["legs_required"] = row["legs_required"]
+    trade["legs_quoted"] = row["legs_quoted"]
+    trade["legs_intrinsic_fallback"] = 0
+    trade["valuation_source"] = source
+    trade["position_mark_state"] = state
+    trade["position_mark_timestamp"] = tick_ts
+    trade["position_mark_source"] = source
+    trade["position_mark_actionable"] = False
+    # Do NOT invent current_premium. Only stamp when P1 supplied executable mark.
+    if current_net_premium is not None:
+        trade["current_premium"] = round(current_net_premium, 2)
+    return True
+
+
 def _stamp_unavailable_position_valuation(trade, result, tid, spot=None, reason='missing_required_chain_quotes'):
     """Propagate failed live valuation as explicit unavailable state.
 
@@ -16042,21 +16302,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         chain = result["bnfProfile"] if idx == 'BNF' else result["nfProfile"]
         spot = bnf_spot if idx == 'BNF' else nf_spot
 
-        pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, ctx.get('vix'), ctx, bnf_breadth)
-        if pl_data and not pl_data.get('_valuation_unavailable'):
-            result["position_live"][tid] = pl_data
-            # Update trade object for downstream insights
-            t['current_pnl'] = pl_data['current_pnl']
-            t['current_spot'] = pl_data['current_spot']
-            t['valuation_quality'] = pl_data.get('valuation_quality')
-            t['positionDataDegraded'] = pl_data.get('valuation_quality') != 'full'
-            t['lot_size_assumed'] = pl_data.get('lot_size_assumed')
-            t['legs_required'] = pl_data.get('legs_required')
-            t['legs_quoted'] = pl_data.get('legs_quoted')
-            t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
-            # Batch A A2 REJECT response: compute bridged VIX/erosion for
-            # observation-only evidence. Do NOT feed into trade keys that
-            # position_verdict reads — that would change live BOOK/EXIT advice.
+        # Paper: P1 LIVE_FULL validated mark is the valuation source for Brain.
+        # Incomplete Brain chain poll must not force DATA_UNAVAILABLE when P1
+        # already accepted the four-leg executable mark. Real trades unchanged.
+        p1_applied = False
+        if t.get('paper'):
+            try:
+                p1_applied = _try_apply_paper_p1_valuation(t, result, tid, ctx, spot=spot)
+            except Exception as e:
+                print(f"P1_PAPER_VALUATION_APPLY_FAIL: trade={tid} err={e}")
+                p1_applied = False
+
+        if p1_applied:
+            pl_data = result.get("position_live", {}).get(tid) or {}
+            # Observation-only VIX/erosion bridge (same contract as chain path).
             observed = _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
             result.setdefault('position_verdict_inputs_observed', {})[tid] = observed
             live_row = result['position_live'].get(tid)
@@ -16067,17 +16326,44 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     'position_verdict_input_bridge'
                 )
                 live_row['observation_only_vix_erosion'] = True
+                live_row['p1_paper_brain_valuation'] = True
         else:
-            reason = 'missing_required_chain_quotes'
-            if isinstance(pl_data, dict) and pl_data.get('failure_reason'):
-                reason = str(pl_data.get('failure_reason'))
-            _stamp_unavailable_position_valuation(
-                t,
-                result,
-                tid,
-                spot=spot,
-                reason=reason,
-            )
+            pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, ctx.get('vix'), ctx, bnf_breadth)
+            if pl_data and not pl_data.get('_valuation_unavailable'):
+                result["position_live"][tid] = pl_data
+                # Update trade object for downstream insights
+                t['current_pnl'] = pl_data['current_pnl']
+                t['current_spot'] = pl_data['current_spot']
+                t['valuation_quality'] = pl_data.get('valuation_quality')
+                t['positionDataDegraded'] = pl_data.get('valuation_quality') != 'full'
+                t['lot_size_assumed'] = pl_data.get('lot_size_assumed')
+                t['legs_required'] = pl_data.get('legs_required')
+                t['legs_quoted'] = pl_data.get('legs_quoted')
+                t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
+                # Batch A A2 REJECT response: compute bridged VIX/erosion for
+                # observation-only evidence. Do NOT feed into trade keys that
+                # position_verdict reads — that would change live BOOK/EXIT advice.
+                observed = _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
+                result.setdefault('position_verdict_inputs_observed', {})[tid] = observed
+                live_row = result['position_live'].get(tid)
+                if isinstance(live_row, dict):
+                    live_row['vixChange'] = observed.get('vixChange')
+                    live_row['peakErosion'] = observed.get('peakErosion')
+                    live_row['position_verdict_input_bridge'] = observed.get(
+                        'position_verdict_input_bridge'
+                    )
+                    live_row['observation_only_vix_erosion'] = True
+            else:
+                reason = 'missing_required_chain_quotes'
+                if isinstance(pl_data, dict) and pl_data.get('failure_reason'):
+                    reason = str(pl_data.get('failure_reason'))
+                _stamp_unavailable_position_valuation(
+                    t,
+                    result,
+                    tid,
+                    spot=spot,
+                    reason=reason,
+                )
 
         ci_detail = compute_control_index(t, chain, spot, bnf_breadth, return_detail=True)
         t['controlIndex'] = ci_detail.get('score', 0)

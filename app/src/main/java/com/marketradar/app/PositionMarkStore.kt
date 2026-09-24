@@ -50,6 +50,27 @@ internal object PositionMarkStore {
                 next.put("last_valid_mark", row.opt("executable_mark"))
                 next.put("last_valid_source", row.optString("source", ""))
                 next.put("last_valid_leg_count", row.optInt("leg_count", 0))
+                // Full accepted mark for Paper Brain valuation (not display-only).
+                // Do not invent premiums; only persist what P1 already validated.
+                if (row.has("legs_json") && !row.isNull("legs_json")) {
+                    next.put("last_valid_legs_json", row.opt("legs_json"))
+                }
+                next.put("last_valid_mark_basis", row.optString("mark_basis", ""))
+                next.put("last_valid_auth_source", row.optString("auth_source", ""))
+                if (row.has("quantity_units") && !row.isNull("quantity_units")) {
+                    next.put("last_valid_quantity_units", row.opt("quantity_units"))
+                }
+                if (row.has("contract_lot_size") && !row.isNull("contract_lot_size")) {
+                    next.put("last_valid_contract_lot_size", row.opt("contract_lot_size"))
+                }
+                if (row.has("number_of_lots") && !row.isNull("number_of_lots")) {
+                    next.put("last_valid_number_of_lots", row.opt("number_of_lots"))
+                }
+                if (row.has("lot_authoritative")) {
+                    next.put("last_valid_lot_authoritative", row.optBoolean("lot_authoritative", false))
+                }
+                next.put("last_valid_index_key", row.optString("index_key", ""))
+                next.put("last_valid_strategy_type", row.optString("strategy_type", ""))
             }
             all.put(tradeId, next)
         }
@@ -95,6 +116,19 @@ internal object PositionMarkStore {
             put("leg_count", raw.optInt("last_valid_leg_count", 0))
             put("latest_policy_action", raw.optString("latest_policy_action", ""))
             put("latest_policy_reason", raw.optString("latest_policy_reason", ""))
+            // Brain bridge fields (Paper valuation source). Present even when
+            // STALE so diagnostics can explain rejection; apply path still
+            // requires LIVE_FULL.
+            put("last_valid_legs_json", raw.opt("last_valid_legs_json") ?: JSONObject.NULL)
+            put("last_valid_mark_basis", raw.optString("last_valid_mark_basis", ""))
+            put("last_valid_auth_source", raw.optString("last_valid_auth_source", ""))
+            put("last_valid_quantity_units", raw.opt("last_valid_quantity_units") ?: JSONObject.NULL)
+            put("last_valid_contract_lot_size", raw.opt("last_valid_contract_lot_size") ?: JSONObject.NULL)
+            put("last_valid_number_of_lots", raw.opt("last_valid_number_of_lots") ?: JSONObject.NULL)
+            put("last_valid_lot_authoritative", raw.optBoolean("last_valid_lot_authoritative", false))
+            put("last_valid_index_key", raw.optString("last_valid_index_key", ""))
+            put("last_valid_strategy_type", raw.optString("last_valid_strategy_type", ""))
+            put("fresh_mark_max_age_ms", FRESH_MARK_MAX_AGE_MS)
         }
     }
 

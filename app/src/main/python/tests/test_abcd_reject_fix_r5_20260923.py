@@ -173,11 +173,11 @@ class R5Gap2PerLegQuoteTiming(unittest.TestCase):
                 "L1": "2026-09-23T09:59:30+00:00",
                 "L2": "2026-09-23T09:57:00+00:00",
             },
-            self.EVENT,
+            valuation_ts=self.EVENT,
             max_quote_age_seconds=90,
         )
         self.assertFalse(r["available"])
-        self.assertIn("leg_quote_stale_vs_event", r["reason"])
+        self.assertIn("leg_quote_stale_vs_valuation", r["reason"])
 
     def test_one_future_dated_unavailable(self):
         r = api.validate_per_leg_quote_timing(
@@ -186,10 +186,10 @@ class R5Gap2PerLegQuoteTiming(unittest.TestCase):
                 "L1": "2026-09-23T09:59:30+00:00",
                 "L2": "2026-09-23T10:01:00+00:00",
             },
-            self.EVENT,
+            valuation_ts=self.EVENT,
         )
         self.assertFalse(r["available"])
-        self.assertIn("leg_quote_ts_after_event", r["reason"])
+        self.assertIn("leg_quote_ts_after_valuation", r["reason"])
 
     def test_mixed_timestamp_formats_and_offsets(self):
         r = api.validate_per_leg_quote_timing(
@@ -204,14 +204,27 @@ class R5Gap2PerLegQuoteTiming(unittest.TestCase):
         )
         self.assertTrue(r["available"], r)
 
-    def test_event_captured_before_later_quote_fetch(self):
+    def test_quote_after_valuation_unavailable(self):
         r = api.validate_per_leg_quote_timing(
             ["L1"],
             {"L1": "2026-09-23T10:00:05+00:00"},
-            self.EVENT,
+            valuation_ts=self.EVENT,
+            request_started_ts="2026-09-23T09:59:59+00:00",
         )
         self.assertFalse(r["available"])
-        self.assertIn("leg_quote_ts_after_event", r["reason"])
+        self.assertIn("leg_quote_ts_after_valuation", r["reason"])
+
+    def test_quote_210ms_after_request_before_valuation_accepted(self):
+        # request_started at EVENT; quote 210ms later; valuation 500ms later
+        r = api.validate_per_leg_quote_timing(
+            ["L1"],
+            {"L1": "2026-09-23T10:00:00.210+00:00"},
+            valuation_ts="2026-09-23T10:00:00.500+00:00",
+            request_started_ts=self.EVENT,
+            max_quote_age_seconds=90,
+        )
+        self.assertTrue(r["available"], r)
+        self.assertEqual(r["reason"], "all_required_legs_fresh")
 
     def test_missing_never_agreement_in_join(self):
         path = tempfile.mktemp(suffix=".jsonl")
@@ -245,6 +258,11 @@ class R5Gap2PerLegQuoteTiming(unittest.TestCase):
         self.assertIn("parseParityInstantUtc", kt)
         self.assertIn("batch_b_parity_leg_quote_timings", kt)
         self.assertIn("r5_20260923", kt)
+        self.assertIn("valuationTsIso", kt)
+        self.assertIn("requestStartedTsIso", kt)
+        self.assertIn("batch_b_parity_valuation_ts", kt)
+        self.assertIn("batch_b_parity_request_started_ts", kt)
+        self.assertIn("leg_quote_ts_after_valuation", kt)
         block_start = kt.index("batch_b_parity_event_ts")
         block_end = kt.index("batch_b_parity_action", block_start)
         block = kt[block_start:block_end]
@@ -265,7 +283,8 @@ class R5ContractPinned(unittest.TestCase):
     def test_per_leg_helper_compares_instants(self):
         src = inspect.getsource(api.validate_per_leg_quote_timing)
         self.assertIn("_parse_aware_instant", src)
-        self.assertIn("leg_quote_ts_after_event", src)
+        self.assertIn("leg_quote_ts_after_valuation", src)
+        self.assertIn("valuation_ts", src)
 
 
 if __name__ == "__main__":

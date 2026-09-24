@@ -2164,6 +2164,15 @@ class MarketWatchService : Service() {
             // can reconstruct the same calibration and risk context later.
             ctxObj.put("snapshot_open_trades_json", openTradesJson)
             ctxObj.put("snapshot_closed_trades_json", closedTradesJson)
+            // Paper Brain valuation source: P1 accepted marks (LIVE_FULL only is
+            // applied in brain.py). Never clears valid P1 marks; bridge is read-only.
+            try {
+                val p1MarksRaw = PositionMarkStore.presentationJson(prefs)
+                ctxObj.put("p1_position_marks", JSONObject(p1MarksRaw))
+                ctxObj.put("p1_position_marks_contract", "p1_paper_brain_valuation_v1_20260924")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "P1_MARKS_CTX_FAIL: ${e.message}")
+            }
             
             // CHAIN MERGING (Phase C: Format raw chains for Python)
             fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double,

@@ -143,18 +143,26 @@ def _quote_fresh_vs_event(
 def validate_per_leg_quote_timing(
     required_leg_keys: Iterable[Any],
     source_ts_by_key: Dict[Any, Any],
-    event_ts: Any,
+    valuation_ts: Any = None,
     *,
+    event_ts: Any = None,
+    request_started_ts: Any = None,
     max_quote_age_seconds: float = DEFAULT_MAX_QUOTE_AGE_SECONDS,
 ) -> Dict[str, Any]:
-    """R5: every required valued leg must have trustworthy source timing.
+    """R5/R7: every required valued leg must have trustworthy source timing.
 
-    Mirrors Kotlin ``resolveParitySourceQuoteTiming``. Missing / unparseable /
-    stale / future-dated (vs event) for ANY leg => parity unavailable.
+    Mirrors Kotlin ``resolveParitySourceQuoteTiming``. Compare each leg against
+    ``valuation_ts`` (post-fetch). ``request_started_ts`` / legacy ``event_ts``
+    are diagnostics only when ``valuation_ts`` is supplied. Missing / unparseable /
+    stale / genuinely future vs valuation for ANY leg => parity unavailable.
+    Quotes that arrive after request_started but before valuation_ts PASS when fresh.
     Compares parsed UTC instants, not timestamp strings.
     """
     keys = [str(k).strip() for k in (required_leg_keys or []) if str(k).strip()]
-    event = _parse_aware_instant(event_ts)
+    # Prefer explicit valuation_ts; fall back to event_ts for older callers/tests.
+    valuation = _parse_aware_instant(valuation_ts if valuation_ts is not None else event_ts)
+    # request_started retained for diagnostics; never invent; not a reject gate alone.
+    _ = _parse_aware_instant(request_started_ts)
     leg_results: List[Dict[str, Any]] = []
     if not keys:
         return {
@@ -163,11 +171,11 @@ def validate_per_leg_quote_timing(
             "reason": "missing_required_valued_legs",
             "leg_timings": leg_results,
         }
-    if event is None:
+    if valuation is None:
         return {
             "available": False,
             "quote_ts": None,
-            "reason": "missing_or_naive_event_ts",
+            "reason": "missing_or_naive_valuation_ts",
             "leg_timings": leg_results,
         }
     parsed_ok: List[Tuple[datetime, str]] = []
@@ -204,9 +212,9 @@ def validate_per_leg_quote_timing(
                 "reason": f"leg_source_ts_unparseable:{key}",
                 "leg_timings": leg_results,
             }
-        if quote > event:
-            after = (quote - event).total_seconds()
-            reason = f"leg_quote_ts_after_event:{key}:{after}"
+        if quote > valuation:
+            after_ms = int((quote - valuation).total_seconds() * 1000)
+            reason = f"leg_quote_ts_after_valuation:{key}:{after_ms}ms"
             leg_results.append(
                 {"instrument_key": key, "source_ts": str(raw), "ok": False, "reason": reason}
             )
@@ -216,9 +224,9 @@ def validate_per_leg_quote_timing(
                 "reason": reason,
                 "leg_timings": leg_results,
             }
-        age = (event - quote).total_seconds()
+        age = (valuation - quote).total_seconds()
         if age > float(max_quote_age_seconds):
-            reason = f"leg_quote_stale_vs_event:{key}:{age}"
+            reason = f"leg_quote_stale_vs_valuation:{key}:{age}"
             leg_results.append(
                 {"instrument_key": key, "source_ts": str(raw), "ok": False, "reason": reason}
             )
@@ -233,7 +241,7 @@ def validate_per_leg_quote_timing(
                 "instrument_key": key,
                 "source_ts": str(raw),
                 "ok": True,
-                "reason": f"leg_quote_fresh_vs_event_seconds:{age}",
+                "reason": f"leg_quote_fresh_vs_valuation_seconds:{age}",
             }
         )
         parsed_ok.append((quote, str(raw)))
@@ -244,6 +252,10 @@ def validate_per_leg_quote_timing(
         "reason": "all_required_legs_fresh",
         "leg_timings": leg_results,
         "earliest_quote_ts_utc": earliest_dt.isoformat(),
+        "valuation_ts": valuation.isoformat(),
+        "request_started_ts": (
+            str(request_started_ts) if request_started_ts is not None else None
+        ),
     }
 
 

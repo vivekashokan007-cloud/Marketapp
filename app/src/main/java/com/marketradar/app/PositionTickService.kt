@@ -170,7 +170,7 @@ class PositionTickService : Service() {
             return false
         }
 
-        val tickTs = isoUtcNow()
+        val requestStartedTs = isoUtcNow()
         val sessionDate = istSessionDate()
         val trades = (0 until openTrades.length()).mapNotNull { openTrades.optJSONObject(it) }
         val allKeys = trades
@@ -178,9 +178,12 @@ class PositionTickService : Service() {
             .distinct()
 
         val quoteFetch = fetchQuotesWithFallback(allKeys)
+        // Valuation instant is AFTER the quote response. Quotes that arrive a few
+        // hundred ms after request_started but before valuation_ts are valid when fresh.
+        val valuationTs = isoUtcNow()
         val rows = JSONArray()
         trades.forEach { trade ->
-            val row = buildTickRow(trade, sessionDate, tickTs, quoteFetch) ?: return@forEach
+            val row = buildTickRow(trade, sessionDate, requestStartedTs, valuationTs, quoteFetch) ?: return@forEach
             maybeNotifyShadowExit(row, trade)
             rows.put(row)
         }
@@ -400,9 +403,11 @@ class PositionTickService : Service() {
     private fun buildTickRow(
         trade: JSONObject,
         sessionDate: String,
-        tickTs: String,
+        requestStartedTs: String,
+        valuationTs: String,
         quoteFetch: QuoteFetch
     ): JSONObject? {
+        val tickTs = valuationTs
         val tradeId = trade.optStringAny("id", "")
         val strategyType = trade.optStringAny("strategy_type", "strategyType")
         val isCredit = isCreditTrade(trade, strategyType)
@@ -505,10 +510,11 @@ class PositionTickService : Service() {
             put("batch_b_parity_trade_id", tradeId)
             put("batch_b_parity_session_id", sessionDate)
             put("batch_b_parity_event_ts", tickTs)
-            // R5: validate source timing for EVERY required valued leg.
-            // Taking the min of present timestamps was wrong — one missing leg could still look fresh
-            // from another. tickTs is captured BEFORE fetchQuotesWithFallback; compare
-            // quote source instants to that observation event (not wall-clock after fetch).
+            put("batch_b_parity_request_started_ts", requestStartedTs)
+            put("batch_b_parity_valuation_ts", valuationTs)
+            // R5/R7: validate source timing for EVERY required valued leg against
+            // valuation_ts (post-fetch). request_started_ts is retained for diagnostics.
+            // A quote ~210ms after request_started but before valuation_ts must PASS when fresh.
             val requiredLegKeys = legs.mapNotNull { leg ->
                 leg.instrumentKey?.takeIf { it.isNotBlank() }
             }
@@ -518,7 +524,8 @@ class PositionTickService : Service() {
             val timing = resolveParitySourceQuoteTiming(
                 requiredLegKeys = requiredLegKeys,
                 sourceTsByInstrumentKey = sourceTsByKey,
-                eventTsIso = tickTs
+                valuationTsIso = valuationTs,
+                requestStartedTsIso = requestStartedTs
             )
             if (timing.available && !timing.quoteTs.isNullOrBlank()) {
                 put("batch_b_parity_quote_ts", timing.quoteTs)
@@ -557,6 +564,10 @@ class PositionTickService : Service() {
             put("strategy_type", strategyType)
             put("status", trade.optStringAny("status").ifBlank { "OPEN" })
             put("leg_count", legs.size)
+            putOptNumber("quantity_units", lotSize)
+            putOptNumber("contract_lot_size", lotMeta.contractLotSize)
+            putOptNumber("number_of_lots", lotMeta.numberOfLots)
+            put("lot_authoritative", lotMeta.authoritative)
             put("valuation_quality", valuation.valuationQuality)
             put("mark_basis", if (valuation.executableMark != null) "EXECUTABLE" else "NONE")
             putOptNumber("executable_mark", valuation.executableMark)
@@ -1566,16 +1577,19 @@ internal data class ParitySourceQuoteTiming(
 )
 
 /**
- * R5: record/validate source timing for each required valued leg.
+ * R5/R7: record/validate source timing for each required valued leg.
  *
- * If ANY leg lacks a trustworthy timestamp, is stale, is future-dated vs the
- * observation event, or cannot be mapped to its quote → parity unavailable.
+ * Compare each leg quote source instant to [valuationTsIso] (captured AFTER the
+ * quote response). [requestStartedTsIso] is diagnostics-only (pre-fetch).
+ * Quotes that land after request_started but before valuation_ts PASS when fresh.
+ * Missing / unparseable / stale / genuinely future vs valuation → unavailable.
  * Compares parsed UTC instants (not timestamp strings). Pure / unit-testable.
  */
 internal fun resolveParitySourceQuoteTiming(
     requiredLegKeys: List<String>,
     sourceTsByInstrumentKey: Map<String, String?>,
-    eventTsIso: String,
+    valuationTsIso: String,
+    requestStartedTsIso: String? = null,
     maxQuoteAgeSeconds: Long = 90L
 ): ParitySourceQuoteTiming {
     val keys = requiredLegKeys.map { it.trim() }.filter { it.isNotEmpty() }
@@ -1588,13 +1602,16 @@ internal fun resolveParitySourceQuoteTiming(
             legTimings = legTimings
         )
     }
-    val eventInstant = parseParityInstantUtc(eventTsIso)
+    val valuationInstant = parseParityInstantUtc(valuationTsIso)
         ?: return ParitySourceQuoteTiming(
             available = false,
             quoteTs = null,
-            reason = "missing_or_naive_event_ts",
+            reason = "missing_or_naive_valuation_ts",
             legTimings = legTimings
         )
+    // request_started is diagnostic only — never invent; never used as reject gate alone.
+    @Suppress("UNUSED_VARIABLE")
+    val requestStartedInstant = parseParityInstantUtc(requestStartedTsIso)
     val okParsed = mutableListOf<Pair<java.time.Instant, String>>()
     for (key in keys) {
         val raw = sourceTsByInstrumentKey[key]
@@ -1609,20 +1626,20 @@ internal fun resolveParitySourceQuoteTiming(
             legTimings.add(ParityLegQuoteTiming(key, raw, false, "leg_source_ts_unparseable"))
             return ParitySourceQuoteTiming(false, null, reason, legTimings)
         }
-        if (quoteInstant.isAfter(eventInstant)) {
-            val after = java.time.Duration.between(eventInstant, quoteInstant).seconds
-            val reason = "leg_quote_ts_after_event:$key:$after"
+        if (quoteInstant.isAfter(valuationInstant)) {
+            val after = java.time.Duration.between(valuationInstant, quoteInstant).toMillis()
+            val reason = "leg_quote_ts_after_valuation:$key:${after}ms"
             legTimings.add(ParityLegQuoteTiming(key, raw, false, reason))
             return ParitySourceQuoteTiming(false, null, reason, legTimings)
         }
-        val age = java.time.Duration.between(quoteInstant, eventInstant).seconds
+        val age = java.time.Duration.between(quoteInstant, valuationInstant).seconds
         if (age > maxQuoteAgeSeconds) {
-            val reason = "leg_quote_stale_vs_event:$key:$age"
+            val reason = "leg_quote_stale_vs_valuation:$key:$age"
             legTimings.add(ParityLegQuoteTiming(key, raw, false, reason))
             return ParitySourceQuoteTiming(false, null, reason, legTimings)
         }
         legTimings.add(
-            ParityLegQuoteTiming(key, raw, true, "leg_quote_fresh_vs_event_seconds:$age")
+            ParityLegQuoteTiming(key, raw, true, "leg_quote_fresh_vs_valuation_seconds:$age")
         )
         okParsed.add(quoteInstant to raw)
     }
