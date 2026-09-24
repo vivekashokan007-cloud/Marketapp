@@ -58,4 +58,27 @@ class PositionMarkStoreTest {
         assertTrue(state.isNull("last_valid_current_pnl"))
         assertFalse(state.getBoolean("display_is_actionable"))
     }
+
+    @Test
+    fun presentationIncludesTrackingCompleteFromOverflowStatus() {
+        val now = 1_000_000L
+        val incomplete = PositionTickTrackingStatus(
+            trackingComplete = false,
+            overflowActive = true,
+            overflowRejectedCount = 3L
+        )
+        val state = PositionMarkStore.presentationFor(
+            JSONObject().apply {
+                put("latest_valuation_quality", "OK")
+                put("latest_tick_ms", now - 60_000L)
+                put("last_valid_tick_ms", now - 60_000L)
+                put("last_valid_current_pnl", 10.0)
+            },
+            now,
+            incomplete
+        )
+        assertFalse(state.getBoolean("tracking_complete"))
+        assertTrue(state.getBoolean("overflow_active"))
+        assertEquals(3L, state.getLong("overflow_rejected_count"))
+    }
 }

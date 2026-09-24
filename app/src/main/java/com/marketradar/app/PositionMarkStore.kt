@@ -79,17 +79,26 @@ internal object PositionMarkStore {
 
     fun presentationJson(prefs: SharedPreferences, nowMs: Long = System.currentTimeMillis()): String {
         val all = readAll(prefs)
+        val tracking = readPositionTickTrackingStatus(prefs)
         val out = JSONObject()
         val keys = all.keys()
         while (keys.hasNext()) {
             val tradeId = keys.next()
             val raw = all.optJSONObject(tradeId) ?: continue
-            out.put(tradeId, presentationFor(raw, nowMs))
+            out.put(tradeId, presentationFor(raw, nowMs, tracking))
         }
         return out.toString()
     }
 
-    internal fun presentationFor(raw: JSONObject, nowMs: Long): JSONObject {
+    internal fun presentationFor(
+        raw: JSONObject,
+        nowMs: Long,
+        tracking: PositionTickTrackingStatus = PositionTickTrackingStatus(
+            trackingComplete = true,
+            overflowActive = false,
+            overflowRejectedCount = 0L
+        )
+    ): JSONObject {
         val latestQuality = raw.optString("latest_valuation_quality", UNAVAILABLE)
         val latestMs = raw.optLong("latest_tick_ms", 0L)
         val lastValidPnl = raw.optFiniteDouble("last_valid_current_pnl")
@@ -129,6 +138,11 @@ internal object PositionMarkStore {
             put("last_valid_index_key", raw.optString("last_valid_index_key", ""))
             put("last_valid_strategy_type", raw.optString("last_valid_strategy_type", ""))
             put("fresh_mark_max_age_ms", FRESH_MARK_MAX_AGE_MS)
+            // R8: overflow / history-capture completeness for Position card UI.
+            // Does not affect Brain valuation fail-closed (Brain ignores unknown fields).
+            put("tracking_complete", tracking.trackingComplete)
+            put("overflow_active", tracking.overflowActive)
+            put("overflow_rejected_count", tracking.overflowRejectedCount)
         }
     }
 

@@ -6,6 +6,8 @@ Covers:
 - overflow admit preserves prior rows and marks tracking incomplete
 - privacy-safe diagnostics (no raw bodies / tick values)
 - dedupe same-key same/different payload
+- R8 fingerprint covers lot authority + policy_trace (Codex counterexample)
+- R8 tracking_complete in mark broadcast / PositionMarkStore
 - source contracts through PositionTickService / SupabaseClient / PositionTickFlush
 """
 from __future__ import annotations
@@ -123,16 +125,20 @@ def admit(existing, incoming, max_pending):
     }
 
 
+FINGERPRINT_KEYS = [
+    "trade_id", "tick_ts", "session_date", "source", "auth_source",
+    "index_key", "strategy_type", "status", "leg_count",
+    "quantity_units", "contract_lot_size", "number_of_lots", "lot_authoritative",
+    "valuation_quality", "mark_basis",
+    "executable_mark", "mid_mark", "ltp_mark",
+    "current_pnl", "current_pnl_r", "running_mae", "running_mfe",
+    "policy_action", "policy_reason", "policy_trace_json", "legs_json",
+]
+
+
 def fingerprint(row):
-    keys = [
-        "trade_id", "tick_ts", "session_date", "source", "index_key", "strategy_type",
-        "status", "leg_count", "valuation_quality", "mark_basis",
-        "executable_mark", "mid_mark", "ltp_mark",
-        "current_pnl", "current_pnl_r", "running_mae", "running_mfe",
-        "policy_action", "policy_reason", "legs_json",
-    ]
     parts = []
-    for k in keys:
+    for k in FINGERPRINT_KEYS:
         v = row.get(k, "<missing>")
         parts.append(f"{k}={v}")
     return "|".join(parts)
@@ -303,7 +309,40 @@ class PositionTickFlushMirrorTests(unittest.TestCase):
         self.assertEqual(5 * 60_000, backoff_ms(99, TRANSIENT))
 
 
+    def test_codex_counterexample_lot_authority_policy_trace_not_duplicates(self):
+        """Same trade/ts/marks/P&L but different lot authority + policy_trace → retain both."""
+        base = {
+            "trade_id": "286",
+            "tick_ts": "2026-09-24T05:00:00.000Z",
+            "executable_mark": 42.5,
+            "current_pnl": 1677.0,
+            "quantity_units": 30,
+            "contract_lot_size": 15,
+            "number_of_lots": 2,
+        }
+        a = dict(base, lot_authoritative=True, policy_trace_json={"path": "A"})
+        b = dict(base, lot_authoritative=False, policy_trace_json={"path": "B"})
+        self.assertNotEqual(fingerprint(a), fingerprint(b))
+        result = dedupe([a, b])
+        self.assertEqual(0, result["exact_dup_dropped"])
+        self.assertEqual(1, result["content_conflicts"])
+        self.assertEqual(2, len(result["queue"]))
+
+    def test_fingerprint_covers_builder_lot_and_policy_fields(self):
+        for k in (
+            "quantity_units",
+            "contract_lot_size",
+            "number_of_lots",
+            "lot_authoritative",
+            "policy_trace_json",
+            "auth_source",
+            "legs_json",
+        ):
+            self.assertIn(k, FINGERPRINT_KEYS)
+
+
 class PositionTickFlushSourceContractTests(unittest.TestCase):
+
     @classmethod
     def setUpClass(cls):
         cls.pts = PTS.read_text(encoding="utf-8")
@@ -375,6 +414,19 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertIn("contentConflicts", self.ptf)
         self.assertIn("POSITION_TICK_QUEUE_CONTENT_CONFLICT", self.pts)
         self.assertIn("positionTickImmutableFingerprint", self.ptf)
+
+    def test_tracking_complete_in_mark_broadcast_and_store(self):
+        self.assertIn("EXTRA_POSITION_TICK_TRACKING_COMPLETE", self.ptf)
+        self.assertIn("positionTickTrackingBroadcastPayload", self.ptf)
+        self.assertIn("POSITION_MARK_BROADCAST_SENT", self.pts)
+        pms = (JAVA_APP / "PositionMarkStore.kt").read_text(encoding="utf-8")
+        self.assertIn('put("tracking_complete"', pms)
+        self.assertIn("readPositionTickTrackingStatus", pms)
+
+    def test_verified_exact_duplicates_remain_unconditional_false(self):
+        """Known recovery limitation: live insert path never claims verifiedExactDuplicates."""
+        self.assertIn("verifiedExactDuplicates = false", self.sbc)
+        self.assertNotIn("verifiedExactDuplicates = true", self.sbc)
 
 
 if __name__ == "__main__":

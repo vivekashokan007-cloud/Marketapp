@@ -1426,6 +1426,15 @@ class NativeBridge(private val context: Context) {
             )
             // Prefer truthful learningComplete over legacy evaluationDone aliases for UI.
             status.put("learningCompleteRequiresC3", true)
+            // R8: Paper position_ticks overflow / history capture visibility for Position tab.
+            val tickTracking = readPositionTickTrackingStatus(prefs)
+            status.put("positionTickTrackingComplete", tickTracking.trackingComplete)
+            status.put("positionTickOverflowActive", tickTracking.overflowActive)
+            status.put("positionTickOverflowRejectedCount", tickTracking.overflowRejectedCount)
+            // Snake aliases for PWA mark-quality rendering consistency.
+            status.put("tracking_complete", tickTracking.trackingComplete)
+            status.put("overflow_active", tickTracking.overflowActive)
+            status.put("overflow_rejected_count", tickTracking.overflowRejectedCount)
             status.toString()
         } catch (e: Exception) {
             "{\"running\": false, \"error\": \"Internal failure\"}"

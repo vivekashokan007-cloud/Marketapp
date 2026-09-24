@@ -12,7 +12,7 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * R7: unverified 409 retains queue; overflow never silently trims; privacy-safe
+ * R8: fingerprint covers lot/policy; tracking_complete in mark broadcast. R7: unverified 409 retains queue; overflow never silently trims; privacy-safe
  * diagnostics; dedupe never collapses distinct payloads.
  */
 class PositionTickFlushTest {
@@ -345,5 +345,68 @@ class PositionTickFlushTest {
         assertEquals(positionTickImmutableFingerprint(a), positionTickImmutableFingerprint(b))
         val c = JSONObject().put("trade_id", "1").put("tick_ts", "t").put("current_pnl", 2.0)
         assertTrue(positionTickImmutableFingerprint(a) != positionTickImmutableFingerprint(c))
+    }
+
+    /**
+     * Codex R8 reproduction: same trade_id + tick_ts, equal marks/P&L, but different
+     * lot authority and policy_trace_json must NOT be treated as exact duplicates.
+     */
+    @Test
+    fun fingerprintCodexCounterexample_lotAuthorityAndPolicyTrace_notDuplicates() {
+        val base = JSONObject()
+            .put("trade_id", "286")
+            .put("tick_ts", "2026-09-24T05:00:00.000Z")
+            .put("session_date", "2026-09-24")
+            .put("source", "P1_REST_60S")
+            .put("executable_mark", 42.5)
+            .put("mid_mark", 41.0)
+            .put("ltp_mark", 40.0)
+            .put("current_pnl", 1677.0)
+            .put("current_pnl_r", 0.5)
+            .put("valuation_quality", "OK")
+            .put("mark_basis", "EXECUTABLE")
+            .put("quantity_units", 30)
+            .put("contract_lot_size", 15)
+            .put("number_of_lots", 2)
+        val a = JSONObject(base.toString())
+            .put("lot_authoritative", true)
+            .put("policy_trace_json", JSONObject().put("path", "A").put("guards", "v3"))
+        val b = JSONObject(base.toString())
+            .put("lot_authoritative", false)
+            .put("policy_trace_json", JSONObject().put("path", "B").put("guards", "v3"))
+        assertTrue(
+            positionTickImmutableFingerprint(a) != positionTickImmutableFingerprint(b)
+        )
+        val q = JSONArray().put(a).put(b)
+        val result = dedupePositionTicksByTradeTs(q)
+        assertEquals(0, result.exactDupDropped)
+        assertEquals(1, result.contentConflicts)
+        assertEquals(2, result.queue.length())
+    }
+
+    @Test
+    fun fingerprintCoversBuilderLotAndPolicyFields() {
+        val keys = POSITION_TICK_IMMUTABLE_FINGERPRINT_KEYS
+        assertTrue(keys.contains("quantity_units"))
+        assertTrue(keys.contains("contract_lot_size"))
+        assertTrue(keys.contains("number_of_lots"))
+        assertTrue(keys.contains("lot_authoritative"))
+        assertTrue(keys.contains("policy_trace_json"))
+        assertTrue(keys.contains("auth_source"))
+        assertTrue(keys.contains("legs_json"))
+    }
+
+    @Test
+    fun trackingBroadcastPayload_includesTrackingComplete() {
+        val status = PositionTickTrackingStatus(
+            trackingComplete = false,
+            overflowActive = true,
+            overflowRejectedCount = 7L
+        )
+        val payload = positionTickTrackingBroadcastPayload(status)
+        assertEquals(true, payload.getBoolean("position_mark_tick"))
+        assertEquals(false, payload.getBoolean("tracking_complete"))
+        assertEquals(true, payload.getBoolean("overflow_active"))
+        assertEquals(7L, payload.getLong("overflow_rejected_count"))
     }
 }

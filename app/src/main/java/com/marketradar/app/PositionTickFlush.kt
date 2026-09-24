@@ -393,20 +393,35 @@ internal fun dedupePositionTicksByTradeTs(queue: JSONArray): PositionTickDedupeR
 
 /**
  * Fingerprint of immutable tick contents used to detect same-key conflicts.
- * Excludes free-form diagnostics that may differ without changing the tick identity
- * of valuation fields. Intentionally excludes nothing that would hide a PnL/mark
- * divergence under the same trade_id|tick_ts.
+ *
+ * Must cover every field [PositionTickService.buildTickRow] writes into the
+ * persisted payload that affects valuation or provenance. R8 expanded the set
+ * after Codex showed same trade_id|tick_ts + equal marks/P&L but different
+ * lot authority / policy_trace_json were treated as exact duplicates and one
+ * was silently dropped.
+ *
+ * Intentional exclusions vs builder:
+ * - None. Builder keys are: trade_id, session_date, tick_ts, source, auth_source,
+ *   index_key, strategy_type, status, leg_count, quantity_units, contract_lot_size,
+ *   number_of_lots, lot_authoritative, valuation_quality, mark_basis,
+ *   executable_mark, mid_mark, ltp_mark, current_pnl, current_pnl_r, running_mae,
+ *   running_mfe, policy_action, policy_reason, policy_trace_json, legs_json.
+ * - Keep this list in lockstep with buildTickRow; missing valuation/provenance
+ *   fields are a data-loss risk under same-key dedupe.
  */
+internal val POSITION_TICK_IMMUTABLE_FINGERPRINT_KEYS: List<String> = listOf(
+    "trade_id", "tick_ts", "session_date", "source", "auth_source",
+    "index_key", "strategy_type", "status", "leg_count",
+    "quantity_units", "contract_lot_size", "number_of_lots", "lot_authoritative",
+    "valuation_quality", "mark_basis",
+    "executable_mark", "mid_mark", "ltp_mark",
+    "current_pnl", "current_pnl_r", "running_mae", "running_mfe",
+    "policy_action", "policy_reason", "policy_trace_json", "legs_json"
+)
+
 internal fun positionTickImmutableFingerprint(row: JSONObject): String {
-    val keys = listOf(
-        "trade_id", "tick_ts", "session_date", "source", "index_key", "strategy_type",
-        "status", "leg_count", "valuation_quality", "mark_basis",
-        "executable_mark", "mid_mark", "ltp_mark",
-        "current_pnl", "current_pnl_r", "running_mae", "running_mfe",
-        "policy_action", "policy_reason", "legs_json"
-    )
     val sb = StringBuilder()
-    for (k in keys) {
+    for (k in POSITION_TICK_IMMUTABLE_FINGERPRINT_KEYS) {
         sb.append(k).append('=')
         if (row.has(k) && !row.isNull(k)) {
             val v = row.opt(k)
@@ -423,6 +438,51 @@ internal fun positionTickImmutableFingerprint(row: JSONObject): String {
         sb.append('|')
     }
     return sb.toString()
+}
+
+/** Pref keys for overflow / history-capture completeness (shared with mark UI). */
+internal const val PREF_POSITION_TICK_OVERFLOW_ACTIVE = "position_tick_overflow_active"
+internal const val PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT = "position_tick_overflow_rejected_count"
+internal const val PREF_POSITION_TICK_TRACKING_COMPLETE = "position_tick_tracking_complete"
+
+/** Intent extras on ACTION_POSITION_MARK_TICK (broadcast payload). */
+internal const val EXTRA_POSITION_TICK_TRACKING_COMPLETE = "tracking_complete"
+internal const val EXTRA_POSITION_TICK_OVERFLOW_ACTIVE = "overflow_active"
+internal const val EXTRA_POSITION_TICK_OVERFLOW_REJECTED_COUNT = "overflow_rejected_count"
+
+internal data class PositionTickTrackingStatus(
+    val trackingComplete: Boolean,
+    val overflowActive: Boolean,
+    val overflowRejectedCount: Long
+)
+
+/**
+ * Read overflow / tracking_complete prefs. tracking_complete is false after any
+ * overflow reject until restored; overflow_active also forces incomplete.
+ */
+internal fun readPositionTickTrackingStatus(
+    prefs: android.content.SharedPreferences
+): PositionTickTrackingStatus {
+    val rejected = prefs.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L)
+    val overflowActive =
+        prefs.getBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false) || rejected > 0L
+    val trackingComplete =
+        prefs.getBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true) && !overflowActive
+    return PositionTickTrackingStatus(
+        trackingComplete = trackingComplete,
+        overflowActive = overflowActive,
+        overflowRejectedCount = rejected
+    )
+}
+
+/** Compact JSON for broadcast Intent / MainActivity → PWA wake payload. */
+internal fun positionTickTrackingBroadcastPayload(
+    status: PositionTickTrackingStatus
+): JSONObject = JSONObject().apply {
+    put("position_mark_tick", true)
+    put("tracking_complete", status.trackingComplete)
+    put("overflow_active", status.overflowActive)
+    put("overflow_rejected_count", status.overflowRejectedCount)
 }
 
 /** Queue drains only after confirmed persistence (success or verified idempotent conflict). */

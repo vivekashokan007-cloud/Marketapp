@@ -198,8 +198,25 @@ class PositionTickService : Service() {
             // to pull the same native snapshot. This keeps verified Paper marks
             // visible between the five-minute Brain polls without granting P1
             // any execution authority.
-            sendBroadcast(Intent(ACTION_POSITION_MARK_TICK).setPackage(packageName))
-            LogBuffer.add('D', TAG, "POSITION_MARK_BROADCAST_SENT: rows=${rows.length()}")
+            val tracking = readPositionTickTrackingStatus(prefs)
+            sendBroadcast(
+                Intent(ACTION_POSITION_MARK_TICK)
+                    .setPackage(packageName)
+                    .putExtra(EXTRA_POSITION_TICK_TRACKING_COMPLETE, tracking.trackingComplete)
+                    .putExtra(EXTRA_POSITION_TICK_OVERFLOW_ACTIVE, tracking.overflowActive)
+                    .putExtra(EXTRA_POSITION_TICK_OVERFLOW_REJECTED_COUNT, tracking.overflowRejectedCount)
+                    .putExtra(
+                        "data",
+                        positionTickTrackingBroadcastPayload(tracking).toString()
+                    )
+            )
+            LogBuffer.add(
+                'D',
+                TAG,
+                "POSITION_MARK_BROADCAST_SENT: rows=${rows.length()} " +
+                    "tracking_complete=${tracking.trackingComplete} " +
+                    "overflow_active=${tracking.overflowActive}"
+            )
         }
         enqueueRows(rows)
         flushPending(force = false)
@@ -1189,11 +1206,11 @@ class PositionTickService : Service() {
         private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
         private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
         /** True while new ticks were refused because the bounded queue is full. */
-        private const val PREF_OVERFLOW_ACTIVE = "position_tick_overflow_active"
+        private val PREF_OVERFLOW_ACTIVE = PREF_POSITION_TICK_OVERFLOW_ACTIVE
         /** Cumulative count of ticks refused at enqueue (never silently deleted). */
-        private const val PREF_OVERFLOW_REJECTED_COUNT = "position_tick_overflow_rejected_count"
+        private val PREF_OVERFLOW_REJECTED_COUNT = PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT
         /** False after overflow refuses new ticks until explicitly restored. */
-        private const val PREF_TRACKING_COMPLETE = "position_tick_tracking_complete"
+        private val PREF_TRACKING_COMPLETE = PREF_POSITION_TICK_TRACKING_COMPLETE
         private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
         private const val PREF_FLUSH_LAST_CLASS = "position_tick_flush_last_class"
         private const val PREF_FGS_BLOCKED_UNTIL_MS = "position_tick_fgs_blocked_until_ms"
