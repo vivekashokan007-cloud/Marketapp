@@ -457,23 +457,37 @@ internal data class PositionTickTrackingStatus(
 )
 
 /**
- * Read overflow / tracking_complete prefs. tracking_complete is false after any
- * overflow reject until restored; overflow_active also forces incomplete.
+ * Derive overflow / tracking_complete status from prefs (or test doubles).
+ *
+ * - overflow_active comes from the **active flag alone** ([PREF_POSITION_TICK_OVERFLOW_ACTIVE]),
+ *   not from the cumulative rejected-tick count. After a successful drain the service clears
+ *   the flag even when rejected totals remain, so status must not re-assert an *active* overflow.
+ * - tracking_complete stays false when any historical rejects remain (gap preserved) or when
+ *   overflow is still active; the pref is also ANDed so writers remain authoritative.
  */
-internal fun readPositionTickTrackingStatus(
-    prefs: android.content.SharedPreferences
+internal fun derivePositionTickTrackingStatus(
+    overflowActiveFlag: Boolean,
+    trackingCompletePref: Boolean,
+    rejectedCount: Long
 ): PositionTickTrackingStatus {
-    val rejected = prefs.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L)
-    val overflowActive =
-        prefs.getBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false) || rejected > 0L
+    val overflowActive = overflowActiveFlag
     val trackingComplete =
-        prefs.getBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true) && !overflowActive
+        trackingCompletePref && !overflowActive && rejectedCount == 0L
     return PositionTickTrackingStatus(
         trackingComplete = trackingComplete,
         overflowActive = overflowActive,
-        overflowRejectedCount = rejected
+        overflowRejectedCount = rejectedCount
     )
 }
+
+/** Read overflow / tracking_complete prefs via [derivePositionTickTrackingStatus]. */
+internal fun readPositionTickTrackingStatus(
+    prefs: android.content.SharedPreferences
+): PositionTickTrackingStatus = derivePositionTickTrackingStatus(
+    overflowActiveFlag = prefs.getBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false),
+    trackingCompletePref = prefs.getBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true),
+    rejectedCount = prefs.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L)
+)
 
 /** Compact JSON for broadcast Intent / MainActivity → PWA wake payload. */
 internal fun positionTickTrackingBroadcastPayload(

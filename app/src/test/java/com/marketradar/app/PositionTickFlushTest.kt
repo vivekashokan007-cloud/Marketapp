@@ -12,8 +12,10 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * R8: fingerprint covers lot/policy; tracking_complete in mark broadcast. R7: unverified 409 retains queue; overflow never silently trims; privacy-safe
- * diagnostics; dedupe never collapses distinct payloads.
+ * R9: after overflow+drain, overflow_active follows flag alone (rejected count retained,
+ * tracking_complete stays false). R8: fingerprint covers lot/policy; tracking_complete in
+ * mark broadcast. R7: unverified 409 retains queue; overflow never silently trims;
+ * privacy-safe diagnostics; dedupe never collapses distinct payloads.
  */
 class PositionTickFlushTest {
 
@@ -408,5 +410,75 @@ class PositionTickFlushTest {
         assertEquals(false, payload.getBoolean("tracking_complete"))
         assertEquals(true, payload.getBoolean("overflow_active"))
         assertEquals(7L, payload.getLong("overflow_rejected_count"))
+    }
+
+    /**
+     * Codex R9: overflow → successful drain clears the active flag but retains rejected
+     * count. Status must report overflow_active=false and tracking_complete=false.
+     */
+    @Test
+    fun overflowThenSuccessfulDrain_overflowActiveFalse_trackingIncomplete_rejectsRetained() {
+        // Simulate prefs after overflow admits (flag set, rejects accumulated, incomplete).
+        val afterOverflow = derivePositionTickTrackingStatus(
+            overflowActiveFlag = true,
+            trackingCompletePref = false,
+            rejectedCount = 20L
+        )
+        assertTrue(afterOverflow.overflowActive)
+        assertFalse(afterOverflow.trackingComplete)
+        assertEquals(20L, afterOverflow.overflowRejectedCount)
+
+        // Successful flush clears PREF_OVERFLOW_ACTIVE but keeps rejected total + incomplete.
+        val afterDrain = derivePositionTickTrackingStatus(
+            overflowActiveFlag = false,
+            trackingCompletePref = false,
+            rejectedCount = 20L
+        )
+        assertFalse(
+            "overflow_active must follow the active flag alone after drain",
+            afterDrain.overflowActive
+        )
+        assertFalse(
+            "tracking_complete must stay false to preserve the historical gap",
+            afterDrain.trackingComplete
+        )
+        assertEquals(20L, afterDrain.overflowRejectedCount)
+
+        val payload = positionTickTrackingBroadcastPayload(afterDrain)
+        assertEquals(false, payload.getBoolean("overflow_active"))
+        assertEquals(false, payload.getBoolean("tracking_complete"))
+        assertEquals(20L, payload.getLong("overflow_rejected_count"))
+    }
+
+    @Test
+    fun deriveStatus_overflowActiveFromFlagAlone_notRejectedCount() {
+        // Cumulative rejects alone must not assert an *active* overflow.
+        val resumed = derivePositionTickTrackingStatus(
+            overflowActiveFlag = false,
+            trackingCompletePref = false,
+            rejectedCount = 5L
+        )
+        assertFalse(resumed.overflowActive)
+        assertFalse(resumed.trackingComplete)
+        assertEquals(5L, resumed.overflowRejectedCount)
+
+        // Clean slate: no rejects, flag clear, pref complete → complete + inactive.
+        val clean = derivePositionTickTrackingStatus(
+            overflowActiveFlag = false,
+            trackingCompletePref = true,
+            rejectedCount = 0L
+        )
+        assertFalse(clean.overflowActive)
+        assertTrue(clean.trackingComplete)
+        assertEquals(0L, clean.overflowRejectedCount)
+
+        // Active overflow still forces incomplete even if pref were stale-true.
+        val active = derivePositionTickTrackingStatus(
+            overflowActiveFlag = true,
+            trackingCompletePref = true,
+            rejectedCount = 0L
+        )
+        assertTrue(active.overflowActive)
+        assertFalse(active.trackingComplete)
     }
 }

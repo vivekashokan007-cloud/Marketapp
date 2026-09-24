@@ -942,21 +942,27 @@ class PositionTickService : Service() {
             }
         }
         val pendingBefore = queue.length()
-        val overflowActive = prefs.getBoolean(PREF_OVERFLOW_ACTIVE, false) ||
-            prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) > 0L
-        val trackingComplete = prefs.getBoolean(PREF_TRACKING_COMPLETE, true) && !overflowActive
+        // overflow_active = active flag alone; historical rejects keep tracking incomplete.
+        val overflowActiveFlag = prefs.getBoolean(PREF_OVERFLOW_ACTIVE, false)
+        val rejectedCount = prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L)
+        val hadHistoricalRejects = rejectedCount > 0L
+        val tracking = derivePositionTickTrackingStatus(
+            overflowActiveFlag = overflowActiveFlag,
+            trackingCompletePref = prefs.getBoolean(PREF_TRACKING_COMPLETE, true),
+            rejectedCount = rejectedCount
+        )
         val result = SupabaseClient.insertPositionTicksDetailed(queue)
         val (pendingAfter, drained) = applyPositionTickFlushDecision(pendingBefore, result)
         if (drained) {
-            // Drain confirmed-persisted rows only. Overflow totals remain visible so we
-            // never claim complete tracking after rejected admits.
+            // Drain confirmed-persisted rows only. Clear active overflow flag; retain rejected
+            // totals so tracking_complete stays false (historical gap preserved).
             val editor = prefs.edit()
                 .putString(PREF_PENDING_QUEUE, "[]")
                 .putLong(PREF_LAST_FLUSH_MS, now)
                 .putInt(PREF_FLUSH_FAILURE_COUNT, 0)
                 .putString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_OK)
                 .putBoolean(PREF_OVERFLOW_ACTIVE, false)
-            if (!overflowActive) {
+            if (!hadHistoricalRejects) {
                 editor.putBoolean(PREF_TRACKING_COMPLETE, true)
             }
             editor.apply()
@@ -965,7 +971,8 @@ class PositionTickService : Service() {
                 TAG,
                 "POSITION_TICK_FLUSH_OK: cleared=$pendingBefore class=${result.failureClass} " +
                     "status=${result.httpStatus ?: -1} persisted=true " +
-                    "tracking_complete=$trackingComplete overflow_had_rejects=$overflowActive"
+                    "tracking_complete=${tracking.trackingComplete} " +
+                    "overflow_had_rejects=$hadHistoricalRejects"
             )
         } else {
             // Preserve queued ticks on rejection — do not clear, drop, or fabricate.
@@ -976,8 +983,8 @@ class PositionTickService : Service() {
                 pending = pendingAfter,
                 result = result,
                 backoffMs = nextBackoff,
-                overflowActive = overflowActive,
-                trackingComplete = trackingComplete
+                overflowActive = overflowActiveFlag,
+                trackingComplete = tracking.trackingComplete
             )
             Log.w(TAG, line)
             LogBuffer.add('W', TAG, line)

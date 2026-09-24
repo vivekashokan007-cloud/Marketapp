@@ -1,4 +1,4 @@
-"""Contract + behavioral mirrors for position tick flush diagnostics (R7 2026-09-24).
+"""Contract + behavioral mirrors for position tick flush diagnostics (R9 2026-09-24).
 
 Covers:
 - generic/unverified HTTP 409 retains queue (never drains on status alone)
@@ -8,6 +8,7 @@ Covers:
 - dedupe same-key same/different payload
 - R8 fingerprint covers lot authority + policy_trace (Codex counterexample)
 - R8 tracking_complete in mark broadcast / PositionMarkStore
+- R9 overflow→drain: overflow_active from flag alone; tracking_complete stays false
 - source contracts through PositionTickService / SupabaseClient / PositionTickFlush
 """
 from __future__ import annotations
@@ -122,6 +123,23 @@ def admit(existing, incoming, max_pending):
         "rejected": rejected,
         "overflow_active": overflow,
         "tracking_complete": not overflow,
+    }
+
+
+def derive_status(overflow_active_flag, tracking_complete_pref, rejected_count):
+    """Mirror of derivePositionTickTrackingStatus (R9).
+
+    overflow_active follows the active flag alone; cumulative rejects keep
+    tracking_complete false (historical gap) without re-asserting active overflow.
+    """
+    overflow_active = bool(overflow_active_flag)
+    tracking_complete = (
+        bool(tracking_complete_pref) and not overflow_active and int(rejected_count) == 0
+    )
+    return {
+        "overflow_active": overflow_active,
+        "tracking_complete": tracking_complete,
+        "overflow_rejected_count": int(rejected_count),
     }
 
 
@@ -341,6 +359,36 @@ class PositionTickFlushMirrorTests(unittest.TestCase):
             self.assertIn(k, FINGERPRINT_KEYS)
 
 
+class PositionTickTrackingStatusR9Tests(unittest.TestCase):
+    """R9: overflow → successful drain clears active flag; rejected count retained."""
+
+    def test_overflow_then_drain_clears_active_keeps_gap(self):
+        after_overflow = derive_status(True, False, 20)
+        self.assertTrue(after_overflow["overflow_active"])
+        self.assertFalse(after_overflow["tracking_complete"])
+        self.assertEqual(20, after_overflow["overflow_rejected_count"])
+
+        after_drain = derive_status(False, False, 20)
+        self.assertFalse(after_drain["overflow_active"])
+        self.assertFalse(after_drain["tracking_complete"])
+        self.assertEqual(20, after_drain["overflow_rejected_count"])
+
+    def test_overflow_active_from_flag_alone_not_rejected_count(self):
+        resumed = derive_status(False, False, 5)
+        self.assertFalse(resumed["overflow_active"])
+        self.assertFalse(resumed["tracking_complete"])
+        self.assertEqual(5, resumed["overflow_rejected_count"])
+
+        clean = derive_status(False, True, 0)
+        self.assertFalse(clean["overflow_active"])
+        self.assertTrue(clean["tracking_complete"])
+        self.assertEqual(0, clean["overflow_rejected_count"])
+
+        active = derive_status(True, True, 0)
+        self.assertTrue(active["overflow_active"])
+        self.assertFalse(active["tracking_complete"])
+
+
 class PositionTickFlushSourceContractTests(unittest.TestCase):
 
     @classmethod
@@ -427,6 +475,23 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         """Known recovery limitation: live insert path never claims verifiedExactDuplicates."""
         self.assertIn("verifiedExactDuplicates = false", self.sbc)
         self.assertNotIn("verifiedExactDuplicates = true", self.sbc)
+
+    def test_r9_overflow_active_from_flag_alone(self):
+        """Status reader must not OR rejected count into overflow_active (Codex R9)."""
+        self.assertIn("derivePositionTickTrackingStatus", self.ptf)
+        self.assertIn("overflowActiveFlag", self.ptf)
+        # The buggy pattern ORed rejected into overflow_active inside the reader.
+        reader = self.ptf.split("fun derivePositionTickTrackingStatus")[1].split(
+            "fun positionTickTrackingBroadcastPayload"
+        )[0]
+        self.assertNotIn("rejected > 0", reader)
+        self.assertNotIn("rejectedCount > 0", reader)
+        # Drain clears active flag but retains rejected totals / incomplete tracking.
+        self.assertIn("hadHistoricalRejects", self.pts)
+        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", self.pts)
+        drain_window = self.pts.split("if (drained)")[1].split("} else {")[0]
+        self.assertIn("if (!hadHistoricalRejects)", drain_window)
+        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", drain_window)
 
 
 if __name__ == "__main__":
