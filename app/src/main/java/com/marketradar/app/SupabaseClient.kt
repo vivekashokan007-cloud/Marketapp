@@ -3327,8 +3327,28 @@ object SupabaseClient {
         }
     }
 
+    /**
+     * Insert pending position_ticks. Returns a privacy-safe diagnostic result.
+     * Queue drain must use [PositionTickInsertResult.persisted] — HTTP/transport
+     * failure is never reported as persisted. Duplicate-safe when server returns
+     * 409 (treated as already-present). Does not clear caller queues.
+     */
     fun insertPositionTicks(rows: JSONArray): Boolean {
-        if (rows.length() == 0) return true
+        return insertPositionTicksDetailed(rows).persisted
+    }
+
+    fun insertPositionTicksDetailed(rows: JSONArray): PositionTickInsertResult {
+        if (rows.length() == 0) {
+            return PositionTickInsertResult(
+                success = true,
+                persisted = true,
+                failureClass = POSITION_TICK_FLUSH_OK,
+                httpStatus = null,
+                exceptionType = null,
+                detail = "empty",
+                rowCount = 0
+            )
+        }
         val request = getBaseRequest("position_ticks")
             .header("Prefer", "return=minimal")
             .post(rows.toString().toRequestBody("application/json".toMediaTypeOrNull()))
@@ -3336,17 +3356,53 @@ object SupabaseClient {
 
         return try {
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    true
-                } else {
-                    val err = response.body?.string() ?: ""
-                    Log.e(TAG, "Position tick insert failed: ${response.code} ${response.message} | $err")
-                    false
+                val rawBody = response.body?.string().orEmpty()
+                val diag = classifyPositionTickFlushFailure(
+                    httpStatus = response.code,
+                    httpMessage = response.message,
+                    exceptionType = null,
+                    exceptionMessage = null,
+                    responseBodySnippet = rawBody,
+                    rowCount = rows.length()
+                )
+                if (!diag.persisted) {
+                    Log.e(
+                        TAG,
+                        "Position tick insert failed: class=${diag.failureClass} status=${diag.httpStatus} detail=${diag.detail}"
+                    )
+                    LogBuffer.add(
+                        'E',
+                        TAG,
+                        "POSITION_TICK_INSERT_FAIL: class=${diag.failureClass} status=${diag.httpStatus ?: -1} " +
+                            "rows=${diag.rowCount} detail=${diag.detail}"
+                    )
+                } else if (diag.failureClass == POSITION_TICK_FLUSH_IDEMPOTENT_CONFLICT) {
+                    Log.w(TAG, "Position tick insert conflict treated as persisted: rows=${diag.rowCount}")
+                    LogBuffer.add(
+                        'W',
+                        TAG,
+                        "POSITION_TICK_INSERT_IDEMPOTENT: class=${diag.failureClass} status=${diag.httpStatus} rows=${diag.rowCount}"
+                    )
                 }
+                diag
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Position tick insert exception: ${e.message}")
-            false
+            val diag = classifyPositionTickFlushFailure(
+                httpStatus = null,
+                httpMessage = null,
+                exceptionType = e.javaClass.name,
+                exceptionMessage = e.message,
+                responseBodySnippet = null,
+                rowCount = rows.length()
+            )
+            Log.e(TAG, "Position tick insert exception: class=${diag.failureClass} ex=${diag.exceptionType} detail=${diag.detail}")
+            LogBuffer.add(
+                'E',
+                TAG,
+                "POSITION_TICK_INSERT_FAIL: class=${diag.failureClass} status=-1 " +
+                    "ex=${diag.exceptionType} rows=${diag.rowCount} detail=${diag.detail}"
+            )
+            diag
         }
     }
 

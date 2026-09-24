@@ -852,8 +852,26 @@ class PositionTickService : Service() {
     private fun flushPending(force: Boolean) {
         val now = System.currentTimeMillis()
         val lastFlush = prefs.getLong(PREF_LAST_FLUSH_MS, 0L)
-        if (!force && now - lastFlush < FLUSH_MIN_MS) return
-        val queue = loadPendingQueue()
+        val priorFailures = prefs.getInt(PREF_FLUSH_FAILURE_COUNT, 0)
+        val lastClass = prefs.getString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_UNKNOWN)
+            ?: POSITION_TICK_FLUSH_UNKNOWN
+        val backoffMs = if (priorFailures > 0) {
+            computePositionTickFlushBackoffMs(priorFailures, lastClass)
+        } else {
+            FLUSH_MIN_MS
+        }
+        if (!force && now - lastFlush < backoffMs) {
+            if (priorFailures > 0) {
+                LogBuffer.add(
+                    'D',
+                    TAG,
+                    "POSITION_TICK_FLUSH_BACKOFF: wait_ms=${backoffMs - (now - lastFlush)} " +
+                        "backoff_ms=$backoffMs consecutive=$priorFailures class=$lastClass"
+                )
+            }
+            return
+        }
+        var queue = loadPendingQueue()
         if (queue.length() == 0) {
             prefs.edit().putLong(PREF_LAST_FLUSH_MS, now).apply()
             return
@@ -863,20 +881,52 @@ class PositionTickService : Service() {
             recordDroppedTicks(dropped)
             prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
         }
-        val ok = SupabaseClient.insertPositionTicks(queue)
-        if (ok) {
+        val (deduped, dupDropped) = dedupePositionTicksByTradeTs(queue)
+        if (dupDropped > 0) {
+            queue = deduped
+            prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
+            LogBuffer.add('I', TAG, "POSITION_TICK_QUEUE_DEDUPE: dropped=$dupDropped pending=${queue.length()}")
+        } else {
+            queue = deduped
+        }
+        val pendingBefore = queue.length()
+        val result = SupabaseClient.insertPositionTicksDetailed(queue)
+        val (pendingAfter, drained) = applyPositionTickFlushDecision(pendingBefore, result)
+        if (drained) {
             prefs.edit()
                 .putString(PREF_PENDING_QUEUE, "[]")
                 .putLong(PREF_LAST_FLUSH_MS, now)
                 .putInt(PREF_FLUSH_FAILURE_COUNT, 0)
+                .putString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_OK)
                 .apply()
+            LogBuffer.add(
+                'I',
+                TAG,
+                "POSITION_TICK_FLUSH_OK: cleared=$pendingBefore class=${result.failureClass} " +
+                    "status=${result.httpStatus ?: -1} persisted=true"
+            )
         } else {
-            val failures = prefs.getInt(PREF_FLUSH_FAILURE_COUNT, 0) + 1
-            Log.w(TAG, "Position tick flush failed; consecutive_failures=$failures pending_rows=${queue.length()}")
-            LogBuffer.add('W', TAG, "POSITION_TICK_FLUSH_FAIL: consecutive=$failures pending=${queue.length()}")
+            // Preserve queued ticks on rejection — do not clear, drop, or fabricate.
+            val failures = priorFailures + 1
+            val nextBackoff = computePositionTickFlushBackoffMs(failures, result.failureClass)
+            Log.w(
+                TAG,
+                "Position tick flush failed; class=${result.failureClass} status=${result.httpStatus} " +
+                    "consecutive_failures=$failures pending_rows=$pendingAfter"
+            )
+            LogBuffer.add(
+                'W',
+                TAG,
+                "POSITION_TICK_FLUSH_FAIL: consecutive=$failures pending=$pendingAfter " +
+                    "class=${result.failureClass} status=${result.httpStatus ?: -1} " +
+                    "ex=${result.exceptionType ?: "-"} backoff_ms=$nextBackoff " +
+                    "persisted=false detail=${result.detail}"
+            )
             prefs.edit()
+                .putString(PREF_PENDING_QUEUE, queue.toString())
                 .putLong(PREF_LAST_FLUSH_MS, now)
                 .putInt(PREF_FLUSH_FAILURE_COUNT, failures)
+                .putString(PREF_FLUSH_LAST_CLASS, result.failureClass)
                 .apply()
         }
     }
@@ -1114,6 +1164,7 @@ class PositionTickService : Service() {
         private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
         private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
         private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
+        private const val PREF_FLUSH_LAST_CLASS = "position_tick_flush_last_class"
         private const val PREF_FGS_BLOCKED_UNTIL_MS = "position_tick_fgs_blocked_until_ms"
         private const val PREF_FGS_BLOCKED_COUNT = "position_tick_fgs_blocked_count"
         private const val NOTIFICATION_CHANNEL_ID = "position_tick_capture"
