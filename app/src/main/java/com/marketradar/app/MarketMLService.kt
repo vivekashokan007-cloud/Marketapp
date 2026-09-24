@@ -2480,6 +2480,21 @@ class MarketMLService : Service() {
         persistEvaluationRun(updated)
     }
 
+    private fun c3PhaseLog(sessionDate: String, phase: String, detail: String = "") {
+        // Privacy-safe counters only: never log frames, trades, or credentials.
+        Log.i(TAG, "C3_PHASE: date=$sessionDate phase=$phase $detail ${evalHeapLine()}")
+    }
+
+    private fun shallowCopyJsonObject(src: org.json.JSONObject): org.json.JSONObject {
+        val out = org.json.JSONObject()
+        val keys = src.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            out.put(key, src.get(key))
+        }
+        return out
+    }
+
     private suspend fun runC3PercentileFinalization(sessionDate: String) = withContext(Dispatchers.IO) {
         if (activeEvaluationRun == null) {
             activeEvaluationRun = EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
@@ -2504,25 +2519,40 @@ class MarketMLService : Service() {
         }
         updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
         updateRunStage("percentile_finalization", "running")
+        c3PhaseLog(sessionDate, "before_remote_fetch")
         val frames = org.json.JSONArray()
+        var candidateSliceCount = 0
         fun captureFrame(snapshot: org.json.JSONObject) {
             val context = parseJsonObject(snapshot.opt("context_json")) ?: return
             val captured = context.optJSONObject("c3_finalization_frame") ?: return
-            val frame = org.json.JSONObject(captured.toString())
+            // Shallow copy: avoid captured.toString()/JSONObject round-trip.
+            val frame = shallowCopyJsonObject(captured)
             frame.put("snapshot_id", snapshot.optString("id", frame.optString("snapshot_id", "")))
             frame.put("session_date", snapshot.optString("session_date", sessionDate))
             frame.put("poll_ts", snapshot.optString("poll_ts", frame.optString("poll_ts", "")))
-            if (frame.optString("poll_ts").isNotBlank()) frames.put(frame)
-        }
-        val remoteSnapshots = SupabaseClient.fetchC3FinalizationSnapshots(sessionDate)
-        val snapshotCount = if (remoteSnapshots.length() > 0) {
-            for (i in 0 until remoteSnapshots.length()) {
-                remoteSnapshots.optJSONObject(i)?.let(::captureFrame)
+            if (frame.optString("poll_ts").isNotBlank()) {
+                frames.put(frame)
+                candidateSliceCount += frame.optJSONArray("candidate_slices")?.length() ?: 0
             }
-            remoteSnapshots.length()
-        } else {
-            EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, ::captureFrame)
         }
+        // Page+extract+release: never retain full context_json for all polls.
+        val remoteCount = SupabaseClient.forEachC3FinalizationCompactSnapshot(sessionDate, ::captureFrame)
+        c3PhaseLog(
+            sessionDate, "after_remote_fetch",
+            "remoteCompacts=$remoteCount frames=${frames.length()} candidateSlices=$candidateSliceCount"
+        )
+        val snapshotCount = if (remoteCount > 0) {
+            remoteCount
+        } else {
+            c3PhaseLog(sessionDate, "before_local_stream_fallback")
+            val local = EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, ::captureFrame)
+            c3PhaseLog(sessionDate, "after_local_stream_fallback", "localSnapshots=$local frames=${frames.length()}")
+            local
+        }
+        c3PhaseLog(
+            sessionDate, "after_frame_extract",
+            "snapshots=$snapshotCount frames=${frames.length()} candidateSlices=$candidateSliceCount"
+        )
         if (frames.length() == 0) {
             updateC3FinalizationState(
                 sessionDate, "SKIPPED_NO_FRAMES",
@@ -2541,8 +2571,8 @@ class MarketMLService : Service() {
                 lastError = ""
             )
             Log.w(TAG, "C3_FINALIZE_NO_FRAMES: date=$sessionDate snapshots=$snapshotCount")
-                        maybeRunPerformanceMetricsStage(sessionDate)
-return@withContext
+            maybeRunPerformanceMetricsStage(sessionDate)
+            return@withContext
         }
 
         // G5: assess original-frame provenance BEFORE any C3 write. Capped /
@@ -2571,46 +2601,100 @@ return@withContext
                 )
             }
             Log.w(TAG, "C3_FINALIZE_INELIGIBLE: date=$sessionDate reason=$reason frames=${frames.length()}")
-                        maybeRunPerformanceMetricsStage(sessionDate)
-return@withContext
-        }
-        updateC3FinalizationState(sessionDate, "BUILDING", "Building C3 rows from ${frames.length()} captured frames...", frameCount = frames.length(), running = true)
-        val historySeed = SupabaseClient.fetchC3PercentileHistorySeed(sessionDate)
-        val outcomePrior = SupabaseClient.fetchC3OutcomePrior(sessionDate)
-        val brain = Python.getInstance().getModule("brain")
-        val raw = withTimeoutOrNull(120_000L) {
-            brain.callAttr("c3_finalize_frames", frames.toString(), historySeed.toString(), outcomePrior.toString()).toString()
-        } ?: throw IllegalStateException("C3 finalization timed out")
-        val result = org.json.JSONObject(raw)
-        if (!result.optBoolean("ok", false)) throw IllegalStateException(result.optString("error", "C3 finalization failed"))
-        val rows = result.optJSONArray("rows") ?: org.json.JSONArray()
-        if (rows.length() == 0) throw IllegalStateException("C3 finalization produced no rows from ${frames.length()} frames")
-        updateC3FinalizationState(sessionDate, "UPLOADING", "Uploading ${rows.length()} C3 rows...", frameCount = frames.length(), rowCount = rows.length(), running = true)
-        val write = SupabaseClient.saveC3PercentileRows(sessionDate, rows)
-        if (!write.success) {
-            updateC3FinalizationState(sessionDate, "FAILED", write.message, frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false, lastError = write.message)
-            updateRunStage(
-                "percentile_finalization",
-                "failed",
-                reasonCode = "C3_WRITE_FAIL",
-                expectedCount = write.expectedRows,
-                writtenCount = write.verifiedRows,
-                verifiedCount = write.verifiedRows,
-                lastError = write.message ?: ""
-            )
-            Log.e(TAG, "C3_FINALIZE_WRITE_FAIL: date=$sessionDate ${write.message}")
+            maybeRunPerformanceMetricsStage(sessionDate)
             return@withContext
         }
-        updateC3FinalizationState(sessionDate, "DONE", "C3 percentile finalization verified: ${write.verifiedRows}/${write.expectedRows} rows.", frameCount = frames.length(), rowCount = write.expectedRows, verifiedRows = write.verifiedRows, running = false)
-        updateRunStage(
-            "percentile_finalization",
-            "verified",
-            expectedCount = write.expectedRows,
-            writtenCount = write.expectedRows,
-            verifiedCount = write.verifiedRows
+        val frameCount = frames.length()
+        updateC3FinalizationState(sessionDate, "BUILDING", "Building C3 rows from $frameCount captured frames...", frameCount = frameCount, running = true)
+        c3PhaseLog(sessionDate, "before_history_outcome_seed", "frames=$frameCount")
+        val historySeed = SupabaseClient.fetchC3PercentileHistorySeed(sessionDate)
+        val outcomePrior = SupabaseClient.fetchC3OutcomePrior(sessionDate)
+        c3PhaseLog(
+            sessionDate, "after_history_outcome_seed",
+            "historyKeys=${historySeed.length()} outcomeKeys=${outcomePrior.length()}"
         )
-        Log.i(TAG, "C3_FINALIZE_DONE: date=$sessionDate frames=${frames.length()} rows=${write.expectedRows} existing=${write.alreadyPresentRows}")
-        maybeRunPerformanceMetricsStage(sessionDate)
+
+        val workDir = File(cacheDir, "c3_finalize").apply { mkdirs() }
+        val framesFile = File(workDir, "frames_$sessionDate.json")
+        val rowsFile = File(workDir, "rows_$sessionDate.ndjson")
+        try {
+            framesFile.writeText(frames.toString())
+            val framesBytes = framesFile.length()
+            // Release the in-memory frames array before the Python bridge.
+            while (frames.length() > 0) {
+                frames.remove(frames.length() - 1)
+            }
+            c3PhaseLog(sessionDate, "before_python_bridge", "framesFileBytes=$framesBytes")
+            val brain = Python.getInstance().getModule("brain")
+            val raw = withTimeoutOrNull(120_000L) {
+                brain.callAttr(
+                    "c3_finalize_frames_to_path",
+                    framesFile.absolutePath,
+                    historySeed.toString(),
+                    outcomePrior.toString(),
+                    rowsFile.absolutePath
+                ).toString()
+            } ?: throw IllegalStateException("C3 finalization timed out")
+            c3PhaseLog(sessionDate, "after_python_bridge", "statusBytes=${raw.length} rowsFileBytes=${rowsFile.length()}")
+            val result = org.json.JSONObject(raw)
+            if (!result.optBoolean("ok", false)) {
+                throw IllegalStateException(result.optString("error", "C3 finalization failed"))
+            }
+            val rowCount = result.optInt("row_count", 0)
+            if (rowCount <= 0 || !rowsFile.exists() || rowsFile.length() == 0L) {
+                throw IllegalStateException("C3 finalization produced no rows from $frameCount frames")
+            }
+            c3PhaseLog(sessionDate, "after_kotlin_status_parse", "rowCount=$rowCount")
+            updateC3FinalizationState(
+                sessionDate, "UPLOADING", "Uploading $rowCount C3 rows...",
+                frameCount = frameCount, rowCount = rowCount, running = true
+            )
+            c3PhaseLog(sessionDate, "before_persist_chunks", "rowCount=$rowCount")
+            val write = SupabaseClient.saveC3PercentileRowsFromNdjson(sessionDate, rowsFile)
+            c3PhaseLog(
+                sessionDate, "after_persist_chunks",
+                "success=${write.success} expected=${write.expectedRows} verified=${write.verifiedRows} already=${write.alreadyPresentRows}"
+            )
+            if (!write.success) {
+                updateC3FinalizationState(
+                    sessionDate, "FAILED", write.message,
+                    frameCount = frameCount, rowCount = write.expectedRows,
+                    verifiedRows = write.verifiedRows, running = false, lastError = write.message
+                )
+                updateRunStage(
+                    "percentile_finalization",
+                    "failed",
+                    reasonCode = "C3_WRITE_FAIL",
+                    expectedCount = write.expectedRows,
+                    writtenCount = write.verifiedRows,
+                    verifiedCount = write.verifiedRows,
+                    lastError = write.message ?: ""
+                )
+                Log.e(TAG, "C3_FINALIZE_WRITE_FAIL: date=$sessionDate ${write.message}")
+                return@withContext
+            }
+            updateC3FinalizationState(
+                sessionDate, "DONE",
+                "C3 percentile finalization verified: ${write.verifiedRows}/${write.expectedRows} rows.",
+                frameCount = frameCount, rowCount = write.expectedRows,
+                verifiedRows = write.verifiedRows, running = false
+            )
+            updateRunStage(
+                "percentile_finalization",
+                "verified",
+                expectedCount = write.expectedRows,
+                writtenCount = write.expectedRows,
+                verifiedCount = write.verifiedRows
+            )
+            Log.i(
+                TAG,
+                "C3_FINALIZE_DONE: date=$sessionDate frames=$frameCount rows=${write.expectedRows} existing=${write.alreadyPresentRows}"
+            )
+            maybeRunPerformanceMetricsStage(sessionDate)
+        } finally {
+            try { framesFile.delete() } catch (_: Exception) {}
+            try { rowsFile.delete() } catch (_: Exception) {}
+        }
     }
 
 

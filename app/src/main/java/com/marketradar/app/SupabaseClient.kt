@@ -1454,12 +1454,162 @@ object SupabaseClient {
         }
     }
 
-    fun fetchC3FinalizationSnapshots(sessionDate: String): JSONArray {
-        return fetchArrayFromTables(
-            listOf(
-                "ml_brain_snapshots?select=id,session_date,poll_ts,context_json,verdict_json,market_forces_json,poll_summary_json,confidence&session_date=eq.$sessionDate&order=poll_ts.asc&limit=200"
-            )
+    /**
+     * Compact C3 snapshot: id/session_date/poll_ts plus context_json that holds
+     * ONLY c3_finalization_frame. Never retains full brain context_json.
+     */
+    private fun compactC3Snapshot(id: Any?, sessionDate: String, pollTs: String, frame: Any): JSONObject {
+        return JSONObject().apply {
+            if (id != null && id != JSONObject.NULL) put("id", id)
+            put("session_date", sessionDate)
+            put("poll_ts", pollTs)
+            put("context_json", JSONObject().put("c3_finalization_frame", frame))
+        }
+    }
+
+    private fun extractC3FrameValue(raw: Any?): Any? {
+        return when (raw) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> raw
+            is String -> {
+                val trimmed = raw.trim()
+                if (trimmed.startsWith("{")) {
+                    try { JSONObject(trimmed) } catch (_: Exception) { null }
+                } else null
+            }
+            else -> null
+        }
+    }
+
+    /**
+     * Page remote ml_brain_snapshots and invoke [onCompact] with compact C3
+     * snapshots only. Peak memory is one page (narrow select prefers larger
+     * pages; full-context fallback uses page size 1 and drops context_json
+     * immediately after extracting the frame).
+     *
+     * @return number of compact snapshots delivered to [onCompact]
+     */
+    fun forEachC3FinalizationCompactSnapshot(
+        sessionDate: String,
+        onCompact: (JSONObject) -> Unit
+    ): Int {
+        require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(sessionDate)) {
+            "C3 finalization sessionDate must be yyyy-MM-dd"
+        }
+        val narrow = pageC3FinalizationCompacts(
+            sessionDate = sessionDate,
+            select = "id,session_date,poll_ts,c3_finalization_frame:context_json->c3_finalization_frame",
+            pageSize = 25,
+            maxPages = 40,
+            mode = "narrow_json_path",
+            onCompact = onCompact
         )
+        if (narrow.pagesWithRows > 0) {
+            LogBuffer.add(
+                'I', TAG,
+                "C3_FETCH_COMPACT: mode=narrow_json_path date=$sessionDate " +
+                    "pages=${narrow.pagesWithRows} delivered=${narrow.delivered} " +
+                    "pageBytesPeak=${narrow.pageBytesPeak}"
+            )
+            return narrow.delivered
+        }
+        val fallback = pageC3FinalizationCompacts(
+            sessionDate = sessionDate,
+            select = "id,session_date,poll_ts,context_json",
+            pageSize = 1,
+            maxPages = 200,
+            mode = "context_page_extract",
+            onCompact = onCompact
+        )
+        LogBuffer.add(
+            'I', TAG,
+            "C3_FETCH_COMPACT: mode=context_page_extract date=$sessionDate " +
+                "pages=${fallback.pagesWithRows} delivered=${fallback.delivered} " +
+                "pageBytesPeak=${fallback.pageBytesPeak}"
+        )
+        return fallback.delivered
+    }
+
+    private data class C3FetchPageStats(
+        val pagesWithRows: Int,
+        val delivered: Int,
+        val pageBytesPeak: Int
+    )
+
+    private fun pageC3FinalizationCompacts(
+        sessionDate: String,
+        select: String,
+        pageSize: Int,
+        maxPages: Int,
+        mode: String,
+        onCompact: (JSONObject) -> Unit
+    ): C3FetchPageStats {
+        var pagesWithRows = 0
+        var delivered = 0
+        var pageBytesPeak = 0
+        var offset = 0
+        repeat(maxPages) {
+            val path = "ml_brain_snapshots?session_date=eq.$sessionDate" +
+                "&select=$select&order=poll_ts.asc&limit=$pageSize&offset=$offset"
+            val raw = fetchSync(getBaseRequest(path).get().build())
+            if (raw == null) {
+                if (pagesWithRows == 0 && offset == 0) {
+                    LogBuffer.add('W', TAG, "C3_FETCH_COMPACT_EMPTY: mode=$mode date=$sessionDate offset=0")
+                }
+                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+            }
+            pageBytesPeak = maxOf(pageBytesPeak, raw.length)
+            val page = try {
+                JSONArray(raw)
+            } catch (oom: OutOfMemoryError) {
+                Log.e(TAG, "C3_FETCH_PAGE_OOM: mode=$mode date=$sessionDate bytes=${raw.length} error=${oom.message}")
+                LogBuffer.add('E', TAG, "C3_FETCH_PAGE_OOM: mode=$mode bytes=${raw.length}")
+                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+            } catch (_: Exception) {
+                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+            }
+            if (page.length() == 0) {
+                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+            }
+            pagesWithRows += 1
+            for (i in 0 until page.length()) {
+                val row = page.optJSONObject(i) ?: continue
+                val pollTs = row.optString("poll_ts", "").trim()
+                if (pollTs.isBlank()) continue
+                val frame = when (mode) {
+                    "narrow_json_path" -> extractC3FrameValue(row.opt("c3_finalization_frame"))
+                    else -> {
+                        val context = when (val rawCtx = row.opt("context_json")) {
+                            is JSONObject -> rawCtx
+                            is String -> try { JSONObject(rawCtx) } catch (_: Exception) { null }
+                            else -> null
+                        }
+                        val captured = extractC3FrameValue(context?.opt("c3_finalization_frame"))
+                        // Drop full context reference before compacting.
+                        context?.remove("c3_finalization_frame")
+                        captured
+                    }
+                } ?: continue
+                val session = row.optString("session_date", sessionDate).ifBlank { sessionDate }
+                onCompact(compactC3Snapshot(row.opt("id"), session, pollTs, frame))
+                delivered += 1
+            }
+            if (page.length() < pageSize) {
+                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+            }
+            offset += page.length()
+        }
+        return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+    }
+
+    /**
+     * Compatibility collector: returns compact C3 snapshots only (no full
+     * context_json / verdict / forces). Prefer [forEachC3FinalizationCompactSnapshot].
+     */
+    fun fetchC3FinalizationSnapshots(sessionDate: String): JSONArray {
+        val out = JSONArray()
+        forEachC3FinalizationCompactSnapshot(sessionDate) { out.put(it) }
+        return out
     }
 
     fun fetchC3OutcomePrior(targetDate: String, maxPages: Int = 20): JSONObject {
@@ -1562,6 +1712,97 @@ object SupabaseClient {
             }
         }
         val verified = expectedIds.count(fetchC3ExistingIds(sessionDate)::contains)
+        return C3PercentileWriteResult(
+            success = verified == expectedIds.size,
+            expectedRows = expectedIds.size,
+            alreadyPresentRows = alreadyPresent,
+            verifiedRows = verified,
+            message = if (verified == expectedIds.size) "C3 rows verified." else "C3 verification incomplete: $verified/${expectedIds.size}"
+        )
+    }
+
+    /**
+     * Stream NDJSON C3 rows into the existing chunked stable-ID write/verify
+     * path. Holds at most one upload chunk in memory besides the ID set.
+     * Idempotent: re-reads existing IDs before retry; uncertain HTTP is never
+     * assumed to be a failed write.
+     */
+    fun saveC3PercentileRowsFromNdjson(sessionDate: String, ndjsonFile: File): C3PercentileWriteResult {
+        if (!ndjsonFile.exists()) {
+            return C3PercentileWriteResult(false, 0, 0, 0, "C3 NDJSON missing: ${ndjsonFile.name}")
+        }
+        val expectedIds = linkedSetOf<String>()
+        var present = fetchC3ExistingIds(sessionDate)
+        var alreadyPresent = 0
+        var pending = JSONArray()
+        var parsedRows = 0
+
+        fun flushPending(): C3PercentileWriteResult? {
+            if (pending.length() == 0) return null
+            for (chunk in splitJSONArray(pending, 120)) {
+                var result = postArrayToTableDetailed("ml_context_percentile_history?on_conflict=id", chunk)
+                if (!result.success) {
+                    present = fetchC3ExistingIds(sessionDate)
+                    val retry = JSONArray()
+                    for (i in 0 until chunk.length()) {
+                        val row = chunk.optJSONObject(i) ?: continue
+                        if (!present.contains(row.optString("id"))) retry.put(row)
+                    }
+                    if (retry.length() > 0) {
+                        result = postArrayToTableDetailed("ml_context_percentile_history?on_conflict=id", retry)
+                    }
+                    if (!result.success) {
+                        return C3PercentileWriteResult(
+                            false,
+                            expectedIds.size,
+                            alreadyPresent,
+                            expectedIds.count(fetchC3ExistingIds(sessionDate)::contains),
+                            "C3 write failed: ${result.errorBody ?: result.exceptionMessage ?: result.message.orEmpty()}"
+                        )
+                    }
+                }
+            }
+            pending = JSONArray()
+            return null
+        }
+
+        var failure: C3PercentileWriteResult? = null
+        ndjsonFile.bufferedReader().use { reader ->
+            for (line in reader.lineSequence()) {
+                val trimmed = line.trim()
+                if (trimmed.isEmpty()) continue
+                val row = try {
+                    JSONObject(trimmed)
+                } catch (_: Exception) {
+                    continue
+                }
+                val id = row.optString("id", "").trim()
+                if (id.isEmpty()) continue
+                expectedIds.add(id)
+                parsedRows += 1
+                if (present.contains(id)) {
+                    alreadyPresent += 1
+                } else {
+                    pending.put(row)
+                    if (pending.length() >= 120) {
+                        failure = flushPending()
+                        if (failure != null) break
+                    }
+                }
+            }
+        }
+        if (failure != null) return failure as C3PercentileWriteResult
+        failure = flushPending()
+        if (failure != null) return failure as C3PercentileWriteResult
+        if (expectedIds.isEmpty()) {
+            return C3PercentileWriteResult(false, 0, 0, 0, "C3 NDJSON had no stable IDs (parsedRows=$parsedRows)")
+        }
+        val verified = expectedIds.count(fetchC3ExistingIds(sessionDate)::contains)
+        LogBuffer.add(
+            'I', TAG,
+            "C3_WRITE_NDJSON: date=$sessionDate parsed=$parsedRows expected=${expectedIds.size} " +
+                "already=$alreadyPresent verified=$verified"
+        )
         return C3PercentileWriteResult(
             success = verified == expectedIds.size,
             expectedRows = expectedIds.size,

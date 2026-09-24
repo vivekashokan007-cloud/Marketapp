@@ -240,3 +240,240 @@ class C3PercentileFinalizerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class C3OomSafeFinalizerTest(unittest.TestCase):
+    """Parity + memory-shape tests for the C3 OOM-safe finalization path."""
+
+    @staticmethod
+    def _catalog():
+        return {
+            "existing": ["vix", "iv_richness_menu_median"],
+            "candidate_quality": ["sigma_otm_menu_median"],
+        }
+
+    def test_ndjson_path_matches_finalize_frames_ids_and_values(self):
+        import os
+        import tempfile
+        from c3_percentile_finalizer import finalize_frames_to_ndjson
+
+        catalog = {
+            "candidate_quality": ["iv_richness_menu_median", "sigma_otm_menu_median"],
+            "existing": ["vix"],
+        }
+        frames = [
+            {
+                "frame_version": FRAME_VERSION,
+                "session_date": "2026-09-24",
+                "poll_ts": "2026-09-24T09:15:00+05:30",
+                "snapshot_id": "a",
+                "values": {"vix": 12.0, "iv_richness_menu_median": 1.0, "sigma_otm_menu_median": 2.0},
+                "candidate_population_verified": True,
+                "generated_capture_complete": True,
+                "candidate_slices": [
+                    {
+                        "slice_key": "BNF|BULL|credit",
+                        "index_key": "BNF",
+                        "direction": "BULL",
+                        "trade_mode": "credit",
+                        "population_scope": "uncapped_generated_plus_rejected_live_memory",
+                        "population_count": 10,
+                        "generated_count": 5,
+                        "rejected_count": 5,
+                        "values": {"credit_width_ratio_menu_median": 0.2},
+                        "quantiles": {"credit_width_ratio_menu_median": {"median": 0.2}},
+                    }
+                ],
+            },
+            {
+                "frame_version": FRAME_VERSION,
+                "session_date": "2026-09-24",
+                "poll_ts": "2026-09-24T09:20:00+05:30",
+                "snapshot_id": "b",
+                "values": {"vix": 13.0, "iv_richness_menu_median": 1.4, "sigma_otm_menu_median": 2.2},
+                "candidate_population_verified": True,
+                "generated_capture_complete": True,
+                "candidate_slices": [],
+            },
+        ]
+        seed = {
+            "vix": [10.0, 11.0],
+            "iv_richness_menu_median": [0.8],
+            "daily::iv_richness_menu_median": [0.9, 1.1],
+            "credit_width_ratio_menu_median|BNF|BULL|credit": [0.1],
+        }
+        prior = {"menu_mean_pnl_prior_sessions_only": 100.0}
+        expected = finalize_frames(frames, seed, prior, catalog)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rows.ndjson")
+            meta = finalize_frames_to_ndjson(frames, seed, prior, catalog, path)
+            self.assertTrue(meta["ok"])
+            self.assertEqual(meta["row_count"], len(expected))
+            streamed = []
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        import json
+                        streamed.append(json.loads(line))
+        self.assertEqual(len(streamed), len(expected))
+        for left, right in zip(streamed, expected):
+            self.assertEqual(left["id"], right["id"])
+            self.assertEqual(left["variable_name"], right["variable_name"])
+            self.assertEqual(left["value"], right["value"])
+            self.assertEqual(left["pct_30"], right["pct_30"])
+            self.assertEqual(left["pct_60"], right["pct_60"])
+            self.assertEqual(left["support_count_30"], right["support_count_30"])
+            self.assertEqual(left["support_count_60"], right["support_count_60"])
+            self.assertEqual(left["history_source"], right["history_source"])
+            self.assertEqual(left["source_quality"], right["source_quality"])
+            self.assertEqual(left.get("poll_ts"), right.get("poll_ts"))
+            self.assertEqual(left.get("index_key"), right.get("index_key"))
+            self.assertEqual(left.get("extra_json"), right.get("extra_json"))
+
+    def test_incident_scale_fixture_parity_and_bounded_peak(self):
+        import json
+        import os
+        import tempfile
+        import tracemalloc
+        from c3_percentile_finalizer import finalize_frames_to_ndjson
+
+        fixture_path = os.path.join(
+            os.path.dirname(__file__), "fixtures", "c3_incident_77_frames.json"
+        )
+        if not os.path.exists(fixture_path):
+            self.skipTest("incident fixture missing")
+        with open(fixture_path, encoding="utf-8") as handle:
+            fixture = json.load(handle)
+        frames = fixture["frames"]
+        seed = fixture["history_seed"]
+        prior = fixture["outcome_prior"]
+        # Use a catalog subset matching fixture values keys that exist in frames.
+        catalog = {
+            "existing": [
+                "vix",
+                "fii_short_pct",
+                "iv_richness_menu_median",
+                "realized_day_range",
+                "sigma_otm_menu_median",
+                "credit_width_ratio_menu_median",
+                "menu_win_rate_prior_sessions_only",
+                "rejected_sigma_otm_median",
+            ],
+            "candidate_economics": [
+                "premium_edge_menu_median",
+                "premium_edge_menu_best",
+                "ev_per_1k_menu_median",
+                "ev_per_1k_menu_best",
+                "prob_profit_menu_median",
+                "prob_profit_menu_best",
+                "net_premium_menu_median",
+                "net_premium_menu_best",
+                "max_profit_menu_median",
+                "max_profit_menu_best",
+                "max_loss_menu_median",
+                "max_loss_menu_best",
+                "risk_reward_menu_median",
+                "risk_reward_menu_best",
+                "width_menu_median",
+                "width_menu_best",
+                "debit_breakeven_sigma_menu_median",
+                "debit_breakeven_sigma_menu_best",
+                "theta_friction_minutes_menu_median",
+                "theta_friction_minutes_menu_best",
+                "net_theta_menu_median",
+                "net_theta_menu_best",
+            ],
+            "market_state": [
+                "atm_iv", "iv_percentile", "daily_sigma", "pcr", "near_atm_pcr",
+                "max_pain_distance", "call_wall_distance", "put_wall_distance",
+                "total_call_oi", "total_put_oi", "oi_skew",
+                "realized_vs_implied_range_ratio", "overnight_gap", "spot_vs_vwap",
+                "abs_spot_sigma", "abs_nf_spot_sigma", "abs_vix_sigma",
+                "bnf_atm_iv", "nf_atm_iv", "bnf_pcr", "nf_pcr",
+                "bnf_near_atm_pcr", "nf_near_atm_pcr",
+                "bnf_max_pain_distance", "nf_max_pain_distance",
+                "bnf_call_wall_distance", "nf_call_wall_distance",
+                "bnf_put_wall_distance", "nf_put_wall_distance",
+                "bnf_total_call_oi", "nf_total_call_oi",
+                "bnf_total_put_oi", "nf_total_put_oi",
+                "bnf_oi_skew", "nf_oi_skew",
+            ],
+            "supply_process": [
+                "generated_count", "rejected_count", "watchlist_survivors",
+                "distinct_families_generated", "menu_size",
+            ],
+            "decision_state": [
+                "confidence", "signal_independence_score", "bull_score",
+                "bear_score", "signal_accuracy",
+            ],
+            "outcome_state": [
+                "menu_mean_pnl_prior_sessions_only",
+                "realized_r_prior_sessions_only",
+                "notification_count_session",
+            ],
+            "position_state": [
+                "open_position_profit_capture_max",
+                "open_position_profit_capture_median",
+                "open_position_loss_capture_max",
+                "open_position_loss_capture_median",
+            ],
+        }
+        self.assertEqual(len(frames), 77)
+        expected = finalize_frames(frames, seed, prior, catalog)
+        tracemalloc.start()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rows.ndjson")
+            meta = finalize_frames_to_ndjson(frames, seed, prior, catalog, path)
+            current, peak = tracemalloc.get_traced_memory()
+            streamed_ids = []
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    streamed_ids.append(json.loads(line)["id"])
+        tracemalloc.stop()
+        self.assertEqual(meta["row_count"], len(expected))
+        self.assertEqual(streamed_ids, [row["id"] for row in expected])
+        # NDJSON path must stay well under a 256MB device heap budget for the
+        # pure-Python portion (frames already compact; no full context_json).
+        self.assertLess(peak, 64 * 1024 * 1024, f"peak={peak}")
+        # Record for STOP report
+        print(
+            f"C3_STRESS peak_bytes={peak} current_bytes={current} "
+            f"rows={len(expected)} frames=77 ndjson_ok=1"
+        )
+
+    def test_on_row_sink_does_not_retain_full_list(self):
+        frames = [
+            {
+                "frame_version": FRAME_VERSION,
+                "session_date": "2026-09-24",
+                "poll_ts": "2026-09-24T09:15:00+05:30",
+                "values": {"vix": 12.0},
+                "candidate_population_verified": True,
+            }
+        ]
+        seen = []
+        retained = finalize_frames(
+            frames, {"vix": [10.0]}, {}, {"existing": ["vix"]}, on_row=seen.append
+        )
+        self.assertEqual(retained, [])
+        self.assertGreaterEqual(len(seen), 1)
+        self.assertEqual(seen[0]["variable_name"], "vix")
+
+    def test_ci_small_fixture_finalizes(self):
+        catalog = {"existing": ["vix"]}
+        frames = [
+            {
+                "frame_version": FRAME_VERSION,
+                "session_date": "2026-09-24",
+                "poll_ts": f"2026-09-24T09:{i:02d}:00+05:30",
+                "values": {"vix": 10.0 + i},
+                "candidate_population_verified": True,
+            }
+            for i in range(8)
+        ]
+        rows = finalize_frames(frames, {"vix": [5.0]}, {}, catalog)
+        self.assertEqual(len([r for r in rows if r["poll_ts"]]), 8)

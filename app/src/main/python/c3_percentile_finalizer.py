@@ -322,8 +322,15 @@ def _slice_history_key(variable_name: str, index_key: str, direction: str, trade
 def finalize_frames(
     frames: list[dict[str, Any]], history_seed: dict[str, list[float]], outcome_prior: dict[str, float | None], catalog: dict[str, list[str]],
     *, history_source: str = "live", pre_t_clean: bool = True,
+    on_row: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Build poll and daily C3 rows from history strictly before this session."""
+    """Build poll and daily C3 rows from history strictly before this session.
+
+    When ``on_row`` is provided it receives each row in emission order and the
+    returned list is empty (rows are not retained). Omitting ``on_row`` retains
+    the full list for callers/tests that need it. Rolling prior history and
+    daily medians are continuous across the whole session.
+    """
     history: dict[str, list[float]] = defaultdict(list)
     daily_history: dict[str, list[float]] = defaultdict(list)
     for name, values in (history_seed or {}).items():
@@ -334,6 +341,15 @@ def finalize_frames(
     group_by_name = {name: group for group, names in catalog.items() for name in names}
     catalog_names = set(group_by_name)
     rows: list[dict[str, Any]] = []
+    retain = on_row is None
+    poll_rows_by_day_name: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+
+    def _emit(row: dict[str, Any]) -> None:
+        if on_row is not None:
+            on_row(row)
+        if retain:
+            rows.append(row)
+
     for frame in sorted(frames, key=lambda row: str(row.get("poll_ts") or "")):
         if frame.get("frame_version") != FRAME_VERSION:
             continue
@@ -355,7 +371,19 @@ def finalize_frames(
                 "extra_json": {"candidate_population_scope": CALIBRATION_POPULATION_SCOPE if frame.get("candidate_population_verified") else "unverified_incomplete_candidate_population", "calibration_population_version": CALIBRATION_POPULATION_VERSION if frame.get("candidate_population_verified") else "unverified", "generated_population_count": frame.get("generated_population_count", 0), "rejected_population_count": frame.get("rejected_population_count", 0), "generated_capture_complete": bool(frame.get("generated_capture_complete"))},
             }
             row["id"] = _row_id(row)
-            rows.append(row)
+            _emit(row)
+            if (
+                row.get("poll_ts")
+                and name in DAILY_CALIBRATION_VARIABLES
+                and row.get("session_date")
+                and _number(row.get("value")) is not None
+            ):
+                poll_rows_by_day_name[(str(row["session_date"]), name)].append({
+                    "value": row["value"],
+                    "poll_ts": row.get("poll_ts"),
+                    "pre_t_clean": row.get("pre_t_clean"),
+                    "extra_json": row.get("extra_json"),
+                })
             if value is not None:
                 history[name].append(value)
         for slice_row in frame.get("candidate_slices") or []:
@@ -395,21 +423,9 @@ def finalize_frames(
                     },
                 }
                 row["id"] = _row_id(row)
-                rows.append(row)
+                _emit(row)
                 if value is not None:
                     history[history_key].append(value)
-    poll_rows_by_day_name: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        name = str(row.get("variable_name") or "")
-        day = str(row.get("session_date") or "")
-        if (
-            row.get("poll_ts")
-            and row.get("index_key") == "MARKET"
-            and name in DAILY_CALIBRATION_VARIABLES
-            and day
-            and _number(row.get("value")) is not None
-        ):
-            poll_rows_by_day_name[(day, name)].append(row)
 
     for day, name in sorted(poll_rows_by_day_name):
         contributors = poll_rows_by_day_name[(day, name)]
@@ -453,6 +469,42 @@ def finalize_frames(
             },
         }
         daily_row["id"] = _row_id(daily_row)
-        rows.append(daily_row)
+        _emit(daily_row)
         daily_history[name].append(daily_value)
     return rows
+
+
+def finalize_frames_to_ndjson(
+    frames: list[dict[str, Any]],
+    history_seed: dict[str, list[float]],
+    outcome_prior: dict[str, float | None],
+    catalog: dict[str, list[str]],
+    ndjson_path: str,
+    *,
+    history_source: str = "live",
+    pre_t_clean: bool = True,
+) -> dict[str, Any]:
+    """Write finalized rows as NDJSON; return compact counters only."""
+    row_count = 0
+    with open(ndjson_path, "w", encoding="utf-8") as handle:
+        def _on_row(row: dict[str, Any]) -> None:
+            nonlocal row_count
+            handle.write(json.dumps(row, separators=(",", ":"), ensure_ascii=True))
+            handle.write("\n")
+            row_count += 1
+
+        finalize_frames(
+            frames,
+            history_seed,
+            outcome_prior,
+            catalog,
+            history_source=history_source,
+            pre_t_clean=pre_t_clean,
+            on_row=_on_row,
+        )
+    return {
+        "ok": True,
+        "row_count": row_count,
+        "frame_count": len(frames),
+        "ndjson_path": ndjson_path,
+    }

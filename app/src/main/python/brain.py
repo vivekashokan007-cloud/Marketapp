@@ -21096,6 +21096,8 @@ def c3_finalize_frames(frames, history_seed, outcome_prior):
 
     Inputs are captured poll frames plus history strictly before the target
     session. This deliberately does not read evaluation state or Supabase.
+    Prefer c3_finalize_frames_to_path on device to avoid holding the full rows
+    JSON string in the Chaquopy bridge.
     """
     try:
         from c3_percentile_finalizer import finalize_frames
@@ -21108,6 +21110,38 @@ def c3_finalize_frames(frames, history_seed, outcome_prior):
             return json.dumps({'ok': False, 'error': 'c3_history_or_outcome_prior_invalid'})
         rows = finalize_frames(parsed_frames, parsed_seed, parsed_prior, C3_CONTEXT_PERCENTILE_VARIABLES)
         return json.dumps({'ok': True, 'rows': rows, 'frame_count': len(parsed_frames)})
+    except Exception as exc:
+        return json.dumps({'ok': False, 'error': f'c3_finalization_failed:{exc}'})
+
+
+def c3_finalize_frames_to_path(frames_path, history_seed, outcome_prior, rows_ndjson_path):
+    """File-backed C3 finalizer: read frames JSON, write rows NDJSON.
+
+    Returns a compact status JSON (no rows payload) so Kotlin/Chaquopy never
+    materializes the full rows array as one bridge string.
+    """
+    try:
+        from c3_percentile_finalizer import finalize_frames_to_ndjson
+        if not isinstance(frames_path, str) or not frames_path.strip():
+            return json.dumps({'ok': False, 'error': 'c3_frames_path_invalid'})
+        if not isinstance(rows_ndjson_path, str) or not rows_ndjson_path.strip():
+            return json.dumps({'ok': False, 'error': 'c3_rows_path_invalid'})
+        with open(frames_path, 'r', encoding='utf-8') as handle:
+            parsed_frames = json.load(handle)
+        parsed_seed = _bridge_json_obj(history_seed) or {}
+        parsed_prior = _bridge_json_obj(outcome_prior) or {}
+        if not isinstance(parsed_frames, list):
+            return json.dumps({'ok': False, 'error': 'c3_frames_not_array'})
+        if not isinstance(parsed_seed, dict) or not isinstance(parsed_prior, dict):
+            return json.dumps({'ok': False, 'error': 'c3_history_or_outcome_prior_invalid'})
+        result = finalize_frames_to_ndjson(
+            parsed_frames,
+            parsed_seed,
+            parsed_prior,
+            C3_CONTEXT_PERCENTILE_VARIABLES,
+            rows_ndjson_path,
+        )
+        return json.dumps(result)
     except Exception as exc:
         return json.dumps({'ok': False, 'error': f'c3_finalization_failed:{exc}'})
 
