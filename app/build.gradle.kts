@@ -20,7 +20,7 @@ android {
         // b479 / 2.6.48: ML eval lease recovery (stable holder + releaseLease + historical continuation session_date)
         // b480 / 2.6.49: Eng batches A–E (lot authority, C3 honesty, eval completeness, teacher reporting, holding horizon)
         // b481 / 2.6.50: Codex R1 fix — identity completeness gates, Supabase identity readback, PWA labelsSaved truth, teacher_summary, lot failure reasons
-        // b487 / 2.6.56: Paper P1→Brain valuation bridge + valuation_ts quote timing (DATA_UNAVAILABLE disconnect)
+        // b488 / 2.6.57: Position tick flush R7–R9 (fail-closed 409, full fingerprint, overflow UI + overflow_active fix)
         // b485 / 2.6.54: synchronized release for the fresh P1 Paper-close quote contract
         // b484 / 2.6.53: expose verified Paper marks through the APK bridge and refresh on P1 ticks
         // b483 / 2.6.52: preserve strict verified Paper marks across temporary Brain-chain gaps
@@ -32,8 +32,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 487
-        versionName = "2.6.56"
+        versionCode = 488
+        versionName = "2.6.57"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
