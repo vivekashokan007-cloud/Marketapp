@@ -87,7 +87,10 @@ class C3PagingR2Test {
                 localRows.forEach(sink)
                 if (localRows.isEmpty()) C3LocalReadResult.Empty(C3LocalSnapshotReader.EMPTY_NO_FILE)
                 else C3LocalReadResult.Complete(localRows.size, 0, 0)
-            }
+            },
+            // R4: untrimmed cache whose count matches the authoritative expected count.
+            trimEvidence = { C3TrimEvidence.ABSENT },
+            expectedCount = { C3ExpectedCount.Known(localRows.size, "test") }
         )
         return outcome to delivered
     }

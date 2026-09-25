@@ -1730,6 +1730,11 @@ class MarketMLService : Service() {
         )
 
         var preparedSnapshotCount = if (snapshotResult.complete) snapshotResult.count else 0
+        // C3 R4 provenance (metadata only; not part of any identity/manifest hash).
+        val preparedSnapshotSource = when {
+            snapshotResult.complete && snapshotResult.count > 0 -> C3ExpectedCountResolver.SNAPSHOT_SOURCE_REMOTE_COMPLETE
+            else -> C3ExpectedCountResolver.SNAPSHOT_SOURCE_LOCAL_FALLBACK
+        }
         if (!snapshotResult.complete || snapshotResult.count == 0) {
             if (snapshotResult.count > 0) {
                 Log.w(
@@ -1802,6 +1807,7 @@ class MarketMLService : Service() {
                     put("leg_key_count", 0)
                     put("chain_row_count", 0)
                     put("source", "none")
+                    put("snapshot_source", if (snapshotCount > 0) preparedSnapshotSource else C3ExpectedCountResolver.SNAPSHOT_SOURCE_NONE)
                     put("page_count", 0)
                     put("empty_reason", emptyReason)
                     put("completed_at", java.time.Instant.now().toString())
@@ -1857,6 +1863,7 @@ class MarketMLService : Service() {
                 put("h2_coverage_present_legs", h2Coverage.present)
                 put("h2_missing_preview", h2Coverage.missingPreview)
                 put("source", chainFeed.source)
+                put("snapshot_source", preparedSnapshotSource)
                 put("page_count", chainFeed.pageCount)
                 put("completed_at", java.time.Instant.now().toString())
             }.toString()
@@ -2485,6 +2492,23 @@ class MarketMLService : Service() {
         Log.i(TAG, "C3_PHASE: date=$sessionDate phase=$phase $detail ${evalHeapLine()}")
     }
 
+    /**
+     * C3 R4: authoritative expected snapshot count for the local fallback —
+     * local evaluation-run ledger input manifest, accepted only when the
+     * evaluation inputs came from a COMPLETE remote read (prepare metadata).
+     */
+    private fun c3ExpectedSnapshotCount(sessionDate: String): C3ExpectedCount {
+        val run = activeEvaluationRun?.takeIf { it.optString("session_date") == sessionDate }
+            ?: EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
+        val meta = try {
+            val f = File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate))
+            if (f.exists()) org.json.JSONObject(f.readText()) else null
+        } catch (_: Exception) {
+            null
+        }
+        return C3ExpectedCountResolver.resolve(sessionDate, run, meta)
+    }
+
     private suspend fun runC3PercentileFinalization(sessionDate: String) = withContext(Dispatchers.IO) {
         if (activeEvaluationRun == null) {
             activeEvaluationRun = EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
@@ -2516,13 +2540,16 @@ class MarketMLService : Service() {
             sessionDate,
             remoteFetch = { sink -> SupabaseClient.forEachC3FinalizationCompactSnapshot(sessionDate, sink) },
             localFetch = { sink -> EvaluationLocalCache.forEachBrainSnapshotStrict(this@MarketMLService, sessionDate, sink) },
+            trimEvidence = { EvaluationLocalCache.readC3TrimEvidence(this@MarketMLService, sessionDate) },
+            expectedCount = { c3ExpectedSnapshotCount(sessionDate) },
             onPhase = { phase, detail -> c3PhaseLog(sessionDate, phase, detail) }
         )
         val terminal = C3FrameCollector.terminalPlan(collected)
         if (terminal != null) {
             val snapshotCount = (collected as? C3CollectOutcome.NoFrames)?.snapshotCount
                 ?: (collected as? C3CollectOutcome.RemoteFailed)?.localSnapshots
-                ?: (collected as? C3CollectOutcome.LocalFailed)?.local?.rowsBeforeFailure ?: 0
+                ?: (collected as? C3CollectOutcome.LocalFailed)?.local?.rowsBeforeFailure
+                ?: (collected as? C3CollectOutcome.LocalRejected)?.localRows ?: 0
             if (terminal.c3Phase == "FAILED") {
                 // Retryable: FAILED is not in the DONE/INELIGIBLE skip set and the
                 // ledger stage "failed" keeps learning_complete=false.
@@ -2542,8 +2569,13 @@ class MarketMLService : Service() {
                     verifiedCount = 0,
                     lastError = terminal.lastError
                 )
-                val failPhase = if (collected is C3CollectOutcome.LocalFailed) "local_read_failed" else "remote_fetch_failed"
+                val failPhase = when (collected) {
+                    is C3CollectOutcome.LocalFailed -> "local_read_failed"
+                    is C3CollectOutcome.LocalRejected -> "local_fallback_rejected"
+                    else -> "remote_fetch_failed"
+                }
                 val localTag = (collected as? C3CollectOutcome.LocalFailed)?.let { C3LocalSnapshotReader.describe(it.local) }
+                    ?: (collected as? C3CollectOutcome.LocalRejected)?.let { "localRejected=${it.reasonCode} ${it.detail}" }
                     ?: "localSnapshots=$snapshotCount"
                 c3PhaseLog(sessionDate, failPhase, "${C3SnapshotPager.describe(collected.remote)} $localTag")
                 Log.e(TAG, "C3_FINALIZE_READ_FAIL: date=$sessionDate reasonCode=${terminal.reasonCode} ${C3SnapshotPager.describe(collected.remote)} $localTag")

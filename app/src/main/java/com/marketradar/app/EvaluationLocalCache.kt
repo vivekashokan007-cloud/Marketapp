@@ -35,7 +35,9 @@ object EvaluationLocalCache {
     private data class FullSnapshotIndex(
         val rows: LinkedHashMap<String, Long>,
         var totalBytes: Long,
-        var needsRewrite: Boolean
+        var needsRewrite: Boolean,
+        // C3 R4: malformed lines a rewrite will drop (recorded in the trim marker).
+        var malformedLines: Int = 0
     )
 
     private val snapshotStateByPath = mutableMapOf<String, SnapshotFileState>()
@@ -51,6 +53,16 @@ object EvaluationLocalCache {
 
     private fun brainSnapshotFile(context: Context, sessionDate: String): File {
         return File(cacheDir(context), "brain_snapshots_${safeDate(sessionDate)}.jsonl")
+    }
+
+    /** C3 R4: durable per-session trim marker sidecar for the full snapshot cache. */
+    private fun brainSnapshotTrimMarkerFile(context: Context, sessionDate: String): File {
+        return File(cacheDir(context), "brain_snapshot_trim_${safeDate(sessionDate)}.jsonl")
+    }
+
+    internal fun trimMarkerFileFor(snapshotFile: File): File {
+        val date = snapshotFile.name.removePrefix("brain_snapshots_").removeSuffix(".jsonl")
+        return File(snapshotFile.parentFile, "brain_snapshot_trim_$date.jsonl")
     }
 
     private fun brainSnapshotSummaryFile(context: Context, sessionDate: String): File {
@@ -76,12 +88,14 @@ object EvaluationLocalCache {
                 (
                     file.name.startsWith("brain_snapshots_") ||
                         file.name.startsWith("brain_snapshot_summaries_") ||
+                        file.name.startsWith("brain_snapshot_trim_") ||
                         file.name.startsWith("build3_ab_")
                     ) &&
                 file.name.endsWith(".jsonl")
         }?.forEach { file ->
             val sessionDate = file.name
                 .removePrefix("brain_snapshot_summaries_")
+                .removePrefix("brain_snapshot_trim_")
                 .removePrefix("brain_snapshots_")
                 .removePrefix("build3_ab_")
                 .removeSuffix(".jsonl")
@@ -211,6 +225,7 @@ object EvaluationLocalCache {
         val rows = linkedMapOf<String, Long>()
         var totalBytes = 0L
         var needsRewrite = false
+        var malformed = 0
         if (file.exists()) {
             file.forEachLine { line ->
                 val trimmed = line.trim()
@@ -220,6 +235,7 @@ object EvaluationLocalCache {
                 }
                 val row = try { JSONObject(trimmed) } catch (_: Exception) {
                     needsRewrite = true
+                    malformed += 1
                     return@forEachLine
                 }
                 val key = snapshotKey(row)
@@ -231,7 +247,7 @@ object EvaluationLocalCache {
                 }
             }
         }
-        val index = FullSnapshotIndex(rows, totalBytes, needsRewrite)
+        val index = FullSnapshotIndex(rows, totalBytes, needsRewrite, malformed)
         fullSnapshotIndexByPath[file.absolutePath] = index
         return index
     }
@@ -1028,38 +1044,10 @@ object EvaluationLocalCache {
         return try {
             pruneExpiredCacheFiles(context)
             val file = brainSnapshotFile(context, sessionDate)
-            val index = loadFullSnapshotIndex(file)
             val compactSnapshot = compactBrainSnapshot(snapshot)
-            val key = snapshotKey(compactSnapshot)
-            if (index.rows.containsKey(key)) {
-                LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_SKIP_DUP: date=$sessionDate key=$key")
-                return true
+            if (!appendFullSnapshotRow(file, brainSnapshotTrimMarkerFile(context, sessionDate), sessionDate, compactSnapshot)) {
+                return true // duplicate key: unchanged behaviour
             }
-            val json = compactSnapshot.toString()
-            val compactBytes = rowBytes(json)
-            file.appendText(json + "\n")
-            index.rows[key] = compactBytes
-            index.totalBytes += compactBytes
-            val trimmed = trimFullSnapshotIndex(index)
-            if (index.needsRewrite || trimmed) {
-                rewriteFullSnapshotFile(file, index.rows.keys)
-                index.needsRewrite = false
-                if (trimmed) {
-                    LogBuffer.add(
-                        'I',
-                        TAG,
-                        "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${index.rows.size} bytes=${index.totalBytes} rowCap=$MAX_ROWS_PER_SESSION rowTarget=$TARGET_ROWS_PER_SESSION byteCap=$MAX_BYTES_PER_SESSION byteTarget=$TARGET_BYTES_PER_SESSION"
-                    )
-                } else {
-                    LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_COMPACT_ONCE: file=${file.name} rows=${index.rows.size}")
-                }
-            }
-            LogBuffer.add(
-                'I',
-                TAG,
-                "LOCAL_SNAPSHOT_COMPACTED: date=$sessionDate compactBytes=$compactBytes"
-            )
-            LogBuffer.add('D', TAG, "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
             try {
                 appendSnapshotSummary(context, sessionDate, compactSnapshot)
             } catch (summaryError: Throwable) {
@@ -1069,6 +1057,89 @@ object EvaluationLocalCache {
         } catch (e: Throwable) {
             LogBuffer.add('W', TAG, "LOCAL_SNAPSHOT_APPEND_FAIL: date=$sessionDate error=${e.message}")
             false
+        }
+    }
+
+    /**
+     * Full-snapshot append + (unchanged) trim/compaction policy. Extracted so
+     * the C3 R4 trim marker is testable on plain files. Returns false for a
+     * duplicate key (no write), true after appending.
+     *
+     * C3 R4: whenever a rewrite drops session rows — cap trim, or malformed
+     * lines discarded by compaction — a durable marker is written to
+     * [markerFile] BEFORE the rewrite, so a crash in between still leaves
+     * evidence. Trim caps/targets are not changed.
+     */
+    @Synchronized
+    internal fun appendFullSnapshotRow(
+        file: File,
+        markerFile: File,
+        sessionDate: String,
+        compactSnapshot: JSONObject,
+        log: (Char, String) -> Unit = { level, message -> LogBuffer.add(level, TAG, message) }
+    ): Boolean {
+        val index = loadFullSnapshotIndex(file)
+        val key = snapshotKey(compactSnapshot)
+        if (index.rows.containsKey(key)) {
+            log('I', "LOCAL_SNAPSHOT_SKIP_DUP: date=$sessionDate key=$key")
+            return false
+        }
+        val json = compactSnapshot.toString()
+        val compactBytes = rowBytes(json)
+        file.appendText(json + "\n")
+        index.rows[key] = compactBytes
+        index.totalBytes += compactBytes
+        val rowsBefore = index.rows.size
+        val trimmed = trimFullSnapshotIndex(index)
+        if (index.needsRewrite || trimmed) {
+            val droppedByTrim = if (trimmed) rowsBefore - index.rows.size else 0
+            val droppedMalformed = if (index.needsRewrite) index.malformedLines else 0
+            if (droppedByTrim > 0 || droppedMalformed > 0) {
+                try {
+                    var marker = C3LocalCacheTrimMarker.readRaw(markerFile)
+                    val now = java.time.Instant.now().toString()
+                    if (droppedByTrim > 0) {
+                        marker = C3LocalCacheTrimMarker.merge(
+                            marker, sessionDate, C3LocalCacheTrimMarker.REASON_ROW_OR_BYTE_CAP,
+                            droppedByTrim, rowsBefore, index.rows.size, now
+                        )
+                    }
+                    if (droppedMalformed > 0) {
+                        marker = C3LocalCacheTrimMarker.merge(
+                            marker, sessionDate, C3LocalCacheTrimMarker.REASON_MALFORMED_DROPPED,
+                            droppedMalformed, rowsBefore + droppedMalformed, index.rows.size, now
+                        )
+                    }
+                    C3LocalCacheTrimMarker.write(markerFile, marker!!)
+                } catch (markerError: Throwable) {
+                    // Policy unchanged; the C3 exact expected-count check still protects.
+                    log('W', "LOCAL_SNAPSHOT_TRIM_MARKER_FAIL: date=$sessionDate error=${markerError.javaClass.simpleName}")
+                }
+            }
+            rewriteFullSnapshotFile(file, index.rows.keys)
+            index.needsRewrite = false
+            index.malformedLines = 0
+            if (trimmed) {
+                log(
+                    'I',
+                    "LOCAL_SNAPSHOT_TRIM: date=$sessionDate rows=${index.rows.size} bytes=${index.totalBytes} rowCap=$MAX_ROWS_PER_SESSION rowTarget=$TARGET_ROWS_PER_SESSION byteCap=$MAX_BYTES_PER_SESSION byteTarget=$TARGET_BYTES_PER_SESSION dropped=$droppedByTrim"
+                )
+            } else {
+                log('I', "LOCAL_SNAPSHOT_COMPACT_ONCE: file=${file.name} rows=${index.rows.size}")
+            }
+        }
+        log('I', "LOCAL_SNAPSHOT_COMPACTED: date=$sessionDate compactBytes=$compactBytes")
+        log('D', "LOCAL_SNAPSHOT_APPEND: date=$sessionDate bytes=${file.length()}")
+        return true
+    }
+
+    /** C3 R4: trim evidence for the session's full snapshot cache. */
+    @Synchronized
+    fun readC3TrimEvidence(context: Context, sessionDate: String): C3TrimEvidence {
+        return try {
+            C3LocalCacheTrimMarker.evidence(brainSnapshotTrimMarkerFile(context, sessionDate))
+        } catch (_: Throwable) {
+            C3TrimEvidence(C3TrimEvidence.STATUS_UNREADABLE)
         }
     }
 

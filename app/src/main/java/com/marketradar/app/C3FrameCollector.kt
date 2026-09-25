@@ -26,6 +26,13 @@ import org.json.JSONObject
  * read is COMPLETE. A FAILED local read (malformed line / read error) discards
  * all local frames and yields [C3CollectOutcome.LocalFailed] => retryable
  * FAILED (C3_LOCAL_READ_INCOMPLETE). Local frames are never mixed with remote.
+ *
+ * R4: a COMPLETE local read is still only the *retained* cache. The local
+ * fallback is used only if there is no trim marker ([C3TrimEvidence]), an
+ * authoritative expected snapshot count exists ([C3ExpectedCountResolver]),
+ * and the de-duplicated local row count and local frame count both equal it
+ * exactly. Otherwise [C3CollectOutcome.LocalRejected] => retryable FAILED with
+ * C3_LOCAL_CACHE_TRIMMED / C3_LOCAL_COUNT_UNVERIFIABLE / C3_LOCAL_COUNT_MISMATCH.
  */
 sealed class C3CollectOutcome {
     abstract val remote: C3PagingResult
@@ -46,6 +53,16 @@ sealed class C3CollectOutcome {
     data class RemoteFailed(
         override val remote: C3PagingResult.Failed,
         val localSnapshots: Int
+    ) : C3CollectOutcome()
+
+    /** R4: local cache trimmed / count unverifiable / count mismatch. */
+    data class LocalRejected(
+        override val remote: C3PagingResult,
+        val reasonCode: String,
+        val detail: String,
+        val expected: Int?,
+        val localRows: Int,
+        val localFrames: Int
     ) : C3CollectOutcome()
 
     /** R3: strict local read FAILED while remote gave no usable frames. */
@@ -70,6 +87,9 @@ object C3FrameCollector {
     const val SOURCE_LOCAL = "local_fallback"
     const val REASON_REMOTE_READ_FAILED = "C3_REMOTE_READ_FAILED"
     const val REASON_LOCAL_READ_INCOMPLETE = "C3_LOCAL_READ_INCOMPLETE"
+    const val REASON_LOCAL_CACHE_TRIMMED = "C3_LOCAL_CACHE_TRIMMED"
+    const val REASON_LOCAL_COUNT_UNVERIFIABLE = "C3_LOCAL_COUNT_UNVERIFIABLE"
+    const val REASON_LOCAL_COUNT_MISMATCH = "C3_LOCAL_COUNT_MISMATCH"
 
     private fun parseJsonObject(value: Any?): JSONObject? = when (value) {
         is JSONObject -> value
@@ -109,6 +129,8 @@ object C3FrameCollector {
         sessionDate: String,
         remoteFetch: (onCompact: (JSONObject) -> Unit) -> C3PagingResult,
         localFetch: (onRow: (JSONObject) -> Unit) -> C3LocalReadResult,
+        trimEvidence: () -> C3TrimEvidence,
+        expectedCount: () -> C3ExpectedCount,
         onPhase: (phase: String, detail: String) -> Unit = { _, _ -> }
     ): C3CollectOutcome {
         var frames = JSONArray()
@@ -127,6 +149,22 @@ object C3FrameCollector {
             slices = 0
             onPhase("remote_fetch_failed_discarded", "discarded=${remote.discardedDelivered}")
         }
+        fun remoteTag(): String = when (remote) {
+            is C3PagingResult.Failed -> "remote=FAILED:${remote.reason}"
+            is C3PagingResult.Empty -> "remote=EMPTY"
+            is C3PagingResult.Complete -> "remote=COMPLETE_NO_FRAMES"
+        }
+        // R4: durable trim evidence rejects the fallback before any local read.
+        val trim = trimEvidence()
+        if (trim.rejectsFallback) {
+            onPhase("local_cache_trimmed", "status=${trim.status} dropped=${trim.droppedRowsTotal}")
+            return C3CollectOutcome.LocalRejected(
+                remote, REASON_LOCAL_CACHE_TRIMMED,
+                "marker=${trim.status} droppedRows=${trim.droppedRowsTotal} maxRowsBeforeTrim=${trim.maxRowsBeforeTrim} " +
+                    "trimEvents=${trim.trimEvents} reasons=${trim.reasons.joinToString("|")} ${remoteTag()}",
+                expected = null, localRows = 0, localFrames = 0
+            )
+        }
         onPhase("before_local_stream_fallback", "")
         // Buffer compact local frames; they are released only on COMPLETE.
         var localFrames = JSONArray()
@@ -142,8 +180,31 @@ object C3FrameCollector {
             return C3CollectOutcome.LocalFailed(remote, local)
         }
         val localRows = (local as? C3LocalReadResult.Complete)?.rows ?: 0
-        if (local is C3LocalReadResult.Complete && localFrames.length() > 0) {
-            return C3CollectOutcome.Frames(localFrames, SOURCE_LOCAL, localRows, localSlices, remote)
+        if (local is C3LocalReadResult.Complete) {
+            // R4: the retained cache must match the authoritative session count.
+            val frameCount = localFrames.length()
+            fun reject(code: String, expected: Int?, why: String): C3CollectOutcome {
+                localFrames = JSONArray()
+                onPhase("local_cache_rejected", "reason=$code expected=${expected ?: "-"} rows=$localRows frames=$frameCount")
+                return C3CollectOutcome.LocalRejected(
+                    remote, code, "$why expected=${expected ?: "unavailable"} localRows=$localRows localFrames=$frameCount ${remoteTag()}",
+                    expected, localRows, frameCount
+                )
+            }
+            when (val exp = expectedCount()) {
+                is C3ExpectedCount.Unavailable ->
+                    return reject(REASON_LOCAL_COUNT_UNVERIFIABLE, null, "expected_count_unavailable:${exp.why}")
+                is C3ExpectedCount.Known -> {
+                    if (localRows != exp.count) return reject(REASON_LOCAL_COUNT_MISMATCH, exp.count, "row_count_mismatch")
+                    if (frameCount > 0 && frameCount != exp.count) {
+                        return reject(REASON_LOCAL_COUNT_MISMATCH, exp.count, "frame_count_mismatch")
+                    }
+                    if (frameCount > 0) {
+                        onPhase("local_cache_verified", "expected=${exp.count} source=${exp.source}")
+                        return C3CollectOutcome.Frames(localFrames, SOURCE_LOCAL, localRows, localSlices, remote)
+                    }
+                }
+            }
         }
         if (remote is C3PagingResult.Failed) {
             return C3CollectOutcome.RemoteFailed(remote, localRows)
@@ -175,6 +236,14 @@ object C3FrameCollector {
                 runMetricsStage = false
             )
         }
+        is C3CollectOutcome.LocalRejected -> C3TerminalPlan(
+            c3Phase = "FAILED",
+            ledgerState = "failed",
+            reasonCode = outcome.reasonCode,
+            reason = "C3 local cache fallback rejected (${outcome.detail}); retry allowed.",
+            lastError = "C3 local fallback rejected: ${outcome.reasonCode} ${outcome.detail}",
+            runMetricsStage = false
+        )
         is C3CollectOutcome.LocalFailed -> {
             val l = outcome.local
             val remoteTag = when (val r = outcome.remote) {

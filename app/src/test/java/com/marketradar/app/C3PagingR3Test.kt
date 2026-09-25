@@ -253,7 +253,10 @@ class C3PagingR3Test {
         fake: FakePostgrest? = null,
         remoteEmpty: Boolean = false,
         remoteFail: Boolean = false,
-        local: (onRow: (JSONObject) -> Unit) -> C3LocalReadResult = { C3LocalReadResult.Empty(C3LocalSnapshotReader.EMPTY_NO_FILE) }
+        local: (onRow: (JSONObject) -> Unit) -> C3LocalReadResult = { C3LocalReadResult.Empty(C3LocalSnapshotReader.EMPTY_NO_FILE) },
+        // R4: defaults model an untrimmed cache whose count matches the ledger.
+        trim: C3TrimEvidence = C3TrimEvidence.ABSENT,
+        expected: C3ExpectedCount = C3ExpectedCount.Known(4, "test")
     ): Pair<C3CollectOutcome, MutableList<JSONObject>> {
         val delivered = mutableListOf<JSONObject>()
         val outcome = C3FrameCollector.collect(
@@ -266,7 +269,9 @@ class C3PagingR3Test {
                     else -> error("configure remote")
                 }
             },
-            localFetch = local
+            localFetch = local,
+            trimEvidence = { trim },
+            expectedCount = { expected }
         )
         return outcome to delivered
     }
@@ -324,14 +329,14 @@ class C3PagingR3Test {
 
     @Test
     fun cleanLocalFile_isComplete_andFinalizesFromLocalLikeBefore() {
-        val text = listOf(localLine(1), localLine(2), "", localLine(2), localLine(3, withFrame = false), localLine(4)).joinToString("\n") + "\n"
+        val text = listOf(localLine(1), localLine(2), "", localLine(2), localLine(3), localLine(4)).joinToString("\n") + "\n"
         val direct = C3LocalSnapshotReader.readStrict(reader(text)) {}
         assertEquals(C3LocalReadResult.Complete(rows = 4, duplicatesSkipped = 1, blankLines = 1), direct)
         val (outcome, _) = collect(remoteEmpty = true, local = { sink -> C3LocalSnapshotReader.readStrict(reader(text), sink) })
         assertTrue("got $outcome", outcome is C3CollectOutcome.Frames)
         outcome as C3CollectOutcome.Frames
         assertEquals(C3FrameCollector.SOURCE_LOCAL, outcome.source)
-        assertEquals(listOf("L1", "L2", "L4"), (0 until outcome.frames.length()).map { outcome.frames.getJSONObject(it).getString("snapshot_id") })
+        assertEquals(listOf("L1", "L2", "L3", "L4"), (0 until outcome.frames.length()).map { outcome.frames.getJSONObject(it).getString("snapshot_id") })
         assertEquals(4, outcome.snapshotCount)
     }
 
