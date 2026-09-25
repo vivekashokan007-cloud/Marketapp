@@ -2485,16 +2485,6 @@ class MarketMLService : Service() {
         Log.i(TAG, "C3_PHASE: date=$sessionDate phase=$phase $detail ${evalHeapLine()}")
     }
 
-    private fun shallowCopyJsonObject(src: org.json.JSONObject): org.json.JSONObject {
-        val out = org.json.JSONObject()
-        val keys = src.keys()
-        while (keys.hasNext()) {
-            val key = keys.next()
-            out.put(key, src.get(key))
-        }
-        return out
-    }
-
     private suspend fun runC3PercentileFinalization(sessionDate: String) = withContext(Dispatchers.IO) {
         if (activeEvaluationRun == null) {
             activeEvaluationRun = EvaluationRunLedger.loadLocal(this@MarketMLService, prefs, sessionDate)
@@ -2520,51 +2510,52 @@ class MarketMLService : Service() {
         updateC3FinalizationState(sessionDate, "PREPARING", "Reading captured C3 frames for $sessionDate...", running = true)
         updateRunStage("percentile_finalization", "running")
         c3PhaseLog(sessionDate, "before_remote_fetch")
-        val frames = org.json.JSONArray()
-        var candidateSliceCount = 0
-        fun captureFrame(snapshot: org.json.JSONObject) {
-            val context = parseJsonObject(snapshot.opt("context_json")) ?: return
-            val captured = context.optJSONObject("c3_finalization_frame") ?: return
-            // Shallow copy: avoid captured.toString()/JSONObject round-trip.
-            val frame = shallowCopyJsonObject(captured)
-            frame.put("snapshot_id", snapshot.optString("id", frame.optString("snapshot_id", "")))
-            frame.put("session_date", snapshot.optString("session_date", sessionDate))
-            frame.put("poll_ts", snapshot.optString("poll_ts", frame.optString("poll_ts", "")))
-            if (frame.optString("poll_ts").isNotBlank()) {
-                frames.put(frame)
-                candidateSliceCount += frame.optJSONArray("candidate_slices")?.length() ?: 0
+        // C3 R2: explicit COMPLETE / EMPTY / FAILED paging. FAILED remote
+        // frames are discarded inside the collector and never finalized.
+        val collected = C3FrameCollector.collect(
+            sessionDate,
+            remoteFetch = { sink -> SupabaseClient.forEachC3FinalizationCompactSnapshot(sessionDate, sink) },
+            localFetch = { sink -> EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, sink) },
+            onPhase = { phase, detail -> c3PhaseLog(sessionDate, phase, detail) }
+        )
+        val terminal = C3FrameCollector.terminalPlan(collected)
+        if (terminal != null) {
+            val snapshotCount = (collected as? C3CollectOutcome.NoFrames)?.snapshotCount
+                ?: (collected as? C3CollectOutcome.RemoteFailed)?.localSnapshots ?: 0
+            if (terminal.c3Phase == "FAILED") {
+                // Retryable: FAILED is not in the DONE/INELIGIBLE skip set and the
+                // ledger stage "failed" keeps learning_complete=false.
+                updateC3FinalizationState(
+                    sessionDate, "FAILED", terminal.reason,
+                    frameCount = 0, rowCount = 0, verifiedRows = 0, running = false,
+                    lastError = terminal.lastError,
+                    reasonCode = terminal.reasonCode,
+                    reason = terminal.reason
+                )
+                updateRunStage(
+                    "percentile_finalization",
+                    terminal.ledgerState,
+                    reasonCode = terminal.reasonCode,
+                    expectedCount = 0,
+                    writtenCount = 0,
+                    verifiedCount = 0,
+                    lastError = terminal.lastError
+                )
+                c3PhaseLog(sessionDate, "remote_fetch_failed", C3SnapshotPager.describe(collected.remote))
+                Log.e(TAG, "C3_FINALIZE_REMOTE_READ_FAIL: date=$sessionDate ${C3SnapshotPager.describe(collected.remote)} localSnapshots=$snapshotCount")
+                return@withContext
             }
-        }
-        // Page+extract+release: never retain full context_json for all polls.
-        val remoteCount = SupabaseClient.forEachC3FinalizationCompactSnapshot(sessionDate, ::captureFrame)
-        c3PhaseLog(
-            sessionDate, "after_remote_fetch",
-            "remoteCompacts=$remoteCount frames=${frames.length()} candidateSlices=$candidateSliceCount"
-        )
-        val snapshotCount = if (remoteCount > 0) {
-            remoteCount
-        } else {
-            c3PhaseLog(sessionDate, "before_local_stream_fallback")
-            val local = EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, ::captureFrame)
-            c3PhaseLog(sessionDate, "after_local_stream_fallback", "localSnapshots=$local frames=${frames.length()}")
-            local
-        }
-        c3PhaseLog(
-            sessionDate, "after_frame_extract",
-            "snapshots=$snapshotCount frames=${frames.length()} candidateSlices=$candidateSliceCount"
-        )
-        if (frames.length() == 0) {
             updateC3FinalizationState(
                 sessionDate, "SKIPPED_NO_FRAMES",
                 "No C3 recording frames were captured for $sessionDate. Labels may be saved; learning is not complete until C3 is verified or explicitly ineligible.",
                 frameCount = 0, rowCount = 0, verifiedRows = 0, running = false,
-                reasonCode = "NO_C3_FRAMES",
-                reason = "No C3 recording frames were captured for this session."
+                reasonCode = terminal.reasonCode,
+                reason = terminal.reason
             )
             updateRunStage(
                 "percentile_finalization",
-                "ineligible",
-                reasonCode = EvaluationRunLedger.REASON_NO_FRAMES,
+                terminal.ledgerState,
+                reasonCode = terminal.reasonCode,
                 expectedCount = 0,
                 writtenCount = 0,
                 verifiedCount = 0,
@@ -2574,6 +2565,13 @@ class MarketMLService : Service() {
             maybeRunPerformanceMetricsStage(sessionDate)
             return@withContext
         }
+        val frameOutcome = collected as C3CollectOutcome.Frames
+        val frames = frameOutcome.frames
+        c3PhaseLog(
+            sessionDate, "after_frame_extract",
+            "source=${frameOutcome.source} snapshots=${frameOutcome.snapshotCount} frames=${frames.length()} " +
+                "candidateSlices=${frameOutcome.candidateSliceCount}"
+        )
 
         // G5: assess original-frame provenance BEFORE any C3 write. Capped /
         // incomplete populations are ineligible — never fabricate verified rows.

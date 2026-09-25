@@ -1455,161 +1455,53 @@ object SupabaseClient {
     }
 
     /**
-     * Compact C3 snapshot: id/session_date/poll_ts plus context_json that holds
-     * ONLY c3_finalization_frame. Never retains full brain context_json.
+     * C3 R2 transport for [C3SnapshotPager]: distinguishes HTTP/transport
+     * failure from a successful body. Logs carry only status code and exception
+     * class (no response bodies, no URLs with data).
      */
-    private fun compactC3Snapshot(id: Any?, sessionDate: String, pollTs: String, frame: Any): JSONObject {
-        return JSONObject().apply {
-            if (id != null && id != JSONObject.NULL) put("id", id)
-            put("session_date", sessionDate)
-            put("poll_ts", pollTs)
-            put("context_json", JSONObject().put("c3_finalization_frame", frame))
-        }
-    }
-
-    private fun extractC3FrameValue(raw: Any?): Any? {
-        return when (raw) {
-            null, JSONObject.NULL -> null
-            is JSONObject -> raw
-            is String -> {
-                val trimmed = raw.trim()
-                if (trimmed.startsWith("{")) {
-                    try { JSONObject(trimmed) } catch (_: Exception) { null }
-                } else null
+    private fun fetchC3Page(path: String): C3PageFetch {
+        return try {
+            client.newCall(getBaseRequest(path).get().build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    C3PageFetch.Failed(httpCode = response.code, detail = "http_${response.code}")
+                } else {
+                    val body = response.body?.string()
+                    if (body == null) C3PageFetch.Failed(httpCode = response.code, detail = "null_body")
+                    else C3PageFetch.Ok(body)
+                }
             }
-            else -> null
+        } catch (oom: OutOfMemoryError) {
+            C3PageFetch.Failed(detail = "oom")
+        } catch (e: Exception) {
+            C3PageFetch.Failed(detail = e.javaClass.simpleName)
         }
     }
 
     /**
      * Page remote ml_brain_snapshots and invoke [onCompact] with compact C3
-     * snapshots only. Peak memory is one page (narrow select prefers larger
-     * pages; full-context fallback uses page size 1 and drops context_json
-     * immediately after extracting the frame).
-     *
-     * @return number of compact snapshots delivered to [onCompact]
+     * snapshots only (R1 memory design). Returns an explicit
+     * COMPLETE / EMPTY / FAILED result; on FAILED the caller must discard every
+     * compact already delivered. See [C3SnapshotPager] for the contract.
      */
     fun forEachC3FinalizationCompactSnapshot(
         sessionDate: String,
         onCompact: (JSONObject) -> Unit
-    ): Int {
-        require(Regex("\\d{4}-\\d{2}-\\d{2}").matches(sessionDate)) {
-            "C3 finalization sessionDate must be yyyy-MM-dd"
-        }
-        val narrow = pageC3FinalizationCompacts(
-            sessionDate = sessionDate,
-            select = "id,session_date,poll_ts,c3_finalization_frame:context_json->c3_finalization_frame",
-            pageSize = 25,
-            maxPages = 40,
-            mode = "narrow_json_path",
-            onCompact = onCompact
-        )
-        if (narrow.pagesWithRows > 0) {
-            LogBuffer.add(
-                'I', TAG,
-                "C3_FETCH_COMPACT: mode=narrow_json_path date=$sessionDate " +
-                    "pages=${narrow.pagesWithRows} delivered=${narrow.delivered} " +
-                    "pageBytesPeak=${narrow.pageBytesPeak}"
-            )
-            return narrow.delivered
-        }
-        val fallback = pageC3FinalizationCompacts(
-            sessionDate = sessionDate,
-            select = "id,session_date,poll_ts,context_json",
-            pageSize = 1,
-            maxPages = 200,
-            mode = "context_page_extract",
-            onCompact = onCompact
-        )
-        LogBuffer.add(
-            'I', TAG,
-            "C3_FETCH_COMPACT: mode=context_page_extract date=$sessionDate " +
-                "pages=${fallback.pagesWithRows} delivered=${fallback.delivered} " +
-                "pageBytesPeak=${fallback.pageBytesPeak}"
-        )
-        return fallback.delivered
-    }
-
-    private data class C3FetchPageStats(
-        val pagesWithRows: Int,
-        val delivered: Int,
-        val pageBytesPeak: Int
-    )
-
-    private fun pageC3FinalizationCompacts(
-        sessionDate: String,
-        select: String,
-        pageSize: Int,
-        maxPages: Int,
-        mode: String,
-        onCompact: (JSONObject) -> Unit
-    ): C3FetchPageStats {
-        var pagesWithRows = 0
-        var delivered = 0
-        var pageBytesPeak = 0
-        var offset = 0
-        repeat(maxPages) {
-            val path = "ml_brain_snapshots?session_date=eq.$sessionDate" +
-                "&select=$select&order=poll_ts.asc&limit=$pageSize&offset=$offset"
-            val raw = fetchSync(getBaseRequest(path).get().build())
-            if (raw == null) {
-                if (pagesWithRows == 0 && offset == 0) {
-                    LogBuffer.add('W', TAG, "C3_FETCH_COMPACT_EMPTY: mode=$mode date=$sessionDate offset=0")
-                }
-                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
-            }
-            pageBytesPeak = maxOf(pageBytesPeak, raw.length)
-            val page = try {
-                JSONArray(raw)
-            } catch (oom: OutOfMemoryError) {
-                Log.e(TAG, "C3_FETCH_PAGE_OOM: mode=$mode date=$sessionDate bytes=${raw.length} error=${oom.message}")
-                LogBuffer.add('E', TAG, "C3_FETCH_PAGE_OOM: mode=$mode bytes=${raw.length}")
-                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
-            } catch (_: Exception) {
-                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
-            }
-            if (page.length() == 0) {
-                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
-            }
-            pagesWithRows += 1
-            for (i in 0 until page.length()) {
-                val row = page.optJSONObject(i) ?: continue
-                val pollTs = row.optString("poll_ts", "").trim()
-                if (pollTs.isBlank()) continue
-                val frame = when (mode) {
-                    "narrow_json_path" -> extractC3FrameValue(row.opt("c3_finalization_frame"))
-                    else -> {
-                        val context = when (val rawCtx = row.opt("context_json")) {
-                            is JSONObject -> rawCtx
-                            is String -> try { JSONObject(rawCtx) } catch (_: Exception) { null }
-                            else -> null
-                        }
-                        val captured = extractC3FrameValue(context?.opt("c3_finalization_frame"))
-                        // Drop full context reference before compacting.
-                        context?.remove("c3_finalization_frame")
-                        captured
-                    }
-                } ?: continue
-                val session = row.optString("session_date", sessionDate).ifBlank { sessionDate }
-                onCompact(compactC3Snapshot(row.opt("id"), session, pollTs, frame))
-                delivered += 1
-            }
-            if (page.length() < pageSize) {
-                return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
-            }
-            offset += page.length()
-        }
-        return C3FetchPageStats(pagesWithRows, delivered, pageBytesPeak)
+    ): C3PagingResult {
+        val result = C3SnapshotPager.fetchAll(sessionDate, ::fetchC3Page, onCompact)
+        val level = if (result is C3PagingResult.Failed) 'W' else 'I'
+        LogBuffer.add(level, TAG, "C3_FETCH_COMPACT: date=$sessionDate ${C3SnapshotPager.describe(result)}")
+        return result
     }
 
     /**
-     * Compatibility collector: returns compact C3 snapshots only (no full
-     * context_json / verdict / forces). Prefer [forEachC3FinalizationCompactSnapshot].
+     * Compatibility collector: compact C3 snapshots only. Fail-closed: returns
+     * an empty array unless paging is COMPLETE. Prefer
+     * [forEachC3FinalizationCompactSnapshot].
      */
     fun fetchC3FinalizationSnapshots(sessionDate: String): JSONArray {
         val out = JSONArray()
-        forEachC3FinalizationCompactSnapshot(sessionDate) { out.put(it) }
-        return out
+        val result = forEachC3FinalizationCompactSnapshot(sessionDate) { out.put(it) }
+        return if (result is C3PagingResult.Complete) out else JSONArray()
     }
 
     fun fetchC3OutcomePrior(targetDate: String, maxPages: Int = 20): JSONObject {
