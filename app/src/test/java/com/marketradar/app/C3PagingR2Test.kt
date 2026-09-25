@@ -22,26 +22,40 @@ class C3PagingR2Test {
         .put("candidate_slices", JSONArray().put(JSONObject().put("k", i)))
 
     private fun narrowRow(i: Int, withFrame: Boolean = true) = JSONObject()
-        .put("id", "snap-$i")
+        .put("id", i.toLong())
         .put("session_date", date)
         .put("poll_ts", "2026-09-24T10:%02d:%02d+05:30".format(i / 60, i % 60))
         .put(C3SnapshotPager.FRAME_KEY, if (withFrame) frame(i) else JSONObject.NULL)
 
     private fun contextRow(i: Int) = JSONObject()
-        .put("id", "snap-$i")
+        .put("id", i.toLong())
         .put("session_date", date)
         .put("poll_ts", "2026-09-24T11:%02d:%02d+05:30".format(i / 60, i % 60))
         .put("context_json", JSONObject().put("big", "x".repeat(64)).put(C3SnapshotPager.FRAME_KEY, frame(i)))
 
     private fun page(rows: List<JSONObject>) = C3PageFetch.Ok(JSONArray(rows).toString())
 
-    /** Scripted transport: responder(mode, offset, limit) -> response. Records calls. */
-    private class FakeTransport(val responder: (mode: String, offset: Int, limit: Int) -> C3PageFetch) {
+    /**
+     * Scripted transport: responder(mode, offset, limit) -> response. R3: the
+     * pager uses keyset (poll_ts,id) paging; fixture ids equal the row index and
+     * poll_ts increases with it, so the virtual offset is `after.id + 1`.
+     * The start-of-read boundary query is answered by [boundary].
+     */
+    private class FakeTransport(
+        val boundary: C3PageFetch = C3PageFetch.Ok("[{\"id\":1000000}]"),
+        val responder: (mode: String, offset: Int, limit: Int) -> C3PageFetch
+    ) {
         val calls = mutableListOf<String>()
+        val boundaryCalls = mutableListOf<String>()
         fun fetch(path: String): C3PageFetch {
+            if (path.contains("order=id.desc")) {
+                boundaryCalls += path
+                return boundary
+            }
             calls += path
             val mode = if (path.contains("context_json->")) C3SnapshotPager.MODE_NARROW else C3SnapshotPager.MODE_CONTEXT
-            val offset = Regex("offset=(\\d+)").find(path)!!.groupValues[1].toInt()
+            val decoded = java.net.URLDecoder.decode(path, "UTF-8")
+            val offset = Regex("id\\.gt\\.(\\d+)").find(decoded)?.groupValues?.get(1)?.toInt()?.plus(1) ?: 0
             val limit = Regex("limit=(\\d+)").find(path)!!.groupValues[1].toInt()
             return responder(mode, offset, limit)
         }
@@ -69,7 +83,11 @@ class C3PagingR2Test {
                     contextPageSize = 1, contextMaxPages = 5
                 )
             },
-            localFetch = { sink -> localRows.forEach(sink); localRows.size }
+            localFetch = { sink ->
+                localRows.forEach(sink)
+                if (localRows.isEmpty()) C3LocalReadResult.Empty(C3LocalSnapshotReader.EMPTY_NO_FILE)
+                else C3LocalReadResult.Complete(localRows.size, 0, 0)
+            }
         )
         return outcome to delivered
     }
@@ -161,7 +179,7 @@ class C3PagingR2Test {
         assertEquals(C3FrameCollector.SOURCE_LOCAL, outcome.source)
         assertEquals(2, outcome.frames.length())
         val ids = (0 until outcome.frames.length()).map { outcome.frames.getJSONObject(it).getString("snapshot_id") }
-        assertEquals(listOf("snap-100", "snap-101"), ids) // no remote partial frames mixed in
+        assertEquals(listOf("100", "101"), ids) // no remote partial frames mixed in
         assertTrue(outcome.remote is C3PagingResult.Failed)
     }
 
@@ -195,7 +213,7 @@ class C3PagingR2Test {
         assertEquals(0, delivered.size)
         // page-0 narrow failure retries in context mode; context responder fails -> still FAILED
         assertTrue(outcome is C3CollectOutcome.RemoteFailed)
-        val narrow = C3SnapshotPager.pageMode(date, C3SnapshotPager.MODE_NARROW, 3, 4, t::fetch) {}
+        val narrow = C3SnapshotPager.pageMode(date, C3SnapshotPager.MODE_NARROW, 3, 4, 1_000_000L, t::fetch) {}
         assertTrue(narrow is C3PagingResult.Failed)
         narrow as C3PagingResult.Failed
         assertEquals(C3PagingFailure.PAGE_PARSE_FAILED, narrow.reason)
@@ -250,7 +268,7 @@ class C3PagingR2Test {
     @Test
     fun oversizePage_isFailedParse() {
         val t = narrowTable(10) { offset, _ -> if (offset == 0) page((0 until 5).map { narrowRow(it) }) else null }
-        val r = C3SnapshotPager.pageMode(date, C3SnapshotPager.MODE_NARROW, 3, 4, t::fetch) {}
+        val r = C3SnapshotPager.pageMode(date, C3SnapshotPager.MODE_NARROW, 3, 4, 1_000_000L, t::fetch) {}
         assertTrue(r is C3PagingResult.Failed)
         assertEquals(C3PagingFailure.PAGE_PARSE_FAILED, (r as C3PagingResult.Failed).reason)
     }
@@ -270,7 +288,7 @@ class C3PagingR2Test {
         assertEquals("short_page", remote.confirmedBy)
         assertEquals(3, remote.pagesRead)
         val f0 = outcome.frames.getJSONObject(0)
-        assertEquals("snap-0", f0.getString("snapshot_id"))
+        assertEquals("0", f0.getString("snapshot_id"))
         assertEquals(date, f0.getString("session_date"))
         assertEquals(narrowRow(0).getString("poll_ts"), f0.getString("poll_ts"))
         // Compact deliveries hold only the frame under context_json.
@@ -312,7 +330,7 @@ class C3PagingR2Test {
     // 5. EMPTY keeps existing terminal handling (SKIPPED_NO_FRAMES / ineligible NO_C3_FRAMES).
     @Test
     fun empty_keepsExistingNoFramesTerminalHandling() {
-        val t = FakeTransport { _, _, _ -> page(emptyList()) }
+        val t = FakeTransport(boundary = page(emptyList())) { _, _, _ -> page(emptyList()) }
         val (outcome, delivered) = collectWith(t)
         assertEquals(0, delivered.size)
         assertTrue(outcome is C3CollectOutcome.NoFrames)
@@ -326,12 +344,14 @@ class C3PagingR2Test {
         assertTrue(plan.runMetricsStage)
         val stage = ledgerAfter(outcome).getJSONObject("stages").getJSONObject("percentile_finalization")
         assertEquals("ineligible", stage.getString("state"))
-        assertEquals(2, t.calls.size) // narrow EMPTY then context EMPTY (R1 mode order)
+        // R3: the boundary query proves the session has no rows; no page calls.
+        assertEquals(1, t.boundaryCalls.size)
+        assertEquals(0, t.calls.size)
     }
 
     @Test
     fun empty_withLocalFrames_usesLocalFallback() {
-        val t = FakeTransport { _, _, _ -> page(emptyList()) }
+        val t = FakeTransport(boundary = page(emptyList())) { _, _, _ -> page(emptyList()) }
         val (outcome, _) = collectWith(t, localRows = listOf(contextRow(7)))
         assertTrue(outcome is C3CollectOutcome.Frames)
         assertEquals(C3FrameCollector.SOURCE_LOCAL, (outcome as C3CollectOutcome.Frames).source)
@@ -354,6 +374,5 @@ class C3PagingR2Test {
         assertTrue(line.contains("reason=page_fetch_failed"))
         assertTrue(line.contains("pageIndex=1"))
         assertFalse(line.contains("candidate_slices"))
-        assertFalse(line.contains("snap-"))
     }
 }

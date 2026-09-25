@@ -2515,13 +2515,14 @@ class MarketMLService : Service() {
         val collected = C3FrameCollector.collect(
             sessionDate,
             remoteFetch = { sink -> SupabaseClient.forEachC3FinalizationCompactSnapshot(sessionDate, sink) },
-            localFetch = { sink -> EvaluationLocalCache.forEachBrainSnapshot(this@MarketMLService, sessionDate, sink) },
+            localFetch = { sink -> EvaluationLocalCache.forEachBrainSnapshotStrict(this@MarketMLService, sessionDate, sink) },
             onPhase = { phase, detail -> c3PhaseLog(sessionDate, phase, detail) }
         )
         val terminal = C3FrameCollector.terminalPlan(collected)
         if (terminal != null) {
             val snapshotCount = (collected as? C3CollectOutcome.NoFrames)?.snapshotCount
-                ?: (collected as? C3CollectOutcome.RemoteFailed)?.localSnapshots ?: 0
+                ?: (collected as? C3CollectOutcome.RemoteFailed)?.localSnapshots
+                ?: (collected as? C3CollectOutcome.LocalFailed)?.local?.rowsBeforeFailure ?: 0
             if (terminal.c3Phase == "FAILED") {
                 // Retryable: FAILED is not in the DONE/INELIGIBLE skip set and the
                 // ledger stage "failed" keeps learning_complete=false.
@@ -2541,8 +2542,11 @@ class MarketMLService : Service() {
                     verifiedCount = 0,
                     lastError = terminal.lastError
                 )
-                c3PhaseLog(sessionDate, "remote_fetch_failed", C3SnapshotPager.describe(collected.remote))
-                Log.e(TAG, "C3_FINALIZE_REMOTE_READ_FAIL: date=$sessionDate ${C3SnapshotPager.describe(collected.remote)} localSnapshots=$snapshotCount")
+                val failPhase = if (collected is C3CollectOutcome.LocalFailed) "local_read_failed" else "remote_fetch_failed"
+                val localTag = (collected as? C3CollectOutcome.LocalFailed)?.let { C3LocalSnapshotReader.describe(it.local) }
+                    ?: "localSnapshots=$snapshotCount"
+                c3PhaseLog(sessionDate, failPhase, "${C3SnapshotPager.describe(collected.remote)} $localTag")
+                Log.e(TAG, "C3_FINALIZE_READ_FAIL: date=$sessionDate reasonCode=${terminal.reasonCode} ${C3SnapshotPager.describe(collected.remote)} $localTag")
                 return@withContext
             }
             updateC3FinalizationState(

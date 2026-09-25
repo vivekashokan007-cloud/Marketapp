@@ -19,6 +19,13 @@ import org.json.JSONObject
  *    of frames was not proven.
  *  - COMPLETE with zero frames or EMPTY + no local frames => existing
  *    evidence-based SKIPPED_NO_FRAMES handling.
+ *
+ * R3: the local fallback uses the strict reader
+ * (EvaluationLocalCache.forEachBrainSnapshotStrict / [C3LocalSnapshotReader]).
+ * Local compact frames are buffered and handed on only when the whole file
+ * read is COMPLETE. A FAILED local read (malformed line / read error) discards
+ * all local frames and yields [C3CollectOutcome.LocalFailed] => retryable
+ * FAILED (C3_LOCAL_READ_INCOMPLETE). Local frames are never mixed with remote.
  */
 sealed class C3CollectOutcome {
     abstract val remote: C3PagingResult
@@ -40,6 +47,12 @@ sealed class C3CollectOutcome {
         override val remote: C3PagingResult.Failed,
         val localSnapshots: Int
     ) : C3CollectOutcome()
+
+    /** R3: strict local read FAILED while remote gave no usable frames. */
+    data class LocalFailed(
+        override val remote: C3PagingResult,
+        val local: C3LocalReadResult.Failed
+    ) : C3CollectOutcome()
 }
 
 /** Terminal state plan for a non-proceeding outcome; applied by MarketMLService. */
@@ -56,6 +69,7 @@ object C3FrameCollector {
     const val SOURCE_REMOTE = "remote"
     const val SOURCE_LOCAL = "local_fallback"
     const val REASON_REMOTE_READ_FAILED = "C3_REMOTE_READ_FAILED"
+    const val REASON_LOCAL_READ_INCOMPLETE = "C3_LOCAL_READ_INCOMPLETE"
 
     private fun parseJsonObject(value: Any?): JSONObject? = when (value) {
         is JSONObject -> value
@@ -94,7 +108,7 @@ object C3FrameCollector {
     fun collect(
         sessionDate: String,
         remoteFetch: (onCompact: (JSONObject) -> Unit) -> C3PagingResult,
-        localFetch: (onRow: (JSONObject) -> Unit) -> Int,
+        localFetch: (onRow: (JSONObject) -> Unit) -> C3LocalReadResult,
         onPhase: (phase: String, detail: String) -> Unit = { _, _ -> }
     ): C3CollectOutcome {
         var frames = JSONArray()
@@ -114,21 +128,28 @@ object C3FrameCollector {
             onPhase("remote_fetch_failed_discarded", "discarded=${remote.discardedDelivered}")
         }
         onPhase("before_local_stream_fallback", "")
-        val localFrames = JSONArray()
+        // Buffer compact local frames; they are released only on COMPLETE.
+        var localFrames = JSONArray()
         var localSlices = 0
-        val localSnapshots = localFetch { row ->
+        val local = localFetch { row ->
             val added = captureFrame(row, sessionDate, localFrames)
             if (added >= 0) localSlices += added
         }
-        onPhase("after_local_stream_fallback", "localSnapshots=$localSnapshots frames=${localFrames.length()}")
-        if (localFrames.length() > 0) {
-            return C3CollectOutcome.Frames(localFrames, SOURCE_LOCAL, localSnapshots, localSlices, remote)
+        onPhase("after_local_stream_fallback", "${C3LocalSnapshotReader.describe(local)} frames=${localFrames.length()}")
+        if (local is C3LocalReadResult.Failed) {
+            localFrames = JSONArray()
+            onPhase("local_read_failed_discarded", "rowsBefore=${local.rowsBeforeFailure}")
+            return C3CollectOutcome.LocalFailed(remote, local)
+        }
+        val localRows = (local as? C3LocalReadResult.Complete)?.rows ?: 0
+        if (local is C3LocalReadResult.Complete && localFrames.length() > 0) {
+            return C3CollectOutcome.Frames(localFrames, SOURCE_LOCAL, localRows, localSlices, remote)
         }
         if (remote is C3PagingResult.Failed) {
-            return C3CollectOutcome.RemoteFailed(remote, localSnapshots)
+            return C3CollectOutcome.RemoteFailed(remote, localRows)
         }
         val remoteCount = (remote as? C3PagingResult.Complete)?.delivered ?: 0
-        return C3CollectOutcome.NoFrames(if (remoteCount > 0) remoteCount else localSnapshots, remote)
+        return C3CollectOutcome.NoFrames(if (remoteCount > 0) remoteCount else localRows, remote)
     }
 
     /** Null for [C3CollectOutcome.Frames] (proceed to G5 assessment / build). */
@@ -151,6 +172,23 @@ object C3FrameCollector {
                 reasonCode = REASON_REMOTE_READ_FAILED,
                 reason = "C3 remote snapshot read incomplete ($detail); partial frames discarded, retry allowed.",
                 lastError = "C3 remote read failed: $detail",
+                runMetricsStage = false
+            )
+        }
+        is C3CollectOutcome.LocalFailed -> {
+            val l = outcome.local
+            val remoteTag = when (val r = outcome.remote) {
+                is C3PagingResult.Failed -> "remote=FAILED:${r.reason}"
+                is C3PagingResult.Empty -> "remote=EMPTY"
+                is C3PagingResult.Complete -> "remote=COMPLETE_NO_FRAMES"
+            }
+            val detail = "${l.reason} line=${l.lineNumber} rowsBefore=${l.rowsBeforeFailure} $remoteTag"
+            C3TerminalPlan(
+                c3Phase = "FAILED",
+                ledgerState = "failed",
+                reasonCode = REASON_LOCAL_READ_INCOMPLETE,
+                reason = "C3 local snapshot cache read incomplete ($detail); local frames discarded, retry allowed.",
+                lastError = "C3 local read incomplete: $detail",
                 runMetricsStage = false
             )
         }

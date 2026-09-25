@@ -1119,6 +1119,35 @@ object EvaluationLocalCache {
         return count
     }
 
+    /**
+     * C3 R3 strict variant for C3 percentile finalization ONLY. Malformed lines
+     * or read errors yield FAILED (never a partial count). The lenient
+     * [forEachBrainSnapshot] above is intentionally unchanged because
+     * [streamBrainSnapshotsToJsonArrayFile] (evaluation input) relies on it.
+     */
+    @Synchronized
+    fun forEachBrainSnapshotStrict(
+        context: Context,
+        sessionDate: String,
+        onRow: (JSONObject) -> Unit
+    ): C3LocalReadResult {
+        val result = try {
+            pruneExpiredCacheFiles(context)
+            val file = brainSnapshotFile(context, sessionDate)
+            C3LocalSnapshotReader.readStrict(
+                open = { if (file.exists()) file.bufferedReader() else null },
+                onRow = onRow
+            )
+        } catch (e: Throwable) {
+            C3LocalReadResult.Failed(C3LocalReadFailure.LOCAL_READ_ERROR, 0, 0, e.javaClass.simpleName)
+        }
+        LogBuffer.add(
+            if (result is C3LocalReadResult.Failed) 'W' else 'I', TAG,
+            "LOCAL_SNAPSHOT_STRICT: date=$sessionDate ${C3LocalSnapshotReader.describe(result)}"
+        )
+        return result
+    }
+
     @Synchronized
     fun streamBrainSnapshotsToJsonArrayFile(
         context: Context,
