@@ -299,6 +299,22 @@ class PositionTickService : Service() {
                     valuation.executableMark == null || valuation.currentPnl == null ->
                     return fail(PAPER_CLOSE_VALUATION_NOT_ACCEPTED)
             }
+            // B3: executable close permission requires per-leg quote validity
+            // (exact key, source time present/fresh, session, expiry, quantity).
+            // A wide-but-valid book stays closable; bound trust is recorded only.
+            val closeA1 = assessMarkTrust(
+                trade, tradeId, strategyType, legs, valuation, quoteFetch, isoUtcNow(),
+                lotMeta, isCreditTrade(trade, strategyType),
+                trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium"),
+                trade.optDoubleAny("max_profit", "maxProfit"),
+                trade.optDoubleAny("max_loss", "maxLoss")
+            )
+            if (!closeA1.validity.valid) {
+                return fail(
+                    PAPER_CLOSE_QUOTE_SOURCE_INVALID,
+                    closeA1.validity.reasons.joinToString(",").take(180)
+                )
+            }
 
             val quotedAt = System.currentTimeMillis()
             val payload = JSONObject().apply {
@@ -320,6 +336,13 @@ class PositionTickService : Service() {
                 put("number_of_lots", lotMeta.numberOfLots)
                 put("quantity_units", lotMeta.lotSize)
                 put("position_tick_guards_version", POSITION_TICK_GUARDS_VERSION)
+                put("quote_validity_state", closeA1.validity.state)
+                put("quote_validity_contract", QUOTE_VALIDITY_CONTRACT)
+                put("source_quote_ts", closeA1.validity.earliestSourceTs ?: JSONObject.NULL)
+                put("max_source_age_ms", closeA1.validity.maxSourceAgeMs ?: JSONObject.NULL)
+                put("mark_trust_state", closeA1.trust.state)
+                put("mark_trust_cause", closeA1.trust.cause ?: JSONObject.NULL)
+                put("close_permission_basis", "QUOTE_VALIDITY_REQUIRED_BOUND_TRUST_RECORDED")
             }
             PaperCloseQuoteStore.completeReady(prefs, requestId, payload)
             sendBroadcast(
@@ -367,6 +390,26 @@ class PositionTickService : Service() {
         for (i in 0 until openTrades.length()) {
             val id = openTrades.optJSONObject(i)?.optStringAny("id")?.trim().orEmpty()
             if (id.isNotEmpty()) live.add(id)
+        }
+
+        // B3: trusted-extrema blob is per trade; drop closed trades.
+        prefs.getString(PREF_TRUSTED_EXTREMA_STATE, null)?.let { rawExtrema ->
+            val obj = try { JSONObject(rawExtrema) } catch (_: Exception) { JSONObject() }
+            val closed = obj.keys().asSequence().filter { !live.contains(it) }.toList()
+            if (closed.isNotEmpty()) {
+                closed.forEach { obj.remove(it) }
+                prefs.edit().putString(PREF_TRUSTED_EXTREMA_STATE, obj.toString()).apply()
+            }
+        }
+
+        // B3: the delivery ledger is one bounded blob; drop closed-trade events.
+        val ledgerRaw = prefs.getString(PREF_SHADOW_DELIVERY_LEDGER, null)
+        if (ledgerRaw != null) {
+            val before = readShadowDeliveryLedger()
+            val after = pruneShadowDeliveryLedger(before, live)
+            if (after.length() != before.length()) {
+                prefs.edit().putString(PREF_SHADOW_DELIVERY_LEDGER, after.toString()).apply()
+            }
         }
 
         val stale = prefs.all.keys.filter { key ->
@@ -489,11 +532,41 @@ class PositionTickService : Service() {
         // the extrema. Revision 2 additionally excluded bound anomalies here, which was
         // inconsistent - it trusted the bound check enough to censor research metrics
         // while deliberately not trusting it enough to veto P&L. One rule now.
-        val running = updateRunningState(tradeId, valuation.currentPnl)
-        val policy = evaluateShadowPolicy(
-            tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
-            publishedExitThresholds(tradeId)
+        // B3 + A1: shared quote validity and mark trust. Paper gates price policy
+        // on trust; Real records the same assessment as observation only so its
+        // policy_action, notifications and extrema stay byte-identical.
+        val isPaper = trade.optBoolean("paper", false)
+        val a1 = assessMarkTrust(
+            trade, tradeId, strategyType, legs, valuation, quoteFetch, valuationTs,
+            lotMeta, isCredit, entryPremium, maxProfit, maxLoss
         )
+        val priceGateApplied = isPaper && !a1.trust.trusted
+        val running = updateRunningState(tradeId, valuation.currentPnl)
+        val trustedExtrema = updateTrustedExtremaState(
+            tradeId,
+            if (a1.trust.trusted) valuation.currentPnl else null
+        )
+        val published = publishedExitThresholds(tradeId)
+        val legacyPolicy = evaluateShadowPolicy(
+            tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
+            published
+        )
+        val policy = if (priceGateApplied) {
+            evaluateShadowPolicy(
+                tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
+                published, priceUntrustedCause = a1.trust.cause ?: CAUSE_UNRESOLVED
+            )
+        } else {
+            legacyPolicy
+        }
+        if (priceGateApplied) {
+            // Real assessments are recorded in policy_trace_json only (no log noise).
+            val line = "POSITION_MARK_UNTRUSTED: trade_id=${tradeId.ifBlank { "__missing__" }} " +
+                "paper=$isPaper cause=${a1.trust.cause} gate_applied=$priceGateApplied " +
+                "quote_validity=${a1.validity.state} raw_action=${legacyPolicy.action} action=${policy.action}"
+            Log.w(TAG, line)
+            LogBuffer.add('W', TAG, line)
+        }
         // Diagnostics ride in policy_trace_json (jsonb, free-form) rather than new
         // top-level columns, so this ships without a position_ticks migration.
         policy.trace.apply {
@@ -511,6 +584,28 @@ class PositionTickService : Service() {
             put("crossed_quote_legs", valuation.crossedQuoteLegs)
             put("raw_mark_complete", valuation.rawMarkComplete)
             put("running_state_updated", valuation.currentPnl != null)
+            // B3 + A1 diagnostics (jsonb only — no position_ticks schema change).
+            put("quote_validity", a1.validity.toJson())
+            put("mark_trust", a1.trust.toJson().apply {
+                put("paper", isPaper)
+                put("price_gate_applied", priceGateApplied)
+                put("real_observation_only", !isPaper)
+            })
+            put("a1_raw_policy_action", legacyPolicy.action)
+            put("a1_raw_policy_reason", legacyPolicy.reason)
+            put("mark_store_trust", JSONObject().apply {
+                put("paper", isPaper)
+                put("trust_state", a1.trust.state)
+                put("trust_cause", a1.trust.cause ?: JSONObject.NULL)
+                put("quote_validity_state", a1.validity.state)
+                put("earliest_source_ms", a1.validity.earliestSourceMs ?: JSONObject.NULL)
+                put("earliest_source_ts", a1.validity.earliestSourceTs ?: JSONObject.NULL)
+                put("latest_source_ms", a1.validity.latestSourceMs ?: JSONObject.NULL)
+                put("book_fingerprint", a1.validity.bookFingerprint ?: JSONObject.NULL)
+            })
+            put("trusted_extrema_contract", TRUSTED_EXTREMA_CONTRACT)
+            putOptNumber("trusted_mae", trustedExtrema.first)
+            putOptNumber("trusted_mfe", trustedExtrema.second)
             putOptNumber("raw_executable_mark", valuation.rawExecutableMark)
             putOptNumber("max_profit_ref", maxProfit)
             putOptNumber("max_loss_ref", maxLoss)
@@ -597,9 +692,72 @@ class PositionTickService : Service() {
             put("policy_action", policy.action)
             put("policy_reason", policy.reason)
             put("policy_trace_json", policy.trace)
-            put("legs_json", valuation.legsJson())
+            put("legs_json", annotateLegsWithSourceValidity(valuation.legsJson(), a1.validity))
         }
     }
+
+    private data class A1Assessment(val validity: PositionQuoteValidity, val trust: MarkTrust)
+
+    /** Builds the shared validity + trust assessment for one position tick. */
+    private fun assessMarkTrust(
+        trade: JSONObject,
+        tradeId: String,
+        strategyType: String,
+        legs: List<PositionLeg>,
+        valuation: TickValuation,
+        quoteFetch: QuoteFetch,
+        receiptTs: String,
+        lotMeta: PositionTickLotMeta,
+        isCredit: Boolean,
+        entryPremium: Double?,
+        maxProfit: Double?,
+        maxLoss: Double?
+    ): A1Assessment {
+        val validity = validatePositionQuotes(
+            requiredLegKeys = legs.map { it.instrumentKey },
+            structureStatus = valuation.structure.status,
+            bookStatusByKey = valuation.legValuations
+                .mapNotNull { lv -> lv.leg.instrumentKey?.let { it to lv.quoteStatus } }
+                .toMap(),
+            quotes = legSourceQuotes(legs, quoteFetch),
+            receiptTsIso = receiptTs,
+            expiry = positionTradeExpiry(trade),
+            quantityUnits = lotMeta.lotSize,
+            quantityAuthoritative = lotMeta.authoritative,
+            fetchStatus = quoteFetch.fetchStatus
+        )
+        val expected = expectedStructuralBounds(strategyType, legs, entryPremium, isCredit, lotMeta.lotSize)
+        val raw = classifyPositionMarkTrust(
+            validity = validity,
+            valuationAccepted = valuation.valuationAccepted,
+            currentPnl = valuation.currentPnl,
+            midMark = valuation.midMark,
+            entryPremium = entryPremium,
+            isCredit = isCredit,
+            quantityUnits = lotMeta.lotSize,
+            storedMaxProfit = maxProfit,
+            storedMaxLoss = maxLoss,
+            expected = expected
+        )
+        val prior = PositionMarkStore.trustRecoveryState(prefs, tradeId)
+        return A1Assessment(validity, applyTrustRecovery(raw, validity, prior.first, prior.second))
+    }
+
+    private fun legSourceQuotes(legs: List<PositionLeg>, quoteFetch: QuoteFetch): Map<String, LegSourceQuote> =
+        legs.mapNotNull { leg ->
+            val key = leg.instrumentKey?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val q = quoteFetch.quotes[key]
+            key to LegSourceQuote(
+                instrumentKey = key,
+                present = q != null,
+                exactKeyMatch = quoteFetch.exactKeys.contains(key),
+                responseKey = q?.responseKey,
+                bid = q?.bid,
+                ask = q?.ask,
+                sourceTs = q?.sourceTs,
+                lastTradeTs = q?.lastTradeTs
+            )
+        }.toMap()
 
     /**
      * Percentile-contextual exit levels resolved by brain.py for this trade, or
@@ -640,8 +798,13 @@ class PositionTickService : Service() {
         maxProfit: Double?,
         valuationQuality: String,
         lotMeta: PositionTickLotMeta,
-        published: JSONObject? = null
+        published: JSONObject? = null,
+        priceUntrustedCause: String? = null
     ): PolicyDecision {
+        // A1 (Paper only, via buildTickRow): an untrusted mark cannot reach the
+        // price thresholds. Deadlines (EOD) stay visible; the result is an explicit
+        // data-quality state, never a silent HOLD. null cause => legacy behaviour.
+        val pricePnl = if (priceUntrustedCause == null) currentPnl else null
         val constantSl = maxLoss?.let { -PositionPolicyV1.SL_MULT * it }
         val constantTp = maxProfit?.let { PositionPolicyV1.TP_MULT * it }
         val publishedSl = published?.optNullableDouble("stop_pnl_at")
@@ -658,9 +821,10 @@ class PositionTickService : Service() {
         val slBasis = thresholdBasis(constantSl, publishedSl, slThreshold, published, "stop_basis")
         val eod = isAtOrAfterPolicyEod()
         val action = when {
-            currentPnl != null && slThreshold != null && currentPnl <= slThreshold -> "SHADOW_SL"
-            currentPnl != null && tpThreshold != null && currentPnl >= tpThreshold -> "SHADOW_TP"
+            pricePnl != null && slThreshold != null && pricePnl <= slThreshold -> "SHADOW_SL"
+            pricePnl != null && tpThreshold != null && pricePnl >= tpThreshold -> "SHADOW_TP"
             eod -> "SHADOW_EOD"
+            priceUntrustedCause != null -> "SHADOW_DEGRADED"
             valuationQuality != "OK" -> "SHADOW_DEGRADED"
             else -> "HOLD"
         }
@@ -668,7 +832,11 @@ class PositionTickService : Service() {
             "SHADOW_SL" -> "current_pnl <= -${PositionPolicyV1.SL_MULT} * max_loss"
             "SHADOW_TP" -> "current_pnl >= ${PositionPolicyV1.TP_MULT} * max_profit"
             "SHADOW_EOD" -> "tick_ts >= ${PositionPolicyV1.EOD_HH_MM} IST"
-            "SHADOW_DEGRADED" -> "valuation_quality=$valuationQuality"
+            "SHADOW_DEGRADED" -> if (priceUntrustedCause != null) {
+                "mark_untrusted:$priceUntrustedCause"
+            } else {
+                "valuation_quality=$valuationQuality"
+            }
             else -> "no shadow exit rule matched"
         }
         return PolicyDecision(
@@ -686,6 +854,11 @@ class PositionTickService : Service() {
                 put("eod_hh_mm", PositionPolicyV1.EOD_HH_MM)
                 put("is_eod", eod)
                 put("valuation_quality", valuationQuality)
+                if (priceUntrustedCause != null) {
+                    put("price_policy_trusted", false)
+                    put("price_policy_untrusted_cause", priceUntrustedCause)
+                    put("stop_target_evaluation", "UNAVAILABLE_MARK_UNTRUSTED")
+                }
                 // Which arm set each level, so a session can be audited for how
                 // often the published percentile context actually moved a
                 // threshold versus the constants standing alone.
@@ -745,6 +918,31 @@ class PositionTickService : Service() {
         return RunningState(mae, mfe)
     }
 
+    /**
+     * B3/A1: trusted extrema live in their own prefs blob so the raw observed
+     * MAE/MFE (EXTREMA_CONTRACT, every accepted valuation) are untouched. Only
+     * TRUSTED marks reach this; null leaves the prior trusted extrema as-is.
+     */
+    private fun updateTrustedExtremaState(tradeId: String, trustedPnl: Double?): Pair<Double?, Double?> {
+        if (tradeId.isBlank()) return updateTrustedExtrema(null, null, trustedPnl)
+        val all = try {
+            JSONObject(prefs.getString(PREF_TRUSTED_EXTREMA_STATE, "{}") ?: "{}")
+        } catch (_: Exception) {
+            JSONObject()
+        }
+        val prev = all.optJSONObject(tradeId) ?: JSONObject()
+        val next = updateTrustedExtrema(prev.optNullableDouble("trusted_mae"), prev.optNullableDouble("trusted_mfe"), trustedPnl)
+        if (trustedPnl != null && trustedPnl.isFinite()) {
+            all.put(tradeId, JSONObject().apply {
+                putOptNumber("trusted_mae", next.first)
+                putOptNumber("trusted_mfe", next.second)
+                put("updated_at", isoUtcNow())
+            })
+            prefs.edit().putString(PREF_TRUSTED_EXTREMA_STATE, all.toString()).apply()
+        }
+        return next
+    }
+
     private fun extractLegs(trade: JSONObject): List<PositionLeg> {
         val legs = mutableListOf<PositionLeg>()
         addLeg(legs, trade, "sell", "SHORT", CloseSide.BUY_TO_CLOSE)
@@ -793,22 +991,32 @@ class PositionTickService : Service() {
     }
 
     private fun fetchQuotesWithFallback(keys: List<String>): QuoteFetch {
-        if (keys.isEmpty()) return QuoteFetch("NONE", emptyMap())
+        if (keys.isEmpty()) return QuoteFetch("NONE", emptyMap(), fetchStatus = "NO_KEYS")
         val analyticsEnabled = prefs.getBoolean(PREF_ANALYTICS_ENABLED, false)
         val analyticsToken = listOf(PREF_ANALYTICS_TOKEN, PREF_ANALYTICS_TOKEN_ALT)
             .firstNotNullOfOrNull { prefs.getString(it, null)?.takeIf { token -> token.isNotBlank() } }
         if (analyticsEnabled && analyticsToken != null) {
-            val analyticsQuotes = fetchQuotes(keys, analyticsToken)
-            if (analyticsQuotes != null) return QuoteFetch("ANALYTICS", analyticsQuotes)
-            LogBuffer.add('W', TAG, "Analytics token quote fetch failed; falling back to daily token")
+            val analytics = fetchQuotes(keys, analyticsToken)
+            val parsed = analytics.parsed
+            if (parsed != null) {
+                return QuoteFetch("ANALYTICS", parsed.quotes, parsed.exactKeys, analytics.status, keys.size)
+            }
+            LogBuffer.add('W', TAG, "Analytics token quote fetch failed; falling back to daily token status=${analytics.status}")
         }
         val dailyToken = prefs.getString(PREF_DAILY_TOKEN, null)?.takeIf { it.isNotBlank() }
-            ?: return QuoteFetch("NONE", emptyMap())
-        val dailyQuotes = fetchQuotes(keys, dailyToken)
-        return QuoteFetch("DAILY", dailyQuotes ?: emptyMap())
+            ?: return QuoteFetch("NONE", emptyMap(), fetchStatus = "NO_TOKEN", requestedKeys = keys.size)
+        val daily = fetchQuotes(keys, dailyToken)
+        val parsed = daily.parsed
+        return QuoteFetch(
+            "DAILY",
+            parsed?.quotes ?: emptyMap(),
+            parsed?.exactKeys ?: emptySet(),
+            daily.status,
+            keys.size
+        )
     }
 
-    private fun fetchQuotes(keys: List<String>, token: String): Map<String, Quote>? {
+    private fun fetchQuotes(keys: List<String>, token: String): FetchAttempt {
         val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=${keys.joinToString(",")}"
         val request = Request.Builder()
             .url(url)
@@ -820,17 +1028,22 @@ class PositionTickService : Service() {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Quote fetch failed: ${response.code} ${response.message}")
-                    return null
+                    val status = if (response.code == 401 || response.code == 403) {
+                        "AUTH_REJECTED_${response.code}"
+                    } else {
+                        "HTTP_${response.code}"
+                    }
+                    return FetchAttempt(null, status)
                 }
-                parseQuotes(response.body?.string() ?: "{}", keys)
+                FetchAttempt(parseQuotes(response.body?.string() ?: "{}", keys), "OK")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Quote fetch exception: ${e.message}")
-            null
+            FetchAttempt(null, "EXCEPTION_${e.javaClass.simpleName}")
         }
     }
 
-    private fun parseQuotes(raw: String, requestedKeys: List<String>): Map<String, Quote> {
+    private fun parseQuotes(raw: String, requestedKeys: List<String>): ParsedQuotes {
         val out = mutableMapOf<String, Quote>()
         val data = try {
             JSONObject(raw).optJSONObject("data") ?: JSONObject(raw)
@@ -846,17 +1059,21 @@ class PositionTickService : Service() {
                 ltp = quoteObj.optDoubleAny("last_price", "ltp", "last_traded_price"),
                 // R4: actual source quote timestamp when Upstox provides one.
                 // Never invent tickTs here — missing => parity marks unavailable.
-                sourceTs = quoteObj.sourceQuoteTimestamp()
+                sourceTs = quoteObj.sourceQuoteTimestamp(),
+                // B3: diagnostic only — last-trade time is not book-update time.
+                lastTradeTs = quoteObj.lastTradeTimestamp(),
+                responseKey = responseKey
             )
             out[instrumentKey] = quote
             out[responseKey] = quote
         }
+        val exact = requestedKeys.filter { out.containsKey(it) }.toSet()
         requestedKeys.forEach { key ->
             if (!out.containsKey(key)) {
                 out.entries.firstOrNull { it.key.endsWith(key) || key.endsWith(it.key) }?.let { out[key] = it.value }
             }
         }
-        return out
+        return ParsedQuotes(out, exact)
     }
 
     private fun enqueueRows(rows: JSONArray) {
@@ -1091,8 +1308,26 @@ class PositionTickService : Service() {
         val indexKey = row.optString("index_key", trade.optStringAny("index_key", "indexKey", "index"))
         val strategy = row.optString("strategy_type", trade.optStringAny("strategy_type", "strategyType"))
         val pnl = if (row.isNull("current_pnl")) Double.NaN else row.optDouble("current_pnl", Double.NaN)
-        val pnlText = if (pnl.isNaN()) "P&L n/a" else "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))}"
+        // A1: a Paper deadline notice on an untrusted mark labels the raw P&L.
+        val priceGateApplied = row.optJSONObject("policy_trace_json")
+            ?.optJSONObject("mark_trust")?.optBoolean("price_gate_applied", false) == true
+        val pnlText = when {
+            pnl.isNaN() -> "P&L n/a"
+            priceGateApplied -> "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))} (untrusted mark)"
+            else -> "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))}"
+        }
         val label = listOf(indexKey, strategy).filter { it.isNotBlank() }.joinToString(" ").ifBlank { tradeId }
+        // A1: an untrusted Paper mark produces an explicit monitoring-risk notice
+        // instead of a stop/target instruction; never a silent HOLD.
+        val untrustedReason = row.optString("policy_reason", "")
+        val markUntrusted = untrustedReason.startsWith("mark_untrusted:")
+        val degradedTitle = if (markUntrusted) "⚠️ Stop/Target Unavailable" else "🧪 Position Data Incomplete"
+        val degradedBody = if (markUntrusted) {
+            "$label · mark untrusted (${untrustedReason.removePrefix("mark_untrusted:")}) · " +
+                "stop/target cannot be evaluated · review position."
+        } else {
+            "$label · valuation degraded · review marks before trusting P&L."
+        }
 
         val (title, body, notifType) = when (action) {
             "SHADOW_SL" -> Triple(
@@ -1116,27 +1351,46 @@ class PositionTickService : Service() {
             // so a transient quote gap cannot train the user to ignore the audible
             // position channels.
             "SHADOW_DEGRADED" -> Triple(
-                "🧪 Position Data Incomplete",
-                "$label · valuation degraded · review marks before trusting P&L.",
+                degradedTitle,
+                degradedBody,
                 "routine"
             )
             else -> return
         }
 
-        val delivery = NotificationHelper.send(this, title, body, notifType, "positions")
-        prefs.edit()
-            .putString(lastActionKey, action)
-            .putLong(lastNotifyMsKey, now)
-            .apply()
-        Log.i(
-            TAG,
-            "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action class=$alertClass outcome=${delivery.outcome}"
+        val delivery = try {
+            NotificationHelper.send(this, title, body, notifType, "positions")
+        } catch (t: Throwable) {
+            NotificationHelper.DeliveryResult(true, false, "NOTIFY_FAILED", t.javaClass.simpleName)
+        }
+        // B3 item 7: decision, attempt and OS post are distinct. Paper consumes the
+        // transition/cooldown only on an OS-accepted post; every failure stays
+        // retryable. Real keeps legacy consume-on-send (Real parity rule).
+        val isPaper = trade.optBoolean("paper", false)
+        val deliveryClass = classifyNotificationDelivery(delivery.outcome, delivery.postedToOs)
+        val consumed = shadowAlertAttemptConsumes(isPaper, deliveryClass)
+        val sessionDate = row.optString("session_date", "")
+        val ledger = recordShadowDeliveryAttempt(
+            readShadowDeliveryLedger(), tradeId, action, sessionDate, isPaper,
+            deliveryClass, delivery.outcome, delivery.detail, consumed, now
         )
-        LogBuffer.add(
-            'I',
-            TAG,
-            "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action class=$alertClass outcome=${delivery.outcome}"
-        )
+        val editor = prefs.edit().putString(PREF_SHADOW_DELIVERY_LEDGER, ledger.toString())
+        if (consumed) {
+            editor.putString(lastActionKey, action)
+            editor.putLong(lastNotifyMsKey, now)
+        }
+        editor.apply()
+        val line = "SHADOW_EXIT_NOTIFY: trade=$tradeId action=$action class=$alertClass " +
+            "outcome=${delivery.outcome} delivery=$deliveryClass paper=$isPaper consumed=$consumed " +
+            "event=${shadowDeliveryEventId(tradeId, action, sessionDate)}"
+        Log.i(TAG, line)
+        LogBuffer.add(if (delivery.postedToOs) 'I' else 'W', TAG, line)
+    }
+
+    private fun readShadowDeliveryLedger(): JSONObject = try {
+        JSONObject(prefs.getString(PREF_SHADOW_DELIVERY_LEDGER, "{}") ?: "{}")
+    } catch (_: Exception) {
+        JSONObject()
     }
 
     private fun buildNotification() =
@@ -1174,9 +1428,32 @@ class PositionTickService : Service() {
     /* PositionLeg / CloseSide live at file level (bottom of this file) so the
        structure validator that consumes them can be unit-tested. */
 
-    private data class Quote(val bid: Double?, val ask: Double?, val ltp: Double?, val sourceTs: String? = null)
+    private data class Quote(
+        val bid: Double?,
+        val ask: Double?,
+        val ltp: Double?,
+        val sourceTs: String? = null,
+        val lastTradeTs: String? = null,
+        val responseKey: String? = null
+    )
 
-    private data class QuoteFetch(val authSource: String, val quotes: Map<String, Quote>)
+    /**
+     * B3: [quotes] keeps the legacy lookup (including the historical fuzzy suffix
+     * match) so Real valuation is byte-identical. [exactKeys] records which
+     * requested keys were matched exactly; [fetchStatus] records request/auth
+     * failures that previously collapsed silently into an empty map.
+     */
+    private data class QuoteFetch(
+        val authSource: String,
+        val quotes: Map<String, Quote>,
+        val exactKeys: Set<String> = emptySet(),
+        val fetchStatus: String = "OK",
+        val requestedKeys: Int = 0
+    )
+
+    private data class ParsedQuotes(val quotes: Map<String, Quote>, val exactKeys: Set<String>)
+
+    private data class FetchAttempt(val parsed: ParsedQuotes?, val status: String)
 
     private data class RunningState(val mae: Double?, val mfe: Double?)
 
@@ -1201,6 +1478,7 @@ class PositionTickService : Service() {
         const val PAPER_CLOSE_CROSSED_QUOTE = "CROSSED_QUOTE"
         const val PAPER_CLOSE_NON_POSITIVE_EXECUTABLE_QUOTE = "NON_POSITIVE_EXECUTABLE_QUOTE"
         const val PAPER_CLOSE_VALUATION_NOT_ACCEPTED = "VALUATION_NOT_ACCEPTED"
+        const val PAPER_CLOSE_QUOTE_SOURCE_INVALID = "QUOTE_SOURCE_INVALID"
         const val PAPER_CLOSE_INTERNAL_ERROR = "INTERNAL_ERROR"
         private const val PREFS_NAME = "market_radar"
         private const val PREF_OPEN_TRADES = "open_trades"
@@ -1256,6 +1534,8 @@ class PositionTickService : Service() {
         private const val PREF_POSITION_EXIT_THRESHOLDS = "position_exit_thresholds"
         private const val POSITION_EXIT_THRESHOLD_MAX_AGE_MS = 20 * 60 * 1000L
 
+        private const val PREF_SHADOW_DELIVERY_LEDGER = "shadow_delivery_ledger_v1"
+        private const val PREF_TRUSTED_EXTREMA_STATE = "position_tick_trusted_extrema_v1"
         private const val SHADOW_LAST_ACTION_PREFIX = "shadow_last_action_"
         private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"
         private val SHADOW_ALERT_CLASSES = listOf("exit", "degraded")
@@ -1373,6 +1653,15 @@ private fun JSONObject.bestDepthPrice(side: String): Double? {
     val arr = depth.optJSONArray(side) ?: return null
     val first = arr.optJSONObject(0) ?: return null
     return first.optDoubleAny("price")
+}
+
+/** B3 diagnostic: Upstox last_trade_time (epoch ms string) → ISO UTC; never a validity gate. */
+private fun JSONObject.lastTradeTimestamp(): String? {
+    val raw = optStringAny("last_trade_time", "ltt").trim()
+    if (raw.isEmpty() || raw == "null" || raw == "0") return null
+    val asLong = raw.toLongOrNull() ?: return raw
+    val millis = if (asLong < 100_000_000_000L) asLong * 1000L else asLong
+    return java.time.Instant.ofEpochMilli(millis).toString()
 }
 
 internal data class PositionTickLotMeta(
@@ -2060,4 +2349,44 @@ internal fun violatesStructuralBounds(
     if (maxProfit != null && maxProfit > 0.0 && pnl > maxProfit * tolerance) return true
     if (maxLoss != null && maxLoss > 0.0 && pnl < -maxLoss * tolerance) return true
     return false
+}
+
+/** B3: raw observed extrema are separate; only TRUSTED marks update these. */
+internal const val TRUSTED_EXTREMA_CONTRACT = "a1_trusted_extrema_v1_trusted_marks_only_raw_extrema_unchanged"
+
+internal fun updateTrustedExtrema(prevMae: Double?, prevMfe: Double?, trustedPnl: Double?): Pair<Double?, Double?> {
+    if (trustedPnl == null || !trustedPnl.isFinite()) return prevMae to prevMfe
+    val mae = if (prevMae == null) trustedPnl else min(prevMae, trustedPnl)
+    val mfe = if (prevMfe == null) trustedPnl else max(prevMfe, trustedPnl)
+    return mae to mfe
+}
+
+/** Contract expiry (IST calendar date) from the trade or its entry snapshot. */
+internal fun positionTradeExpiry(trade: JSONObject): java.time.LocalDate? {
+    val entrySnapshot = trade.optJSONObjectAny("entry_snapshot", "entrySnapshot") ?: JSONObject()
+    val text = trade.optStringAny("expiry", "expiry_date", "expiryDate")
+        .ifBlank { entrySnapshot.optStringAny("expiry", "expiry_date", "expiryDate") }
+    return try {
+        if (text.length >= 10) java.time.LocalDate.parse(text.substring(0, 10)) else null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * B3 item 8/12: add request/source-age causes to the EXISTING legs_json entries
+ * (quote_status is left untouched — no duplicated field, no renamed status).
+ */
+internal fun annotateLegsWithSourceValidity(legsJson: JSONArray, validity: PositionQuoteValidity): JSONArray {
+    for (i in 0 until legsJson.length()) {
+        val leg = legsJson.optJSONObject(i) ?: continue
+        val key = if (leg.isNull("instrument_key")) null else leg.optString("instrument_key", "")
+        val lv = validity.legFor(key) ?: continue
+        leg.put("source_ts", lv.sourceTs ?: JSONObject.NULL)
+        leg.put("source_age_ms", lv.sourceAgeMs ?: JSONObject.NULL)
+        leg.put("last_trade_ts", lv.lastTradeTs ?: JSONObject.NULL)
+        leg.put("key_match", if (lv.exactKeyMatch) "EXACT" else "INEXACT_OR_MISSING")
+        leg.put("source_validity", if (lv.ok) "OK" else lv.reasons.joinToString(","))
+    }
+    return legsJson
 }

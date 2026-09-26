@@ -4498,6 +4498,16 @@ def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
     if state != "LIVE_FULL":
         return False
 
+    # B3 + A1: when the native store publishes a trust assessment, only a
+    # TRUSTED mark with VALID per-leg quotes may become the Paper valuation
+    # source. Older stores without these fields keep the prior contract.
+    trust_state = mark.get("mark_trust_state")
+    if trust_state is not None and str(trust_state).upper() != "TRUSTED":
+        return False
+    quote_validity_state = mark.get("quote_validity_state")
+    if quote_validity_state is not None and str(quote_validity_state).upper() != "VALID":
+        return False
+
     pnl_raw = mark.get("last_valid_current_pnl")
     try:
         pnl = float(pnl_raw)
@@ -4622,6 +4632,10 @@ def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
         "p1_contract_lot_size": mark_cls,
         "p1_apply_reason": "p1_live_full_accepted",
     }
+    if trust_state is not None:
+        row["p1_mark_trust_state"] = str(trust_state).upper()
+        row["p1_freshness_basis"] = mark.get("freshness_basis")
+        row["p1_source_quote_ts"] = mark.get("last_valid_source_quote_ts")
     if current_net_premium is not None:
         row["current_net_premium"] = round(current_net_premium, 2)
 
