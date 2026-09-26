@@ -19,7 +19,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import brain  # noqa: E402
+import advice_parity_instrumentation as _api  # noqa: E402
 from test_paper_brain_p1_bridge_20260924 import _p1_mark, _trade_284  # noqa: E402
+
+# §6 test pollution (2026-09-26): brain.analyze() records parity observations to
+# the default store under tests/fixtures/batch_b_parity/. Redirect it to a
+# tempdir for this module so the checkout stays clean.
+import tempfile  # noqa: E402
+
+_PARITY_TMP = None
+_PARITY_ORIG = None
+
+
+def setUpModule():
+    global _PARITY_TMP, _PARITY_ORIG
+    _PARITY_TMP = tempfile.TemporaryDirectory()
+    _PARITY_ORIG = _api._DEFAULT_STORE_PATH
+    _api._DEFAULT_STORE_PATH = os.path.join(_PARITY_TMP.name, "parity_observations.jsonl")
+
+
+def tearDownModule():
+    _api._DEFAULT_STORE_PATH = _PARITY_ORIG
+    _PARITY_TMP.cleanup()
 
 NOW_MS = 1_790_000_000_000
 POLL1 = [{"t": "09:15", "bnf": 52010, "nf": 24800, "vix": 14}]
