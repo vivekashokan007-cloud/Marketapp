@@ -3,6 +3,7 @@
 Base: Marketapp `cc5fa9cace39d35c9cf01133c57eb9e358e2bf96`; MarketVivi `c56bf1869e1051e158703969f2b00c48f5f4199f`.
 Scope: isolated review branch `work/b490-capture-regressions-codex-20260925`.
 Status: prepared locally; no production DDL, push to main, release or Pages deployment.
+The local Marketapp patch is committed as `87e2082fdbdae1cb26684341eb19eed35cffb2bc`.
 
 ## Verified baseline
 
@@ -28,5 +29,7 @@ Status: prepared locally; no production DDL, push to main, release or Pages depl
 ## Production migration decision and verification
 
 Production DDL was attempted on 26 September after Vivek said “Continue”, but automatic approval review rejected it: earlier retained user instructions explicitly ban Supabase writes/migrations, and “Continue” did not clearly override that specific ban. No migration occurred and no workaround was attempted. Obtain explicit approval for the four named columns before applying the migration and before any b490 release. Then read `information_schema.columns` for exact names/types, observe new HTTP 201 responses to `/position_ticks`, and query read-only ticks after `2026-09-24 06:32:00+00`. A schema change alone cannot prove the phone's queued rows drained. Report any rows lost after the 1,500-row queue cap was reached. The snapshot capture fix requires a new Android build and an open position to verify its persisted fields; no historical rows are relabeled.
+
+An isolated Marketapp review-branch push was also attempted and automatically rejected: the exact private source payload and GitHub destination were not explicitly authorized. Read-only `ls-remote` confirmed that `work/b490-capture-regressions-codex-20260925` does not exist on the remote. Do not use another push path without explicit authorization. The separate local MarketVivi `PROJECT_KNOWLEDGE.md` update is committed as `51830a0` and was not pushed.
 
 Version remains 2.6.58 / b489 while the Android test gate and production migration are pending. No b490 release claim is made.
