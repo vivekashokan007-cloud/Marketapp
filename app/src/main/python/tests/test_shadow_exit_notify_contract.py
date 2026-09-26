@@ -36,6 +36,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..",
 SERVICE = os.path.join(
     ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "PositionTickService.kt"
 )
+# B3.1: title/body/channel selection moved verbatim into this pure file.
+CONTENT = os.path.join(
+    ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "ShadowExitNotification.kt"
+)
 
 
 class ShadowExitNotifyContractTests(unittest.TestCase):
@@ -49,6 +53,12 @@ class ShadowExitNotifyContractTests(unittest.TestCase):
         )
         assert block is not None, "maybeNotifyShadowExit must be locatable"
         cls.block = block.group(0)
+        with open(CONTENT, encoding="utf-8") as source:
+            content = re.search(
+                r"internal fun shadowExitNotificationContent\([\s\S]*?\n\}\n", source.read()
+            )
+        assert content is not None, "shadowExitNotificationContent must be locatable"
+        cls.content = content.group(0)
 
     # ---- 1. per-class cooldown anchors -------------------------------------
 
@@ -125,8 +135,9 @@ class ShadowExitNotifyContractTests(unittest.TestCase):
     # ---- 3. degraded is not an audible exit signal -------------------------
 
     def test_degraded_notice_uses_the_silent_routine_channel(self):
+        self.assertIn("shadowExitNotificationContent(action, label, row)", self.block)
         degraded = re.search(
-            r"\"SHADOW_DEGRADED\" -> Triple\([\s\S]*?\)", self.block
+            r"\"SHADOW_DEGRADED\" -> Triple\([\s\S]*?\)", self.content
         )
         self.assertIsNotNone(degraded, "SHADOW_DEGRADED branch must be locatable")
         self.assertIn('"routine"', degraded.group(0))
@@ -134,10 +145,16 @@ class ShadowExitNotifyContractTests(unittest.TestCase):
         self.assertNotIn('"warning"', degraded.group(0))
 
     def test_real_exit_signals_stay_on_the_urgent_channel(self):
-        for action in ("SHADOW_SL", "SHADOW_TP", "SHADOW_EOD"):
-            branch = re.search(rf"\"{action}\" -> Triple\([\s\S]*?\)", self.block)
+        for action in ("SHADOW_TP", "SHADOW_EOD"):
+            branch = re.search(rf"\"{action}\" -> Triple\([\s\S]*?\)", self.content)
             self.assertIsNotNone(branch, f"{action} branch must be locatable")
             self.assertIn('"urgent"', branch.group(0), f"{action} must stay audible")
+        # SHADOW_SL has two arms (B3.1 mid-fallback and legacy); both stay urgent.
+        sl = re.search(r"\"SHADOW_SL\" -> if \(midFallback\) \{[\s\S]*?\n        \}\n", self.content)
+        self.assertIsNotNone(sl, "SHADOW_SL branch must be locatable")
+        self.assertEqual(sl.group(0).count("Triple("), 2)
+        self.assertEqual(sl.group(0).count('"urgent"'), 2)
+        self.assertNotIn('"routine"', sl.group(0))
 
 
 if __name__ == "__main__":

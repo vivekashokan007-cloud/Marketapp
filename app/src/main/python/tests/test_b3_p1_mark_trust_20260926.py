@@ -47,7 +47,7 @@ class TestP1MarkTrustGate(unittest.TestCase):
         self.assertEqual(trade["valuation_quality"], "full")
 
     def test_untrusted_mark_is_not_applied_even_if_live_full(self):
-        for cause in ("WIDE_LIQUIDATION_BOOK", "BOUND_REFERENCE_MISMATCH", "UNRESOLVED",
+        for cause in ("WIDE_LIQUIDATION_BOOK", "WIDE_EXECUTABLE_BOOK", "BOUND_REFERENCE_MISMATCH", "UNRESOLVED",
                       "QUOTE_INVALIDITY", "AWAITING_REVALIDATION"):
             ok, trade, result = _apply(mark_trust_state="UNTRUSTED", mark_trust_cause=cause,
                                        quote_validity_state="VALID")
@@ -77,6 +77,8 @@ class TestTickServiceOwnershipAndNoPolicyShortcuts(unittest.TestCase):
             cls.service = f.read()
         with open(os.path.join(KT, "PositionQuoteValidity.kt"), encoding="utf-8") as f:
             cls.validity = f.read()
+        with open(os.path.join(KT, "ShadowExitNotification.kt"), encoding="utf-8") as f:
+            cls.shadow = f.read()
 
     def test_pos_verdict_and_pos_book_stay_brain_owned(self):
         for src in (self.service, self.validity):
@@ -91,7 +93,10 @@ class TestTickServiceOwnershipAndNoPolicyShortcuts(unittest.TestCase):
 
     def test_price_gate_is_paper_only_and_eod_precedes_untrusted(self):
         self.assertIn("val priceGateApplied = isPaper && !a1.trust.trusted", self.service)
-        block = re.search(r"val action = when \{[\s\S]*?\n        \}", self.service).group(0)
+        # B3.1: the precedence moved verbatim into the pure decideShadowAction,
+        # which evaluateShadowPolicy calls (and which the JVM tests execute).
+        self.assertIn("val action = decideShadowAction(", self.service)
+        block = re.search(r"internal fun decideShadowAction\([\s\S]*?\n\}", self.shadow).group(0)
         self.assertLess(block.index("eod -> \"SHADOW_EOD\""),
                         block.index("priceUntrustedCause != null -> \"SHADOW_DEGRADED\""))
 

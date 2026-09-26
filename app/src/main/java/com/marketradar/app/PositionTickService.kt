@@ -578,10 +578,14 @@ class PositionTickService : Service() {
             tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
             published
         )
+        // B3.1: Paper only — a wide-book untrusted mark with VALID current quotes
+        // may still stop on its mid P&L. Real never reaches this (priceGateApplied).
+        val midFallbackPnl = if (priceGateApplied) midFallbackStopPnl(a1.trust, a1.validity) else null
         val policy = if (priceGateApplied) {
             evaluateShadowPolicy(
                 tickTs, valuation.currentPnl, maxLoss, maxProfit, valuation.valuationQuality, lotMeta,
-                published, priceUntrustedCause = a1.trust.cause ?: CAUSE_UNRESOLVED
+                published, priceUntrustedCause = a1.trust.cause ?: CAUSE_UNRESOLVED,
+                midFallbackPnl = midFallbackPnl
             )
         } else {
             legacyPolicy
@@ -826,7 +830,8 @@ class PositionTickService : Service() {
         valuationQuality: String,
         lotMeta: PositionTickLotMeta,
         published: JSONObject? = null,
-        priceUntrustedCause: String? = null
+        priceUntrustedCause: String? = null,
+        midFallbackPnl: Double? = null
     ): PolicyDecision {
         // A1 (Paper only, via buildTickRow): an untrusted mark cannot reach the
         // price thresholds. Deadlines (EOD) stay visible; the result is an explicit
@@ -847,16 +852,19 @@ class PositionTickService : Service() {
         val tpBasis = thresholdBasis(constantTp, publishedTp, tpThreshold, published, "target_basis")
         val slBasis = thresholdBasis(constantSl, publishedSl, slThreshold, published, "stop_basis")
         val eod = isAtOrAfterPolicyEod()
-        val action = when {
-            pricePnl != null && slThreshold != null && pricePnl <= slThreshold -> "SHADOW_SL"
-            pricePnl != null && tpThreshold != null && pricePnl >= tpThreshold -> "SHADOW_TP"
-            eod -> "SHADOW_EOD"
-            priceUntrustedCause != null -> "SHADOW_DEGRADED"
-            valuationQuality != "OK" -> "SHADOW_DEGRADED"
-            else -> "HOLD"
-        }
+        // B3.1: SL only (never TP), only when the caller supplied an eligible mid
+        // P&L (Paper, wide-book cause, valid current quotes). See midFallbackStopPnl.
+        val midFallbackSl = isMidFallbackStop(pricePnl, midFallbackPnl, slThreshold)
+        val action = decideShadowAction(
+            pricePnl, midFallbackPnl, slThreshold, tpThreshold, eod, priceUntrustedCause, valuationQuality
+        )
         val reason = when (action) {
-            "SHADOW_SL" -> "current_pnl <= -${PositionPolicyV1.SL_MULT} * max_loss"
+            "SHADOW_SL" -> if (midFallbackSl) {
+                "stop_basis=$STOP_BASIS_MID_FALLBACK_WIDE_BOOK: mid_pnl <= sl_threshold " +
+                    "(executable mark untrusted:$priceUntrustedCause)"
+            } else {
+                "current_pnl <= -${PositionPolicyV1.SL_MULT} * max_loss"
+            }
             "SHADOW_TP" -> "current_pnl >= ${PositionPolicyV1.TP_MULT} * max_profit"
             "SHADOW_EOD" -> "tick_ts >= ${PositionPolicyV1.EOD_HH_MM} IST"
             "SHADOW_DEGRADED" -> if (priceUntrustedCause != null) {
@@ -884,7 +892,15 @@ class PositionTickService : Service() {
                 if (priceUntrustedCause != null) {
                     put("price_policy_trusted", false)
                     put("price_policy_untrusted_cause", priceUntrustedCause)
-                    put("stop_target_evaluation", "UNAVAILABLE_MARK_UNTRUSTED")
+                    put("stop_target_evaluation", if (midFallbackSl) "MID_FALLBACK_STOP_ONLY" else "UNAVAILABLE_MARK_UNTRUSTED")
+                    put("mid_fallback_contract", MID_FALLBACK_CONTRACT)
+                    put("mid_fallback_eligible", midFallbackPnl != null)
+                    putOptNumber("mid_fallback_pnl", midFallbackPnl)
+                    put("mid_fallback_stop", midFallbackSl)
+                    if (midFallbackSl) {
+                        put("stop_basis", STOP_BASIS_MID_FALLBACK_WIDE_BOOK)
+                        putOptNumber("executable_pnl_untrusted", currentPnl)
+                    }
                 }
                 // Which arm set each level, so a session can be audited for how
                 // often the published percentile context actually moved a
@@ -1334,56 +1350,8 @@ class PositionTickService : Service() {
 
         val indexKey = row.optString("index_key", trade.optStringAny("index_key", "indexKey", "index"))
         val strategy = row.optString("strategy_type", trade.optStringAny("strategy_type", "strategyType"))
-        val pnl = if (row.isNull("current_pnl")) Double.NaN else row.optDouble("current_pnl", Double.NaN)
-        // A1: a Paper deadline notice on an untrusted mark labels the raw P&L.
-        val priceGateApplied = row.optJSONObject("policy_trace_json")
-            ?.optJSONObject("mark_trust")?.optBoolean("price_gate_applied", false) == true
-        val pnlText = when {
-            pnl.isNaN() -> "P&L n/a"
-            priceGateApplied -> "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))} (untrusted mark)"
-            else -> "P&L ₹${"%,.0f".format(kotlin.math.round(pnl))}"
-        }
         val label = listOf(indexKey, strategy).filter { it.isNotBlank() }.joinToString(" ").ifBlank { tradeId }
-        // A1: an untrusted Paper mark produces an explicit monitoring-risk notice
-        // instead of a stop/target instruction; never a silent HOLD.
-        val untrustedReason = row.optString("policy_reason", "")
-        val markUntrusted = untrustedReason.startsWith("mark_untrusted:")
-        val degradedTitle = if (markUntrusted) "⚠️ Stop/Target Unavailable" else "🧪 Position Data Incomplete"
-        val degradedBody = if (markUntrusted) {
-            "$label · mark untrusted (${untrustedReason.removePrefix("mark_untrusted:")}) · " +
-                "stop/target cannot be evaluated · review position."
-        } else {
-            "$label · valuation degraded · review marks before trusting P&L."
-        }
-
-        val (title, body, notifType) = when (action) {
-            "SHADOW_SL" -> Triple(
-                "🛑 Stop Loss Near",
-                "$label · $pnlText · Cut position.",
-                "urgent"
-            )
-            "SHADOW_TP" -> Triple(
-                "💰 Target Near",
-                "$label · $pnlText · Book profit.",
-                "urgent"
-            )
-            "SHADOW_EOD" -> Triple(
-                "⏰ Exit — EOD",
-                "$label · $pnlText · Square off before close.",
-                "urgent"
-            )
-            // Data-quality notice, not an exit signal: evaluateShadowPolicy only
-            // reaches SHADOW_DEGRADED when no SL/TP/EOD rule matched, so nothing is
-            // wrong with the position itself. Routed to the silent routine channel
-            // so a transient quote gap cannot train the user to ignore the audible
-            // position channels.
-            "SHADOW_DEGRADED" -> Triple(
-                degradedTitle,
-                degradedBody,
-                "routine"
-            )
-            else -> return
-        }
+        val (title, body, notifType) = shadowExitNotificationContent(action, label, row) ?: return
 
         val delivery = try {
             NotificationHelper.send(this, title, body, notifType, "positions")

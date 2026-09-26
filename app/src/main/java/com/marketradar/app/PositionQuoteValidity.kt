@@ -35,7 +35,7 @@ import kotlin.math.max
  */
 
 internal const val QUOTE_VALIDITY_CONTRACT = "b3_quote_validity_v1_per_leg_source_time_exact_key_session_expiry"
-internal const val MARK_TRUST_CONTRACT = "a1_mark_trust_v1_quote_validity_plus_structural_bounds_gross_basis"
+internal const val MARK_TRUST_CONTRACT = "a1_mark_trust_v2_quote_validity_plus_structural_bounds_plus_b3_1_book_width_gross_basis"
 internal const val SOURCE_TIME_KIND = "VENDOR_TIMESTAMP_SEMANTICS_UNVERIFIED"
 internal const val SESSION_CALENDAR_BASIS = "regular_weekday_0915_1530_ist_no_holiday_or_special_session_calendar"
 
@@ -56,6 +56,35 @@ internal const val CAUSE_WIDE_LIQUIDATION_BOOK = "WIDE_LIQUIDATION_BOOK"
 internal const val CAUSE_UNRESOLVED = "UNRESOLVED"
 internal const val CAUSE_AWAITING_REVALIDATION = "AWAITING_REVALIDATION"
 internal const val CAUSE_NO_ACCEPTED_VALUATION = "NO_ACCEPTED_VALUATION"
+internal const val CAUSE_WIDE_EXECUTABLE_BOOK = "WIDE_EXECUTABLE_BOOK"
+
+/*
+ * B3.1 (2026-09-26) book-width validity. One named, versioned place.
+ *
+ * A Paper mark whose executable (liquidation) P&L sits further from its mid P&L
+ * than WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS x stored max loss is
+ * UNTRUSTED with cause WIDE_EXECUTABLE_BOOK, even when it lies inside the
+ * structural bounds. Replay over every stored position_ticks row since
+ * 10 Sep 2026 (10,351 valued ticks, read-only SELECT): normal ticks have
+ * gap/max_loss p99 <= 0.021 per trade and max 0.144 (276, 17 Sep 09:15); the
+ * opening-book artifacts are >= 0.362. 0.20 sits inside that empty band and
+ * flags exactly six ticks (274: 11/15/16/17 Sep 09:15; 276: 15/16 Sep 09:15).
+ */
+internal const val WIDE_EXECUTABLE_BOOK_CONTRACT = "b3_1_wide_executable_book_v1_gap_vs_stored_max_loss"
+internal const val WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS = 0.20
+internal const val BOOK_WIDTH_OK = "OK"
+internal const val BOOK_WIDTH_WIDE = "WIDE"
+internal const val BOOK_WIDTH_UNMEASURABLE = "UNMEASURABLE"
+
+/*
+ * B3.1 stop fallback on mid. A Paper mark untrusted ONLY because the book is
+ * wide (WIDE_LIQUIDATION_BOOK / WIDE_EXECUTABLE_BOOK) with VALID current quotes
+ * may still produce a stop when its mid P&L is at or below the SL threshold.
+ * Never for quote invalidity, never for targets.
+ */
+internal const val MID_FALLBACK_CONTRACT = "b3_1_mid_fallback_stop_v1_wide_book_valid_quotes_sl_only"
+internal const val STOP_BASIS_MID_FALLBACK_WIDE_BOOK = "MID_FALLBACK_WIDE_BOOK"
+internal val MID_FALLBACK_ELIGIBLE_CAUSES = setOf(CAUSE_WIDE_LIQUIDATION_BOOK, CAUSE_WIDE_EXECUTABLE_BOOK)
 
 private val IST_ZONE: ZoneId = ZoneId.of("Asia/Kolkata")
 private const val SESSION_OPEN_MIN = 9 * 60 + 15
@@ -296,6 +325,54 @@ internal fun expectedStructuralBounds(
     }
 }
 
+/** B3.1: executable-vs-mid gap measured against the position's own max loss. */
+internal data class BookWidthCheck(
+    val status: String,
+    val gap: Double?,
+    val maxLossRef: Double?,
+    val maxLossSource: String,
+    val threshold: Double?,
+    val fraction: Double = WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS
+) {
+    val gapFraction: Double? get() = if (gap != null && maxLossRef != null && maxLossRef > 0.0) gap / maxLossRef else null
+
+    fun toJson(): JSONObject = JSONObject().apply {
+        put("contract", WIDE_EXECUTABLE_BOOK_CONTRACT)
+        put("status", status)
+        put("max_gap_fraction_of_max_loss", fraction)
+        put("threshold_rupees", threshold?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        put("gap_rupees", gap?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        put("gap_fraction_of_max_loss", gapFraction?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        put("max_loss_ref", maxLossRef?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        put("max_loss_source", maxLossSource)
+    }
+}
+
+/**
+ * B3.1: |executable P&L - mid P&L| vs WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS
+ * x max loss (stored first, structure-derived when stored is missing).
+ * UNMEASURABLE when either P&L or a positive max loss is unavailable.
+ */
+internal fun assessBookWidth(
+    executablePnl: Double?,
+    midPnl: Double?,
+    storedMaxLoss: Double?,
+    expectedMaxLoss: Double?,
+    fraction: Double = WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS
+): BookWidthCheck {
+    val (ref, src) = when {
+        storedMaxLoss != null && storedMaxLoss.isFinite() && storedMaxLoss > 0.0 -> storedMaxLoss to "STORED"
+        expectedMaxLoss != null && expectedMaxLoss.isFinite() && expectedMaxLoss > 0.0 -> expectedMaxLoss to "STRUCTURAL"
+        else -> null to "UNAVAILABLE"
+    }
+    if (executablePnl == null || !executablePnl.isFinite() || midPnl == null || !midPnl.isFinite() || ref == null) {
+        return BookWidthCheck(BOOK_WIDTH_UNMEASURABLE, null, ref, src, ref?.let { it * fraction }, fraction)
+    }
+    val gap = abs(executablePnl - midPnl)
+    val threshold = ref * fraction
+    return BookWidthCheck(if (gap > threshold) BOOK_WIDTH_WIDE else BOOK_WIDTH_OK, gap, ref, src, threshold, fraction)
+}
+
 internal data class MarkTrust(
     val state: String,
     val cause: String?,
@@ -304,7 +381,8 @@ internal data class MarkTrust(
     val boundReferenceStatus: String,
     val expected: StructuralBounds?,
     val midPnl: Double?,
-    val detail: List<String>
+    val detail: List<String>,
+    val bookWidth: BookWidthCheck? = null
 ) {
     val trusted: Boolean get() = state == TRUST_TRUSTED
 
@@ -320,6 +398,7 @@ internal data class MarkTrust(
         put("expected_max_loss", expected?.maxLoss ?: JSONObject.NULL)
         put("structure_width", expected?.width ?: JSONObject.NULL)
         put("mid_pnl_diagnostic", midPnl?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        put("book_width", bookWidth?.toJson() ?: JSONObject.NULL)
         put("detail", JSONArray(detail))
     }
 }
@@ -361,8 +440,11 @@ internal fun classifyPositionMarkTrust(
         computePositionTickCurrentPnl(entryPremium, midMark, isCredit, quantityUnits)
     } else null
 
+    val bookWidth = assessBookWidth(currentPnl, midPnl, storedMaxLoss, expected?.maxLoss)
+
     fun result(state: String, cause: String?) =
-        MarkTrust(state, cause, anomStored, anomStruct, refStatus, expected, midPnl, detail)
+        MarkTrust(state, cause, anomStored, anomStruct, refStatus, expected, midPnl, detail,
+            if (validity.valid) bookWidth else null)
 
     if (!validity.valid) {
         detail.addAll(validity.reasons.take(8))
@@ -371,7 +453,16 @@ internal fun classifyPositionMarkTrust(
     if (!valuationAccepted || currentPnl == null || !currentPnl.isFinite()) {
         return result(TRUST_UNTRUSTED, CAUSE_NO_ACCEPTED_VALUATION)
     }
-    if (!anomStored && anomStruct != true) return result(TRUST_TRUSTED, null)
+    if (!anomStored && anomStruct != true) {
+        // B3.1: inside the bounds is not enough — a wide executable book (the
+        // 09:15 opening-book artifact) is untrusted by its own measure.
+        if (bookWidth.status == BOOK_WIDTH_WIDE) {
+            detail.add("executable_mid_gap_exceeds_book_width_limit")
+            return result(TRUST_UNTRUSTED, CAUSE_WIDE_EXECUTABLE_BOOK)
+        }
+        if (bookWidth.status == BOOK_WIDTH_UNMEASURABLE) detail.add("book_width_unmeasurable:${bookWidth.maxLossSource}")
+        return result(TRUST_TRUSTED, null)
+    }
 
     // Anomalous: explain, never assert the quote is false.
     if (refStatus == "MISMATCH" && (anomStored != (anomStruct == true))) {
@@ -386,6 +477,19 @@ internal fun classifyPositionMarkTrust(
     }
     if (refStatus == "MISMATCH") return result(TRUST_UNTRUSTED, CAUSE_BOUND_REFERENCE_MISMATCH)
     return result(TRUST_UNTRUSTED, CAUSE_UNRESOLVED)
+}
+
+/**
+ * B3.1: the mid P&L a Paper stop may fall back on, or null. Eligible only when
+ * the mark is UNTRUSTED for a wide-book cause AND the current quotes are VALID
+ * (fresh, exact-key, complete) AND the mid P&L is finite. Quote invalidity,
+ * bound-reference mismatch, unresolved and awaiting-revalidation never qualify.
+ */
+internal fun midFallbackStopPnl(trust: MarkTrust, validity: PositionQuoteValidity): Double? {
+    if (trust.trusted) return null
+    if (trust.cause !in MID_FALLBACK_ELIGIBLE_CAUSES) return null
+    if (!validity.valid) return null
+    return trust.midPnl?.takeIf { it.isFinite() }
 }
 
 private fun relDiff(stored: Double, expected: Double): Double {

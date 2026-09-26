@@ -54,6 +54,15 @@ class B3QuoteValidityTrustTest {
         "NSE_FO|69776" to LegQuote(225.05, 399.85, 355.1)
     )
 
+    // Trade 274 at 16 Sep 2026 09:15:57 IST (production tick 27875, HOLD, exec +885,
+    // mid +1,000.5, gap about 115 rupees): the normal book 57 s after the artifact.
+    private val quotes274Normal = mapOf(
+        "NSE_FO|69801" to LegQuote(522.85, 524.7, 523.05),
+        "NSE_FO|69826" to LegQuote(148.95, 149.9, 149.0),
+        "NSE_FO|69802" to LegQuote(709.95, 713.25, 708.3),
+        "NSE_FO|69776" to LegQuote(268.4, 270.0, 269.1)
+    )
+
     // Tuesday 15 Sep 2026 09:16:00 IST receipt.
     private val receipt = "2026-09-15T03:46:00.000Z"
 
@@ -231,12 +240,28 @@ class B3QuoteValidityTrustTest {
     }
 
     @Test
-    fun trade274InsideBoundsWithValidQuotesIsTrusted() {
+    fun trade274InsideBoundsButWideExecutableBookIsUntrusted() {
+        // B3.1 (replaces the pre-B3.1 assertion that this -7,563 mark was TRUSTED,
+        // which let the false 16 Sep 09:15 SHADOW_SL through): inside the bounds,
+        // valid quotes, but the executable-to-mid gap is 7,304 = 69.6% of max loss.
         val (tv, t) = trustFor(legs274, quotes274, 850.1, 30.0, 25503.0, 10497.0)
         assertEquals(-7563.0, tv.currentPnl!!, 0.5)
         assertFalse(tv.boundAnomaly)
+        assertEquals(TRUST_UNTRUSTED, t.state)
+        assertEquals(CAUSE_WIDE_EXECUTABLE_BOOK, t.cause)
+        assertEquals(BOOK_WIDTH_WIDE, t.bookWidth!!.status)
+        assertEquals(7304.25, t.bookWidth!!.gap!!, 0.5)
+        assertEquals(10497.0 * WIDE_EXECUTABLE_BOOK_MAX_GAP_FRACTION_OF_MAX_LOSS, t.bookWidth!!.threshold!!, 1e-6)
+    }
+
+    @Test
+    fun trade274NormalBookAt091557IsTrusted() {
+        val (tv, t) = trustFor(legs274, quotes274Normal, 850.1, 30.0, 25503.0, 10497.0)
+        assertEquals(885.0, tv.currentPnl!!, 0.5)
         assertEquals(TRUST_TRUSTED, t.state)
         assertNull(t.cause)
+        assertEquals(BOOK_WIDTH_OK, t.bookWidth!!.status)
+        assertTrue(t.bookWidth!!.gap!! < 150.0)
     }
 
     @Test
@@ -269,8 +294,8 @@ class B3QuoteValidityTrustTest {
 
     @Test
     fun recoveryRequiresSourceAdvanceAndChangedBook() {
-        val v = validity(legs274, quotes274)
-        val (_, trusted) = trustFor(legs274, quotes274, 850.1, 30.0, 25503.0, 10497.0, v)
+        val v = validity(legs274, quotes274Normal)
+        val (_, trusted) = trustFor(legs274, quotes274Normal, 850.1, 30.0, 25503.0, 10497.0, v)
         assertEquals(TRUST_TRUSTED, trusted.state)
         // Same source time as the untrusted mark (repeated receipt): not recovered.
         val sameSrc = applyTrustRecovery(trusted, v, v.latestSourceMs, "other-book")
