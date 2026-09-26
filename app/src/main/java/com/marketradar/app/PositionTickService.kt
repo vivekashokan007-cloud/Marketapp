@@ -181,10 +181,28 @@ class PositionTickService : Service() {
         // Valuation instant is AFTER the quote response. Quotes that arrive a few
         // hundred ms after request_started but before valuation_ts are valid when fresh.
         val valuationTs = isoUtcNow()
+        // B3 item 3 (Paper only): one capped re-fetch of only the invalid legs of
+        // Paper marks. Real trades always value from the original response.
+        val refresh = maybeRefreshPaperInvalidLegs(trades, quoteFetch, valuationTs)
         val rows = JSONArray()
         trades.forEach { trade ->
-            val row = buildTickRow(trade, sessionDate, requestStartedTs, valuationTs, quoteFetch) ?: return@forEach
+            val isPaperTrade = trade.optBoolean("paper", false)
+            val tradeIdForRefresh = trade.optStringAny("id").trim()
+            val refreshed = isPaperTrade && refresh != null &&
+                refresh.plan.requestedByTrade.containsKey(tradeIdForRefresh)
+            val row = if (refreshed) {
+                buildTickRow(
+                    trade, sessionDate, requestStartedTs, refresh!!.valuationTs,
+                    refresh.fetchForTrade(extractLegs(trade).mapNotNull { it.instrumentKey?.takeIf { k -> k.isNotBlank() } })
+                )
+            } else {
+                buildTickRow(trade, sessionDate, requestStartedTs, valuationTs, quoteFetch)
+            } ?: return@forEach
+            if (refreshed) {
+                row.optJSONObject("policy_trace_json")?.put("quote_refresh", refresh!!.traceFor(tradeIdForRefresh))
+            }
             maybeNotifyShadowExit(row, trade)
+            if (isPaperTrade) maybeEscalatePersistentMarkFailure(row, trade, sessionDate)
             rows.put(row)
         }
         // The 60-second service is the only path that obtains a complete
@@ -399,6 +417,15 @@ class PositionTickService : Service() {
             if (closed.isNotEmpty()) {
                 closed.forEach { obj.remove(it) }
                 prefs.edit().putString(PREF_TRUSTED_EXTREMA_STATE, obj.toString()).apply()
+            }
+        }
+
+        // B3 item 3: failure episodes are per trade; drop closed trades.
+        prefs.getString(PREF_MARK_FAILURE_EPISODES, null)?.let {
+            val before = readMarkFailureEpisodes()
+            val after = pruneMarkFailureEpisodes(before, live)
+            if (after.length() != before.length()) {
+                prefs.edit().putString(PREF_MARK_FAILURE_EPISODES, after.toString()).apply()
             }
         }
 
@@ -1387,6 +1414,174 @@ class PositionTickService : Service() {
         LogBuffer.add(if (delivery.postedToOs) 'I' else 'W', TAG, line)
     }
 
+    private inner class PaperQuoteRefresh(
+        val plan: QuoteRefreshPlan,
+        val status: String,
+        val original: QuoteFetch,
+        val mergedQuotes: Map<String, Quote>,
+        val mergedExact: Set<String>,
+        val replacedKeys: List<String>,
+        val valuationTs: String,
+        val firstAttemptReasons: Map<String, List<String>>,
+        val firstReceiptTs: String
+    ) {
+        fun fetchForTrade(tradeKeys: List<String>): QuoteFetch = original.copy(
+            quotes = mergedQuotes,
+            exactKeys = mergedExact,
+            fetchStatus = mergedFetchStatus(original.fetchStatus, status, tradeKeys, replacedKeys)
+        )
+
+        fun traceFor(tradeId: String): JSONObject = JSONObject().apply {
+            val requested = plan.requestedByTrade[tradeId].orEmpty()
+            put("contract", QUOTE_REFRESH_CONTRACT)
+            put("paper_only", true)
+            put("attempted", true)
+            put("requests_this_tick", QUOTE_REFRESH_MAX_REQUESTS_PER_TICK)
+            put("requested_keys", org.json.JSONArray(requested))
+            put("replaced_keys", org.json.JSONArray(requested.filter { it in replacedKeys }))
+            put("refresh_status", status)
+            put("plan_truncated", plan.truncated)
+            put("max_keys", QUOTE_REFRESH_MAX_KEYS)
+            put("first_attempt_receipt_ts", firstReceiptTs)
+            put("refreshed_receipt_ts", valuationTs)
+            put("first_attempt_reasons", org.json.JSONArray(firstAttemptReasons[tradeId].orEmpty().take(12)))
+        }
+    }
+
+    /** Per-leg quote validity of one Paper trade against [quoteFetch], or null if it cannot be assessed. */
+    private fun paperQuoteValidity(trade: JSONObject, quoteFetch: QuoteFetch, receiptTs: String): PositionQuoteValidity? {
+        val lotMeta = resolvePositionTickLotMeta(trade) ?: return null
+        val strategyType = trade.optStringAny("strategy_type", "strategyType")
+        val legs = extractLegs(trade)
+        val valuation = valuePositionTick(
+            strategyType = strategyType,
+            legs = legs,
+            quotes = legs.mapNotNull { leg ->
+                leg.instrumentKey?.let { k -> quoteFetch.quotes[k]?.let { k to LegQuote(it.bid, it.ask, it.ltp) } }
+            }.toMap(),
+            isCredit = isCreditTrade(trade, strategyType),
+            entryPremium = trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium"),
+            maxProfit = trade.optDoubleAny("max_profit", "maxProfit"),
+            maxLoss = trade.optDoubleAny("max_loss", "maxLoss"),
+            lotSize = lotMeta.lotSize
+        )
+        return validatePositionQuotes(
+            requiredLegKeys = legs.map { it.instrumentKey },
+            structureStatus = valuation.structure.status,
+            bookStatusByKey = valuation.legValuations
+                .mapNotNull { lv -> lv.leg.instrumentKey?.let { it to lv.quoteStatus } }
+                .toMap(),
+            quotes = legSourceQuotes(legs, quoteFetch),
+            receiptTsIso = receiptTs,
+            expiry = positionTradeExpiry(trade),
+            quantityUnits = lotMeta.lotSize,
+            quantityAuthoritative = lotMeta.authoritative,
+            fetchStatus = quoteFetch.fetchStatus
+        )
+    }
+
+    /**
+     * B3 item 3: at most one extra quote request per tick, for at most
+     * QUOTE_REFRESH_MAX_KEYS keys, covering only the refreshable invalid legs of
+     * Paper marks. Returns null (no request) when nothing qualifies.
+     */
+    private fun maybeRefreshPaperInvalidLegs(
+        trades: List<JSONObject>,
+        quoteFetch: QuoteFetch,
+        receiptTs: String
+    ): PaperQuoteRefresh? {
+        val invalidByTrade = linkedMapOf<String, List<String>>()
+        val reasonsByTrade = mutableMapOf<String, List<String>>()
+        trades.filter { it.optBoolean("paper", false) }.forEach { trade ->
+            val tid = trade.optStringAny("id").trim()
+            if (tid.isEmpty()) return@forEach
+            val validity = try { paperQuoteValidity(trade, quoteFetch, receiptTs) } catch (_: Exception) { null }
+                ?: return@forEach
+            val keys = refreshableInvalidLegKeys(validity)
+            if (keys.isNotEmpty()) {
+                invalidByTrade[tid] = keys
+                reasonsByTrade[tid] = validity.reasons
+            }
+        }
+        val plan = planQuoteRefresh(invalidByTrade)
+        if (plan.keys.isEmpty()) return null
+        try { Thread.sleep(QUOTE_REFRESH_DELAY_MS) } catch (_: InterruptedException) { }
+        val refreshed = fetchQuotesWithFallback(plan.keys)
+        val refreshedTs = isoUtcNow()
+        val (quotes, exact, replaced) = mergeRefreshedLegQuotes(
+            quoteFetch.quotes, quoteFetch.exactKeys,
+            refreshed.quotes, refreshed.exactKeys, plan.keys
+        )
+        val line = "POSITION_QUOTE_REFRESH: keys=${plan.keys.size} replaced=${replaced.size} " +
+            "status=${refreshed.fetchStatus} trades=${plan.requestedByTrade.size} truncated=${plan.truncated}"
+        Log.i(TAG, line)
+        LogBuffer.add(if (refreshed.fetchStatus == "OK") 'I' else 'W', TAG, line)
+        return PaperQuoteRefresh(
+            plan, refreshed.fetchStatus, quoteFetch, quotes, exact, replaced,
+            refreshedTs, reasonsByTrade, receiptTs
+        )
+    }
+
+    /**
+     * B3 item 3 (Paper only): one escalation notice per persistent mark-failure
+     * episode, with a durable identity; a failed post stays retryable.
+     */
+    private fun maybeEscalatePersistentMarkFailure(row: JSONObject, trade: JSONObject, sessionDate: String) {
+        if (!trade.optBoolean("paper", false)) return
+        val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }.trim()
+        if (tradeId.isEmpty()) return
+        val trust = row.optJSONObject("policy_trace_json")?.optJSONObject("mark_trust")
+        val untrusted = trust?.optString("state", "") == TRUST_UNTRUSTED
+        val cause = trust?.optString("cause", "")?.takeIf { it.isNotBlank() && it != "null" }
+        val now = System.currentTimeMillis()
+        val all = readMarkFailureEpisodes()
+        val prev = all.optJSONObject(tradeId)
+        val step = advanceMarkFailureEpisode(prev, tradeId, sessionDate, untrusted, cause, now)
+        var state = step.state
+        if (step.shouldEscalate && state != null) {
+            val label = listOf(
+                row.optString("index_key", ""), row.optString("strategy_type", "")
+            ).filter { it.isNotBlank() }.joinToString(" ").ifBlank { tradeId }
+            val (title, body) = markFailureEscalationText(label, state)
+            val delivery = try {
+                NotificationHelper.send(this, title, body, "warning", "positions")
+            } catch (t: Throwable) {
+                NotificationHelper.DeliveryResult(true, false, "NOTIFY_FAILED", t.javaClass.simpleName)
+            }
+            val deliveryClass = classifyNotificationDelivery(delivery.outcome, delivery.postedToOs)
+            state = recordMarkFailureEscalationAttempt(state, deliveryClass, now)
+            val ledger = recordShadowDeliveryAttempt(
+                readShadowDeliveryLedger(), tradeId, "MARK_FAILURE_ESCALATION", sessionDate, true,
+                deliveryClass, delivery.outcome, state.optString("episode_id", ""),
+                deliveryClass == DELIVERY_POSTED, now
+            )
+            prefs.edit().putString(PREF_SHADOW_DELIVERY_LEDGER, ledger.toString()).apply()
+            val line = "MARK_FAILURE_ESCALATION: trade=$tradeId episode=${state.optString("episode_id")} " +
+                "ticks=${state.optInt("consecutive_ticks")} observed_ms=${state.optLong("observed_failure_ms")} " +
+                "cause=$cause outcome=${delivery.outcome} delivery=$deliveryClass"
+            Log.w(TAG, line)
+            LogBuffer.add('W', TAG, line)
+        }
+        if (step.episodeClosed) {
+            LogBuffer.add('I', TAG, "MARK_FAILURE_EPISODE_CLOSED: trade=$tradeId episode=${prev?.optString("episode_id")}")
+        }
+        if (state != null) {
+            all.put(tradeId, state)
+            row.optJSONObject("policy_trace_json")?.put("mark_failure_episode", JSONObject(state.toString()))
+        } else {
+            all.remove(tradeId)
+        }
+        if (state != null || step.episodeClosed) {
+            prefs.edit().putString(PREF_MARK_FAILURE_EPISODES, pruneMarkFailureEpisodes(all, null).toString()).apply()
+        }
+    }
+
+    private fun readMarkFailureEpisodes(): JSONObject = try {
+        JSONObject(prefs.getString(PREF_MARK_FAILURE_EPISODES, "{}") ?: "{}")
+    } catch (_: Exception) {
+        JSONObject()
+    }
+
     private fun readShadowDeliveryLedger(): JSONObject = try {
         JSONObject(prefs.getString(PREF_SHADOW_DELIVERY_LEDGER, "{}") ?: "{}")
     } catch (_: Exception) {
@@ -1536,6 +1731,8 @@ class PositionTickService : Service() {
 
         private const val PREF_SHADOW_DELIVERY_LEDGER = "shadow_delivery_ledger_v1"
         private const val PREF_TRUSTED_EXTREMA_STATE = "position_tick_trusted_extrema_v1"
+        // B3 item 3: Paper persistent mark-failure episodes (one bounded blob).
+        private const val PREF_MARK_FAILURE_EPISODES = "position_mark_failure_episodes_v1"
         private const val SHADOW_LAST_ACTION_PREFIX = "shadow_last_action_"
         private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"
         private val SHADOW_ALERT_CLASSES = listOf("exit", "degraded")
