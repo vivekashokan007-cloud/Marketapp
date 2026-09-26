@@ -476,11 +476,10 @@ class MainActivity : AppCompatActivity() {
             addAction(PositionTickService.ACTION_POSITION_MARK_TICK)
             addAction(PositionTickService.ACTION_PAPER_CLOSE_QUOTE_READY)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(pollReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(pollReceiver, filter)
-        }
+        // M1: in-app broadcasts only. All senders (MarketWatchService POLL_TICK,
+        // PositionTickService mark/close-quote) are same-app, so NOT_EXPORTED still
+        // receives them. Other apps can no longer inject `data` into the WebView.
+        ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
