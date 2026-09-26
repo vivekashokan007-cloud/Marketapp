@@ -174,6 +174,7 @@ class MarketWatchService : Service() {
         private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
+        private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
         private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
         private const val PREF_LAST_BRAIN_NOTIFICATION = "last_brain_notification"
         private const val PREF_LAST_BRAIN_NOTIFICATION_META = "last_brain_notification_meta"
@@ -2549,18 +2550,19 @@ class MarketWatchService : Service() {
 
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
             LogBuffer.add('I', TAG, "POLL_HEAP_BEFORE_BRAIN: ${heapLine()}")
-            val result = runBlocking {
-                withTimeoutOrNull(10_000L) {
-                    brain.callAttr("analyze",
-                        pollsJson,
-                        closedTradesJson,
-                        baselineJson,
-                        openTradesJson,
-                        "[]",
-                        strikeOiJson,
-                        ctxObj.toString()
-                    ).toString()
-                }
+            // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
+            // The poll path shares one key, so a timed-out poll call still running
+            // in the background never overlaps a later poll's Python calls.
+            val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, 10_000L) {
+                brain.callAttr("analyze",
+                    pollsJson,
+                    closedTradesJson,
+                    baselineJson,
+                    openTradesJson,
+                    "[]",
+                    strikeOiJson,
+                    ctxObj.toString()
+                ).toString()
             }
             
             if (result != null) {
@@ -2640,16 +2642,15 @@ class MarketWatchService : Service() {
                         } catch (_: Exception) { /* non-fatal */ }
 
                         // Take poll snapshot and save to ml_brain_snapshots
-                        val snapResult = runBlocking {
-                            withTimeoutOrNull(PY_SNAPSHOT_TIMEOUT_MS) {
-                                brain.callAttr(
-                                    "take_poll_snapshot",
-                                    resultObj.toString(),
-                                    ctxObj.toString(),
-                                    pollsJson,
-                                    "android_compact_v1"
-                                ).toString()
-                            }
+                        // H1: effective timeout (PyTimeout, shared poll key).
+                        val snapResult = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
+                            brain.callAttr(
+                                "take_poll_snapshot",
+                                resultObj.toString(),
+                                ctxObj.toString(),
+                                pollsJson,
+                                "android_compact_v1"
+                            ).toString()
                         }
                         if (snapResult == null) {
                             Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
@@ -2975,7 +2976,7 @@ class MarketWatchService : Service() {
             // Keep the Binder payload empty. The WebView pulls the latest native
             // state directly, and sending the full brain payload here can exceed
             // Android's parcel limit and crash the poll loop.
-            val tickIntent = Intent("com.marketradar.POLL_TICK")
+            val tickIntent = Intent("com.marketradar.POLL_TICK").setPackage(packageName)
             sendBroadcast(tickIntent)
             val pollCount = prefs.getInt("poll_count", 0)
             Log.d(TAG, "BROADCAST_SENT: Poll #$pollCount (brain success=$brainSuccess)")
@@ -3074,14 +3075,13 @@ class MarketWatchService : Service() {
 
     private fun processUnifiedBrainNotifications(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject) {
         try {
-            val rawPayload = runBlocking {
-                withTimeoutOrNull(PY_AGENT_TIMEOUT_MS) {
-                    brain.callAttr(
-                        "brain_notification_process",
-                        resultObj.toString(),
-                        ctxObj.toString()
-                    ).toString()
-                }
+            // H1: effective timeout (PyTimeout, shared poll key).
+            val rawPayload = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_AGENT_TIMEOUT_MS) {
+                brain.callAttr(
+                    "brain_notification_process",
+                    resultObj.toString(),
+                    ctxObj.toString()
+                ).toString()
             }
             if (rawPayload == null) {
                 Log.w(TAG, "BRAIN_NOTIFICATION_TIMEOUT: brain_notification_process exceeded ${PY_AGENT_TIMEOUT_MS}ms")

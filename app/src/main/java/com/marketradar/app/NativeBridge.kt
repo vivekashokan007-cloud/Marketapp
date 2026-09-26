@@ -23,12 +23,10 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -1461,10 +1459,9 @@ class NativeBridge(private val context: Context) {
             val py = com.chaquo.python.Python.getInstance()
             val mod = py.getModule("ml_train")
             val modelPath = File(context.filesDir, "ml_model.json").absolutePath
-            val result = runBlocking {
-                withTimeoutOrNull(PY_VALIDATE_TIMEOUT_MS) {
-                    mod.callAttr("validate_model", modelPath).toString()
-                }
+            // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
+            val result = PyTimeout.callWithTimeout("bridge.validate_model", PY_VALIDATE_TIMEOUT_MS) {
+                mod.callAttr("validate_model", modelPath).toString()
             }
             if (result == null) {
                 Log.w(TAG, "ML_VALIDATE_TIMEOUT: validate_model exceeded ${PY_VALIDATE_TIMEOUT_MS}ms")
@@ -1795,10 +1792,9 @@ class NativeBridge(private val context: Context) {
         return try {
             val py = Python.getInstance()
             val brain = py.getModule("brain")
-            runBlocking {
-                withTimeoutOrNull(PY_SCORE_TIMEOUT_MS) {
-                    brain.callAttr("compute_live_friction_bridge", tradeJson.ifBlank { "{}" }).toString()
-                }
+            // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
+            PyTimeout.callWithTimeout("bridge.compute_live_friction", PY_SCORE_TIMEOUT_MS) {
+                brain.callAttr("compute_live_friction_bridge", tradeJson.ifBlank { "{}" }).toString()
             } ?: JSONObject()
                 .put("friction_cost", JSONObject.NULL)
                 .put("friction_reason", "PYTHON_TIMEOUT")
@@ -3071,10 +3067,9 @@ class NativeBridge(private val context: Context) {
         return try {
             val py = com.chaquo.python.Python.getInstance()
             val brain = py.getModule("brain")
-            val result = runBlocking {
-                withTimeoutOrNull(PY_SCORE_TIMEOUT_MS) {
-                    brain.callAttr("ml_score_bridge", cand.toString()).toString()
-                }
+            // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
+            val result = PyTimeout.callWithTimeout("bridge.ml_score", PY_SCORE_TIMEOUT_MS) {
+                brain.callAttr("ml_score_bridge", cand.toString()).toString()
             } ?: return null
             JSONObject(result)
         } catch (e: Exception) {
