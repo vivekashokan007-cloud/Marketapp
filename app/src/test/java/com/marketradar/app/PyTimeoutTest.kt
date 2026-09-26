@@ -38,9 +38,12 @@ class PyTimeoutTest {
     @Test
     fun fastPath_returnsValueUnchanged() {
         val value = "{\"ok\":true,\"score\":0.61}"
-        val out = PyTimeout.callWithTimeout(key(), 2_000L) { value }
+        val k = key()
+        val out = PyTimeout.callWithTimeout(k, 2_000L) { value }
         assertSame(value, out)
-        assertTrue(logs.isEmpty())
+        // PyTimeout.logger is process-global: a late completion from an earlier
+        // test's released background call may log here. Only this key matters.
+        assertTrue(logs.none { it.contains(k) })
     }
 
     @Test
