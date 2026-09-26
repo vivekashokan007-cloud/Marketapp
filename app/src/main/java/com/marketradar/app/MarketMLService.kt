@@ -195,6 +195,10 @@ class MarketMLService : Service() {
          * Nested `contract_identity` object is kept whole when present.
          * index / expiry / tDTE remain in the main allowlist below.
          */
+        /** Decision 10: existing bounds, unchanged (measure before tuning). */
+        internal const val ONLINE_UPDATE_TIMEOUT_MS = 30_000L
+        internal const val TEMPORAL_TRAIN_TIMEOUT_MS = 45_000L
+
         internal val CONTRACT_IDENTITY_COMPACTION_KEYS = arrayOf(
             "index_key",
             "expiry_cycle",
@@ -2054,7 +2058,8 @@ class MarketMLService : Service() {
                 }
             }
 
-            val result = withTimeoutOrNull(30_000L) {
+            // Decision 10: timed + recorded; the 30 s bound is unchanged.
+            val onlineTimed = runTimedMl(ONLINE_UPDATE_TIMEOUT_MS) {
                 mod.callAttr(
                     "online_update",
                     modelPath(this@MarketMLService),
@@ -2062,6 +2067,8 @@ class MarketMLService : Service() {
                     null  // no log_fn for online update
                 ).toString()
             }
+            recordPostCloseMlDuration("online_update", onlineTimed, ONLINE_UPDATE_TIMEOUT_MS)
+            val result = (onlineTimed as? TimedMlResult.Completed)?.value
             
             if (result == null) {
                 Log.w(TAG, "ONLINE_UPDATE_TIMEOUT: Python online_update timed out after 30s")
@@ -2102,6 +2109,25 @@ class MarketMLService : Service() {
     // TEMPORAL MODEL TRAINING
     // ─────────────────────────────────────────────────────────────────────────
 
+    /** Decision 10: bounded duration log for post-close ML (measure first, limits later). */
+    private fun recordPostCloseMlDuration(stage: String, result: TimedMlResult<*>, limitMs: Long) {
+        try {
+            val session = java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("Asia/Kolkata")
+            }.format(Date())
+            val updated = appendMlDurationSample(
+                prefs.getString(POST_CLOSE_ML_TIMING_PREFS_KEY, null), stage, session,
+                result.elapsedMs, result.outcomeLabel(), limitMs
+            )
+            prefs.edit().putString(POST_CLOSE_ML_TIMING_PREFS_KEY, updated).apply()
+            val line = mlDurationLogLine(result, limitMs, summarizeMlDurations(updated, stage))
+            Log.i(TAG, line)
+            LogBuffer.add('I', TAG, line)
+        } catch (e: Exception) {
+            Log.w(TAG, "POST_CLOSE_ML_DURATION_RECORD_FAIL: ${e.message}")
+        }
+    }
+
     private suspend fun runTemporalTraining() = withContext(Dispatchers.IO) {
         try {
             val py  = Python.getInstance()
@@ -2115,7 +2141,8 @@ class MarketMLService : Service() {
 
             // Train (synthetic if <20 real sequences, real path otherwise).
             // G8: Python train_temporal accepts 5th arg is_real (arity aligned).
-            val te = withTimeoutOrNull(45_000L) {
+            // Decision 10: explicit Completed(value?) / TimedOut; 45 s bound unchanged.
+            val temporalTimed = runTimedMl(TEMPORAL_TRAIN_TIMEOUT_MS) {
                 if (nReal >= 20) {
                     // Real-sequence path — must not be certified by synthetic models.
                     mod.callAttr("train_temporal",
@@ -2134,7 +2161,18 @@ class MarketMLService : Service() {
                         py.builtins.callAttr("print")
                     )
                 }
-            } ?: return@withContext
+            }
+            recordPostCloseMlDuration("train_temporal", temporalTimed, TEMPORAL_TRAIN_TIMEOUT_MS)
+            val te = when (temporalTimed) {
+                is TimedMlResult.TimedOut -> {
+                    Log.w(TAG, "TEMPORAL_TRAIN_TIMED_OUT: limit_ms=${temporalTimed.limitMs} (model not saved)")
+                    return@withContext
+                }
+                is TimedMlResult.Completed -> temporalTimed.value ?: run {
+                    Log.w(TAG, "TEMPORAL_TRAIN_COMPLETED_WITHOUT_MODEL: ms=${temporalTimed.elapsedMs} (model not saved)")
+                    return@withContext
+                }
+            }
 
             mod.callAttr("save_temporal", te, temporalModelPath(this@MarketMLService))
             Log.i(TAG, "Temporal model saved")

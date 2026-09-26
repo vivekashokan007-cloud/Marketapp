@@ -53,8 +53,15 @@ class H1M1SourceContractTest {
     fun postCloseLearningSites_deliberatelyUnchanged() {
         // No evidence of typical durations, so the post-close learning / eval / C3
         // timeouts are left exactly as before (see STOP_H1_M1_SHIP_2.6.59).
+        // Owner decision 10 (2026-09-26): online_update + train_temporal moved to
+        // runTimedMl (instrumentation only). It wraps the same withTimeoutOrNull
+        // with the same 30 s / 45 s values, so no limit becomes effective.
         val ml = src("MarketMLService.kt")
-        assertEquals(7, Regex("withTimeoutOrNull\\(").findAll(ml).count())
+        assertEquals(5, Regex("withTimeoutOrNull\\(").findAll(ml).count())
+        assertEquals(2, Regex("runTimedMl\\(").findAll(ml).count())
         assertFalse(ml.contains("PyTimeout"))
+        val timing = src("PostCloseMlTiming.kt")
+        assertTrue(timing.contains("val done = withTimeoutOrNull(limitMs) { Box(block()) }"))
+        assertFalse(timing.contains("PyTimeout.callWithTimeout"))
     }
 }
