@@ -204,8 +204,10 @@ class TestRestart(unittest.TestCase):
 
     def test_acknowledged_paper_alert_is_not_renotified_after_restart(self):
         # POS_BOOK is Brain-owned and notifies (forces weak while profitable).
+        # Decision 3: warm-up alerts notify only with a TRUSTED mark.
         trade = _trade_284(force_alignment=1)
-        r = _run(POLL1, [trade], _ctx({"284": _p1_mark(pnl=1200.0)}))
+        r = _run(POLL1, [trade], _ctx({"284": _p1_mark(pnl=1200.0, mark_trust_state="TRUSTED",
+                                                       quote_validity_state="VALID")}))
         a = brain.NotificationAgent()
         first = a.process_contract(r, _ctx())
         first_keys = [c.get("alert_key") for c in first["brain_notifications"]]

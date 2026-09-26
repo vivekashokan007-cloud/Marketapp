@@ -16206,6 +16206,33 @@ FIRST_POLL_HISTORY_DEPENDENT_SIGNALS = (
     'new_entry_generation',
 )
 FIRST_POLL_SNAPSHOT_POSITION_INSIGHTS = ('position_wall_proximity',)
+# Owner decision 3 (26 Sep 2026): warm-up POSITION alerts are display-only
+# until the trade has a TRUSTED mark. In the warm-up payload the only TRUSTED
+# mark is an applied Paper P1 mark whose store trust state is TRUSTED
+# (_try_apply_paper_p1_valuation refuses untrusted marks). A chain-derived
+# warm-up valuation is not a trusted mark. Threshold publication still starts
+# at poll 1 and every warm-up threshold row is labelled.
+FIRST_POLL_WARMUP_ALERT_GATE_VERSION = 'b3_decision3_warmup_alerts_display_only_until_trusted_mark_v1_20260926'
+FIRST_POLL_WARMUP_DISPLAY_ONLY_REASON = 'WARMUP_AWAITING_FIRST_TRUSTED_MARK'
+
+
+def _first_poll_trade_has_trusted_mark(result, trade_id):
+    """True only for an applied Paper P1 mark whose trust state is TRUSTED."""
+    position_live = (result or {}).get('position_live') or {}
+    # In-process keys are the trade's own id type (int or str); JSON turns them into str.
+    live = next((row for key, row in position_live.items() if str(key) == str(trade_id)), None)
+    if not isinstance(live, dict):
+        return False
+    return bool(live.get('p1_paper_brain_valuation')) and str(live.get('p1_mark_trust_state') or '').upper() == 'TRUSTED'
+
+
+def _first_poll_alert_trade_id(alert, monitored_ids):
+    """Trade id of a warm-up POSITION alert: its key suffix, bounded to monitored ids."""
+    key = str((alert or {}).get('key') or '')
+    for tid in sorted(monitored_ids, key=len, reverse=True):
+        if key.endswith('_' + tid):
+            return tid
+    return None
 
 
 def _first_poll_paper_position_monitor(result, polls, baseline, open_trades, strike_oi, ctx, required_polls=3):
@@ -16371,10 +16398,24 @@ def _first_poll_paper_position_monitor(result, polls, baseline, open_trades, str
             alert['history_dependent_signals_unavailable'] = list(FIRST_POLL_HISTORY_DEPENDENT_SIGNALS)
             body = str(alert.get('body') or '')
             alert['body'] = (body + ' Warm-up: history-based signals unavailable.').strip()
+            alert_tid = _first_poll_alert_trade_id(alert, monitored_set)
+            trusted = alert_tid is not None and _first_poll_trade_has_trusted_mark(result, alert_tid)
+            alert['warmup_alert_gate_version'] = FIRST_POLL_WARMUP_ALERT_GATE_VERSION
+            alert['warmup_display_only'] = not trusted
+            if not trusted:
+                alert['warmup_display_only_reason'] = FIRST_POLL_WARMUP_DISPLAY_ONLY_REASON
             alerts.append(alert)
     except Exception as e:
         result['alert_error'] = str(e)
     result['alerts'] = alerts
+    # Decision 3: thresholds may publish from poll 1, labelled as warm-up.
+    published = result.get('position_exit_thresholds')
+    if isinstance(published, dict):
+        for tid_key, row in published.items():
+            if isinstance(row, dict) and str(tid_key) in {str(x) for x in monitored}:
+                row['publication_mode'] = 'FIRST_POLL_WARMUP'
+                row['warmup'] = True
+                row['warmup_trusted_mark'] = _first_poll_trade_has_trusted_mark(result, tid_key)
 
     result['position_monitoring_scope'] = FIRST_POLL_POSITION_MONITORING_SCOPE
     result['position_monitoring'] = {
@@ -25324,6 +25365,28 @@ class NotificationAgent:
         candidate_id = (
             str(alert.get('key') or '').split('_', 2)[-1] if alert.get('key') else None
         )
+        if owner == 'brain' and alert.get('warmup_display_only') is True:
+            # Decision 3: shown in the UI (result['alerts']), never notified, never
+            # acknowledged, so it can notify once a TRUSTED mark exists.
+            return self._build_contract(
+                base,
+                decision_type=self._position_alert_decision_type(alert),
+                notify_user=False,
+                notification_kind='NONE',
+                title=alert.get('title', ''),
+                body=alert.get('body', ''),
+                reason_code='POSITION_ALERT_WARMUP_DISPLAY_ONLY',
+                reason_text=(
+                    'First-poll warm-up alert: display-only until this trade has a '
+                    'TRUSTED mark.'
+                ),
+                sound_class='routine',
+                alert_key=alert.get('key'),
+                candidate_id=candidate_id,
+                position_alert_owner=owner,
+                position_alert_ownership_version=POSITION_ALERT_OWNERSHIP_VERSION,
+                warmup_alert_gate_version=FIRST_POLL_WARMUP_ALERT_GATE_VERSION,
+            )
         if owner != 'brain':
             # Kept as a contract (not dropped) so the suppression stays visible in
             # brain_notification telemetry and the alert still reaches the UI.
