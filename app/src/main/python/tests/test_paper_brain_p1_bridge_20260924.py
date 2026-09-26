@@ -115,6 +115,30 @@ def _p1_mark(pnl=-1596.0, state="LIVE_FULL", **extra):
 
 
 class TestPaperP1BrainBridgeTrade284(unittest.TestCase):
+    def test_paper_p1_three_polls_preserve_gross_extrema_and_flip(self):
+        trade = _trade_284(peak_pnl=0, trough_pnl=0, entry_vix=12.0)
+        for pnl, peak, trough in (
+            (1800.0, 1800.0, 0.0),
+            (900.0, 1800.0, 0.0),
+            (-1596.0, 1800.0, -1596.0),
+        ):
+            result = {"position_live": {}}
+            ctx = {"p1_position_marks": {"284": _p1_mark(pnl=pnl)}, "vix": 13.0}
+            self.assertTrue(brain._try_apply_paper_p1_valuation(trade, result, 284, ctx, spot=52010))
+            row = result["position_live"][284]
+            self.assertEqual(row["pnl_basis"], "GROSS_MTM")
+            self.assertEqual(row["peak_pnl"], peak)
+            self.assertEqual(row["trough_pnl"], trough)
+            self.assertEqual(row["peak_erosion"], round((peak - pnl) / peak * 100, 1))
+            self.assertEqual(row["vix_change"], 1.0)
+            self.assertEqual(row["vix_change_provenance"], "observed_current_minus_entry")
+            self.assertEqual(trade["peak_pnl"], peak)
+            self.assertEqual(trade["trough_pnl"], trough)
+            self.assertNotIn("vixChange", trade)
+            self.assertNotIn("peakErosion", trade)
+        verdict = brain.position_verdict(trade, [], "MILD", {"bnfDTE": 3})
+        self.assertIn("Flipped from +₹1800", verdict["reason"])
+
     def test_p1_live_full_feeds_brain_not_data_unavailable(self):
         trade = _trade_284()
         # Empty chain — compute_position_live alone would fail closed.

@@ -4511,7 +4511,7 @@ def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
     pnl_raw = mark.get("last_valid_current_pnl")
     try:
         pnl = float(pnl_raw)
-        if pnl != pnl:  # NaN
+        if not math.isfinite(pnl):
             return False
     except (TypeError, ValueError):
         return False
@@ -4613,9 +4613,32 @@ def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
     except Exception:
         legs_quoted = None
 
+    # PositionMarkStore.last_valid_current_pnl comes from the Kotlin
+    # computePositionTickCurrentPnl entry/mark difference × quantity. Friction
+    # is applied only to the card's separate net liquidation value. Keep the
+    # trades_v2 extrema in the existing GROSS MTM basis.
+    prev_peak = _finite_float_or_none(trade.get("peak_pnl")) or 0.0
+    prev_trough = _finite_float_or_none(trade.get("trough_pnl")) or 0.0
+    new_peak = max(prev_peak, pnl) if pnl > 0 else prev_peak
+    new_trough = min(prev_trough, pnl) if pnl < 0 else prev_trough
+    erosion = round((new_peak - pnl) / new_peak * 100, 1) if new_peak >= 500 else 0.0
+    vix_info = _compute_vix_change_for_verdict(
+        ctx.get("vix") if isinstance(ctx, dict) else None,
+        trade.get("entry_vix"), mode="corrected",
+    )
+
     row = {
         "trade_id": tid,
         "current_pnl": round(pnl, 2),
+        "pnl_basis": "GROSS_MTM",
+        "peak_pnl": round(new_peak),
+        "trough_pnl": round(new_trough),
+        "peak_erosion": erosion,
+        "vix_change": vix_info["vix_change"],
+        "vix_change_available": vix_info["vix_change_available"],
+        "vix_change_provenance": vix_info["vix_change_provenance"],
+        "current_vix": vix_info["current_vix"],
+        "entry_vix_used": vix_info["entry_vix"],
         "current_spot": round(spot, 2) if spot is not None else trade.get("current_spot"),
         "valuation_quality": "full",
         "positionDataDegraded": False,
@@ -4643,6 +4666,8 @@ def _try_apply_paper_p1_valuation(trade, result, tid, ctx, spot=None):
         result.setdefault("position_live", {})[tid] = row
 
     trade["current_pnl"] = row["current_pnl"]
+    trade["peak_pnl"] = row["peak_pnl"]
+    trade["trough_pnl"] = row["trough_pnl"]
     trade["current_spot"] = row["current_spot"]
     trade["valuation_quality"] = "full"
     trade["positionDataDegraded"] = False

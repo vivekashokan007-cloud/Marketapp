@@ -2810,11 +2810,7 @@ class MarketWatchService : Service() {
                         if (live != null) {
                             t.putNullableFiniteNumber("current_pnl", live.optNullableFiniteDouble("current_pnl"))
                             t.putNullableFiniteNumber("current_spot", live.optNullableFiniteDouble("current_spot"))
-                            t.putNullableFiniteNumber("current_premium", live.optNullableFiniteDouble("current_net_premium"))
-                            t.putNullableFiniteNumber("peak_pnl", live.optNullableFiniteDouble("peak_pnl"))
-                            t.putNullableFiniteNumber("trough_pnl", live.optNullableFiniteDouble("trough_pnl"))
-                            t.putNullableFiniteNumber("peak_erosion", live.optNullableFiniteDouble("peak_erosion"))
-                            t.putNullableFiniteNumber("vix_change", live.optNullableFiniteDouble("vix_change"))
+                            applyOptionalPositionLiveMetrics(t, live)
                             if (live.has("journey")) {
                                 t.put("journey", live.optJSONArray("journey"))
                             }
@@ -4734,5 +4730,17 @@ private fun JSONObject.putNullableFiniteNumber(name: String, value: Double?) {
         put(name, JSONObject.NULL)
     } else {
         put(name, value)
+    }
+}
+
+/** Missing or nonfinite optional fields are not evidence that a stored gross
+ * extreme vanished. Fresh current_pnl/current_spot retain their fail-closed
+ * copy-back behaviour in the caller. */
+internal fun applyOptionalPositionLiveMetrics(trade: JSONObject, live: JSONObject) {
+    val premium = if (live.has("current_net_premium")) live.optNullableFiniteDouble("current_net_premium") else null
+    if (premium != null) trade.put("current_premium", premium)
+    for (key in arrayOf("peak_pnl", "trough_pnl", "peak_erosion", "vix_change")) {
+        if (!live.has(key)) continue
+        live.optNullableFiniteDouble(key)?.let { trade.put(key, it) }
     }
 }

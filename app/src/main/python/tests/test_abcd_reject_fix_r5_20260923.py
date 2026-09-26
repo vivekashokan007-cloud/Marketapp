@@ -129,11 +129,14 @@ class R5Gap1ReadonlyPagedPositionTicks(unittest.TestCase):
                 }
             ]
         )
-        result = api.import_kotlin_parity_from_readonly_client(
-            client,
-            live_production_readback=False,
-            source_label="fixture_shaped_mock_not_live",
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = api.ParityObservationStore(path=str(Path(directory) / "parity.jsonl"))
+            result = api.import_kotlin_parity_from_readonly_client(
+                client,
+                store=store,
+                live_production_readback=False,
+                source_label="fixture_shaped_mock_not_live",
+            )
         self.assertFalse(result["live_production_readback"])
         self.assertTrue(result["fixture_only"])
         self.assertEqual(result["read_via"], "fetch_all_position_ticks_readonly")

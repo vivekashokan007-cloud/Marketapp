@@ -1,0 +1,13 @@
+{
+  "table": "public.position_ticks",
+  "source": "2026-09-25 read-only information_schema export plus four columns in 20260925100000_position_ticks_lot_columns.sql; re-export after migration",
+  "columns": [
+    "id", "trade_id", "session_date", "tick_ts", "source", "auth_source",
+    "index_key", "strategy_type", "status", "leg_count",
+    "valuation_quality", "mark_basis", "executable_mark", "mid_mark",
+    "ltp_mark", "current_pnl", "current_pnl_r", "running_mae", "running_mfe",
+    "policy_action", "policy_reason", "policy_trace_json", "legs_json",
+    "created_at", "quantity_units", "contract_lot_size", "number_of_lots",
+    "lot_authoritative"
+  ]
+}

@@ -285,11 +285,14 @@ class C4RunnerTests(unittest.TestCase):
                 disk = json.load(f)
             self.assertEqual(disk["n_outcomes"], 36)
 
-    def test_default_docs_report_path_writable(self):
-        # Also write the in-repo sample artifact under docs/
-        report = per.run_fixture_eval(write_report=True)
-        self.assertTrue(os.path.isfile(report["report_path"]))
-        self.assertIn("batch_c_policy_eval", report["report_path"])
+    def test_docs_report_shape_writable_without_mutating_repository(self):
+        with tempfile.TemporaryDirectory() as directory:
+            docs = os.path.join(directory, "batch_c_policy_eval")
+            os.makedirs(docs)
+            report_path = os.path.join(docs, "sample_policy_eval_report_20260923.json")
+            report = per.run_fixture_eval(report_path=report_path, write_report=True)
+            self.assertTrue(os.path.isfile(report["report_path"]))
+            self.assertIn("batch_c_policy_eval", report["report_path"])
 
 
 if __name__ == "__main__":

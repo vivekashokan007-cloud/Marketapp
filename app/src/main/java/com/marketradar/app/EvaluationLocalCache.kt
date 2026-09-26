@@ -20,6 +20,19 @@ object EvaluationLocalCache {
     private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
     private const val MAX_SUMMARY_BYTES_PER_SESSION = 4L * 1024L * 1024L
     private const val MAX_COMPACT_SNAPSHOT_BYTES = 2L * 1024L * 1024L
+    // Keep in sync with brain.py _compact_android_snapshot_context Batch A
+    // evidence-contract survivors (scalar_keys, object_keys, array_keys).
+    // One list feeds both local persistence and the cloud upload compactor.
+    internal val BATCH_A_CONTEXT_KEYS = arrayOf(
+        "nfDTE", "bnfDTE", "snapshot_open_trades_json",
+        "snapshot_closed_trades_json", "snapshot_capture_completeness",
+        "snapshot_capture_failure_reason", "marketPhase",
+        "snapshot_position_verdicts", "snapshot_position_marks",
+        "advice_parity_observed", "position_state_observed",
+        "snapshot_manual_exit_provenance", "snapshot_capture_field_status",
+        "snapshot_market_profiles", "bnfDteMeta", "nfDteMeta",
+        "snapshot_watchlist", "snapshot_open_trades"
+    )
     // Cloud snapshots are the durable evidence path. Keep local full snapshots
     // as a bounded recent cache, and trim with hysteresis so polling does not
     // rewrite a near-100 MiB file every few minutes after the cap is reached.
@@ -752,6 +765,10 @@ object EvaluationLocalCache {
             "snapshot_supply_state"
         )
         for (key in contextKeys) {
+            val value = context.opt(key)
+            if (value != null && value != JSONObject.NULL) compactContext.put(key, value)
+        }
+        for (key in BATCH_A_CONTEXT_KEYS) {
             val value = context.opt(key)
             if (value != null && value != JSONObject.NULL) compactContext.put(key, value)
         }

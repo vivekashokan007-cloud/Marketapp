@@ -1,0 +1,56 @@
+{
+  "context_json": {
+    "bnfDTE": 4,
+    "marketPhase": {
+      "id": "OPEN"
+    },
+    "nfDTE": 3,
+    "snapshot_capture_completeness": "forward_capture_v1_batch_a",
+    "snapshot_capture_field_status": {
+      "fields": {
+        "bnfDTE": "present",
+        "marketPhase": "present",
+        "nfDTE": "present",
+        "snapshot_open_trades_json": "present",
+        "snapshot_position_marks": "present",
+        "snapshot_position_verdicts": "present"
+      },
+      "schema_version": "capture_field_status_v1_batch_a_reject_fix_20260923"
+    },
+    "snapshot_manual_exit_provenance": {
+      "book_profit_button_reason_is_brain_proof": false,
+      "note": "UI Book Profit may pass a wording token such as \"manual_book_profit_button\"; that is button provenance, not proof the Brain emitted BOOK."
+    },
+    "snapshot_market_profiles": {
+      "bnfProfile": {},
+      "effective_bias": null,
+      "marketPhase": {
+        "id": "OPEN"
+      },
+      "nfProfile": {},
+      "pcrContext": null,
+      "rangeSigma": null,
+      "regime": null
+    },
+    "snapshot_open_trades_json": "[{\"id\":\"paper-284\",\"paper\":true}]",
+    "snapshot_position_marks": {
+      "paper-284": {
+        "current_pnl": -1596,
+        "peak_erosion": 188.7,
+        "peak_pnl": 1800,
+        "valuation_quality": "full",
+        "vix_change": null,
+        "vix_change_available": null
+      }
+    },
+    "snapshot_position_verdicts": {
+      "paper-284": {
+        "action": "HOLD",
+        "urgency": "MONITOR"
+      }
+    },
+    "snapshot_watchlist": []
+  },
+  "poll_ts": "2026-09-25T10:27:11+0530",
+  "session_date": "2026-09-25"
+}

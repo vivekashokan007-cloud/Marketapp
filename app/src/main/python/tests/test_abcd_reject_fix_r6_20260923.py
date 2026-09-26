@@ -86,11 +86,14 @@ class R6Counter1MockNeverLabeledLive(unittest.TestCase):
             _tick_row(1, "t-r6-live-join", "2026-09-23", "2026-09-23T10:00:00+00:00"),
         ]
         client = ptx.MockMultiPagePositionTicksClient(rows)
-        result = api.import_kotlin_parity_from_readonly_client(
-            client,
-            live_production_readback=True,
-            source_label="mock_must_not_be_live_import",
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            store = api.ParityObservationStore(path=f"{directory}/parity.jsonl")
+            result = api.import_kotlin_parity_from_readonly_client(
+                client,
+                store=store,
+                live_production_readback=True,
+                source_label="mock_must_not_be_live_import",
+            )
         self.assertFalse(result["live_production_readback"])
         self.assertTrue(result["fixture_only"])
 
