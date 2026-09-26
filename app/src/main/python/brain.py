@@ -16154,6 +16154,219 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_elig
     return final
 
 
+# ═══════════════════════════════════════════════════════════════
+# B3 item 2 (2026-09-26) — first-poll Paper position monitoring
+# ═══════════════════════════════════════════════════════════════
+# analyze() returns early while the session has fewer than 3 polls. Before
+# this, that early return also skipped every open position: no valuation, no
+# Brain position verdict, no POSITION alerts and no published exit levels for
+# the first ~10 minutes of a session (and after any restart that lost the poll
+# history). Open positions do not need the entry warmup — their exposure is
+# already live. This helper monitors PAPER positions from the first usable
+# mark while leaving new-entry generation and every history-dependent signal
+# explicitly unavailable. Real trades are untouched: the early-return payload
+# for a session with no Paper position is byte-identical to before.
+FIRST_POLL_POSITION_MONITORING_VERSION = 'b3_first_poll_paper_position_monitoring_v1_20260926'
+FIRST_POLL_POSITION_MONITORING_SCOPE = 'PAPER_FIRST_POLL'
+# Signals that need poll history (>=2-3 polls) or regime, and so stay
+# unavailable until the normal path runs. Only snapshot inputs are evaluated.
+FIRST_POLL_HISTORY_DEPENDENT_SIGNALS = (
+    'regime',
+    'market_phase',
+    'position_momentum_threat',
+    'position_regime_fit',
+    'position_vix_headwind',
+    'position_book_signal',
+    'position_gamma_alert',
+    'new_entry_generation',
+)
+FIRST_POLL_SNAPSHOT_POSITION_INSIGHTS = ('position_wall_proximity',)
+
+
+def _first_poll_paper_position_monitor(result, polls, baseline, open_trades, strike_oi, ctx, required_polls=3):
+    """Monitor Paper open positions during the analyze() poll-history warmup.
+
+    Uses the same valuation sources as the full path (P1 trusted LIVE_FULL
+    mark first, then the chain valuation, else explicit DATA_UNAVAILABLE), the
+    same position_verdict and the same evaluate_alerts position rules, with
+    only snapshot insights. Regime/market phase are passed as explicitly
+    unknown. Returns the list of monitored trade ids (empty => no change).
+    """
+    if not isinstance(result, dict) or not isinstance(open_trades, list):
+        return []
+    ctx = ctx if isinstance(ctx, dict) else {}
+    paper_trades = [t for t in open_trades if isinstance(t, dict) and t.get('paper')]
+    if not paper_trades:
+        return []
+    real_ids = [t.get('id') for t in open_trades if isinstance(t, dict) and not t.get('paper')]
+    polls = polls if isinstance(polls, list) else []
+    baseline = baseline if isinstance(baseline, dict) else {}
+    strike_oi = strike_oi if isinstance(strike_oi, dict) else {}
+
+    latest_poll = polls[-1] if polls and isinstance(polls[-1], dict) else {}
+
+    def _spot(index_key):
+        base_key = 'bnfSpot' if index_key == 'BNF' else 'nfSpot'
+        poll_key = 'bnf' if index_key == 'BNF' else 'nf'
+        return (
+            latest_poll.get(base_key) or latest_poll.get(poll_key)
+            or latest_poll.get(poll_key.upper()) or ctx.get(base_key)
+            or baseline.get(base_key) or 0
+        )
+
+    bnf_chain = ctx.get('bnfChain') or {}
+    nf_chain = ctx.get('nfChain') or {}
+    bnf_spot = _spot('BNF')
+    nf_spot = _spot('NF')
+    vix = ctx.get('vix') or 15
+    gap = ctx.get('gap') or {}
+    try:
+        bnf_profile = chain_profile(bnf_chain, bnf_spot, ctx.get('bnfOHLC'), vix, gap) or {}
+    except Exception as e:
+        print(f"FIRST_POLL_MONITOR: bnf chain_profile failed: {e}")
+        bnf_profile = {}
+    try:
+        nf_profile = chain_profile(nf_chain, nf_spot, ctx.get('nfOHLC'), vix, gap) or {}
+    except Exception as e:
+        print(f"FIRST_POLL_MONITOR: nf chain_profile failed: {e}")
+        nf_profile = {}
+    spots = {'bnfSpot': bnf_spot, 'nfSpot': nf_spot}
+    bnf_breadth = ctx.get('bnfBreadth')
+
+    # History-dependent context is explicitly unknown, never inherited from a
+    # previous poll or session through the persisted ctx.
+    warmup_regime = {
+        'type': 'unknown', 'sigma': 0, 'direction': 0, 'trend_pct': 0,
+        'unavailable_reason': 'first_poll_warmup',
+    }
+    warmup_ctx = dict(ctx)
+    warmup_ctx['marketPhase'] = 'UNKNOWN'
+    warmup_ctx['regime'] = warmup_regime
+
+    result.setdefault('position_live', {})
+    result.setdefault('positions', {})
+    monitored = []
+    for t in paper_trades:
+        tid = t.get('id', '')
+        idx = (_index_key_fail_closed(t) or 'UNKNOWN')
+        profile = bnf_profile if idx == 'BNF' else nf_profile
+        spot = bnf_spot if idx == 'BNF' else nf_spot
+        try:
+            p1_applied = False
+            try:
+                p1_applied = _try_apply_paper_p1_valuation(t, result, tid, warmup_ctx, spot=spot)
+            except Exception as e:
+                print(f"P1_PAPER_VALUATION_APPLY_FAIL: trade={tid} err={e}")
+                p1_applied = False
+            if p1_applied:
+                pl_data = result['position_live'].get(tid) or {}
+                observed = _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
+                result.setdefault('position_verdict_inputs_observed', {})[tid] = observed
+                live_row = result['position_live'].get(tid)
+                if isinstance(live_row, dict):
+                    live_row['vixChange'] = observed.get('vixChange')
+                    live_row['peakErosion'] = observed.get('peakErosion')
+                    live_row['position_verdict_input_bridge'] = observed.get('position_verdict_input_bridge')
+                    live_row['observation_only_vix_erosion'] = True
+                    live_row['p1_paper_brain_valuation'] = True
+            else:
+                pl_data = compute_position_live(t, bnf_chain, nf_chain, spots, ctx.get('vix'), warmup_ctx, bnf_breadth)
+                if pl_data and not pl_data.get('_valuation_unavailable'):
+                    result['position_live'][tid] = pl_data
+                    t['current_pnl'] = pl_data['current_pnl']
+                    t['current_spot'] = pl_data['current_spot']
+                    t['valuation_quality'] = pl_data.get('valuation_quality')
+                    t['positionDataDegraded'] = pl_data.get('valuation_quality') != 'full'
+                    t['lot_size_assumed'] = pl_data.get('lot_size_assumed')
+                    t['legs_required'] = pl_data.get('legs_required')
+                    t['legs_quoted'] = pl_data.get('legs_quoted')
+                    t['legs_intrinsic_fallback'] = pl_data.get('legs_intrinsic_fallback')
+                    observed = _bridge_position_verdict_inputs(t, pl_data, prefer_fresh=True)
+                    result.setdefault('position_verdict_inputs_observed', {})[tid] = observed
+                    live_row = result['position_live'].get(tid)
+                    if isinstance(live_row, dict):
+                        live_row['vixChange'] = observed.get('vixChange')
+                        live_row['peakErosion'] = observed.get('peakErosion')
+                        live_row['position_verdict_input_bridge'] = observed.get('position_verdict_input_bridge')
+                        live_row['observation_only_vix_erosion'] = True
+                else:
+                    reason = 'missing_required_chain_quotes'
+                    if isinstance(pl_data, dict) and pl_data.get('failure_reason'):
+                        reason = str(pl_data.get('failure_reason'))
+                    _stamp_unavailable_position_valuation(t, result, tid, spot=spot, reason=reason)
+
+            ci_detail = compute_control_index(t, profile, spot, bnf_breadth, return_detail=True)
+            t['controlIndex'] = ci_detail.get('score', 0)
+            t['controlIndexMeta'] = ci_detail
+            t['wallDrift'] = compute_wall_drift(t, profile)
+
+            ins = []
+            soi = strike_oi.get(tid, strike_oi.get(str(tid), []))
+            try:
+                r = position_wall_proximity(t, polls, baseline, warmup_regime, soi)
+                if r:
+                    ins.append(r)
+            except Exception as e:
+                print(f"DEBUG: Position insight position_wall_proximity failed for tid {tid}: {e}")
+            pv = position_verdict(t, ins, warmup_regime, warmup_ctx)
+            live_row = result['position_live'].get(tid)
+            if isinstance(live_row, dict):
+                live_row['monitoring_mode'] = 'FIRST_POLL_WARMUP'
+            result['positions'][tid] = {
+                'verdict': pv,
+                'insights': ins,
+                'controlIndex': t.get('controlIndex', 0),
+                'controlIndexMeta': t.get('controlIndexMeta'),
+                'valuation_quality': t.get('valuation_quality'),
+                'legs_required': t.get('legs_required'),
+                'legs_quoted': t.get('legs_quoted'),
+                'legs_intrinsic_fallback': t.get('legs_intrinsic_fallback'),
+                'lot_size_assumed': t.get('lot_size_assumed'),
+                'wallDrift': t.get('wallDrift'),
+                'monitoring_mode': 'FIRST_POLL_WARMUP',
+                'history_dependent_signals_unavailable': list(FIRST_POLL_HISTORY_DEPENDENT_SIGNALS),
+                'snapshot_insights_evaluated': list(FIRST_POLL_SNAPSHOT_POSITION_INSIGHTS),
+            }
+            monitored.append(tid)
+        except Exception as e:
+            print(f"FIRST_POLL_MONITOR_TRADE_FAIL: trade={tid} err={e}")
+            result.setdefault('position_monitoring_errors', {})[str(tid)] = str(e)
+
+    # Same POSITION alert rules as the full path, for the monitored Paper
+    # trades only. Non-position (entry/market) alerts stay off during warmup.
+    alerts = []
+    try:
+        monitored_set = {str(x) for x in monitored}
+        monitored_trades = [t for t in paper_trades if str(t.get('id', '')) in monitored_set]
+        raw = evaluate_alerts(open_trades=monitored_trades, watchlist=[], result=result, ctx=warmup_ctx)
+        for alert in (raw or []):
+            if not isinstance(alert, dict) or str(alert.get('category') or '').upper() != 'POSITION':
+                continue
+            alert['monitoring_mode'] = 'FIRST_POLL_WARMUP'
+            alert['history_dependent_signals_unavailable'] = list(FIRST_POLL_HISTORY_DEPENDENT_SIGNALS)
+            body = str(alert.get('body') or '')
+            alert['body'] = (body + ' Warm-up: history-based signals unavailable.').strip()
+            alerts.append(alert)
+    except Exception as e:
+        result['alert_error'] = str(e)
+    result['alerts'] = alerts
+
+    result['position_monitoring_scope'] = FIRST_POLL_POSITION_MONITORING_SCOPE
+    result['position_monitoring'] = {
+        'schema_version': FIRST_POLL_POSITION_MONITORING_VERSION,
+        'mode': 'FIRST_POLL_WARMUP',
+        'scope': 'PAPER_ONLY',
+        'poll_count': len(polls),
+        'required_polls_for_full_analysis': required_polls,
+        'monitored_trade_ids': monitored,
+        'unmonitored_real_trade_ids': real_ids,
+        'new_entry_warmup': 'UNAVAILABLE',
+        'history_dependent_signals_unavailable': list(FIRST_POLL_HISTORY_DEPENDENT_SIGNALS),
+        'snapshot_insights_evaluated': list(FIRST_POLL_SNAPSHOT_POSITION_INSIGHTS),
+    }
+    return monitored
+
+
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -16208,6 +16421,15 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "approved_count": len(_normalize_approved_branch_proposals(ctx)),
             "matched_by_index": {},
         }
+        # B3 item 2: Paper open positions are monitored from the first usable
+        # mark; entry generation above stays in warmup. No Paper position =>
+        # no change to this payload (Real parity).
+        try:
+            _first_poll_paper_position_monitor(
+                result, polls, baseline, open_trades, strike_oi, ctx, required_polls=3
+            )
+        except Exception as e:
+            result["position_monitoring_error"] = str(e)
         try:
             result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
         except Exception as e:
@@ -24911,6 +25133,11 @@ class NotificationAgent:
         """
         live_ids = None
         position_live = result.get('position_live') if isinstance(result, dict) else None
+        # B3 item 2: a first-poll warmup payload carries Paper rows only, so it
+        # is not evidence that any other trade closed. Keep the pre-B3
+        # early-return behaviour (no trade-closed pruning) for that payload.
+        if isinstance(result, dict) and result.get('position_monitoring_scope') == FIRST_POLL_POSITION_MONITORING_SCOPE:
+            position_live = None
         if isinstance(position_live, dict) and position_live:
             live_ids = {str(trade_id) for trade_id in position_live.keys()}
 
