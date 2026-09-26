@@ -290,48 +290,77 @@ class PositionTickService : Service() {
             }
 
             val keys = legs.mapNotNull { it.instrumentKey }.distinct()
-            val quoteFetch = fetchQuotesWithFallback(keys)
-            val quotes = legs.mapNotNull { leg ->
-                leg.instrumentKey?.let { key ->
-                    quoteFetch.quotes[key]?.let { quote ->
-                        key to LegQuote(quote.bid, quote.ask, quote.ltp)
-                    }
-                }
-            }.toMap()
-            val valuation = valuePositionTick(
+            val isCredit = isCreditTrade(trade, strategyType)
+            val entryPremium = trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium")
+            val maxProfit = trade.optDoubleAny("max_profit", "maxProfit")
+            val maxLoss = trade.optDoubleAny("max_loss", "maxLoss")
+            fun valueWith(fetch: QuoteFetch): TickValuation = valuePositionTick(
                 strategyType = strategyType,
                 legs = legs,
-                quotes = quotes,
-                isCredit = isCreditTrade(trade, strategyType),
-                entryPremium = trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium"),
-                maxProfit = trade.optDoubleAny("max_profit", "maxProfit"),
-                maxLoss = trade.optDoubleAny("max_loss", "maxLoss"),
+                quotes = legs.mapNotNull { leg ->
+                    leg.instrumentKey?.let { key ->
+                        fetch.quotes[key]?.let { quote -> key to LegQuote(quote.bid, quote.ask, quote.ltp) }
+                    }
+                }.toMap(),
+                isCredit = isCredit,
+                entryPremium = entryPremium,
+                maxProfit = maxProfit,
+                maxLoss = maxLoss,
                 lotSize = lotMeta.lotSize
             )
-            when {
-                valuation.crossedQuoteLegs > 0 -> return fail(PAPER_CLOSE_CROSSED_QUOTE)
-                valuation.nonPositiveQuoteLegs > 0 -> return fail(PAPER_CLOSE_NON_POSITIVE_EXECUTABLE_QUOTE)
-                valuation.legValuations.any { it.bid == null || it.ask == null || it.executablePrice == null } ->
-                    return fail(PAPER_CLOSE_QUOTE_INCOMPLETE)
-                !valuation.valuationAccepted || valuation.valuationQuality != "OK" ||
-                    valuation.executableMark == null || valuation.currentPnl == null ->
-                    return fail(PAPER_CLOSE_VALUATION_NOT_ACCEPTED)
+            /** Pre-B3 executable gates; null when the book yields an executable close. */
+            fun bookGateFailure(v: TickValuation): String? = when {
+                v.crossedQuoteLegs > 0 -> PAPER_CLOSE_CROSSED_QUOTE
+                v.nonPositiveQuoteLegs > 0 -> PAPER_CLOSE_NON_POSITIVE_EXECUTABLE_QUOTE
+                v.legValuations.any { it.bid == null || it.ask == null || it.executablePrice == null } ->
+                    PAPER_CLOSE_QUOTE_INCOMPLETE
+                !v.valuationAccepted || v.valuationQuality != "OK" ||
+                    v.executableMark == null || v.currentPnl == null -> PAPER_CLOSE_VALUATION_NOT_ACCEPTED
+                else -> null
             }
-            // B3: executable close permission requires per-leg quote validity
-            // (exact key, source time present/fresh, session, expiry, quantity).
-            // A wide-but-valid book stays closable; bound trust is recorded only.
-            val closeA1 = assessMarkTrust(
+            val quoteFetch = fetchQuotesWithFallback(keys)
+            var valuation = valueWith(quoteFetch)
+            bookGateFailure(valuation)?.let { return fail(it) }
+            // B3: per-leg quote validity (exact key, source time, session, expiry,
+            // quantity). Decision 9: one bounded refresh, then allow a DEGRADED
+            // close with the reason recorded; Paper is never un-closable on
+            // validity alone. A wide-but-valid book stays closable as before.
+            var closeA1 = assessMarkTrust(
                 trade, tradeId, strategyType, legs, valuation, quoteFetch, isoUtcNow(),
-                lotMeta, isCreditTrade(trade, strategyType),
-                trade.optDoubleAny("entry_premium", "entryPremium", "net_premium", "netPremium"),
-                trade.optDoubleAny("max_profit", "maxProfit"),
-                trade.optDoubleAny("max_loss", "maxLoss")
+                lotMeta, isCredit, entryPremium, maxProfit, maxLoss
             )
-            if (!closeA1.validity.valid) {
-                return fail(
-                    PAPER_CLOSE_QUOTE_SOURCE_INVALID,
-                    closeA1.validity.reasons.joinToString(",").take(180)
+            val firstValidity = closeA1.validity
+            val refreshKeys = paperCloseRefreshKeys(firstValidity)
+            var refreshedValidity: PositionQuoteValidity? = null
+            var refreshStatus: String? = null
+            if (!firstValidity.valid && refreshKeys.isNotEmpty()) {
+                try { Thread.sleep(QUOTE_REFRESH_DELAY_MS) } catch (_: InterruptedException) { }
+                val refreshed = fetchQuotesWithFallback(refreshKeys)
+                refreshStatus = refreshed.fetchStatus
+                val (mq, mx, replaced) = mergeRefreshedLegQuotes(
+                    quoteFetch.quotes, quoteFetch.exactKeys, refreshed.quotes, refreshed.exactKeys, refreshKeys
                 )
+                val mergedFetch = quoteFetch.copy(
+                    quotes = mq, exactKeys = mx,
+                    fetchStatus = mergedFetchStatus(quoteFetch.fetchStatus, refreshed.fetchStatus, keys, replaced)
+                )
+                val v2 = valueWith(mergedFetch)
+                if (bookGateFailure(v2) == null) {
+                    val a2 = assessMarkTrust(
+                        trade, tradeId, strategyType, legs, v2, mergedFetch, isoUtcNow(),
+                        lotMeta, isCredit, entryPremium, maxProfit, maxLoss
+                    )
+                    refreshedValidity = a2.validity
+                    valuation = v2
+                    closeA1 = a2
+                }
+            }
+            val closeQuality = decidePaperCloseQuality(firstValidity, refreshKeys, refreshedValidity)
+            if (closeQuality.quality == PAPER_CLOSE_QUOTE_QUALITY_DEGRADED) {
+                val line = "PAPER_CLOSE_QUOTE_DEGRADED: trade=$tradeId refresh=${closeQuality.refreshAttempted} " +
+                    "refresh_status=${refreshStatus ?: "-"} reason=${closeQuality.reason?.take(120)}"
+                Log.w(TAG, line)
+                LogBuffer.add('W', TAG, line)
             }
 
             val quotedAt = System.currentTimeMillis()
@@ -360,7 +389,14 @@ class PositionTickService : Service() {
                 put("max_source_age_ms", closeA1.validity.maxSourceAgeMs ?: JSONObject.NULL)
                 put("mark_trust_state", closeA1.trust.state)
                 put("mark_trust_cause", closeA1.trust.cause ?: JSONObject.NULL)
-                put("close_permission_basis", "QUOTE_VALIDITY_REQUIRED_BOUND_TRUST_RECORDED")
+                put("close_permission_basis", "QUOTE_VALIDITY_OR_DEGRADED_AFTER_ONE_REFRESH_BOUND_TRUST_RECORDED")
+                // Decision 9: explicit quality + reason; DEGRADED is never silent.
+                put("close_quote_quality_contract", PAPER_CLOSE_QUALITY_CONTRACT)
+                put("close_quote_quality", closeQuality.quality)
+                put("close_quote_degraded_reason", closeQuality.reason ?: JSONObject.NULL)
+                put("close_quote_refresh_attempted", closeQuality.refreshAttempted)
+                put("close_quote_refresh_keys", JSONArray(closeQuality.refreshKeys))
+                put("close_quote_first_validity_reasons", JSONArray(firstValidity.reasons.take(12)))
             }
             PaperCloseQuoteStore.completeReady(prefs, requestId, payload)
             sendBroadcast(
