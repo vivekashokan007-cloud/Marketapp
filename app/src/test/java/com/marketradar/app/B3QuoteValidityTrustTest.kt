@@ -376,21 +376,18 @@ class B3QuoteValidityTrustTest {
     }
 
     @Test
-    fun paperConsumesOnlyOnPost_realKeepsLegacyConsumeOnSend() {
+    fun bothModesConsumeOnlyOnPost_ownerDecision1() {
+        // Owner decision 1 (26 Sep 2026): Real no longer consumes on send.
         listOf(DELIVERY_PERMISSION_DENIED, DELIVERY_CHANNEL_BLOCKED, DELIVERY_THROTTLED, DELIVERY_EXCEPTION)
-            .forEach {
-                assertFalse(shadowAlertAttemptConsumes(true, it))
-                assertTrue(shadowAlertAttemptConsumes(false, it))
-            }
-        assertTrue(shadowAlertAttemptConsumes(true, DELIVERY_POSTED))
-        assertTrue(shadowAlertAttemptConsumes(false, DELIVERY_POSTED))
+            .forEach { assertFalse(it, shadowAlertAttemptConsumes(it)) }
+        assertTrue(shadowAlertAttemptConsumes(DELIVERY_POSTED))
     }
 
     @Test
     fun deniedThenPermissionRestoredRetriesAcrossRestartThenConsumes() {
         var ledgerBlob = "{}"
         fun attempt(cls: String, raw: String, now: Long): JSONObject {
-            val consumed = shadowAlertAttemptConsumes(true, cls)
+            val consumed = shadowAlertAttemptConsumes(cls)
             // Serialize/parse each time: identical to SharedPreferences across restart.
             val next = recordShadowDeliveryAttempt(JSONObject(ledgerBlob), "281", "SHADOW_SL", "2026-09-28",
                 true, cls, raw, "", consumed, now)

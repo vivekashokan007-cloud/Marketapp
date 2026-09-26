@@ -548,12 +548,20 @@ internal fun classifyNotificationDelivery(outcome: String, postedToOs: Boolean):
 
 /**
  * Whether a shadow alert attempt consumes its transition and cooldown anchor.
- * Paper: only an OS-accepted post consumes; every failure stays retryable.
- * Real: legacy consume-on-send is preserved byte-for-byte (Real parity rule;
- * enabling retry for Real is an owner decision, see B3 handoff).
+ * Only an OS-accepted post consumes; every failure (permission denied, channel
+ * blocked, throttled, exception) stays retryable on the next tick.
+ *
+ * Owner decision 1 (26 Sep 2026): applies to Paper AND Real. It is delivery
+ * reliability, not advice. Real-behaviour change: a Real shadow SL/TP/EOD/
+ * DEGRADED notice that the OS did not accept is no longer consumed; it is
+ * re-attempted on each following tick while the action persists (at most one
+ * attempt per tick) and consumes the transition + cooldown anchor only when
+ * posted. Before this, Real consumed on the first attempt whatever happened.
  */
-internal fun shadowAlertAttemptConsumes(isPaper: Boolean, deliveryClass: String): Boolean =
-    if (isPaper) deliveryClass == DELIVERY_POSTED else true
+internal const val SHADOW_DELIVERY_CONSUME_RULE = "POSTED_ONLY_ALL_MODES_OWNER_DECISION_1_20260926"
+
+internal fun shadowAlertAttemptConsumes(deliveryClass: String): Boolean =
+    deliveryClass == DELIVERY_POSTED
 
 internal const val SHADOW_DELIVERY_LEDGER_VERSION = "shadow_delivery_ledger_v1"
 internal const val SHADOW_DELIVERY_LEDGER_MAX_ENTRIES = 200
@@ -600,6 +608,7 @@ internal fun recordShadowDeliveryAttempt(
             else -> JSONObject.NULL
         })
         put("consumed", consumed)
+        put("consume_rule", SHADOW_DELIVERY_CONSUME_RULE)
         put("retry_pending", !consumed)
         put("user_saw_notification", "UNKNOWN_OS_POST_IS_NOT_USER_ACK")
     }

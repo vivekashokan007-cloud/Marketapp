@@ -176,7 +176,7 @@ class B3Item2FirstPollMonitoringTest {
         assertTrue(ledger.getJSONObject(id).getBoolean("retry_pending"))
         assertFalse(ledger.getJSONObject(id).getBoolean("posted_to_os"))
         ledger = recordShadowDeliveryAttempt(ledger, "284", "SHADOW_SL", "2026-09-15", true,
-            DELIVERY_POSTED, "POSTED_TO_OS", "", consumed = shadowAlertAttemptConsumes(true, DELIVERY_POSTED), nowMs = now + 60_000L)
+            DELIVERY_POSTED, "POSTED_TO_OS", "", consumed = shadowAlertAttemptConsumes(DELIVERY_POSTED), nowMs = now + 60_000L)
         ledger = JSONObject(ledger.toString())
         val e = ledger.getJSONObject(id)
         assertEquals(2, e.getInt("attempts"))

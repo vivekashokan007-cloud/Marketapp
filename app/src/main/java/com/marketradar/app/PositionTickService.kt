@@ -1361,12 +1361,12 @@ class PositionTickService : Service() {
         } catch (t: Throwable) {
             NotificationHelper.DeliveryResult(true, false, "NOTIFY_FAILED", t.javaClass.simpleName)
         }
-        // B3 item 7: decision, attempt and OS post are distinct. Paper consumes the
-        // transition/cooldown only on an OS-accepted post; every failure stays
-        // retryable. Real keeps legacy consume-on-send (Real parity rule).
+        // B3 item 7 + owner decision 1: decision, attempt and OS post are distinct.
+        // Paper AND Real consume the transition/cooldown only on an OS-accepted
+        // post; every failure stays retryable (see shadowAlertAttemptConsumes).
         val isPaper = trade.optBoolean("paper", false)
         val deliveryClass = classifyNotificationDelivery(delivery.outcome, delivery.postedToOs)
-        val consumed = shadowAlertAttemptConsumes(isPaper, deliveryClass)
+        val consumed = shadowAlertAttemptConsumes(deliveryClass)
         val sessionDate = row.optString("session_date", "")
         val ledger = recordShadowDeliveryAttempt(
             readShadowDeliveryLedger(), tradeId, action, sessionDate, isPaper,

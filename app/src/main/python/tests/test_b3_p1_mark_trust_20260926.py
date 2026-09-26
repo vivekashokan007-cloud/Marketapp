@@ -101,7 +101,10 @@ class TestTickServiceOwnershipAndNoPolicyShortcuts(unittest.TestCase):
                         block.index("priceUntrustedCause != null -> \"SHADOW_DEGRADED\""))
 
     def test_paper_consumes_only_on_post(self):
-        self.assertIn("if (isPaper) deliveryClass == DELIVERY_POSTED else true", self.validity)
+        # Owner decision 1 (26 Sep 2026): POSTED-only consumption for Paper and Real.
+        self.assertIn("internal fun shadowAlertAttemptConsumes(deliveryClass: String): Boolean =\n"
+                      "    deliveryClass == DELIVERY_POSTED", self.validity)
+        self.assertIn("val consumed = shadowAlertAttemptConsumes(deliveryClass)", self.service)
         self.assertIn("if (consumed) {", self.service)
 
 
