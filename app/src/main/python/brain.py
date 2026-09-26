@@ -25053,6 +25053,12 @@ def _candidates_economically_equivalent(id_a, id_b):
     return True
 
 
+# Owner decision 5: bounded POS_VERDICT_<ACTION>_<id> state-key parse.
+POS_VERDICT_KEY_PREFIX = 'POS_VERDICT_'
+POS_VERDICT_ACTIONS = frozenset({'BOOK', 'EXIT'})
+POS_VERDICT_STATE_KEY_CONTRACT = 'pos_verdict_state_key_v2_bounded_action_token_20260926'
+
+
 class NotificationAgent:
     def __init__(self, state=None):
         if state is None:
@@ -25208,6 +25214,17 @@ class NotificationAgent:
         key = str((alert or {}).get('key') or '').strip()
         if not key:
             return ''
+        # Owner decision 5 (26 Sep 2026): POS_VERDICT_<ACTION>_<id> carries an
+        # action token, so the generic 3-way split produced '<ACTION>_<id>:POS_VERDICT'.
+        # Its "trade id" never matched position_live, _prune_position_alert_states
+        # dropped the acknowledgement on the next poll and the verdict re-notified
+        # every other poll (~10 min) for Paper and Real. Bounded parse: only the
+        # known action tokens, and only a non-empty id without further '_'.
+        if key.startswith(POS_VERDICT_KEY_PREFIX):
+            rest = key[len(POS_VERDICT_KEY_PREFIX):]
+            action, sep, trade_id = rest.partition('_')
+            if sep and action in POS_VERDICT_ACTIONS and trade_id and '_' not in trade_id:
+                return f"{trade_id}:POS_VERDICT_{action}"
         parts = key.split('_', 2)
         if len(parts) >= 3:
             state = '_'.join(parts[:2])
