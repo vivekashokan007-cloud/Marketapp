@@ -900,6 +900,9 @@ class PositionTickService : Service() {
                     if (midFallbackSl) {
                         put("stop_basis", STOP_BASIS_MID_FALLBACK_WIDE_BOOK)
                         putOptNumber("executable_pnl_untrusted", currentPnl)
+                        // Addendum A: executable = expected fill cost; mid = indicative.
+                        put("expected_fill_basis", "EXECUTABLE_BID_ASK")
+                        put("mid_fallback_pnl_role", "INDICATIVE_NOT_A_CLOSING_PRICE")
                     }
                 }
                 // Which arm set each level, so a session can be audited for how

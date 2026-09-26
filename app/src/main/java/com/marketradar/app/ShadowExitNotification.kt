@@ -9,7 +9,13 @@ import org.json.JSONObject
  * pre-B3.1 strings from PositionTickService.maybeNotifyShadowExit (Real parity).
  */
 
-/** B3.1: SL fires on mid only when the executable mark was withheld and mid <= SL. */
+/**
+ * B3.1: SL fires on mid only when the executable mark was withheld and mid <= SL.
+ * Addendum A: the fallback can only ADD a stop. It is consulted only when
+ * pricePnl == null (untrusted Paper mark); whenever the executable P&L is
+ * available (trusted mark, all Real) decideShadowAction evaluates the
+ * executable stop first and the mid is never read.
+ */
 internal fun isMidFallbackStop(pricePnl: Double?, midFallbackPnl: Double?, slThreshold: Double?): Boolean =
     pricePnl == null && midFallbackPnl != null && midFallbackPnl.isFinite() &&
         slThreshold != null && midFallbackPnl <= slThreshold
@@ -72,10 +78,14 @@ internal fun shadowExitNotificationContent(action: String, label: String, row: J
         "SHADOW_SL" -> if (midFallback) {
             val mid = trace!!.optDouble("mid_fallback_pnl", Double.NaN)
             val cause = trace.optString("price_policy_untrusted_cause", "WIDE_BOOK")
+            // Addendum A (Codex): a wide book's mid is indicative, not a closing
+            // price (buy-to-close pays the ask, sell-to-close gets the bid). The
+            // executable P&L is shown FIRST as the expected fill cost so the
+            // fallback can never make the position look safer than a close.
             Triple(
                 "🛑 Stop Loss Near (mid basis)",
-                "$label · mid P&L ${if (mid.isNaN()) "n/a" else rupees(mid)} · " +
-                    "executable P&L ${if (pnl.isNaN()) "n/a" else rupees(pnl)} ($cause) · " +
+                "$label · expected fill (bid/ask) P&L ${if (pnl.isNaN()) "n/a" else rupees(pnl)} · " +
+                    "mid P&L ${if (mid.isNaN()) "n/a" else rupees(mid)} (indicative) · wide book ($cause) · " +
                     "stop_basis=$STOP_BASIS_MID_FALLBACK_WIDE_BOOK · Cut position.",
                 "urgent"
             )

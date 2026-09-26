@@ -162,9 +162,11 @@ class B31WideBookTrustRuleTest {
             fallbackRow(p.tv.currentPnl!!, p.midFallback!!, p.trust.cause!!))!!
         assertEquals("urgent", channel)
         assertEquals("🛑 Stop Loss Near (mid basis)", title)
-        assertTrue(body, body.contains("mid P&L ₹-8,037"))
-        assertTrue(body, body.contains("executable P&L ₹-14,232"))
+        assertTrue(body, body.contains("expected fill (bid/ask) P&L ₹-14,232"))
+        assertTrue(body, body.contains("mid P&L ₹-8,037 (indicative)"))
         assertTrue(body, body.contains("stop_basis=MID_FALLBACK_WIDE_BOOK"))
+        // The expected fill cost comes before the indicative mid.
+        assertTrue(body.indexOf("expected fill") < body.indexOf("mid P&L"))
     }
 
     @Test
@@ -218,6 +220,49 @@ class B31WideBookTrustRuleTest {
         assertNull(midFallbackStopPnl(base.trust, invalid))       // wide cause but stale quotes
         assertNull(midFallbackStopPnl(base.trust.copy(state = TRUST_TRUSTED, cause = null), base.v))
         assertNull(midFallbackStopPnl(base.trust.copy(midPnl = null), base.v))
+    }
+
+    // ------------------------------------------ addendum A: fallback only adds
+
+    // 274 with a wider-than-normal but still TRUSTED book (gap 6.4% of ML < 20%):
+    // executable -6,597 is below SL -6,298.2, mid -5,922 is above it.
+    private val wideButTrustedBelowSl = mapOf(
+        "NSE_FO|69801" to LegQuote(30.0, 40.0, 35.0),
+        "NSE_FO|69826" to LegQuote(3.0, 5.0, 4.0),
+        "NSE_FO|69802" to LegQuote(1160.0, 1183.0, 1171.5),
+        "NSE_FO|69776" to LegQuote(150.0, 160.0, 155.0)
+    )
+
+    @Test
+    fun wideBookExecutableBelowSlMidAboveSl_firesOnExecutableBasis() {
+        val p = paper(legs274, wideButTrustedBelowSl, 850.1, 25503.0, 10497.0, sl274, tp274)
+        assertEquals(TRUST_TRUSTED, p.trust.state)
+        assertTrue(p.tv.currentPnl!! <= sl274)
+        assertTrue(p.trust.midPnl!! > sl274)
+        assertTrue(p.trust.bookWidth!!.gapFraction!! > 0.05)   // wider than any normal stored tick
+        assertNull(p.midFallback)                              // mid never consulted when trusted
+        assertEquals("SHADOW_SL", p.action)
+        assertFalse(isMidFallbackStop(p.tv.currentPnl, p.trust.midPnl, sl274))
+        val row = JSONObject().put("current_pnl", p.tv.currentPnl!!).put("policy_reason", "x")
+            .put("policy_trace_json", JSONObject().put("mark_trust", JSONObject().put("price_gate_applied", false)))
+        val (title, body, channel) = shadowExitNotificationContent("SHADOW_SL", "L", row)!!
+        assertEquals("🛑 Stop Loss Near", title)                // executable basis, no mid wording
+        assertFalse(body.contains("mid"))
+        assertEquals("urgent", channel)
+    }
+
+    @Test
+    fun midFallbackNeverSuppressesOrReplacesAnExecutableStop() {
+        // Whenever the executable P&L is present, any mid value is irrelevant.
+        for (mid in listOf(null, -20_000.0, -6_298.2, 0.0, 20_000.0)) {
+            assertEquals("SHADOW_SL", decideShadowAction(-7_000.0, mid, sl274, tp274, false, null, "OK"))
+            assertEquals("SHADOW_SL", decideShadowAction(-7_000.0, mid, sl274, tp274, true, null, "OK"))
+            assertEquals("SHADOW_TP", decideShadowAction(13_000.0, mid, sl274, tp274, false, null, "OK"))
+            assertEquals("HOLD", decideShadowAction(0.0, mid, sl274, tp274, false, null, "OK"))
+        }
+        // With the executable withheld, the fallback only turns a no-stop into a stop.
+        assertEquals("SHADOW_DEGRADED", decideShadowAction(null, null, sl274, tp274, false, CAUSE_WIDE_EXECUTABLE_BOOK, "OK"))
+        assertEquals("SHADOW_SL", decideShadowAction(null, -7_000.0, sl274, tp274, false, CAUSE_WIDE_EXECUTABLE_BOOK, "OK"))
     }
 
     // ------------------------------------------------------------- Real parity
