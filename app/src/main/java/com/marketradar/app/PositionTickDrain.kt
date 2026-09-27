@@ -40,6 +40,9 @@ internal const val PREF_POSITION_TICK_PENDING_QUEUE = "position_tick_pending_que
 internal const val PREF_POSITION_TICK_LAST_FLUSH_MS = "position_tick_last_flush_ms"
 internal const val PREF_POSITION_TICK_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
 internal const val PREF_POSITION_TICK_FLUSH_LAST_CLASS = "position_tick_flush_last_class"
+/** Full raw rows that cannot be inserted, retained durably for manual recovery. */
+internal const val PREF_POSITION_TICK_QUARANTINE_QUEUE = "position_tick_quarantine_queue_v1"
+internal const val PREF_POSITION_TICK_QUARANTINE_TOTAL = "position_tick_quarantine_total_v1"
 
 /** Minimum spacing between non-continuation attempts (storm guard). */
 internal const val POSITION_TICK_DRAIN_MIN_SPACING_MS = 5_000L
@@ -126,7 +129,20 @@ internal interface PositionTickQueueStore {
     fun load(): JSONArray
     /** Must be durable before returning (the app uses commit()). */
     fun save(queue: JSONArray)
+    /**
+     * Atomically retain [entries] in the quarantine and remove those exact
+     * identities from the pending queue. The full original row is preserved.
+     */
+    fun quarantineAndRemove(entries: List<PositionTickQuarantineEntry>)
 }
+
+internal data class PositionTickQuarantineEntry(
+    val row: JSONObject,
+    val reason: String,
+    val failureClass: String,
+    val httpStatus: Int? = null,
+    val serverCode: String? = null
+)
 
 /** One POST of [rows] (already shaped for upload). */
 internal fun interface PositionTickTransport {
@@ -164,12 +180,58 @@ internal data class PositionTickDrainReport(
     val lastChunkRows: Int,
     val maxChunkBytesSent: Int,
     val failure: PositionTickInsertResult?,
-    val identitySent: Boolean
+    val identitySent: Boolean,
+    val rowsQuarantined: Int = 0,
+    val removedKeyCounts: Map<String, Int> = emptyMap()
 ) {
     val failureClass: String get() = failure?.failureClass ?: POSITION_TICK_FLUSH_OK
 }
 
-private data class SelectedChunk(val rows: List<JSONObject>, val ids: List<String>, val body: JSONArray, val bytes: Int)
+private data class SelectedChunk(
+    val rows: List<JSONObject>,
+    val ids: List<String>,
+    val body: JSONArray,
+    val bytes: Int,
+    val removedKeyCounts: Map<String, Int>
+)
+
+private val POSITION_TICK_REQUIRED_TEXT_COLUMNS = listOf("trade_id", "session_date", "tick_ts", "source")
+
+/** Only locally certain poison is quarantined before a request. */
+internal fun positionTickLocalQuarantineReason(row: JSONObject): String? {
+    for (key in POSITION_TICK_REQUIRED_TEXT_COLUMNS) {
+        if (!row.has(key) || row.isNull(key) || row.optString(key, "").trim().isEmpty()) {
+            return "missing_required_$key"
+        }
+    }
+    return null
+}
+
+private fun positionTickQuarantineReason(result: PositionTickInsertResult): String =
+    "server_${result.failureClass}_http_${result.httpStatus ?: -1}_code_${result.allowlistedServerCode ?: "none"}"
+
+/**
+ * Only SQLSTATEs that identify a row-value violation may leave the active queue.
+ * Endpoint/schema/cache errors such as 404, 415, PGRST102 or PGRST204 remain
+ * pending because retrying after an app/server correction may succeed.
+ */
+private val POSITION_TICK_ROW_POISON_SERVER_CODES = setOf(
+    "22P02", // invalid text representation (for example text in an integer column)
+    "22003", // numeric value out of range
+    "22007", // invalid datetime format
+    "22008", // datetime field overflow
+    "23502", // not-null violation
+    "23514"  // check-constraint violation
+)
+
+internal fun isPositionTickQuarantinableSchemaFailure(result: PositionTickInsertResult): Boolean =
+    result.failureClass == POSITION_TICK_FLUSH_SCHEMA_PAYLOAD &&
+        (result.httpStatus == 400 || result.httpStatus == 422) &&
+        POSITION_TICK_ROW_POISON_SERVER_CODES.contains(result.allowlistedServerCode ?: "")
+
+private fun mergeRemovedKeyCounts(target: MutableMap<String, Int>, source: Map<String, Int>) {
+    for ((key, count) in source) target[key] = (target[key] ?: 0) + count
+}
 
 /** Exact duplicate proof: HTTP 409 + 23505 on the client_event_id unique index. */
 internal fun isPositionTickClientEventIdDuplicate(result: PositionTickInsertResult): Boolean =
@@ -180,12 +242,12 @@ internal fun isPositionTickClientEventIdDuplicate(result: PositionTickInsertResu
 /**
  * FIFO chunk drain. Invariants (each covered by PositionTickDrainTest):
  * 1. Rows are sent oldest-first in chunks of ≤ [PositionTickDrainConfig.chunkRows].
- * 2. Only rows of a chunk the server confirmed (2xx, or per-row proven identity
- *    duplicate) are removed — by identity, from the CURRENT stored queue, so rows
- *    enqueued concurrently are never lost.
- * 3. The first failing chunk stops the pass; it and every later row stay queued.
- * 4. The queue is never cleared, truncated or reordered; legacy rows only gain
- *    their computed `client_event_id` field.
+ * 2. Persisted rows are removed only after server confirmation. Permanently
+ *    malformed rows move atomically, with their full raw body, to quarantine.
+ * 3. A schema-rejected chunk is retried row-by-row so one poison row cannot
+ *    block later good rows. Other failures remain fail-closed and stop the pass.
+ * 4. The queue is never cleared or truncated; legacy rows only gain their
+ *    computed `client_event_id` field.
  */
 internal fun drainPositionTickQueue(
     store: PositionTickQueueStore,
@@ -216,13 +278,28 @@ internal fun drainPositionTickQueue(
     var chunksAcked = 0
     var rowsAcked = 0
     var rowsIdempotent = 0
+    var rowsQuarantined = 0
     var requests = 0
     var lastChunkRows = 0
     var maxBytes = 0
     var failure: PositionTickInsertResult? = null
     var outcome = PositionTickDrainOutcome.BUDGET_EXHAUSTED
+    val removedKeyCounts = linkedMapOf<String, Int>()
 
     while (chunksAttempted < config.maxChunksPerDrain) {
+        val localPoison = synchronized(lock) {
+            val q = store.load()
+            val entries = ArrayList<PositionTickQuarantineEntry>()
+            for (i in 0 until q.length()) {
+                val row = q.optJSONObject(i) ?: continue
+                val reason = positionTickLocalQuarantineReason(row) ?: continue
+                entries.add(PositionTickQuarantineEntry(row, reason, POSITION_TICK_FLUSH_SCHEMA_PAYLOAD))
+            }
+            if (entries.isNotEmpty()) store.quarantineAndRemove(entries)
+            entries.size
+        }
+        rowsQuarantined += localPoison
+
         val chunk = synchronized(lock) {
             val q = store.load()
             val late = ensurePositionTickIdentities(q)
@@ -239,6 +316,7 @@ internal fun drainPositionTickQueue(
         chunksAttempted += 1
         lastChunkRows = chunk.rows.size
         maxBytes = maxOf(maxBytes, chunk.bytes)
+        mergeRemovedKeyCounts(removedKeyCounts, chunk.removedKeyCounts)
         requests += 1
         val result = transport.insert(chunk.body)
         if (shouldDrainPositionTickQueue(result)) {
@@ -274,6 +352,46 @@ internal fun drainPositionTickQueue(
             outcome = PositionTickDrainOutcome.FAILED
             break
         }
+        if (result.failureClass == POSITION_TICK_FLUSH_SCHEMA_PAYLOAD) {
+            // The bulk statement is atomic. Retry each row so one malformed
+            // historical row cannot pin the full queue forever. A row that is
+            // still schema-rejected is retained in the durable quarantine.
+            val ackIds = LinkedHashSet<String>()
+            val quarantine = ArrayList<PositionTickQuarantineEntry>()
+            var rowFailure: PositionTickInsertResult? = null
+            for ((i, row) in chunk.rows.withIndex()) {
+                requests += 1
+                val one = JSONArray().put(positionTickUploadRow(row, config.sendClientEventId))
+                val r1 = transport.insert(one)
+                when {
+                    shouldDrainPositionTickQueue(r1) -> ackIds.add(chunk.ids[i])
+                    config.sendClientEventId && isPositionTickClientEventIdDuplicate(r1) -> {
+                        ackIds.add(chunk.ids[i]); rowsIdempotent += 1
+                    }
+                    isPositionTickQuarantinableSchemaFailure(r1) -> quarantine.add(
+                        PositionTickQuarantineEntry(
+                            row = row,
+                            reason = positionTickQuarantineReason(r1),
+                            failureClass = r1.failureClass,
+                            httpStatus = r1.httpStatus,
+                            serverCode = r1.allowlistedServerCode
+                        )
+                    )
+                    else -> { rowFailure = r1; break }
+                }
+            }
+            if (quarantine.isNotEmpty()) synchronized(lock) { store.quarantineAndRemove(quarantine) }
+            removeAcked(store, lock, ackIds)
+            rowsQuarantined += quarantine.size
+            rowsAcked += ackIds.size
+            if (rowFailure == null) {
+                if (ackIds.isNotEmpty()) chunksAcked += 1
+                continue
+            }
+            failure = rowFailure
+            outcome = PositionTickDrainOutcome.FAILED
+            break
+        }
         failure = result
         outcome = PositionTickDrainOutcome.FAILED
         break
@@ -295,7 +413,9 @@ internal fun drainPositionTickQueue(
         lastChunkRows = lastChunkRows,
         maxChunkBytesSent = maxBytes,
         failure = failure,
-        identitySent = config.sendClientEventId
+        identitySent = config.sendClientEventId,
+        rowsQuarantined = rowsQuarantined,
+        removedKeyCounts = removedKeyCounts.toMap()
     )
 }
 
@@ -304,6 +424,8 @@ private fun selectChunk(queue: JSONArray, config: PositionTickDrainConfig): Sele
     val ids = ArrayList<String>()
     val body = JSONArray()
     var bytes = 2 // "[" + "]"
+    val removedKeyCounts = linkedMapOf<String, Int>()
+    val uploadKeys = positionTickUploadColumnNames(config.sendClientEventId).toSet()
     val limit = config.chunkRows.coerceAtLeast(1)
     for (i in 0 until queue.length()) {
         if (rows.size >= limit) break
@@ -315,8 +437,13 @@ private fun selectChunk(queue: JSONArray, config: PositionTickDrainConfig): Sele
         ids.add(positionTickRowIdentity(row))
         body.put(up)
         bytes += rowBytes
+        val keys = row.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (key !in uploadKeys) removedKeyCounts[key] = (removedKeyCounts[key] ?: 0) + 1
+        }
     }
-    return SelectedChunk(rows, ids, body, if (rows.isEmpty()) 0 else bytes)
+    return SelectedChunk(rows, ids, body, if (rows.isEmpty()) 0 else bytes, removedKeyCounts)
 }
 
 private fun removeAcked(store: PositionTickQueueStore, lock: Any, ids: Set<String>) {
@@ -344,11 +471,16 @@ internal fun positionTickTrackingAfterDrain(
     overflowActiveFlag: Boolean,
     trackingCompletePref: Boolean,
     rejectedTotal: Long,
-    maxPending: Int = POSITION_TICK_MAX_PENDING
+    maxPending: Int = POSITION_TICK_MAX_PENDING,
+    quarantinedTotal: Long = 0L
 ): PositionTickTrackingAfterDrain {
     val progressed = report.rowsAcked > 0
     val overflow = if (progressed && report.remaining < maxPending) false else overflowActiveFlag
-    val complete = if (progressed && !overflow && rejectedTotal == 0L) true else trackingCompletePref
+    val complete = when {
+        report.rowsQuarantined > 0 || quarantinedTotal > 0L -> false
+        progressed && !overflow && rejectedTotal == 0L -> true
+        else -> trackingCompletePref
+    }
     // derivePositionTickTrackingStatus still ANDs with rejectedTotal == 0 for display.
     return PositionTickTrackingAfterDrain(overflow, complete && rejectedTotal == 0L && !overflow)
 }
@@ -363,7 +495,8 @@ internal fun formatPositionTickDrainLog(
     overflowActive: Boolean,
     overflowRejectedTotal: Long,
     trackingComplete: Boolean,
-    elapsedMs: Long
+    elapsedMs: Long,
+    quarantineTotal: Long = 0L
 ): String {
     val f = report.failure
     return "POSITION_TICK_DRAIN: trigger=$trigger outcome=${report.outcome} " +
@@ -374,7 +507,16 @@ internal fun formatPositionTickDrainLog(
         "remaining=${report.remaining} class=${report.failureClass} status=${f?.httpStatus ?: -1} " +
         "server_code=${f?.allowlistedServerCode ?: "-"} ids_assigned=${report.identitiesAssigned} " +
         "exact_dup_dropped=${report.exactDupDropped} content_conflicts=${report.contentConflicts} " +
+        "quarantined=${report.rowsQuarantined} quarantine_total=$quarantineTotal " +
+        "removed_keys=${formatPositionTickRemovedKeyCounts(report.removedKeyCounts)} " +
         "identity_sent=${report.identitySent} overflow_active=$overflowActive " +
         "overflow_rejected_total=$overflowRejectedTotal tracking_complete=$trackingComplete " +
         "elapsed_ms=$elapsedMs"
 }
+
+/** Schema names only; values are never logged. */
+internal fun formatPositionTickRemovedKeyCounts(counts: Map<String, Int>): String =
+    if (counts.isEmpty()) "-" else counts.toSortedMap().entries.joinToString(",") { (key, count) ->
+        val safeKey = key.replace(Regex("[^A-Za-z0-9_]"), "_").take(64)
+        "$safeKey:$count"
+    }

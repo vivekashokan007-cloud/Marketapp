@@ -25,12 +25,46 @@ class PositionTickDrainTest {
 
     private class StringStore(initial: String = "[]") : PositionTickQueueStore {
         var raw: String = initial
+        var quarantineRaw: String = "[]"
+        var quarantineTotal: Long = 0
         var saves = 0
         var onSave: ((JSONArray) -> Unit)? = null
         override fun load(): JSONArray = JSONArray(raw)
         override fun save(queue: JSONArray) { raw = queue.toString(); saves += 1; onSave?.invoke(queue) }
+        override fun quarantineAndRemove(entries: List<PositionTickQuarantineEntry>) {
+            val ids = entries.map { positionTickRowIdentity(it.row) }.toSet()
+            val pending = JSONArray(raw)
+            val retained = JSONArray()
+            for (i in 0 until pending.length()) {
+                val row = pending.optJSONObject(i)
+                if (row != null && positionTickRowIdentity(row) in ids) continue
+                retained.put(pending.opt(i))
+            }
+            val quarantine = JSONArray(quarantineRaw)
+            val existing = (0 until quarantine.length()).mapNotNull {
+                quarantine.optJSONObject(it)?.optString(POSITION_TICK_CLIENT_EVENT_ID_KEY, "")?.ifBlank { null }
+            }.toMutableSet()
+            for (entry in entries) {
+                val identity = positionTickRowIdentity(entry.row)
+                if (!existing.add(identity)) continue
+                quarantine.put(
+                    JSONObject()
+                        .put(POSITION_TICK_CLIENT_EVENT_ID_KEY, identity)
+                        .put("reason", entry.reason)
+                        .put("failure_class", entry.failureClass)
+                        .put("row", JSONObject(entry.row.toString()))
+                )
+                quarantineTotal += 1
+            }
+            raw = retained.toString()
+            quarantineRaw = quarantine.toString()
+            saves += 1
+        }
         fun size() = JSONArray(raw).length()
         fun rows(): List<JSONObject> = JSONArray(raw).let { a -> (0 until a.length()).map { a.getJSONObject(it) } }
+        fun quarantined(): List<JSONObject> = JSONArray(quarantineRaw).let { a ->
+            (0 until a.length()).map { a.getJSONObject(it) }
+        }
     }
 
     private enum class Mode { OK, NETWORK_BEFORE_SEND, COMMIT_THEN_LOSE_ACK, SERVER_5XX, SCHEMA_400, CONFLICT_OTHER }
@@ -319,19 +353,40 @@ class PositionTickDrainTest {
 
     // ----------------------------------------------------- §3: chunk failures
 
-    @Test fun secondChunkFailure_keepsSecondAndLaterChunks_inOrder_firstAckedOnly() {
+    @Test fun secondChunkBulkSchemaFailure_isolatedRowsContinueThroughLaterChunks() {
         val store = StringStore(legacyQueue(140))
-        val all = store.load().let { q -> (0 until q.length()).map { computePositionTickClientEventId(q.getJSONObject(it)) } }
         val server = FakeServer(false)
         server.script.addAll(listOf(Mode.OK, Mode.SCHEMA_400))
         val r = drain(store, server)
-        assertEquals(PositionTickDrainOutcome.FAILED, r.outcome)
-        assertEquals(POSITION_TICK_FLUSH_SCHEMA_PAYLOAD, r.failureClass)
-        assertEquals(1, r.chunksAcked)
-        assertEquals(50, r.rowsAcked)
-        assertEquals(90, r.remaining)
-        assertEquals(all.drop(50), store.rows().map { it.getString(POSITION_TICK_CLIENT_EVENT_ID_KEY) })
-        assertEquals(listOf(50, 50), server.requestSizes)
+        assertEquals(PositionTickDrainOutcome.DRAINED, r.outcome)
+        assertEquals(POSITION_TICK_FLUSH_OK, r.failureClass)
+        assertEquals(140, r.rowsAcked)
+        assertEquals(0, r.rowsQuarantined)
+        assertEquals(0, r.remaining)
+        assertEquals(140, server.table.size)
+        assertEquals(listOf(50, 50), server.requestSizes.take(2))
+        assertTrue(server.requestSizes.drop(2).contains(1))
+    }
+
+    @Test fun globalSchemaFailure_isNeverQuarantined_orSkipped() {
+        val store = StringStore(legacyQueue(60))
+        var requests = 0
+        val result = drainPositionTickQueue(
+            store,
+            PositionTickTransport { body ->
+                requests += 1
+                classifyPositionTickFlushFailure(400, "Bad", null, null, "PGRST204", body.length())
+            },
+            PositionTickDrainConfig(sendClientEventId = false),
+            Any()
+        )
+        assertEquals(PositionTickDrainOutcome.FAILED, result.outcome)
+        assertEquals(POSITION_TICK_FLUSH_SCHEMA_PAYLOAD, result.failureClass)
+        assertEquals(0, result.rowsAcked)
+        assertEquals(0, result.rowsQuarantined)
+        assertEquals(60, store.size())
+        assertEquals(0, store.quarantined().size)
+        assertEquals(2, requests) // failed bulk + failed singleton proof
     }
 
     @Test fun perRowResolution_stopsAtFirstRealFailure_keepsThatRowAndLater() {
@@ -441,9 +496,11 @@ class PositionTickDrainTest {
             remove("contract_lot_size")
             remove("number_of_lots")
             remove("lot_authoritative")
-            put("retired_local_only_key", "must-not-upload")
         }
         val current = row("NEW", 2)
+        assertEquals("pre-2.6.56 production shape", 22, old.length())
+        assertEquals("current production shape", 26, current.length())
+        old.put("retired_local_only_key", "must-not-upload")
         val store = StringStore(JSONArray().put(old).put(current).toString())
         val posted = mutableListOf<JSONArray>()
         val result = drainPositionTickQueue(
@@ -467,6 +524,87 @@ class PositionTickDrainTest {
         }
         assertTrue(posted.single().getJSONObject(0).isNull("quantity_units"))
         assertEquals(75.0, posted.single().getJSONObject(1).getDouble("quantity_units"), 0.0)
+        assertEquals(1, result.removedKeyCounts["retired_local_only_key"])
+        assertEquals(2, result.removedKeyCounts[POSITION_TICK_CLIENT_EVENT_ID_KEY])
+    }
+
+    @Test fun locallyMissingRequiredRow_isDurablyQuarantined_goodRowsContinue() {
+        val poison = row("BAD", 2).apply { remove("source") }
+        val store = StringStore(JSONArray().put(row("GOOD1", 1)).put(poison).put(row("GOOD2", 3)).toString())
+        val persisted = mutableListOf<JSONObject>()
+        val result = drainPositionTickQueue(
+            store,
+            PositionTickTransport { body ->
+                for (i in 0 until body.length()) persisted += JSONObject(body.getJSONObject(i).toString())
+                classifyPositionTickFlushFailure(201, "Created", null, null, null, body.length())
+            },
+            PositionTickDrainConfig(sendClientEventId = false),
+            Any()
+        )
+
+        assertEquals(PositionTickDrainOutcome.DRAINED, result.outcome)
+        assertEquals(2, result.rowsAcked)
+        assertEquals(1, result.rowsQuarantined)
+        assertEquals(0, store.size())
+        assertEquals(setOf("GOOD1", "GOOD2"), persisted.map { it.getString("trade_id") }.toSet())
+        assertEquals(1, store.quarantined().size)
+        assertEquals("missing_required_source", store.quarantined().single().getString("reason"))
+        assertEquals("BAD", store.quarantined().single().getJSONObject("row").getString("trade_id"))
+    }
+
+    @Test fun serverRejectedPoisonRow_isolatedAndQuarantined_laterRowsStillPersist() {
+        val queue = JSONArray()
+        repeat(61) { i ->
+            val r = row("T$i", i)
+            if (i == 10) r.put("leg_count", "not-an-integer")
+            queue.put(r)
+        }
+        val store = StringStore(queue.toString())
+        val persisted = mutableListOf<String>()
+        val requestSizes = mutableListOf<Int>()
+        val result = drainPositionTickQueue(
+            store,
+            PositionTickTransport { body ->
+                requestSizes += body.length()
+                val poisoned = (0 until body.length()).any {
+                    body.getJSONObject(it).opt("leg_count") is String
+                }
+                if (poisoned) {
+                    classifyPositionTickFlushFailure(400, "Bad", null, null, "22P02", body.length())
+                } else {
+                    for (i in 0 until body.length()) persisted += body.getJSONObject(i).getString("trade_id")
+                    classifyPositionTickFlushFailure(201, "Created", null, null, null, body.length())
+                }
+            },
+            PositionTickDrainConfig(sendClientEventId = false),
+            Any()
+        )
+
+        assertEquals(PositionTickDrainOutcome.DRAINED, result.outcome)
+        assertEquals(60, result.rowsAcked)
+        assertEquals(1, result.rowsQuarantined)
+        assertEquals(0, store.size())
+        assertEquals(60, persisted.toSet().size)
+        assertTrue("rows after poison must be delivered", "T60" in persisted)
+        assertEquals("T10", store.quarantined().single().getJSONObject("row").getString("trade_id"))
+        assertTrue(requestSizes.first() > 1)
+        assertTrue(requestSizes.drop(1).contains(1))
+    }
+
+    @Test fun quarantineMakesTrackingIncompleteEvenWhenGoodRowsProgress() {
+        val poison = row("BAD", 1).apply { put("source", "") }
+        val store = StringStore(JSONArray().put(poison).put(row("GOOD", 2)).toString())
+        val server = FakeServer(false)
+        val report = drain(store, server)
+        val tracking = positionTickTrackingAfterDrain(report, false, true, 0L)
+        assertEquals(1, report.rowsQuarantined)
+        assertFalse(tracking.trackingComplete)
+        val laterCleanPass = report.copy(rowsQuarantined = 0, rowsAcked = 1)
+        assertFalse(
+            positionTickTrackingAfterDrain(
+                laterCleanPass, false, false, 0L, quarantinedTotal = 1L
+            ).trackingComplete
+        )
     }
 
     @Test fun postgrestInsertPath_pinsExactCanonicalColumns() {

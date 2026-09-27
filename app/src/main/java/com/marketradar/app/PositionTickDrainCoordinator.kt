@@ -59,6 +59,49 @@ internal class KvPositionTickQueueStore(private val kv: PositionTickKv) : Positi
     override fun save(queue: JSONArray) {
         kv.edit(durable = true) { putString(PREF_POSITION_TICK_PENDING_QUEUE, queue.toString()) }
     }
+
+    override fun quarantineAndRemove(entries: List<PositionTickQuarantineEntry>) {
+        if (entries.isEmpty()) return
+        val ids = entries.map { positionTickRowIdentity(it.row) }.toSet()
+        val pending = load()
+        val retained = JSONArray()
+        for (i in 0 until pending.length()) {
+            val row = pending.optJSONObject(i)
+            if (row != null && positionTickRowIdentity(row) in ids) continue
+            retained.put(pending.opt(i))
+        }
+        val quarantine = try {
+            JSONArray(kv.getString(PREF_POSITION_TICK_QUARANTINE_QUEUE, "[]") ?: "[]")
+        } catch (_: Exception) {
+            JSONArray()
+        }
+        val existingIds = HashSet<String>()
+        for (i in 0 until quarantine.length()) {
+            quarantine.optJSONObject(i)?.optString(POSITION_TICK_CLIENT_EVENT_ID_KEY, "")
+                ?.takeIf { it.isNotBlank() }?.let(existingIds::add)
+        }
+        var added = 0
+        for (entry in entries) {
+            val identity = positionTickRowIdentity(entry.row)
+            if (!existingIds.add(identity)) continue
+            quarantine.put(
+                org.json.JSONObject()
+                    .put(POSITION_TICK_CLIENT_EVENT_ID_KEY, identity)
+                    .put("reason", entry.reason)
+                    .put("failure_class", entry.failureClass)
+                    .put("http_status", entry.httpStatus ?: org.json.JSONObject.NULL)
+                    .put("server_code", entry.serverCode ?: org.json.JSONObject.NULL)
+                    .put("row", org.json.JSONObject(entry.row.toString()))
+            )
+            added += 1
+        }
+        val previousTotal = kv.getLong(PREF_POSITION_TICK_QUARANTINE_TOTAL, 0L)
+        kv.edit(durable = true) {
+            putString(PREF_POSITION_TICK_PENDING_QUEUE, retained.toString())
+            putString(PREF_POSITION_TICK_QUARANTINE_QUEUE, quarantine.toString())
+            putLong(PREF_POSITION_TICK_QUARANTINE_TOTAL, previousTotal + added)
+        }
+    }
 }
 
 /** Persistent one-off scheduler (unique work, CONNECTED constraint, REPLACE on enqueue). */
@@ -361,7 +404,8 @@ internal data class PositionTickTrackingSnapshot(
     val depth: Int,
     val overflowActive: Boolean,
     val trackingComplete: Boolean,
-    val rejectedTotal: Long
+    val rejectedTotal: Long,
+    val quarantinedTotal: Long
 )
 
 internal fun readPositionTickTrackingSnapshot(kv: PositionTickKv, store: PositionTickQueueStore) =
@@ -369,7 +413,8 @@ internal fun readPositionTickTrackingSnapshot(kv: PositionTickKv, store: Positio
         depth = store.load().length(),
         overflowActive = kv.getBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false),
         trackingComplete = kv.getBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true),
-        rejectedTotal = kv.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L)
+        rejectedTotal = kv.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L),
+        quarantinedTotal = kv.getLong(PREF_POSITION_TICK_QUARANTINE_TOTAL, 0L)
     )
 
 /** Serialises every drain pass in the process (executor triggers and the worker). */
@@ -467,17 +512,19 @@ internal class PositionTickDrainCoordinator(
             val snapshot = readPositionTickTrackingSnapshot(kv, store)
             val tracking = positionTickTrackingAfterDrain(
                 report.copy(remaining = snapshot.depth), snapshot.overflowActive,
-                snapshot.trackingComplete, snapshot.rejectedTotal
+                snapshot.trackingComplete, snapshot.rejectedTotal,
+                quarantinedTotal = snapshot.quarantinedTotal
             )
             kv.edit(durable = true) {
                 putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, tracking.overflowActive)
                 putBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, tracking.trackingComplete)
             }
-            Triple(tracking, snapshot.rejectedTotal, snapshot.depth)
+            Pair(tracking, snapshot)
         }
         val tracking = committed.first
-        val rejectedTotal = committed.second
-        val committedDepth = committed.third
+        val rejectedTotal = committed.second.rejectedTotal
+        val quarantineTotal = committed.second.quarantinedTotal
+        val committedDepth = committed.second.depth
 
         // --- failure counters (serialised by PositionTickDrainMutex)
         val failure = report.failure
@@ -508,7 +555,8 @@ internal class PositionTickDrainCoordinator(
         }
 
         val line = formatPositionTickDrainLog(
-            trigger, report, tracking.overflowActive, rejectedTotal, tracking.trackingComplete, elapsed
+            trigger, report, tracking.overflowActive, rejectedTotal, tracking.trackingComplete, elapsed,
+            quarantineTotal = quarantineTotal
         ) + " next_attempt_in_ms=${next?.let { it - after } ?: -1}"
         if (failure == null) {
             log('I', line)

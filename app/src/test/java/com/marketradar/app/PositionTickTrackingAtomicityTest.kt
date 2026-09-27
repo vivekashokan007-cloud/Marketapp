@@ -29,7 +29,7 @@ class PositionTickTrackingAtomicityTest {
         val violations = mutableListOf<String>()
         private val guarded = setOf(
             PREF_POSITION_TICK_OVERFLOW_ACTIVE, PREF_POSITION_TICK_TRACKING_COMPLETE,
-            PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT
+            PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, PREF_POSITION_TICK_QUARANTINE_TOTAL
         )
         private fun check(key: String, op: String) {
             if (key in guarded && !Thread.holdsLock(lock)) violations.add("$op $key without PositionTickQueueLock")
@@ -59,7 +59,9 @@ class PositionTickTrackingAtomicityTest {
     }
 
     private fun row(tag: String, i: Int) = JSONObject().put("trade_id", tag).put("seq", i)
-        .put("tick_ts", "2026-09-24T04:00:00.000Z").put("current_pnl", i * 1.5)
+        .put("tick_ts", "2026-09-24T04:00:00.000Z")
+        .put("session_date", "2026-09-24").put("source", "P1_REST_60S")
+        .put("current_pnl", i * 1.5)
 
     private fun rows(tag: String, n: Int) = JSONArray().apply { repeat(n) { put(row(tag, it)) } }
 

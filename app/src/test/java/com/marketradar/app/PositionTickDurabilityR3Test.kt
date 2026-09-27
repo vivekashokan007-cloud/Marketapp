@@ -60,7 +60,13 @@ class PositionTickDurabilityR3Test {
 
     private fun seed(kv: MapKv, n: Int) = kv.edit {
         putString(PREF_POSITION_TICK_PENDING_QUEUE, JSONArray().apply {
-            repeat(n) { put(JSONObject().put("trade_id", "T1").put("seq", it).put("tick_ts", "2026-09-24T04:00:00.000Z")) }
+            repeat(n) {
+                put(
+                    JSONObject().put("trade_id", "T1").put("seq", it)
+                        .put("tick_ts", "2026-09-24T04:00:00.000Z")
+                        .put("session_date", "2026-09-24").put("source", "P1_REST_60S")
+                )
+            }
         }.toString())
     }
 

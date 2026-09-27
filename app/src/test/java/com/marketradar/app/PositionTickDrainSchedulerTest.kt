@@ -79,6 +79,7 @@ class PositionTickDrainSchedulerTest {
     }
 
     private fun row(i: Int) = JSONObject().put("trade_id", "T1").put("tick_ts", "2026-09-24T04:%02d:%02d.000Z".format(i / 60, i % 60))
+        .put("session_date", "2026-09-24").put("source", "P1_REST_60S")
         .put("current_pnl", -100.0 + i).put("status", "OPEN")
 
     private fun seed(kv: MapKv, n: Int) {

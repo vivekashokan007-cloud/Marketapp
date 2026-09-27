@@ -469,6 +469,22 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertIn(".post(normalizedRows.toString()", self.sbc)
         self.assertNotIn('getBaseRequest("position_ticks")', self.sbc)
 
+    def test_schema_poison_is_quarantined_and_drain_continues(self):
+        self.assertIn("PREF_POSITION_TICK_QUARANTINE_QUEUE", self.drain)
+        self.assertIn("quarantineAndRemove", self.drain)
+        self.assertIn("positionTickLocalQuarantineReason", self.drain)
+        self.assertIn("isPositionTickQuarantinableSchemaFailure(r1)", self.drain)
+        self.assertIn('"22P02"', self.drain)
+        self.assertIn("PGRST204", self.drain)
+        self.assertIn("continue", self.drain)
+        self.assertIn("rowsQuarantined", self.drain)
+        self.assertIn("report.rowsQuarantined > 0 || quarantinedTotal > 0L -> false", self.drain)
+
+    def test_removed_upload_keys_are_counted_without_values(self):
+        self.assertIn("removedKeyCounts", self.drain)
+        self.assertIn("formatPositionTickRemovedKeyCounts", self.drain)
+        self.assertIn("Schema names only; values are never logged", self.drain)
+
     def test_classifier_409_fail_closed_constant(self):
         self.assertIn(f'"{CONFLICT_UNVERIFIED}"', self.ptf)
         self.assertIn("verifiedExactDuplicates", self.ptf)
