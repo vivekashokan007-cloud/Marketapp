@@ -63,6 +63,8 @@ internal object PositionTickDrainTrigger {
     const val NO_OPEN_TRADES = "no_open_trades"
     const val ENSURE_RUNNING_NO_CAPTURE = "ensure_running_no_capture"
     const val CONTINUE = "continue"
+    /** B1.1 R2: the durable WorkManager job (scheduled at the required time). */
+    const val WORKER = "worker"
 
     /** Triggers allowed to skip a *transient* failure backoff (network came back, app/service (re)started). */
     val RECOVERY: Set<String> = setOf(APP_START, PACKAGE_REPLACED, BOOT, LIFECYCLE, CONNECTIVITY, SERVICE_START)
@@ -91,7 +93,9 @@ internal fun decidePositionTickDrainAttempt(
     lastFailureClass: String?
 ): PositionTickDrainAttemptDecision {
     val since = if (lastAttemptMs <= 0L) Long.MAX_VALUE else nowMs - lastAttemptMs
-    if (trigger != PositionTickDrainTrigger.CONTINUE && since < POSITION_TICK_DRAIN_MIN_SPACING_MS) {
+    if (trigger != PositionTickDrainTrigger.CONTINUE && trigger != PositionTickDrainTrigger.WORKER &&
+        since < POSITION_TICK_DRAIN_MIN_SPACING_MS
+    ) {
         return PositionTickDrainAttemptDecision(false, POSITION_TICK_DRAIN_MIN_SPACING_MS - since, "min_spacing")
     }
     if (consecutiveFailures <= 0) {

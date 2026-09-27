@@ -26,6 +26,8 @@ SBC = JAVA_APP / "SupabaseClient.kt"
 # B1.1 (27 Sep): the flush moved out of PositionTickService into a chunked drain.
 DRAIN = JAVA_APP / "PositionTickDrain.kt"
 RUNNER = JAVA_APP / "PositionTickUploadRunner.kt"
+# B1.1 R2: the per-pass logic (logs, tracking commit, durable follow-up) moved here.
+COORDINATOR = JAVA_APP / "PositionTickDrainCoordinator.kt"
 ROOT = APP  # for build.gradle.kts version pin
 
 
@@ -398,7 +400,9 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.pts = PTS.read_text(encoding="utf-8")
         # B1.1: upload/flush code now lives in the drain + runner files.
-        cls.drain = DRAIN.read_text(encoding="utf-8") + "\n" + RUNNER.read_text(encoding="utf-8")
+        cls.drain = "\n".join(
+            p.read_text(encoding="utf-8") for p in (DRAIN, RUNNER, COORDINATOR)
+        )
         cls.ptf = PTF.read_text(encoding="utf-8")
         cls.sbc = SBC.read_text(encoding="utf-8")
 

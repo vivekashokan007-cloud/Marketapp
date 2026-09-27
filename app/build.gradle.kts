@@ -100,6 +100,8 @@ dependencies {
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
+    // B1.1 R2: durable pending-tick drain (unique one-time work, CONNECTED constraint).
+    implementation("androidx.work:work-runtime:2.9.1")
     
     // UI & Material Design
     implementation("com.google.android.material:material:1.11.0")

@@ -165,7 +165,9 @@ class PositionTickDrainTest {
         val app = src("src/main/java/com/marketradar/app/MarketRadarApp.kt")
         assertTrue(app.contains("PositionTickUploadRunner.onProcessStart(this, PositionTickDrainTrigger.APP_START)"))
         val life = src("src/main/java/com/marketradar/app/MarketOpenScheduler.kt")
-        assertTrue(life.contains("Intent.ACTION_MY_PACKAGE_REPLACED -> PositionTickDrainTrigger.PACKAGE_REPLACED"))
+        // B1.1 R2: receivers enqueue the durable WorkManager job under goAsync().
+        assertTrue(life.contains("val pending = goAsync()"))
+        assertTrue(life.contains("PositionTickUploadRunner.enqueueDurableFromReceiver(context) { pending.finish() }"))
         val runner = src("src/main/java/com/marketradar/app/PositionTickUploadRunner.kt")
         assertTrue(runner.contains("registerDefaultNetworkCallback"))
         assertTrue(runner.contains("request(app, PositionTickDrainTrigger.CONNECTIVITY)"))
@@ -177,7 +179,8 @@ class PositionTickDrainTest {
     }
 
     @Test fun noQuoteCaptureOutsideSession_drainPathHasNoQuoteOrPolicyAccess() {
-        for (f in listOf("PositionTickDrain.kt", "PositionTickUploadRunner.kt", "PositionTickIdentity.kt")) {
+        for (f in listOf("PositionTickDrain.kt", "PositionTickUploadRunner.kt", "PositionTickIdentity.kt",
+            "PositionTickDrainCoordinator.kt", "PositionTickDrainWorker.kt")) {
             val s = src("src/main/java/com/marketradar/app/$f")
             for (banned in listOf("fetchQuotes", "api.upstox.com", "market-quote", "captureOnce", "buildTickRow",
                 "PositionPolicyV1", "maybeNotifyShadowExit", "startForegroundService")) {

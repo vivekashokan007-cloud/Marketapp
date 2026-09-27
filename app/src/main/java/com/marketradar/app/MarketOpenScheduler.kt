@@ -187,14 +187,14 @@ class MarketLifecycleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: "unknown"
         MarketOpenScheduler.maybeStartIngestionNow(context, action)
-        // B1.1: upload trigger only (no capture): drain any pending ticks.
-        PositionTickUploadRunner.request(
-            context,
-            when (action) {
-                Intent.ACTION_MY_PACKAGE_REPLACED -> PositionTickDrainTrigger.PACKAGE_REPLACED
-                Intent.ACTION_BOOT_COMPLETED -> PositionTickDrainTrigger.BOOT
-                else -> PositionTickDrainTrigger.LIFECYCLE
-            }
-        )
+        // B1.1 R2 (Codex §4): upload trigger only (no capture). Enqueue the durable
+        // pending-tick drain job directly; the PendingResult is finished only after
+        // WorkManager has durably recorded the request.
+        val pending = goAsync()
+        try {
+            PositionTickUploadRunner.enqueueDurableFromReceiver(context) { pending.finish() }
+        } catch (e: Exception) {
+            android.util.Log.e("PositionTickDrain", "POSITION_TICK_RECEIVER_ENQUEUE_FAIL: action=$action ex=${e.javaClass.simpleName}")
+        }
     }
 }
