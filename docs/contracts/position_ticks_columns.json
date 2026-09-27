@@ -9,5 +9,8 @@
     "policy_action", "policy_reason", "policy_trace_json", "legs_json",
     "created_at", "quantity_units", "contract_lot_size", "number_of_lots",
     "lot_authoritative"
-  ]
+  ],
+  "gated_planned_columns": {
+    "client_event_id": "B1.1 20260927090000_position_ticks_client_event_id.sql — PREPARED, NOT APPLIED. Producer sends it only when POSITION_TICK_CLIENT_EVENT_ID_SEND_COMPILED=true AND the read-only runtime probe confirms the column. Not part of 'columns' until applied and read back."
+  }
 }
