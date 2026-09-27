@@ -65,66 +65,261 @@ internal class KvPositionTickQueueStore(private val kv: PositionTickKv) : Positi
 internal interface PositionTickWorkScheduler {
     /**
      * Replace the unique job with one that runs after [delayMs] once a network is
-     * connected. [onDurable] runs after the request is durably recorded.
+     * connected. May throw synchronously (e.g. WorkManager unavailable). Otherwise
+     * [onResult] is invoked exactly once — possibly later, on another thread —
+     * with true only when WorkManager reports the enqueue operation SUCCEEDED,
+     * false when the operation failed (B1.1 R3, Codex Blocker A).
      */
-    fun enqueue(delayMs: Long, onDurable: (() -> Unit)? = null)
+    fun enqueue(delayMs: Long, onResult: (Boolean) -> Unit)
     fun cancel()
 }
 
 /**
- * Request a durable attempt at [atMs] (clamped to now). An already-scheduled
- * EARLIER (or equal) attempt is kept: later triggers never postpone it.
- * Returns true when a job was (re)enqueued.
+ * Reservation of the unique job (B1.1 R3). [PREF_POSITION_TICK_NEXT_DRAIN_AT_MS]
+ * holds the reserved time, [PREF_POSITION_TICK_NEXT_DRAIN_TOKEN] the token of the
+ * enqueue attempt that owns it and [PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED]
+ * whether WorkManager confirmed that attempt. Only a CONFIRMED reservation is
+ * trusted; a pending one (in flight, or orphaned by process death) never
+ * suppresses a real enqueue.
+ */
+internal const val PREF_POSITION_TICK_NEXT_DRAIN_TOKEN = "position_tick_next_drain_token"
+internal const val PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED = "position_tick_next_drain_confirmed"
+/** Monotonic token source (never reset). */
+internal const val PREF_POSITION_TICK_DRAIN_TOKEN_SEQ = "position_tick_drain_token_seq"
+
+/** Enqueue result classes (fixed, privacy-safe log values). */
+internal object PositionTickEnqueueResult {
+    const val CONFIRMED = "confirmed"
+    const val KEPT_CONFIRMED = "kept_confirmed"
+    const val SYNC_FAILURE = "sync_failure"
+    const val ASYNC_FAILURE = "async_failure"
+}
+
+private fun PositionTickKvEditor.clearReservation() {
+    putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
+    putLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, 0L)
+    putBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, false)
+}
+
+/**
+ * Settle one enqueue attempt: confirm on success, compare-and-clear on failure.
+ * Only the reservation still owned by [token] is touched, so a late result of a
+ * superseded attempt can neither confirm nor erase a newer reservation.
+ * Returns true when the reservation belonged to [token].
+ */
+internal fun settlePositionTickReservation(kv: PositionTickKv, token: Long, succeeded: Boolean): Boolean =
+    synchronized(PositionTickScheduleLock) {
+        if (kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, 0L) != token) return@synchronized false
+        kv.edit(durable = true) {
+            if (succeeded) putBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, true) else clearReservation()
+        }
+        true
+    }
+
+/**
+ * Request a durable attempt at [atMs] (clamped to now). A CONFIRMED earlier (or
+ * equal) attempt is kept: later triggers never postpone it. A merely pending
+ * reservation is not trusted: a fresh real enqueue is made at
+ * min(pending, target), which also never postpones anything.
+ *
+ * [onComplete] is invoked exactly once with the outcome class
+ * ([PositionTickEnqueueResult]); true in [onComplete] only for confirmed work.
+ * Never throws for scheduler failures. Returns true when an enqueue was attempted.
  */
 internal fun requestDurablePositionTickDrain(
     kv: PositionTickKv,
     scheduler: PositionTickWorkScheduler,
     nowMs: Long,
     atMs: Long,
-    onDurable: (() -> Unit)? = null
-): Boolean = synchronized(PositionTickScheduleLock) {
-    val target = maxOf(atMs, nowMs)
-    val existing = kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
-    val lost = existing > 0L && existing < nowMs - POSITION_TICK_SCHEDULE_LOST_AFTER_MS
-    if (existing > 0L && existing <= target && !lost) {
-        onDurable?.invoke()
-        return@synchronized false
+    log: (Char, String) -> Unit = { _, _ -> },
+    onComplete: ((ok: Boolean, result: String) -> Unit)? = null
+): Boolean {
+    val token: Long
+    val effective: Long
+    synchronized(PositionTickScheduleLock) {
+        val target = maxOf(atMs, nowMs)
+        val existing = kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
+        val confirmed = existing > 0L && kv.getBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, false)
+        val lost = existing > 0L && existing < nowMs - POSITION_TICK_SCHEDULE_LOST_AFTER_MS
+        if (confirmed && existing <= target && !lost) {
+            onComplete?.invoke(true, PositionTickEnqueueResult.KEPT_CONFIRMED)
+            return false
+        }
+        effective = when {
+            lost -> minOf(target, nowMs)
+            existing > 0L && !confirmed -> maxOf(nowMs, minOf(existing, target))
+            else -> target
+        }
+        token = kv.getLong(PREF_POSITION_TICK_DRAIN_TOKEN_SEQ, 0L) + 1
+        // Reservation is PENDING (unconfirmed) until WorkManager reports success.
+        kv.edit(durable = true) {
+            putLong(PREF_POSITION_TICK_DRAIN_TOKEN_SEQ, token)
+            putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, effective)
+            putLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, token)
+            putBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, false)
+        }
     }
-    val effective = if (lost) minOf(target, nowMs) else target
-    kv.edit(durable = true) { putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, effective) }
-    scheduler.enqueue(effective - nowMs, onDurable)
-    true
+    var reported = false
+    val report = { ok: Boolean, result: String ->
+        val first = synchronized(PositionTickScheduleLock) { if (reported) false else { reported = true; true } }
+        if (first) onComplete?.invoke(ok, result)
+    }
+    try {
+        scheduler.enqueue(effective - nowMs) { succeeded ->
+            settlePositionTickReservation(kv, token, succeeded)
+            if (!succeeded) {
+                log('W', "POSITION_TICK_DURABLE_ENQUEUE_FAIL: stage=async delay_ms=${effective - nowMs} reservation_cleared=owned_only")
+            }
+            report(succeeded, if (succeeded) PositionTickEnqueueResult.CONFIRMED else PositionTickEnqueueResult.ASYNC_FAILURE)
+        }
+    } catch (e: Exception) {
+        settlePositionTickReservation(kv, token, false)
+        log('W', "POSITION_TICK_DURABLE_ENQUEUE_FAIL: stage=sync ex=${e.javaClass.simpleName} reservation_cleared=owned_only")
+        report(false, PositionTickEnqueueResult.SYNC_FAILURE)
+    }
+    return true
 }
 
-/** Guards the stored next-attempt slot (receivers write it without the drain mutex). */
+/** Guards the stored reservation (receivers write it without the drain mutex). */
 internal object PositionTickScheduleLock
 
-/** Queue empty: cancel any pending job and forget the stored time. */
-internal fun cancelDurablePositionTickDrain(kv: PositionTickKv, scheduler: PositionTickWorkScheduler) = synchronized(PositionTickScheduleLock) {
-    if (kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L) != 0L) {
-        kv.edit(durable = true) { putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L) }
+/** Queue empty: cancel any pending job and forget the reservation. */
+internal fun cancelDurablePositionTickDrain(
+    kv: PositionTickKv,
+    scheduler: PositionTickWorkScheduler,
+    log: (Char, String) -> Unit = { _, _ -> }
+) = synchronized(PositionTickScheduleLock) {
+    if (kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L) != 0L || kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, 0L) != 0L) {
+        kv.edit(durable = true) { clearReservation() }
     }
-    scheduler.cancel()
+    try {
+        scheduler.cancel()
+    } catch (e: Exception) {
+        // A surviving job finds an empty queue and cancels itself.
+        log('W', "POSITION_TICK_DURABLE_CANCEL_FAIL: ex=${e.javaClass.simpleName}")
+    }
 }
 
 /**
  * Boot / package-replaced / time-change receivers: enqueue the durable job
- * directly and call [finish] (the receiver's PendingResult.finish) only once the
- * enqueue is durably recorded — no work continues on an unprotected thread.
+ * directly and call [finish] (the receiver's PendingResult.finish) exactly once,
+ * after the enqueue succeeded OR failed (sync or async) — no work continues on
+ * an unprotected thread and a failure never leaves a trusted phantom slot.
  */
 internal fun enqueuePositionTickDrainFromReceiver(
     kv: PositionTickKv,
     scheduler: PositionTickWorkScheduler,
     nowMs: Long,
+    log: (Char, String) -> Unit = { _, _ -> },
     finish: () -> Unit
 ) {
-    var finished = false
-    val once = { if (!finished) { finished = true; finish() } }
+    val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+    val once = { if (finished.compareAndSet(false, true)) finish() }
     try {
-        requestDurablePositionTickDrain(kv, scheduler, nowMs, nowMs, once)
+        requestDurablePositionTickDrain(kv, scheduler, nowMs, nowMs, log) { ok, result ->
+            log(if (ok) 'I' else 'W', "POSITION_TICK_RECEIVER_ENQUEUE: result=$result")
+            once()
+        }
     } catch (e: Exception) {
+        log('W', "POSITION_TICK_RECEIVER_ENQUEUE: result=error ex=${e.javaClass.simpleName}")
         once()
-        throw e
+    }
+}
+
+/**
+ * Completion of a WorkManager `Operation.result` future, called from its
+ * listener once the future is done: success only if `get()` returns normally.
+ */
+internal fun completePositionTickEnqueueFuture(future: java.util.concurrent.Future<*>, onResult: (Boolean) -> Unit) {
+    val ok = try {
+        future.get()
+        true
+    } catch (_: Throwable) {
+        false
+    }
+    onResult(ok)
+}
+
+/** Bounded explicit WorkManager backoff for an unexpected worker exception (Codex R3 Blocker B). */
+internal const val POSITION_TICK_WORKER_RETRY_BACKOFF_MS = 60_000L
+/** WorkManager caps exponential backoff at 5 h; this is the bound we rely on and document. */
+internal const val POSITION_TICK_WORKER_RETRY_MAX_BACKOFF_MS = 5 * 60 * 60 * 1000L
+/** Executor-pass unexpected exception: durable fallback attempt after this delay. */
+internal const val POSITION_TICK_EXECUTOR_FAILURE_RETRY_MS = 60_000L
+
+internal enum class PositionTickWorkerResult { SUCCESS, RETRY }
+
+/** WorkManager's EXPONENTIAL backoff for [runAttemptCount] (0-based), capped. */
+internal fun positionTickWorkerRetryDelayMs(runAttemptCount: Int): Long {
+    val shift = runAttemptCount.coerceIn(0, 20)
+    return minOf(POSITION_TICK_WORKER_RETRY_BACKOFF_MS shl shift, POSITION_TICK_WORKER_RETRY_MAX_BACKOFF_MS)
+}
+
+/**
+ * Worker body (B1.1 R3): classified outcomes are handled (and durably followed
+ * up) inside the pass → SUCCESS. An UNEXPECTED exception escaping the pass →
+ * RETRY: WorkManager re-runs this same unique job after the explicit bounded
+ * backoff. The queue is untouched here; the reservation records the retry so
+ * later triggers keep the "never postpone an earlier attempt" rule.
+ */
+internal fun runPositionTickWorker(
+    kv: PositionTickKv,
+    nowMs: () -> Long,
+    runAttemptCount: Int,
+    log: (Char, String) -> Unit,
+    pass: () -> Unit
+): PositionTickWorkerResult = try {
+    pass()
+    PositionTickWorkerResult.SUCCESS
+} catch (e: Exception) {
+    val delay = positionTickWorkerRetryDelayMs(runAttemptCount)
+    val now = nowMs()
+    try {
+        synchronized(PositionTickScheduleLock) {
+            val existing = kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
+            val confirmed = existing > 0L && kv.getBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, false)
+            if (!confirmed || existing > now + delay) {
+                val token = kv.getLong(PREF_POSITION_TICK_DRAIN_TOKEN_SEQ, 0L) + 1
+                kv.edit(durable = true) {
+                    putLong(PREF_POSITION_TICK_DRAIN_TOKEN_SEQ, token)
+                    putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, now + delay)
+                    putLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, token)
+                    // WorkManager itself persists and re-runs a Result.retry() job.
+                    putBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, true)
+                }
+            }
+        }
+    } catch (_: Exception) {
+        // Reservation bookkeeping failed; WorkManager still retries the job.
+    }
+    log('E', "POSITION_TICK_DRAIN_WORKER_ERROR: ex=${e.javaClass.simpleName} attempt=$runAttemptCount result=retry backoff_ms=$delay")
+    PositionTickWorkerResult.RETRY
+}
+
+/**
+ * Opportunistic in-process executor pass (B1.1 R3): an unexpected exception
+ * arms a durable fallback (coalesced by the reservation rules, so repeated
+ * failures do not spin). If WorkManager is unavailable the attempt fails
+ * honestly, its reservation is cleared and the next trigger re-enqueues.
+ */
+internal fun runPositionTickExecutorPass(
+    kv: PositionTickKv,
+    scheduler: PositionTickWorkScheduler,
+    nowMs: () -> Long,
+    trigger: String,
+    log: (Char, String) -> Unit,
+    pass: () -> Unit
+) {
+    try {
+        pass()
+    } catch (e: Exception) {
+        log('E', "POSITION_TICK_DRAIN_ERROR: trigger=$trigger ex=${e.javaClass.simpleName} durable_fallback=armed")
+        try {
+            val now = nowMs()
+            requestDurablePositionTickDrain(kv, scheduler, now, now + POSITION_TICK_EXECUTOR_FAILURE_RETRY_MS, log)
+        } catch (e2: Exception) {
+            log('E', "POSITION_TICK_DRAIN_FALLBACK_FAIL: ex=${e2.javaClass.simpleName}")
+        }
     }
 }
 
@@ -206,7 +401,11 @@ internal class PositionTickDrainCoordinator(
         synchronized(PositionTickScheduleLock) {
             val stored = kv.getLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
             if (stored != 0L && stored <= clock()) {
-                kv.edit(durable = true) { putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L) }
+                kv.edit(durable = true) {
+                    putLong(PREF_POSITION_TICK_NEXT_DRAIN_AT_MS, 0L)
+                    putLong(PREF_POSITION_TICK_NEXT_DRAIN_TOKEN, 0L)
+                    putBoolean(PREF_POSITION_TICK_NEXT_DRAIN_CONFIRMED, false)
+                }
             }
         }
         runPassLocked(PositionTickDrainTrigger.WORKER)
@@ -215,13 +414,13 @@ internal class PositionTickDrainCoordinator(
     private fun runPassLocked(trigger: String): PositionTickPassResult {
         val depth = synchronized(lock) { store.load().length() }
         if (depth == 0) {
-            cancelDurablePositionTickDrain(kv, scheduler)
+            cancelDurablePositionTickDrain(kv, scheduler, log)
             return PositionTickPassResult(PositionTickPassOutcome.EMPTY)
         }
         val now = clock()
         if (!positionTickUploadEligible(depth, networkAvailable())) {
             // No POST and no spinning: the job's CONNECTED constraint waits for a network.
-            requestDurablePositionTickDrain(kv, scheduler, now, now)
+            requestDurablePositionTickDrain(kv, scheduler, now, now, log)
             log('D', "POSITION_TICK_DRAIN_SKIP: trigger=$trigger reason=no_network depth=$depth durable_retry=connected")
             return PositionTickPassResult(PositionTickPassOutcome.NO_NETWORK, nextAttemptAtMs = now)
         }
@@ -234,7 +433,7 @@ internal class PositionTickDrainCoordinator(
         ) {
             // No rapid loop: rows retained; wait for app start/update or the long diagnostic retry.
             val at = lastFlush + POSITION_TICK_DURABLE_FAILURE_RETRY_MS
-            requestDurablePositionTickDrain(kv, scheduler, now, at)
+            requestDurablePositionTickDrain(kv, scheduler, now, at, log)
             log(
                 'D',
                 "POSITION_TICK_FLUSH_BACKOFF: trigger=$trigger wait_ms=${at - now} reason=durable_failure " +
@@ -245,7 +444,7 @@ internal class PositionTickDrainCoordinator(
         val decision = decidePositionTickDrainAttempt(trigger, now, lastFlush, failures, lastClass)
         if (!decision.allowed) {
             val at = now + decision.waitMs
-            requestDurablePositionTickDrain(kv, scheduler, now, at)
+            requestDurablePositionTickDrain(kv, scheduler, now, at, log)
             log(
                 'D',
                 "POSITION_TICK_FLUSH_BACKOFF: trigger=$trigger wait_ms=${decision.waitMs} " +
@@ -303,9 +502,9 @@ internal class PositionTickDrainCoordinator(
         }
         if (next != null) {
             // Keeps any other, earlier pending attempt (never postpones it).
-            requestDurablePositionTickDrain(kv, scheduler, after, next)
+            requestDurablePositionTickDrain(kv, scheduler, after, next, log)
         } else {
-            cancelDurablePositionTickDrain(kv, scheduler)
+            cancelDurablePositionTickDrain(kv, scheduler, log)
         }
 
         val line = formatPositionTickDrainLog(

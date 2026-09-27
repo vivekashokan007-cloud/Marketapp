@@ -48,11 +48,11 @@ class PositionTickDrainSchedulerTest {
         var pendingDueAt: Long? = null
         val enqueues = mutableListOf<Long>()
         var cancels = 0
-        val deferred = mutableListOf<() -> Unit>()
-        override fun enqueue(delayMs: Long, onDurable: (() -> Unit)?) {
+        val deferred = mutableListOf<(Boolean) -> Unit>()
+        override fun enqueue(delayMs: Long, onResult: (Boolean) -> Unit) {
             enqueues.add(delayMs)
             pendingDueAt = clock() + delayMs
-            if (onDurable != null) { if (deferDurable) deferred.add(onDurable) else onDurable() }
+            if (deferDurable) deferred.add(onResult) else onResult(true)
         }
         override fun cancel() { cancels += 1; pendingDueAt = null }
     }
@@ -295,8 +295,8 @@ class PositionTickDrainSchedulerTest {
             }
         }
         val w = src("src/main/java/com/marketradar/app/PositionTickDrainWorker.kt")
-        assertTrue(w.contains("PositionTickUploadRunner.runWorkerPass(applicationContext)"))
-        assertTrue(w.contains("return Result.success()"))
+        assertTrue(w.contains("PositionTickUploadRunner.runWorkerPass(applicationContext, runAttemptCount)"))
+        assertTrue(w.contains("PositionTickWorkerResult.SUCCESS -> Result.success()"))
     }
 
     // ---------------------------------------------------------------- 10
@@ -307,7 +307,7 @@ class PositionTickDrainSchedulerTest {
         enqueuePositionTickDrainFromReceiver(kv, work, clock.now) { finished += 1 }
         assertEquals(listOf(0L), work.enqueues)
         assertEquals("finish must wait for the durable enqueue", 0, finished)
-        work.deferred.single().invoke()
+        work.deferred.single().invoke(true)
         assertEquals(1, finished)
         // Already-scheduled earlier job: finish immediately, nothing re-enqueued.
         var finished2 = 0
@@ -316,7 +316,7 @@ class PositionTickDrainSchedulerTest {
         assertEquals(1, work.enqueues.size)
         // Scheduler failure still finishes the PendingResult exactly once.
         val broken = object : PositionTickWorkScheduler {
-            override fun enqueue(delayMs: Long, onDurable: (() -> Unit)?) = throw IllegalStateException("x")
+            override fun enqueue(delayMs: Long, onResult: (Boolean) -> Unit) = throw IllegalStateException("x")
             override fun cancel() {}
         }
         var finished3 = 0
@@ -329,7 +329,7 @@ class PositionTickDrainSchedulerTest {
         assertTrue(recv.contains("PositionTickUploadRunner.enqueueDurableFromReceiver(context) { pending.finish() }"))
         assertFalse("no executor started from the receiver", recv.contains("PositionTickUploadRunner.request("))
         val runner = src("src/main/java/com/marketradar/app/PositionTickUploadRunner.kt")
-        assertTrue(runner.contains("operation.result.addListener({ onDurable() }, Runnable::run)"))
+        assertTrue(runner.contains("future.addListener({ completePositionTickEnqueueFuture(future, onResult) }, Runnable::run)"))
     }
 
     // ------------------------------------------------------------- extra

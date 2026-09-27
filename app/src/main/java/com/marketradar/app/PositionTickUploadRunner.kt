@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.marketradar.app.util.LogBuffer
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -63,11 +64,17 @@ internal object PositionTickUploadRunner {
                 queued.set(false)
                 val t = pendingTrigger
                 try {
-                    runOnce(app, t)
+                    // B1.1 R3: an unexpected pass exception arms a durable fallback job.
+                    runPositionTickExecutorPass(
+                        kv = SharedPrefsPositionTickKv(prefs(app)),
+                        scheduler = WorkManagerPositionTickScheduler(app),
+                        nowMs = { System.currentTimeMillis() },
+                        trigger = t,
+                        log = ::logLine
+                    ) { runOnce(app, t) }
                 } catch (e: Exception) {
                     // Never let a drain bug take down a caller; class name only.
-                    Log.e(TAG, "POSITION_TICK_DRAIN_ERROR: trigger=$t ex=${e.javaClass.simpleName}")
-                    LogBuffer.add('E', TAG, "POSITION_TICK_DRAIN_ERROR: trigger=$t ex=${e.javaClass.simpleName}")
+                    logLine('E', "POSITION_TICK_DRAIN_ERROR: trigger=$t ex=${e.javaClass.simpleName} durable_fallback=failed")
                 }
             }
         } catch (e: Exception) {
@@ -81,8 +88,19 @@ internal object PositionTickUploadRunner {
         coordinator(context).runPass(trigger)
     }
 
-    /** Durable WorkManager job: one pass; follow-ups are scheduled durably by the coordinator. */
-    fun runWorkerPass(context: Context): PositionTickPassResult = coordinator(context).runWorkerPass()
+    /**
+     * Durable WorkManager job: one pass; follow-ups are scheduled durably by the
+     * coordinator. An unexpected exception → RETRY (bounded explicit backoff).
+     */
+    fun runWorkerPass(context: Context, runAttemptCount: Int): PositionTickWorkerResult {
+        val app = context.applicationContext
+        return runPositionTickWorker(
+            kv = SharedPrefsPositionTickKv(prefs(app)),
+            nowMs = { System.currentTimeMillis() },
+            runAttemptCount = runAttemptCount,
+            log = ::logLine
+        ) { coordinator(app).runWorkerPass() }
+    }
 
     /**
      * Receiver path (BOOT / MY_PACKAGE_REPLACED / time changes): enqueue the durable
@@ -91,8 +109,19 @@ internal object PositionTickUploadRunner {
     fun enqueueDurableFromReceiver(context: Context, finish: () -> Unit) {
         val app = context.applicationContext
         enqueuePositionTickDrainFromReceiver(
-            SharedPrefsPositionTickKv(prefs(app)), WorkManagerPositionTickScheduler(app), System.currentTimeMillis(), finish
+            SharedPrefsPositionTickKv(prefs(app)), WorkManagerPositionTickScheduler(app), System.currentTimeMillis(),
+            ::logLine, finish
         )
+    }
+
+    private fun logLine(level: Char, line: String) {
+        when (level) {
+            'W' -> Log.w(TAG, line)
+            'E' -> Log.e(TAG, line)
+            'I' -> Log.i(TAG, line)
+            else -> Log.d(TAG, line)
+        }
+        LogBuffer.add(level, TAG, line)
     }
 
     private fun prefs(context: Context): SharedPreferences =
@@ -107,15 +136,7 @@ internal object PositionTickUploadRunner {
             clock = { System.currentTimeMillis() },
             scheduler = WorkManagerPositionTickScheduler(app),
             sendClientEventId = { resolveClientEventIdGate() },
-            log = { level, line ->
-                when (level) {
-                    'W' -> Log.w(TAG, line)
-                    'E' -> Log.e(TAG, line)
-                    'I' -> Log.i(TAG, line)
-                    else -> Log.d(TAG, line)
-                }
-                LogBuffer.add(level, TAG, line)
-            }
+            log = ::logLine
         )
     }
 
@@ -156,17 +177,18 @@ internal object PositionTickUploadRunner {
 
     /** Unique one-time WorkManager job with a CONNECTED constraint (REPLACE = reschedule to the given delay). */
     private class WorkManagerPositionTickScheduler(private val app: Context) : PositionTickWorkScheduler {
-        override fun enqueue(delayMs: Long, onDurable: (() -> Unit)?) {
+        override fun enqueue(delayMs: Long, onResult: (Boolean) -> Unit) {
             val request = OneTimeWorkRequestBuilder<PositionTickDrainWorker>()
                 .setInitialDelay(maxOf(0L, delayMs), TimeUnit.MILLISECONDS)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, POSITION_TICK_WORKER_RETRY_BACKOFF_MS, TimeUnit.MILLISECONDS)
                 .build()
+            // May throw synchronously (WorkManager unavailable): the caller clears its reservation.
             val operation = WorkManager.getInstance(app)
                 .enqueueUniqueWork(POSITION_TICK_DRAIN_WORK_NAME, ExistingWorkPolicy.REPLACE, request)
-            if (onDurable != null) {
-                // Operation.result completes once WorkManager has persisted the request.
-                operation.result.addListener({ onDurable() }, Runnable::run)
-            }
+            val future = operation.result
+            // Success only if the operation's future completes normally (get() inside the listener).
+            future.addListener({ completePositionTickEnqueueFuture(future, onResult) }, Runnable::run)
         }
 
         override fun cancel() {

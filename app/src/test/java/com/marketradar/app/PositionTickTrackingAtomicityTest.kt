@@ -54,7 +54,7 @@ class PositionTickTrackingAtomicityTest {
     }
 
     private class NullWork : PositionTickWorkScheduler {
-        override fun enqueue(delayMs: Long, onDurable: (() -> Unit)?) { onDurable?.invoke() }
+        override fun enqueue(delayMs: Long, onResult: (Boolean) -> Unit) { onResult(true) }
         override fun cancel() {}
     }
 
