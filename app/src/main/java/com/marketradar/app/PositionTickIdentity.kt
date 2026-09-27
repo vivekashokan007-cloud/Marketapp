@@ -44,6 +44,49 @@ internal val POSITION_TICK_IDENTITY_EXCLUDED_KEYS: Set<String> =
 internal const val POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX = "position_ticks_client_event_id_uidx"
 
 /**
+ * Exact PostgREST insert shape for the production position_ticks table.
+ *
+ * Bulk JSON inserts require a uniform key set. A durable queue may contain rows
+ * captured by different APK versions, so the upload boundary must not forward
+ * each row's historical key set verbatim. This list deliberately reuses the
+ * audited producer/fingerprint contract: missing nullable fields are sent as
+ * JSON null and unknown/local-only fields are ignored.
+ */
+internal val POSITION_TICK_UPLOAD_COLUMNS: List<String> =
+    POSITION_TICK_IMMUTABLE_FINGERPRINT_KEYS
+
+internal fun positionTickUploadColumnNames(sendClientEventId: Boolean): List<String> =
+    if (sendClientEventId) POSITION_TICK_UPLOAD_COLUMNS + POSITION_TICK_CLIENT_EVENT_ID_KEY
+    else POSITION_TICK_UPLOAD_COLUMNS
+
+/** Pin the accepted columns so PostgREST never infers them from a mixed-shape batch. */
+internal fun positionTickInsertPath(sendClientEventId: Boolean): String =
+    "position_ticks?columns=${positionTickUploadColumnNames(sendClientEventId).joinToString(",")}"
+
+internal data class PositionTickUploadBatch(
+    val rows: JSONArray,
+    val sendClientEventId: Boolean,
+    val errorDetail: String? = null
+)
+
+/** Defensive normalization for every caller, including callers outside the drain. */
+internal fun normalizePositionTickUploadBatch(rows: JSONArray): PositionTickUploadBatch {
+    val first = rows.optJSONObject(0)
+        ?: return PositionTickUploadBatch(JSONArray(), false, "local_non_object_row")
+    val sendClientEventId = first.has(POSITION_TICK_CLIENT_EVENT_ID_KEY)
+    val normalized = JSONArray()
+    for (i in 0 until rows.length()) {
+        val row = rows.optJSONObject(i)
+            ?: return PositionTickUploadBatch(JSONArray(), sendClientEventId, "local_non_object_row")
+        if (row.has(POSITION_TICK_CLIENT_EVENT_ID_KEY) != sendClientEventId) {
+            return PositionTickUploadBatch(JSONArray(), sendClientEventId, "local_mixed_identity_shape")
+        }
+        normalized.put(positionTickUploadRow(row, sendClientEventId))
+    }
+    return PositionTickUploadBatch(normalized, sendClientEventId)
+}
+
+/**
  * PRODUCER-KEY GATE (compile time). While false, `client_event_id` is computed and
  * kept in the LOCAL queue for chunk acknowledgement only and is stripped from every
  * upload body, so this build sends exactly the 28-column production payload.
@@ -122,16 +165,15 @@ internal fun positionTickRowIdentity(row: JSONObject): String {
 }
 
 /**
- * Build the exact upload row. With the gate off the identity key is removed so the
- * request matches the current production schema; the queued row is not modified.
+ * Build the exact, uniform upload row. Missing historical columns become JSON
+ * null, extra/local-only columns are excluded, and the queued row is not modified.
+ * With the gate off the identity key is omitted so the request matches the current
+ * production schema.
  */
 internal fun positionTickUploadRow(row: JSONObject, sendClientEventId: Boolean): JSONObject {
     val out = JSONObject()
-    val keys = row.keys()
-    while (keys.hasNext()) {
-        val k = keys.next()
-        if (k == POSITION_TICK_CLIENT_EVENT_ID_KEY && !sendClientEventId) continue
-        out.put(k, row.opt(k))
+    for (key in POSITION_TICK_UPLOAD_COLUMNS) {
+        out.put(key, if (row.has(key)) row.opt(key) ?: JSONObject.NULL else JSONObject.NULL)
     }
     if (sendClientEventId) out.put(POSITION_TICK_CLIENT_EVENT_ID_KEY, positionTickRowIdentity(row))
     return out

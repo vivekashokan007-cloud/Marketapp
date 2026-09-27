@@ -3487,9 +3487,28 @@ object SupabaseClient {
                 rowCount = 0
             )
         }
-        val request = getBaseRequest("position_ticks")
+
+        // A durable queue can span APK schema versions. PostgREST bulk JSON
+        // requires uniform object keys (PGRST102 otherwise), so normalize every
+        // row to the audited production column contract and pin ?columns=.
+        // Identity presence must also be uniform: mixed identity/no-identity is a
+        // local contract failure and must retain the queue without a network call.
+        val upload = normalizePositionTickUploadBatch(rows)
+        if (upload.errorDetail != null) {
+            return PositionTickInsertResult(
+                success = false,
+                persisted = false,
+                failureClass = POSITION_TICK_FLUSH_SCHEMA_PAYLOAD,
+                httpStatus = null,
+                exceptionType = null,
+                detail = upload.errorDetail,
+                rowCount = rows.length()
+            )
+        }
+        val normalizedRows = upload.rows
+        val request = getBaseRequest(positionTickInsertPath(upload.sendClientEventId))
             .header("Prefer", "return=minimal")
-            .post(rows.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+            .post(normalizedRows.toString().toRequestBody("application/json".toMediaTypeOrNull()))
             .build()
 
         return try {
@@ -3504,7 +3523,7 @@ object SupabaseClient {
                     exceptionType = null,
                     exceptionMessage = null,
                     allowlistedServerErrorCode = serverCode,
-                    rowCount = rows.length(),
+                    rowCount = normalizedRows.length(),
                     // No safe exact-identity readback against current schema (no unique
                     // (trade_id, tick_ts) constraint). Fail closed on 409.
                     verifiedExactDuplicates = false
@@ -3543,7 +3562,7 @@ object SupabaseClient {
                 exceptionType = e.javaClass.name,
                 exceptionMessage = e.message,
                 allowlistedServerErrorCode = null,
-                rowCount = rows.length(),
+                rowCount = normalizedRows.length(),
                 verifiedExactDuplicates = false
             )
             val line = formatPositionTickInsertFailLog(diag)

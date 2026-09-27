@@ -423,11 +423,61 @@ class PositionTickDrainTest {
         assertEquals(expected, store.rows().map { it.getString(POSITION_TICK_CLIENT_EVENT_ID_KEY) })
         assertEquals((0 until 3).map { positionTickCanonicalPayload(legacy.getJSONObject(it)) },
             store.rows().map { positionTickCanonicalPayload(it) })
-        // Gate off -> the POST body is exactly the legacy key set.
+        // Gate off -> every POST body is normalized to the current production
+        // key set; legacy missing columns are explicit nulls.
         drain(store, server)
-        assertEquals(legacy.getJSONObject(0).keySet(), server.table[0].keySet())
+        assertEquals(POSITION_TICK_UPLOAD_COLUMNS.toSet(), server.table[0].keySet())
+        assertTrue(server.table[0].isNull("quantity_units"))
+        assertTrue(server.table[0].isNull("contract_lot_size"))
+        assertTrue(server.table[0].isNull("number_of_lots"))
+        assertTrue(server.table[0].isNull("lot_authoritative"))
         // Identity is stable across a SharedPreferences-style round trip.
         assertEquals(expected[0], computePositionTickClientEventId(JSONObject(JSONObject(legacy.getJSONObject(0).toString()).toString())))
+    }
+
+    @Test fun mixedApkRowShapes_areCanonicalizedBeforeOneBulkPost() {
+        val old = row("OLD", 1).apply {
+            remove("quantity_units")
+            remove("contract_lot_size")
+            remove("number_of_lots")
+            remove("lot_authoritative")
+            put("retired_local_only_key", "must-not-upload")
+        }
+        val current = row("NEW", 2)
+        val store = StringStore(JSONArray().put(old).put(current).toString())
+        val posted = mutableListOf<JSONArray>()
+        val result = drainPositionTickQueue(
+            store,
+            PositionTickTransport { body ->
+                posted += JSONArray(body.toString())
+                PositionTickInsertResult(true, true, POSITION_TICK_FLUSH_OK, 201, null, POSITION_TICK_DETAIL_OK, body.length())
+            },
+            PositionTickDrainConfig(sendClientEventId = false),
+            Any()
+        )
+
+        assertEquals(PositionTickDrainOutcome.DRAINED, result.outcome)
+        assertEquals(1, posted.size)
+        assertEquals(2, posted.single().length())
+        val expectedKeys = POSITION_TICK_UPLOAD_COLUMNS.toSet()
+        for (i in 0 until posted.single().length()) {
+            assertEquals(expectedKeys, posted.single().getJSONObject(i).keySet())
+            assertFalse(posted.single().getJSONObject(i).has("retired_local_only_key"))
+            assertFalse(posted.single().getJSONObject(i).has(POSITION_TICK_CLIENT_EVENT_ID_KEY))
+        }
+        assertTrue(posted.single().getJSONObject(0).isNull("quantity_units"))
+        assertEquals(75.0, posted.single().getJSONObject(1).getDouble("quantity_units"), 0.0)
+    }
+
+    @Test fun postgrestInsertPath_pinsExactCanonicalColumns() {
+        assertEquals(
+            "position_ticks?columns=${POSITION_TICK_UPLOAD_COLUMNS.joinToString(",")}",
+            positionTickInsertPath(false)
+        )
+        assertEquals(
+            POSITION_TICK_UPLOAD_COLUMNS + POSITION_TICK_CLIENT_EVENT_ID_KEY,
+            positionTickUploadColumnNames(true)
+        )
     }
 
     @Test fun tamperedStoredIdentity_isRederivedFromContent() {

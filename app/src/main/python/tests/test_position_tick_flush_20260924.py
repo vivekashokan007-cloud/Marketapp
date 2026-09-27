@@ -23,6 +23,7 @@ JAVA_APP = Path(__file__).resolve().parents[2] / "java" / "com" / "marketradar" 
 PTS = JAVA_APP / "PositionTickService.kt"
 PTF = JAVA_APP / "PositionTickFlush.kt"
 SBC = JAVA_APP / "SupabaseClient.kt"
+IDENTITY = JAVA_APP / "PositionTickIdentity.kt"
 # B1.1 (27 Sep): the flush moved out of PositionTickService into a chunked drain.
 DRAIN = JAVA_APP / "PositionTickDrain.kt"
 RUNNER = JAVA_APP / "PositionTickUploadRunner.kt"
@@ -405,6 +406,7 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         )
         cls.ptf = PTF.read_text(encoding="utf-8")
         cls.sbc = SBC.read_text(encoding="utf-8")
+        cls.identity = IDENTITY.read_text(encoding="utf-8")
 
     def test_flush_uses_detailed_insert_and_persisted_gate(self):
         # B1.1: drain uses the same detailed insert + persisted gate, per chunk.
@@ -447,12 +449,25 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertIn("verifiedExactDuplicates = false", self.sbc)
         # Must not pass responseBodySnippet / rawBody into classify.
         insert_idx = self.sbc.index("fun insertPositionTicksDetailed")
-        window = self.sbc[insert_idx : insert_idx + 2500]
+        # Bound by the next function instead of a brittle character count: the
+        # insert path legitimately grows when new fail-closed guards are added.
+        insert_end = self.sbc.index("fun probePositionTickClientEventIdColumn", insert_idx)
+        window = self.sbc[insert_idx:insert_end]
         self.assertNotIn("responseBodySnippet", window)
         self.assertIn("allowlistedServerErrorCode = serverCode", window)
         # Literal fail tag lives in the shared privacy-safe formatter.
         self.assertIn("POSITION_TICK_INSERT_FAIL:", self.ptf)
         self.assertIn("formatPositionTickInsertFailLog(diag)", window)
+
+    def test_mixed_apk_queue_shape_is_normalized_before_postgrest_bulk_insert(self):
+        self.assertIn("POSITION_TICK_UPLOAD_COLUMNS", self.identity)
+        self.assertIn("POSITION_TICK_IMMUTABLE_FINGERPRINT_KEYS", self.identity)
+        self.assertIn("positionTickInsertPath", self.identity)
+        self.assertIn('"position_ticks?columns=', self.identity)
+        self.assertIn("normalizePositionTickUploadBatch(rows)", self.sbc)
+        self.assertIn("positionTickInsertPath(upload.sendClientEventId)", self.sbc)
+        self.assertIn(".post(normalizedRows.toString()", self.sbc)
+        self.assertNotIn('getBaseRequest("position_ticks")', self.sbc)
 
     def test_classifier_409_fail_closed_constant(self):
         self.assertIn(f'"{CONFLICT_UNVERIFIED}"', self.ptf)
