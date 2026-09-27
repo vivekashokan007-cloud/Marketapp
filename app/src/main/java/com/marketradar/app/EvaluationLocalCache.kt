@@ -837,9 +837,6 @@ object EvaluationLocalCache {
         parseJsonObject(context.opt("snapshot_pc2_authority_policy"))?.let {
             compactContext.put("snapshot_pc2_authority_policy", it)
         }
-        parseJsonObject(context.opt("snapshot_pc2_authority_recording"))?.let {
-            compactContext.put("snapshot_pc2_authority_recording", it)
-        }
         parseJsonArray(context.opt("snapshot_pc2_authority_decisions"))?.let {
             if (it.length() > 0) compactContext.put("snapshot_pc2_authority_decisions", it)
         }

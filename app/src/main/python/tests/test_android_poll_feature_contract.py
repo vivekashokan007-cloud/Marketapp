@@ -113,7 +113,6 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertIn('listOf("ml_brain_snapshots")', supabase)
         self.assertNotIn('val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")', supabase)
         self.assertIn('"snapshot_pc2_authority_policy"', cache)
-        self.assertIn('"snapshot_pc2_authority_recording"', cache)
         self.assertIn('"snapshot_pc2_authority_decisions"', cache)
         self.assertIn('"snapshot_android_compaction"', cache)
         self.assertIn('"snapshot_evaluation_legs"', cache)

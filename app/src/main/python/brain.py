@@ -7147,8 +7147,6 @@ CONTEXT_PERCENTILES_RECORDING_VERSION = "c3_percentile_recording_v1"
 CONTEXT_PERCENTILE_WINDOWS = (30, 60)
 PC2_AUTHORITY_POLICY_VERSION = 'pc2_authority_policy_v2'
 PC2_AUTHORITY_DIAGNOSTICS_VERSION = 'pc2_authority_diagnostics_v1'
-PC2_AUTHORITY_RECORDING_VERSION = 'pc2_authority_exact_signature_aggregate_v1'
-PC2_AUTHORITY_RECORDING_COMPLETE = 'COMPLETE_EXACT_SIGNATURE_AGGREGATED'
 PC2_AUTHORITY_PATH_INVENTORY = {
     'live_percentile_paths': (
         'economic_gate_thresholds',
@@ -9908,103 +9906,6 @@ def _pc2_authority_allows_percentile(decision):
     )
 
 
-def _pc2_candidate_reference(row):
-    """Stable, compact reference for the candidate whose authority was evaluated."""
-    if not isinstance(row, dict):
-        return None
-    for key in ('id', 'candidate_id', 'candidateId', 'recommendation_id'):
-        value = str(row.get(key) or '').strip()
-        if value:
-            return value
-    descriptor = {
-        key: row.get(key)
-        for key in (
-            'index', 'index_key', 'type', 'strategy_type', 'expiry',
-            'sellStrike', 'buyStrike', 'sellStrike2', 'buyStrike2',
-            'width', 'sellType', 'buyType', 'sellType2', 'buyType2',
-        )
-        if row.get(key) is not None
-    }
-    if not descriptor:
-        return None
-    raw = json.dumps(descriptor, sort_keys=True, separators=(',', ':'), default=str)
-    return 'candidate_sha256:' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
-
-
-def _pc2_authority_decision_signature(record):
-    """Hash one exact decision body; aggregation metadata is never an input."""
-    body = {
-        key: value for key, value in (record or {}).items()
-        if key not in {
-            'decision_signature', 'recording_version', 'pc2_record_completeness',
-            'evaluation_count', 'candidate_refs', 'first_candidate_ref',
-            'last_candidate_ref', 'missing_candidate_ref_count',
-        }
-    }
-    raw = json.dumps(body, sort_keys=True, separators=(',', ':'), ensure_ascii=False, default=str)
-    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
-
-
-def _pc2_record_authority_decision(ctx, record, candidate_ref=None):
-    """Aggregate only exact-equal calls while preserving their candidate mapping."""
-    if not isinstance(ctx, dict) or not isinstance(record, dict):
-        return
-    registry = ctx.setdefault('_pc2_authority_decision_registry', {})
-    if not isinstance(registry, dict):
-        registry = {}
-        ctx['_pc2_authority_decision_registry'] = registry
-    signature = _pc2_authority_decision_signature(record)
-    ref = str(candidate_ref or '').strip() or None
-    entry = registry.get(signature)
-    if not isinstance(entry, dict):
-        entry = dict(record)
-        entry.update({
-            'decision_signature': signature,
-            'recording_version': PC2_AUTHORITY_RECORDING_VERSION,
-            'pc2_record_completeness': PC2_AUTHORITY_RECORDING_COMPLETE,
-            'evaluation_count': 0,
-            'candidate_refs': [],
-            'first_candidate_ref': None,
-            'last_candidate_ref': None,
-            'missing_candidate_ref_count': 0,
-        })
-        registry[signature] = entry
-    entry['evaluation_count'] = int(entry.get('evaluation_count') or 0) + 1
-    if ref:
-        refs = entry.setdefault('candidate_refs', [])
-        refs.append(ref)
-        if not entry.get('first_candidate_ref'):
-            entry['first_candidate_ref'] = ref
-        entry['last_candidate_ref'] = ref
-    else:
-        entry['missing_candidate_ref_count'] = int(entry.get('missing_candidate_ref_count') or 0) + 1
-    ctx['_pc2_authority_decision_call_count'] = int(
-        ctx.get('_pc2_authority_decision_call_count') or 0
-    ) + 1
-
-
-def _pc2_finalize_authority_recording(ctx):
-    ctx = ctx if isinstance(ctx, dict) else {}
-    registry = ctx.get('_pc2_authority_decision_registry')
-    decisions = list(registry.values()) if isinstance(registry, dict) else []
-    call_count = int(ctx.get('_pc2_authority_decision_call_count') or 0)
-    kinds = sorted({
-        str(row.get('authority_kind') or '')
-        for row in decisions if isinstance(row, dict) and row.get('authority_kind')
-    })
-    recording = {
-        'version': PC2_AUTHORITY_RECORDING_VERSION,
-        'completeness': PC2_AUTHORITY_RECORDING_COMPLETE,
-        'truncated': False,
-        'call_count': call_count,
-        'unique_decision_count': len(decisions),
-        'aggregated_duplicate_count': max(0, call_count - len(decisions)),
-        'authority_kinds': kinds,
-        'candidate_mapping': 'ordered_candidate_refs_per_exact_decision',
-    }
-    return decisions, recording
-
-
 def _resolve_pc2_parameter_authority(
     ctx,
     *,
@@ -10024,7 +9925,6 @@ def _resolve_pc2_parameter_authority(
     promotion_records=None,
     hard_outcome=None,
     percentile_outcome=None,
-    candidate_ref=None,
 ):
     """Resolve every PC2 authority promotion through one auditable contract.
 
@@ -10190,9 +10090,9 @@ def _resolve_pc2_parameter_authority(
         **provenance,
     }
     if isinstance(ctx, dict):
-        _pc2_record_authority_decision(
-            ctx,
-            {
+        decisions = ctx.setdefault('_pc2_authority_decisions', [])
+        if isinstance(decisions, list):
+            decisions.append({
                 'variable_name': variable_name,
                 'constant': constant,
                 'context_variable': variable_name,
@@ -10228,9 +10128,7 @@ def _resolve_pc2_parameter_authority(
                 'promotion_id': decision.get('promotion_id'),
                 'promotion_valid_until': decision.get('promotion_valid_until'),
                 'fallback_reason': decision['fallback_reason'],
-            },
-            candidate_ref=candidate_ref,
-        )
+            })
     return decision
 
 def _apply_pc2_stability_bar(windows):
@@ -10721,7 +10619,6 @@ def _pc2_live_gate_decision(ctx, row, const_name, observed_value, hard_threshold
         **_pc2_authority_runtime(ctx, row),
         hard_outcome=hard_pass,
         percentile_outcome=percentile_pass,
-        candidate_ref=_pc2_candidate_reference(row),
     )
     authority_pass = _pc2_authority_allows_percentile(authority) and percentile_threshold is not None
     gate_basis = 'percentile' if authority_pass else 'hard_fallback'
@@ -10792,7 +10689,6 @@ def _pc2_width_gate_decision(ctx, row, const_name, observed_width, hard_threshol
         **_pc2_authority_runtime(ctx, row),
         hard_outcome=hard_pass,
         percentile_outcome=percentile_pass,
-        candidate_ref=_pc2_candidate_reference(row),
     )
     gate_basis = 'percentile' if _pc2_authority_allows_percentile(authority) and percentile_threshold is not None else 'hard_fallback'
     active_threshold = percentile_threshold if gate_basis == 'percentile' else hard_threshold
@@ -10873,7 +10769,6 @@ def _pc2_cross_market_move_context(ctx, const_name, observed_pct, fallback_thres
         **_pc2_authority_runtime(ctx, {}),
         hard_outcome=hard_active,
         percentile_outcome=percentile_active,
-        candidate_ref='__poll_context__',
     )
     support = int(authority.get('support_count') or 0)
     percentile = authority.get('percentile') if _pc2_authority_allows_percentile(authority) else None
@@ -11615,7 +11510,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'windows': windows,
     }
 
-def _pc2_ranking_percentile_authority(ctx, variable_name, value, candidate_ref=None):
+def _pc2_ranking_percentile_authority(ctx, variable_name, value):
     history = _history_values(ctx, (variable_name,), 60)
     authority = _resolve_pc2_parameter_authority(
         ctx,
@@ -11626,7 +11521,6 @@ def _pc2_ranking_percentile_authority(ctx, variable_name, value, candidate_ref=N
         slice_key=_pc2_slice_key({}, variable_name),
         **_pc2_authority_runtime(ctx, {}),
         authority_kind='ranking_context',
-        candidate_ref=candidate_ref,
     )
     authority['bar'] = CONTEXT_PERCENTILE_STABILITY_MAX
     authority['live_ranking_authority'] = _pc2_authority_allows_percentile(authority)
@@ -11693,19 +11587,16 @@ def _apply_context_percentile_live_ranking(candidates, context_percentiles, ctx=
                 ctx,
                 'realized_day_range',
                 (context_percentiles.get('current_values') or {}).get('realized_day_range'),
-                candidate_ref=_pc2_candidate_reference(cand),
             ),
             'vix': _pc2_ranking_percentile_authority(
                 ctx,
                 'vix',
                 (context_percentiles.get('current_values') or {}).get('vix'),
-                candidate_ref=_pc2_candidate_reference(cand),
             ),
             'fii_short_pct': _pc2_ranking_percentile_authority(
                 ctx,
                 'fii_short_pct',
                 (context_percentiles.get('current_values') or {}).get('fii_short_pct'),
-                candidate_ref=_pc2_candidate_reference(cand),
             ),
         }
 
@@ -17122,9 +17013,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
         result['pc2_batch_f_paper_context'] = batch_f_paper_context
         ctx['pc2_batch_f_paper_context'] = batch_f_paper_context
-        pc2_authority_decisions, pc2_authority_recording = _pc2_finalize_authority_recording(ctx)
-        result['pc2_authority_decisions'] = pc2_authority_decisions
-        result['pc2_authority_recording'] = pc2_authority_recording
+        result['pc2_authority_decisions'] = list(ctx.get('_pc2_authority_decisions') or [])[-128:]
         result['pc2_authority_policy'] = dict(PC2_AUTHORITY_POLICY)
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
@@ -20628,7 +20517,6 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_pc2_supply_quality_shadow',
         'snapshot_pc2_batch_f_paper_context',
         'snapshot_pc2_authority_policy',
-        'snapshot_pc2_authority_recording',
         'snapshot_shadow_selector_suite',
         'snapshot_menu_abstention_shadow',
         'snapshot_brain_notification',
@@ -21319,7 +21207,6 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
     snapshot_context['snapshot_pc2_authority_decisions'] = result.get('pc2_authority_decisions') if isinstance(result.get('pc2_authority_decisions'), list) else []
     snapshot_context['snapshot_pc2_authority_policy'] = result.get('pc2_authority_policy') if isinstance(result.get('pc2_authority_policy'), dict) else {}
-    snapshot_context['snapshot_pc2_authority_recording'] = result.get('pc2_authority_recording') if isinstance(result.get('pc2_authority_recording'), dict) else {}
     snapshot_context['snapshot_pc2_composite_shadow'] = result.get('pc2_composite_shadow') if isinstance(result.get('pc2_composite_shadow'), dict) else {}
     snapshot_context['snapshot_pc2_supply_quality_shadow'] = result.get('pc2_supply_quality_shadow') if isinstance(result.get('pc2_supply_quality_shadow'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
