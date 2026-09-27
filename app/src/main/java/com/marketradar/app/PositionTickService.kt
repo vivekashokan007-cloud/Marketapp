@@ -49,6 +49,9 @@ class PositionTickService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // B1.1: service start is an upload trigger. The drain runs on its own
+        // thread and needs neither this service nor an open trade.
+        PositionTickUploadRunner.request(applicationContext, PositionTickDrainTrigger.SERVICE_START)
         if (foregroundStartBackoffRemainingMs() > 0L) {
             val remainingMs = foregroundStartBackoffRemainingMs()
             Log.w(TAG, "POSITION_TICK_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
@@ -93,7 +96,7 @@ class PositionTickService : Service() {
     }
 
     override fun onDestroy() {
-        Thread { flushPending(force = true) }.start()
+        PositionTickUploadRunner.request(applicationContext, PositionTickDrainTrigger.SERVICE_DESTROY)
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -153,7 +156,8 @@ class PositionTickService : Service() {
 
     private fun captureOnce(): Boolean {
         if (!isMarketSessionActive()) {
-            flushPending(force = true)
+            // B1.1: upload is independent of capture; no quotes are fetched here.
+            PositionTickUploadRunner.request(applicationContext, PositionTickDrainTrigger.SESSION_CLOSED)
             return false
         }
 
@@ -166,7 +170,7 @@ class PositionTickService : Service() {
 
         val openTrades = parsedOpenTrades ?: JSONArray()
         if (openTrades.length() == 0) {
-            flushPending(force = true)
+            PositionTickUploadRunner.request(applicationContext, PositionTickDrainTrigger.NO_OPEN_TRADES)
             return false
         }
 
@@ -237,7 +241,7 @@ class PositionTickService : Service() {
             )
         }
         enqueueRows(rows)
-        flushPending(force = false)
+        PositionTickUploadRunner.request(applicationContext, PositionTickDrainTrigger.AFTER_ENQUEUE)
         return true
     }
 
@@ -1159,6 +1163,13 @@ class PositionTickService : Service() {
     }
 
     private fun enqueueRows(rows: JSONArray) {
+        // B1.1: identity is fixed at enqueue from the final queued content
+        // (after quote_refresh / mark_failure_episode annotations were added).
+        ensurePositionTickIdentities(rows)
+        synchronized(PositionTickQueueLock) { enqueueRowsLocked(rows) }
+    }
+
+    private fun enqueueRowsLocked(rows: JSONArray) {
         val existing = loadPendingQueue()
         val admission = admitPositionTicksToBoundedQueue(existing, rows, MAX_PENDING_TICKS)
         val editor = prefs.edit().putString(PREF_PENDING_QUEUE, admission.queue.toString())
@@ -1190,110 +1201,6 @@ class PositionTickService : Service() {
             }
         }
         editor.apply()
-    }
-
-    private fun flushPending(force: Boolean) {
-        val now = System.currentTimeMillis()
-        val lastFlush = prefs.getLong(PREF_LAST_FLUSH_MS, 0L)
-        val priorFailures = prefs.getInt(PREF_FLUSH_FAILURE_COUNT, 0)
-        val lastClass = prefs.getString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_UNKNOWN)
-            ?: POSITION_TICK_FLUSH_UNKNOWN
-        val backoffMs = if (priorFailures > 0) {
-            computePositionTickFlushBackoffMs(priorFailures, lastClass)
-        } else {
-            FLUSH_MIN_MS
-        }
-        if (!force && now - lastFlush < backoffMs) {
-            if (priorFailures > 0) {
-                LogBuffer.add(
-                    'D',
-                    TAG,
-                    "POSITION_TICK_FLUSH_BACKOFF: wait_ms=${backoffMs - (now - lastFlush)} " +
-                        "backoff_ms=$backoffMs consecutive=$priorFailures class=$lastClass"
-                )
-            }
-            return
-        }
-        var queue = loadPendingQueue()
-        if (queue.length() == 0) {
-            prefs.edit().putLong(PREF_LAST_FLUSH_MS, now).apply()
-            return
-        }
-        // Never silently trim unpersisted rows before flush. Capacity is enforced at
-        // enqueue via admitPositionTicksToBoundedQueue (reject new, preserve old).
-        val dedupe = dedupePositionTicksByTradeTs(queue)
-        queue = dedupe.queue
-        if (dedupe.exactDupDropped > 0 || dedupe.contentConflicts > 0) {
-            prefs.edit().putString(PREF_PENDING_QUEUE, queue.toString()).apply()
-            LogBuffer.add(
-                'I',
-                TAG,
-                "POSITION_TICK_QUEUE_DEDUPE: exact_dropped=${dedupe.exactDupDropped} " +
-                    "content_conflicts=${dedupe.contentConflicts} pending=${queue.length()}"
-            )
-            if (dedupe.contentConflicts > 0) {
-                LogBuffer.add(
-                    'W',
-                    TAG,
-                    "POSITION_TICK_QUEUE_CONTENT_CONFLICT: conflicts=${dedupe.contentConflicts} " +
-                        "pending=${queue.length()} retained_all=true"
-                )
-            }
-        }
-        val pendingBefore = queue.length()
-        // overflow_active = active flag alone; historical rejects keep tracking incomplete.
-        val overflowActiveFlag = prefs.getBoolean(PREF_OVERFLOW_ACTIVE, false)
-        val rejectedCount = prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L)
-        val hadHistoricalRejects = rejectedCount > 0L
-        val tracking = derivePositionTickTrackingStatus(
-            overflowActiveFlag = overflowActiveFlag,
-            trackingCompletePref = prefs.getBoolean(PREF_TRACKING_COMPLETE, true),
-            rejectedCount = rejectedCount
-        )
-        val result = SupabaseClient.insertPositionTicksDetailed(queue)
-        val (pendingAfter, drained) = applyPositionTickFlushDecision(pendingBefore, result)
-        if (drained) {
-            // Drain confirmed-persisted rows only. Clear active overflow flag; retain rejected
-            // totals so tracking_complete stays false (historical gap preserved).
-            val editor = prefs.edit()
-                .putString(PREF_PENDING_QUEUE, "[]")
-                .putLong(PREF_LAST_FLUSH_MS, now)
-                .putInt(PREF_FLUSH_FAILURE_COUNT, 0)
-                .putString(PREF_FLUSH_LAST_CLASS, POSITION_TICK_FLUSH_OK)
-                .putBoolean(PREF_OVERFLOW_ACTIVE, false)
-            if (!hadHistoricalRejects) {
-                editor.putBoolean(PREF_TRACKING_COMPLETE, true)
-            }
-            editor.apply()
-            LogBuffer.add(
-                'I',
-                TAG,
-                "POSITION_TICK_FLUSH_OK: cleared=$pendingBefore class=${result.failureClass} " +
-                    "status=${result.httpStatus ?: -1} persisted=true " +
-                    "tracking_complete=${tracking.trackingComplete} " +
-                    "overflow_had_rejects=$hadHistoricalRejects"
-            )
-        } else {
-            // Preserve queued ticks on rejection — do not clear, drop, or fabricate.
-            val failures = priorFailures + 1
-            val nextBackoff = computePositionTickFlushBackoffMs(failures, result.failureClass)
-            val line = formatPositionTickFlushFailLog(
-                consecutive = failures,
-                pending = pendingAfter,
-                result = result,
-                backoffMs = nextBackoff,
-                overflowActive = overflowActiveFlag,
-                trackingComplete = tracking.trackingComplete
-            )
-            Log.w(TAG, line)
-            LogBuffer.add('W', TAG, line)
-            prefs.edit()
-                .putString(PREF_PENDING_QUEUE, queue.toString())
-                .putLong(PREF_LAST_FLUSH_MS, now)
-                .putInt(PREF_FLUSH_FAILURE_COUNT, failures)
-                .putString(PREF_FLUSH_LAST_CLASS, result.failureClass)
-                .apply()
-        }
     }
 
     private fun loadPendingQueue(): JSONArray {
@@ -1688,9 +1595,8 @@ class PositionTickService : Service() {
         private const val PREF_ANALYTICS_ENABLED = "position_tick_analytics_enabled"
         private const val PREF_ANALYTICS_TOKEN = "upstox_analytics_token"
         private const val PREF_ANALYTICS_TOKEN_ALT = "analytics_token"
-        private const val PREF_PENDING_QUEUE = "position_tick_pending_queue"
+        private const val PREF_PENDING_QUEUE = PREF_POSITION_TICK_PENDING_QUEUE
         private const val PREF_RUNNING_STATE = "position_tick_running_state"
-        private const val PREF_LAST_FLUSH_MS = "position_tick_last_flush_ms"
         private const val PREF_DROPPED_TICK_COUNT = "position_tick_dropped_count"
         /** True while new ticks were refused because the bounded queue is full. */
         private val PREF_OVERFLOW_ACTIVE = PREF_POSITION_TICK_OVERFLOW_ACTIVE
@@ -1698,8 +1604,6 @@ class PositionTickService : Service() {
         private val PREF_OVERFLOW_REJECTED_COUNT = PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT
         /** False after overflow refuses new ticks until explicitly restored. */
         private val PREF_TRACKING_COMPLETE = PREF_POSITION_TICK_TRACKING_COMPLETE
-        private const val PREF_FLUSH_FAILURE_COUNT = "position_tick_flush_failure_count"
-        private const val PREF_FLUSH_LAST_CLASS = "position_tick_flush_last_class"
         private const val PREF_FGS_BLOCKED_UNTIL_MS = "position_tick_fgs_blocked_until_ms"
         private const val PREF_FGS_BLOCKED_COUNT = "position_tick_fgs_blocked_count"
         private const val NOTIFICATION_CHANNEL_ID = "position_tick_capture"
@@ -1744,8 +1648,7 @@ class PositionTickService : Service() {
         private const val SHADOW_LAST_NOTIFY_MS_PREFIX = "shadow_last_notify_ms_"
         private val SHADOW_ALERT_CLASSES = listOf("exit", "degraded")
         private const val JITTER_MS = 5_000L
-        private const val FLUSH_MIN_MS = 60_000L
-        private const val MAX_PENDING_TICKS = 1_500
+        private const val MAX_PENDING_TICKS = POSITION_TICK_MAX_PENDING
         private const val FGS_BLOCKED_BASE_BACKOFF_MS = 10 * 60 * 1000L
         private const val FGS_BLOCKED_MAX_BACKOFF_MS = 30 * 60 * 1000L
         // Shared schedule (G4): policy exit intent = 15:15; native session
@@ -1771,7 +1674,13 @@ class PositionTickService : Service() {
             } catch (_: Exception) {
                 JSONArray()
             }
-            if (open.length() == 0 || !marketSessionActiveNow()) return
+            // B1.1: capture eligibility (quotes/policy) is unchanged — open trade AND
+            // regular session. Upload eligibility is separate: a non-empty queue
+            // drains now even with no trade or outside the session.
+            if (!positionTickCaptureEligible(open.length(), marketSessionActiveNow())) {
+                PositionTickUploadRunner.request(context, PositionTickDrainTrigger.ENSURE_RUNNING_NO_CAPTURE)
+                return
+            }
             val blockedUntilMs = prefs.getLong(PREF_FGS_BLOCKED_UNTIL_MS, 0L)
             val remainingMs = (blockedUntilMs - System.currentTimeMillis()).coerceAtLeast(0L)
             if (remainingMs > 0L) {

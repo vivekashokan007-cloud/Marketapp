@@ -23,6 +23,9 @@ JAVA_APP = Path(__file__).resolve().parents[2] / "java" / "com" / "marketradar" 
 PTS = JAVA_APP / "PositionTickService.kt"
 PTF = JAVA_APP / "PositionTickFlush.kt"
 SBC = JAVA_APP / "SupabaseClient.kt"
+# B1.1 (27 Sep): the flush moved out of PositionTickService into a chunked drain.
+DRAIN = JAVA_APP / "PositionTickDrain.kt"
+RUNNER = JAVA_APP / "PositionTickUploadRunner.kt"
 ROOT = APP  # for build.gradle.kts version pin
 
 
@@ -394,18 +397,21 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.pts = PTS.read_text(encoding="utf-8")
+        # B1.1: upload/flush code now lives in the drain + runner files.
+        cls.drain = DRAIN.read_text(encoding="utf-8") + "\n" + RUNNER.read_text(encoding="utf-8")
         cls.ptf = PTF.read_text(encoding="utf-8")
         cls.sbc = SBC.read_text(encoding="utf-8")
 
     def test_flush_uses_detailed_insert_and_persisted_gate(self):
-        self.assertIn("insertPositionTicksDetailed", self.pts)
-        self.assertIn("applyPositionTickFlushDecision", self.pts)
-        self.assertIn("POSITION_TICK_FLUSH_OK", self.pts)
-        self.assertIn("dedupePositionTicksByTradeTs", self.pts)
+        # B1.1: drain uses the same detailed insert + persisted gate, per chunk.
+        self.assertIn("insertPositionTicksDetailed", self.drain)
+        self.assertIn("shouldDrainPositionTickQueue(result)", self.drain)
+        self.assertIn("POSITION_TICK_FLUSH_OK", self.drain)
+        self.assertIn("dedupePositionTicksByTradeTs", self.drain)
         self.assertIn("admitPositionTicksToBoundedQueue", self.pts)
         # persisted=false is emitted by the shared formatter (privacy-safe).
         self.assertIn("persisted=false", self.ptf)
-        self.assertIn("formatPositionTickFlushFailLog", self.pts)
+        self.assertIn("formatPositionTickFlushFailLog", self.drain)
 
     def test_no_silent_trim_or_queue_drop(self):
         self.assertNotIn("private fun trimQueue", self.pts)
@@ -415,15 +421,19 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertIn("PREF_OVERFLOW_ACTIVE", self.pts)
 
     def test_fail_log_includes_class_and_status(self):
-        self.assertIn("formatPositionTickFlushFailLog", self.pts)
+        self.assertIn("formatPositionTickFlushFailLog", self.drain)
         self.assertIn("POSITION_TICK_FLUSH_FAIL:", self.ptf)
         self.assertIn("tracking_complete=", self.ptf)
 
     def test_queue_not_cleared_on_fail(self):
-        fail_idx = self.pts.index("formatPositionTickFlushFailLog")
-        window = self.pts[fail_idx : fail_idx + 900]
-        self.assertIn('putString(PREF_PENDING_QUEUE, queue.toString())', window)
-        self.assertNotIn('putString(PREF_PENDING_QUEUE, "[]")', window)
+        # B1.1: nothing ever writes an empty queue; rows leave only by acked identity.
+        for text in (self.pts, self.drain):
+            self.assertNotIn('putString(PREF_PENDING_QUEUE, "[]")', text)
+            self.assertNotIn('putString(PREF_POSITION_TICK_PENDING_QUEUE, "[]")', text)
+        self.assertIn("removeAcked(store, lock, chunk.ids.toSet())", self.drain)
+        fail_idx = self.drain.index("failure = result")
+        window = self.drain[fail_idx : fail_idx + 200]
+        self.assertNotIn("removeAcked", window)
 
     def test_supabase_never_passes_raw_body_to_classifier(self):
         self.assertIn("extractAllowlistedServerErrorCode", self.sbc)
@@ -460,7 +470,7 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
 
     def test_dedupe_content_conflict_path_present(self):
         self.assertIn("contentConflicts", self.ptf)
-        self.assertIn("POSITION_TICK_QUEUE_CONTENT_CONFLICT", self.pts)
+        self.assertIn("POSITION_TICK_QUEUE_CONTENT_CONFLICT", self.drain)
         self.assertIn("positionTickImmutableFingerprint", self.ptf)
 
     def test_tracking_complete_in_mark_broadcast_and_store(self):
@@ -487,11 +497,14 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertNotIn("rejected > 0", reader)
         self.assertNotIn("rejectedCount > 0", reader)
         # Drain clears active flag but retains rejected totals / incomplete tracking.
-        self.assertIn("hadHistoricalRejects", self.pts)
-        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", self.pts)
-        drain_window = self.pts.split("if (drained)")[1].split("} else {")[0]
-        self.assertIn("if (!hadHistoricalRejects)", drain_window)
-        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", drain_window)
+        # B1.1: this now lives in positionTickTrackingAfterDrain (PositionTickDrain.kt).
+        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", self.pts)  # enqueue path
+        after = self.drain.split("internal fun positionTickTrackingAfterDrain(")[1].split("\n}\n")[0]
+        self.assertIn("rejectedTotal == 0L", after)
+        self.assertNotIn("PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT", after)
+        self.assertIn("putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, tracking.overflowActive)", self.drain)
+        self.assertNotIn("putLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT", self.drain)
+        self.assertIn("if (progressed && report.remaining < maxPending) false else overflowActiveFlag", after)
 
 
 if __name__ == "__main__":

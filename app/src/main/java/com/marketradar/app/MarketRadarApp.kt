@@ -41,6 +41,10 @@ class MarketRadarApp : Application() {
                 prefs.getBoolean(AuthAccess.PREF_SESSION_ENABLED, AuthAccess.DEFAULT_SESSION_ENABLED)
             )
             AuthAccess.setUserAccessToken(prefs.getString(AuthAccess.PREF_USER_ACCESS_TOKEN, "") ?: "")
+            // B1.1: pending position ticks drain on every process start (this also
+            // covers an app upgrade) and on connectivity recovery — independent of
+            // open trades and of the market session. No quotes are fetched.
+            PositionTickUploadRunner.onProcessStart(this, PositionTickDrainTrigger.APP_START)
             val pid = android.os.Process.myPid()
             Log.i("MarketRadarApp", "onCreate starting pid=$pid startUuid=$PROCESS_START_UUID")
             LogBuffer.add('I', "MarketRadarApp", "APP_PROCESS_START: pid=$pid startUuid=$PROCESS_START_UUID heap=${heapLine()}")

@@ -58,7 +58,13 @@ data class PositionTickInsertResult(
     val exceptionType: String?,
     val detail: String,
     val rowCount: Int,
-    val allowlistedServerCode: String? = null
+    val allowlistedServerCode: String? = null,
+    /**
+     * B1.1: only ever [POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX] or null — the one
+     * constraint name the drain needs to prove an exact-identity duplicate. Never
+     * any other text from the response.
+     */
+    val allowlistedConstraint: String? = null
 )
 
 /** Result of admitting new ticks into a bounded pending queue without dropping old rows. */
@@ -241,6 +247,18 @@ internal fun extractAllowlistedServerErrorCode(rawBody: String?): String? {
         m?.groupValues?.getOrNull(1).orEmpty()
     }
     return normalizeAllowlistedServerCode(code)
+}
+
+/**
+ * B1.1: returns [POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX] iff the error body names
+ * exactly that constraint (PostgREST 23505 message), else null. Returns no other
+ * body content, so it is safe with arbitrary bodies.
+ */
+internal fun extractAllowlistedConflictConstraint(rawBody: String?): String? {
+    if (rawBody.isNullOrBlank()) return null
+    val quoted = "\"" + POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX + "\""
+    val escapedQuoted = "\\\"" + POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX + "\\\""
+    return if (rawBody.contains(quoted) || rawBody.contains(escapedQuoted)) POSITION_TICK_CLIENT_EVENT_ID_UNIQUE_INDEX else null
 }
 
 internal fun normalizeAllowlistedServerCode(raw: String?): String? {

@@ -187,5 +187,14 @@ class MarketLifecycleReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: "unknown"
         MarketOpenScheduler.maybeStartIngestionNow(context, action)
+        // B1.1: upload trigger only (no capture): drain any pending ticks.
+        PositionTickUploadRunner.request(
+            context,
+            when (action) {
+                Intent.ACTION_MY_PACKAGE_REPLACED -> PositionTickDrainTrigger.PACKAGE_REPLACED
+                Intent.ACTION_BOOT_COMPLETED -> PositionTickDrainTrigger.BOOT
+                else -> PositionTickDrainTrigger.LIFECYCLE
+            }
+        )
     }
 }

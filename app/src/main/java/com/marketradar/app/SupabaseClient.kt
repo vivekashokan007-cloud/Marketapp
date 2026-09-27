@@ -3508,7 +3508,15 @@ object SupabaseClient {
                     // No safe exact-identity readback against current schema (no unique
                     // (trade_id, tick_ts) constraint). Fail closed on 409.
                     verifiedExactDuplicates = false
-                )
+                ).let { d ->
+                    // B1.1: expose ONLY the client_event_id unique-index name (or null)
+                    // so the drain can prove an exact-identity duplicate per row.
+                    if (response.code == 409) {
+                        d.copy(allowlistedConstraint = extractAllowlistedConflictConstraint(rawBody))
+                    } else {
+                        d
+                    }
+                }
                 if (!diag.persisted) {
                     val line = formatPositionTickInsertFailLog(diag)
                     Log.e(TAG, line)
@@ -3542,6 +3550,31 @@ object SupabaseClient {
             Log.e(TAG, line)
             LogBuffer.add('E', TAG, line)
             diag
+        }
+    }
+
+    /**
+     * B1.1 producer-key gate, runtime half: read-only column-existence probe.
+     * `GET position_ticks?select=client_event_id&limit=0` returns 200 with an empty
+     * array when the column exists (RLS filters rows, not columns) and 400
+     * (42703 / PGRST*) when it does not. true = confirmed, false = absent,
+     * null = could not tell (network/auth) — callers treat null as NOT confirmed.
+     * Only called when POSITION_TICK_CLIENT_EVENT_ID_SEND_COMPILED is true.
+     */
+    fun probePositionTickClientEventIdColumn(): Boolean? {
+        val request = getBaseRequest("position_ticks?select=$POSITION_TICK_CLIENT_EVENT_ID_KEY&limit=0")
+            .get()
+            .build()
+        return try {
+            client.newCall(request).execute().use { response ->
+                when {
+                    response.code == 200 -> true
+                    response.code == 400 -> false
+                    else -> null
+                }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
