@@ -233,6 +233,11 @@ class PositionTickDrainSchedulerTest {
             val kv = MapKv(); val clock = Clock(); val work = FakeWork(clock::get); val server = Server()
             seed(kv, 30)
             server.script.add(status)
+            // A schema-class bulk rejection now gets one bounded singleton
+            // proof. Keep that proof globally rejected too; otherwise the
+            // fake server's default 201 would incorrectly model a row-specific
+            // problem and drain the queue.
+            if (status == 400) server.script.add(status)
             val c = coordinator(kv, server, clock, work)
             val r = c.runPass(PositionTickDrainTrigger.APP_START)
             assertFalse(r.report!!.failureClass in POSITION_TICK_TRANSIENT_FAILURE_CLASSES)
@@ -244,12 +249,13 @@ class PositionTickDrainSchedulerTest {
                 c.runPass(PositionTickDrainTrigger.CONNECTIVITY)
                 c.runPass(PositionTickDrainTrigger.SERVICE_START)
             }
-            assertEquals("only the original request", 1, server.requests.size)
+            val firstAttemptRequests = if (status == 400) 2 else 1
+            assertEquals("only the original bounded attempt", firstAttemptRequests, server.requests.size)
             assertEquals(1, work.enqueues.size)
             assertEquals(30, kv.queue().length())
             // App start/update may retry after the ordinary backoff (bounded).
             c.runPass(PositionTickDrainTrigger.APP_START)
-            assertEquals(2, server.requests.size)
+            assertEquals(firstAttemptRequests + 1, server.requests.size)
         }
     }
 

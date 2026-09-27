@@ -466,8 +466,18 @@ class PositionTickDrainTest {
     // --------------------------------------------- §3: legacy rows / overflow
 
     @Test fun legacyRowsWithoutIdentity_getContentDerivedIdBeforeUpload_contentOtherwiseUnchanged() {
-        val raw = legacyQueue(3)
-        val legacy = JSONArray(raw)
+        val legacy = JSONArray(legacyQueue(3))
+        // Model the actual older APK shape: these lot-authority columns did
+        // not exist yet and must therefore become explicit JSON null only at
+        // the canonical upload boundary.
+        for (i in 0 until legacy.length()) {
+            val row = legacy.getJSONObject(i)
+            row.remove("quantity_units")
+            row.remove("contract_lot_size")
+            row.remove("number_of_lots")
+            row.remove("lot_authoritative")
+        }
+        val raw = legacy.toString()
         assertTrue((0 until 3).none { legacy.getJSONObject(it).has(POSITION_TICK_CLIENT_EVENT_ID_KEY) })
         val expected = (0 until 3).map { computePositionTickClientEventId(legacy.getJSONObject(it)) }
         val store = StringStore(raw)

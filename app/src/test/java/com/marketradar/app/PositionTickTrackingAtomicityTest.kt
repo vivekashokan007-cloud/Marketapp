@@ -123,7 +123,13 @@ class PositionTickTrackingAtomicityTest {
         // 4) queued rows intact and ordered: OLD 50..1499, then NEW 0..49.
         val expected = (50 until max).map { "OLD:$it" } + (0 until 50).map { "NEW:$it" }
         assertEquals(expected, tags(kv.queue()))
-        assertEquals((0 until 50).map { "OLD:$it" }, acked.map { it.getString("trade_id") + ":" + it.getInt("seq") })
+        // The POST body is the canonical production projection, so fixture-only
+        // `seq` must be absent. `current_pnl` is a production column and remains
+        // unique here, allowing FIFO order to be asserted without relying on a
+        // field that must never leave the phone.
+        assertTrue(acked.all { it.getString("trade_id") == "OLD" })
+        assertTrue(acked.none { it.has("seq") })
+        assertEquals((0 until 50).map { it * 1.5 }, acked.map { it.getDouble("current_pnl") })
         assertTrue(kv.violations.toString(), kv.violations.isEmpty())
     }
 
