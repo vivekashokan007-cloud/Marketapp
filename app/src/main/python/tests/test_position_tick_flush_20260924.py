@@ -412,7 +412,9 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertIn("shouldDrainPositionTickQueue(result)", self.drain)
         self.assertIn("POSITION_TICK_FLUSH_OK", self.drain)
         self.assertIn("dedupePositionTicksByTradeTs", self.drain)
-        self.assertIn("admitPositionTicksToBoundedQueue", self.pts)
+        # B1.1 R2: the enqueue path commits through the shared locked transition.
+        self.assertIn("admitAndCommitPositionTicksLocked(", self.pts)
+        self.assertIn("admitPositionTicksToBoundedQueue(existing, rows, maxPending)", self.ptf)
         # persisted=false is emitted by the shared formatter (privacy-safe).
         self.assertIn("persisted=false", self.ptf)
         self.assertIn("formatPositionTickFlushFailLog", self.drain)
@@ -502,7 +504,8 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         self.assertNotIn("rejectedCount > 0", reader)
         # Drain clears active flag but retains rejected totals / incomplete tracking.
         # B1.1: this now lives in positionTickTrackingAfterDrain (PositionTickDrain.kt).
-        self.assertIn("putBoolean(PREF_OVERFLOW_ACTIVE, false)", self.pts)  # enqueue path
+        # enqueue path (B1.1 R2: shared locked transition in PositionTickFlush.kt)
+        self.assertIn("putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false)", self.ptf)
         after = self.drain.split("internal fun positionTickTrackingAfterDrain(")[1].split("\n}\n")[0]
         self.assertIn("rejectedTotal == 0L", after)
         self.assertNotIn("PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT", after)

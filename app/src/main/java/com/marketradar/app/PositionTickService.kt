@@ -1170,44 +1170,21 @@ class PositionTickService : Service() {
     }
 
     private fun enqueueRowsLocked(rows: JSONArray) {
-        val existing = loadPendingQueue()
-        val admission = admitPositionTicksToBoundedQueue(existing, rows, MAX_PENDING_TICKS)
-        val editor = prefs.edit().putString(PREF_PENDING_QUEUE, admission.queue.toString())
-        if (admission.overflowActive || admission.rejected > 0) {
-            val rejectedTotal = prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) + admission.rejected
-            editor
-                .putBoolean(PREF_OVERFLOW_ACTIVE, true)
-                .putBoolean(PREF_TRACKING_COMPLETE, false)
-                .putLong(PREF_OVERFLOW_REJECTED_COUNT, rejectedTotal)
+        // B1.1 R2: shared atomic queue + overflow/tracking transition (caller holds PositionTickQueueLock).
+        val c = admitAndCommitPositionTicksLocked(SharedPrefsPositionTickKv(prefs), rows, MAX_PENDING_TICKS, durable = false)
+        if (c.overflowed) {
             Log.w(
                 TAG,
-                "Position tick queue overflow: admitted=${admission.admitted} rejected=${admission.rejected} " +
-                    "pending=${admission.queue.length()} max=$MAX_PENDING_TICKS tracking_complete=false"
+                "Position tick queue overflow: admitted=${c.admitted} rejected=${c.rejected} " +
+                    "pending=${c.pending} max=$MAX_PENDING_TICKS tracking_complete=false"
             )
             LogBuffer.add(
                 'W',
                 TAG,
-                "POSITION_TICK_QUEUE_OVERFLOW: admitted=${admission.admitted} rejected=${admission.rejected} " +
-                    "pending=${admission.queue.length()} max=$MAX_PENDING_TICKS " +
-                    "rejected_total=$rejectedTotal tracking_complete=false"
+                "POSITION_TICK_QUEUE_OVERFLOW: admitted=${c.admitted} rejected=${c.rejected} " +
+                    "pending=${c.pending} max=$MAX_PENDING_TICKS " +
+                    "rejected_total=${c.rejectedTotal} tracking_complete=false"
             )
-        } else if (admission.queue.length() < MAX_PENDING_TICKS) {
-            // Capacity available again — clear active overflow flag but keep totals.
-            editor.putBoolean(PREF_OVERFLOW_ACTIVE, false)
-            if (!prefs.getBoolean(PREF_TRACKING_COMPLETE, true) &&
-                prefs.getLong(PREF_OVERFLOW_REJECTED_COUNT, 0L) == 0L
-            ) {
-                editor.putBoolean(PREF_TRACKING_COMPLETE, true)
-            }
-        }
-        editor.apply()
-    }
-
-    private fun loadPendingQueue(): JSONArray {
-        return try {
-            JSONArray(prefs.getString(PREF_PENDING_QUEUE, "[]") ?: "[]")
-        } catch (_: Exception) {
-            JSONArray()
         }
     }
 

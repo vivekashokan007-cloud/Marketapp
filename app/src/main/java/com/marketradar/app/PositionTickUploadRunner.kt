@@ -91,7 +91,7 @@ internal object PositionTickUploadRunner {
     fun enqueueDurableFromReceiver(context: Context, finish: () -> Unit) {
         val app = context.applicationContext
         enqueuePositionTickDrainFromReceiver(
-            PrefsPositionTickKv(prefs(app)), WorkManagerPositionTickScheduler(app), System.currentTimeMillis(), finish
+            SharedPrefsPositionTickKv(prefs(app)), WorkManagerPositionTickScheduler(app), System.currentTimeMillis(), finish
         )
     }
 
@@ -101,7 +101,7 @@ internal object PositionTickUploadRunner {
     private fun coordinator(context: Context): PositionTickDrainCoordinator {
         val app = context.applicationContext
         return PositionTickDrainCoordinator(
-            kv = PrefsPositionTickKv(prefs(app)),
+            kv = SharedPrefsPositionTickKv(prefs(app)),
             transport = PositionTickTransport { rows -> SupabaseClient.insertPositionTicksDetailed(rows) },
             networkAvailable = { isNetworkAvailable(app) },
             clock = { System.currentTimeMillis() },
@@ -154,23 +154,6 @@ internal object PositionTickUploadRunner {
         true
     }
 
-    private class PrefsPositionTickKv(private val prefs: SharedPreferences) : PositionTickKv {
-        override fun getString(key: String, def: String?): String? = prefs.getString(key, def)
-        override fun getInt(key: String, def: Int): Int = prefs.getInt(key, def)
-        override fun getLong(key: String, def: Long): Long = prefs.getLong(key, def)
-        override fun getBoolean(key: String, def: Boolean): Boolean = prefs.getBoolean(key, def)
-        override fun edit(durable: Boolean, block: PositionTickKvEditor.() -> Unit) {
-            val editor = prefs.edit()
-            object : PositionTickKvEditor {
-                override fun putString(key: String, value: String) { editor.putString(key, value) }
-                override fun putInt(key: String, value: Int) { editor.putInt(key, value) }
-                override fun putLong(key: String, value: Long) { editor.putLong(key, value) }
-                override fun putBoolean(key: String, value: Boolean) { editor.putBoolean(key, value) }
-            }.block()
-            if (durable) editor.commit() else editor.apply()
-        }
-    }
-
     /** Unique one-time WorkManager job with a CONNECTED constraint (REPLACE = reschedule to the given delay). */
     private class WorkManagerPositionTickScheduler(private val app: Context) : PositionTickWorkScheduler {
         override fun enqueue(delayMs: Long, onDurable: (() -> Unit)?) {
@@ -189,5 +172,23 @@ internal object PositionTickUploadRunner {
         override fun cancel() {
             WorkManager.getInstance(app).cancelUniqueWork(POSITION_TICK_DRAIN_WORK_NAME)
         }
+    }
+}
+
+/** SharedPreferences-backed [PositionTickKv] (drain, worker, receiver and the capture enqueue). */
+internal class SharedPrefsPositionTickKv(private val prefs: SharedPreferences) : PositionTickKv {
+    override fun getString(key: String, def: String?): String? = prefs.getString(key, def)
+    override fun getInt(key: String, def: Int): Int = prefs.getInt(key, def)
+    override fun getLong(key: String, def: Long): Long = prefs.getLong(key, def)
+    override fun getBoolean(key: String, def: Boolean): Boolean = prefs.getBoolean(key, def)
+    override fun edit(durable: Boolean, block: PositionTickKvEditor.() -> Unit) {
+        val editor = prefs.edit()
+        object : PositionTickKvEditor {
+            override fun putString(key: String, value: String) { editor.putString(key, value) }
+            override fun putInt(key: String, value: Int) { editor.putInt(key, value) }
+            override fun putLong(key: String, value: Long) { editor.putLong(key, value) }
+            override fun putBoolean(key: String, value: Boolean) { editor.putBoolean(key, value) }
+        }.block()
+        if (durable) editor.commit() else editor.apply()
     }
 }

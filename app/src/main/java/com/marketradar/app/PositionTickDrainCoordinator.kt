@@ -259,10 +259,13 @@ internal class PositionTickDrainCoordinator(
         val report = drainPositionTickQueue(store, transport, config.copy(sendClientEventId = sendClientEventId()), lock)
         val elapsed = clock() - started
 
-        // --- queue-derived tracking state (overflow_active / tracking_complete)
-        val snapshot = readPositionTickTrackingSnapshot(kv, store)
+        // --- queue-derived tracking state (overflow_active / tracking_complete): Codex §5.
+        // One atomic transition under the SAME lock as enqueue: reload the current
+        // queue, flags and rejected total, derive from those, commit durably. The
+        // rejected total is history and is never written here.
         afterDrainHook?.invoke()
-        val committed = run {
+        val committed = synchronized(lock) {
+            val snapshot = readPositionTickTrackingSnapshot(kv, store)
             val tracking = positionTickTrackingAfterDrain(
                 report.copy(remaining = snapshot.depth), snapshot.overflowActive,
                 snapshot.trackingComplete, snapshot.rejectedTotal
@@ -271,10 +274,11 @@ internal class PositionTickDrainCoordinator(
                 putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, tracking.overflowActive)
                 putBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, tracking.trackingComplete)
             }
-            Pair(tracking, snapshot.rejectedTotal)
+            Triple(tracking, snapshot.rejectedTotal, snapshot.depth)
         }
         val tracking = committed.first
         val rejectedTotal = committed.second
+        val committedDepth = committed.third
 
         // --- failure counters (serialised by PositionTickDrainMutex)
         val failure = report.failure
@@ -294,7 +298,7 @@ internal class PositionTickDrainCoordinator(
             failure != null && failure.failureClass in POSITION_TICK_TRANSIENT_FAILURE_CLASSES ->
                 after + computePositionTickFlushBackoffMs(failures + 1, failure.failureClass)
             failure != null -> after + POSITION_TICK_DURABLE_FAILURE_RETRY_MS
-            report.remaining > 0 -> after // budget exhausted or rows enqueued meanwhile: continue
+            committedDepth > 0 -> after // budget exhausted or rows enqueued meanwhile: continue
             else -> null
         }
         if (next != null) {

@@ -364,6 +364,53 @@ internal fun admitPositionTicksToBoundedQueue(
     )
 }
 
+/** Result of [admitAndCommitPositionTicksLocked] (counts only; for logs). */
+internal data class PositionTickEnqueueCommit(
+    val admitted: Int,
+    val rejected: Int,
+    val pending: Int,
+    val overflowed: Boolean,
+    val rejectedTotal: Long
+)
+
+/**
+ * B1.1 R2 (Codex §5): enqueue-side half of the ONE atomic queue/flags state
+ * transition. The caller MUST hold [PositionTickQueueLock]; queue contents,
+ * overflow_active, tracking_complete and overflow_rejected_total are read and
+ * written in one edit. The drain's post-drain commit uses the same lock.
+ */
+internal fun admitAndCommitPositionTicksLocked(
+    kv: PositionTickKv,
+    rows: JSONArray,
+    maxPending: Int,
+    durable: Boolean
+): PositionTickEnqueueCommit {
+    val existing = try {
+        JSONArray(kv.getString(PREF_POSITION_TICK_PENDING_QUEUE, "[]") ?: "[]")
+    } catch (_: Exception) {
+        JSONArray()
+    }
+    val admission = admitPositionTicksToBoundedQueue(existing, rows, maxPending)
+    val overflowed = admission.overflowActive || admission.rejected > 0
+    val priorRejected = kv.getLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, 0L)
+    val rejectedTotal = if (overflowed) priorRejected + admission.rejected else priorRejected
+    kv.edit(durable) {
+        putString(PREF_POSITION_TICK_PENDING_QUEUE, admission.queue.toString())
+        if (overflowed) {
+            putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, true)
+            putBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, false)
+            putLong(PREF_POSITION_TICK_OVERFLOW_REJECTED_COUNT, rejectedTotal)
+        } else if (admission.queue.length() < maxPending) {
+            // Capacity available again — clear active overflow flag but keep totals.
+            putBoolean(PREF_POSITION_TICK_OVERFLOW_ACTIVE, false)
+            if (!kv.getBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true) && priorRejected == 0L) {
+                putBoolean(PREF_POSITION_TICK_TRACKING_COMPLETE, true)
+            }
+        }
+    }
+    return PositionTickEnqueueCommit(admission.admitted, admission.rejected, admission.queue.length(), overflowed, rejectedTotal)
+}
+
 /**
  * De-dupe pending queue by trade_id|tick_ts.
  *
