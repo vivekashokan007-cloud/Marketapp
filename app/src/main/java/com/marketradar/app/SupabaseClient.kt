@@ -2400,10 +2400,17 @@ object SupabaseClient {
     fun saveChainRows(rows: JSONArray): Boolean {
         if (rows.length() == 0) return true
         val payload = rows.toString()
-        return postToFirstWorkingTable(
-            listOf("ml_option_chain_snapshots", "chain_slices"),
+        // The primary table has ml_ocs_unique on these four columns. Naming the
+        // conflict target makes a replay of a fetched poll genuinely idempotent;
+        // relying on the id primary key would reject the duplicate business key.
+        val primarySaved = postToFirstWorkingTable(
+            listOf(
+                "ml_option_chain_snapshots?on_conflict=poll_ts,index_key,strike,option_type"
+            ),
             payload
         )
+        if (primarySaved) return true
+        return postToFirstWorkingTable(listOf("chain_slices"), payload)
     }
 
     fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {

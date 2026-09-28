@@ -2012,7 +2012,7 @@ class NativeBridge(private val context: Context) {
         val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
         val runningDate = prefs.getString("evaluation_running_date", "") ?: ""
         if (runningDate == targetDate) return
-        if (doneDate != targetDate && phase !in setOf("DONE", "FAILED_RESEARCH", "FAILED", "FAILED_SAVE", "STALLED", "INCOMPLETE_IDENTITY", "FAILED_IDENTITY_COVERAGE", "")) return
+        if (doneDate != targetDate && phase !in setOf("DONE", "FAILED_RESEARCH", "FAILED", "FAILED_SAVE", "STALLED", "INCOMPLETE_IDENTITY", "FAILED_IDENTITY_COVERAGE", "INCOMPLETE_H2_MARKET_DATA", "")) return
         val issue = currentCoverageIntegrityIssue(targetDate).ifBlank { "INTEGRITY_BROKEN" }
         prefs.edit()
             .remove("evaluation_done_date")
@@ -2050,7 +2050,8 @@ class NativeBridge(private val context: Context) {
             phase == "FAILED_RESEARCH" ||
             phase == "STALLED" ||
             phase == "INCOMPLETE_IDENTITY" ||
-            phase == "FAILED_IDENTITY_COVERAGE"
+            phase == "FAILED_IDENTITY_COVERAGE" ||
+            phase == "INCOMPLETE_H2_MARKET_DATA"
         ) {
             return true
         }

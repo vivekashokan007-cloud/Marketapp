@@ -1618,7 +1618,11 @@ class MarketMLService : Service() {
         val chainFile: File,
         val snapshotCount: Int,
         val legKeyCount: Int,
-        val emptyReason: String? = null
+        val emptyReason: String? = null,
+        val h2CoverageOk: Boolean = true,
+        val h2RequiredLegs: Int = 0,
+        val h2PresentLegs: Int = 0,
+        val h2MissingPreview: String = ""
     )
 
     private fun reconcileEvaluationSnapshotIds(sessionDate: String, file: File): Set<Long> {
@@ -1689,7 +1693,11 @@ class MarketMLService : Service() {
                         chainFile = chainFile,
                         snapshotCount = preparedCount,
                         legKeyCount = maxOf(cachedLegKeyCount, 0),
-                        emptyReason = cachedEmptyReason
+                        emptyReason = cachedEmptyReason,
+                        h2CoverageOk = completeMeta?.optBoolean("h2_coverage_ok", cachedLegKeyCount == 0) ?: false,
+                        h2RequiredLegs = completeMeta?.optInt("h2_coverage_required_legs", 0) ?: 0,
+                        h2PresentLegs = completeMeta?.optInt("h2_coverage_present_legs", 0) ?: 0,
+                        h2MissingPreview = completeMeta?.optString("h2_missing_preview", "") ?: ""
                     )
                 }
             }
@@ -1823,7 +1831,8 @@ class MarketMLService : Service() {
                 chainFile = chainFile,
                 snapshotCount = snapshotCount,
                 legKeyCount = 0,
-                emptyReason = emptyReason
+                emptyReason = emptyReason,
+                h2CoverageOk = true
             )
         }
         val chainFeed = SupabaseClient.writeEvaluationChainCandlesForLegs(sessionDate, legKeys, chainFile) { source, pages, rows ->
@@ -1848,12 +1857,12 @@ class MarketMLService : Service() {
         if (!h2Coverage.ok) {
             Log.w(
                 TAG,
-                "EVAL_CHAIN_H2_INCOMPLETE_ADVISORY: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}; missing=${h2Coverage.missingPreview}"
+                "EVAL_CHAIN_H2_INCOMPLETE_BLOCKING: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}; missing=${h2Coverage.missingPreview}"
             )
             LogBuffer.add(
-                'W',
+                'E',
                 TAG,
-                "EVAL_CHAIN_H2_INCOMPLETE_ADVISORY: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}"
+                "EVAL_CHAIN_H2_INCOMPLETE_BLOCKING: ${h2Coverage.present}/${h2Coverage.required} candidate legs have H2 rows from ${chainFeed.source}"
             )
         }
         completeFile.writeText(
@@ -1883,7 +1892,11 @@ class MarketMLService : Service() {
             snapshotsFile = snapshotsFile,
             chainFile = chainFile,
             snapshotCount = snapshotCount,
-            legKeyCount = legKeys.size
+            legKeyCount = legKeys.size,
+            h2CoverageOk = h2Coverage.ok,
+            h2RequiredLegs = h2Coverage.required,
+            h2PresentLegs = h2Coverage.present,
+            h2MissingPreview = h2Coverage.missingPreview
         )
     }
 
@@ -2909,6 +2922,46 @@ class MarketMLService : Service() {
             val preparedInputs = ensureEvaluationInputFiles(sessionDate)
             val snapshotsFile = preparedInputs.snapshotsFile
             val chainFile = preparedInputs.chainFile
+            if (
+                preparedInputs.snapshotCount > 0 &&
+                preparedInputs.legKeyCount > 0 &&
+                !preparedInputs.h2CoverageOk
+            ) {
+                preserveRecoveryState = true
+                archiveEvaluationOutput(outputsFile, "incomplete_h2_market_data")
+                prefs.edit().remove("evaluation_done_date").commit()
+                val coverage = "${preparedInputs.h2PresentLegs}/${preparedInputs.h2RequiredLegs}"
+                val reason = "INCOMPLETE_H2_MARKET_DATA: required closing-window option marks are missing ($coverage legs present)."
+                updateEvaluationJobState(
+                    sessionDate = sessionDate,
+                    phase = "INCOMPLETE_H2_MARKET_DATA",
+                    message = "$reason Labels are NOT saved and C3 will not run. Retry will refetch the selected session without fabricating prices.",
+                    totalSnapshots = preparedInputs.snapshotCount,
+                    completedSnapshots = 0,
+                    producedCount = 0,
+                    persistedCount = 0,
+                    running = false,
+                    lastError = reason
+                )
+                LogBuffer.add(
+                    'E',
+                    TAG,
+                    "EVAL_BLOCKED_INCOMPLETE_H2: date=$sessionDate coverage=$coverage missing=${preparedInputs.h2MissingPreview}"
+                )
+                publishEvaluationStatus(
+                    this@MarketMLService,
+                    "Day Evaluation Missing Closing Data",
+                    "Closing option marks cover $coverage required legs. No training labels were saved. Tap retry only after data recovery.",
+                    sessionDate = sessionDate,
+                    allowRetry = true
+                )
+                // Invalidate only the prepared-input cache. A later retry must
+                // refetch Supabase instead of reusing the known-incomplete chain.
+                File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate)).delete()
+                chainFile.delete()
+                scheduleNextEvaluationReminder(this@MarketMLService)
+                return@withContext
+            }
             // This also checks cached/local-fallback inputs before Python consumes
             // them. Missing or ambiguous remote identity stops without an upload.
             val evaluationSnapshotIds = if (preparedInputs.snapshotCount > 0) {

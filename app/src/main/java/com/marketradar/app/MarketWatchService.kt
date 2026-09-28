@@ -1172,6 +1172,13 @@ class MarketWatchService : Service() {
             savePoll(pollObj, pollCount, slotKey)
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount complete${slotKey?.let { " slot=$it" } ?: ""}, candidates=${pollObj.optJSONArray("candidates")?.length() ?: 0}")
 
+            // b493: raw chain evidence belongs to the market-data fetch, not to
+            // Brain success. Persist it synchronously before analyze() so a slow,
+            // timed-out, or failed Python call cannot erase the 15:15-15:40 marks
+            // required by the post-close teacher. The database write is
+            // idempotent on (poll_ts,index_key,strike,option_type).
+            persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
+
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
             runBrainAnalysis(
@@ -2639,18 +2646,6 @@ class MarketWatchService : Service() {
                 try {
                     val mlPersistKey = mlPersistKeyForPoll(poll)
                     if (reserveMlPollPersist(mlPersistKey)) {
-                        val chainSliceRows = extractChainSlice(bnfChain, nfChain, resultObj)
-                        val chainRowsJson = JSONArray()
-                        chainSliceRows.forEach { chainRowsJson.put(it) }
-                        serviceScope.launch(Dispatchers.IO) {
-                            val saved = SupabaseClient.saveChainRows(chainRowsJson)
-                            LogBuffer.add(
-                                if (saved) 'I' else 'E',
-                                TAG,
-                                "ML_CHAIN_SAVE: rows=${chainSliceRows.size} saved=$saved"
-                            )
-                        }
-
                         // Batch A: lift marketPhase onto ctx before snapshot so
                         // producer→compact→upload can retain session phase evidence.
                         // (The later A1 ctx merge still runs for the next poll.)
@@ -3026,18 +3021,41 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun extractChainSlice(bnfChain: JSONObject, nfChain: JSONObject, brainResult: JSONObject): List<JSONObject> {
+    private suspend fun persistFetchedChainEvidenceBeforeBrain(
+        bnfChain: JSONObject,
+        nfChain: JSONObject
+    ) {
+        val pollTs = currentIstIso()
+        val chainSliceRows = extractChainSlice(bnfChain, nfChain, pollTs)
+        val chainRowsJson = JSONArray()
+        chainSliceRows.forEach { chainRowsJson.put(it) }
+        val saved = try {
+            withContext(Dispatchers.IO) { SupabaseClient.saveChainRows(chainRowsJson) }
+        } catch (e: Exception) {
+            Log.e(TAG, "ML_CHAIN_PRE_BRAIN_SAVE_EXCEPTION: ${e.message}", e)
+            false
+        }
+        LogBuffer.add(
+            if (saved) 'I' else 'E',
+            TAG,
+            "ML_CHAIN_PRE_BRAIN_SAVE: rows=${chainSliceRows.size} saved=$saved pollTs=$pollTs"
+        )
+    }
+
+    private fun extractChainSlice(
+        bnfChain: JSONObject,
+        nfChain: JSONObject,
+        pollTs: String
+    ): List<JSONObject> {
         val rows = mutableListOf<JSONObject>()
-        val now = System.currentTimeMillis()
         val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
-        val pollTs = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
-        val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = istTimeZone }.format(Date(now))
+        val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = istTimeZone }.format(Date())
         appendFullChainSlice(rows, bnfChain, "BNF", sessionDate, pollTs)
         appendFullChainSlice(rows, nfChain, "NF", sessionDate, pollTs)
         LogBuffer.add(
             'I',
             TAG,
-            "ML_CHAIN_FULL: rows=${rows.size} pollTs=$pollTs generated=${brainResult.optJSONArray("generated_candidates")?.length() ?: 0} watchlist=${brainResult.optJSONArray("watchlist")?.length() ?: 0}"
+            "ML_CHAIN_FETCH_EVIDENCE: rows=${rows.size} pollTs=$pollTs"
         )
         return rows
     }
