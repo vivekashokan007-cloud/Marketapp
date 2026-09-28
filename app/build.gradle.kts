@@ -20,6 +20,7 @@ android {
         // b479 / 2.6.48: ML eval lease recovery (stable holder + releaseLease + historical continuation session_date)
         // b480 / 2.6.49: Eng batches A–E (lot authority, C3 honesty, eval completeness, teacher reporting, holding horizon)
         // b481 / 2.6.50: Codex R1 fix — identity completeness gates, Supabase identity readback, PWA labelsSaved truth, teacher_summary, lot failure reasons
+        // b491 / 2.6.60: position-tick PostgREST containment fix (canonical upload projection, poison-row quarantine, unsafe PC2 aggregation blocked)
         // b490 / 2.6.59: B1 capture evidence + B3/B3.1 position mark trust (wide book, mid-fallback stop), decisions 1/3/5/9/10
         // b489 / 2.6.58: C3 OOM-safe percentile finalization (keyset paging, fail-closed local fallback, trim marker)
         // b488 / 2.6.57: Position tick flush R7–R9 (fail-closed 409, full fingerprint, overflow UI + overflow_active fix)
@@ -34,8 +35,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 490
-        versionName = "2.6.59"
+        versionCode = 491
+        versionName = "2.6.60"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
