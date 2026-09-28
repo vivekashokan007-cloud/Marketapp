@@ -32,12 +32,15 @@ class H1M1SourceContractTest {
     }
 
     @Test
-    fun pollAndBridgePythonCalls_useEffectiveTimeout_withUnchangedLimits() {
+    fun pollAndBridgePythonCalls_useEffectiveTimeout_withEvidenceBasedAnalyzeLimit() {
         val mw = src("MarketWatchService.kt")
         val nb = src("NativeBridge.kt")
         assertFalse(mw.contains("withTimeoutOrNull"))
         assertFalse(nb.contains("withTimeoutOrNull"))
-        assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, 10_000L)"))
+        assertTrue(mw.contains("PY_POLL_ANALYZE_TIMEOUT_MS = 90_000L"))
+        assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS)"))
+        assertTrue(mw.contains("brain_result_completed_at_ms"))
+        assertTrue(mw.contains("BRAIN_ANALYZE_COMPLETE"))
         assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
         assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_AGENT_TIMEOUT_MS)"))
         assertTrue(mw.contains("PY_SNAPSHOT_TIMEOUT_MS = 4_000L"))

@@ -172,9 +172,17 @@ class MarketWatchService : Service() {
         private const val LEASE_HEARTBEAT_MS_KEY = "lease_heartbeat_ms"
         private const val LEASE_STALE_MS = 10 * 60 * 1000L
         private const val SESSION_POLL_GAP_WARNING_MS = 12 * 60 * 1000L
+        // Live evidence on 2026-09-28 showed valid brain.analyze completions up
+        // to ~80 seconds. Keep this below the five-minute poll cadence while
+        // preserving PyTimeout's one-in-flight guard.
+        private const val PY_POLL_ANALYZE_TIMEOUT_MS = 90_000L
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
+        private const val PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS = "last_brain_analysis_success_ms"
+        private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS = "last_brain_analysis_failure_ms"
+        private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON = "last_brain_analysis_failure_reason"
+        private const val PREF_LAST_BRAIN_ANALYSIS_DURATION_MS = "last_brain_analysis_duration_ms"
         private const val PREF_NOTIFICATION_TRANSPORT_MODE = "brain_notification_transport_mode"
         private const val PREF_LAST_BRAIN_NOTIFICATION = "last_brain_notification"
         private const val PREF_LAST_BRAIN_NOTIFICATION_META = "last_brain_notification_meta"
@@ -2092,6 +2100,7 @@ class MarketWatchService : Service() {
                                          liveBnfExpiry: String,
                                          liveNfExpiry: String) {
         var brainSuccess = false
+        var brainAnalyzeStartedAtMs = 0L
 
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
@@ -2553,7 +2562,8 @@ class MarketWatchService : Service() {
             // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
             // The poll path shares one key, so a timed-out poll call still running
             // in the background never overlaps a later poll's Python calls.
-            val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, 10_000L) {
+            brainAnalyzeStartedAtMs = System.currentTimeMillis()
+            val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",
                     pollsJson,
                     closedTradesJson,
@@ -2566,7 +2576,17 @@ class MarketWatchService : Service() {
             }
             
             if (result != null) {
+                val brainAnalyzeCompletedAtMs = System.currentTimeMillis()
+                val brainAnalyzeDurationMs = brainAnalyzeCompletedAtMs - brainAnalyzeStartedAtMs
                 val resultObj = JSONObject(result)
+                    .put("brain_result_started_at_ms", brainAnalyzeStartedAtMs)
+                    .put("brain_result_completed_at_ms", brainAnalyzeCompletedAtMs)
+                    .put("brain_result_duration_ms", brainAnalyzeDurationMs)
+                LogBuffer.add(
+                    'I',
+                    TAG,
+                    "BRAIN_ANALYZE_COMPLETE: elapsedMs=$brainAnalyzeDurationMs resultBytes=${result.toByteArray(Charsets.UTF_8).size} timeoutMs=$PY_POLL_ANALYZE_TIMEOUT_MS"
+                )
                 try {
                     val contextPercentiles = resultObj.optJSONObject("context_percentiles")
                     val variables = contextPercentiles?.optJSONObject("variables")
@@ -2585,8 +2605,6 @@ class MarketWatchService : Service() {
                 }
                 val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
                 enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
-                brainSuccess = true
-
                 processUnifiedBrainNotifications(brain, resultObj, ctxObj)
 
                 try {
@@ -2931,7 +2949,23 @@ class MarketWatchService : Service() {
                 
                 val candidates = resultObj.optJSONArray("generated_candidates")
                     ?: resultObj.optJSONArray("candidates")
-                BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
+                val brainStored = BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
+                if (brainStored) {
+                    prefs.edit()
+                        .putLong(PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS, brainAnalyzeCompletedAtMs)
+                        .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, brainAnalyzeDurationMs)
+                        .remove(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON)
+                        .apply()
+                    brainSuccess = true
+                } else {
+                    val failureAtMs = System.currentTimeMillis()
+                    prefs.edit()
+                        .putLong(PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS, failureAtMs)
+                        .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, failureAtMs - brainAnalyzeStartedAtMs)
+                        .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "RESULT_PERSISTENCE_FAILED")
+                        .apply()
+                    LogBuffer.add('E', TAG, "BRAIN_RESULT_NOT_CURRENT: persistence failed; previous result remains authoritative only as stale display")
+                }
                 LogBuffer.add('I', TAG, "POLL_HEAP_AFTER_PERSISTENCE: ${heapLine()}")
                 Log.d(TAG, "BRAIN_COMPLETE: candidates=${candidates?.length() ?: 0}")
                 
@@ -2961,12 +2995,25 @@ class MarketWatchService : Service() {
                     Log.e(TAG, "Candle data persist failed: ${e.message}")
                 }
 
-                brainSuccess = true
             } else {
-                Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after 10s")
+                val failureAtMs = System.currentTimeMillis()
+                val elapsedMs = if (brainAnalyzeStartedAtMs > 0L) failureAtMs - brainAnalyzeStartedAtMs else 0L
+                prefs.edit()
+                    .putLong(PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS, failureAtMs)
+                    .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, elapsedMs)
+                    .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "TIMEOUT")
+                    .apply()
+                Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after ${PY_POLL_ANALYZE_TIMEOUT_MS}ms")
             }
             
         } catch (e: Exception) {
+            val failureAtMs = System.currentTimeMillis()
+            val elapsedMs = if (brainAnalyzeStartedAtMs > 0L) failureAtMs - brainAnalyzeStartedAtMs else 0L
+            prefs.edit()
+                .putLong(PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS, failureAtMs)
+                .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, elapsedMs)
+                .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "EXCEPTION:${e.javaClass.simpleName}")
+                .apply()
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
         } finally {
             // Keep the Binder payload empty. The WebView pulls the latest native

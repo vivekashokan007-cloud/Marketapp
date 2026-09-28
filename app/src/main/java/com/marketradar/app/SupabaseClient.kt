@@ -1726,7 +1726,7 @@ object SupabaseClient {
      * Requires ALTER TABLE ml_brain_snapshots ADD COLUMN top_candidates_json JSONB;
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
-        val payload = body.toString()
+        val payload = BrainSnapshotPayloadSanitizer.sanitize(body).toString()
         val result = postToFirstWorkingTableDetailed(
             listOf("ml_brain_snapshots"),
             payload,

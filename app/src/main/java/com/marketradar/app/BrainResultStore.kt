@@ -78,6 +78,9 @@ object BrainResultStore {
         return prefs.getString("brain_result", "null") != "null"
     }
 
+    fun savedAtMs(prefs: SharedPreferences): Long =
+        prefs.getLong(PREF_BRAIN_RESULT_SAVED_MS, 0L)
+
     fun clear(context: Context, prefs: SharedPreferences.Editor): SharedPreferences.Editor {
         val dir = directory(context)
         dir.listFiles()?.forEach { file ->
