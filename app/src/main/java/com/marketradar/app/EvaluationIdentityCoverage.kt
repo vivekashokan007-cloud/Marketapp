@@ -16,6 +16,7 @@ import org.json.JSONObject
 object EvaluationIdentityCoverage {
     const val PHASE_INCOMPLETE_IDENTITY = "INCOMPLETE_IDENTITY"
     const val PHASE_FAILED_IDENTITY_COVERAGE = "FAILED_IDENTITY_COVERAGE"
+    const val PHASE_RESEARCH_ONLY = "RESEARCH_ONLY"
     const val REASON_PARTIAL_IDENTITY = "PARTIAL_IDENTITY_COVERAGE"
     const val REASON_READBACK_FAILED = "IDENTITY_READBACK_FAILED"
     const val REASON_EMPTY_EXPECTED_NONEMPTY_SNAPSHOTS = "IDENTITY_MANIFEST_EMPTY_WHILE_SNAPSHOTS_PRESENT"
@@ -62,7 +63,19 @@ object EvaluationIdentityCoverage {
     )
 
     /** Production orchestration decision consumed by MarketMLService. */
-    fun transitionFor(assessment: Assessment): Transition = if (assessment.complete) {
+    fun transitionFor(assessment: Assessment): Transition = if (assessment.complete && assessment.expectedSnapshotIds.isEmpty()) {
+        Transition(
+            phase = PHASE_RESEARCH_ONLY,
+            labelsSaved = false,
+            writeEvaluationDoneDate = true,
+            publishLabelsSaved = false,
+            startC3 = true,
+            cancelReminder = true,
+            logEvaluationComplete = true,
+            clearRecoveryState = true,
+            scheduleContinuation = false
+        )
+    } else if (assessment.complete) {
         Transition(
             phase = "LABELS_SAVED",
             labelsSaved = true,
@@ -194,7 +207,10 @@ object EvaluationIdentityCoverage {
         val complete = allMissingSnapshots.isEmpty() && missingComposites.isEmpty() &&
             missingRequiredPrimary.isEmpty() && expected.isNotEmpty()
         // Empty expected with nonempty intent is handled by the caller (manifest fail-closed).
-        val emptyComplete = expected.isEmpty() && produced.isEmpty()
+        // An all-WAIT session can produce chosen-candidate research outcomes,
+        // while having no labelable trade decisions. Verify every produced
+        // composite against the server, then complete as research only.
+        val emptyComplete = expected.isEmpty() && expectedPrimary.isEmpty() && missingComposites.isEmpty()
         val ok = complete || emptyComplete
 
         val preview = (

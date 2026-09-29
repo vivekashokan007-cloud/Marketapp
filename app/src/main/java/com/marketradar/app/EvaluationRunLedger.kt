@@ -165,9 +165,11 @@ object EvaluationRunLedger {
         val missing = expected.filterNot { it in persisted || it in nonlabelable }.sorted()
         run.put("missing_identity_ids", JSONArray(missing))
         run.put("missing_identity_count", missing.size)
-        val identityComplete = expected.isEmpty() || missing.isEmpty()
+        val identityComplete = missing.isEmpty()
         val stageVerified = persistence.optString("state") == "verified"
-        val labelsSaved = stageVerified && identityComplete
+        // Verified research outcomes are not training labels when every
+        // snapshot was WAIT/nonlabelable. Empty manifests never prove labels.
+        val labelsSaved = stageVerified && identityComplete && expected.isNotEmpty()
         run.put("labels_saved", labelsSaved)
 
         var learningOk = labelsSaved

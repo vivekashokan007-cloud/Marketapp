@@ -2898,10 +2898,13 @@ class MarketMLService : Service() {
         try {
             enforceEvaluationBudget("preparing")
             if (!forceAnyway && prefs.getString("evaluation_done_date", null) == sessionDate) {
+                val priorPhase = prefs.getString("evaluation_phase", "") ?: ""
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
-                    phase = "DONE",
-                    message = if (sessionDate == todayIstDate()) "Today's evaluation already done." else "Evaluation already done for $sessionDate.",
+                    phase = if (priorPhase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY) priorPhase else "DONE",
+                    message = if (priorPhase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY) {
+                        "Research evaluation already completed for $sessionDate; no trade decisions were labelable and no training labels were saved."
+                    } else if (sessionDate == todayIstDate()) "Today's evaluation already done." else "Evaluation already done for $sessionDate.",
                     producedCount = prefs.getInt("last_evaluation_produced_count", 0),
                     persistedCount = prefs.getInt("last_evaluation_outcome_count", 0),
                     running = false
@@ -3546,7 +3549,7 @@ class MarketMLService : Service() {
                 }
             }
             val identityTransition = EvaluationIdentityCoverage.transitionFor(finalAssessment)
-            if (!identityTransition.labelsSaved) {
+            if (!identityTransition.writeEvaluationDoneDate) {
                 val assessment = finalAssessment
                 val detail = EvaluationIdentityCoverage.detailJson(assessment, identityReadback.error)
                     .put("primary_persisted", saveResult.primaryPersistedCount)
@@ -3608,11 +3611,14 @@ class MarketMLService : Service() {
                 "verified",
                 expectedCount = expectedSnapshotIds.size,
                 writtenCount = saveResult.persistedCount,
-                verifiedCount = finalAssessment.verifiedSnapshotIds.size,
+                verifiedCount = if (identityTransition.phase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY) {
+                    finalAssessment.verifiedCompositeKeys.size
+                } else finalAssessment.verifiedSnapshotIds.size,
                 detail = EvaluationIdentityCoverage.detailJson(finalAssessment)
                     .put("primary_persisted", saveResult.primaryPersistedCount)
                     .put("evaluation_persisted", saveResult.evaluationPersistedCount)
                     .put("rejected_persisted", saveResult.rejectedPersistedCount)
+                    .put("research_only", identityTransition.phase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY)
                     .put("recommendation_readback_keys", identityReadback.recommendationCompositeKeys.size)
             )
 
@@ -3637,9 +3643,12 @@ class MarketMLService : Service() {
                 teacherResearchResult = buildTeacherResearchReport(brain, sessionDate, snapshotsFile, reportableOutcomes)
             }
 
+            val researchOnly = identityTransition.phase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY
             val saveDetails = saveResult.message.take(700)
             val evaluationMessage = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
                 "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence. $saveDetails"
+            } else if (researchOnly) {
+                "Research evaluation done for $sessionDate: ${saveResult.producedCount} research outcomes produced and verified. No trade decisions were labelable; no training labels were saved. $saveDetails"
             } else if (evaluatedOutcomes.length() > 0 && gradeableTeacherRows == 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase, but 0 gradeable teacher outcomes passed integrity checks. $saveDetails"
             } else if (evaluatedOutcomes.length() > 0) {
@@ -3681,7 +3690,8 @@ class MarketMLService : Service() {
             }
             updateEvaluationJobState(
                 sessionDate = sessionDate,
-                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH" else "LABELS_SAVED",
+                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH"
+                    else if (researchOnly) EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY else "LABELS_SAVED",
                 message = truthfulMessage,
                 totalSnapshots = totalSnapshots,
                 completedSnapshots = completedSnapshots,
