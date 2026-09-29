@@ -99,11 +99,18 @@ decisions a poll made. The compaction is exactly lossless with respect to that
 array, but `complete = true` on a batch row could easily be read as "all
 decisions this poll made", which is false.
 
-Measured: across all 29 sessions in `ml_pc2_authority_decisions`,
-`authority_kind = 'parameter_threshold'` — the gate decisions, the only kind that
-can change behaviour — appears on **3 sessions only** (18 Aug, 25 Aug, 1 Sep, the
-small-menu days). On the other 26 sessions the cap displaced every one of them
-with per-candidate `ranking_context` rows.
+Measured (re-checked after the 29-Sep session closed): across all **31**
+sessions in `ml_pc2_authority_decisions`, `authority_kind =
+'parameter_threshold'` — the gate decisions, the only kind that can change
+behaviour — appears on **5** sessions: 18 Aug, 25 Aug, 1 Sep, **28 Sep and 29
+Sep**. On the other 26 the cap displaced every one of them with per-candidate
+`ranking_context` rows.
+
+Gate evidence has therefore partly returned on the newest builds, and it is
+**poll-dependent, silently**: on 29 Sep (v2.6.62, 76 polls) `parameter_threshold`
+is present on **33 polls** and absent on 43, while `ranking_context` is present
+on 73. A consumer cannot tell which case a given batch is without the marker this
+correction adds — which is the whole point of C6.
 
 Fix, inside `grouped_decisions_json` and the snapshot ref, so the migration is
 untouched:
@@ -112,11 +119,13 @@ untouched:
 - `source_tail_cap = 128`
 - `source_possibly_truncated = decision_count >= 128`
 
-Removing the cap itself is deliberately **not** in this branch: on a full-menu
-session the brain evaluates gates per candidate across ~1,400 candidates per
-poll, so uncapping without first measuring would risk both a much larger PC2
-table and eviction inside the 1.35 MB `context_json` budget. That belongs in its
-own batch with a replay measurement.
+Removing the cap itself is deliberately **not** in this branch. The per-poll
+construction volume is currently in flux: `ranked_before_persistence` averaged
+607–658 per poll on v2.6.51–2.6.60 but **43** on v2.6.62 (29 Sep), while the
+rejected population stayed at ~795. Uncapping is therefore much cheaper today
+than it was last week — and would become expensive again if that volume returns.
+It needs its own batch with a replay measurement against whatever volume is then
+current, not a guess against either figure.
 
 ## C7 — the reviewed tip cannot trigger its own CI
 
@@ -183,7 +192,12 @@ Compact size, measured by replicating the exact-dedup grouping in SQL over the
 real 29-Sep decisions:
 
 - 76 polls, mean 126 decisions per poll, **mean 19.1 distinct bodies** per poll
-- distinct bodies 1.952 MB + index arrays 0.053 MB = **2.005 MB of text per session**
+  (min 3, p95 44, max 46 — no tail blow-up while the 128 cap stands)
+- computed two ways that agree: 2.005 MB from the legacy table rows, and
+  **2.082 MB measured directly on the `snapshot_pc2_authority_decisions` arrays
+  the compactor actually consumes** (bodies 1.952 MB + index/prototype/row
+  overhead 0.130 MB)
+- largest single compact row: **66.7 KB**, mean 28.0 KB
 - measured jsonb compression: 4.13× on large values, 1.63× on sub-TOAST values.
   At ~27 KB per poll the grouped column is comfortably above the TOAST threshold,
   so **≈0.5–0.9 MB stored per session**.
@@ -228,3 +242,33 @@ Unchanged from the DB-1 plan, and these corrections do not add a rollback step:
 6. Retention and historical reduction remain a separate batch requiring a
    verified restorable backup, reconstruction and restore proof, a bounded pilot
    and explicit approval.
+
+## Out-of-scope observation raised on re-check (not a storage issue)
+
+While re-measuring the PC2 decision mix after the 29-Sep session closed, the
+per-poll ranked population turned out to have stepped down sharply on the newest
+build. This is not caused by, and does not affect, this batch — it is recorded
+here only because it was found while verifying the C6 numbers and it changes what
+a future uncapping batch would cost.
+
+`ml_brain_snapshots.context_json -> snapshot_build3_flow`, mean per poll:
+
+| Session | brain version | `ranked_before_persistence` | `generated_count` | `rejected_count` | polls with a primary |
+|---|---|---:|---:|---:|---:|
+| 21 Sep | 2.6.51–2.6.53 | 658 | — | — | 73 / 74 |
+| 22 Sep | 2.6.53–2.6.54 | 413 | — | — | 74 / 75 |
+| 23 Sep | 2.6.54 | 646 | 30 | 792 | 76 / 77 |
+| 24 Sep | 2.6.55–2.6.56 | 607 | — | — | 76 / 77 |
+| 25 Sep | 2.6.56–2.6.58 | 613 | 30 | 797 | 76 / 77 |
+| 28 Sep | 2.6.59–2.6.60 | 563 | — | — | 6 / 7 |
+| **29 Sep** | **2.6.62** | **43** | **21** | **795** | **73 / 78** |
+
+`after_a8_count` and `after_lane_gate_count` equal `ranked_before_persistence` on
+every one of these sessions, so the drop happens **upstream of the A8 and lane
+gates**, not inside ranking. The rejected population is unchanged at ~795, so the
+missing candidates are not being rejected — they are not being constructed.
+Primaries are still produced on 73 of 78 polls, so advice is still flowing.
+
+This may be an intended narrowing introduced in 2.6.61/2.6.62. It is not
+verifiable from stored data alone and it is outside this batch's scope. Flagged
+for confirmation of intent; **not** a reason to hold DB-1.
