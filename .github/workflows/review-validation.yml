@@ -18,6 +18,7 @@ on:
       - main
       - work/g8-g10-integrity-20260913
       - review/codex-corrective-20260914
+      - work/db1-pc2-review-corrections-20260929
     paths:
       - 'app/**'
       - 'tools/**'

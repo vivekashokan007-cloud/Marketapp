@@ -12,7 +12,9 @@ class Pc2CompactSourceContractTest {
     @Test
     fun durableEnqueuePrecedesSnapshotCompactionAndLegacyDualWriteRemains() {
         val service = source("src/main/java/com/marketradar/app/MarketWatchService.kt")
-        val build = service.indexOf("val pc2CompactBatch = Pc2CompactBatch.build(rawSnapObj)")
+        // Review correction C1 wraps the call in runCatching, so match the call
+        // itself rather than the whole assignment line.
+        val build = service.indexOf("Pc2CompactBatch.build(rawSnapObj)")
         val enqueue = service.indexOf("Pc2TelemetryOutbox.enqueue(", build)
         val compact = service.indexOf("EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)", enqueue)
         val legacy = service.indexOf("SupabaseClient.savePc2AuthorityDecisions(snapObj)", compact)

@@ -18,14 +18,14 @@ class Pc2TelemetryOutboxTest {
             assertFalse("same batch is idempotent", Pc2TelemetryOutbox.enqueue(root, built))
             assertEquals(1, Pc2TelemetryOutbox.pending(root).size)
 
-            val failed = Pc2TelemetryOutbox.drain(root) { false }
+            val failed = Pc2TelemetryOutbox.drain(root) { Pc2TelemetryOutbox.Outcome.RETRY }
             assertEquals(1, failed.attempted)
             assertEquals(0, failed.acknowledged)
             assertEquals(1, failed.pending)
 
             // A new read from disk simulates process restart recovery.
             assertEquals(built.batchRow.getString("batch_id"), Pc2TelemetryOutbox.pending(root).single().getJSONObject("batch_row").getString("batch_id"))
-            val succeeded = Pc2TelemetryOutbox.drain(root) { true }
+            val succeeded = Pc2TelemetryOutbox.drain(root) { Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED }
             assertEquals(1, succeeded.acknowledged)
             assertEquals(0, succeeded.pending)
         } finally {

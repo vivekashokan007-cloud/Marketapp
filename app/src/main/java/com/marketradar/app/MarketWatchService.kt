@@ -2701,7 +2701,17 @@ class MarketWatchService : Service() {
                             // DB-1: persist a lossless compact PC2 envelope locally before the
                             // snapshot compactor may remove large embedded telemetry. The old
                             // row-per-decision upload remains during the parity/rollback window.
-                            val pc2CompactBatch = Pc2CompactBatch.build(rawSnapObj)
+                            // Review correction C1: build() can throw on malformed or
+                            // non-finite telemetry. It sits inside the outer
+                            // ML_SNAPSHOT_FAIL catch, so an uncaught throw here would
+                            // abort snapshot persistence, the legacy PC2 upload, the
+                            // generated-candidate write and the poll-persist release.
+                            // Telemetry must never be able to do that.
+                            val pc2CompactBatch = runCatching { Pc2CompactBatch.build(rawSnapObj) }
+                                .onFailure { e ->
+                                    LogBuffer.add('E', TAG, "PC2_COMPACT_BUILD_FAIL: ${e.message}")
+                                }
+                                .getOrNull()
                             if (pc2CompactBatch != null) {
                                 val rawContext = rawSnapObj.optJSONObject("context_json")
                                 rawContext?.put(
@@ -3054,10 +3064,16 @@ class MarketWatchService : Service() {
             SupabaseClient.savePc2CompactBatch(envelope)
         }
         LogBuffer.add(
-            if (compactDrain.pending == 0) 'I' else 'W',
+            if (compactDrain.pending == 0 && compactDrain.quarantinedTotal == 0) 'I' else 'W',
             TAG,
-            "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} acknowledged=${compactDrain.acknowledged} pending=${compactDrain.pending} pendingBytes=${compactDrain.pendingBytes}"
+            "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} " +
+                "acknowledged=${compactDrain.acknowledged} quarantined=${compactDrain.quarantined} " +
+                "pending=${compactDrain.pending} pendingBytes=${compactDrain.pendingBytes} " +
+                "quarantinedTotal=${compactDrain.quarantinedTotal}"
         )
+        compactDrain.quarantineReasons.forEach { reason ->
+            LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_QUARANTINE: $reason")
+        }
     }
 
     private suspend fun persistFetchedChainEvidenceBeforeBrain(

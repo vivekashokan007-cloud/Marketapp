@@ -1861,49 +1861,58 @@ object SupabaseClient {
      * may acknowledge a file only when this method has verified both rows by
      * readback. Missing tables, denied writes, or mismatched content fail closed.
      */
-    fun savePc2CompactBatch(envelope: JSONObject): Boolean {
-        val policyRow = envelope.optJSONObject("policy_row") ?: return false
-        val batchRow = envelope.optJSONObject("batch_row") ?: return false
+    fun savePc2CompactBatch(envelope: JSONObject): Pc2TelemetryOutbox.Outcome {
+        val quarantine = Pc2TelemetryOutbox.Outcome.QUARANTINE
+        val retry = Pc2TelemetryOutbox.Outcome.RETRY
+        val policyRow = envelope.optJSONObject("policy_row") ?: return quarantine
+        val batchRow = envelope.optJSONObject("batch_row") ?: return quarantine
         val policyHash = policyRow.optString("policy_hash", "")
         val batchId = batchRow.optString("batch_id", "")
         if (!policyHash.matches(Regex("[0-9a-f]{64}")) ||
-            !batchId.matches(Regex("[0-9a-f]{64}"))) return false
+            !batchId.matches(Regex("[0-9a-f]{64}"))) return quarantine
 
         val expectedPolicyHash = runCatching {
             Pc2CompactBatch.sha256(
                 Pc2CompactBatch.canonicalJson(policyRow.getJSONObject("policy_json"))
             )
-        }.getOrNull() ?: return false
-        if (expectedPolicyHash != policyHash) return false
+        }.getOrNull() ?: return quarantine
+        if (expectedPolicyHash != policyHash) return quarantine
 
         val policyPost = postToFirstWorkingTableDetailed(
             listOf("ml_pc2_policy_registry?on_conflict=policy_hash"),
             policyRow.toString(),
             preferHeader = "resolution=ignore-duplicates,return=minimal"
         )
-        if (!policyPost.success) return false
+        if (!policyPost.success) return classifyPc2PostFailure(policyPost, batchId, "policy_registry")
 
         val policyReadback = fetchSync(
             getBaseRequest(
                 "ml_pc2_policy_registry?policy_hash=eq.$policyHash&" +
                     "select=policy_hash,policy_version,schema_version,policy_json&limit=1"
             ).get().build()
-        ) ?: return false
+        ) ?: return retry
         val storedPolicy = runCatching { JSONArray(policyReadback).optJSONObject(0) }.getOrNull()
-            ?: return false
-        if (storedPolicy.optString("policy_hash") != policyHash ||
-            storedPolicy.optString("policy_version") != policyRow.optString("policy_version") ||
-            storedPolicy.optString("schema_version") != policyRow.optString("schema_version") ||
-            Pc2CompactBatch.sha256(
-                Pc2CompactBatch.canonicalJson(storedPolicy.optJSONObject("policy_json") ?: return false)
-            ) != policyHash) return false
+            ?: return retry
+        val storedPolicyJson = storedPolicy.optJSONObject("policy_json")
+        val policyVerified = storedPolicy.optString("policy_hash") == policyHash &&
+            storedPolicy.optString("policy_version") == policyRow.optString("policy_version") &&
+            storedPolicy.optString("schema_version") == policyRow.optString("schema_version") &&
+            storedPolicyJson != null &&
+            Pc2CompactBatch.sha256(Pc2CompactBatch.canonicalJson(storedPolicyJson)) == policyHash
+        if (!policyVerified) {
+            // A registry row already exists under this hash whose content does not
+            // hash back to it. Retrying can never fix that and the primary key
+            // blocks a correct replacement, so it must not stall the queue.
+            LogBuffer.add('E', TAG, "PC2_COMPACT_POLICY_MISMATCH: policyHash=$policyHash batchId=$batchId")
+            return quarantine
+        }
 
         val batchPost = postToFirstWorkingTableDetailed(
             listOf("ml_pc2_decision_batches?on_conflict=batch_id"),
             batchRow.toString(),
             preferHeader = "resolution=ignore-duplicates,return=minimal"
         )
-        if (!batchPost.success) return false
+        if (!batchPost.success) return classifyPc2PostFailure(batchPost, batchId, "decision_batches")
 
         val batchReadback = fetchSync(
             getBaseRequest(
@@ -1911,12 +1920,16 @@ object SupabaseClient {
                     "select=batch_id,policy_hash,decision_count,distinct_decision_count," +
                     "decision_digest,grouping_schema_version,grouped_decisions_json,complete&limit=1"
             ).get().build()
-        ) ?: return false
+        ) ?: return retry
         val storedBatch = runCatching { JSONArray(batchReadback).optJSONObject(0) }.getOrNull()
-            ?: return false
+            ?: return retry
         val reconstructed = runCatching {
             Pc2CompactBatch.reconstructOrderedDecisions(storedBatch)
-        }.getOrNull() ?: return false
+        }.getOrNull()
+        if (reconstructed == null) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_RECONSTRUCT_FAIL: batchId=$batchId")
+            return quarantine
+        }
         val verified = storedBatch.optString("batch_id") == batchId &&
             storedBatch.optString("policy_hash") == policyHash &&
             storedBatch.optInt("decision_count", -1) == batchRow.optInt("decision_count", -2) &&
@@ -1927,8 +1940,25 @@ object SupabaseClient {
             Pc2CompactBatch.digestOrderedDecisions(reconstructed) == batchRow.optString("decision_digest")
         if (!verified) {
             LogBuffer.add('E', TAG, "PC2_COMPACT_READBACK_MISMATCH: batchId=$batchId")
+            return quarantine
         }
-        return verified
+        return Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED
+    }
+
+    /** Delegates to the outbox contract so the rule is unit-testable in isolation. */
+    private fun classifyPc2PostFailure(
+        result: PostResult,
+        batchId: String,
+        stage: String
+    ): Pc2TelemetryOutbox.Outcome {
+        val body = (result.errorBody ?: "") + " " + (result.message ?: "")
+        val outcome = Pc2TelemetryOutbox.classifyPostFailure(result.code, body)
+        LogBuffer.add(
+            if (outcome == Pc2TelemetryOutbox.Outcome.QUARANTINE) 'E' else 'W',
+            TAG,
+            "PC2_COMPACT_POST_FAIL: stage=$stage batchId=$batchId code=${result.code} outcome=$outcome"
+        )
+        return outcome
     }
 
     /**

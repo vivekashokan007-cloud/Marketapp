@@ -17,6 +17,19 @@ object Pc2CompactBatch {
     const val GROUPING_SCHEMA_VERSION = "pc2_exact_dedup_v1"
     const val DIGEST_ALGORITHM = "sha256"
 
+    /**
+     * Review correction C6: brain.py publishes only the LAST 128 authority
+     * decisions of a poll (`result['pc2_authority_decisions'] = ...[-128:]`).
+     * This compactor is lossless with respect to the array it is given, but that
+     * array is itself a tail. `complete = true` therefore means "this envelope
+     * reproduces the stored array exactly", NOT "these are all the decisions the
+     * brain made". Gate (`parameter_threshold`) decisions are evaluated before
+     * the ranking-context calls and are displaced by the cap on full-menu
+     * sessions, so a compact batch must never be read as complete gate evidence.
+     */
+    const val SOURCE_TAIL_CAP = 128
+    const val ENVELOPE_COMPLETENESS = "LOSSLESS_OF_SNAPSHOT_ARRAY"
+
     data class Built(
         val policyRow: JSONObject,
         val batchRow: JSONObject,
@@ -74,9 +87,13 @@ object Pc2CompactBatch {
                     .put("indexes", JSONArray(indexes))
             )
         }
+        val sourceTruncated = decisions.length() >= SOURCE_TAIL_CAP
         val grouped = JSONObject()
             .put("schema_version", GROUPING_SCHEMA_VERSION)
             .put("ordered_count", decisions.length())
+            .put("envelope_completeness", ENVELOPE_COMPLETENESS)
+            .put("source_tail_cap", SOURCE_TAIL_CAP)
+            .put("source_possibly_truncated", sourceTruncated)
             .put("prototypes", prototypes)
 
         val brainVersion = context.optString("snapshot_brain_version", "unknown")
@@ -120,6 +137,8 @@ object Pc2CompactBatch {
             .put("distinct_decision_count", prototypes.length())
             .put("decision_digest", decisionDigest)
             .put("grouping_schema_version", GROUPING_SCHEMA_VERSION)
+            .put("envelope_completeness", ENVELOPE_COMPLETENESS)
+            .put("source_possibly_truncated", sourceTruncated)
             .put("complete", true)
         return Built(policyRow, batchRow, snapshotRef)
     }
