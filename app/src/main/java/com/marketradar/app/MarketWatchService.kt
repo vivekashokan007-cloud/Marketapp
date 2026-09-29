@@ -439,6 +439,7 @@ class MarketWatchService : Service() {
         PositionTickService.ensureRunning(this)
         maintainSessionWakeLock()
         ensurePollAlarmScheduled()
+        serviceScope.launch(Dispatchers.IO) { drainPc2CompactOutbox() }
 
         if (intent?.action == ACTION_POLL_TICK) {
             serviceScope.launch { maybeRunPollFromAlarm() }
@@ -2697,6 +2698,32 @@ class MarketWatchService : Service() {
                                     catch (_: Exception) { /* leave as-is — don't drop the row */ }
                                 }
                             }
+                            // DB-1: persist a lossless compact PC2 envelope locally before the
+                            // snapshot compactor may remove large embedded telemetry. The old
+                            // row-per-decision upload remains during the parity/rollback window.
+                            val pc2CompactBatch = Pc2CompactBatch.build(rawSnapObj)
+                            if (pc2CompactBatch != null) {
+                                val rawContext = rawSnapObj.optJSONObject("context_json")
+                                rawContext?.put(
+                                    "snapshot_pc2_authority_compact_ref",
+                                    pc2CompactBatch.snapshotRef
+                                )
+                                try {
+                                    val newlyQueued = Pc2TelemetryOutbox.enqueue(
+                                        filesDir,
+                                        pc2CompactBatch
+                                    )
+                                    LogBuffer.add(
+                                        'I',
+                                        TAG,
+                                        "PC2_COMPACT_OUTBOX_ENQUEUE: new=$newlyQueued batchId=${pc2CompactBatch.batchRow.optString("batch_id")}"
+                                    )
+                                } catch (e: Exception) {
+                                    // Telemetry is non-authoritative, but failure is explicit and
+                                    // the legacy snapshot/row path stays intact for evidence.
+                                    LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_ENQUEUE_FAIL: ${e.message}")
+                                }
+                            }
                             val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
                             val contextBytes = snapObj.opt("context_json")
                                 ?.toString()?.toByteArray(Charsets.UTF_8)?.size ?: 0
@@ -2728,6 +2755,7 @@ class MarketWatchService : Service() {
                                     TAG,
                                     "PC2_AUTHORITY_TELEMETRY_SAVE: saved=$authorityTelemetrySaved pollTs=${snapObj.optString("poll_ts")} snapshotSaved=$snapshotSaved"
                                 )
+                                drainPc2CompactOutbox()
                                 try {
                                     if (generatedFactPack != null) {
                                         generatedSaved = persistCompactGeneratedCandidates(generatedFactPack, snapObj)
@@ -3019,6 +3047,17 @@ class MarketWatchService : Service() {
             val pollCount = prefs.getInt("poll_count", 0)
             Log.d(TAG, "BROADCAST_SENT: Poll #$pollCount (brain success=$brainSuccess)")
         }
+    }
+
+    private fun drainPc2CompactOutbox() {
+        val compactDrain = Pc2TelemetryOutbox.drain(filesDir) { envelope ->
+            SupabaseClient.savePc2CompactBatch(envelope)
+        }
+        LogBuffer.add(
+            if (compactDrain.pending == 0) 'I' else 'W',
+            TAG,
+            "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} acknowledged=${compactDrain.acknowledged} pending=${compactDrain.pending} pendingBytes=${compactDrain.pendingBytes}"
+        )
     }
 
     private suspend fun persistFetchedChainEvidenceBeforeBrain(

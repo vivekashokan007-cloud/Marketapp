@@ -1857,6 +1857,81 @@ object SupabaseClient {
     }
 
     /**
+     * Dual-write target for the lossless compact PC2 format. The outbox caller
+     * may acknowledge a file only when this method has verified both rows by
+     * readback. Missing tables, denied writes, or mismatched content fail closed.
+     */
+    fun savePc2CompactBatch(envelope: JSONObject): Boolean {
+        val policyRow = envelope.optJSONObject("policy_row") ?: return false
+        val batchRow = envelope.optJSONObject("batch_row") ?: return false
+        val policyHash = policyRow.optString("policy_hash", "")
+        val batchId = batchRow.optString("batch_id", "")
+        if (!policyHash.matches(Regex("[0-9a-f]{64}")) ||
+            !batchId.matches(Regex("[0-9a-f]{64}"))) return false
+
+        val expectedPolicyHash = runCatching {
+            Pc2CompactBatch.sha256(
+                Pc2CompactBatch.canonicalJson(policyRow.getJSONObject("policy_json"))
+            )
+        }.getOrNull() ?: return false
+        if (expectedPolicyHash != policyHash) return false
+
+        val policyPost = postToFirstWorkingTableDetailed(
+            listOf("ml_pc2_policy_registry?on_conflict=policy_hash"),
+            policyRow.toString(),
+            preferHeader = "resolution=ignore-duplicates,return=minimal"
+        )
+        if (!policyPost.success) return false
+
+        val policyReadback = fetchSync(
+            getBaseRequest(
+                "ml_pc2_policy_registry?policy_hash=eq.$policyHash&" +
+                    "select=policy_hash,policy_version,schema_version,policy_json&limit=1"
+            ).get().build()
+        ) ?: return false
+        val storedPolicy = runCatching { JSONArray(policyReadback).optJSONObject(0) }.getOrNull()
+            ?: return false
+        if (storedPolicy.optString("policy_hash") != policyHash ||
+            storedPolicy.optString("policy_version") != policyRow.optString("policy_version") ||
+            storedPolicy.optString("schema_version") != policyRow.optString("schema_version") ||
+            Pc2CompactBatch.sha256(
+                Pc2CompactBatch.canonicalJson(storedPolicy.optJSONObject("policy_json") ?: return false)
+            ) != policyHash) return false
+
+        val batchPost = postToFirstWorkingTableDetailed(
+            listOf("ml_pc2_decision_batches?on_conflict=batch_id"),
+            batchRow.toString(),
+            preferHeader = "resolution=ignore-duplicates,return=minimal"
+        )
+        if (!batchPost.success) return false
+
+        val batchReadback = fetchSync(
+            getBaseRequest(
+                "ml_pc2_decision_batches?batch_id=eq.$batchId&" +
+                    "select=batch_id,policy_hash,decision_count,distinct_decision_count," +
+                    "decision_digest,grouping_schema_version,grouped_decisions_json,complete&limit=1"
+            ).get().build()
+        ) ?: return false
+        val storedBatch = runCatching { JSONArray(batchReadback).optJSONObject(0) }.getOrNull()
+            ?: return false
+        val reconstructed = runCatching {
+            Pc2CompactBatch.reconstructOrderedDecisions(storedBatch)
+        }.getOrNull() ?: return false
+        val verified = storedBatch.optString("batch_id") == batchId &&
+            storedBatch.optString("policy_hash") == policyHash &&
+            storedBatch.optInt("decision_count", -1) == batchRow.optInt("decision_count", -2) &&
+            storedBatch.optInt("distinct_decision_count", -1) == batchRow.optInt("distinct_decision_count", -2) &&
+            storedBatch.optString("decision_digest") == batchRow.optString("decision_digest") &&
+            storedBatch.optString("grouping_schema_version") == Pc2CompactBatch.GROUPING_SCHEMA_VERSION &&
+            storedBatch.optBoolean("complete", false) &&
+            Pc2CompactBatch.digestOrderedDecisions(reconstructed) == batchRow.optString("decision_digest")
+        if (!verified) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_READBACK_MISMATCH: batchId=$batchId")
+        }
+        return verified
+    }
+
+    /**
      * Best-effort compact candidate persistence for offline ML evaluation breadth.
      *
      * The table may not exist yet in every environment; fail closed without
