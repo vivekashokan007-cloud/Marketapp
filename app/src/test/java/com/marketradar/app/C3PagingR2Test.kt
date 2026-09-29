@@ -98,6 +98,8 @@ class C3PagingR2Test {
     /** Real ledger run with every non-C3 stage complete, so only C3 decides learning_complete. */
     private fun readyRun(): JSONObject {
         var run = EvaluationRunLedger.newRun(sessionDate = date, inputManifest = JSONObject().put("session_date", date))
+        run = EvaluationRunLedger.setExpectedIdentities(run, listOf("1"))
+        run = EvaluationRunLedger.recordPersistedIdentities(run, listOf("1"))
         for (name in EvaluationRunLedger.STAGE_ORDER) {
             if (name == "percentile_finalization") continue
             run = EvaluationRunLedger.setStage(run, name, "verified")

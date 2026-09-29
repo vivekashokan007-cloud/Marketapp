@@ -157,4 +157,35 @@ class EngBatchCR1IdentityCoverageTest {
         assertTrue(assessment.missingPreview.any { it.contains("candidate_2") })
         assertTrue(assessment.unexpectedServerCompositeKeys.isEmpty())
     }
+
+    @Test
+    fun allWaitResearchOutcomesCompleteWithoutSavingTrainingLabels() {
+        val produced = outcomes(2..3)
+        val assessment = EvaluationIdentityCoverage.assess(
+            expectedSnapshotIds = emptyList(),
+            producedOutcomes = produced,
+            serverCompositeKeys = listOf(key(2), key(3)),
+            readbackOk = true
+        )
+        assertTrue(assessment.complete)
+        val transition = EvaluationIdentityCoverage.transitionFor(assessment)
+        assertEquals("RESEARCH_ONLY", transition.phase)
+        assertFalse(transition.labelsSaved)
+        assertTrue(transition.writeEvaluationDoneDate)
+        assertTrue(transition.cancelReminder)
+        assertFalse(transition.scheduleContinuation)
+    }
+
+    @Test
+    fun allWaitResearchStillFailsWhenOneOutcomeWasNotReadBack() {
+        val assessment = EvaluationIdentityCoverage.assess(
+            expectedSnapshotIds = emptyList(),
+            producedOutcomes = outcomes(2..3),
+            serverCompositeKeys = listOf(key(2)),
+            readbackOk = true
+        )
+        assertFalse(assessment.complete)
+        assertEquals(1, assessment.missingCount)
+        assertEquals("INCOMPLETE_IDENTITY", EvaluationIdentityCoverage.transitionFor(assessment).phase)
+    }
 }

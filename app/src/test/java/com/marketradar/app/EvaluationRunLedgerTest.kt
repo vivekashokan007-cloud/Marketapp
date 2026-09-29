@@ -6,11 +6,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EvaluationRunLedgerTest {
-    private fun baseRun(): JSONObject =
-        EvaluationRunLedger.newRun(
+    private fun baseRun(): JSONObject {
+        val run = EvaluationRunLedger.newRun(
             "2026-09-10",
             JSONObject().put("snapshot_ids", JSONArray().put(1).put(2)).put("snapshot_count", 2)
         )
+        EvaluationRunLedger.setExpectedIdentities(run, listOf("1", "2"))
+        return EvaluationRunLedger.recordPersistedIdentities(run, listOf("1", "2"))
+    }
 
     @Test
     fun crashResumeReturnsCorrectStage() {
@@ -99,6 +102,15 @@ class EvaluationRunLedgerTest {
             reasonCode = "NONLABELABLE_SNAPSHOTS_ACCOUNTED"
         )
         assertEquals(3, run.getJSONObject("stages").getJSONObject("input_coverage").optInt("nonlabelable_count"))
+    }
+
+    @Test
+    fun verifiedResearchWithNoLabelableSnapshotNeverClaimsLearning() {
+        var run = EvaluationRunLedger.setExpectedIdentities(baseRun(), emptyList(), listOf("1", "2"))
+        run = EvaluationRunLedger.setStage(run, "outcome_persistence", "verified", writtenCount = 2, verifiedCount = 2)
+        assertEquals(0, run.optInt("missing_identity_count"))
+        assertFalse(run.optBoolean("labels_saved"))
+        assertFalse(run.optBoolean("learning_complete"))
     }
 
     @Test

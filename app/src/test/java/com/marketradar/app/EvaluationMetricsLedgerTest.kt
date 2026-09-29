@@ -16,6 +16,8 @@ class EvaluationMetricsLedgerTest {
     @Test
     fun applyMetricsResultMarksVerifiedAndAllowsLearningComplete() {
         var run = EvaluationRunLedger.newRun("2026-09-12")
+        run = EvaluationRunLedger.setExpectedIdentities(run, listOf("1"))
+        run = EvaluationRunLedger.recordPersistedIdentities(run, listOf("1"))
         for (name in listOf(
             "input_coverage", "outcome_computation", "outcome_persistence",
             "research_aggregation", "percentile_finalization"
