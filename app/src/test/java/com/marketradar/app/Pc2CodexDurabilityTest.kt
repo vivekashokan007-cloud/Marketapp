@@ -107,7 +107,7 @@ class Pc2CodexDurabilityTest {
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", "two")); Thread.sleep(2)
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:10:00Z", "three"))
 
-        repeat(Pc2TelemetryOutbox.DEFER_AFTER_ATTEMPTS + 5) {
+        repeat(25) {
             Pc2TelemetryOutbox.drain(dir) {
                 Pc2TelemetryOutbox.classifyPostFailure(404, """{"code":"PGRST205"}""")
             }
@@ -129,7 +129,7 @@ class Pc2CodexDurabilityTest {
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", "b"))
 
         val cycle = listOf(401 to "", 429 to "", 503 to "", null to "connection reset")
-        repeat(Pc2TelemetryOutbox.DEFER_AFTER_ATTEMPTS + 8) { pass ->
+        repeat(28) { pass ->
             val (code, body) = cycle[pass % cycle.size]
             Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.classifyPostFailure(code, body) }
         }
@@ -147,7 +147,7 @@ class Pc2CodexDurabilityTest {
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:00:00Z", "a")); Thread.sleep(2)
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", "b"))
 
-        repeat(Pc2TelemetryOutbox.DEFER_AFTER_ATTEMPTS + 3) {
+        repeat(23) {
             Pc2TelemetryOutbox.drain(dir) {
                 Pc2TelemetryOutbox.classifyPostFailure(
                     404,
@@ -236,7 +236,8 @@ class Pc2CodexDurabilityTest {
 
         // Pre-seed the exact destination the archiver would otherwise choose.
         val quarantineDir = File(outboxOf(dir), "quarantine").apply { mkdirs() }
-        val decoy = File(quarantineDir, "${pendingFile.lastModified()}-$batchId.json")
+        // The exact destination the archiver would otherwise choose (C1 naming).
+        val decoy = File(quarantineDir, "${pendingFile.lastModified()}-$batchId--permanent_rejection.json")
         decoy.writeText("EARLIER ARCHIVED EVIDENCE")
 
         val result = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.QUARANTINE }

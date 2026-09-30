@@ -1857,11 +1857,32 @@ object SupabaseClient {
     }
 
     /**
+     * Codex round-2 finding B4: registration check for this device's ingestion
+     * credential. Returns true only when the server reports the credential as
+     * registered AND active; false when it answered otherwise; null when the
+     * question could not be answered (network, function not deployed yet).
+     */
+    fun pc2IngestDeviceActive(deviceKey: String): Boolean? {
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return false
+        val body = Pc2IngestCredential.statusRequestBody(deviceKey).toString()
+        val response = fetchSync(
+            getBaseRequest("rpc/pc2_ingest_device_status")
+                .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+        ) ?: return null
+        return Pc2IngestCredential.statusIsActive(response)
+    }
+
+    /**
      * Dual-write target for the lossless compact PC2 format. The outbox caller
      * may acknowledge a file only when this method has verified both rows by
      * readback. Missing tables, denied writes, or mismatched content fail closed.
+     *
+     * Round 3 (B4): rows are written only through the authorised ingestion
+     * function, never by table INSERT. The readbacks are unchanged and remain
+     * the acknowledgement evidence.
      */
-    fun savePc2CompactBatch(envelope: JSONObject): Pc2TelemetryOutbox.Outcome {
+    fun savePc2CompactBatch(envelope: JSONObject, deviceKey: String): Pc2TelemetryOutbox.Outcome {
         val quarantine = Pc2TelemetryOutbox.Outcome.QUARANTINE
         val retry = Pc2TelemetryOutbox.Outcome.RETRY
         val policyRow = envelope.optJSONObject("policy_row") ?: return quarantine
@@ -1878,12 +1899,28 @@ object SupabaseClient {
         if (canonicalPolicy.isEmpty()) return quarantine
         if (Pc2CompactBatch.sha256(canonicalPolicy) != policyHash) return quarantine
 
-        val policyPost = postToFirstWorkingTableDetailed(
-            listOf("ml_pc2_policy_registry?on_conflict=policy_hash"),
-            policyRow.toString(),
-            preferHeader = "resolution=ignore-duplicates,return=minimal"
+        // B1: the version the client acknowledges must be the one the database
+        // derives from the same bytes. A local disagreement is a builder defect
+        // that no retry can fix.
+        val derivedVersion = runCatching {
+            Pc2CompactBatch.derivePolicyVersion(JSONObject(canonicalPolicy))
+        }.getOrNull() ?: return quarantine
+        if (policyRow.optString("policy_version") != derivedVersion ||
+            batchRow.optString("policy_version") != derivedVersion ||
+            policyRow.optString("schema_version") != Pc2CompactBatch.GROUPING_SCHEMA_VERSION
+        ) return quarantine
+
+        // B4: one authorised call inserts both rows atomically. An unregistered
+        // or revoked device (PT403) and a spent daily quota (PT429) retry; the
+        // evidence stays queued until the owner registers the device or the
+        // IST day turns.
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return retry
+        val ingest = postToFirstWorkingTableDetailed(
+            listOf("rpc/pc2_ingest_compact_batch"),
+            Pc2IngestCredential.ingestRequestBody(deviceKey, envelope).toString(),
+            preferHeader = "return=representation"
         )
-        if (!policyPost.success) return classifyPc2PostFailure(policyPost, batchId, "policy_registry")
+        if (!ingest.success) return classifyPc2PostFailure(ingest, batchId, "ingest")
 
         val policyReadback = fetchSync(
             getBaseRequest(
@@ -1907,19 +1944,12 @@ object SupabaseClient {
             return quarantine
         }
 
-        val batchPost = postToFirstWorkingTableDetailed(
-            listOf("ml_pc2_decision_batches?on_conflict=batch_id"),
-            batchRow.toString(),
-            preferHeader = "resolution=ignore-duplicates,return=minimal"
-        )
-        if (!batchPost.success) return classifyPc2PostFailure(batchPost, batchId, "decision_batches")
-
         val batchReadback = fetchSync(
             getBaseRequest(
                 "ml_pc2_decision_batches?batch_id=eq.$batchId&" +
-                    "select=batch_id,policy_hash,decision_count,distinct_decision_count," +
-                    "decision_digest,grouped_digest,grouping_schema_version," +
-                    "grouped_canonical,complete&limit=1"
+                    "select=batch_id,policy_hash,policy_version,decision_count," +
+                    "distinct_decision_count,decision_digest,grouped_digest," +
+                    "grouping_schema_version,grouped_canonical,complete&limit=1"
             ).get().build()
         ) ?: return retry
         val storedBatch = runCatching { JSONArray(batchReadback).optJSONObject(0) }.getOrNull()
@@ -1963,6 +1993,7 @@ object SupabaseClient {
         }
         val verified = storedBatch.optString("batch_id") == batchId &&
             storedBatch.optString("policy_hash") == policyHash &&
+            storedBatch.optString("policy_version") == batchRow.optString("policy_version") &&
             storedBatch.optInt("decision_count", -1) == batchRow.optInt("decision_count", -2) &&
             storedBatch.optInt("distinct_decision_count", -1) == batchRow.optInt("distinct_decision_count", -2) &&
             storedBatch.optString("decision_digest") == batchRow.optString("decision_digest") &&

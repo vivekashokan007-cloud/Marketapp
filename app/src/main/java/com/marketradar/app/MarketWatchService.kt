@@ -2707,11 +2707,18 @@ class MarketWatchService : Service() {
                             // abort snapshot persistence, the legacy PC2 upload, the
                             // generated-candidate write and the poll-persist release.
                             // Telemetry must never be able to do that.
-                            val pc2CompactBatch = runCatching { Pc2CompactBatch.build(rawSnapObj) }
-                                .onFailure { e ->
-                                    LogBuffer.add('E', TAG, "PC2_COMPACT_BUILD_FAIL: ${e.message}")
-                                }
-                                .getOrNull()
+                            // B4 (round 3): the compact channel is off until this
+                            // device's ingestion credential is confirmed registered.
+                            // Safe during parity only: the legacy PC2 path below stays
+                            // authoritative and is untouched by this gate.
+                            val pc2CompactEnabled =
+                                prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)
+                            val pc2CompactBatch = if (!pc2CompactEnabled) null else
+                                runCatching { Pc2CompactBatch.build(rawSnapObj) }
+                                    .onFailure { e ->
+                                        LogBuffer.add('E', TAG, "PC2_COMPACT_BUILD_FAIL: ${e.message}")
+                                    }
+                                    .getOrNull()
                             if (pc2CompactBatch != null) {
                                 val rawContext = rawSnapObj.optJSONObject("context_json")
                                 rawContext?.put(
@@ -3059,9 +3066,42 @@ class MarketWatchService : Service() {
         }
     }
 
+    @Volatile
+    private var pc2UnregisteredLogged = false
+
     private fun drainPc2CompactOutbox() {
+        val deviceKey = Pc2IngestCredential.loadOrCreate(
+            read = { prefs.getString(Pc2IngestCredential.PREF_DEVICE_KEY, null) },
+            // commit(), not apply(): the key must be durable before it is used.
+            write = { key -> prefs.edit().putString(Pc2IngestCredential.PREF_DEVICE_KEY, key).commit() }
+        )
+        if (deviceKey == null) {
+            LogBuffer.add('E', TAG, "PC2_INGEST_CREDENTIAL_UNAVAILABLE: compact channel stays off")
+            return
+        }
+        if (!prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)) {
+            when (SupabaseClient.pc2IngestDeviceActive(deviceKey)) {
+                true -> {
+                    prefs.edit().putBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, true).commit()
+                    LogBuffer.add('I', TAG, "PC2_INGEST_DEVICE_REGISTERED: compact channel enabled")
+                }
+                else -> {
+                    if (!pc2UnregisteredLogged) {
+                        pc2UnregisteredLogged = true
+                        // The hash only - never the key - so the owner can register it.
+                        LogBuffer.add(
+                            'W',
+                            TAG,
+                            "PC2_INGEST_DEVICE_UNREGISTERED: key_hash=${Pc2IngestCredential.keyHash(deviceKey)} " +
+                                "compact channel off; legacy PC2 remains authoritative"
+                        )
+                    }
+                    return
+                }
+            }
+        }
         val compactDrain = Pc2TelemetryOutbox.drain(filesDir) { envelope ->
-            SupabaseClient.savePc2CompactBatch(envelope)
+            SupabaseClient.savePc2CompactBatch(envelope, deviceKey)
         }
         val clean = compactDrain.pending == 0 && compactDrain.quarantinedTotal == 0 &&
             compactDrain.recoveredTotal == 0 && compactDrain.storageErrors == 0
@@ -3070,7 +3110,8 @@ class MarketWatchService : Service() {
             TAG,
             "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} " +
                 "acknowledged=${compactDrain.acknowledged} quarantined=${compactDrain.quarantined} " +
-                "deferred=${compactDrain.deferred} pending=${compactDrain.pending} " +
+                "retried=${compactDrain.retried} stop=${compactDrain.stopReason} " +
+                "pending=${compactDrain.pending} " +
                 "pendingBytes=${compactDrain.pendingBytes} " +
                 "quarantinedTotal=${compactDrain.quarantinedTotal} " +
                 "recoveredTotal=${compactDrain.recoveredTotal} " +

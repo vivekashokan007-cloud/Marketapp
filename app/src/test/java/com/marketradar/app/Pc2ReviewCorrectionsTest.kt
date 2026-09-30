@@ -151,10 +151,13 @@ class Pc2ReviewCorrectionsTest {
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", marker = "y"))
 
         val result = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.RETRY }
-        assertEquals(1, result.attempted)
+        // Round 3 (B2): a pass keeps going through the rotation until
+        // MAX_CONSECUTIVE_RETRIES in a row; with two batches both are tried once.
+        assertEquals(2, result.attempted)
+        assertEquals(2, result.retried)
         assertEquals(0, result.acknowledged)
         assertEquals(0, result.quarantined)
-        assertEquals("order and backoff are preserved for transient faults", 2, result.pending)
+        assertEquals("transient faults keep everything queued", 2, result.pending)
     }
 
     /**
@@ -164,21 +167,25 @@ class Pc2ReviewCorrectionsTest {
      * away valid evidence the moment the backend recovered.
      */
     @Test
-    fun aRecoverablyStuckHeadIsDeferredNeverQuarantined() {
+    fun aRecoverablyStuckHeadIsRotatedNeverQuarantined() {
         val dir = tempDir()
-        Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:00:00Z", marker = "stuck")); Thread.sleep(2)
+        val stuck = built("2026-09-29T04:00:00Z", marker = "stuck")
+        Pc2TelemetryOutbox.enqueue(dir, stuck); Thread.sleep(2)
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", marker = "later"))
+        val stuckId = stuck.batchRow.getString("batch_id")
 
         var quarantined = 0
-        var deferred = 0
-        repeat(Pc2TelemetryOutbox.DEFER_AFTER_ATTEMPTS + 2) {
-            val pass = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.RETRY }
+        var laterAttempts = 0
+        repeat(30) {
+            val pass = Pc2TelemetryOutbox.drain(dir) { envelope ->
+                if (envelope.getJSONObject("batch_row").getString("batch_id") != stuckId) laterAttempts += 1
+                Pc2TelemetryOutbox.Outcome.RETRY
+            }
             quarantined += pass.quarantined
-            deferred += pass.deferred
         }
         assertEquals("a recoverable failure must never be quarantined", 0, quarantined)
         assertEquals(0, Pc2TelemetryOutbox.quarantinedFiles(dir).size)
-        assertTrue("the stuck head must stop blocking the queue", deferred > 0)
+        assertTrue("the batch behind a stuck head is still tried", laterAttempts >= 29)
         assertEquals("both batches are still queued", 2, Pc2TelemetryOutbox.pending(dir).size)
 
         val after = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED }

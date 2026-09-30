@@ -8,97 +8,124 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Durable PC2 upload queue.
  *
- * Codex review corrections R1-R3 (2026-09-30) supersede the first correction
- * pass. The governing rule is now explicit:
+ * The governing rule, unchanged since round 2:
  *
  *   **Evidence leaves the pending queue only when the backend has acknowledged
  *   it, or when the payload itself has been proven permanently unacceptable.
  *   Nothing is ever removed because it is old, because it has been tried many
  *   times, or because a temporary file looked abandoned.**
  *
- *  - R1: [classifyPostFailure] quarantines only proven payload-specific
- *    rejections. Everything else - missing tables before the migration, expired
- *    auth, rate limits, gateway and schema-cache errors, outages - retries
- *    automatically and indefinitely. The attempt counter is diagnostic: past
- *    [DEFER_AFTER_ATTEMPTS] a batch stops *blocking* the queue but stays pending
- *    and is retried on every later pass.
- *  - R2: archive moves are collision-safe, their result is checked, the attempt
- *    marker survives a failed move, and the reason is persisted beside the
- *    retained bytes so it outlives a restart. A failed move is reported as a
- *    storage error, never as a successful quarantine.
- *  - R3: an orphaned `.tmp` may hold the only copy of a complete envelope
- *    (process death between `fd.sync()` and `renameTo`). It is verified by
- *    digest and promoted into the queue; only unverifiable bytes are archived,
- *    and neither is ever deleted on age.
+ * Round 3 (Codex round-2 review) corrects how that rule is scheduled and
+ * recorded:
  *
- * Work per drain pass is bounded by [MAX_UPLOADS_PER_PASS]. The object stays
- * free of Android dependencies so every rule above is unit-testable.
+ *  - B2, fairness. Round 2 walked the queue in enqueue order and spent the
+ *    per-pass budget on it, so 25 permanently-retrying batches starved every
+ *    batch behind them forever (reproduced in this class: 1,000 passes, zero
+ *    attempts on the tail). The queue is now served least-recently-attempted
+ *    first, on a clock-independent attempt sequence persisted beside each
+ *    batch. A retried batch moves to the back; a never-attempted batch goes
+ *    first. A pass stops after [MAX_UPLOADS_PER_PASS] attempts or after
+ *    [MAX_CONSECUTIVE_RETRIES] retryable failures in a row, which bounds the
+ *    cost of an outage without letting any prefix monopolise the queue.
+ *    Upload order is not a correctness property: every batch is independently
+ *    addressed by its content-bound id.
+ *  - C1, reason persistence. The archive reason is now part of the archive
+ *    file name, so it is recorded by the same rename that retains the bytes and
+ *    cannot be lost to a full disk independently of them. The `.reason` sidecar
+ *    carries detail only; failing to write it is reported as a storage error
+ *    and the sidecar is backfilled on a later pass.
+ *  - Metadata writes (attempt sequence, sidecars) never fail silently: every
+ *    failure is counted in [DrainResult.storageErrors].
+ *
+ * The object stays free of Android dependencies so every rule is unit-testable.
  */
 object Pc2TelemetryOutbox {
     private const val DIRECTORY = "pc2_telemetry_outbox_v1"
     private const val QUARANTINE = "quarantine"
     private const val RECOVERY = "recovery"
+    private const val SEQUENCE_FILE = "attempt_sequence"
+    private const val RETRY_SUFFIX = ".retry"
+    private const val REASON_SUFFIX = ".reason"
+    private const val ARCHIVE_REASON_SEPARATOR = "--"
 
     /** A `.tmp` younger than this may still be mid-write by a live enqueue. */
     private const val TMP_SETTLE_MS = 60L * 1000L
 
-    /**
-     * R1: diagnostic only. A batch past this many retryable attempts stops
-     * holding up the batches behind it; it is NOT removed and is retried on
-     * every subsequent pass.
-     */
-    internal const val DEFER_AFTER_ATTEMPTS = 20
-
     /** Bounded work per pass so a long queue cannot monopolise a poll. */
     internal const val MAX_UPLOADS_PER_PASS = 25
 
+    /**
+     * Retryable failures in a row that end a pass. A backend outage fails every
+     * batch; three in a row is strong evidence of one, so the pass stops and the
+     * next pass resumes further round the rotation instead of at the same place.
+     */
+    internal const val MAX_CONSECUTIVE_RETRIES = 3
+
     private val draining = AtomicBoolean(false)
 
+    /** Highest attempt sequence seen by this process; rebuilt from disk on restart. */
+    @Volatile
+    private var memorySequence = 0L
+
     /**
-     * Test seam for R2. Archiving must behave correctly when the filesystem
-     * refuses a move, and a JVM test running as root cannot provoke that with
-     * permissions. Production always uses [File.renameTo]; only tests replace it.
+     * Test seams. A JVM test running as root cannot provoke a refused rename or
+     * a failed file write with permissions, so both operations are injectable.
+     * Production always uses [File.renameTo] and [File.writeText].
      */
     internal var moveFile: (File, File) -> Boolean = { source, target -> source.renameTo(target) }
+    internal var writeMetadata: (File, String) -> Boolean = { file, text ->
+        runCatching { file.writeText(text, Charsets.UTF_8) }.isSuccess
+    }
+
+    /** Test-only: forget in-process state, as a process restart would. */
+    internal fun simulateProcessRestart() {
+        memorySequence = 0L
+    }
 
     /** Upload result contract. RETRY keeps evidence queued; QUARANTINE is terminal. */
     enum class Outcome { ACKNOWLEDGED, RETRY, QUARANTINE }
 
     /**
-     * Postgres / PostgREST codes that prove THIS payload can never be accepted.
-     * Anything absent from this list is treated as recoverable.
+     * PostgreSQL / PostgREST / ingestion codes that prove THIS payload can never
+     * be accepted. Matched against the `code` field of the error body, not as a
+     * free-text substring, so a digit sequence inside a message cannot turn a
+     * recoverable failure into a permanent one.
      *
-     * Deliberately excluded:
-     *  - `PGRST205` / `42P01` (table absent): the documented pre-migration state.
-     *  - `PGRST204` (column absent / stale schema cache): a partial or
-     *    not-yet-reloaded migration, recoverable without touching the payload.
-     *  - `23503` (foreign key): the policy registry row may simply not be
-     *    inserted yet; a later pass fixes it.
-     *  - every unclassified 4xx, including gateway 404s, which say nothing
-     *    about payload validity.
+     * Deliberately absent, and therefore retried:
+     *  - `PGRST205` / `42P01` / `PGRST202`: table or ingestion function not
+     *    deployed yet - the documented pre-migration state;
+     *  - `PGRST204`: column missing / stale schema cache;
+     *  - `23503`: foreign key - the parent may simply not exist yet;
+     *  - `PT403` (`PC2_DEVICE_NOT_AUTHORIZED`): recoverable by registering or
+     *    re-activating the device;
+     *  - `PT429` (`PC2_DAILY_QUOTA_EXCEEDED`): recoverable the next IST day;
+     *  - every unclassified 4xx, 401/403/408/429 and 5xx, and transport failure.
      */
-    private val PERMANENT_PAYLOAD_CODES = listOf(
-        "23505",   // unique_violation - the secondary constraint, not the on_conflict target
-        "22P02",   // invalid_text_representation
-        "22003",   // numeric_value_out_of_range
-        "22001",   // string_data_right_truncation
-        "23502",   // not_null_violation
-        "23514",   // check_violation
-        "PGRST102" // mixed key sets within a single bulk insert
+    private val PERMANENT_PAYLOAD_CODES = setOf(
+        "23505",    // unique_violation
+        "22P02",    // invalid_text_representation (includes invalid JSON)
+        "22P05",    // untranslatable_character (e.g. \u0000 cast to jsonb)
+        "22003",    // numeric_value_out_of_range
+        "22001",    // string_data_right_truncation
+        "23502",    // not_null_violation
+        "23514",    // check_violation
+        "PGRST102", // mixed key sets within a single bulk insert
+        "PT413"     // PC2_PAYLOAD_TOO_LARGE from the ingestion function
     )
 
+    private val CODE_FIELD = Regex("\"code\"\\s*:\\s*\"([^\"]+)\"")
+
+    /** The PostgREST `code` field of an error body, if there is one. */
+    fun errorCodeOf(body: String): String? = CODE_FIELD.find(body)?.groupValues?.get(1)
+
     /**
-     * R1: classify an upload rejection. The default is RETRY - a failure must
-     * prove itself permanent before evidence is set aside.
-     *
-     * The one concrete permanent case preserved from the earlier pass: the batch
-     * table carries `unique (poll_ts, policy_hash, authority_diagnostics_version)`,
-     * which is NOT the `on_conflict=batch_id` target, so a second differing batch
-     * for the same poll is rejected forever and would otherwise stall the queue.
+     * R1: the default is RETRY - a failure must prove itself permanent before
+     * evidence is set aside. PostgREST surfaces a unique violation as 409 even
+     * when the body is empty, so 409 alone is also permanent.
      */
     fun classifyPostFailure(code: Int?, body: String): Outcome {
-        if (PERMANENT_PAYLOAD_CODES.any { body.contains(it) }) return Outcome.QUARANTINE
-        // PostgREST surfaces a unique violation as 409 even when the body is empty.
+        val errorCode = errorCodeOf(body)
+        if (errorCode != null && errorCode in PERMANENT_PAYLOAD_CODES) return Outcome.QUARANTINE
         if (code == 409) return Outcome.QUARANTINE
         return Outcome.RETRY
     }
@@ -111,21 +138,24 @@ object Pc2TelemetryOutbox {
         val pendingBytes: Long,
         val quarantinedTotal: Int,
         val recoveredTotal: Int = 0,
-        val deferred: Int = 0,
+        /** Retryable outcomes this pass; each moved its batch to the back. */
+        val retried: Int = 0,
         val storageErrors: Int = 0,
         /** "<batchId>:<reason>" for each batch archived during this pass. */
         val quarantineReasons: List<String> = emptyList(),
         /** "<name>:<reason>" for each orphaned temp file resolved this pass. */
         val recoveredReasons: List<String> = emptyList(),
-        /** "<name>:<reason>" for each archive move that could not be completed. */
-        val storageErrorReasons: List<String> = emptyList()
+        /** "<name>:<fault>" for every file operation that did not complete. */
+        val storageErrorReasons: List<String> = emptyList(),
+        /** Why the pass ended: "queue_empty", "budget", or "consecutive_retries". */
+        val stopReason: String = "queue_empty"
     )
 
     @Synchronized
     fun enqueue(filesDir: File, built: Pc2CompactBatch.Built): Boolean {
         val envelope = built.envelope()
         val batchId = built.batchRow.getString("batch_id")
-        require(batchId.matches(Regex("[0-9a-f]{64}"))) { "Invalid PC2 batch id" }
+        require(batchId.matches(BATCH_ID)) { "Invalid PC2 batch id" }
         val dir = directory(filesDir)
         val canonical = Pc2CompactBatch.canonicalJson(envelope)
 
@@ -137,10 +167,8 @@ object Pc2TelemetryOutbox {
             }
             return false
         }
-        // R1: a previously quarantined batch is NOT refused here. If the builder
-        // produces it again after a backend fix, it gets a fresh attempt; the
-        // archive is collision-safe, so an unchanged rejection costs one archive
-        // entry rather than the permanent loss of a recoverable batch.
+        // A previously archived batch is NOT refused: after a backend fix it gets
+        // a fresh attempt, and the collision-safe archive keeps every rejection.
         writeAtomically(dir, "${System.currentTimeMillis()}-$batchId.json", canonical)
         return true
     }
@@ -152,29 +180,39 @@ object Pc2TelemetryOutbox {
 
     @Synchronized
     fun acknowledge(filesDir: File, batchId: String): Boolean {
-        if (!batchId.matches(Regex("[0-9a-f]{64}"))) return false
+        if (!batchId.matches(BATCH_ID)) return false
         val dir = directory(filesDir)
         val file = fileForBatch(dir, batchId) ?: return true
         val removed = file.delete()
-        if (removed) attemptsFile(dir, file).delete()
+        if (removed) retryFile(dir, file).delete()
         return removed
     }
 
     fun drain(filesDir: File, uploader: (JSONObject) -> Outcome): DrainResult {
         if (!draining.compareAndSet(false, true)) {
-            return currentResult(filesDir, 0, 0, 0, emptyList(), emptyList(), emptyList())
+            return currentResult(filesDir, 0, 0, 0, emptyList(), emptyList(), emptyList(), "busy")
         }
         return try {
             val dir = directory(filesDir)
+            val storageErrors = mutableListOf<String>()
             val recovery = recoverOrphanedTempFiles(dir)
+            storageErrors += recovery.storageErrors
+            storageErrors += backfillReasonSidecars(dir)
+
+            val queue = scheduledQueue(dir)
             var attempted = 0
             var acknowledged = 0
-            var deferred = 0
+            var retried = 0
+            var consecutiveRetries = 0
+            var stopReason = "queue_empty"
             val quarantineReasons = mutableListOf<String>()
-            val storageErrors = recovery.storageErrors.toMutableList()
 
-            for (file in pendingFiles(filesDir)) {
-                if (attempted >= MAX_UPLOADS_PER_PASS) break
+            for (entry in queue) {
+                if (attempted >= MAX_UPLOADS_PER_PASS) { stopReason = "budget"; break }
+                if (consecutiveRetries >= MAX_CONSECUTIVE_RETRIES) {
+                    stopReason = "consecutive_retries"; break
+                }
+                val file = entry.file
                 val raw = runCatching { file.readText(Charsets.UTF_8) }.getOrNull()
                 val envelope = raw?.let { runCatching { JSONObject(it) }.getOrNull() }
                 if (envelope == null) {
@@ -188,30 +226,30 @@ object Pc2TelemetryOutbox {
                 val batchId = envelope.optJSONObject("batch_row")?.optString("batch_id", "").orEmpty()
                 when (uploader(envelope)) {
                     Outcome.ACKNOWLEDGED -> {
+                        consecutiveRetries = 0
                         if (!acknowledge(filesDir, batchId)) {
                             storageErrors += "${file.name}:acknowledge_delete_failed"
-                            break
+                            continue
                         }
                         acknowledged += 1
                     }
                     Outcome.QUARANTINE -> {
+                        consecutiveRetries = 0
                         archive(dir, quarantineDir(dir), file, "permanent_rejection")
                             .fold(quarantineReasons, storageErrors)
                     }
                     Outcome.RETRY -> {
-                        val attempts = bumpAttempts(dir, file)
-                        if (attempts > DEFER_AFTER_ATTEMPTS) {
-                            // R1: stop blocking, stay queued, keep being retried.
-                            deferred += 1
-                            continue
-                        }
-                        break // transient: preserve order and back off
+                        retried += 1
+                        consecutiveRetries += 1
+                        // B2: move to the back of the rotation. The batch stays
+                        // pending and is retried automatically, indefinitely.
+                        recordRetry(dir, entry)?.let { storageErrors += it }
                     }
                 }
             }
             currentResult(
-                filesDir, attempted, acknowledged, deferred,
-                quarantineReasons, recovery.recovered, storageErrors
+                filesDir, attempted, acknowledged, retried,
+                quarantineReasons, recovery.recovered, storageErrors, stopReason
             )
         } finally {
             draining.set(false)
@@ -222,15 +260,28 @@ object Pc2TelemetryOutbox {
     @Synchronized
     fun quarantinedFiles(filesDir: File): List<File> = jsonFiles(quarantineDir(directory(filesDir)))
 
-    /** Orphaned temp bytes that could not be verified, retained for inspection. */
+    /** Orphaned temp bytes that could not be promoted, retained for inspection. */
     @Synchronized
     fun recoveryFiles(filesDir: File): List<File> = jsonFiles(recoveryDir(directory(filesDir)))
 
-    /** The persisted reason recorded beside an archived file, if any. */
-    fun archivedReason(file: File): String? =
-        File(file.parentFile, "${file.name}.reason")
-            .takeIf { it.isFile }
+    /**
+     * The reason recorded for an archived file. The name always carries it (C1);
+     * the sidecar, when present, adds when and from which file.
+     */
+    fun archivedReason(file: File): String? {
+        val sidecar = File(file.parentFile, "${file.name}$REASON_SUFFIX")
+        val detail = sidecar.takeIf { it.isFile }
             ?.let { runCatching { it.readText(Charsets.UTF_8).trim() }.getOrNull() }
+        return detail?.takeIf { it.isNotEmpty() } ?: reasonFromArchiveName(file.name)
+    }
+
+    /** The reason encoded in an archive file name, independent of any sidecar. */
+    fun reasonFromArchiveName(name: String): String? {
+        val base = name.removeSuffix(".json").substringBefore('~')
+        val at = base.indexOf(ARCHIVE_REASON_SEPARATOR)
+        if (at < 0) return null
+        return base.substring(at + ARCHIVE_REASON_SEPARATOR.length).takeIf { it.isNotEmpty() }
+    }
 
     /**
      * Operator-driven replay: move every archived batch back into the queue.
@@ -241,18 +292,76 @@ object Pc2TelemetryOutbox {
         val dir = directory(filesDir)
         var moved = 0
         for (file in quarantinedFiles(filesDir)) {
-            val batchId = batchIdOf(file) ?: continue
+            val batchId = archiveBatchIdOf(file.name) ?: continue
             if (fileForBatch(dir, batchId) != null) continue
             val target = collisionSafeTarget(dir, "${System.currentTimeMillis()}-$batchId", "json")
             if (moveFile(file, target)) {
-                File(file.parentFile, "${file.name}.reason").delete()
+                File(file.parentFile, "${file.name}$REASON_SUFFIX").delete()
                 moved += 1
             }
         }
         return moved
     }
 
-    // ---- R3: orphaned temp recovery ------------------------------------------
+    /** Diagnostic: retryable attempts recorded for a pending batch. */
+    internal fun attemptsOf(filesDir: File, batchId: String): Int {
+        val dir = directory(filesDir)
+        val file = fileForBatch(dir, batchId) ?: return 0
+        return readRetry(dir, file).attempts
+    }
+
+    // ---- B2: least-recently-attempted rotation ---------------------------------
+
+    private data class RetryState(val attempts: Int, val lastSequence: Long)
+
+    private class QueueEntry(val file: File, val state: RetryState, val order: String)
+
+    /**
+     * Never-attempted batches (sequence 0) first in enqueue order, then every
+     * retried batch in the order it was last tried. The sequence is a counter,
+     * not a clock, so a device clock change cannot reorder or starve anything.
+     */
+    private fun scheduledQueue(dir: File): List<QueueEntry> {
+        val entries = pendingFilesIn(dir).map { file ->
+            QueueEntry(file, readRetry(dir, file), sortKey(file))
+        }
+        // Self-healing: the next sequence is above every sequence on disk, so a
+        // lost counter file can never send a just-retried batch to the front.
+        val highestOnDisk = entries.maxOfOrNull { it.state.lastSequence } ?: 0L
+        memorySequence = maxOf(memorySequence, highestOnDisk, readSequenceFile(dir))
+        return entries.sortedWith(compareBy<QueueEntry>({ it.state.lastSequence }, { it.order }))
+    }
+
+    /** Returns a storage-error note when the rotation state could not be persisted. */
+    private fun recordRetry(dir: File, entry: QueueEntry): String? {
+        memorySequence += 1
+        val next = memorySequence
+        val state = RetryState(entry.state.attempts + 1, next)
+        val retryOk = writeMetadata(
+            retryFile(dir, entry.file),
+            JSONObject().put("attempts", state.attempts).put("last_sequence", state.lastSequence).toString()
+        )
+        val sequenceOk = writeMetadata(File(dir, SEQUENCE_FILE), next.toString())
+        return when {
+            retryOk && sequenceOk -> null
+            !retryOk -> "${entry.file.name}:retry_state_write_failed"
+            else -> "$SEQUENCE_FILE:sequence_write_failed"
+        }
+    }
+
+    private fun readRetry(dir: File, file: File): RetryState {
+        val text = runCatching { retryFile(dir, file).readText(Charsets.UTF_8) }.getOrNull()
+            ?: return RetryState(0, 0L)
+        val json = runCatching { JSONObject(text) }.getOrNull() ?: return RetryState(0, 0L)
+        return RetryState(json.optInt("attempts", 0), json.optLong("last_sequence", 0L))
+    }
+
+    private fun readSequenceFile(dir: File): Long =
+        runCatching { File(dir, SEQUENCE_FILE).readText(Charsets.UTF_8).trim().toLong() }.getOrDefault(0L)
+
+    private fun retryFile(dir: File, file: File): File = File(dir, "${file.name}$RETRY_SUFFIX")
+
+    // ---- R3: orphaned temp recovery ---------------------------------------------
 
     private class Recovery(val recovered: List<String>, val storageErrors: List<String>)
 
@@ -281,7 +390,7 @@ object Pc2TelemetryOutbox {
                     else errors += "${temp.name}:promote_move_failed"
                 }
                 OrphanAction.ARCHIVE -> {
-                    val base = verdict.batchId ?: temp.nameWithoutExtension
+                    val base = verdict.batchId ?: temp.nameWithoutExtension.replace("-", "_")
                     archiveAs(dir, recoveryDir(dir), temp, base, verdict.reason)
                         .fold(recovered, errors)
                 }
@@ -292,11 +401,7 @@ object Pc2TelemetryOutbox {
 
     private enum class OrphanAction { PROMOTE, ARCHIVE }
 
-    private class OrphanVerdict(
-        val action: OrphanAction,
-        val reason: String,
-        val batchId: String?
-    )
+    private class OrphanVerdict(val action: OrphanAction, val reason: String, val batchId: String?)
 
     private fun verifyOrphan(dir: File, temp: File): OrphanVerdict {
         val raw = runCatching { temp.readText(Charsets.UTF_8) }.getOrNull()
@@ -310,7 +415,7 @@ object Pc2TelemetryOutbox {
         val batchRow = envelope.optJSONObject("batch_row")
             ?: return OrphanVerdict(OrphanAction.ARCHIVE, "missing_batch_row", null)
         val batchId = batchRow.optString("batch_id", "")
-        if (!batchId.matches(Regex("[0-9a-f]{64}"))) {
+        if (!batchId.matches(BATCH_ID)) {
             return OrphanVerdict(OrphanAction.ARCHIVE, "invalid_batch_id", null)
         }
         val digestOk = runCatching {
@@ -332,23 +437,24 @@ object Pc2TelemetryOutbox {
         return OrphanVerdict(OrphanAction.PROMOTE, "verified_complete", batchId)
     }
 
-    // ---- R2: checked, collision-safe archiving --------------------------------
+    // ---- R2 / C1: checked, collision-safe, self-describing archives -------------
 
-    private class ArchiveOutcome(val ok: Boolean, val note: String) {
+    private class ArchiveOutcome(val ok: Boolean, val note: String, val warnings: List<String>) {
         fun fold(success: MutableList<String>, failure: MutableList<String>) {
             if (ok) success += note else failure += note
+            failure += warnings
         }
     }
 
     private fun archive(dir: File, targetDir: File, file: File, reason: String): ArchiveOutcome {
-        val base = batchIdOf(file) ?: file.nameWithoutExtension
+        val base = batchIdOf(file) ?: file.nameWithoutExtension.replace("-", "_")
         return archiveAs(dir, targetDir, file, base, reason)
     }
 
     /**
-     * R2: never overwrite an earlier archive, never report an unmoved file as
-     * archived, and keep the attempt marker until the move has actually
-     * succeeded so a storage failure is recoverable rather than silent.
+     * Never overwrite an earlier archive, never report an unmoved file as
+     * archived, keep the retry state until the move has succeeded, and record
+     * the reason in the name so it survives exactly as long as the bytes do.
      */
     private fun archiveAs(
         dir: File,
@@ -358,20 +464,35 @@ object Pc2TelemetryOutbox {
         reason: String
     ): ArchiveOutcome {
         val stamp = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
-        val target = collisionSafeTarget(targetDir, "$stamp-$base", "json")
+        val target = collisionSafeTarget(targetDir, "$stamp-$base$ARCHIVE_REASON_SEPARATOR$reason", "json")
         if (!moveFile(file, target)) {
-            return ArchiveOutcome(false, "${file.name}:archive_move_failed:$reason")
+            return ArchiveOutcome(false, "${file.name}:archive_move_failed:$reason", emptyList())
         }
-        // Persist the reason beside the retained bytes: it must survive a restart
-        // and log rotation, so a log line alone is not enough.
-        runCatching {
-            File(targetDir, "${target.name}.reason").writeText(
-                "$reason at=${System.currentTimeMillis()} from=${file.name}",
-                Charsets.UTF_8
-            )
+        retryFile(dir, file).delete()
+        val warnings = mutableListOf<String>()
+        val detail = "$reason at=${System.currentTimeMillis()} from=${file.name}"
+        if (!writeMetadata(File(targetDir, "${target.name}$REASON_SUFFIX"), detail)) {
+            // C1: the reason is already durable in the name; the missing detail is
+            // surfaced now and backfilled on a later pass.
+            warnings += "${target.name}:reason_sidecar_write_failed"
         }
-        attemptsFile(dir, file).delete()
-        return ArchiveOutcome(true, "$base:$reason")
+        return ArchiveOutcome(true, "$base:$reason", warnings)
+    }
+
+    /** C1 recovery: write any sidecar a full disk prevented earlier. */
+    private fun backfillReasonSidecars(dir: File): List<String> {
+        val errors = mutableListOf<String>()
+        for (archiveDir in listOf(quarantineDir(dir), recoveryDir(dir))) {
+            for (file in jsonFiles(archiveDir)) {
+                val sidecar = File(archiveDir, "${file.name}$REASON_SUFFIX")
+                if (sidecar.isFile) continue
+                val reason = reasonFromArchiveName(file.name) ?: "unknown"
+                if (!writeMetadata(sidecar, "$reason backfilled_at=${System.currentTimeMillis()}")) {
+                    errors += "${file.name}:reason_sidecar_backfill_failed"
+                }
+            }
+        }
+        return errors
     }
 
     private fun collisionSafeTarget(dir: File, base: String, extension: String): File {
@@ -394,32 +515,15 @@ object Pc2TelemetryOutbox {
         check(temp.renameTo(target)) { "PC2 outbox atomic rename failed for $name" }
     }
 
-    private fun bumpAttempts(dir: File, file: File): Int {
-        val marker = attemptsFile(dir, file)
-        val current = runCatching { marker.readText(Charsets.UTF_8).trim().toInt() }.getOrDefault(0)
-        val next = current + 1
-        runCatching { marker.writeText(next.toString(), Charsets.UTF_8) }
-        return next
-    }
-
-    internal fun attemptsOf(filesDir: File, batchId: String): Int {
-        val dir = directory(filesDir)
-        val file = fileForBatch(dir, batchId) ?: return 0
-        return runCatching {
-            attemptsFile(dir, file).readText(Charsets.UTF_8).trim().toInt()
-        }.getOrDefault(0)
-    }
-
-    private fun attemptsFile(dir: File, file: File): File = File(dir, "${file.name}.attempts")
-
     private fun currentResult(
         filesDir: File,
         attempted: Int,
         acknowledged: Int,
-        deferred: Int,
+        retried: Int,
         quarantineReasons: List<String>,
         recoveredReasons: List<String>,
-        storageErrorReasons: List<String>
+        storageErrorReasons: List<String>,
+        stopReason: String
     ): DrainResult {
         val remaining = pendingFiles(filesDir)
         return DrainResult(
@@ -430,13 +534,16 @@ object Pc2TelemetryOutbox {
             pendingBytes = remaining.sumOf { it.length() },
             quarantinedTotal = quarantinedFiles(filesDir).size,
             recoveredTotal = recoveryFiles(filesDir).size,
-            deferred = deferred,
+            retried = retried,
             storageErrors = storageErrorReasons.size,
             quarantineReasons = quarantineReasons,
             recoveredReasons = recoveredReasons,
-            storageErrorReasons = storageErrorReasons
+            storageErrorReasons = storageErrorReasons,
+            stopReason = stopReason
         )
     }
+
+    private val BATCH_ID = Regex("[0-9a-f]{64}")
 
     private fun directory(filesDir: File): File = File(filesDir, DIRECTORY).apply {
         check(exists() || mkdirs()) { "Could not create PC2 outbox" }
@@ -453,24 +560,34 @@ object Pc2TelemetryOutbox {
     private fun jsonFiles(dir: File): List<File> =
         dir.listFiles { f -> f.isFile && f.extension == "json" }?.sortedBy { it.name }.orEmpty()
 
-    /** Chronological by filename prefix; legacy `<batchId>.json` files sort first and still drain. */
-    private fun pendingFiles(filesDir: File): List<File> = directory(filesDir)
-        .listFiles { file -> file.isFile && file.extension == "json" }
-        ?.sortedBy { sortKey(it) }
-        .orEmpty()
+    private fun pendingFiles(filesDir: File): List<File> = pendingFilesIn(directory(filesDir))
+
+    /** Enqueue order by filename prefix; legacy `<batchId>.json` files sort first. */
+    private fun pendingFilesIn(dir: File): List<File> =
+        dir.listFiles { file -> file.isFile && file.extension == "json" }
+            ?.sortedBy { sortKey(it) }
+            .orEmpty()
 
     private fun sortKey(file: File): String {
         val name = file.name
         val dash = name.indexOf('-')
-        if (dash <= 0) return "0000000000000-$name" // legacy name: drain first
+        if (dash <= 0) return "0000000000000-$name"
         val millis = name.substring(0, dash).toLongOrNull() ?: return "0000000000000-$name"
         return "%013d-%s".format(millis, name.substring(dash + 1))
     }
 
+    /** Batch id of a pending file named `<millis>-<batchId>[~n].json`. */
     private fun batchIdOf(file: File): String? {
         val base = file.nameWithoutExtension.substringBefore('~')
         val candidate = base.substringAfterLast('-', base)
-        return candidate.takeIf { it.matches(Regex("[0-9a-f]{64}")) }
+        return candidate.takeIf { it.matches(BATCH_ID) }
+    }
+
+    /** Batch id of an archive named `<stamp>-<batchId>--<reason>[~n].json`. */
+    internal fun archiveBatchIdOf(name: String): String? {
+        val base = name.removeSuffix(".json").substringBefore('~').substringBefore(ARCHIVE_REASON_SEPARATOR)
+        val candidate = base.substringAfter('-', "")
+        return candidate.takeIf { it.matches(BATCH_ID) }
     }
 
     private fun fileForBatch(dir: File, batchId: String): File? =

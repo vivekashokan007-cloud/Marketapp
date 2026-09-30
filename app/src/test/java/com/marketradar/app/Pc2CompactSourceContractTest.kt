@@ -30,20 +30,32 @@ class Pc2CompactSourceContractTest {
     }
 
     @Test
-    fun migrationIsAdditiveRlsAndInsertOnlyForMobileRoles() {
+    fun migrationIsAdditiveRlsAndReadOnlyForMobileRoles() {
         val sql = source("supabase/migrations/20260929100000_pc2_compact_dual_write.sql")
             .lowercase()
         assertTrue(sql.contains("create table if not exists public.ml_pc2_policy_registry"))
         assertTrue(sql.contains("create table if not exists public.ml_pc2_decision_batches"))
         assertTrue(sql.contains("enable row level security"))
-        assertTrue(sql.contains("grant select, insert"))
+        // Round 3 (B4): mobile roles may read, never write, the compact tables.
+        assertTrue(sql.contains("grant select on table public.ml_pc2_policy_registry to anon, authenticated"))
+        assertTrue(sql.contains("grant select on table public.ml_pc2_decision_batches to anon, authenticated"))
+        assertFalse(sql.contains("grant select, insert"))
+        assertFalse(Regex("grant[^;]*(insert|update|delete)[^;]*to anon").containsMatchIn(sql))
+        // No write POLICY for any role. (`select ... for update` row locks inside
+        // the ingestion function are not policies and are expected.)
+        assertFalse(Regex("create policy[^;]*for (insert|update|delete|all)").containsMatchIn(sql))
         assertTrue(sql.contains("on delete restrict"))
-        assertFalse(sql.contains("grant select, insert, update"))
-        assertFalse(sql.contains("for update"))
-        assertFalse(sql.contains("for delete"))
+        // The only write path is the authorised ingestion function.
+        assertTrue(sql.contains("security definer"))
+        assertTrue(sql.contains("grant execute on function public.pc2_ingest_compact_batch(text, jsonb, jsonb) to anon, authenticated"))
+        assertTrue(sql.contains("revoke all on function public.pc2_ingest_compact_batch(text, jsonb, jsonb) from public"))
+        // Legacy tables are not touched.
+        assertFalse(sql.contains("ml_pc2_authority_decisions"))
+        assertFalse(sql.contains("ml_brain_snapshots"))
         assertFalse(sql.contains("drop table"))
         assertFalse(sql.contains("delete from"))
-        assertFalse(sql.contains("truncate"))
+        // A TRUNCATE statement, not the word inside `source_possibly_truncated`.
+        assertFalse(Regex("(^|;)\\s*truncate\\s", RegexOption.MULTILINE).containsMatchIn(sql))
     }
 
     /**
@@ -75,6 +87,6 @@ class Pc2CompactSourceContractTest {
         assertTrue(builder.contains("\"canonical_policy\", canonicalPolicy"))
         assertTrue(builder.contains("\"grouped_canonical\", groupedCanonical"))
         assertTrue(builder.contains("\"grouped_digest\", groupedDigest"))
-        assertTrue(builder.contains("val batchId = sha256(identityPreimage)"))
+        assertTrue(builder.contains("val batchId = batchIdOf("))
     }
 }

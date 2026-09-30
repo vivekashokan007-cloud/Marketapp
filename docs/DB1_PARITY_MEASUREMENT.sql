@@ -1,113 +1,102 @@
 -- DB-1 dual-write parity measurement. READ ONLY: nothing here writes, deletes,
--- rewrites or vacuums. Run each block after the migration is applied and the
--- first parity session has closed.
+-- rewrites or vacuums. Run after the migration is applied and a parity session
+-- has closed. Every window is an explicit IST day, [D 00:00+05:30, D+1 00:00+05:30),
+-- never the database session time zone.
 --
--- Codex asked for per-poll results (source count, reconstructed digest,
--- pending/quarantine totals) and actual table/index bytes rather than
--- projections. Blocks 1-4 are the SQL half. The pending/quarantine totals are
--- NOT in the database by design - unsent evidence is on the device - so they
--- come from the drain log line named in block 5.
+-- ROUND 3 CORRECTION (Codex B3). The round-2 file certified reconstruction
+-- with a `reconstruct_ok` column that checked counts and the grouped byte hash
+-- only. It never checked the decision digest, never expanded the indexes, and
+-- joined by poll time - so it returned true for a payload with a duplicate
+-- index and an all-zero digest. That column is gone. SQL cannot certify exact
+-- reconstruction: it would have to reimplement the pinned canonicalisation.
+--
+-- CERTIFICATION IS DONE BY THE AUDIT PROGRAM, NOT BY THIS FILE:
+--
+--   PC2_DB_URL='postgresql://...' tools/pc2_parity_export.sh 2026-10-01 out
+--   PC2_AUDIT_DIR=out ./gradlew :app:testDebugUnitTest \
+--       --tests 'com.marketradar.app.Pc2ParityAuditRunTest'
+--
+-- The audit reconstructs every referenced batch from its stored bytes with the
+-- real compactor, validates index coverage, compares the reconstructed digest
+-- with the stored digest, the snapshot reference AND the source array (the
+-- snapshot's own copy, or the legacy table's rows when the snapshot dropped it),
+-- matches batches by the identity each snapshot references, and reports
+-- missing, extra, duplicate, mismatched, capped and non-reconstructable
+-- evidence. It writes out/pc2_parity_report.json and fails if not certified.
+--
+-- What remains here is what SQL can answer honestly.
 
--- 1. Actual table and index bytes for the new relations, and their share of
---    the database. This replaces the projection.
-select relname,
-       pg_size_pretty(pg_total_relation_size(c.oid))              as total,
-       pg_size_pretty(pg_table_size(c.oid))                       as heap_plus_toast,
-       pg_size_pretty(pg_indexes_size(c.oid))                     as indexes,
-       (select count(*) from pg_index i where i.indrelid = c.oid) as index_count
-from pg_class c
-join pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public'
-  and c.relname in ('ml_pc2_decision_batches', 'ml_pc2_policy_registry',
-                    'ml_pc2_authority_decisions', 'ml_brain_snapshots')
-order by pg_total_relation_size(c.oid) desc;
+\set day '2026-10-01'
 
--- 2. Per-poll parity for one session. Every row must show
---    legacy_decisions = compact_decision_count and reconstruct_ok = true.
---    `reconstructed_digest` is recomputed FROM THE STORED BYTES, so this is a
---    database-side check of the client's claim, not a restatement of it.
-with params as (select date '2026-10-01' as session_day),
-legacy as (
-    select poll_ts, count(*) as legacy_decisions
-    from public.ml_pc2_authority_decisions, params
-    where poll_ts::date = params.session_day
-    group by poll_ts
-),
-compact as (
-    select b.poll_ts_text,
-           b.poll_ts_text::timestamptz as poll_ts,
-           b.decision_count      as compact_decision_count,
-           b.distinct_decision_count,
-           b.decision_digest,
-           b.grouped_digest,
-           encode(sha256(convert_to(b.grouped_canonical, 'UTF8')), 'hex') as recomputed_grouped_digest,
-           (b.grouped_canonical::jsonb ->> 'ordered_count')::integer       as grouped_ordered_count,
-           jsonb_array_length(b.grouped_canonical::jsonb -> 'prototypes')  as grouped_prototypes,
-           b.grouped_canonical::jsonb ->> 'source_possibly_truncated'      as source_possibly_truncated,
-           b.grouped_canonical::jsonb ->> 'compact_contract_version'       as contract_version,
-           pg_column_size(b.grouped_canonical)                             as stored_bytes
-    from public.ml_pc2_decision_batches b, params
-    where b.session_date_text = params.session_day::text
+-- 1. Actual table and index bytes (not projections).
+select c.relname,
+       pg_size_pretty(pg_total_relation_size(c.oid))  as total,
+       pg_size_pretty(pg_table_size(c.oid))           as heap_plus_toast,
+       pg_size_pretty(pg_indexes_size(c.oid))         as indexes,
+       pg_total_relation_size(c.oid)                  as total_bytes
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public'
+   and c.relname in ('ml_pc2_decision_batches', 'ml_pc2_policy_registry',
+                     'ml_pc2_authority_decisions', 'ml_brain_snapshots')
+ order by total_bytes desc;
+
+-- 2. Per-session stored size of the two representations for one IST day.
+with w as (
+    select (:'day' || ' 00:00:00+05:30')::timestamptz as lo,
+           (:'day' || ' 00:00:00+05:30')::timestamptz + interval '1 day' as hi
 )
-select c.poll_ts_text,
-       l.legacy_decisions,
-       c.compact_decision_count,
-       c.distinct_decision_count,
-       c.grouped_ordered_count,
-       c.grouped_prototypes,
-       c.source_possibly_truncated,
-       c.contract_version,
-       c.stored_bytes,
-       (l.legacy_decisions = c.compact_decision_count
-        and c.compact_decision_count = c.grouped_ordered_count
-        and c.distinct_decision_count = c.grouped_prototypes
-        and c.grouped_digest = c.recomputed_grouped_digest) as reconstruct_ok
-from compact c
-full outer join legacy l on l.poll_ts = c.poll_ts
-order by c.poll_ts_text nulls last;
+select (select count(*) from public.ml_pc2_decision_batches b, w
+         where b.poll_ts_text::timestamptz >= w.lo and b.poll_ts_text::timestamptz < w.hi) as compact_rows,
+       (select sum(pg_column_size(b.grouped_canonical)) from public.ml_pc2_decision_batches b, w
+         where b.poll_ts_text::timestamptz >= w.lo and b.poll_ts_text::timestamptz < w.hi) as compact_stored_bytes,
+       (select count(*) from public.ml_pc2_authority_decisions a, w
+         where a.poll_ts >= w.lo and a.poll_ts < w.hi)                                     as legacy_rows,
+       (select sum(pg_column_size(a.*)) from public.ml_pc2_authority_decisions a, w
+         where a.poll_ts >= w.lo and a.poll_ts < w.hi)                                     as legacy_stored_row_bytes;
 
--- 3. Session totals: the compaction actually achieved, measured, not projected.
-with params as (select date '2026-10-01' as session_day)
-select (select count(*) from public.ml_pc2_decision_batches b, params
-          where b.session_date_text = params.session_day::text)          as compact_rows,
-       (select sum(decision_count) from public.ml_pc2_decision_batches b, params
-          where b.session_date_text = params.session_day::text)          as decisions_covered,
-       (select sum(pg_column_size(grouped_canonical))
-          from public.ml_pc2_decision_batches b, params
-          where b.session_date_text = params.session_day::text)          as compact_stored_bytes,
-       (select sum(pg_column_size(context_json))
-          from public.ml_pc2_authority_decisions a, params
-          where a.poll_ts::date = params.session_day)                    as legacy_stored_bytes;
-
--- 4. Identity integrity across everything stored so far. Must return zero rows.
---    The CHECK constraints make this impossible to violate on insert; this is
---    the standing audit that they were never dropped.
-select batch_id, 'identity' as failed
-from public.ml_pc2_decision_batches
-where batch_id <> encode(sha256(convert_to(
-        grouping_schema_version || '|' || session_date_text || '|' || poll_ts_text || '|' ||
-        brain_version || '|' || policy_hash || '|' || policy_version || '|' ||
-        authority_diagnostics_version || '|' || decision_digest || '|' || grouped_digest,
-        'UTF8')), 'hex')
+-- 3. Standing identity and structure audit over EVERYTHING stored. Must return
+--    zero rows. The CHECK constraints make these impossible on insert; this
+--    proves they were never dropped or bypassed. It is not a reconstruction
+--    certificate (see above).
+select batch_id as key, 'identity' as failed
+  from public.ml_pc2_decision_batches
+ where batch_id <> encode(sha256(convert_to(
+         grouping_schema_version || '|' || session_date_text || '|' || poll_ts_text || '|' ||
+         brain_version || '|' || policy_hash || '|' || policy_version || '|' ||
+         authority_diagnostics_version || '|' || decision_digest || '|' || grouped_digest,
+         'UTF8')), 'hex')
 union all
 select batch_id, 'content'
-from public.ml_pc2_decision_batches
-where grouped_digest <> encode(sha256(convert_to(grouped_canonical, 'UTF8')), 'hex')
+  from public.ml_pc2_decision_batches
+ where grouped_digest <> encode(sha256(convert_to(grouped_canonical, 'UTF8')), 'hex')
 union all
-select policy_hash, 'policy'
-from public.ml_pc2_policy_registry
-where policy_hash <> encode(sha256(convert_to(canonical_policy, 'UTF8')), 'hex');
+select batch_id, 'structure'
+  from public.ml_pc2_decision_batches
+ where public.pc2_grouped_payload_valid(grouped_canonical::jsonb) is not true
+union all
+select policy_hash, 'policy_content'
+  from public.ml_pc2_policy_registry
+ where policy_hash <> encode(sha256(convert_to(canonical_policy, 'UTF8')), 'hex')
+union all
+select policy_hash, 'policy_version'
+  from public.ml_pc2_policy_registry
+ where policy_version is distinct from public.pc2_derive_policy_version(canonical_policy::jsonb);
 
--- 5. Pending / quarantine / recovery totals are device-side and are NOT in the
---    database: the whole point of the outbox is that unsent evidence has not
---    reached Postgres yet. Read them from the end-of-session log line
---
---      PC2_COMPACT_OUTBOX_DRAIN: attempted= acknowledged= quarantined=
---                                deferred= pending= pendingBytes=
---                                quarantinedTotal= recoveredTotal=
---                                storageErrors=
---
---    plus any PC2_COMPACT_OUTBOX_QUARANTINE / _TEMP_RECOVERY / _STORAGE_ERROR
---    lines. A healthy parity session ends with pending=0, quarantined=0,
---    storageErrors=0. A non-zero pending is expected and correct while the
---    backend is unreachable; a non-zero storageErrors is always a fault.
+-- 4. Admission metering for the day (B4). Owner-only: pc2_private is not
+--    exposed to the API. Compare batches with the snapshot count for the day.
+select l.device_key_hash, d.label, d.active, l.ist_day, l.batches, l.bytes,
+       d.daily_batch_limit, d.daily_byte_limit
+  from pc2_private.ingest_ledger l
+  join pc2_private.ingest_devices d using (device_key_hash)
+ where l.ist_day = :'day'::date;
+
+-- 5. Pending / quarantine / recovery totals are device-side and deliberately
+--    not in the database: unsent evidence has not reached Postgres. Read them
+--    from the end-of-session log line
+--      PC2_COMPACT_OUTBOX_DRAIN: attempted= acknowledged= quarantined= retried=
+--                                stop= pending= pendingBytes= quarantinedTotal=
+--                                recoveredTotal= storageErrors=
+--    A healthy parity session ends with pending=0, quarantined=0 and
+--    storageErrors=0. Non-zero pending is expected and correct while the
+--    backend is unreachable; non-zero storageErrors is always a fault.
