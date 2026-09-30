@@ -30,6 +30,41 @@ object Pc2CompactBatch {
     const val SOURCE_TAIL_CAP = 128
     const val ENVELOPE_COMPLETENESS = "LOSSLESS_OF_SNAPSHOT_ARRAY"
 
+    /**
+     * Codex review correction R4: the batch identity and the decision digest
+     * cover the DECISIONS, not the completeness metadata beside them. A row
+     * could therefore carry the right decisions under wrong or absent
+     * completeness metadata and still be acknowledged. The contract is pinned
+     * here and verified on readback by [completenessMetadataMatches].
+     */
+    const val COMPACT_CONTRACT_VERSION = "pc2_compact_contract_v2_completeness_verified"
+
+    val COMPLETENESS_FIELDS: List<String> = listOf(
+        "envelope_completeness",
+        "source_tail_cap",
+        "source_possibly_truncated",
+        "compact_contract_version"
+    )
+
+    /**
+     * R4 verification. A locally built envelope always declares the contract, so
+     * every field must be present and equal in the stored row.
+     *
+     * Explicit legacy behaviour: an envelope written before this correction
+     * declares none of the fields. It verifies only against a stored row that
+     * also carries none of them - a row that has acquired metadata the local
+     * envelope never sent is a mismatch, not an upgrade.
+     */
+    fun completenessMetadataMatches(expected: JSONObject?, stored: JSONObject?): Boolean {
+        if (expected == null || stored == null) return false
+        val declares = COMPLETENESS_FIELDS.any { expected.has(it) }
+        if (!declares) return COMPLETENESS_FIELDS.none { stored.has(it) }
+        return COMPLETENESS_FIELDS.all { key ->
+            expected.has(key) && stored.has(key) &&
+                canonicalJson(expected.opt(key)) == canonicalJson(stored.opt(key))
+        }
+    }
+
     data class Built(
         val policyRow: JSONObject,
         val batchRow: JSONObject,
@@ -94,6 +129,7 @@ object Pc2CompactBatch {
             .put("envelope_completeness", ENVELOPE_COMPLETENESS)
             .put("source_tail_cap", SOURCE_TAIL_CAP)
             .put("source_possibly_truncated", sourceTruncated)
+            .put("compact_contract_version", COMPACT_CONTRACT_VERSION)
             .put("prototypes", prototypes)
 
         val brainVersion = context.optString("snapshot_brain_version", "unknown")
@@ -138,7 +174,9 @@ object Pc2CompactBatch {
             .put("decision_digest", decisionDigest)
             .put("grouping_schema_version", GROUPING_SCHEMA_VERSION)
             .put("envelope_completeness", ENVELOPE_COMPLETENESS)
+            .put("source_tail_cap", SOURCE_TAIL_CAP)
             .put("source_possibly_truncated", sourceTruncated)
+            .put("compact_contract_version", COMPACT_CONTRACT_VERSION)
             .put("complete", true)
         return Built(policyRow, batchRow, snapshotRef)
     }

@@ -50,6 +50,10 @@ class Pc2ReviewCorrectionsTest {
         val grouped = short.batchRow.getJSONObject("grouped_decisions_json")
         assertEquals("LOSSLESS_OF_SNAPSHOT_ARRAY", grouped.getString("envelope_completeness"))
         assertEquals(128, grouped.getInt("source_tail_cap"))
+        assertEquals(
+            Pc2CompactBatch.COMPACT_CONTRACT_VERSION,
+            grouped.getString("compact_contract_version")
+        )
         assertFalse(grouped.getBoolean("source_possibly_truncated"))
         assertFalse(short.snapshotRef.getBoolean("source_possibly_truncated"))
 
@@ -152,20 +156,32 @@ class Pc2ReviewCorrectionsTest {
         assertEquals("order and backoff are preserved for transient faults", 2, result.pending)
     }
 
+    /**
+     * Codex R1 supersedes the first correction pass. A head that keeps failing
+     * for a RECOVERABLE reason must stop blocking without ever leaving the
+     * queue: the earlier version quarantined it after 20 attempts, which threw
+     * away valid evidence the moment the backend recovered.
+     */
     @Test
-    fun aBatchThatNeverSucceedsIsQuarantinedInsteadOfBlockingForever() {
+    fun aRecoverablyStuckHeadIsDeferredNeverQuarantined() {
         val dir = tempDir()
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:00:00Z", marker = "stuck")); Thread.sleep(2)
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:05:00Z", marker = "later"))
 
         var quarantined = 0
-        repeat(Pc2TelemetryOutbox.MAX_ATTEMPTS) {
-            quarantined += Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.RETRY }.quarantined
+        var deferred = 0
+        repeat(Pc2TelemetryOutbox.DEFER_AFTER_ATTEMPTS + 2) {
+            val pass = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.RETRY }
+            quarantined += pass.quarantined
+            deferred += pass.deferred
         }
-        assertEquals("the stuck head is set aside after MAX_ATTEMPTS", 1, quarantined)
+        assertEquals("a recoverable failure must never be quarantined", 0, quarantined)
+        assertEquals(0, Pc2TelemetryOutbox.quarantinedFiles(dir).size)
+        assertTrue("the stuck head must stop blocking the queue", deferred > 0)
+        assertEquals("both batches are still queued", 2, Pc2TelemetryOutbox.pending(dir).size)
 
         val after = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED }
-        assertEquals("the queue drains once the head is out of the way", 1, after.acknowledged)
+        assertEquals("recovery drains everything automatically", 2, after.acknowledged)
         assertEquals(0, after.pending)
     }
 
@@ -183,10 +199,14 @@ class Pc2ReviewCorrectionsTest {
         assertEquals(1, Pc2TelemetryOutbox.quarantinedFiles(dir).size)
     }
 
-    // ---- C4: orphaned temp files are swept --------------------------------------
+    // ---- C4 / R3: orphaned temp files are resolved, never deleted ----------------
 
+    /**
+     * Codex R3 supersedes the first correction pass: an unparseable temp file is
+     * retained for inspection instead of being deleted on age.
+     */
     @Test
-    fun staleTempFilesAreSweptAndNeverDrained() {
+    fun aPartialOrphanedTempIsRetainedNotDeleted() {
         val dir = tempDir()
         Pc2TelemetryOutbox.enqueue(dir, built("2026-09-29T04:00:00Z"))
         val outbox = File(dir, "pc2_telemetry_outbox_v1")
@@ -194,8 +214,14 @@ class Pc2ReviewCorrectionsTest {
         orphan.writeText("partial")
         orphan.setLastModified(System.currentTimeMillis() - 2L * 60 * 60 * 1000)
 
-        Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED }
-        assertFalse("an orphaned .tmp from process death must not accumulate", orphan.exists())
+        val result = Pc2TelemetryOutbox.drain(dir) { Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED }
+        assertFalse("the temp file must be moved out of the working set", orphan.exists())
+        assertEquals("unverifiable bytes are retained, never discarded", 1, result.recoveredTotal)
+        val retained = Pc2TelemetryOutbox.recoveryFiles(dir).single()
+        assertEquals("partial", retained.readText())
+        assertTrue(
+            Pc2TelemetryOutbox.archivedReason(retained)?.startsWith("partial_or_invalid_json") == true
+        )
     }
 
     // ---- C1: telemetry can never abort snapshot persistence ---------------------

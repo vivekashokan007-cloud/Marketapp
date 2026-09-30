@@ -3063,16 +3063,31 @@ class MarketWatchService : Service() {
         val compactDrain = Pc2TelemetryOutbox.drain(filesDir) { envelope ->
             SupabaseClient.savePc2CompactBatch(envelope)
         }
+        val clean = compactDrain.pending == 0 && compactDrain.quarantinedTotal == 0 &&
+            compactDrain.recoveredTotal == 0 && compactDrain.storageErrors == 0
         LogBuffer.add(
-            if (compactDrain.pending == 0 && compactDrain.quarantinedTotal == 0) 'I' else 'W',
+            if (clean) 'I' else 'W',
             TAG,
             "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} " +
                 "acknowledged=${compactDrain.acknowledged} quarantined=${compactDrain.quarantined} " +
-                "pending=${compactDrain.pending} pendingBytes=${compactDrain.pendingBytes} " +
-                "quarantinedTotal=${compactDrain.quarantinedTotal}"
+                "deferred=${compactDrain.deferred} pending=${compactDrain.pending} " +
+                "pendingBytes=${compactDrain.pendingBytes} " +
+                "quarantinedTotal=${compactDrain.quarantinedTotal} " +
+                "recoveredTotal=${compactDrain.recoveredTotal} " +
+                "storageErrors=${compactDrain.storageErrors}"
         )
         compactDrain.quarantineReasons.forEach { reason ->
             LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_QUARANTINE: $reason")
+        }
+        // R3: an orphaned temp envelope that was verified and re-queued, or that
+        // could not be verified and was retained for inspection.
+        compactDrain.recoveredReasons.forEach { reason ->
+            LogBuffer.add('W', TAG, "PC2_COMPACT_OUTBOX_TEMP_RECOVERY: $reason")
+        }
+        // R2: a failed archive move is a storage fault, not a successful
+        // quarantine. The bytes are still pending and must be surfaced.
+        compactDrain.storageErrorReasons.forEach { reason ->
+            LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_STORAGE_ERROR: $reason")
         }
     }
 

@@ -1930,6 +1930,24 @@ object SupabaseClient {
             LogBuffer.add('E', TAG, "PC2_COMPACT_RECONSTRUCT_FAIL: batchId=$batchId")
             return quarantine
         }
+        // Codex review correction R4: the digest covers the decisions, not the
+        // completeness metadata beside them. A row with the right decisions but
+        // missing or contradictory truncation metadata would otherwise be
+        // acknowledged, and a capped source could later be read as full-poll
+        // evidence. Verify the contract explicitly before acknowledging.
+        val metadataVerified = Pc2CompactBatch.completenessMetadataMatches(
+            batchRow.optJSONObject("grouped_decisions_json"),
+            storedBatch.optJSONObject("grouped_decisions_json")
+        )
+        if (!metadataVerified) {
+            LogBuffer.add(
+                'E',
+                TAG,
+                "PC2_COMPACT_COMPLETENESS_MISMATCH: batchId=$batchId " +
+                    "contract=${Pc2CompactBatch.COMPACT_CONTRACT_VERSION}"
+            )
+            return quarantine
+        }
         val verified = storedBatch.optString("batch_id") == batchId &&
             storedBatch.optString("policy_hash") == policyHash &&
             storedBatch.optInt("decision_count", -1) == batchRow.optInt("decision_count", -2) &&
