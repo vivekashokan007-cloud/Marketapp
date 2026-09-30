@@ -45,4 +45,36 @@ class Pc2CompactSourceContractTest {
         assertFalse(sql.contains("delete from"))
         assertFalse(sql.contains("truncate"))
     }
+
+    /**
+     * Codex review correction R5: every identity column must be a hash the
+     * DATABASE can re-derive from the row, so a holder of the publishable key
+     * cannot insert forged content under a legitimate identity.
+     */
+    @Test
+    fun migrationBindsEveryIdentityColumnToTheStoredBytes() {
+        val sql = source("supabase/migrations/20260929100000_pc2_compact_dual_write.sql")
+            .lowercase()
+        assertTrue(sql.contains("ml_pc2_policy_registry_content_bound"))
+        assertTrue(sql.contains("ml_pc2_decision_batches_content_bound"))
+        assertTrue(sql.contains("ml_pc2_decision_batches_identity_bound"))
+        assertTrue(sql.contains("ml_pc2_decision_batches_counts_bound"))
+        assertTrue(sql.contains("encode(sha256(convert_to(canonical_policy, 'utf8')), 'hex')"))
+        assertTrue(sql.contains("encode(sha256(convert_to(grouped_canonical, 'utf8')), 'hex')"))
+        // The grouped payload must be stored exactly once, as the bytes hashed.
+        assertFalse(
+            "a generated jsonb mirror would store the payload twice",
+            sql.contains("grouped_decisions_json")
+        )
+    }
+
+    /** The upload path must send the canonical bytes the constraints check. */
+    @Test
+    fun theWriterSendsTheCanonicalBytesTheConstraintsVerify() {
+        val builder = source("src/main/java/com/marketradar/app/Pc2CompactBatch.kt")
+        assertTrue(builder.contains("\"canonical_policy\", canonicalPolicy"))
+        assertTrue(builder.contains("\"grouped_canonical\", groupedCanonical"))
+        assertTrue(builder.contains("\"grouped_digest\", groupedDigest"))
+        assertTrue(builder.contains("val batchId = sha256(identityPreimage)"))
+    }
 }

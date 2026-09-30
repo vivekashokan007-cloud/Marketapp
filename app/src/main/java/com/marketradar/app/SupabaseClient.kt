@@ -1871,12 +1871,12 @@ object SupabaseClient {
         if (!policyHash.matches(Regex("[0-9a-f]{64}")) ||
             !batchId.matches(Regex("[0-9a-f]{64}"))) return quarantine
 
-        val expectedPolicyHash = runCatching {
-            Pc2CompactBatch.sha256(
-                Pc2CompactBatch.canonicalJson(policyRow.getJSONObject("policy_json"))
-            )
-        }.getOrNull() ?: return quarantine
-        if (expectedPolicyHash != policyHash) return quarantine
+        // R5: the registry row carries the exact canonical bytes the hash is
+        // taken over, so both sides - and the database CHECK - derive the same
+        // identity from the same bytes.
+        val canonicalPolicy = policyRow.optString("canonical_policy", "")
+        if (canonicalPolicy.isEmpty()) return quarantine
+        if (Pc2CompactBatch.sha256(canonicalPolicy) != policyHash) return quarantine
 
         val policyPost = postToFirstWorkingTableDetailed(
             listOf("ml_pc2_policy_registry?on_conflict=policy_hash"),
@@ -1888,17 +1888,17 @@ object SupabaseClient {
         val policyReadback = fetchSync(
             getBaseRequest(
                 "ml_pc2_policy_registry?policy_hash=eq.$policyHash&" +
-                    "select=policy_hash,policy_version,schema_version,policy_json&limit=1"
+                    "select=policy_hash,policy_version,schema_version,canonical_policy&limit=1"
             ).get().build()
         ) ?: return retry
         val storedPolicy = runCatching { JSONArray(policyReadback).optJSONObject(0) }.getOrNull()
             ?: return retry
-        val storedPolicyJson = storedPolicy.optJSONObject("policy_json")
+        val storedCanonicalPolicy = storedPolicy.optString("canonical_policy", "")
         val policyVerified = storedPolicy.optString("policy_hash") == policyHash &&
             storedPolicy.optString("policy_version") == policyRow.optString("policy_version") &&
             storedPolicy.optString("schema_version") == policyRow.optString("schema_version") &&
-            storedPolicyJson != null &&
-            Pc2CompactBatch.sha256(Pc2CompactBatch.canonicalJson(storedPolicyJson)) == policyHash
+            storedCanonicalPolicy == canonicalPolicy &&
+            Pc2CompactBatch.sha256(storedCanonicalPolicy) == policyHash
         if (!policyVerified) {
             // A registry row already exists under this hash whose content does not
             // hash back to it. Retrying can never fix that and the primary key
@@ -1918,7 +1918,8 @@ object SupabaseClient {
             getBaseRequest(
                 "ml_pc2_decision_batches?batch_id=eq.$batchId&" +
                     "select=batch_id,policy_hash,decision_count,distinct_decision_count," +
-                    "decision_digest,grouping_schema_version,grouped_decisions_json,complete&limit=1"
+                    "decision_digest,grouped_digest,grouping_schema_version," +
+                    "grouped_canonical,complete&limit=1"
             ).get().build()
         ) ?: return retry
         val storedBatch = runCatching { JSONArray(batchReadback).optJSONObject(0) }.getOrNull()
@@ -1936,8 +1937,8 @@ object SupabaseClient {
         // acknowledged, and a capped source could later be read as full-poll
         // evidence. Verify the contract explicitly before acknowledging.
         val metadataVerified = Pc2CompactBatch.completenessMetadataMatches(
-            batchRow.optJSONObject("grouped_decisions_json"),
-            storedBatch.optJSONObject("grouped_decisions_json")
+            Pc2CompactBatch.groupedOf(batchRow),
+            Pc2CompactBatch.groupedOf(storedBatch)
         )
         if (!metadataVerified) {
             LogBuffer.add(
@@ -1946,6 +1947,18 @@ object SupabaseClient {
                 "PC2_COMPACT_COMPLETENESS_MISMATCH: batchId=$batchId " +
                     "contract=${Pc2CompactBatch.COMPACT_CONTRACT_VERSION}"
             )
+            return quarantine
+        }
+        // R5: the stored bytes must hash to the stored digest, and that digest is
+        // one of the inputs to the batch id, so a row cannot carry a legitimate
+        // identity over content the writer never produced.
+        val storedGroupedCanonical = storedBatch.optString("grouped_canonical", "")
+        val groupedBytesVerified = storedGroupedCanonical.isNotEmpty() &&
+            storedGroupedCanonical == batchRow.optString("grouped_canonical") &&
+            Pc2CompactBatch.sha256(storedGroupedCanonical) == batchRow.optString("grouped_digest") &&
+            storedBatch.optString("grouped_digest") == batchRow.optString("grouped_digest")
+        if (!groupedBytesVerified) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_CONTENT_BINDING_MISMATCH: batchId=$batchId")
             return quarantine
         }
         val verified = storedBatch.optString("batch_id") == batchId &&

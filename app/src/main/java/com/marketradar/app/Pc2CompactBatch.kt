@@ -37,7 +37,7 @@ object Pc2CompactBatch {
      * completeness metadata and still be acknowledged. The contract is pinned
      * here and verified on readback by [completenessMetadataMatches].
      */
-    const val COMPACT_CONTRACT_VERSION = "pc2_compact_contract_v2_completeness_verified"
+    const val COMPACT_CONTRACT_VERSION = "pc2_compact_contract_v3_content_bound"
 
     val COMPLETENESS_FIELDS: List<String> = listOf(
         "envelope_completeness",
@@ -132,29 +132,44 @@ object Pc2CompactBatch {
             .put("compact_contract_version", COMPACT_CONTRACT_VERSION)
             .put("prototypes", prototypes)
 
+        // Codex review correction R5. The grouped payload is stored as the exact
+        // canonical bytes it is hashed over, and every identity-bearing column
+        // is folded into the batch id. The database can then re-derive both
+        // hashes from the stored row, so a holder of the public key cannot
+        // insert forged content under a legitimate identity: squatting an
+        // identity requires supplying the identical bytes.
+        //
+        // Storing the canonical text rather than jsonb also removes a silent
+        // assumption from exact reconstruction - it no longer depends on a
+        // jsonb round trip preserving the client's number formatting.
+        val groupedCanonical = canonicalJson(grouped)
+        val groupedDigest = sha256(groupedCanonical)
+
         val brainVersion = context.optString("snapshot_brain_version", "unknown")
             .trim().ifEmpty { "unknown" }
-        val batchId = sha256(
-            listOf(
-                GROUPING_SCHEMA_VERSION,
-                sessionDate,
-                pollTs,
-                policyHash,
-                policyDiagnosticsVersion,
-                decisionDigest
-            ).joinToString("|")
-        )
+        val identityPreimage = listOf(
+            GROUPING_SCHEMA_VERSION,
+            sessionDate,
+            pollTs,
+            brainVersion,
+            policyHash,
+            policyVersion,
+            policyDiagnosticsVersion,
+            decisionDigest,
+            groupedDigest
+        ).joinToString("|")
+        val batchId = sha256(identityPreimage)
         val policyRow = JSONObject()
             .put("policy_hash", policyHash)
             .put("policy_version", policyVersion)
             .put("schema_version", GROUPING_SCHEMA_VERSION)
             .put("digest_algorithm", DIGEST_ALGORITHM)
             .put("canonical_bytes", canonicalPolicy.toByteArray(Charsets.UTF_8).size)
-            .put("policy_json", JSONObject(policy.toString()))
+            .put("canonical_policy", canonicalPolicy)
         val batchRow = JSONObject()
             .put("batch_id", batchId)
-            .put("session_date", sessionDate)
-            .put("poll_ts", pollTs)
+            .put("session_date_text", sessionDate)
+            .put("poll_ts_text", pollTs)
             .put("brain_version", brainVersion)
             .put("policy_hash", policyHash)
             .put("policy_version", policyVersion)
@@ -164,7 +179,8 @@ object Pc2CompactBatch {
             .put("decision_count", decisions.length())
             .put("distinct_decision_count", prototypes.length())
             .put("decision_digest", decisionDigest)
-            .put("grouped_decisions_json", grouped)
+            .put("grouped_digest", groupedDigest)
+            .put("grouped_canonical", groupedCanonical)
             .put("complete", true)
         val snapshotRef = JSONObject()
             .put("batch_id", batchId)
@@ -181,8 +197,21 @@ object Pc2CompactBatch {
         return Built(policyRow, batchRow, snapshotRef)
     }
 
+    /**
+     * The grouped payload as an object, from either the content-bound
+     * `grouped_canonical` text (current) or the earlier `grouped_decisions_json`
+     * object. Returns null when neither is present or parseable.
+     */
+    fun groupedOf(row: JSONObject?): JSONObject? {
+        if (row == null) return null
+        row.opt("grouped_canonical")?.let { raw ->
+            if (raw is String) return runCatching { JSONObject(raw) }.getOrNull()
+        }
+        return row.optJSONObject("grouped_decisions_json")
+    }
+
     fun reconstructOrderedDecisions(batchRow: JSONObject): JSONArray {
-        val grouped = batchRow.getJSONObject("grouped_decisions_json")
+        val grouped = requireNotNull(groupedOf(batchRow)) { "PC2 grouped payload missing" }
         val count = grouped.getInt("ordered_count")
         val ordered = arrayOfNulls<JSONObject>(count)
         val prototypes = grouped.getJSONArray("prototypes")

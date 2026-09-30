@@ -382,7 +382,7 @@ class Pc2CodexDurabilityTest {
     // =========================================================================
 
     private fun groupedOf(batch: Pc2CompactBatch.Built): JSONObject =
-        batch.batchRow.getJSONObject("grouped_decisions_json")
+        requireNotNull(Pc2CompactBatch.groupedOf(batch.batchRow))
 
     @Test
     fun consistentCompletenessMetadataVerifies() {

@@ -47,7 +47,7 @@ class Pc2ReviewCorrectionsTest {
     @Test
     fun envelopeRecordsThatTheSourceArrayIsATail() {
         val short = built("2026-09-29T04:00:00Z", decisionCount = 12)
-        val grouped = short.batchRow.getJSONObject("grouped_decisions_json")
+        val grouped = requireNotNull(Pc2CompactBatch.groupedOf(short.batchRow))
         assertEquals("LOSSLESS_OF_SNAPSHOT_ARRAY", grouped.getString("envelope_completeness"))
         assertEquals(128, grouped.getInt("source_tail_cap"))
         assertEquals(
@@ -60,7 +60,8 @@ class Pc2ReviewCorrectionsTest {
         val capped = built("2026-09-29T04:05:00Z", decisionCount = Pc2CompactBatch.SOURCE_TAIL_CAP)
         assertTrue(
             "a 128-row array is at brain.py's [-128:] cap and must be flagged",
-            capped.batchRow.getJSONObject("grouped_decisions_json").getBoolean("source_possibly_truncated")
+            requireNotNull(Pc2CompactBatch.groupedOf(capped.batchRow))
+                .getBoolean("source_possibly_truncated")
         )
         assertTrue(capped.snapshotRef.getBoolean("source_possibly_truncated"))
         // Losslessness of the envelope itself is unchanged.
@@ -134,7 +135,7 @@ class Pc2ReviewCorrectionsTest {
 
         val seen = mutableListOf<String>()
         Pc2TelemetryOutbox.drain(dir) { envelope ->
-            seen += envelope.getJSONObject("batch_row").getString("poll_ts")
+            seen += envelope.getJSONObject("batch_row").getString("poll_ts_text")
             Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED
         }
         assertEquals(
