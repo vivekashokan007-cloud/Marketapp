@@ -10,10 +10,13 @@
 -- index and an all-zero digest. That column is gone. SQL cannot certify exact
 -- reconstruction: it would have to reimplement the pinned canonicalisation.
 --
+-- Round 4: stored poll times are parsed with public.pc2_poll_utc, which returns
+-- NULL rather than raising, so no malformed row can abort a measurement.
+--
 -- CERTIFICATION IS DONE BY THE AUDIT PROGRAM, NOT BY THIS FILE:
 --
 --   PC2_DB_URL='postgresql://...' tools/pc2_parity_export.sh 2026-10-01 out
---   PC2_AUDIT_DIR=out ./gradlew :app:testDebugUnitTest \
+--   PC2_AUDIT_DIR=out ./gradlew :app:testDebugUnitTest --rerun \
 --       --tests 'com.marketradar.app.Pc2ParityAuditRunTest'
 --
 -- The audit reconstructs every referenced batch from its stored bytes with the
@@ -47,9 +50,9 @@ with w as (
            (:'day' || ' 00:00:00+05:30')::timestamptz + interval '1 day' as hi
 )
 select (select count(*) from public.ml_pc2_decision_batches b, w
-         where b.poll_ts_text::timestamptz >= w.lo and b.poll_ts_text::timestamptz < w.hi) as compact_rows,
+         where public.pc2_poll_utc(b.poll_ts_text) >= (w.lo at time zone 'UTC') and public.pc2_poll_utc(b.poll_ts_text) < (w.hi at time zone 'UTC')) as compact_rows,
        (select sum(pg_column_size(b.grouped_canonical)) from public.ml_pc2_decision_batches b, w
-         where b.poll_ts_text::timestamptz >= w.lo and b.poll_ts_text::timestamptz < w.hi) as compact_stored_bytes,
+         where public.pc2_poll_utc(b.poll_ts_text) >= (w.lo at time zone 'UTC') and public.pc2_poll_utc(b.poll_ts_text) < (w.hi at time zone 'UTC')) as compact_stored_bytes,
        (select count(*) from public.ml_pc2_authority_decisions a, w
          where a.poll_ts >= w.lo and a.poll_ts < w.hi)                                     as legacy_rows,
        (select sum(pg_column_size(a.*)) from public.ml_pc2_authority_decisions a, w
@@ -74,6 +77,10 @@ union all
 select batch_id, 'structure'
   from public.ml_pc2_decision_batches
  where public.pc2_grouped_payload_valid(grouped_canonical::jsonb) is not true
+union all
+select batch_id, 'poll_time'
+  from public.ml_pc2_decision_batches
+ where public.pc2_poll_ts_valid(poll_ts_text, session_date_text) is not true
 union all
 select policy_hash, 'policy_content'
   from public.ml_pc2_policy_registry

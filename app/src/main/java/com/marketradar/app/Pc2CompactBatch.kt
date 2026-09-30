@@ -31,14 +31,18 @@ import java.util.TreeMap
  * checked on 30 Sep), which is why nothing has failed yet; one reason string
  * such as "n/a" would have broken every off-device verification silently.
  *
- * The contract is now written here and implemented without delegation:
+ * The contract is now written here and implemented without delegation. It is
+ * THIS PROJECT'S versioned canonical form (`pc2_compact_contract_v4`), not
+ * RFC 8785 / JCS: the string escaping below follows JCS section 3.2.2.2, but
+ * lone surrogates are escaped instead of rejected and numbers use a plain
+ * decimal rule instead of JCS's ECMAScript serialisation (section 3.2.2.3).
  *
  *  - objects: keys sorted by UTF-16 code unit ([TreeMap] natural order), no
  *    whitespace;
- *  - strings: the RFC 8785 (JCS) string rule - escape `"` and `\`, the short
- *    forms `\b \f \n \r \t`, every other U+0000-U+001F as lowercase `\u00xx`;
- *    lone surrogates as lowercase `\uXXXX` so the bytes are always well-formed
- *    UTF-8; everything else literal, including `/` and all non-ASCII;
+ *  - strings: escape `"` and `\`, the short forms `\b \f \n \r \t`, every
+ *    other U+0000-U+001F as lowercase `\u00xx`; lone surrogates as lowercase
+ *    `\uXXXX` so the bytes are always well-formed UTF-8; everything else
+ *    literal, including `/` and all non-ASCII;
  *  - numbers: `BigDecimal(value.toString()).stripTrailingZeros().toPlainString()`,
  *    which is idempotent on its own output on both platforms;
  *  - `true`, `false`, `null` literal.

@@ -316,7 +316,7 @@ class Pc2Round3Test {
     // =========================================================================
 
     @Test
-    fun canonicalStringsFollowTheJcsRuleOnEveryPlatform() {
+    fun canonicalStringsFollowThePinnedProjectRuleOnEveryPlatform() {
         val c = Pc2CompactBatch::canonicalString
         assertEquals("slash is literal (Android's quote() writes \\/)", "\"n/a\"", c("n/a"))
         assertEquals("\"</x>\"", c("</x>"))

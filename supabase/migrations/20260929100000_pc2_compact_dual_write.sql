@@ -28,6 +28,14 @@
 --
 -- Round-2 content binding (R5) is retained unchanged: squatting an identity
 -- still requires the identical bytes.
+--
+-- Revision 4 (30 Sep 2026) answers Codex's round-3 finding A3: the round-3
+-- format check accepted '2026-99-99Tgarbage' (it tested only a date-shaped
+-- prefix and a length), and the exporter's timestamptz cast then aborted on
+-- it. poll_ts_text is now validated semantically by public.pc2_poll_utc - a
+-- real date and time and an explicit offset (Z, +HH:MM or +HHMM, at most 14 h)
+-- - and must fall on the IST day named by session_date_text. The exact strings
+-- used in the hashes are unchanged; only which strings are admissible is.
 
 -- ---------------------------------------------------------------------------
 -- Private admission state. Not in an API-exposed schema; no role but the
@@ -149,6 +157,76 @@ $$;
 revoke all on function public.pc2_derive_policy_version(jsonb) from public;
 revoke all on function public.pc2_grouped_payload_valid(jsonb) from public;
 
+-- A3: the UTC instant of a poll timestamp, or NULL - never an error - when the
+-- text is not a real date and time with an explicit offset. Returns a UTC
+-- `timestamp` (without time zone) so the arithmetic is immutable and does not
+-- depend on the session TimeZone. The exporter uses this instead of a cast.
+create or replace function public.pc2_poll_utc(p text)
+returns timestamp
+language plpgsql
+immutable
+parallel safe
+set search_path = ''
+as $$
+declare
+    m text[];
+    local_ts timestamp;
+    offset_minutes integer;
+begin
+    if p is null then return null; end if;
+    m := pg_catalog.regexp_match(
+        p, '^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,6})?(Z|([+-])(\d{2}):?(\d{2}))$');
+    if m is null then return null; end if;
+    begin
+        local_ts := pg_catalog.make_timestamp(
+            m[1]::integer, m[2]::integer, m[3]::integer, m[4]::integer, m[5]::integer,
+            (m[6] || coalesce(m[7], ''))::double precision);
+    exception when others then
+        return null;                                   -- e.g. 2026-02-30, 25:00, 99 seconds
+    end;
+    if m[4]::integer > 23 or m[6]::integer > 59 then return null; end if;
+    if m[8] = 'Z' then
+        offset_minutes := 0;
+    else
+        if m[10]::integer > 14 or m[11]::integer > 59
+           or (m[10]::integer = 14 and m[11]::integer > 0) then
+            return null;
+        end if;
+        offset_minutes := (case m[9] when '+' then 1 else -1 end)
+                          * (m[10]::integer * 60 + m[11]::integer);
+    end if;
+    return local_ts - pg_catalog.make_interval(mins => offset_minutes);
+end
+$$;
+
+-- A3: a poll timestamp is admissible only if it is a valid instant AND its IST
+-- date is the session date. Both helpers are pure and stay executable by
+-- PUBLIC so a read-only export role can use them.
+create or replace function public.pc2_poll_ts_valid(p_poll text, p_session text)
+returns boolean
+language plpgsql
+immutable
+parallel safe
+set search_path = ''
+as $$
+declare
+    utc timestamp;
+    d text[];
+    session_day date;
+begin
+    utc := public.pc2_poll_utc(p_poll);
+    if utc is null or p_session is null then return false; end if;
+    d := pg_catalog.regexp_match(p_session, '^(\d{4})-(\d{2})-(\d{2})$');
+    if d is null then return false; end if;
+    begin
+        session_day := pg_catalog.make_date(d[1]::integer, d[2]::integer, d[3]::integer);
+    exception when others then
+        return false;
+    end;
+    return (utc + interval '5 hours 30 minutes')::date = session_day;
+end
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Tables.
 -- ---------------------------------------------------------------------------
@@ -219,12 +297,14 @@ create table if not exists public.ml_pc2_decision_batches (
         (batch_id ~ '^[0-9a-f]{64}$'
          and decision_digest ~ '^[0-9a-f]{64}$'
          and grouped_digest ~ '^[0-9a-f]{64}$'
-         and session_date_text ~ '^\d{4}-\d{2}-\d{2}$'
-         and poll_ts_text ~ '^\d{4}-\d{2}-\d{2}T'
          and length(poll_ts_text) <= 40
          and length(brain_version) between 1 and 64
          and length(policy_version) between 1 and 128
          and length(authority_diagnostics_version) between 1 and 128) is true
+    ),
+    -- A3: a real instant with an explicit offset, on the IST day it claims.
+    constraint ml_pc2_decision_batches_poll_time_valid check (
+        public.pc2_poll_ts_valid(poll_ts_text, session_date_text) is true
     ),
     constraint ml_pc2_decision_batches_pinned check (
         (grouping_schema_version = 'pc2_exact_dedup_v1'
