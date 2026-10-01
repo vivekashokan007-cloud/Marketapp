@@ -8245,6 +8245,10 @@ VIX_HISTORY_MAX_SESSIONS_BEHIND = 2
 # The same freshness rule guards every other dated daily-history series
 # (premiumHistory / percentile-history rows used by the C3 context cells).
 DAILY_HISTORY_MAX_SESSIONS_BEHIND = VIX_HISTORY_MAX_SESSIONS_BEHIND
+# Oldest usable daily row: the VIX_DAILY_HISTORY_WINDOW-th NSE session before
+# today. A "last 60 rows" window is not enough on its own: after a long idle
+# gap it would reach back months while the newest row still looks fresh.
+DAILY_HISTORY_MAX_AGE_SESSIONS = VIX_DAILY_HISTORY_WINDOW
 # A close is the last poll at or before 15:30 IST; a day whose last poll is
 # before 15:00 IST is an incomplete session and is not used as a close.
 VIX_DAILY_CLOSE_MIN_TIME = '15:00'
@@ -8397,6 +8401,8 @@ def _pc2_iso_date(value):
     text = value.strip()
     if len(text) != 10 or text[4] != '-' or text[7] != '-':
         return None
+    if not all('0' <= ch <= '9' for ch in text[:4] + text[5:7] + text[8:]):
+        return None
     try:
         return datetime.strptime(text, "%Y-%m-%d").date()
     except Exception:
@@ -8408,7 +8414,7 @@ def _pc2_hhmm(value):
     if not isinstance(value, str):
         return None
     text = value.strip()
-    if len(text) != 5 or text[2] != ':' or not (text[:2] + text[3:]).isdigit():
+    if len(text) != 5 or text[2] != ':' or not all('0' <= ch <= '9' for ch in text[:2] + text[3:]):
         return None
     hour, minute = int(text[:2]), int(text[3:])
     if hour > 23 or minute > 59:
@@ -8430,6 +8436,36 @@ def _nse_sessions_strictly_between(start_dt, end_dt):
     return count
 
 
+def _nse_session_floor(session_dt, sessions_back):
+    """The NSE session that is ``sessions_back`` sessions before session_dt."""
+    if session_dt is None:
+        return None
+    try:
+        sessions_back = int(sessions_back)
+    except Exception:
+        return None
+    if sessions_back <= 0:
+        return session_dt
+    holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
+    current = session_dt
+    found = 0
+    # Bounded walk: 60 sessions never need more than ~100 calendar days.
+    for _ in range(sessions_back * 3 + 30):
+        current -= timedelta(days=1)
+        if current.weekday() < 5 and current.strftime("%Y-%m-%d") not in holidays:
+            found += 1
+            if found >= sessions_back:
+                return current
+    return current
+
+
+def _pc2_row_date(row):
+    if not isinstance(row, dict):
+        return None
+    raw = row.get('date') or row.get('session_date') or row.get('sessionDate')
+    return _pc2_iso_date(str(raw)[:10]) if raw is not None else None
+
+
 def _pc2_vix_close_value(value):
     if isinstance(value, bool):
         return None
@@ -8440,6 +8476,37 @@ def _pc2_vix_close_value(value):
 
 
 def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
+    """Memoised per ctx: the regime is evaluated once per candidate."""
+    if not isinstance(ctx, dict):
+        return _pc2_vix_daily_history_uncached(ctx, window)
+    sources = tuple(ctx.get(key) for key in ('vixDailyHistory', 'premiumHistory', 'premium_history', 'vixHistory'))
+    key = (
+        str(ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate') or ''),
+        window,
+        VIX_HISTORY_MAX_SESSIONS_BEHIND,
+        DAILY_HISTORY_MAX_AGE_SESSIONS,
+        VIX_DAILY_CLOSE_MIN_TIME,
+        VIX_DAILY_CLOSE_MAX_TIME,
+        tuple(len(src) if isinstance(src, (list, str)) else -1 for src in sources),
+    )
+    memo = ctx.get('_pc2_vix_daily_history_memo')
+    if (isinstance(memo, dict) and memo.get('key') == key
+            and len(memo.get('sources') or ()) == len(sources)
+            and all(a is b for a, b in zip(memo['sources'], sources))):
+        cached = memo['value']
+        out = dict(cached)
+        out['values'] = list(cached.get('values') or [])
+        out['rows_rejected'] = dict(cached.get('rows_rejected') or {})
+        return out
+    value = _pc2_vix_daily_history_uncached(ctx, window)
+    ctx['_pc2_vix_daily_history_memo'] = {'key': key, 'sources': sources, 'value': value}
+    out = dict(value)
+    out['values'] = list(value.get('values') or [])
+    out['rows_rejected'] = dict(value.get('rows_rejected') or {})
+    return out
+
+
+def _pc2_vix_daily_history_uncached(ctx, window=VIX_DAILY_HISTORY_WINDOW):
     """Validated prior-session daily VIX closes for relative regime evidence.
 
     Sources, in order:
@@ -8474,9 +8541,24 @@ def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
         'sessions_behind': None,
         'max_sessions_behind': VIX_HISTORY_MAX_SESSIONS_BEHIND,
         'close_min_time': VIX_DAILY_CLOSE_MIN_TIME,
+        'floor_date': None,
+        'max_age_sessions': DAILY_HISTORY_MAX_AGE_SESSIONS,
     }
 
     if session_dt is None:
+        dated = ctx.get('vixDailyHistory')
+        if isinstance(dated, list):
+            ordered = sorted(
+                (row for row in dated if _pc2_row_date(row) is not None
+                 and _pc2_vix_close_value(row.get('vix')) is not None),
+                key=_pc2_row_date,
+            )
+            dated_values = [_pc2_vix_close_value(row.get('vix')) for row in ordered]
+            if dated_values:
+                out.update({'status': 'UNVERIFIED_NO_SESSION_DATE', 'source': 'vixDailyHistory_unverified',
+                            'values': dated_values[-window:], 'rows_offered': len(dated),
+                            'rows_accepted': len(dated_values[-window:])})
+                return out
         explicit = _numeric_series(ctx.get('vixHistory'))
         if explicit:
             out.update({'status': 'UNVERIFIED_NO_SESSION_DATE', 'source': 'vixHistory_undated',
@@ -8521,6 +8603,8 @@ def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
 
     out['source'] = source_name
     holidays = set(_CONST.get('NSE_HOLIDAYS', []))
+    floor_dt = _nse_session_floor(session_dt, DAILY_HISTORY_MAX_AGE_SESSIONS)
+    out['floor_date'] = floor_dt.strftime("%Y-%m-%d") if floor_dt else None
     by_date = {}
     for row in source_rows:
         out['rows_offered'] += 1
@@ -8566,16 +8650,21 @@ def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
     ordered = sorted(by_date.items())
     newest_dt = ordered[-1][0]
     behind = _nse_sessions_strictly_between(newest_dt, session_dt)
-    kept = ordered[-window:]
     out.update({
-        'rows_accepted': len(kept),
-        'oldest_date': kept[0][0].strftime("%Y-%m-%d"),
         'newest_date': newest_dt.strftime("%Y-%m-%d"),
         'sessions_behind': behind,
     })
     if behind > VIX_HISTORY_MAX_SESSIONS_BEHIND:
         out['status'] = 'STALE'
         return out
+    in_window = [item for item in ordered if floor_dt is None or item[0] >= floor_dt]
+    if len(in_window) < len(ordered):
+        out['rows_rejected']['older_than_window'] = len(ordered) - len(in_window)
+    kept = in_window[-window:]
+    out.update({
+        'rows_accepted': len(kept),
+        'oldest_date': kept[0][0].strftime("%Y-%m-%d"),
+    })
     out['status'] = 'FRESH'
     out['values'] = [value for _, (_, value) in kept]
     return out
@@ -8739,7 +8828,9 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
         'support_status': regime_ctx.get('support_status'),
         'vix': regime_ctx.get('vix'),
         'vix_percentile': regime_ctx.get('vix_percentile'),
+        'evidence_percentile': regime_ctx.get('evidence_percentile'),
         'support_count': regime_ctx.get('support_count'),
+        'min_support': CONTEXT_PERCENTILE_MIN_SUPPORT,
         'window': VIX_DAILY_HISTORY_WINDOW,
         'history_status': regime_ctx.get('history_status'),
         'history_source': regime_ctx.get('history_source'),
@@ -9607,6 +9698,26 @@ def _row_value(row, keys):
     return None
 
 def _history_rows_from_ctx(ctx):
+    """Merged daily rows, oldest first; memoised per ctx (called per cell)."""
+    if not isinstance(ctx, dict):
+        return _history_rows_from_ctx_uncached(ctx)
+    sources = tuple(ctx.get(key) for key in ('premiumHistory', 'premium_history', 'fiiHistory', 'fii_history'))
+    key = (
+        str(ctx.get('today_ist') or ctx.get('session_date') or ctx.get('sessionDate') or ''),
+        DAILY_HISTORY_MAX_SESSIONS_BEHIND,
+        DAILY_HISTORY_MAX_AGE_SESSIONS,
+        tuple(len(src) if isinstance(src, (list, str)) else -1 for src in sources),
+    )
+    memo = ctx.get('_pc2_history_rows_memo')
+    if (isinstance(memo, dict) and memo.get('key') == key
+            and all(a is b for a, b in zip(memo.get('sources') or (), sources))):
+        return list(memo['rows'])
+    rows = _history_rows_from_ctx_uncached(ctx)
+    ctx['_pc2_history_rows_memo'] = {'key': key, 'sources': sources, 'rows': rows}
+    return list(rows)
+
+
+def _history_rows_from_ctx_uncached(ctx):
     rows = []
     for key in ('premiumHistory', 'premium_history', 'fiiHistory', 'fii_history'):
         source = ctx.get(key) if isinstance(ctx, dict) else None
@@ -9644,21 +9755,25 @@ def _fresh_daily_history_rows(ctx, rows):
     session_dt = _context_session_date(ctx) if isinstance(ctx, dict) else None
     if session_dt is None:
         return rows
+    floor_dt = _nse_session_floor(session_dt, DAILY_HISTORY_MAX_AGE_SESSIONS)
+    kept = []
     newest = None
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        raw = row.get('date') or row.get('session_date') or row.get('sessionDate')
-        row_dt = _pc2_iso_date(str(raw)[:10]) if raw is not None else None
+        row_dt = _pc2_row_date(row)
         if row_dt is None or row_dt >= session_dt:
             continue
+        if floor_dt is not None and row_dt < floor_dt:
+            continue
+        kept.append(row)
         if newest is None or row_dt > newest:
             newest = row_dt
     if newest is None:
         return []
     if _nse_sessions_strictly_between(newest, session_dt) > DAILY_HISTORY_MAX_SESSIONS_BEHIND:
         return []
-    return rows
+    # Oldest first by date, so "last N" windows never depend on source order.
+    kept.sort(key=_pc2_row_date)
+    return kept
 
 def _history_values(ctx, key_options, window):
     rows = _history_rows_from_ctx(ctx)
@@ -9670,11 +9785,21 @@ def _history_values(ctx, key_options, window):
             lookup_keys.append(pct_key)
         if key not in lookup_keys:
             lookup_keys.append(key)
+    session_dt = _context_session_date(ctx) if isinstance(ctx, dict) else None
     values = []
+    newest = None
     for row in rows:
         value = _row_value(row, lookup_keys)
         if value is not None:
             values.append(value)
+            row_dt = _pc2_row_date(row)
+            if row_dt is not None and (newest is None or row_dt > newest):
+                newest = row_dt
+    # Freshness is judged per series: a fresh row of one variable must not
+    # carry months-old rows of another variable back into a live window.
+    if session_dt is not None and values:
+        if newest is None or _nse_sessions_strictly_between(newest, session_dt) > DAILY_HISTORY_MAX_SESSIONS_BEHIND:
+            return []
     return values[-window:]
 
 

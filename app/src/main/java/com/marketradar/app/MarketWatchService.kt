@@ -1896,19 +1896,18 @@ class MarketWatchService : Service() {
      * if it is too old. Must run off the main thread.
      */
     private fun refreshVixDailyHistory(today: String) {
-        val rows = SupabaseClient.getVixDailyCloseSourceRows(today)
-        if (rows == null) {
+        val history = SupabaseClient.getVixDailyCloses(today)
+        if (history == null) {
             val kept = try {
                 JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]").length()
             } catch (_: Exception) { 0 }
             LogBuffer.add('W', TAG, "VIX_DAILY_HISTORY_UNAVAILABLE: kept=$kept previous closes; brain fails closed if they are stale")
             return
         }
-        val history = VixDailyHistory.fromAppConfigRows(rows, today)
         prefs.edit().putString(VixDailyHistory.PREF_KEY, history.toString()).apply()
         val oldest = history.optJSONObject(0)?.optString("date", "") ?: ""
         val newest = history.optJSONObject(history.length() - 1)?.optString("date", "") ?: ""
-        val line = "VIX_DAILY_HISTORY_LOADED: closes=${history.length()} sourceRows=${rows.length()} oldest=$oldest newest=$newest"
+        val line = "VIX_DAILY_HISTORY_LOADED: closes=${history.length()} oldest=$oldest newest=$newest"
         Log.i(TAG, line)
         LogBuffer.add('I', TAG, line)
     }

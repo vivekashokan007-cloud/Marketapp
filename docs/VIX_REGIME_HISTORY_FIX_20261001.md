@@ -37,7 +37,9 @@ IST that has a valid VIX. The result is a dated list, oldest first:
 `{date, vix, t, polls, source}`.
 
 - The list is fetched once per day at bootstrap.
-- If the request fails, the previous list is kept.
+- The fetch pages 5 rows at a time (one row is about 85 KB) and only reads
+  keys from the last 100 calendar days, up to but not including today.
+- If any page fails, the previous list is kept.
 - The app sends it to the brain as `vixDailyHistory`.
 
 ### Acceptance and freshness (brain)
@@ -49,12 +51,18 @@ IST that has a valid VIX. The result is a dated list, oldest first:
 - the VIX is above 0 and below 100;
 - the close time is between 15:00 and 15:30.
 
-It keeps one row per date, and then the newest 60 rows. Each rejected row is
-counted by reason.
+It keeps one row per date. Rows older than the 60th NSE session before today
+are dropped as `older_than_window`; without this, an idle gap would let a
+"last 60 rows" window reach back months. Each rejected row is counted by
+reason.
 
 The whole series is **STALE** if more than two trading sessions separate the
 newest close from today. When the session date is known, an undated list is
 never trusted.
+
+The result is cached in the ctx for each poll. The cache key holds the source
+objects, their lengths and the policy constants, because the regime is
+evaluated once per candidate.
 
 ### Fail closed
 
@@ -63,8 +71,10 @@ When the history is stale, undated or missing:
 - the regime takes the existing neutral path (`NORMAL`, basis
   `neutral_stale_history`, `support_status = STALE_HISTORY`);
 - `vix_z` falls back to its existing absolute bands;
-- the C3 daily rows are dropped by `_fresh_daily_history_rows`, which applies
-  the same session rule to every dated daily series.
+- the C3 daily rows are dropped. `_fresh_daily_history_rows` applies the same
+  session rule and window floor to the merged daily rows. `_history_values`
+  also applies the rule to each series, so a fresh row of one variable cannot
+  bring stale rows of another variable back into a window.
 
 ### Observability
 
@@ -95,11 +105,12 @@ owner sets them:
 ## Evidence
 
 - Unit tests:
-  - `tests/test_vix_regime_history_20261001.py`: 25 tests, including the real
-    closes from 22 June to 30 September as a fixture.
-  - `VixDailyHistoryTest.kt`: 9 tests.
-  - MarketVivi `tests/test_vix_regime_display.mjs`: 8 tests.
-- The full Python suite passes: 1,129 tests, 2 skipped.
+  - `tests/test_vix_regime_history_20261001.py`: 35 tests, including the real
+    closes from 22 June to 30 September as a fixture and the findings from the
+    round-1 review.
+  - `VixDailyHistoryTest.kt`: 10 tests.
+  - MarketVivi `tests/test_vix_regime_display.mjs`: 11 tests.
+- The full Python suite passes: 1,139 tests, 2 skipped.
 - Mutation checks: each of the following, reverted on purpose, fails at least
   one test:
   - reverting the regime to the undated list;

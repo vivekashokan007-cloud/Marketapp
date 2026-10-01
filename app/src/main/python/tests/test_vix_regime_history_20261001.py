@@ -57,7 +57,9 @@ class DailyHistoryParsing(unittest.TestCase):
         self.assertEqual(len(hist['values']), 60)
         self.assertEqual(hist['values'][-1], 13.47)
         self.assertEqual(hist['values'][0], 14.56)
-        self.assertEqual(hist['rows_rejected'], {})
+        # Closes before the 60th prior NSE session (2026-07-08) are outside the window.
+        self.assertEqual(hist['rows_rejected'], {'older_than_window': 11})
+        self.assertEqual(hist['floor_date'], '2026-07-08')
 
     def test_order_of_input_rows_does_not_matter(self):
         rows = closes_before('2026-10-01')
@@ -92,7 +94,7 @@ class DailyHistoryParsing(unittest.TestCase):
             {'date': '2026-10-05', 'vix': 99.0, 't': '15:30'},
         ]
         hist = brain._pc2_vix_daily_history({'today_ist': '2026-10-01', 'vixDailyHistory': rows})
-        self.assertEqual(hist['rows_rejected'], {'not_prior_session': 2})
+        self.assertEqual(hist['rows_rejected'], {'not_prior_session': 2, 'older_than_window': 11})
         self.assertEqual(hist['newest_date'], '2026-09-30')
         self.assertNotIn(15.37, hist['values'])
 
@@ -116,7 +118,7 @@ class DailyHistoryParsing(unittest.TestCase):
         hist = brain._pc2_vix_daily_history({'today_ist': '2026-10-01', 'vixDailyHistory': good + bad})
         self.assertEqual(hist['rows_rejected'], {
             'not_object': 1, 'bad_date': 2, 'not_trading_day': 2, 'bad_vix': 4,
-            'bad_close_time': 2, 'incomplete_session': 1, 'after_close': 1,
+            'bad_close_time': 2, 'incomplete_session': 1, 'after_close': 1, 'older_than_window': 11,
         })
         self.assertEqual(hist['values'], [row['vix'] for row in good][-60:])
 
@@ -125,7 +127,7 @@ class DailyHistoryParsing(unittest.TestCase):
         rows.append({'date': '2026-09-30', 'vix': 99.5, 't': '15:20'})   # earlier: ignored
         rows.append({'date': '2026-09-29', 'vix': 13.40, 't': '15:30'})  # same time: first kept
         hist = brain._pc2_vix_daily_history({'today_ist': '2026-10-01', 'vixDailyHistory': rows})
-        self.assertEqual(hist['rows_rejected'], {'duplicate_date': 2})
+        self.assertEqual(hist['rows_rejected'], {'duplicate_date': 2, 'older_than_window': 11})
         self.assertEqual(hist['values'][-2:], [13.34, 13.47])
         later = closes_before('2026-10-01') + [{'date': '2026-09-30', 'vix': 13.9, 't': '15:30'}]
         later[-2]['t'] = '15:25'
@@ -290,6 +292,97 @@ class ResultSummary(unittest.TestCase):
         self.assertIn('vixRegime', out)
         self.assertIn(out['vixRegime'].get('regime'), ('LOW', 'NORMAL', 'HIGH', 'VERY_HIGH'))
         self.assertNotIn('error', out['vixRegime'])
+
+
+class ReviewRound1(unittest.TestCase):
+    """Findings from the adversarial review of 869d0ae."""
+
+    def test_session_floor_is_the_60th_prior_nse_session(self):
+        floor = brain._nse_session_floor(brain._pc2_iso_date('2026-10-01'), 60)
+        self.assertEqual(floor.strftime('%Y-%m-%d'), '2026-07-08')
+        self.assertEqual(brain._nse_session_floor(brain._pc2_iso_date('2026-10-05'), 1).strftime('%Y-%m-%d'), '2026-10-01')
+
+    def test_idle_gap_cannot_rank_against_months_old_closes(self):
+        # App idle Apr-Aug, then 12 September closes. The newest close is fresh,
+        # but the April-May closes are outside the 60-session window.
+        rows = []
+        for month, days in ((4, range(1, 31)), (5, range(1, 29))):
+            for dom in days:
+                date = f'2026-{month:02d}-{dom:02d}'
+                dt = brain._pc2_iso_date(date)
+                if dt.weekday() < 5 and date not in brain._CONST['NSE_HOLIDAYS']:
+                    rows.append({'date': date, 'vix': 18.0 + (dom % 5), 't': '15:30'})
+        rows += [r for r in CLOSES if r['date'] >= '2026-09-15']
+        ctx = {'today_ist': '2026-10-01', 'vixDailyHistory': rows}
+        hist = brain._pc2_vix_daily_history(ctx)
+        self.assertEqual(hist['status'], 'FRESH')
+        self.assertEqual(hist['oldest_date'], '2026-09-15')
+        self.assertEqual(len(hist['values']), 12)
+        regime = brain._pc2_vix_regime_context(ctx, 15.37, None)
+        self.assertEqual((regime['regime'], regime['support_status']), ('NORMAL', 'LOW_SUPPORT'))
+
+    def test_fresh_row_of_another_series_does_not_revive_a_stale_series(self):
+        # Inside the 60-session window but 14 sessions behind: only the
+        # per-series check can reject it, because the merged rows look fresh.
+        stale = [{'date': f'2026-09-{d:02d}', 'iv_richness': 1.0 + d / 100} for d in (7, 8, 9, 10, 11)]
+        fresh_other = [{'date': '2026-09-30', 'pct_foo': 50.0}]
+        ctx = {'today_ist': '2026-10-01', 'premiumHistory': stale + fresh_other}
+        self.assertEqual(brain._history_values(ctx, ('iv_richness',), 60), [])
+        self.assertEqual(brain._history_values(ctx, ('foo',), 60), [50.0])
+
+    def test_generic_rows_respect_the_window_floor(self):
+        rows = [{'date': '2026-07-07', 'pcr': 9.0}, {'date': '2026-07-08', 'pcr': 1.0}, {'date': '2026-09-30', 'pcr': 1.2}]
+        ctx = {'today_ist': '2026-10-01', 'premiumHistory': rows}
+        self.assertEqual(brain._history_values(ctx, ('pcr',), 60), [1.0, 1.2])
+
+    def test_memo_returns_copies_and_tracks_source_identity(self):
+        ctx = {'today_ist': '2026-10-01', 'vixDailyHistory': closes_before('2026-10-01')}
+        first = brain._pc2_vix_daily_history(ctx)
+        first['values'].clear()
+        first['rows_rejected']['x'] = 1
+        again = brain._pc2_vix_daily_history(ctx)
+        self.assertEqual(len(again['values']), 60)
+        self.assertNotIn('x', again['rows_rejected'])
+        ctx['vixDailyHistory'] = closes_before('2026-09-25')  # new list object, different content
+        self.assertEqual(brain._pc2_vix_daily_history(ctx)['newest_date'], '2026-09-24')
+        rows = brain._history_rows_from_ctx({'today_ist': '2026-10-01', 'premiumHistory': [{'date': '2026-09-30', 'pcr': 1.0}]})
+        rows.append('mutated')
+        self.assertEqual(len(brain._history_rows_from_ctx({'today_ist': '2026-10-01', 'premiumHistory': [{'date': '2026-09-30', 'pcr': 1.0}]})), 1)
+
+    def test_memo_respects_patched_policy_constants(self):
+        ctx = {'today_ist': '2026-10-07', 'vixDailyHistory': closes_before('2026-10-01')}
+        self.assertEqual(brain._pc2_vix_daily_history(ctx)['status'], 'STALE')
+        with mock.patch.object(brain, 'VIX_HISTORY_MAX_SESSIONS_BEHIND', 3):
+            self.assertEqual(brain._pc2_vix_daily_history(ctx)['status'], 'FRESH')
+
+    def test_non_ascii_digits_are_rejected_not_raised(self):
+        self.assertIsNone(brain._pc2_hhmm('1\u00b2:30'))
+        self.assertIsNone(brain._pc2_hhmm('\u0661\u0665:30'))
+        self.assertIsNone(brain._pc2_iso_date('\u0662\u0660\u0662\u0666-09-30'))
+        rows = closes_before('2026-10-01') + [{'date': '2026-09-29', 'vix': 12.0, 't': '1\u00b2:30'}]
+        hist = brain._pc2_vix_daily_history({'today_ist': '2026-10-01', 'vixDailyHistory': rows})
+        self.assertEqual(hist['rows_rejected'].get('bad_close_time'), 1)
+
+    def test_offline_context_prefers_dated_closes(self):
+        hist = brain._pc2_vix_daily_history({'vixDailyHistory': closes_before('2026-10-01'), 'vixHistory': [99.0] * 30})
+        self.assertEqual(hist['source'], 'vixDailyHistory_unverified')
+        self.assertEqual(hist['values'][-1], 13.47)
+
+    def test_summary_carries_evidence_percentile_and_min_support(self):
+        s = brain._pc2_vix_regime_summary({'today_ist': '2026-10-01', 'vixDailyHistory': closes_before('2026-10-01')}, {'vix': 15.37})
+        self.assertEqual(s['evidence_percentile'], 100.0)
+        self.assertEqual(s['min_support'], brain.CONTEXT_PERCENTILE_MIN_SUPPORT)
+
+    def test_per_candidate_cost_is_bounded(self):
+        import time
+        ctx = {'today_ist': '2026-10-01', 'vixDailyHistory': closes_before('2026-10-01'),
+               'premiumHistory': stale_premium_rows()}
+        brain._pc2_vix_regime_context(ctx, 15.37, None)
+        start = time.perf_counter()
+        for _ in range(200):
+            brain._assess_force3('BEAR_CALL', 15.37, None, ctx)
+        per_call_ms = (time.perf_counter() - start) * 1000 / 200
+        self.assertLess(per_call_ms, 2.0)
 
 
 if __name__ == '__main__':

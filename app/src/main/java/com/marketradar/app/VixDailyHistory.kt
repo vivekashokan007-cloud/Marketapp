@@ -26,8 +26,19 @@ object VixDailyHistory {
     const val MARKET_OPEN = "09:15"
     const val CLOSE_CUTOFF = "15:30"
     const val DEFAULT_MAX_DAYS = 60
-    /** Extra rows fetched so rejected (incomplete or malformed) days do not shrink the window. */
-    const val FETCH_MARGIN_DAYS = 15
+    /**
+     * Calendar look-back for the fetch. 60 NSE sessions span about 85-90
+     * calendar days; the brain applies the exact 60-session floor.
+     */
+    const val FETCH_LOOKBACK_CALENDAR_DAYS = 100L
+    /**
+     * Rows per request. One poll_history row is ~85 KB of JSON (measured
+     * 2026-10-01: 72 rows = 6.0 MB), so pages keep each response near 400 KB
+     * instead of holding the whole history in memory at once.
+     */
+    const val FETCH_PAGE_SIZE = 5
+    /** Hard stop: 100 calendar days never hold more than ~70 sessions. */
+    const val FETCH_MAX_PAGES = 20
     const val SOURCE_LABEL = "app_config.poll_history"
 
     /** Mirrors the brain: percentile needs at least this many closes. */
@@ -102,14 +113,18 @@ object VixDailyHistory {
         }
     }
 
+    /** Oldest `poll_history_<date>` key worth fetching for [today], or null if [today] is invalid. */
+    fun fetchFloorDate(today: String): String? =
+        parseIsoDate(today)?.minusDays(FETCH_LOOKBACK_CALENDAR_DAYS)?.toString()
+
     /**
-     * Builds the chronological close history (oldest first) from `app_config`
-     * rows `{key, value}`. Only sessions strictly before [today] are kept; the
-     * newest [maxDays] survive.
+     * Extracts closes from one page of `app_config` rows `{key, value}`, so the
+     * raw page can be released before the next one is fetched. Only sessions
+     * strictly before [today] are returned.
      */
-    fun fromAppConfigRows(rows: JSONArray, today: String, maxDays: Int = DEFAULT_MAX_DAYS): JSONArray {
-        val todayDate = parseIsoDate(today) ?: return JSONArray()
-        val byDate = java.util.TreeMap<LocalDate, JSONObject>()
+    fun closesFromAppConfigRows(rows: JSONArray, today: String): List<JSONObject> {
+        val todayDate = parseIsoDate(today) ?: return emptyList()
+        val out = ArrayList<JSONObject>()
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: continue
             val key = row.optString("key", "")
@@ -117,10 +132,25 @@ object VixDailyHistory {
             val dateText = key.substring(KEY_PREFIX.length)
             val date = parseIsoDate(dateText) ?: continue
             if (!date.isBefore(todayDate)) continue
-            if (byDate.containsKey(date)) continue
             val polls = pollsOf(row) ?: continue
-            val close = closeFromPolls(dateText, polls) ?: continue
-            byDate[date] = close
+            out.add(closeFromPolls(dateText, polls) ?: continue)
+        }
+        return out
+    }
+
+    /**
+     * Chronological close history (oldest first): one close per date (the
+     * first one seen wins), only dates strictly before [today], newest
+     * [maxDays] kept.
+     */
+    fun assemble(closes: List<JSONObject>, today: String, maxDays: Int = DEFAULT_MAX_DAYS): JSONArray {
+        val todayDate = parseIsoDate(today) ?: return JSONArray()
+        val byDate = java.util.TreeMap<LocalDate, JSONObject>()
+        for (close in closes) {
+            val date = parseIsoDate(close.optString("date", "")) ?: continue
+            if (!date.isBefore(todayDate)) continue
+            if (validVix(close) == null) continue
+            if (!byDate.containsKey(date)) byDate[date] = close
         }
         val ordered = byDate.values.toList()
         val keep = if (maxDays > 0 && ordered.size > maxDays) ordered.subList(ordered.size - maxDays, ordered.size) else ordered
@@ -128,6 +158,10 @@ object VixDailyHistory {
         for (close in keep) out.put(close)
         return out
     }
+
+    /** [closesFromAppConfigRows] followed by [assemble], for a single in-memory page. */
+    fun fromAppConfigRows(rows: JSONArray, today: String, maxDays: Int = DEFAULT_MAX_DAYS): JSONArray =
+        assemble(closesFromAppConfigRows(rows, today), today, maxDays)
 
     /** VIX values of a close history, in the same (chronological) order. */
     fun vixValues(history: JSONArray): JSONArray {

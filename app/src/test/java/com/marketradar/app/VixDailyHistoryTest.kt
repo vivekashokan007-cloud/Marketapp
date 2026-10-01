@@ -159,13 +159,50 @@ class VixDailyHistoryTest {
     }
 
     @Test
-    fun fetchIsPriorSessionOnlyAndDistinguishesFailureFromEmpty() {
+    fun fetchIsPagedBoundedPriorSessionOnlyAndFailsAsAWhole() {
         val client = source("src/main/java/com/marketradar/app/SupabaseClient.kt")
-        val start = client.indexOf("fun getVixDailyCloseSourceRows(")
+        val start = client.indexOf("fun getVixDailyCloses(")
         assertTrue(start >= 0)
         val body = client.substring(start, client.indexOf("\n    }\n", start))
         assertTrue(body.contains("\"&key=like.\$prefix*\""))
+        assertTrue(body.contains("\"&key=gte.\$prefix\$floor\""))
         assertTrue(body.contains("\"&key=lt.\$prefix\$today\""))
+        assertTrue(body.contains("&limit=\$pageSize&offset=\${page * pageSize}"))
+        assertTrue(body.contains("for (page in 0 until VixDailyHistory.FETCH_MAX_PAGES)"))
         assertTrue(body.contains("fetchSync(getBaseRequest(path).get().build()) ?: return null"))
+        assertTrue(body.contains("VixDailyHistory.closesFromAppConfigRows(rows, today)"))
+        assertFalse(client.contains("getVixDailyCloseSourceRows"))
+        assertTrue(VixDailyHistory.FETCH_PAGE_SIZE in 1..10)
+    }
+
+    @Test
+    fun fetchFloorAndPagedAssemblyMatchSinglePage() {
+        assertEquals("2026-06-23", VixDailyHistory.fetchFloorDate("2026-10-01"))
+        assertNull(VixDailyHistory.fetchFloorDate("2026-10-32"))
+        val rows = JSONArray()
+        for (day in 30 downTo 1) {
+            val date = "2026-09-%02d".format(day)
+            rows.put(configRow(date, JSONArray().put(poll("15:30", 10.0 + day / 10.0, date))))
+        }
+        val single = VixDailyHistory.fromAppConfigRows(rows, "2026-10-01", 20)
+        val closes = ArrayList<JSONObject>()
+        var i = 0
+        while (i < rows.length()) {
+            val page = JSONArray()
+            for (j in i until minOf(i + VixDailyHistory.FETCH_PAGE_SIZE, rows.length())) page.put(rows.get(j))
+            closes.addAll(VixDailyHistory.closesFromAppConfigRows(page, "2026-10-01"))
+            i += VixDailyHistory.FETCH_PAGE_SIZE
+        }
+        assertEquals(single.toString(), VixDailyHistory.assemble(closes, "2026-10-01", 20).toString())
+        // assemble rejects today, invalid VIX and keeps the first close per date.
+        val mixed = listOf(
+            JSONObject().put("date", "2026-10-01").put("vix", 15.0).put("t", "15:30"),
+            JSONObject().put("date", "2026-09-30").put("vix", 0.0).put("t", "15:30"),
+            JSONObject().put("date", "2026-09-29").put("vix", 13.34).put("t", "15:30"),
+            JSONObject().put("date", "2026-09-29").put("vix", 99.0).put("t", "15:30"),
+        )
+        val assembled = VixDailyHistory.assemble(mixed, "2026-10-01")
+        assertEquals(1, assembled.length())
+        assertEquals(13.34, assembled.getJSONObject(0).getDouble("vix"), 0.0)
     }
 }
