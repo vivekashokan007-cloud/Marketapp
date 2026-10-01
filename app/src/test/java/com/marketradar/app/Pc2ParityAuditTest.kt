@@ -5,6 +5,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -566,6 +567,42 @@ class Pc2ParityAuditTest {
     }
 
     @Test
+    fun aDefectiveDuplicateSourceCannotHideBehindAValidFirstCopy() {
+        val s = Session(); addPoll(s, 0)
+        val defective = JSONObject(s.snapshots[0].toString())
+        defective.getJSONArray("decisions").getJSONObject(0).put("observed_value", 9.99)
+        s.snapshots += defective
+        repeat(2) {
+            val report = audit(s)
+            assertFalse(report.findings.joinToString(), report.certified)
+            assertEquals(0, report.certifiedPolls)
+            assertTrue("SOURCE_DIGEST_MISMATCH" in report.fails())
+            s.snapshots.reverse()
+        }
+    }
+
+    @Test
+    fun aDuplicateWithTheWrongSessionStillFailsIntegrity() {
+        val s = Session(); addPoll(s, 0)
+        s.snapshots += JSONObject(s.snapshots[0].toString()).put("session_date", "2026-10-01")
+        val report = audit(s)
+        assertFalse(report.findings.joinToString(), report.certified)
+        assertEquals(0, report.certifiedPolls)
+        assertTrue("SESSION_MISMATCH" in report.fails())
+    }
+
+    @Test
+    fun anEquivalentTimestampOnAnIdenticalDuplicateStillCountsOnce() {
+        val s = Session(); addPoll(s, 0)
+        s.snapshots += JSONObject(s.snapshots[0].toString())
+            .put("poll_ts_utc", "2026-09-30T10:00:00+05:30")
+        val report = audit(s)
+        assertTrue(report.findings.joinToString(), report.certified)
+        assertEquals(1, report.certifiedPolls)
+        assertTrue("DUPLICATE_REFERENCE" !in report.fails())
+    }
+
+    @Test
     fun equivalentUtcAndIstSpellingsOfOneInstantPass() {
         val a = Pc2ParityAudit.parseInstant("2026-09-30T04:30:00.000000Z")
         assertEquals(a, Pc2ParityAudit.parseInstant("2026-09-30T10:00:00+0530"))
@@ -586,6 +623,20 @@ class Pc2ParityAuditTest {
             "2026-09-30T24:00:00+0530", "2026-09-30T10:00:60+0530", "2026-09-30 10:00:00+0530",
             "2026-09-30T10:00:00+0530x", "", "garbage").forEach {
             assertNull("'$it' must not parse", Pc2ParityAudit.parseInstant(it))
+        }
+    }
+
+    @Test
+    fun theInstantParserUsesTheDatabaseOffsetAndPrecisionLimits() {
+        listOf("2026-09-30T10:00:00+1500", "2026-09-30T10:00:00+14:01",
+            "2026-09-30T10:00:00-14:01", "2026-09-30T10:00:00.1234567Z",
+            "2026-09-30t10:00:00Z", "2026-09-30T10:00:00z",
+            "2026-09-30T10:00:00+05:30+0530", "0000-09-30T10:00:00Z").forEach {
+            assertNull("'$it' must be rejected just as in PostgreSQL", Pc2ParityAudit.parseInstant(it))
+        }
+        listOf("2026-09-30T10:00:00+1400", "2026-09-30T10:00:00-14:00",
+            "2026-09-30T10:00:00.123456Z").forEach {
+            assertNotNull("'$it' is within the shared contract", Pc2ParityAudit.parseInstant(it))
         }
     }
 

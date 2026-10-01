@@ -130,6 +130,12 @@ object Pc2ParityAudit {
 
     // ---- timestamps -----------------------------------------------------------
 
+    // Match the database helper's grammar before the more permissive Java
+    // formatter: one offset, uppercase T/Z, and at most six fractional digits.
+    private val POLL_TIMESTAMP = Regex(
+        "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:?\\d{2})"
+    )
+
     private val INSTANT_FORMAT: DateTimeFormatter = DateTimeFormatterBuilder()
         .parseCaseInsensitive()
         .append(DateTimeFormatter.ISO_LOCAL_DATE)
@@ -147,8 +153,12 @@ object Pc2ParityAudit {
      * `+0530`), dates and times must be real, and nothing else is accepted.
      */
     fun parseInstant(text: String?): Instant? {
-        if (text.isNullOrBlank()) return null
-        return runCatching { OffsetDateTime.parse(text, INSTANT_FORMAT).toInstant() }.getOrNull()
+        if (text == null || !POLL_TIMESTAMP.matches(text)) return null
+        return runCatching {
+            val parsed = OffsetDateTime.parse(text, INSTANT_FORMAT)
+            if (parsed.year < 1 || kotlin.math.abs(parsed.offset.totalSeconds) > 14 * 3600) null
+            else parsed.toInstant()
+        }.getOrNull()
     }
 
     private fun parseDay(text: String?): LocalDate? =
@@ -285,11 +295,16 @@ object Pc2ParityAudit {
             }
             expectedPc2 += 1
             val before = findings.count { it.severity == Severity.FAIL }
-            val row = rows.first()
-            val counted = checkSnapshot(day, instant, row, legacyArrays[instant], stored, referencedBy, ::fail, ::visible)
-            if (counted.capped) capped += 1
-            if (counted.source == "snapshot") fromSnapshot += 1
-            if (counted.source == "legacy") fromLegacy += 1
+            // Every supplied row must pass integrity checks. Count a poll once,
+            // but do not let a valid first copy conceal a defective duplicate.
+            rows.forEachIndexed { index, row ->
+                val counted = checkSnapshot(day, instant, row, legacyArrays[instant], stored, referencedBy, ::fail, ::visible)
+                if (index == 0) {
+                    if (counted.capped) capped += 1
+                    if (counted.source == "snapshot") fromSnapshot += 1
+                    if (counted.source == "legacy") fromLegacy += 1
+                }
+            }
             if (findings.count { it.severity == Severity.FAIL } == before) certifiedPolls += 1
         }
 
@@ -394,7 +409,9 @@ object Pc2ParityAudit {
             fail("REF_IDENTITY_INCONSISTENT", key, "reference fields do not hash to $refId")
         }
         referencedBy[refId]?.let { other ->
-            fail("DUPLICATE_REFERENCE", key, "batch $refId is also referenced by the distinct poll $other")
+            if (other != instant) {
+                fail("DUPLICATE_REFERENCE", key, "batch $refId is also referenced by the distinct poll $other")
+            }
         }
         referencedBy[refId] = instant
         val isCapped = ref.optBoolean("source_possibly_truncated", false)
