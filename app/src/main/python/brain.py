@@ -5740,7 +5740,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
         dte = 5
 
     # b93: Z-SCORE VIX REGIME — dynamic, not hardcoded
-    vix_hist = ctx.get('vixHistory', [])
+    vix_hist = _vix_history_values(ctx, VIX_DAILY_HISTORY_WINDOW)
     vix_z = z_score(vix, vix_hist) if len(vix_hist) >= 10 else (1.5 if vix >= 24 else 0.5 if vix >= 20 else -0.5 if vix >= 16 else -1.5)
     # vix_z > 1.5 = extreme high (was vix>=24), vix_z > 0.5 = high (was vix>=20)
     # vix_z < -1.0 = low VIX regime, negative = cheap premiums
@@ -8231,7 +8231,35 @@ def _detect_flip(current_verdict, previous_verdict):
 # ─── VARSITY FILTER ───
 
 
-PC2_VIX_REGIME_CONTEXT_VERSION = 'pc2_vix_regime_context_live_v1'
+PC2_VIX_REGIME_CONTEXT_VERSION = 'pc2_vix_regime_context_live_v2'
+# Dated daily VIX closes feed the relative VIX regime. v1 trusted an undated
+# list and a premium_history table whose writer was removed on 2026-05-03, so
+# from 2026-08-10 the regime was ranked against Feb-Jun 2026 closes. v2 only
+# accepts dated prior-session closes and fails closed when the newest one is
+# too old. See docs/VIX_REGIME_HISTORY_FIX_20261001.md.
+PC2_VIX_DAILY_HISTORY_VERSION = 'pc2_vix_daily_history_v1'
+VIX_DAILY_HISTORY_WINDOW = 60
+# Trading sessions allowed between the newest accepted close and today. 0 is
+# normal (yesterday's close is present); 2 tolerates two missed sessions.
+VIX_HISTORY_MAX_SESSIONS_BEHIND = 2
+# The same freshness rule guards every other dated daily-history series
+# (premiumHistory / percentile-history rows used by the C3 context cells).
+DAILY_HISTORY_MAX_SESSIONS_BEHIND = VIX_HISTORY_MAX_SESSIONS_BEHIND
+# A close is the last poll at or before 15:30 IST; a day whose last poll is
+# before 15:00 IST is an incomplete session and is not used as a close.
+VIX_DAILY_CLOSE_MIN_TIME = '15:00'
+VIX_DAILY_CLOSE_MAX_TIME = '15:30'
+VIX_DAILY_VALUE_MIN = 0.0
+VIX_DAILY_VALUE_MAX = 100.0
+VIX_HISTORY_FRESH_STATUSES = ('FRESH', 'UNVERIFIED_NO_SESSION_DATE')
+# Optional absolute guards on the relative regime (owner decision, OFF = None).
+# A percentile is relative to the last 60 sessions, so after a calm quarter a
+# modest VIX can rank VERY_HIGH. When set, HIGH/VERY_HIGH also require VIX at
+# or above the floor (otherwise the regime steps down), and LOW requires VIX at
+# or below the ceiling (otherwise NORMAL).
+VIX_REGIME_HIGH_ABS_FLOOR = None
+VIX_REGIME_VERY_HIGH_ABS_FLOOR = None
+VIX_REGIME_LOW_ABS_CEILING = None
 PC2_SIGMA_IMPORTANT_CONTEXT_VERSION = 'pc2_sigma_important_context_live_v1'
 PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE = 85.0
 PC2_POSITION_ALERT_CONTEXT_VERSION = 'pc2_position_alert_context_live_v1'
@@ -8362,6 +8390,213 @@ def _pc2_capture_trigger_level(history, percentile_cutoff):
     return series[k - 1]
 
 
+def _pc2_iso_date(value):
+    """Strict YYYY-MM-DD parser; returns a date or None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) != 10 or text[4] != '-' or text[7] != '-':
+        return None
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _pc2_hhmm(value):
+    """Strict HH:MM (24h) parser; returns the canonical string or None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if len(text) != 5 or text[2] != ':' or not (text[:2] + text[3:]).isdigit():
+        return None
+    hour, minute = int(text[:2]), int(text[3:])
+    if hour > 23 or minute > 59:
+        return None
+    return text
+
+
+def _nse_sessions_strictly_between(start_dt, end_dt):
+    """NSE trading sessions strictly after start_dt and strictly before end_dt."""
+    if start_dt is None or end_dt is None or end_dt <= start_dt:
+        return 0
+    holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
+    count = 0
+    current = start_dt + timedelta(days=1)
+    while current < end_dt:
+        if current.weekday() < 5 and current.strftime("%Y-%m-%d") not in holidays:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _pc2_vix_close_value(value):
+    if isinstance(value, bool):
+        return None
+    num = _percentile_float(value)
+    if num is None or not (VIX_DAILY_VALUE_MIN < num < VIX_DAILY_VALUE_MAX):
+        return None
+    return num
+
+
+def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
+    """Validated prior-session daily VIX closes for relative regime evidence.
+
+    Sources, in order:
+      1. ``vixDailyHistory``: dated closes built by the app from the per-session
+         poll history (``app_config`` ``poll_history_<date>``).
+      2. Dated ``premiumHistory`` rows (legacy table; only if 1 is absent).
+    An undated ``vixHistory`` list is never trusted when the session date is
+    known, because its age cannot be checked. Without a session date (offline
+    tests and replays) the pre-v2 behaviour is kept and labelled UNVERIFIED.
+
+    ``values`` is chronological and empty unless the status is FRESH or
+    UNVERIFIED_NO_SESSION_DATE.
+    """
+    ctx = ctx if isinstance(ctx, dict) else {}
+    try:
+        window = max(1, int(window))
+    except Exception:
+        window = VIX_DAILY_HISTORY_WINDOW
+    session_dt = _context_session_date(ctx)
+    out = {
+        'schema_version': PC2_VIX_DAILY_HISTORY_VERSION,
+        'status': 'MISSING',
+        'source': None,
+        'values': [],
+        'window': window,
+        'session_date': session_dt.strftime("%Y-%m-%d") if session_dt else None,
+        'rows_offered': 0,
+        'rows_accepted': 0,
+        'rows_rejected': {},
+        'oldest_date': None,
+        'newest_date': None,
+        'sessions_behind': None,
+        'max_sessions_behind': VIX_HISTORY_MAX_SESSIONS_BEHIND,
+        'close_min_time': VIX_DAILY_CLOSE_MIN_TIME,
+    }
+
+    if session_dt is None:
+        explicit = _numeric_series(ctx.get('vixHistory'))
+        if explicit:
+            out.update({'status': 'UNVERIFIED_NO_SESSION_DATE', 'source': 'vixHistory_undated',
+                        'values': explicit[-window:], 'rows_offered': len(explicit),
+                        'rows_accepted': len(explicit[-window:])})
+            return out
+        legacy = _history_values(ctx, ('vix', 'VIX'), window)
+        if legacy:
+            out.update({'status': 'UNVERIFIED_NO_SESSION_DATE', 'source': 'premiumHistory_legacy',
+                        'values': legacy, 'rows_offered': len(legacy), 'rows_accepted': len(legacy)})
+        return out
+
+    def _reject(reason):
+        out['rows_rejected'][reason] = int(out['rows_rejected'].get(reason, 0)) + 1
+
+    source_name = None
+    source_rows = ctx.get('vixDailyHistory')
+    if isinstance(source_rows, str):
+        try:
+            source_rows = json.loads(source_rows)
+        except Exception:
+            source_rows = None
+    if isinstance(source_rows, list):
+        source_name = 'vixDailyHistory'
+    else:
+        source_rows = None
+        for key in ('premiumHistory', 'premium_history'):
+            candidate = ctx.get(key)
+            if isinstance(candidate, str):
+                try:
+                    candidate = json.loads(candidate)
+                except Exception:
+                    candidate = None
+            if isinstance(candidate, list) and candidate:
+                source_rows = candidate
+                source_name = 'premiumHistory'
+                break
+    if source_rows is None:
+        if _numeric_series(ctx.get('vixHistory')):
+            out.update({'status': 'UNDATED', 'source': 'vixHistory_undated'})
+        return out
+
+    out['source'] = source_name
+    holidays = set(_CONST.get('NSE_HOLIDAYS', []))
+    by_date = {}
+    for row in source_rows:
+        out['rows_offered'] += 1
+        if not isinstance(row, dict):
+            _reject('not_object')
+            continue
+        row_dt = _pc2_iso_date(row.get('date') if row.get('date') is not None else row.get('session_date'))
+        if row_dt is None:
+            _reject('bad_date')
+            continue
+        if row_dt >= session_dt:
+            _reject('not_prior_session')
+            continue
+        if row_dt.weekday() >= 5 or row_dt.strftime("%Y-%m-%d") in holidays:
+            _reject('not_trading_day')
+            continue
+        value = _pc2_vix_close_value(row.get('vix') if row.get('vix') is not None else row.get('VIX'))
+        if value is None:
+            _reject('bad_vix')
+            continue
+        close_time = None
+        if source_name == 'vixDailyHistory':
+            close_time = _pc2_hhmm(row.get('t') if row.get('t') is not None else row.get('close_time'))
+            if close_time is None:
+                _reject('bad_close_time')
+                continue
+            if close_time < VIX_DAILY_CLOSE_MIN_TIME:
+                _reject('incomplete_session')
+                continue
+            if close_time > VIX_DAILY_CLOSE_MAX_TIME:
+                _reject('after_close')
+                continue
+        previous = by_date.get(row_dt)
+        if previous is not None:
+            _reject('duplicate_date')
+            # Keep the later close of the two; equal times keep the first seen.
+            if close_time is None or previous[0] is None or close_time <= previous[0]:
+                continue
+        by_date[row_dt] = (close_time, value)
+
+    if not by_date:
+        return out
+    ordered = sorted(by_date.items())
+    newest_dt = ordered[-1][0]
+    behind = _nse_sessions_strictly_between(newest_dt, session_dt)
+    kept = ordered[-window:]
+    out.update({
+        'rows_accepted': len(kept),
+        'oldest_date': kept[0][0].strftime("%Y-%m-%d"),
+        'newest_date': newest_dt.strftime("%Y-%m-%d"),
+        'sessions_behind': behind,
+    })
+    if behind > VIX_HISTORY_MAX_SESSIONS_BEHIND:
+        out['status'] = 'STALE'
+        return out
+    out['status'] = 'FRESH'
+    out['values'] = [value for _, (_, value) in kept]
+    return out
+
+
+def _pc2_apply_vix_absolute_guards(regime, vix_value):
+    """Step a percentile regime down when the absolute VIX does not support it."""
+    if vix_value is None:
+        return regime
+    very_high_floor = _percentile_float(VIX_REGIME_VERY_HIGH_ABS_FLOOR)
+    high_floor = _percentile_float(VIX_REGIME_HIGH_ABS_FLOOR)
+    low_ceiling = _percentile_float(VIX_REGIME_LOW_ABS_CEILING)
+    if regime == 'VERY_HIGH' and very_high_floor is not None and vix_value < very_high_floor:
+        regime = 'HIGH'
+    if regime == 'HIGH' and high_floor is not None and vix_value < high_floor:
+        regime = 'NORMAL'
+    if regime == 'LOW' and low_ceiling is not None and vix_value > low_ceiling:
+        regime = 'NORMAL'
+    return regime
+
+
 def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     """Relative VIX regime authority.
 
@@ -8372,7 +8607,9 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     vix_value = _percentile_float(vix if vix is not None else ctx.get('vix'))
     iv_pct = _percentile_float(iv_pctl if iv_pctl is not None else ctx.get('ivPercentile'))
-    vix_hist = _vix_history_values(ctx, 60)
+    vix_history = _pc2_vix_daily_history(ctx, VIX_DAILY_HISTORY_WINDOW)
+    history_usable = vix_history.get('status') in VIX_HISTORY_FRESH_STATUSES
+    vix_hist = list(vix_history.get('values') or []) if history_usable else []
     vix_cell = _percentile_cell(vix_value, vix_hist, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
     support = int(vix_cell.get('support_count') or 0)
     stability_ratio = _percentile_float(vix_cell.get('stability_ratio'))
@@ -8403,6 +8640,8 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
         support_status = 'SUPPORTED'
     elif vix_value is None and iv_pct is None:
         support_status = 'MISSING_CONTEXT'
+    elif not history_usable and vix_history.get('status') in ('STALE', 'UNDATED'):
+        support_status = 'STALE_HISTORY'
     elif support < CONTEXT_PERCENTILE_MIN_SUPPORT and iv_support < CONTEXT_PERCENTILE_MIN_SUPPORT:
         support_status = 'LOW_SUPPORT'
     else:
@@ -8418,6 +8657,8 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
         regime = 'LOW'
     else:
         regime = 'NORMAL'
+    percentile_regime = regime
+    regime = _pc2_apply_vix_absolute_guards(regime, vix_value)
 
     old_low = vix_value is not None and vix_value <= _CONST['IV_LOW']
     old_high = vix_value is not None and vix_value >= _CONST['IV_HIGH']
@@ -8436,6 +8677,7 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
             'vix_percentile' if vix_authority else
             'iv_percentile' if iv_authority else
             'neutral_missing_context' if support_status == 'MISSING_CONTEXT' else
+            'neutral_stale_history' if support_status == 'STALE_HISTORY' else
             'neutral_unsupported_context'
         ),
         'vix': None if vix_value is None else round(vix_value, 4),
@@ -8450,6 +8692,22 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
         'stability_pass': vix_authority,
         'iv_percentile_support_count': iv_support,
         'iv_percentile_stability_pass': iv_stability_pass,
+        'percentile_regime': percentile_regime,
+        'absolute_guard_applied': regime != percentile_regime,
+        'absolute_guards': {
+            'high_floor': VIX_REGIME_HIGH_ABS_FLOOR,
+            'very_high_floor': VIX_REGIME_VERY_HIGH_ABS_FLOOR,
+            'low_ceiling': VIX_REGIME_LOW_ABS_CEILING,
+        },
+        'history_status': vix_history.get('status'),
+        'history_source': vix_history.get('source'),
+        'history_oldest_date': vix_history.get('oldest_date'),
+        'history_newest_date': vix_history.get('newest_date'),
+        'history_sessions_behind': vix_history.get('sessions_behind'),
+        'history_max_sessions_behind': vix_history.get('max_sessions_behind'),
+        'history_rows_accepted': vix_history.get('rows_accepted'),
+        'history_rows_rejected': dict(vix_history.get('rows_rejected') or {}),
+        'history_version': vix_history.get('schema_version'),
         'old_constant_shadow': {
             'schema_version': 'pc2_vix_constant_shadow_v1',
             'regime': old_regime,
@@ -8461,6 +8719,35 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
             'old_very_high': old_very_high,
             'differs_from_live': old_regime != regime,
         },
+    }
+
+
+def _pc2_vix_regime_summary(ctx, latest_poll=None):
+    """Compact, display-safe view of the live VIX regime for the PWA."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    regime_ctx = ctx.get('_pc2_vix_regime_context')
+    if not isinstance(regime_ctx, dict):
+        poll = latest_poll if isinstance(latest_poll, dict) else {}
+        regime_ctx = _pc2_vix_regime_context(
+            ctx, poll.get('vix') if poll.get('vix') is not None else poll.get('VIX'), ctx.get('ivPercentile')
+        )
+    shadow = regime_ctx.get('old_constant_shadow') if isinstance(regime_ctx.get('old_constant_shadow'), dict) else {}
+    return {
+        'schema_version': regime_ctx.get('schema_version'),
+        'regime': regime_ctx.get('regime'),
+        'basis': regime_ctx.get('basis'),
+        'support_status': regime_ctx.get('support_status'),
+        'vix': regime_ctx.get('vix'),
+        'vix_percentile': regime_ctx.get('vix_percentile'),
+        'support_count': regime_ctx.get('support_count'),
+        'window': VIX_DAILY_HISTORY_WINDOW,
+        'history_status': regime_ctx.get('history_status'),
+        'history_source': regime_ctx.get('history_source'),
+        'history_oldest_date': regime_ctx.get('history_oldest_date'),
+        'history_newest_date': regime_ctx.get('history_newest_date'),
+        'history_sessions_behind': regime_ctx.get('history_sessions_behind'),
+        'history_max_sessions_behind': regime_ctx.get('history_max_sessions_behind'),
+        'constant_band_regime': shadow.get('regime'),
     }
 
 
@@ -9341,7 +9628,37 @@ def _history_rows_from_ctx(ctx):
             merged = dict(dedup.get(day, {}))
             merged.update(row)
             dedup[day] = merged
-    return list(reversed(list(dedup.values())))
+    ordered = list(reversed(list(dedup.values())))
+    return _fresh_daily_history_rows(ctx, ordered)
+
+
+def _fresh_daily_history_rows(ctx, rows):
+    """Fail closed on a stale dated daily history.
+
+    When the live session date is known, the whole series is dropped if its
+    newest prior-session row is more than DAILY_HISTORY_MAX_SESSIONS_BEHIND
+    trading sessions old, or if no row carries a valid prior-session date.
+    A percentile ranked against months-old rows is worse than no percentile:
+    callers already treat an empty history as unsupported and fall back.
+    """
+    session_dt = _context_session_date(ctx) if isinstance(ctx, dict) else None
+    if session_dt is None:
+        return rows
+    newest = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get('date') or row.get('session_date') or row.get('sessionDate')
+        row_dt = _pc2_iso_date(str(raw)[:10]) if raw is not None else None
+        if row_dt is None or row_dt >= session_dt:
+            continue
+        if newest is None or row_dt > newest:
+            newest = row_dt
+    if newest is None:
+        return []
+    if _nse_sessions_strictly_between(newest, session_dt) > DAILY_HISTORY_MAX_SESSIONS_BEHIND:
+        return []
+    return rows
 
 def _history_values(ctx, key_options, window):
     rows = _history_rows_from_ctx(ctx)
@@ -9362,11 +9679,15 @@ def _history_values(ctx, key_options, window):
 
 
 def _vix_history_values(ctx, window):
-    """Return one prior-session VIX series without counting the same days twice."""
-    explicit = _numeric_series(ctx.get('vixHistory') if isinstance(ctx, dict) else None)
-    if explicit:
-        return explicit[-window:]
-    return _history_values(ctx, ('vix', 'VIX'), window)
+    """Return one validated prior-session daily VIX series (chronological).
+
+    Empty when the dated history is stale, undated or missing; see
+    ``_pc2_vix_daily_history``.
+    """
+    history = _pc2_vix_daily_history(ctx, window)
+    if history.get('status') not in VIX_HISTORY_FRESH_STATUSES:
+        return []
+    return list(history.get('values') or [])[-window:]
 
 def _earlier_poll_values(polls, key_options, window):
     source = polls[:-1] if isinstance(polls, list) and len(polls) > 1 else []
@@ -17638,6 +17959,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             if isinstance(c, dict)
         ) if view is not None
     ]
+
+    try:
+        result['vixRegime'] = _pc2_vix_regime_summary(ctx, latest_poll)
+    except Exception as e:
+        result['vixRegime'] = {'error': str(e)}
 
     out_str, _ = _safe_json(result)
     return out_str

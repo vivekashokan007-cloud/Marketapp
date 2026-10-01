@@ -1182,6 +1182,30 @@ object SupabaseClient {
     }
 
     /**
+     * Reads the prior-session poll histories (`app_config` keys
+     * `poll_history_<date>` strictly before [today]) that carry the daily VIX
+     * closes for the brain's relative VIX regime. Returns null when the request
+     * fails, so the caller can keep its previous history instead of replacing
+     * it with nothing; an empty array is a genuine "no rows".
+     */
+    fun getVixDailyCloseSourceRows(today: String, maxDays: Int = VixDailyHistory.DEFAULT_MAX_DAYS): JSONArray? {
+        if (VixDailyHistory.parseIsoDate(today) == null || maxDays <= 0) return null
+        val limit = maxDays + VixDailyHistory.FETCH_MARGIN_DAYS
+        val prefix = VixDailyHistory.KEY_PREFIX
+        val path = "app_config?select=key,value" +
+            "&key=like.$prefix*" +
+            "&key=lt.$prefix$today" +
+            "&order=key.desc&limit=$limit"
+        val json = fetchSync(getBaseRequest(path).get().build()) ?: return null
+        return try {
+            JSONArray(json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error parsing VIX daily close source rows: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Reads premium_history, order by date desc, limit 60
      */
     fun getPremiumHistory(): JSONArray {

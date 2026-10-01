@@ -187,6 +187,18 @@ The **canonical** post-close evaluation (`ml_evaluation_outcomes`) is unaffected
 
 Root cause was an asymmetry: `buildTeacherResearchSnapshotPayload` already streamed via `streamJsonArrayFile` (Android `JsonReader`), but the outcomes side never got the same treatment. Fix: `buildTeacherResearchOutcomePayload(file)` streams the outcomes file row-by-row, applying the same whitelist/rejected-cap/FAIL-scrub compaction (extracted into the shared `compactTeacherResearchOutcomeRow`), so only the compacted output accumulates — never the raw string or the full parsed array. The remote path (`compactTeacherResearchOutcomePayload(JSONArray)`) is refactored onto the same shared helper and is behavior-identical. Dead `readJsonArrayFile` removed. Kotlin-only change; **could not be compile-tested in the analysis sandbox** (no kotlinc/Android SDK) — the GitHub signed-release workflow is the compile gate, and the rebuild is wrapped in try/catch that degrades to the pre-existing "report pending" state on any failure, so a mistake cannot crash the app or corrupt data. **Field-verify** after the phone reports v2.6.14/b445: reopen the ML tab post-close and confirm the log line `teacher research outcome payload compacted (streamed) ...` and a READY teacher-research report (no OOM). Future hardening if volume grows several-fold: stream the compacted rows directly to the temp file (O(1) memory) instead of accumulating the compacted array — deferred as it needs hand-rolled JSON-array serialization.
 
+### VIX regime history v2 (2026-10-01)
+
+`pc2_vix_regime_context_live_v2`. The relative VIX regime, verdict `vix_z` and the C3 daily windows previously read `premium_history`, which stopped on 2026-06-29 when its PWA writer was removed. From 2026-08-10 every regime was therefore ranked against Feb–Jun closes.
+
+The fix has three parts:
+
+- **History source.** The app now builds dated daily closes (`VixDailyHistory`, ctx `vixDailyHistory`) from `app_config` `poll_history_<date>`.
+- **Validation.** The brain validates them in `_pc2_vix_daily_history`.
+- **Fail closed.** `VIX_HISTORY_MAX_SESSIONS_BEHIND = 2` trading sessions; `_fresh_daily_history_rows` applies the same rule to every dated daily series.
+
+Absolute guards (`VIX_REGIME_*_ABS_*`) exist and are off. See `docs/VIX_REGIME_HISTORY_FIX_20261001.md`.
+
 ### Still open / deferred (deliberate scope boundary)
 
 These were scoped but explicitly NOT implemented — they require a build (multi-session evaluator) or further explicit confirmation before touching production ranking:

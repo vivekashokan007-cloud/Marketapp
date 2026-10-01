@@ -594,6 +594,11 @@ class MarketWatchService : Service() {
         
         if (!isStale && hasBaseline && lastPollDate == today) {
             Log.d(TAG, "Bootstrap skipped: data is fresh")
+            if (!prefs.contains(VixDailyHistory.PREF_KEY)) {
+                // First start of a build that introduced the daily VIX history
+                // on a day whose bootstrap already ran: fetch it once now.
+                withContext(Dispatchers.IO) { refreshVixDailyHistory(today) }
+            }
             val premHistory = JSONArray(prefs.getString("premium_history", "[]"))
             val ySig = prefs.getString("yesterday_signal", "null")
             val historyLoadedLog = "HISTORY_LOADED_RESTART: vixCount=${premHistory.length()}, fiiCount=${extractFiiHistory().length()}, ySignal=$ySig"
@@ -675,6 +680,7 @@ class MarketWatchService : Service() {
                 if (premHistory.length() > 0) {
                     prefs.edit().putString("premium_history", premHistory.toString()).apply()
                 }
+                refreshVixDailyHistory(today)
                 val supplyQualityHistory = SupabaseClient.getPc2SupplyQualityHistory(today)
                 prefs.edit().putString("pc2_supply_quality_history", supplyQualityHistory.toString()).apply()
                 
@@ -1884,17 +1890,37 @@ class MarketWatchService : Service() {
         }
     }
 
+    /**
+     * Fetches prior-session daily VIX closes and stores them for the brain.
+     * On a failed request the previous history is kept; brain.py fails closed
+     * if it is too old. Must run off the main thread.
+     */
+    private fun refreshVixDailyHistory(today: String) {
+        val rows = SupabaseClient.getVixDailyCloseSourceRows(today)
+        if (rows == null) {
+            val kept = try {
+                JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]").length()
+            } catch (_: Exception) { 0 }
+            LogBuffer.add('W', TAG, "VIX_DAILY_HISTORY_UNAVAILABLE: kept=$kept previous closes; brain fails closed if they are stale")
+            return
+        }
+        val history = VixDailyHistory.fromAppConfigRows(rows, today)
+        prefs.edit().putString(VixDailyHistory.PREF_KEY, history.toString()).apply()
+        val oldest = history.optJSONObject(0)?.optString("date", "") ?: ""
+        val newest = history.optJSONObject(history.length() - 1)?.optString("date", "") ?: ""
+        val line = "VIX_DAILY_HISTORY_LOADED: closes=${history.length()} sourceRows=${rows.length()} oldest=$oldest newest=$newest"
+        Log.i(TAG, line)
+        LogBuffer.add('I', TAG, line)
+    }
+
     private fun calculateIvPercentile(vix: Double): Int {
-        try {
-            val histStr = prefs.getString("premium_history", "[]") ?: "[]"
-            val hist = JSONArray(histStr)
-            if (hist.length() < 10) return 50
-            var lower = 0
-            for (i in 0 until hist.length()) {
-                if (vix > hist.getJSONObject(i).optDouble("vix", 0.0)) lower++
-            }
-            return (lower * 100 / hist.length())
-        } catch (e: Exception) { return 50 }
+        // Legacy display/recording field. 50 is the pre-existing neutral value
+        // when there is no usable history; the brain never treats this field
+        // as regime authority (it carries no support count).
+        return try {
+            val hist = JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]")
+            VixDailyHistory.ivPercentile(vix, hist, todayIstDate()) ?: 50
+        } catch (_: Exception) { 50 }
     }
 
     private fun extractFiiHistory(): JSONArray {
@@ -2320,12 +2346,15 @@ class MarketWatchService : Service() {
             
             // Always overlay history from SharedPreferences for brain.py (Persistence)
             val premHist = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
-            val vixHist = JSONArray()
-            for (i in 0 until premHist.length()) {
-                val v = premHist.getJSONObject(i).optDouble("vix", 0.0)
-                if (v > 0) vixHist.put(v)
-            }
+            // Dated prior-session VIX closes (oldest first). The undated
+            // vixHistory list is kept for offline tooling only; with today_ist
+            // set, the brain trusts nothing but these dated closes.
+            val vixDailyHist = try {
+                JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]")
+            } catch (_: Exception) { JSONArray() }
+            val vixHist = VixDailyHistory.vixValues(vixDailyHist)
             if (premHist.length() > 0) ctxObj.put("premiumHistory", premHist)
+            if (vixDailyHist.length() > 0) ctxObj.put("vixDailyHistory", vixDailyHist)
             if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
             val supplyQualityHistory = JSONArray(prefs.getString("pc2_supply_quality_history", "[]") ?: "[]")
             if (supplyQualityHistory.length() > 0) {
