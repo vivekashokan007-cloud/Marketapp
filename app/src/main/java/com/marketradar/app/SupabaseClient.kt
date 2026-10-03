@@ -1182,6 +1182,42 @@ object SupabaseClient {
     }
 
     /**
+     * Daily VIX closes for the brain's relative VIX regime, oldest first.
+     *
+     * Reads the prior-session poll histories (`app_config` keys
+     * `poll_history_<date>`, from [VixDailyHistory.fetchFloorDate] up to but
+     * excluding [today]) a few rows at a time and keeps only each session's
+     * close, so the ~85 KB-per-day raw polls are never all held in memory.
+     * Returns null if any page fails, so the caller keeps its previous history
+     * instead of replacing it with a partial one; an empty array is a genuine
+     * "no rows".
+     */
+    fun getVixDailyCloses(today: String, maxDays: Int = VixDailyHistory.DEFAULT_MAX_DAYS): JSONArray? {
+        val floor = VixDailyHistory.fetchFloorDate(today) ?: return null
+        if (maxDays <= 0) return null
+        val prefix = VixDailyHistory.KEY_PREFIX
+        val pageSize = VixDailyHistory.FETCH_PAGE_SIZE
+        val closes = ArrayList<JSONObject>()
+        for (page in 0 until VixDailyHistory.FETCH_MAX_PAGES) {
+            val path = "app_config?select=key,value" +
+                "&key=like.$prefix*" +
+                "&key=gte.$prefix$floor" +
+                "&key=lt.$prefix$today" +
+                "&order=key.desc&limit=$pageSize&offset=${page * pageSize}"
+            val json = fetchSync(getBaseRequest(path).get().build()) ?: return null
+            val rows = try {
+                JSONArray(json)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error parsing VIX daily close page=$page: ${e.message}")
+                return null
+            }
+            closes.addAll(VixDailyHistory.closesFromAppConfigRows(rows, today))
+            if (rows.length() < pageSize) break
+        }
+        return VixDailyHistory.assemble(closes, today, maxDays)
+    }
+
+    /**
      * Reads premium_history, order by date desc, limit 60
      */
     fun getPremiumHistory(): JSONArray {

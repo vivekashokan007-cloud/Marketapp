@@ -40,11 +40,18 @@ assert brain._assess_force1('IRON_CONDOR', {'bias': 'NEUTRAL', 'strength': ''}) 
 # IRON_CONDOR + NEUTRAL bias + VIX 18 (not high enough for VIX_HIGH=20) + iv_pctl 50:
 #   F1 = +1 (NEUTRAL+NEUTRAL post-A.1)
 #   F2 = +1 (credit)
-#   F3 = +1 (NORMAL VIX is non-opposing)
-#   score = 3, aligned = 3, against = 0
+#   F3 = 0 in Paper without verified daily VIX evidence
+#   score = 2, aligned = 2, against = 0
 result = brain._get_forces('IRON_CONDOR', {'bias': 'NEUTRAL', 'strength': ''}, 18.0, 50)
 assert result['f2'] == 1, f"FAIL: aggregator f2 should be +1, got {result['f2']}"
-assert result['aligned'] == 3, f"FAIL: aligned should be 3, got {result['aligned']}"
-assert result['score'] == 3, f"FAIL: score should be 3, got {result['score']}"
+assert result['f3'] == 0, f"FAIL: unsupported Paper VIX should be neutral, got {result['f3']}"
+assert result['aligned'] == 2, f"FAIL: aligned should be 2, got {result['aligned']}"
+assert result['score'] == 2, f"FAIL: score should be 2, got {result['score']}"
+
+# Real execution preserves the previously released vote.
+real_result = brain._get_forces('IRON_CONDOR', {'bias': 'NEUTRAL', 'strength': ''}, 18.0, 50,
+                                ctx={'executionMode': 'live'})
+assert real_result['f3'] == 1 and real_result['score'] == 3, \
+    f"FAIL: Real Force 3 parity changed: {real_result}"
 
 print("ALL 9 TESTS PASSED — Directive A.2 verified.")

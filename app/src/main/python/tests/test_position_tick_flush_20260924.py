@@ -495,10 +495,10 @@ class PositionTickFlushSourceContractTests(unittest.TestCase):
         for c in (OK, CONFIG_AUTH, SCHEMA, TRANSIENT, SERVER, TRANSPORT, IDEMPOTENT, CONFLICT_UNVERIFIED):
             self.assertIn(f'"{c}"', self.ptf)
 
-    def test_version_unchanged_pin(self):
+    def test_current_release_pin(self):
         gradle = (APP / "build.gradle.kts").read_text(encoding="utf-8")
-        self.assertIn('versionName = "2.6.64"', gradle)
-        self.assertIn("versionCode = 495", gradle)
+        self.assertIn('versionName = "2.6.65"', gradle)
+        self.assertIn("versionCode = 496", gradle)
 
     def test_request_started_vs_valuation_ts_still_present(self):
         self.assertIn("batch_b_parity_request_started_ts", self.pts)
