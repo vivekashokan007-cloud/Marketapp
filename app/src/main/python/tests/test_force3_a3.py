@@ -1,8 +1,4 @@
-"""Force3 IV regime verification.
-
-PC2 changed VIX regime authority from absolute constants to relative
-percentile context. Absolute IV_HIGH/IV_LOW remain shadow diagnostics only.
-"""
+"""Force3 IV regime verification for corrected Paper and legacy Real."""
 import os
 import sys
 
@@ -10,14 +6,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import brain
 
 
-HIGH_CTX = {"vixHistory": [10 + i * 0.4 for i in range(30)]}
-LOW_CTX = {"vixHistory": [14 + i * 0.4 for i in range(30)]}
+HIGH_CTX = {"executionMode": "live", "vixHistory": [10 + i * 0.4 for i in range(30)]}
+LOW_CTX = {"executionMode": "live", "vixHistory": [14 + i * 0.4 for i in range(30)]}
 
-# No context means neutral, not hidden absolute-threshold fallback.
-assert brain._assess_force3('BULL_CALL', 22.0, None) == 1, \
-    "FAIL: missing context should not use absolute VIX as live HIGH authority"
-assert brain._assess_force3('BEAR_CALL', 14.0, None) == 1, \
-    "FAIL: missing context should not use absolute VIX as live LOW authority"
+# Missing verified history cannot cast a positive Paper vote. Real parity is
+# tested with explicit executionMode so a legacy undated series remains valid.
+assert brain._assess_force3('BULL_CALL', 22.0, None) == 0, \
+    "FAIL: missing Paper history should give no IV vote"
+assert brain._assess_force3('BEAR_CALL', 14.0, None) == 0, \
+    "FAIL: missing Paper history should give no IV vote"
+assert brain._assess_force3('BULL_CALL', 22.0, None, {'executionMode': 'live'}) == 1, \
+    "FAIL: Real missing history behavior changed"
 
 # Relative high / very-high context favors credit and penalizes debit.
 assert brain._assess_force3('BEAR_CALL', 22.0, None, HIGH_CTX) == 0, \
@@ -34,8 +33,8 @@ assert brain._assess_force3('BEAR_CALL', 14.0, None, LOW_CTX) == -1, \
     "FAIL: percentile LOW + credit should return -1"
 
 # IV percentile is a fallback only when its own support and stability are explicit.
-IV_HIGH_CTX = {"ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
-IV_LOW_CTX = {"ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
+IV_HIGH_CTX = {"executionMode": "live", "ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
+IV_LOW_CTX = {"executionMode": "live", "ivPercentileSupportCount": 30, "ivPercentileStabilityPass": True}
 assert brain._assess_force3('BEAR_PUT', 18.0, 90, IV_HIGH_CTX) == 1, \
     "FAIL: IV percentile 90 should create VERY_HIGH debit support"
 assert brain._assess_force3('BULL_CALL', 18.0, 20, IV_LOW_CTX) == 1, \

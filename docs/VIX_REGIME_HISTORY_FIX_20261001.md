@@ -68,9 +68,10 @@ evaluated once per candidate.
 
 When the history is stale, undated or missing:
 
-- the regime takes the existing neutral path (`NORMAL`, basis
-  `neutral_stale_history`, `support_status = STALE_HISTORY`);
-- `vix_z` falls back to its existing absolute bands;
+- the reported relative regime takes the neutral path (`NORMAL`, basis
+  `neutral_stale_history`, `support_status = STALE_HISTORY`), and Paper
+  Force 3 contributes zero;
+- Paper strategy selection and verdict use the existing absolute VIX bands;
 - the C3 daily rows are dropped. `_fresh_daily_history_rows` applies the same
   session rule and window floor to the merged daily rows. `_history_values`
   also applies the rule to each series, so a fresh row of one variable cannot
@@ -83,34 +84,48 @@ When the history is stale, undated or missing:
   rejection counts.
 - The analyze result has a compact `vixRegime`, which the PWA displays.
 
-### Absolute guards (knobs, off)
+### Decision correction in 2.6.65/b496 (3 October review)
 
-These constants are all `None` by default, so behaviour is unchanged until an
-owner sets them:
+Vivek asked for the known-wrong decision to be corrected, not merely shown as
+research. The dated closes now govern **Paper** decisions. `executionMode`
+`sandbox` and `live` retain their pre-fix VIX inputs and decision policy;
+switching modes also removes any cached dated list from the non-Paper context.
 
-- `VIX_REGIME_HIGH_ABS_FLOOR`
-- `VIX_REGIME_VERY_HIGH_ABS_FLOOR`
-- `VIX_REGIME_LOW_ABS_CEILING`
+- The relative HIGH label needs VIX at least 15; relative VERY_HIGH needs VIX
+  at least 20. LOW is allowed only at VIX 15 or below. These are the existing
+  absolute VIX thresholds used as guards, not newly fitted parameters.
+- With VIX 15.37 on 1 October, the corrected history ranks at the 100th
+  percentile (relative VERY_HIGH), while the Paper decision regime is HIGH.
+- If the dated history is stale, missing, or unstable, Paper Force 3 is **0**
+  rather than +1 for every candidate. The strategy menu uses the existing
+  absolute 20/24 VIX bands until the history loads.
+- Paper verdict `vix_z` uses the existing absolute 16/20/24 bands instead of
+  stale history or an unreviewed relative z-score threshold. Non-Paper keeps
+  the legacy z-score path.
+- The compact result carries `decision_scope`, `percentile_regime`, and
+  `absolute_guard_applied` so the PWA can explain the cap.
 
 ### PWA (MarketVivi)
 
 - The headline is the brain's relative regime, with its percentile and the
   date of its newest close. The fixed 15/20/24 band is shown underneath as a
   labelled reference.
-- When the history is stale or thin, the display says so and shows the regime
-  as held neutral.
+- When the history is stale or thin, the display says Paper Force 3 is neutral
+  and the fixed VIX band is used for strategy selection.
+- In non-Paper execution, it labels the fixed band as reference and does not
+  claim the Paper history correction is active.
 - If the brain result is stale, the display falls back to the band.
 - Sigma badges are rounded to 2 decimals.
 
 ## Evidence
 
 - Unit tests:
-  - `tests/test_vix_regime_history_20261001.py`: 35 tests, including the real
+  - `tests/test_vix_regime_history_20261001.py`: 37 tests, including the real
     closes from 22 June to 30 September as a fixture and the findings from the
     round-1 review.
   - `VixDailyHistoryTest.kt`: 10 tests.
   - MarketVivi `tests/test_vix_regime_display.mjs`: 11 tests.
-- The full Python suite passes: 1,139 tests, 2 skipped.
+- The full Python suite passes: 1,141 discovered tests.
 - Mutation checks: each of the following, reverted on purpose, fails at least
   one test:
   - reverting the regime to the undated list;
@@ -125,15 +140,10 @@ owner sets them:
 
 ## Limits
 
-- The 60-session percentile is relative. After a calm quarter, VIX 13.5 ranks
-  VERY_HIGH. The absolute guards exist for this case; choosing their values is
-  an owner decision.
-- `vix_z` has the same relative property, and the guards do not cover it.
-- The neutral fallback is the pre-existing missing-context behaviour:
-  - Force 3 is +1 for every structure;
-  - directional days use the low-IV strategy lists.
-
-  A distinct UNKNOWN regime would be a separate policy change.
+- The 60-session percentile remains a relative description. It is capped by
+  absolute guards before it changes Paper strategy decisions.
+- A missing series has no positive Force 3 vote. The fixed VIX menu is only a
+  known-current-value fallback; no history percentile is fabricated.
 - `NSE_HOLIDAYS` covers only 2026. Without the 2027 list, the staleness count
   treats 2027 holidays as sessions. That errs towards STALE, which is the safe
   direction.

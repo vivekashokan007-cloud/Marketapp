@@ -166,10 +166,12 @@ class RegimeContext(unittest.TestCase):
         ctx.update(extra)
         return brain._pc2_vix_regime_context(ctx, vix, None)
 
-    def test_2026_10_01_reported_low_is_very_high_on_real_closes(self):
+    def test_2026_10_01_stale_low_is_corrected_with_absolute_guard(self):
         r = self.regime('2026-10-01', 15.37)
         self.assertEqual(r['schema_version'], 'pc2_vix_regime_context_live_v2')
-        self.assertEqual(r['regime'], 'VERY_HIGH')
+        self.assertEqual(r['percentile_regime'], 'VERY_HIGH')
+        self.assertEqual(r['regime'], 'HIGH')
+        self.assertTrue(r['absolute_guard_applied'])
         self.assertEqual(r['vix_percentile'], 100.0)
         self.assertEqual(r['support_count'], 60)
         self.assertEqual(r['basis'], 'vix_percentile')
@@ -180,10 +182,10 @@ class RegimeContext(unittest.TestCase):
     def test_real_sessions_match_hand_checked_regimes(self):
         expected = {
             ('2026-09-23', 10.38): ('LOW', 0.0),
-            ('2026-09-24', 12.63): ('HIGH', 76.67),
+            ('2026-09-24', 12.63): ('NORMAL', 76.67),
             ('2026-09-25', 12.14): ('NORMAL', 57.5),
-            ('2026-09-28', 13.74): ('VERY_HIGH', 95.0),
-            ('2026-09-30', 13.47): ('VERY_HIGH', 92.5),
+            ('2026-09-28', 13.74): ('NORMAL', 95.0),
+            ('2026-09-30', 13.47): ('NORMAL', 92.5),
         }
         for (session, vix), (regime, pct) in expected.items():
             r = self.regime(session, vix)
@@ -199,7 +201,7 @@ class RegimeContext(unittest.TestCase):
         self.assertIsNone(r['vix_percentile'])
         self.assertEqual(r['history_newest_date'], '2026-06-29')
         # The defect: without a session date the same stale list still ranks LOW.
-        legacy = brain._pc2_vix_regime_context({'vixHistory': [r_['vix'] for r_ in premium]}, 15.37, 9)
+        legacy = brain._pc2_vix_regime_context({'executionMode': 'live', 'vixHistory': [r_['vix'] for r_ in premium]}, 15.37, 9)
         self.assertEqual(legacy['regime'], 'LOW')
 
     def test_stale_vix_history_feeds_no_consumer(self):
@@ -212,25 +214,25 @@ class RegimeContext(unittest.TestCase):
         self.assertEqual(brain._vix_history_values(fresh, 60)[-1], 13.47)
         self.assertEqual(len(brain._vix_history_values(fresh, 30)), 30)
 
-    def test_stale_regime_forces_are_the_existing_neutral(self):
+    def test_stale_regime_cannot_add_a_positive_paper_force(self):
         premium = stale_premium_rows()
         ctx = {'today_ist': '2026-10-01', 'premiumHistory': premium}
         for stype in ('BEAR_CALL', 'BULL_PUT', 'IRON_CONDOR', 'BEAR_PUT', 'BULL_CALL'):
-            self.assertEqual(brain._assess_force3(stype, 15.37, 9, ctx), 1, stype)
+            self.assertEqual(brain._assess_force3(stype, 15.37, 9, ctx), 0, stype)
 
-    def test_fresh_very_high_forces_and_varsity(self):
+    def test_fresh_high_forces_and_varsity_with_absolute_guard(self):
         ctx = {'today_ist': '2026-10-01', 'vixDailyHistory': closes_before('2026-10-01')}
-        self.assertEqual(brain._assess_force3('BEAR_CALL', 15.37, None, ctx), 0)
+        self.assertEqual(brain._assess_force3('BEAR_CALL', 15.37, None, ctx), 1)
         self.assertEqual(brain._assess_force3('IRON_CONDOR', 15.37, None, ctx), 1)
-        self.assertEqual(brain._assess_force3('BEAR_PUT', 15.37, None, ctx), 1)
+        self.assertEqual(brain._assess_force3('BEAR_PUT', 15.37, None, ctx), -1)
         varsity = brain._get_varsity_filter({'bias': 'BEAR', 'strength': ''}, 15.37, 'swing', False, dict(ctx, vix=15.37))
-        self.assertEqual(varsity['primary'], ['BEAR_CALL', 'BEAR_PUT'])
+        self.assertEqual(varsity['primary'], ['BEAR_CALL'])
         self.assertIn('IRON_CONDOR', varsity['allowed'])
 
-    def test_absolute_guards_are_off_by_default_and_step_down_when_set(self):
-        self.assertIsNone(brain.VIX_REGIME_HIGH_ABS_FLOOR)
-        self.assertIsNone(brain.VIX_REGIME_VERY_HIGH_ABS_FLOOR)
-        self.assertIsNone(brain.VIX_REGIME_LOW_ABS_CEILING)
+    def test_absolute_guards_are_active_and_step_down(self):
+        self.assertEqual(brain.VIX_REGIME_HIGH_ABS_FLOOR, 15.0)
+        self.assertEqual(brain.VIX_REGIME_VERY_HIGH_ABS_FLOOR, 20.0)
+        self.assertEqual(brain.VIX_REGIME_LOW_ABS_CEILING, 15.0)
         with mock.patch.object(brain, 'VIX_REGIME_VERY_HIGH_ABS_FLOOR', 18.0), \
                 mock.patch.object(brain, 'VIX_REGIME_HIGH_ABS_FLOOR', 14.0):
             r = self.regime('2026-10-01', 15.37)
@@ -243,7 +245,7 @@ class RegimeContext(unittest.TestCase):
             r = self.regime('2026-09-23', 10.38)
             self.assertEqual((r['percentile_regime'], r['regime']), ('LOW', 'NORMAL'))
         r = self.regime('2026-10-01', 15.37)
-        self.assertFalse(r['absolute_guard_applied'])
+        self.assertTrue(r['absolute_guard_applied'])
 
 
 class GenericDailyHistoryFreshness(unittest.TestCase):
@@ -264,17 +266,39 @@ class GenericDailyHistoryFreshness(unittest.TestCase):
 
 class VerdictZScore(unittest.TestCase):
     def test_verdict_z_uses_validated_history_only(self):
-        with open(brain.__file__, encoding='utf-8') as fh:
-            src = fh.read()
-        self.assertIn("vix_hist = _vix_history_values(ctx, VIX_DAILY_HISTORY_WINDOW)", src)
-        self.assertNotIn("vix_hist = ctx.get('vixHistory', [])", src)
+        old = [10 + i * 0.1 for i in range(60)]
+        self.assertEqual(brain._verdict_vix_z(15.37, {'today_ist': '2026-10-01', 'vixHistory': old}), -1.5)
+        self.assertAlmostEqual(
+            brain._verdict_vix_z(15.37, {'executionMode': 'live', 'today_ist': '2026-10-01', 'vixHistory': old}),
+            brain.z_score(15.37, old),
+        )
+
+    def test_non_paper_keeps_legacy_regime_and_daily_series(self):
+        premium = stale_premium_rows()
+        values = [row['vix'] for row in premium]
+        real = {'executionMode': 'live', 'today_ist': '2026-10-01',
+                'premiumHistory': premium, 'vixHistory': values}
+        paper = dict(real, executionMode='paper')
+        self.assertEqual(brain._pc2_vix_regime_context(real, 15.37)['regime'], 'LOW')
+        self.assertEqual(brain._assess_force3('BEAR_CALL', 15.37, None, real), -1)
+        self.assertEqual(brain._vix_history_values(real, 60), values[-60:])
+        self.assertEqual(brain._vix_history_values(paper, 60), [])
+        self.assertEqual(brain._assess_force3('BEAR_CALL', 15.37, None, paper), 0)
+
+    def test_missing_paper_history_uses_absolute_strategy_filter_without_force(self):
+        ctx = {'executionMode': 'paper', 'today_ist': '2026-10-01',
+               'vixDailyHistory': [], 'vix': 24.5}
+        varsity = brain._get_varsity_filter({'bias': 'BEAR', 'strength': ''}, 24.5, 'swing', False, ctx)
+        self.assertIn('BEAR_CALL', varsity['primary'])
+        self.assertIn('BEAR_PUT', varsity['primary'])
+        self.assertEqual(brain._assess_force3('BEAR_PUT', 24.5, None, ctx), 0)
 
 
 class ResultSummary(unittest.TestCase):
     def test_summary_shape(self):
         ctx = {'today_ist': '2026-10-01', 'vixDailyHistory': closes_before('2026-10-01')}
         s = brain._pc2_vix_regime_summary(ctx, {'vix': 15.37})
-        self.assertEqual(s['regime'], 'VERY_HIGH')
+        self.assertEqual(s['regime'], 'HIGH')
         self.assertEqual(s['vix_percentile'], 100.0)
         self.assertEqual(s['history_status'], 'FRESH')
         self.assertEqual(s['history_newest_date'], '2026-09-30')

@@ -146,11 +146,13 @@ class VixDailyHistoryTest {
     }
 
     @Test
-    fun serviceFeedsDatedClosesAndStopsDerivingVixFromPremiumHistory() {
+    fun serviceFeedsDatedClosesForPaperAndPreservesRealInput() {
         val service = source("src/main/java/com/marketradar/app/MarketWatchService.kt")
         assertTrue(service.contains("ctxObj.put(\"vixDailyHistory\", vixDailyHist)"))
-        assertTrue(service.contains("val vixHist = VixDailyHistory.vixValues(vixDailyHist)"))
-        assertFalse(service.contains("val v = premHist.getJSONObject(i).optDouble(\"vix\", 0.0)"))
+        assertTrue(service.contains("val correctedPaper = derivedExecutionMode == \"paper\""))
+        assertTrue(service.contains("VixDailyHistory.vixValues(vixDailyHist)"))
+        assertTrue(service.contains("ctxObj.remove(\"vixDailyHistory\")"))
+        assertTrue(service.contains("premHist.getJSONObject(i).optDouble(\"vix\", 0.0)"))
         assertTrue(service.contains("VixDailyHistory.ivPercentile(vix, hist, todayIstDate())"))
         val bootstrap = service.indexOf("SupabaseClient.getPremiumHistory()")
         assertTrue(bootstrap >= 0 && service.indexOf("refreshVixDailyHistory(today)", bootstrap) > bootstrap)

@@ -1912,11 +1912,20 @@ class MarketWatchService : Service() {
         LogBuffer.add('I', TAG, line)
     }
 
-    private fun calculateIvPercentile(vix: Double): Int {
+    private fun calculateIvPercentile(vix: Double, correctedPaper: Boolean = true): Int {
         // Legacy display/recording field. 50 is the pre-existing neutral value
         // when there is no usable history; the brain never treats this field
         // as regime authority (it carries no support count).
         return try {
+            if (!correctedPaper) {
+                val legacy = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
+                if (legacy.length() < 10) return 50
+                var lower = 0
+                for (i in 0 until legacy.length()) {
+                    if (vix > legacy.getJSONObject(i).optDouble("vix", 0.0)) lower++
+                }
+                return lower * 100 / legacy.length()
+            }
             val hist = JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]")
             VixDailyHistory.ivPercentile(vix, hist, todayIstDate()) ?: 50
         } catch (_: Exception) { 50 }
@@ -2343,6 +2352,16 @@ class MarketWatchService : Service() {
                 ctxObj.put("yesterdaySignal", sigObj)
             }
             
+            val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
+            val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
+            val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)
+            val derivedExecutionMode = when {
+                explicitExecutionMode in setOf("paper", "sandbox", "live") -> explicitExecutionMode
+                sandboxEnabled -> "sandbox"
+                orderProxyUrl.startsWith("https://") -> "live"
+                else -> "paper"
+            }
+
             // Always overlay history from SharedPreferences for brain.py (Persistence)
             val premHist = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
             // Dated prior-session VIX closes (oldest first). The undated
@@ -2351,10 +2370,25 @@ class MarketWatchService : Service() {
             val vixDailyHist = try {
                 JSONArray(prefs.getString(VixDailyHistory.PREF_KEY, "[]") ?: "[]")
             } catch (_: Exception) { JSONArray() }
-            val vixHist = VixDailyHistory.vixValues(vixDailyHist)
+            val correctedPaper = derivedExecutionMode == "paper"
+            val vixHist = if (correctedPaper) {
+                VixDailyHistory.vixValues(vixDailyHist)
+            } else {
+                // Retain the pre-fix input in sandbox/live execution modes.
+                JSONArray().apply {
+                    for (i in 0 until premHist.length()) {
+                        val value = premHist.getJSONObject(i).optDouble("vix", 0.0)
+                        if (value > 0) put(value)
+                    }
+                }
+            }
             if (premHist.length() > 0) ctxObj.put("premiumHistory", premHist)
-            if (vixDailyHist.length() > 0) ctxObj.put("vixDailyHistory", vixDailyHist)
-            if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist)
+            if (correctedPaper && vixDailyHist.length() > 0) {
+                ctxObj.put("vixDailyHistory", vixDailyHist)
+            } else {
+                ctxObj.remove("vixDailyHistory")
+            }
+            if (vixHist.length() > 0) ctxObj.put("vixHistory", vixHist) else ctxObj.remove("vixHistory")
             val supplyQualityHistory = JSONArray(prefs.getString("pc2_supply_quality_history", "[]") ?: "[]")
             if (supplyQualityHistory.length() > 0) {
                 ctxObj.put("pc2SupplyQualityHistory", supplyQualityHistory)
@@ -2371,7 +2405,7 @@ class MarketWatchService : Service() {
             val fiiHist = extractFiiHistory()
             if (fiiHist.length() > 0) ctxObj.put("fiiHistory", fiiHist)
             
-            ctxObj.put("ivPercentile", calculateIvPercentile(vix))
+            ctxObj.put("ivPercentile", calculateIvPercentile(vix, correctedPaper))
 
             ctxObj.put("capital",    prefs.getInt("capital", 250000))
             ctxObj.put("bnfExpiry",  resolvedBnfExpiry)
@@ -2380,8 +2414,6 @@ class MarketWatchService : Service() {
             ctxObj.put("bnfSpot",    bnfSpot)
             ctxObj.put("nfSpot",     nfSpot)
             val authToken = (prefs.getString("auth_token", "") ?: "").trim()
-            val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
-            val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
             val stage2aMode = when ((prefs.getString("stage2a_guard_mode", "paper") ?: "paper").trim().lowercase(Locale.US)) {
                 "off" -> "off"
                 "live" -> "live"
@@ -2389,13 +2421,6 @@ class MarketWatchService : Service() {
                 else -> "paper"
             }
             val stage2aTeacherTablePath = File(filesDir, "teacher_table_stage2a.json").absolutePath
-            val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)
-            val derivedExecutionMode = when {
-                explicitExecutionMode in setOf("paper", "sandbox", "live") -> explicitExecutionMode
-                sandboxEnabled -> "sandbox"
-                orderProxyUrl.startsWith("https://") -> "live"
-                else -> "paper"
-            }
             ctxObj.put("authTokenReady", authToken.isNotEmpty())
             ctxObj.put("sandboxEnabled", sandboxEnabled)
             ctxObj.put("orderProxyUrl", orderProxyUrl)

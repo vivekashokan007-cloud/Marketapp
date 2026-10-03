@@ -5501,6 +5501,15 @@ def position_gamma_alert(trade, polls, strike_oi):
 
 # ═══ THE VERDICT ═══
 
+def _verdict_vix_z(vix, ctx):
+    """Keep the old non-Paper score; Paper uses current absolute VIX bands."""
+    fallback = 1.5 if vix >= 24 else 0.5 if vix >= 20 else -0.5 if vix >= 16 else -1.5
+    if _paper_vix_policy(ctx):
+        return fallback
+    history = _vix_history_values(ctx, VIX_DAILY_HISTORY_WINDOW)
+    return z_score(vix, history) if len(history) >= 10 else fallback
+
+
 def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=None, cand_insights=None):
     """THE function. All intelligence in. ONE answer out.
     b92: Now receives candidates + their insights for menu awareness."""
@@ -5739,9 +5748,10 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
     if dte is None:
         dte = 5
 
-    # b93: Z-SCORE VIX REGIME — dynamic, not hardcoded
-    vix_hist = _vix_history_values(ctx, VIX_DAILY_HISTORY_WINDOW)
-    vix_z = z_score(vix, vix_hist) if len(vix_hist) >= 10 else (1.5 if vix >= 24 else 0.5 if vix >= 20 else -0.5 if vix >= 16 else -1.5)
+    # The older verdict z score came from the frozen undated series. Paper
+    # uses the existing absolute bands until the z-score policy is separately
+    # calibrated; non-Paper retains the exact pre-fix decision path.
+    vix_z = _verdict_vix_z(vix, ctx)
     # vix_z > 1.5 = extreme high (was vix>=24), vix_z > 0.5 = high (was vix>=20)
     # vix_z < -1.0 = low VIX regime, negative = cheap premiums
 
@@ -8261,9 +8271,11 @@ VIX_HISTORY_FRESH_STATUSES = ('FRESH', 'UNVERIFIED_NO_SESSION_DATE')
 # modest VIX can rank VERY_HIGH. When set, HIGH/VERY_HIGH also require VIX at
 # or above the floor (otherwise the regime steps down), and LOW requires VIX at
 # or below the ceiling (otherwise NORMAL).
-VIX_REGIME_HIGH_ABS_FLOOR = None
-VIX_REGIME_VERY_HIGH_ABS_FLOOR = None
-VIX_REGIME_LOW_ABS_CEILING = None
+# A percentile is relative to the recent sample. Keep the existing absolute
+# VIX bands as a guard before the relative rank changes Paper strategies.
+VIX_REGIME_HIGH_ABS_FLOOR = 15.0
+VIX_REGIME_VERY_HIGH_ABS_FLOOR = 20.0
+VIX_REGIME_LOW_ABS_CEILING = 15.0
 PC2_SIGMA_IMPORTANT_CONTEXT_VERSION = 'pc2_sigma_important_context_live_v1'
 PC2_SIGMA_IMPORTANT_NOTIFY_PERCENTILE = 85.0
 PC2_POSITION_ALERT_CONTEXT_VERSION = 'pc2_position_alert_context_live_v1'
@@ -8473,6 +8485,14 @@ def _pc2_vix_close_value(value):
     if num is None or not (VIX_DAILY_VALUE_MIN < num < VIX_DAILY_VALUE_MAX):
         return None
     return num
+
+
+def _paper_vix_policy(ctx):
+    """The dated-history decision correction belongs to Paper execution."""
+    if not isinstance(ctx, dict):
+        return True
+    mode = str(ctx.get('executionMode') or ctx.get('execution_mode') or 'paper').strip().lower()
+    return mode == 'paper'
 
 
 def _pc2_vix_daily_history(ctx, window=VIX_DAILY_HISTORY_WINDOW):
@@ -8696,8 +8716,12 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     ctx = ctx if isinstance(ctx, dict) else {}
     vix_value = _percentile_float(vix if vix is not None else ctx.get('vix'))
     iv_pct = _percentile_float(iv_pctl if iv_pctl is not None else ctx.get('ivPercentile'))
-    vix_history = _pc2_vix_daily_history(ctx, VIX_DAILY_HISTORY_WINDOW)
-    history_usable = vix_history.get('status') in VIX_HISTORY_FRESH_STATUSES
+    paper_policy = _paper_vix_policy(ctx)
+    vix_history = _pc2_vix_daily_history(ctx, VIX_DAILY_HISTORY_WINDOW) if paper_policy else {
+        'status': 'LEGACY_UNVERIFIED', 'source': 'legacy_vixHistory',
+        'values': _vix_history_values(ctx, VIX_DAILY_HISTORY_WINDOW),
+    }
+    history_usable = not paper_policy or vix_history.get('status') in VIX_HISTORY_FRESH_STATUSES
     vix_hist = list(vix_history.get('values') or []) if history_usable else []
     vix_cell = _percentile_cell(vix_value, vix_hist, min_support=CONTEXT_PERCENTILE_MIN_SUPPORT)
     support = int(vix_cell.get('support_count') or 0)
@@ -8747,7 +8771,8 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     else:
         regime = 'NORMAL'
     percentile_regime = regime
-    regime = _pc2_apply_vix_absolute_guards(regime, vix_value)
+    if paper_policy:
+        regime = _pc2_apply_vix_absolute_guards(regime, vix_value)
 
     old_low = vix_value is not None and vix_value <= _CONST['IV_LOW']
     old_high = vix_value is not None and vix_value >= _CONST['IV_HIGH']
@@ -8783,6 +8808,7 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
         'iv_percentile_stability_pass': iv_stability_pass,
         'percentile_regime': percentile_regime,
         'absolute_guard_applied': regime != percentile_regime,
+        'decision_scope': 'paper_corrected' if paper_policy else 'real_legacy_unchanged',
         'absolute_guards': {
             'high_floor': VIX_REGIME_HIGH_ABS_FLOOR,
             'very_high_floor': VIX_REGIME_VERY_HIGH_ABS_FLOOR,
@@ -8825,6 +8851,9 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
         'schema_version': regime_ctx.get('schema_version'),
         'regime': regime_ctx.get('regime'),
         'basis': regime_ctx.get('basis'),
+        'decision_scope': regime_ctx.get('decision_scope'),
+        'percentile_regime': regime_ctx.get('percentile_regime'),
+        'absolute_guard_applied': regime_ctx.get('absolute_guard_applied'),
         'support_status': regime_ctx.get('support_status'),
         'vix': regime_ctx.get('vix'),
         'vix_percentile': regime_ctx.get('vix_percentile'),
@@ -9166,8 +9195,14 @@ def _get_varsity_filter(bias, vix, trade_mode, range_detected=False, ctx=None):
     strength = bias.get('strength', '')
     is_strong = strength == 'STRONG'
     vix_regime = _pc2_vix_regime_context(ctx, vix, ctx.get('ivPercentile') if isinstance(ctx, dict) else None)
-    iv_high = vix_regime.get('regime') in ('HIGH', 'VERY_HIGH')
-    very_high = vix_regime.get('regime') == 'VERY_HIGH'
+    if _paper_vix_policy(ctx) and vix_regime.get('support_status') != 'SUPPORTED':
+        # A missing daily series must not masquerade as low IV. Use the
+        # existing absolute thresholds for strategy selection until it loads.
+        iv_high = _percentile_float(vix) is not None and vix >= _CONST['IV_HIGH']
+        very_high = _percentile_float(vix) is not None and vix >= _CONST['IV_VERY_HIGH']
+    else:
+        iv_high = vix_regime.get('regime') in ('HIGH', 'VERY_HIGH')
+        very_high = vix_regime.get('regime') == 'VERY_HIGH'
 
     if b == 'BEAR' and iv_high:
         primary = ['BEAR_CALL']
@@ -9259,7 +9294,10 @@ def _assess_force3(stype, vix, iv_pctl, ctx=None):
     """IV force: VIX regime → favor credit or debit"""
     is_credit = stype in _CONST['CREDIT_TYPES']
     is_debit = stype in _CONST['DEBIT_TYPES']
-    regime = _pc2_vix_regime_context(ctx, vix, iv_pctl).get('regime', 'NORMAL')
+    evidence = _pc2_vix_regime_context(ctx, vix, iv_pctl)
+    if _paper_vix_policy(ctx) and evidence.get('support_status') != 'SUPPORTED':
+        return 0
+    regime = evidence.get('regime', 'NORMAL')
     if regime == 'VERY_HIGH':
         if is_debit: return 1
         return 1 if stype in _CONST['NEUTRAL_TYPES'] else 0
@@ -9699,6 +9737,8 @@ def _row_value(row, keys):
 
 def _history_rows_from_ctx(ctx):
     """Merged daily rows, oldest first; memoised per ctx (called per cell)."""
+    if not _paper_vix_policy(ctx):
+        return _history_rows_from_ctx_uncached(ctx)
     if not isinstance(ctx, dict):
         return _history_rows_from_ctx_uncached(ctx)
     sources = tuple(ctx.get(key) for key in ('premiumHistory', 'premium_history', 'fiiHistory', 'fii_history'))
@@ -9740,6 +9780,8 @@ def _history_rows_from_ctx_uncached(ctx):
             merged.update(row)
             dedup[day] = merged
     ordered = list(reversed(list(dedup.values())))
+    if not _paper_vix_policy(ctx):
+        return ordered
     return _fresh_daily_history_rows(ctx, ordered)
 
 
@@ -9797,7 +9839,7 @@ def _history_values(ctx, key_options, window):
                 newest = row_dt
     # Freshness is judged per series: a fresh row of one variable must not
     # carry months-old rows of another variable back into a live window.
-    if session_dt is not None and values:
+    if _paper_vix_policy(ctx) and session_dt is not None and values:
         if newest is None or _nse_sessions_strictly_between(newest, session_dt) > DAILY_HISTORY_MAX_SESSIONS_BEHIND:
             return []
     return values[-window:]
@@ -9809,6 +9851,9 @@ def _vix_history_values(ctx, window):
     Empty when the dated history is stale, undated or missing; see
     ``_pc2_vix_daily_history``.
     """
+    if not _paper_vix_policy(ctx):
+        explicit = _numeric_series(ctx.get('vixHistory') if isinstance(ctx, dict) else None)
+        return explicit[-window:] if explicit else _history_values(ctx, ('vix', 'VIX'), window)
     history = _pc2_vix_daily_history(ctx, window)
     if history.get('status') not in VIX_HISTORY_FRESH_STATUSES:
         return []

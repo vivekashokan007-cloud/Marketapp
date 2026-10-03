@@ -197,7 +197,7 @@ The fix has three parts:
 - **Validation.** The brain validates them in `_pc2_vix_daily_history`.
 - **Fail closed.** `VIX_HISTORY_MAX_SESSIONS_BEHIND = 2` trading sessions; `_fresh_daily_history_rows` applies the same rule to every dated daily series.
 
-Absolute guards (`VIX_REGIME_*_ABS_*`) exist and are off. See `docs/VIX_REGIME_HISTORY_FIX_20261001.md`.
+Paper uses absolute guards (`VIX_REGIME_*_ABS_*`) before the relative rank affects decisions; sandbox/live keep their pre-fix inputs. See `docs/VIX_REGIME_HISTORY_FIX_20261001.md`.
 
 ### Still open / deferred (deliberate scope boundary)
 
