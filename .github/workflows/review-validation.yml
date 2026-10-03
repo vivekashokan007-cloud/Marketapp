@@ -8,6 +8,7 @@ on:
     paths:
       - 'app/**'
       - 'tools/**'
+      - 'supabase/**'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
       - 'gradle/**'
@@ -18,9 +19,11 @@ on:
       - main
       - work/g8-g10-integrity-20260913
       - review/codex-corrective-20260914
+      - work/db1-pc2-review-corrections-20260929
     paths:
       - 'app/**'
       - 'tools/**'
+      - 'supabase/**'
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
       - 'gradle/**'
@@ -39,6 +42,22 @@ jobs:
     name: Python and Android unit tests (no APK)
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    # DB-1: a throwaway PostgreSQL matching production's major version (17),
+    # used only by the scratch-database suite below. Nothing here reaches
+    # Supabase.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
 
     steps:
       - name: Checkout Marketapp
@@ -79,6 +98,15 @@ jobs:
 
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      - name: DB-1 migration suite and end-to-end parity audit (scratch PostgreSQL 17)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PC2_SCRATCH_OK: '1'
+        run: tools/pc2_db_suite/run.sh
 
       - name: Confirm publication artifacts were not built
         run: |

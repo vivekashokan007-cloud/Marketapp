@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import advice_parity_instrumentation as api
 import path_quality_evaluator as pqe
@@ -171,16 +173,26 @@ class R2Issue3CaptureCapFailClosed(unittest.TestCase):
 class R2Issue4FreezeCreationGate(unittest.TestCase):
     def test_creation_sep23_outcome_sep22_rejected(self):
         store = edf.EntryDecisionFreezeStore(memory_only=True)
-        row = store.freeze_entry(
-            entry_identity="r2-creation-gate",
-            freeze_ts="2026-09-22T12:00:00+00:00",
-            decision={"action": "ENTER"},
-            policy_id="H0",
-            policy_version="v1",
-            policy_implementation_identity="pinned_policy_impl_sha:abc",
-            dataset_pin="dataset_pin:fixture_v1",
-        )
-        self.assertTrue(row["created_at_utc"].startswith("2026-09-"))
+
+        class CreationClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                instant = cls(2026, 9, 23, 12, tzinfo=timezone.utc)
+                return instant.astimezone(tz) if tz is not None else instant.replace(tzinfo=None)
+
+        # Pin creation time so this Sep-23/Sep-22 counterexample works in
+        # later months and years without weakening the before-creation gate.
+        with patch.object(edf, "datetime", CreationClock):
+            row = store.freeze_entry(
+                entry_identity="r2-creation-gate",
+                freeze_ts="2026-09-22T12:00:00+00:00",
+                decision={"action": "ENTER"},
+                policy_id="H0",
+                policy_version="v1",
+                policy_implementation_identity="pinned_policy_impl_sha:abc",
+                dataset_pin="dataset_pin:fixture_v1",
+            )
+        self.assertEqual(row["created_at_utc"], "2026-09-23T12:00:00Z")
         with self.assertRaises(ValueError) as ctx:
             store.populate_outcome(
                 entry_identity="r2-creation-gate",

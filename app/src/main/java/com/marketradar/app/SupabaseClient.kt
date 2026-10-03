@@ -1857,6 +1857,173 @@ object SupabaseClient {
     }
 
     /**
+     * Codex round-2 finding B4: registration check for this device's ingestion
+     * credential. Returns true only when the server reports the credential as
+     * registered AND active; false when it answered otherwise; null when the
+     * question could not be answered (network, function not deployed yet).
+     */
+    fun pc2IngestDeviceActive(deviceKey: String): Boolean? {
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return false
+        val body = Pc2IngestCredential.statusRequestBody(deviceKey).toString()
+        val response = fetchSync(
+            getBaseRequest("rpc/pc2_ingest_device_status")
+                .post(body.toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+        ) ?: return null
+        return Pc2IngestCredential.statusIsActive(response)
+    }
+
+    /**
+     * Dual-write target for the lossless compact PC2 format. The outbox caller
+     * may acknowledge a file only when this method has verified both rows by
+     * readback. Missing tables, denied writes, or mismatched content fail closed.
+     *
+     * Round 3 (B4): rows are written only through the authorised ingestion
+     * function, never by table INSERT. The readbacks are unchanged and remain
+     * the acknowledgement evidence.
+     */
+    fun savePc2CompactBatch(envelope: JSONObject, deviceKey: String): Pc2TelemetryOutbox.Outcome {
+        val quarantine = Pc2TelemetryOutbox.Outcome.QUARANTINE
+        val retry = Pc2TelemetryOutbox.Outcome.RETRY
+        val policyRow = envelope.optJSONObject("policy_row") ?: return quarantine
+        val batchRow = envelope.optJSONObject("batch_row") ?: return quarantine
+        val policyHash = policyRow.optString("policy_hash", "")
+        val batchId = batchRow.optString("batch_id", "")
+        if (!policyHash.matches(Regex("[0-9a-f]{64}")) ||
+            !batchId.matches(Regex("[0-9a-f]{64}"))) return quarantine
+
+        // R5: the registry row carries the exact canonical bytes the hash is
+        // taken over, so both sides - and the database CHECK - derive the same
+        // identity from the same bytes.
+        val canonicalPolicy = policyRow.optString("canonical_policy", "")
+        if (canonicalPolicy.isEmpty()) return quarantine
+        if (Pc2CompactBatch.sha256(canonicalPolicy) != policyHash) return quarantine
+
+        // B1: the version the client acknowledges must be the one the database
+        // derives from the same bytes. A local disagreement is a builder defect
+        // that no retry can fix.
+        val derivedVersion = runCatching {
+            Pc2CompactBatch.derivePolicyVersion(JSONObject(canonicalPolicy))
+        }.getOrNull() ?: return quarantine
+        if (policyRow.optString("policy_version") != derivedVersion ||
+            batchRow.optString("policy_version") != derivedVersion ||
+            policyRow.optString("schema_version") != Pc2CompactBatch.GROUPING_SCHEMA_VERSION
+        ) return quarantine
+
+        // B4: one authorised call inserts both rows atomically. An unregistered
+        // or revoked device (PT403) and a spent daily quota (PT429) retry; the
+        // evidence stays queued until the owner registers the device or the
+        // IST day turns.
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return retry
+        val ingest = postToFirstWorkingTableDetailed(
+            listOf("rpc/pc2_ingest_compact_batch"),
+            Pc2IngestCredential.ingestRequestBody(deviceKey, envelope).toString(),
+            preferHeader = "return=representation"
+        )
+        if (!ingest.success) return classifyPc2PostFailure(ingest, batchId, "ingest")
+
+        val policyReadback = fetchSync(
+            getBaseRequest(
+                "ml_pc2_policy_registry?policy_hash=eq.$policyHash&" +
+                    "select=policy_hash,policy_version,schema_version,canonical_policy&limit=1"
+            ).get().build()
+        ) ?: return retry
+        val storedPolicy = runCatching { JSONArray(policyReadback).optJSONObject(0) }.getOrNull()
+            ?: return retry
+        val storedCanonicalPolicy = storedPolicy.optString("canonical_policy", "")
+        val policyVerified = storedPolicy.optString("policy_hash") == policyHash &&
+            storedPolicy.optString("policy_version") == policyRow.optString("policy_version") &&
+            storedPolicy.optString("schema_version") == policyRow.optString("schema_version") &&
+            storedCanonicalPolicy == canonicalPolicy &&
+            Pc2CompactBatch.sha256(storedCanonicalPolicy) == policyHash
+        if (!policyVerified) {
+            // A registry row already exists under this hash whose content does not
+            // hash back to it. Retrying can never fix that and the primary key
+            // blocks a correct replacement, so it must not stall the queue.
+            LogBuffer.add('E', TAG, "PC2_COMPACT_POLICY_MISMATCH: policyHash=$policyHash batchId=$batchId")
+            return quarantine
+        }
+
+        val batchReadback = fetchSync(
+            getBaseRequest(
+                "ml_pc2_decision_batches?batch_id=eq.$batchId&" +
+                    "select=batch_id,policy_hash,policy_version,decision_count," +
+                    "distinct_decision_count,decision_digest,grouped_digest," +
+                    "grouping_schema_version,grouped_canonical,complete&limit=1"
+            ).get().build()
+        ) ?: return retry
+        val storedBatch = runCatching { JSONArray(batchReadback).optJSONObject(0) }.getOrNull()
+            ?: return retry
+        val reconstructed = runCatching {
+            Pc2CompactBatch.reconstructOrderedDecisions(storedBatch)
+        }.getOrNull()
+        if (reconstructed == null) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_RECONSTRUCT_FAIL: batchId=$batchId")
+            return quarantine
+        }
+        // Codex review correction R4: the digest covers the decisions, not the
+        // completeness metadata beside them. A row with the right decisions but
+        // missing or contradictory truncation metadata would otherwise be
+        // acknowledged, and a capped source could later be read as full-poll
+        // evidence. Verify the contract explicitly before acknowledging.
+        val metadataVerified = Pc2CompactBatch.completenessMetadataMatches(
+            Pc2CompactBatch.groupedOf(batchRow),
+            Pc2CompactBatch.groupedOf(storedBatch)
+        )
+        if (!metadataVerified) {
+            LogBuffer.add(
+                'E',
+                TAG,
+                "PC2_COMPACT_COMPLETENESS_MISMATCH: batchId=$batchId " +
+                    "contract=${Pc2CompactBatch.COMPACT_CONTRACT_VERSION}"
+            )
+            return quarantine
+        }
+        // R5: the stored bytes must hash to the stored digest, and that digest is
+        // one of the inputs to the batch id, so a row cannot carry a legitimate
+        // identity over content the writer never produced.
+        val storedGroupedCanonical = storedBatch.optString("grouped_canonical", "")
+        val groupedBytesVerified = storedGroupedCanonical.isNotEmpty() &&
+            storedGroupedCanonical == batchRow.optString("grouped_canonical") &&
+            Pc2CompactBatch.sha256(storedGroupedCanonical) == batchRow.optString("grouped_digest") &&
+            storedBatch.optString("grouped_digest") == batchRow.optString("grouped_digest")
+        if (!groupedBytesVerified) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_CONTENT_BINDING_MISMATCH: batchId=$batchId")
+            return quarantine
+        }
+        val verified = storedBatch.optString("batch_id") == batchId &&
+            storedBatch.optString("policy_hash") == policyHash &&
+            storedBatch.optString("policy_version") == batchRow.optString("policy_version") &&
+            storedBatch.optInt("decision_count", -1) == batchRow.optInt("decision_count", -2) &&
+            storedBatch.optInt("distinct_decision_count", -1) == batchRow.optInt("distinct_decision_count", -2) &&
+            storedBatch.optString("decision_digest") == batchRow.optString("decision_digest") &&
+            storedBatch.optString("grouping_schema_version") == Pc2CompactBatch.GROUPING_SCHEMA_VERSION &&
+            storedBatch.optBoolean("complete", false) &&
+            Pc2CompactBatch.digestOrderedDecisions(reconstructed) == batchRow.optString("decision_digest")
+        if (!verified) {
+            LogBuffer.add('E', TAG, "PC2_COMPACT_READBACK_MISMATCH: batchId=$batchId")
+            return quarantine
+        }
+        return Pc2TelemetryOutbox.Outcome.ACKNOWLEDGED
+    }
+
+    /** Delegates to the outbox contract so the rule is unit-testable in isolation. */
+    private fun classifyPc2PostFailure(
+        result: PostResult,
+        batchId: String,
+        stage: String
+    ): Pc2TelemetryOutbox.Outcome {
+        val body = (result.errorBody ?: "") + " " + (result.message ?: "")
+        val outcome = Pc2TelemetryOutbox.classifyPostFailure(result.code, body)
+        LogBuffer.add(
+            if (outcome == Pc2TelemetryOutbox.Outcome.QUARANTINE) 'E' else 'W',
+            TAG,
+            "PC2_COMPACT_POST_FAIL: stage=$stage batchId=$batchId code=${result.code} outcome=$outcome"
+        )
+        return outcome
+    }
+
+    /**
      * Best-effort compact candidate persistence for offline ML evaluation breadth.
      *
      * The table may not exist yet in every environment; fail closed without

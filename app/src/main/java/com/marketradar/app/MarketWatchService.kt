@@ -439,6 +439,7 @@ class MarketWatchService : Service() {
         PositionTickService.ensureRunning(this)
         maintainSessionWakeLock()
         ensurePollAlarmScheduled()
+        serviceScope.launch(Dispatchers.IO) { drainPc2CompactOutbox() }
 
         if (intent?.action == ACTION_POLL_TICK) {
             serviceScope.launch { maybeRunPollFromAlarm() }
@@ -2697,6 +2698,49 @@ class MarketWatchService : Service() {
                                     catch (_: Exception) { /* leave as-is — don't drop the row */ }
                                 }
                             }
+                            // DB-1: persist a lossless compact PC2 envelope locally before the
+                            // snapshot compactor may remove large embedded telemetry. The old
+                            // row-per-decision upload remains during the parity/rollback window.
+                            // Review correction C1: build() can throw on malformed or
+                            // non-finite telemetry. It sits inside the outer
+                            // ML_SNAPSHOT_FAIL catch, so an uncaught throw here would
+                            // abort snapshot persistence, the legacy PC2 upload, the
+                            // generated-candidate write and the poll-persist release.
+                            // Telemetry must never be able to do that.
+                            // B4 (round 3): the compact channel is off until this
+                            // device's ingestion credential is confirmed registered.
+                            // Safe during parity only: the legacy PC2 path below stays
+                            // authoritative and is untouched by this gate.
+                            val pc2CompactEnabled =
+                                prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)
+                            val pc2CompactBatch = if (!pc2CompactEnabled) null else
+                                runCatching { Pc2CompactBatch.build(rawSnapObj) }
+                                    .onFailure { e ->
+                                        LogBuffer.add('E', TAG, "PC2_COMPACT_BUILD_FAIL: ${e.message}")
+                                    }
+                                    .getOrNull()
+                            if (pc2CompactBatch != null) {
+                                val rawContext = rawSnapObj.optJSONObject("context_json")
+                                rawContext?.put(
+                                    "snapshot_pc2_authority_compact_ref",
+                                    pc2CompactBatch.snapshotRef
+                                )
+                                try {
+                                    val newlyQueued = Pc2TelemetryOutbox.enqueue(
+                                        filesDir,
+                                        pc2CompactBatch
+                                    )
+                                    LogBuffer.add(
+                                        'I',
+                                        TAG,
+                                        "PC2_COMPACT_OUTBOX_ENQUEUE: new=$newlyQueued batchId=${pc2CompactBatch.batchRow.optString("batch_id")}"
+                                    )
+                                } catch (e: Exception) {
+                                    // Telemetry is non-authoritative, but failure is explicit and
+                                    // the legacy snapshot/row path stays intact for evidence.
+                                    LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_ENQUEUE_FAIL: ${e.message}")
+                                }
+                            }
                             val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
                             val contextBytes = snapObj.opt("context_json")
                                 ?.toString()?.toByteArray(Charsets.UTF_8)?.size ?: 0
@@ -2728,6 +2772,7 @@ class MarketWatchService : Service() {
                                     TAG,
                                     "PC2_AUTHORITY_TELEMETRY_SAVE: saved=$authorityTelemetrySaved pollTs=${snapObj.optString("poll_ts")} snapshotSaved=$snapshotSaved"
                                 )
+                                drainPc2CompactOutbox()
                                 try {
                                     if (generatedFactPack != null) {
                                         generatedSaved = persistCompactGeneratedCandidates(generatedFactPack, snapObj)
@@ -3018,6 +3063,72 @@ class MarketWatchService : Service() {
             sendBroadcast(tickIntent)
             val pollCount = prefs.getInt("poll_count", 0)
             Log.d(TAG, "BROADCAST_SENT: Poll #$pollCount (brain success=$brainSuccess)")
+        }
+    }
+
+    @Volatile
+    private var pc2UnregisteredLogged = false
+
+    private fun drainPc2CompactOutbox() {
+        val deviceKey = Pc2IngestCredential.loadOrCreate(
+            read = { prefs.getString(Pc2IngestCredential.PREF_DEVICE_KEY, null) },
+            // commit(), not apply(): the key must be durable before it is used.
+            write = { key -> prefs.edit().putString(Pc2IngestCredential.PREF_DEVICE_KEY, key).commit() }
+        )
+        if (deviceKey == null) {
+            LogBuffer.add('E', TAG, "PC2_INGEST_CREDENTIAL_UNAVAILABLE: compact channel stays off")
+            return
+        }
+        if (!prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)) {
+            when (SupabaseClient.pc2IngestDeviceActive(deviceKey)) {
+                true -> {
+                    prefs.edit().putBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, true).commit()
+                    LogBuffer.add('I', TAG, "PC2_INGEST_DEVICE_REGISTERED: compact channel enabled")
+                }
+                else -> {
+                    if (!pc2UnregisteredLogged) {
+                        pc2UnregisteredLogged = true
+                        // The hash only - never the key - so the owner can register it.
+                        LogBuffer.add(
+                            'W',
+                            TAG,
+                            "PC2_INGEST_DEVICE_UNREGISTERED: key_hash=${Pc2IngestCredential.keyHash(deviceKey)} " +
+                                "compact channel off; legacy PC2 remains authoritative"
+                        )
+                    }
+                    return
+                }
+            }
+        }
+        val compactDrain = Pc2TelemetryOutbox.drain(filesDir) { envelope ->
+            SupabaseClient.savePc2CompactBatch(envelope, deviceKey)
+        }
+        val clean = compactDrain.pending == 0 && compactDrain.quarantinedTotal == 0 &&
+            compactDrain.recoveredTotal == 0 && compactDrain.storageErrors == 0
+        LogBuffer.add(
+            if (clean) 'I' else 'W',
+            TAG,
+            "PC2_COMPACT_OUTBOX_DRAIN: attempted=${compactDrain.attempted} " +
+                "acknowledged=${compactDrain.acknowledged} quarantined=${compactDrain.quarantined} " +
+                "retried=${compactDrain.retried} stop=${compactDrain.stopReason} " +
+                "pending=${compactDrain.pending} " +
+                "pendingBytes=${compactDrain.pendingBytes} " +
+                "quarantinedTotal=${compactDrain.quarantinedTotal} " +
+                "recoveredTotal=${compactDrain.recoveredTotal} " +
+                "storageErrors=${compactDrain.storageErrors}"
+        )
+        compactDrain.quarantineReasons.forEach { reason ->
+            LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_QUARANTINE: $reason")
+        }
+        // R3: an orphaned temp envelope that was verified and re-queued, or that
+        // could not be verified and was retained for inspection.
+        compactDrain.recoveredReasons.forEach { reason ->
+            LogBuffer.add('W', TAG, "PC2_COMPACT_OUTBOX_TEMP_RECOVERY: $reason")
+        }
+        // R2: a failed archive move is a storage fault, not a successful
+        // quarantine. The bytes are still pending and must be surfaced.
+        compactDrain.storageErrorReasons.forEach { reason ->
+            LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_STORAGE_ERROR: $reason")
         }
     }
 
