@@ -18552,6 +18552,11 @@ def _candidate_view(c):
         'marginRequestUrl': c.get('marginRequestUrl'),
         'marginQuoteError': c.get('marginQuoteError'),
     }
+    # Varsity tier is a ranking sort key (PRIMARY before ALLOWED). Persist it
+    # when the generator stamped it, so stored evidence can audit the order;
+    # omit it otherwise rather than adding a null key to every row.
+    if c.get('varsityTier') is not None:
+        view['varsityTier'] = c.get('varsityTier')
     # This provenance exists only on the bounded ranked-evidence cohorts. Do
     # not add null keys to ordinary candidates: snapshots retain hundreds of
     # them and Android has a strict payload budget.
@@ -21175,6 +21180,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'sigmaExcessOverCeiling': top_cand.get('sigmaExcessOverCeiling') if top_cand.get('sigmaExcessOverCeiling') is not None else pc2_sort_components.get('sigma_excess_over_ceiling'),
             'entryEligible': top_cand.get('entryEligible'),
             'entryConfidence': top_cand.get('entryConfidence'),
+            'varsityTier': top_cand.get('varsityTier'),
             'deterministic_rank': top_cand.get('deterministic_rank'),
             'pc2PaperRank': top_cand.get('pc2PaperRank'),
             'pc2PaperPrimaryEligible': top_cand.get('pc2PaperPrimaryEligible'),
