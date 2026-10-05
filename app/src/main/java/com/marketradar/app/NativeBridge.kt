@@ -1785,11 +1785,8 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getSignalAccuracyStats(): String {
-        return try {
-            SupabaseClient.getSignalAccuracyStats().toString()
-        } catch (e: Exception) {
-            "{}"
-        }
+        // Compatibility stub: afternoon positioning retired; old PWA may still call.
+        return "{}"
     }
 
     @JavascriptInterface
@@ -2639,44 +2636,21 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getMorningSnapshot(date: String): String {
-        val key = date.ifBlank { todayIsoDate() }
-        morningSnapshotCache[key]?.let { return it }
-        return try {
-            val res = SupabaseClient.select("chain_snapshots", "date=eq.$key&session=eq.morning")
-            val result = if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
-            morningSnapshotCache[key] = result
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "getMorningSnapshot failed", e)
-            morningSnapshotCache[key] ?: "{}"
-        }
+        // Compatibility stub: retired chain_snapshots morning path. Callers must
+        // use morning_input / morning_baseline instead.
+        return "{}"
     }
 
     @JavascriptInterface
     fun getYesterdayHistory(days: Int): String {
-        val safeDays = days.coerceAtLeast(1)
-        val key = "${todayIsoDate()}:$safeDays"
-        if (key == yesterdayHistoryCacheKey) return yesterdayHistoryCache
-        return try {
-            val result = SupabaseClient.select("chain_snapshots", null, "date.desc", safeDays).toString()
-            yesterdayHistoryCacheKey = key
-            yesterdayHistoryCache = result
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "getYesterdayHistory failed", e)
-            yesterdayHistoryCache
-        }
+        // Compatibility stub: retired chain_snapshots history path.
+        return "[]"
     }
 
     @JavascriptInterface
     fun getChainSnapshot(date: String, session: String): String {
-        return try {
-            val res = SupabaseClient.select("chain_snapshots", "date=eq.$date&session=eq.$session")
-            if (res.length() > 0) res.getJSONObject(0).toString() else "{}"
-        } catch (e: Exception) {
-            Log.e(TAG, "getChainSnapshot failed", e)
-            "{}"
-        }
+        // Compatibility stub: retired exact chain_snapshots table path.
+        return "{}"
     }
 
     @JavascriptInterface
@@ -2798,12 +2772,8 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getRecentSignals(limit: Int): String {
-        return try {
-            SupabaseClient.getRecentSignals(limit).toString()
-        } catch (e: Exception) {
-            Log.e(TAG, "getRecentSignals failed", e)
-            "[]"
-        }
+        // Compatibility stub: afternoon positioning signals retired.
+        return "[]"
     }
 
     @JavascriptInterface

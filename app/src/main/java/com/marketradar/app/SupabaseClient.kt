@@ -1739,23 +1739,6 @@ object SupabaseClient {
             message = if (verified == expectedIds.size) "C3 rows verified." else "C3 verification incomplete: $verified/${expectedIds.size}"
         )
     }
-    
-    /**
-     * Reads yesterday's signal from chain_snapshots
-     */
-    fun getYesterdaySignal(date: String): JSONObject? {
-        val request = getBaseRequest("chain_snapshots?date=eq.$date&session=eq.315pm&select=tomorrow_signal,signal_strength")
-            .get()
-            .build()
-        val json = fetchSync(request) ?: return null
-        return try {
-            val array = JSONArray(json)
-            if (array.length() > 0) array.getJSONObject(0) else null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing yesterday signal: ${e.message}")
-            null
-        }
-    }
 
     /**
      * Saves a brain snapshot to ml_brain_snapshots (ML Arch V2).
@@ -2244,35 +2227,8 @@ object SupabaseClient {
         throw IllegalStateException("EVAL_IDENTITY_LOOKUP_CAPPED: local inputs and results retained")
     }
 
-    fun fetchChainSlices(date: String): JSONArray {
-        val exact = fetchArrayFromTables(
-            listOf(
-                "ml_option_chain_snapshots?session_date=eq.$date&order=poll_ts.desc",
-                "chain_slices?session_date=eq.$date&order=poll_ts.desc",
-                "chain_snapshots?date=eq.$date&order=created_at.desc"
-            )
-        )
-        if (exact.length() > 0) return exact
-
-        val recent = fetchArrayFromTables(
-            listOf(
-                "ml_option_chain_snapshots?select=*&order=poll_ts.desc&limit=3000",
-                "chain_slices?select=*&order=poll_ts.desc&limit=3000",
-                "chain_snapshots?select=*&order=created_at.desc&limit=3000"
-            )
-        )
-        return filterRowsByIstSessionDate(recent, date)
-    }
-
     fun fetchEvaluationChainSlices(date: String): JSONArray {
         return fetchEvaluationChainCandles(date).rows
-    }
-
-    fun saveChainSlice(body: JSONObject): Boolean {
-        return postToFirstWorkingTable(
-            listOf("ml_option_chain_snapshots", "chain_slices", "chain_snapshots"),
-            body.toString()
-        )
     }
 
     fun fetchEvaluationChainCandles(date: String): ChainFeedResult {
@@ -3578,37 +3534,6 @@ object SupabaseClient {
         }
     }
 
-    fun saveChainSnapshot(session: String, data: JSONObject): Boolean {
-        // SC4: Standardization - snapshots use IST date to match trading days
-        val ist = java.util.TimeZone.getTimeZone("Asia/Kolkata")
-        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply {
-            timeZone = ist
-        }.format(java.util.Date())
-        val body = JSONObject()
-        body.put("date", today)
-        body.put("session", session)
-        body.put("data", data)
-
-        // Do not rely on PostgREST upsert semantics here: older schemas did not
-        // always have a unique (date, session) constraint, so a plain POST can
-        // create duplicate 2pm/315pm snapshots. Patch the existing row first.
-        val existing = select("chain_snapshots", "date=eq.$today&session=eq.$session", null, 1)
-        if (existing.length() > 0 && update("chain_snapshots", body, "date=eq.$today&session=eq.$session")) {
-            return true
-        }
-
-        val request = getBaseRequest("chain_snapshots")
-            .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
-            .build()
-
-        return try {
-            client.newCall(request).execute().use { it.isSuccessful }
-        } catch (e: Exception) {
-            Log.e(TAG, "Save chain snapshot failed: ${e.message}")
-            false
-        }
-    }
-
     /**
      * Upserts poll history for a specific date to app_config
      */
@@ -4004,76 +3929,7 @@ object SupabaseClient {
         }
     }
 
-    /**
-     * Phase B: fetch recent signals for accuracy tracking.
-     * Mirrors db.js getRecentSignals(limit).
-     */
-    fun getRecentSignals(limit: Int = 20): JSONArray {
-        val request = getBaseRequest(
-            "chain_snapshots?session=eq.315pm" +
-            "&select=date,tomorrow_signal,signal_strength,bnf_spot,vix" +
-            "&order=date.desc" +
-            "&limit=$limit"
-        ).get().build()
-        val json = fetchSync(request) ?: return JSONArray()
-        return try {
-            JSONArray(json)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing recent signals: ${e.message}")
-            JSONArray()
-        }
-    }
-
-    /**
-     * Phase B: write yesterday's signal validation result.
-     * Mirrors db.js updateSignalResult(date, correct, actualGap) — patches
-     * chain_snapshots where date AND session=315pm.
-     */
-    fun updateSignalResult(date: String, correct: Boolean, actualGap: Double): Boolean {
-        val body = JSONObject()
-        body.put("signal_correct", correct)
-        body.put("signal_actual_gap", actualGap)
-        return update("chain_snapshots", body, "date=eq.$date&session=eq.315pm")
-    }
-
-    /**
-     * Phase B: rolling 30-signal accuracy stats.
-     * Mirrors db.js getSignalAccuracyStats() — chain_snapshots filter
-     * session=315pm AND signal_correct IS NOT NULL, last 30, computes pct.
-     */
-    fun getSignalAccuracyStats(): JSONObject {
-        val request = getBaseRequest(
-            "chain_snapshots?session=eq.315pm" +
-            "&signal_correct=not.is.null" +
-            "&select=date,tomorrow_signal,signal_strength,signal_correct,signal_actual_gap" +
-            "&order=date.desc" +
-            "&limit=30"
-        ).get().build()
-        val result = JSONObject()
-        result.put("correct", 0)
-        result.put("total", 0)
-        result.put("pct", 0)
-        result.put("history", JSONArray())
-        val json = fetchSync(request) ?: return result
-        return try {
-            val data = JSONArray(json)
-            val total = data.length()
-            var correctCount = 0
-            for (i in 0 until total) {
-                if (data.getJSONObject(i).optBoolean("signal_correct", false)) correctCount++
-            }
-            result.put("correct", correctCount)
-            result.put("total", total)
-            result.put("pct", if (total > 0) Math.round(correctCount.toDouble() / total * 100).toInt() else 0)
-            result.put("history", data)
-            result
-        } catch (e: Exception) {
-            Log.e(TAG, "Error parsing accuracy stats: ${e.message}")
-            result
-        }
-    }
-
-    fun getSignalReliabilityRows(): JSONArray {
+fun getSignalReliabilityRows(): JSONArray {
         return select("signal_reliability", null, "lane.asc,signal_name.asc", 200)
     }
 

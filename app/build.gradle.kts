@@ -23,7 +23,7 @@ android {
         // b493 / 2.6.62: persist fetched chain evidence before Brain; fail closed on incomplete H2 marks
         // b494 / 2.6.63: verify all-WAIT research outcomes without inventing training labels
         // b495 / 2.6.64: add registered-device compact PC2 dual-write alongside legacy evidence
-        // b496 / 2.6.65: correct Paper VIX history authority and fail-closed decisions
+        // b497 / 2.6.66: retire afternoon positioning;  correct Paper VIX history authority and fail-closed decisions
         // b492 / 2.6.61: Brain completion/freshness safety + numeric snapshot null sanitization
         // b490 / 2.6.59: B1 capture evidence + B3/B3.1 position mark trust (wide book, mid-fallback stop), decisions 1/3/5/9/10
         // b489 / 2.6.58: C3 OOM-safe percentile finalization (keyset paging, fail-closed local fallback, trim marker)
@@ -39,8 +39,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 496
-        versionName = "2.6.65"
+        versionCode = 497
+        versionName = "2.6.66"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

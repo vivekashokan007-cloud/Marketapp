@@ -600,9 +600,10 @@ class MarketWatchService : Service() {
                 withContext(Dispatchers.IO) { refreshVixDailyHistory(today) }
             }
             val premHistory = JSONArray(prefs.getString("premium_history", "[]"))
-            val ySig = prefs.getString("yesterday_signal", "null")
-            val historyLoadedLog = "HISTORY_LOADED_RESTART: vixCount=${premHistory.length()}, fiiCount=${extractFiiHistory().length()}, ySignal=$ySig"
+            val historyLoadedLog = "HISTORY_LOADED_RESTART: vixCount=${premHistory.length()}, fiiCount=${extractFiiHistory().length()}"
             Log.d(TAG, historyLoadedLog)
+            // Warm-upgrade: scrub retired afternoon-positioning prefs/context once
+            sanitizeRetiredPositioningState()
             return
         }
 
@@ -684,11 +685,7 @@ class MarketWatchService : Service() {
                 val supplyQualityHistory = SupabaseClient.getPc2SupplyQualityHistory(today)
                 prefs.edit().putString("pc2_supply_quality_history", supplyQualityHistory.toString()).apply()
                 
-                val yesterday = getYesterdayDate()
-                SupabaseClient.getYesterdaySignal(yesterday)?.let {
-                    prefs.edit().putString("yesterday_signal", it.toString()).apply()
-                    Log.d(TAG, "SIGNAL_PRIOR_LOADED: $it")
-                }
+                // Retire afternoon positioning: no yesterday-signal bootstrap fetch.
 
                 val approvedBranchRows = SupabaseClient.select("ai_branch_proposals", "status=eq.approved", "approved_at.desc", 50)
                 prefs.edit()
@@ -700,6 +697,7 @@ class MarketWatchService : Service() {
                 Log.d(TAG, historyLoadedLog)
 
                 prefs.edit().putLong("last_bootstrap_time", now).commit()
+                sanitizeRetiredPositioningState()
                 Log.d(TAG, "Bootstrap complete")
             } catch (e: Exception) {
                 Log.e(TAG, "Bootstrap failed: ${e.message}")
@@ -1645,8 +1643,9 @@ class MarketWatchService : Service() {
             }.commit()
             persistSessionIntegritySummary(computeSessionIntegrity(today))
 
-            // GAP 12: Institutional Positioning
-            checkInstitutionalPositioning(poll)
+            // Daily session reset (formerly inside checkInstitutionalPositioning).
+            // Preserves hasDayEvalRun rollover; retired afternoon positioning capture removed.
+            ensureDailySessionReset()
 
             // GAP 6: Upsert to Supabase every 3rd poll
             if (pollCount > 0 && pollCount % 3 == 0) {
@@ -1662,34 +1661,62 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun checkInstitutionalPositioning(poll: JSONObject) {
-        val ist = TimeZone.getTimeZone("Asia/Kolkata")
-        val cal = Calendar.getInstance(ist)
-        val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+    /**
+     * Session-date rollover previously embedded in checkInstitutionalPositioning().
+     * Clears hasDayEvalRun so post-close evaluation can run again, and scrubs
+     * retired afternoon-positioning preference keys.
+     */
+    private fun ensureDailySessionReset() {
         val today = todayIstDate()
         val lastSavedDate = prefs.getString("positioning_date", "")
-
-        // Reset if new day
         if (lastSavedDate != today) {
             prefs.edit().apply {
                 remove("afternoon_baseline")
                 remove("tomorrow_signal")
+                remove("yesterday_signal")
                 remove("has2pmSnapshot")
                 remove("has315pmSnapshot")
+                remove("snap_2pm_today")
                 remove("hasDayEvalRun")
                 putString("positioning_date", today)
             }.apply()
+            sanitizeRetiredPositioningState()
+            Log.d(TAG, "DAILY_SESSION_RESET: cleared eval latch and retired positioning prefs for $today")
         }
+    }
 
-        // At 2:00 PM (840 mins) to 2:10 PM
-        if (mins in 840..850) {
-            if (!prefs.contains("afternoon_baseline")) {
-                prefs.edit().putString("afternoon_baseline", poll.toString()).apply()
-                Log.d(TAG, "Captured 2PM institutional baseline")
+    /** Strip retired afternoon-positioning keys from prefs and persisted brain context. */
+    private fun sanitizeRetiredPositioningState() {
+        prefs.edit().apply {
+            remove("has2pmSnapshot")
+            remove("has315pmSnapshot")
+            remove("snap_2pm_today")
+            remove("tomorrow_signal")
+            remove("yesterday_signal")
+            remove("afternoon_baseline")
+        }.apply()
+        try {
+            val raw = prefs.getString("context", null) ?: return
+            val ctx = JSONObject(raw)
+            val retired = listOf(
+                "yesterdaySignal", "signalAccuracy", "snap_2pm_today",
+                "positioning", "tomorrow_signal", "signalValidation",
+                "chain_snapshot_now", "positioning_candidates", "positioning_bias"
+            )
+            var changed = false
+            for (key in retired) {
+                if (ctx.has(key)) {
+                    ctx.remove(key)
+                    changed = true
+                }
             }
+            if (changed) {
+                prefs.edit().putString("context", ctx.toString()).apply()
+                Log.d(TAG, "RETIRED_POSITIONING_CTX_SCRUB: removed stale context keys")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "RETIRED_POSITIONING_CTX_SCRUB_FAIL: ${e.message}")
         }
-
-        // At 3:15 PM (915 mins) to 3:30 PM
     }
 
 
@@ -2305,9 +2332,7 @@ class MarketWatchService : Service() {
             val ydayHistStr = prefs.getString("premium_history", "[]") ?: "[]"
             ctxObj.put("yesterdayHistory", JSONArray(ydayHistStr))
             
-            // Phase B: accuracy stats from Supabase (refresh once per day or per session)
-            val accuracyStats = SupabaseClient.getSignalAccuracyStats()
-            ctxObj.put("signalAccuracy", accuracyStats)
+            // Retire afternoon positioning: do not fetch/inject signalAccuracy.
             val signalReliabilityRows = loadSignalReliabilityRows()
             ctxObj.put("signalReliability", signalReliabilityRows)
             ctxObj.put("elephantObserveOnly", true)
@@ -2343,15 +2368,8 @@ class MarketWatchService : Service() {
             }
             ctxObj.put("gap", gapObj)
             
-            val ySigStr = prefs.getString("yesterday_signal", null)
-            if (ySigStr != null) {
-                val ySig = JSONObject(ySigStr)
-                val sigObj = JSONObject()
-                sigObj.put("signal", ySig.optString("tomorrow_signal", "NEUTRAL").replace("Tomorrow: ", "").split(" ")[0])
-                sigObj.put("strength", ySig.optString("tomorrow_signal", "").let { if (it.contains("4/5")) 4 else 2 })
-                ctxObj.put("yesterdaySignal", sigObj)
-            }
-            
+            // Retire afternoon positioning: do not inject yesterdaySignal into brain context.
+
             val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
             val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
             val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)
@@ -2512,10 +2530,14 @@ class MarketWatchService : Service() {
             ctxObj.put("abs_nf_spot_sigma", Math.abs(nfSpotSigmaValue))
             ctxObj.put("abs_vix_sigma", Math.abs(vixSigma))
 
-            val snap2pmStr = prefs.getString("snap_2pm_today", null)
-            if (snap2pmStr != null) {
-                ctxObj.put("snap_2pm_today", JSONObject(snap2pmStr))
-            }
+            // Retire afternoon positioning: do not inject snap_2pm_today.
+            ctxObj.remove("yesterdaySignal")
+            ctxObj.remove("signalAccuracy")
+            ctxObj.remove("snap_2pm_today")
+            ctxObj.remove("positioning")
+            ctxObj.remove("tomorrow_signal")
+            ctxObj.remove("signalValidation")
+            ctxObj.remove("chain_snapshot_now")
 
             if (!ctxObj.has("ivPercentile")) ctxObj.put("ivPercentile", 50)
             
@@ -2885,8 +2907,9 @@ class MarketWatchService : Service() {
                     Log.w(TAG, "BRAIN_CTX_MERGE_FAIL: ${e.message}")
                 }
 
-                // Phase E: Capture snapshots using Python-computed data
-                captureChainSnapshots(ctxObj, py)
+                // Retire afternoon positioning: captureChainSnapshots removed
+                // (legacy chain_snapshots writer). Active ml_option_chain_snapshots
+                // capture path is unchanged.
 
                 // Decision #17/#18/#Issue9: Persist brain-computed P&L and metrics back to open_trades
                 // Percentile-contextual exit levels resolved by brain.py for the
@@ -4445,57 +4468,6 @@ class MarketWatchService : Service() {
 
     private fun releaseWakeLock() {
         wakeLock?.let { if (it.isHeld) it.release() }
-    }
-
-    private fun captureChainSnapshots(ctx: JSONObject, py: Python) {
-        val ist = TimeZone.getTimeZone("Asia/Kolkata")
-        val cal = Calendar.getInstance(ist)
-        val mins = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-        
-        // 2:00 PM Window (13:45 - 14:30)
-        if (mins in 825..870 && !prefs.getBoolean("has2pmSnapshot", false)) {
-            Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 2pm snapshot")
-            prefs.edit().putBoolean("has2pmSnapshot", true).apply()
-            serviceScope.launch(Dispatchers.IO) {
-                try {
-                    val brain = py.getModule("brain")
-                    val snapJson = brain.callAttr("build_chain_snapshot_data", ctx.toString()).toString()
-                    val data = JSONObject(snapJson)
-                    
-                    if (SupabaseClient.saveChainSnapshot("2pm", data)) {
-                        prefs.edit().putString("snap_2pm_today", snapJson).apply()
-                        Log.i(TAG, "SNAPSHOT_SAVED: 2pm snapshot synced to Supabase & Prefs")
-                    } else {
-                        prefs.edit().remove("has2pmSnapshot").apply()
-                    }
-                } catch (e: Exception) {
-                    prefs.edit().remove("has2pmSnapshot").apply()
-                    Log.e(TAG, "SNAPSHOT_ERROR 2pm: ${e.message}")
-                }
-            }
-        }
-        
-        // 3:15 PM close window (15:00 - official 15:40 close).
-        if (mins in 900..MARKET_CLOSE_MINUTE && !prefs.getBoolean("has315pmSnapshot", false)) {
-            Log.d(TAG, "SNAPSHOT_TRIGGER: Capturing 315pm snapshot")
-            prefs.edit().putBoolean("has315pmSnapshot", true).apply()
-            serviceScope.launch(Dispatchers.IO) {
-                try {
-                    val brain = py.getModule("brain")
-                    val snapJson = brain.callAttr("build_chain_snapshot_data", ctx.toString()).toString()
-                    val data = JSONObject(snapJson)
-                    
-                    if (SupabaseClient.saveChainSnapshot("315pm", data)) {
-                        Log.i(TAG, "SNAPSHOT_SAVED: 315pm snapshot synced to Supabase")
-                    } else {
-                        prefs.edit().remove("has315pmSnapshot").apply()
-                    }
-                } catch (e: Exception) {
-                    prefs.edit().remove("has315pmSnapshot").apply()
-                    Log.e(TAG, "SNAPSHOT_ERROR 315pm: ${e.message}")
-                }
-            }
-        }
     }
 
     private fun isMLModelReady(): Boolean {

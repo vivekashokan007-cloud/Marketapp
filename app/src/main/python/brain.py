@@ -1957,55 +1957,9 @@ def wall_freshness(polls, ctx):
                 "detail": f"Volume/OI {cwF:.1%}. May not hold if tested.", "impact": "caution", "strength": 2})
     return insights[0] if insights else None
 
-def yesterday_signal_prior(polls, ctx):
-    """Yesterday's positioning signal as morning prior."""
-    sig = ctx.get('yesterdaySignal')
-    acc = ctx.get('signalAccuracy')
-    if not sig: return None
-    pct = acc.get('pct', 0) if acc else 0
-    return {"type": "prior", "icon": "📡", "label": f"Yesterday: {sig['signal']} ({sig['strength']}/5)",
-            "detail": f"Signal accuracy: {pct}% over {acc.get('total',0) if acc else 0} signals.",
-            "impact": "bearish" if sig['signal']=='BEARISH' else "bullish" if sig['signal']=='BULLISH' else "neutral",
-            "strength": 2 if pct < 60 else 3}
-
-def validate_yesterday_signal(ctx):
-    """Phase B: validate yesterday's tomorrow_signal against today's gap.
-    Replaces async JS validateYesterdaySignal(todayGap).
-    """
-    gap = ctx.get('gap')
-    if not gap or gap.get('type') == 'UNKNOWN':
-        return None
-
-    yday_hist = _fresh_history_rows(ctx, ctx.get('yesterdayHistory') or [], max_days=7)
-    if not yday_hist:
-        return None
-
-    yday_date = yday_hist[0].get('date')
-    if not yday_date:
-        return None
-
-    yday_signal = ctx.get('yesterdaySignal')
-    if not yday_signal or not yday_signal.get('tomorrow_signal'):
-        return None
-
-    predicted = yday_signal.get('tomorrow_signal')
-    actual_gap = gap.get('gap', 0)
-    actual_dir = 'BULLISH' if actual_gap > 50 else 'BEARISH' if actual_gap < -50 else 'NEUTRAL'
-
-    correct = (predicted == actual_dir) or (predicted == 'NEUTRAL' and abs(actual_gap) < 100)
-
-    accuracy_stats = ctx.get('signalAccuracy') or {}
-    total_signals = accuracy_stats.get('total', 0)
-
-    return {
-        'date': yday_date,
-        'predicted': predicted,
-        'strength': yday_signal.get('signal_strength'),
-        'actualGap': actual_gap,
-        'actualDir': actual_dir,
-        'correct': correct,
-        'totalSignals': total_signals
-    }
+# RETIRED 2026-10-05: yesterday_signal_prior and validate_yesterday_signal
+# removed with afternoon positioning. Their prior-score contribution to
+# synthesize_verdict (strength/5 into bull/bear) is intentionally gone.
 
 # ─── CANDLESTICK PATTERN DETECTION ───
 
@@ -2861,221 +2815,10 @@ def compute_overnight_delta(ctx):
     return delta
 
 # ───────────────────────────────────────────────────────────────
-# DECISION #24 — build_chain_snapshot_data
+# RETIRED 2026-10-05 — afternoon positioning (Decisions #24-26)
+# build_chain_snapshot_data / compute_positioning / compute_global_boost
+# removed. Active ml_option_chain_snapshots path is unchanged.
 # ───────────────────────────────────────────────────────────────
-def build_chain_snapshot_data(ctx: dict) -> dict:
-    if isinstance(ctx, str):
-        try:
-            ctx = json.loads(ctx)
-        except Exception:
-            return {}
-    if not isinstance(ctx, dict):
-        return {}
-
-    bnf_chain = ctx.get('bnfChain', {}) or {}
-    nf_chain = ctx.get('nfChain', {}) or {}
-    live = ctx.get('live', {}) or {}
-    baseline = ctx.get('baseline', {}) or {}
-    bnf_breadth = ctx.get('bnfBreadth', {}) or {}
-    nf50_breadth = ctx.get('nf50Breadth', {}) or {}
-
-    bnf_spot = live.get('bnfSpot') or baseline.get('bnfSpot')
-    nf_spot = live.get('nfSpot') or baseline.get('nfSpot')
-    vix = live.get('vix') or baseline.get('vix')
-
-    snapshot = {
-        'date': ctx.get('today_ist'),
-        'bnf_spot': bnf_spot,
-        'nf_spot': nf_spot,
-        'vix': vix,
-        'bnf_pcr': bnf_chain.get('pcr'),
-        'bnf_near_atm_pcr': bnf_chain.get('nearAtmPCR'),
-        'nf_pcr': nf_chain.get('pcr'),
-        'bnf_max_pain': bnf_chain.get('maxPain'),
-        'nf_max_pain': nf_chain.get('maxPain'),
-        'bnf_call_wall': bnf_chain.get('callWallStrike'),
-        'bnf_call_wall_oi': bnf_chain.get('callWallOI'),
-        'bnf_put_wall': bnf_chain.get('putWallStrike'),
-        'bnf_put_wall_oi': bnf_chain.get('putWallOI'),
-        'bnf_total_call_oi': bnf_chain.get('totalCallOI'),
-        'bnf_total_put_oi': bnf_chain.get('totalPutOI'),
-        'nf_total_call_oi': nf_chain.get('totalCallOI'),
-        'nf_total_put_oi': nf_chain.get('totalPutOI'),
-        'bnf_atm_iv': bnf_chain.get('atmIv'),
-        'bnf_futures_prem': bnf_chain.get('futuresPremium'),
-        'bnf_breadth_pct': bnf_breadth.get('weightedPct'),
-        'nf50_advancing': nf50_breadth.get('scaled'),
-    }
-    return snapshot
-
-# ───────────────────────────────────────────────────────────────
-# DECISION #25 — compute_positioning
-# ───────────────────────────────────────────────────────────────
-def compute_positioning(snap_2pm: dict, snap_315pm: dict, ctx: dict) -> dict:
-    if not snap_2pm or not snap_315pm:
-        return None
-
-    delta = {
-        'callOiDelta': (snap_315pm.get('bnf_total_call_oi') or 0) - (snap_2pm.get('bnf_total_call_oi') or 0),
-        'putOiDelta': (snap_315pm.get('bnf_total_put_oi') or 0) - (snap_2pm.get('bnf_total_put_oi') or 0),
-        'nfCallOiDelta': (snap_315pm.get('nf_total_call_oi') or 0) - (snap_2pm.get('nf_total_call_oi') or 0),
-        'nfPutOiDelta': (snap_315pm.get('nf_total_put_oi') or 0) - (snap_2pm.get('nf_total_put_oi') or 0),
-        'pcrChange': (snap_315pm.get('bnf_pcr') or 0) - (snap_2pm.get('bnf_pcr') or 0),
-        'nearPcrChange': (snap_315pm.get('bnf_near_atm_pcr') or 0) - (snap_2pm.get('bnf_near_atm_pcr') or 0),
-        'vixChange': (snap_315pm.get('vix') or 0) - (snap_2pm.get('vix') or 0),
-        'maxPainShift': (snap_315pm.get('bnf_max_pain') or 0) - (snap_2pm.get('bnf_max_pain') or 0),
-        'breadthChange': (snap_315pm.get('bnf_breadth_pct') or 0) - (snap_2pm.get('bnf_breadth_pct') or 0),
-        'spotChange': (snap_315pm.get('bnf_spot') or 0) - (snap_2pm.get('bnf_spot') or 0),
-        'snap2pm': snap_2pm,
-        'snap315pm': snap_315pm,
-    }
-
-    bear_score = 0.0
-    bull_score = 0.0
-
-    if delta['callOiDelta'] > delta['putOiDelta'] * 1.5:
-        bear_score += 2
-    elif delta['putOiDelta'] > delta['callOiDelta'] * 1.5:
-        bull_score += 2
-
-    if delta['pcrChange'] < -0.05:
-        bear_score += 1.5
-    elif delta['pcrChange'] > 0.05:
-        bull_score += 1.5
-
-    if delta['vixChange'] > 0.3:
-        bear_score += 1.5
-    elif delta['vixChange'] < -0.3:
-        bull_score += 1.5
-
-    if delta['maxPainShift'] < -100:
-        bear_score += 1
-    elif delta['maxPainShift'] > 100:
-        bull_score += 1
-
-    if delta['breadthChange'] < -0.5:
-        bear_score += 1
-    elif delta['breadthChange'] > 0.5:
-        bull_score += 1
-
-    pcr_context = ctx.get('pcrContext')
-    if pcr_context and pcr_context.get('confidence') != 'LOW':
-        bias = pcr_context.get('bias')
-        if bias == 'BULL':
-            bull_score += 1
-        elif bias == 'BEAR':
-            bear_score += 1
-        elif bias == 'MILD_BULL':
-            bull_score += 0.5
-
-    net_score = bull_score - bear_score
-    if net_score >= 3:
-        signal = 'BULLISH'
-        strength = min(5, round(net_score))
-    elif net_score >= 1:
-        signal = 'BULLISH'
-        strength = min(3, round(net_score))
-    elif net_score <= -3:
-        signal = 'BEARISH'
-        strength = min(5, round(abs(net_score)))
-    elif net_score <= -1:
-        signal = 'BEARISH'
-        strength = min(3, round(abs(net_score)))
-    else:
-        signal = 'NEUTRAL'
-        strength = 1
-
-    return {
-        'delta': delta,
-        'signal': signal,
-        'strength': strength,
-        'bullScore': bull_score,
-        'bearScore': bear_score,
-        'netScore': net_score,
-    }
-
-# ───────────────────────────────────────────────────────────────
-# DECISION #26 — compute_global_boost
-# ───────────────────────────────────────────────────────────────
-def compute_global_boost(positioning_result: dict, ctx: dict) -> dict:
-    if not positioning_result:
-        return None
-
-    base_signal = positioning_result.get('signal')
-    if base_signal == 'NEUTRAL':
-        return None
-
-    tomorrow_signal = {
-        'signal': base_signal,
-        'strength': positioning_result.get('strength', 1),
-        'globalBoost': 0,
-    }
-
-    gd = ctx.get('globalDirection', {}) or {}
-    is_bull = base_signal == 'BULLISH'
-    boost = 0
-    cross_market_context = []
-
-    dow_threshold = _CONST.get('DOW_THRESHOLD', 0.5)
-    crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
-    gift_threshold = _CONST.get('GIFT_THRESHOLD', 0.3)
-
-    dow_close = gd.get('dowClose')
-    dow_now = gd.get('dowNow')
-    if dow_close and dow_now:
-        dow_pct = ((dow_now - dow_close) / dow_close) * 100.0
-        dow_context = _pc2_cross_market_move_context(ctx, 'DOW_THRESHOLD', dow_pct, dow_threshold, ('dow_pct', 'dowPct'))
-        dow_context['name'] = 'Dow'
-        cross_market_context.append(dow_context)
-        if dow_context.get('active'):
-            if (dow_pct > 0 and is_bull) or (dow_pct < 0 and not is_bull):
-                boost += 1
-            else:
-                boost -= 1
-
-    crude_settle = gd.get('crudeSettle')
-    crude_now = gd.get('crudeNow')
-    if crude_settle and crude_now:
-        crude_pct = ((crude_now - crude_settle) / crude_settle) * 100.0
-        crude_context = _pc2_cross_market_move_context(ctx, 'CRUDE_THRESHOLD', crude_pct, crude_threshold, ('crude_pct', 'crudePct'))
-        crude_context['name'] = 'Crude'
-        cross_market_context.append(crude_context)
-        if crude_context.get('active'):
-            if (crude_pct < 0 and is_bull) or (crude_pct > 0 and not is_bull):
-                boost += 1
-            else:
-                boost -= 1
-
-    gift_ref = (ctx.get('eveningClose') or {}).get('gift')
-    gift_now = gd.get('giftNow')
-    if gift_ref and gift_now:
-        gift_pct = ((gift_now - gift_ref) / gift_ref) * 100.0
-        gift_context = _pc2_cross_market_move_context(ctx, 'GIFT_THRESHOLD', gift_pct, gift_threshold, ('gift_pct', 'giftPct'))
-        gift_context['name'] = 'GIFT'
-        cross_market_context.append(gift_context)
-        if gift_context.get('active'):
-            if (gift_pct > 0 and is_bull) or (gift_pct < 0 and not is_bull):
-                boost += 1
-            else:
-                boost -= 1
-    elif ctx.get('gap') and ctx['gap'].get('sigma') is not None:
-        gap_sigma = ctx['gap']['sigma']
-        gift_bull = gap_sigma > 0.3
-        gift_bear = gap_sigma < -0.3
-        if (gift_bull and is_bull) or (gift_bear and not is_bull):
-            boost += 1
-        elif (gift_bull and not is_bull) or (gift_bear and is_bull):
-            boost -= 1
-
-    if cross_market_context:
-        tomorrow_signal['crossMarketContext'] = cross_market_context
-
-    if boost != 0:
-        base_strength = positioning_result.get('strength', 1)
-        tomorrow_signal['strength'] = max(1, min(5, base_strength + boost))
-        tomorrow_signal['globalBoost'] = boost
-
-    return tomorrow_signal
 
 # ───────────────────────────────────────────────────────────────
 # DECISION #27 — evaluate_alerts
@@ -7135,7 +6878,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.65"
+BRAIN_VERSION = "2.6.66"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -8837,6 +8580,57 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
     }
 
 
+
+def _vix_immediate_previous_close(ctx, regime_ctx=None):
+    """Return (previous_close, previous_close_date) for the immediately preceding
+    NSE session only. Requires sessions_behind == 0, a valid positive finite close,
+    and a matching current-session context. Returns (None, None) when uncertain.
+    Independent of Paper-only VIX regime decision policy / percentile sample size.
+    Reuses the existing dated VIX history source (no new DB reads).
+    """
+    import math
+    ctx = ctx if isinstance(ctx, dict) else {}
+    regime_ctx = regime_ctx if isinstance(regime_ctx, dict) else {}
+    try:
+        hist = _pc2_vix_daily_history(ctx)
+    except Exception:
+        hist = None
+    if not isinstance(hist, dict):
+        hist = {}
+    # Prefer live history computation; fall back to regime_ctx fields already computed.
+    behind = hist.get('sessions_behind')
+    if behind is None:
+        behind = regime_ctx.get('history_sessions_behind')
+    try:
+        behind_i = int(behind) if behind is not None else None
+    except (TypeError, ValueError):
+        behind_i = None
+    if behind_i != 0:
+        return None, None
+    status = hist.get('status') or regime_ctx.get('history_status')
+    # FRESH with sessions_behind==0 is the only accepted authority for "previous close".
+    if status != 'FRESH':
+        return None, None
+    newest_date = hist.get('newest_date') or regime_ctx.get('history_newest_date')
+    if not newest_date:
+        return None, None
+    today = ctx.get('today_ist') or ctx.get('today') or ctx.get('session_date')
+    if not today:
+        return None, None
+    if str(newest_date) >= str(today):
+        return None, None
+    values = hist.get('values') or []
+    if not isinstance(values, list) or not values:
+        return None, None
+    try:
+        close_f = float(values[-1])
+    except (TypeError, ValueError):
+        return None, None
+    if (not math.isfinite(close_f)) or close_f <= 0:
+        return None, None
+    return close_f, str(newest_date)
+
+
 def _pc2_vix_regime_summary(ctx, latest_poll=None):
     """Compact, display-safe view of the live VIX regime for the PWA."""
     ctx = ctx if isinstance(ctx, dict) else {}
@@ -8847,6 +8641,7 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
             ctx, poll.get('vix') if poll.get('vix') is not None else poll.get('VIX'), ctx.get('ivPercentile')
         )
     shadow = regime_ctx.get('old_constant_shadow') if isinstance(regime_ctx.get('old_constant_shadow'), dict) else {}
+    prev_close, prev_close_date = _vix_immediate_previous_close(ctx, regime_ctx)
     return {
         'schema_version': regime_ctx.get('schema_version'),
         'regime': regime_ctx.get('regime'),
@@ -8868,6 +8663,10 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
         'history_sessions_behind': regime_ctx.get('history_sessions_behind'),
         'history_max_sessions_behind': regime_ctx.get('history_max_sessions_behind'),
         'constant_band_regime': shadow.get('regime'),
+        # Factual previous-session close for trade attribution (independent of
+        # Paper-only VIX regime decision policy). Null when uncertain.
+        'previous_close': prev_close,
+        'previous_close_date': prev_close_date,
     }
 
 
@@ -11760,7 +11559,8 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'signal_independence_score': _percentile_float(signal_independence.get('score') or verdict.get('signal_independence_score') or verdict.get('signalIndependenceScore')),
         'bull_score': _percentile_float(verdict.get('bullScore') or verdict.get('bull_score') or verdict.get('bull')),
         'bear_score': _percentile_float(verdict.get('bearScore') or verdict.get('bear_score') or verdict.get('bear')),
-        'signal_accuracy': _percentile_float(result.get('signalAccuracy') or result.get('signal_accuracy')),
+        # Retired afternoon positioning accuracy — keep schema slot, never invent a value.
+        'signal_accuracy': None,
         'menu_win_rate_prior_sessions_only': None,
         'menu_mean_pnl_prior_sessions_only': None,
         'realized_r_prior_sessions_only': None,
@@ -13882,7 +13682,7 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
             'morning_bias': result.get('morningBias'),
             'bnf_breadth': ctx.get('bnfBreadth'),
             'nf50_breadth': ctx.get('nf50Breadth'),
-            'signal_accuracy': ctx.get('signalAccuracy'),
+            'signal_accuracy': None,  # retired afternoon positioning slot
         },
         'verdict_context': {
             'action': verdict.get('action'),
@@ -17059,7 +16859,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             print(f"DEBUG: Market insight {fn.__name__} failed: {e}")
     # New context-aware market functions
     for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
-               day_range_position, wall_freshness, yesterday_signal_prior]:
+               day_range_position, wall_freshness]:
         try:
             r = fn(polls, ctx)
             if r: result["market"].append(r)
@@ -17265,33 +17065,19 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
 
     # ═══════════════════════════════════════════════════════════════
-    # PHASE E — Snapshot / Positioning / Alerts (Decisions #24-27)
+    # PHASE E — Alerts remain; afternoon positioning (Decisions #24-26) retired.
     # ═══════════════════════════════════════════════════════════════
     if 'pcrContext' in result:
         ctx['pcrContext'] = result['pcrContext']
 
-    mins_since_open = ctx.get('mins_since_open', 0)
-
-    # #24 — Build current snapshot if at/past 2PM (mins >= 270)
-    snapshot_now = None
-    if mins_since_open >= 270:
-        snapshot_now = build_chain_snapshot_data(ctx)
-        result['chain_snapshot_now'] = snapshot_now
-
-    # #25 — Compute positioning if at 3:15PM (mins >= 345) AND 2PM baseline exists
-    positioning_result = None
-    snap_2pm = ctx.get('snap_2pm_today')  # Kotlin populates from SharedPreferences
-    if mins_since_open >= 345 and snap_2pm and snapshot_now:
-        positioning_result = compute_positioning(snap_2pm, snapshot_now, ctx)
-        if positioning_result:
-            result['positioning'] = positioning_result
-
-    # #26 — Compute global boost (only if positioning produced non-NEUTRAL signal)
-    tomorrow_signal_result = None
-    if positioning_result:
-        tomorrow_signal_result = compute_global_boost(positioning_result, ctx)
-        if tomorrow_signal_result:
-            result['tomorrow_signal'] = tomorrow_signal_result
+    # Explicitly drop any stale positioning keys that may have been merged from
+    # an older persisted context so they cannot re-enter the running result.
+    for _retired_key in (
+        'chain_snapshot_now', 'positioning', 'tomorrow_signal', 'signalValidation',
+        'yesterdaySignal', 'signalAccuracy', 'snap_2pm_today',
+    ):
+        result.pop(_retired_key, None)
+        ctx.pop(_retired_key, None)
 
     # Candidates — existing + liquidity + pattern match + b92 risk evaluation
     for c in candidates:
@@ -17370,7 +17156,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         print(f"DEBUG: compute_effective_bias failed: {e}")
 
     result["fiiTrend"] = fii_short_trend(ctx)
-    result["signalValidation"] = validate_yesterday_signal(ctx)
+    # signalValidation retired with afternoon positioning.
 
     # Phase 3: Generate trading candidates from chain data
     # Premium is king — every candidate scored by premium quality

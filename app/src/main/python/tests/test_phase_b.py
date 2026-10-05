@@ -8,7 +8,6 @@ from brain import (
     compute_morning_bias, 
     institutional_regime, 
     fii_short_trend, 
-    validate_yesterday_signal, 
     compute_overnight_delta
 )
 
@@ -272,32 +271,7 @@ def test_fii_trend_uses_fresh_dated_history():
     ctx['today_ist'] = '2026-07-15'
     assert fii_short_trend(ctx)['trend'] == 'BUILDING'
 
-# --- 4. validate_yesterday_signal (6 tests) ---
-
-def test_val_bull_correct():
-    ctx = make_ctx(gap={'gap': 100}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'BULLISH'})
-    assert validate_yesterday_signal(ctx)['correct'] is True
-
-def test_val_bull_incorrect():
-    ctx = make_ctx(gap={'gap': -100}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'BULLISH'})
-    assert validate_yesterday_signal(ctx)['correct'] is False
-
-def test_val_bear_correct():
-    ctx = make_ctx(gap={'gap': -100}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'BEARISH'})
-    assert validate_yesterday_signal(ctx)['correct'] is True
-
-def test_val_neutral_correct_tight():
-    ctx = make_ctx(gap={'gap': 30}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'NEUTRAL'})
-    assert validate_yesterday_signal(ctx)['correct'] is True
-
-def test_val_neutral_correct_tolerance():
-    ctx = make_ctx(gap={'gap': 80}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'NEUTRAL'})
-    # actualDir is BULLISH (>50), but correct is true if predicted neutral and gap < 100
-    assert validate_yesterday_signal(ctx)['correct'] is True
-
-def test_val_neutral_incorrect():
-    ctx = make_ctx(gap={'gap': 120}, yday=[{'date': 'D'}], y_signal={'tomorrow_signal': 'NEUTRAL'})
-    assert validate_yesterday_signal(ctx)['correct'] is False
+# --- 4. validate_yesterday_signal RETIRED 2026-10-05 with afternoon positioning ---
 
 # --- 5. compute_overnight_delta (7 tests) ---
 
@@ -392,12 +366,6 @@ if __name__ == "__main__":
         ("test_fii_trend_ignores_stale_dated_history", test_fii_trend_ignores_stale_dated_history),
         ("test_fii_trend_uses_fresh_dated_history", test_fii_trend_uses_fresh_dated_history),
         # Validation (6)
-        ("test_val_bull_correct", test_val_bull_correct),
-        ("test_val_bull_incorrect", test_val_bull_incorrect),
-        ("test_val_bear_correct", test_val_bear_correct),
-        ("test_val_neutral_correct_tight", test_val_neutral_correct_tight),
-        ("test_val_neutral_correct_tolerance", test_val_neutral_correct_tolerance),
-        ("test_val_neutral_incorrect", test_val_neutral_incorrect),
         # Delta (7)
         ("test_delta_dow_bull", test_delta_dow_bull),
         ("test_delta_dow_bear", test_delta_dow_bear),

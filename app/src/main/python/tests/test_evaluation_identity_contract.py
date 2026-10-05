@@ -53,7 +53,7 @@ class EvaluationIdentityContractTests(unittest.TestCase):
 
     def test_identity_lookup_is_complete_and_read_only(self):
         source = (JAVA / 'SupabaseClient.kt').read_text()
-        fragment = source.split('internal fun fetchEvaluationSnapshotIdentities(')[1].split('fun fetchChainSlices')[0]
+        fragment = source.split('internal fun fetchEvaluationSnapshotIdentities(')[1].split('fun fetchEvaluationChainSlices')[0]
         self.assertIn('EVAL_IDENTITY_LOOKUP_FAILED', fragment)
         self.assertIn('EVAL_IDENTITY_LOOKUP_CAPPED', fragment)
         self.assertIn('select=id,poll_ts,session_date,recommendation_id', fragment)
