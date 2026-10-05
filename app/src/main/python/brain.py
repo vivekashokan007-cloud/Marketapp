@@ -8582,53 +8582,68 @@ def _pc2_vix_regime_context(ctx=None, vix=None, iv_pctl=None):
 
 
 def _vix_immediate_previous_close(ctx, regime_ctx=None):
-    """Return (previous_close, previous_close_date) for the immediately preceding
-    NSE session only. Requires sessions_behind == 0, a valid positive finite close,
-    and a matching current-session context. Returns (None, None) when uncertain.
-    Independent of Paper-only VIX regime decision policy / percentile sample size.
-    Reuses the existing dated VIX history source (no new DB reads).
+    """Factual previous-session VIX close for trade attribution.
+
+    Independent of Paper/Real *regime decision* policy. Always validates dated
+    history via ``_pc2_vix_daily_history`` (immediately preceding NSE session,
+    close time already enforced there, finite positive close, prior to current
+    session date). Does **not** consult regime ``history_sessions_behind``.
+
+    Returns dict:
+      previous_close, previous_close_date,
+      previous_close_verified (True only when accepted),
+      previous_close_sessions_behind (0 when verified, else hist behind or None).
     """
     import math
+    empty = {
+        'previous_close': None,
+        'previous_close_date': None,
+        'previous_close_verified': False,
+        'previous_close_sessions_behind': None,
+    }
     ctx = ctx if isinstance(ctx, dict) else {}
-    regime_ctx = regime_ctx if isinstance(regime_ctx, dict) else {}
+    # regime_ctx intentionally unused for verification — keep arg for call-site
+    # compatibility with summary which still passes the regime snapshot.
+    void = regime_ctx
     try:
         hist = _pc2_vix_daily_history(ctx)
     except Exception:
         hist = None
     if not isinstance(hist, dict):
-        hist = {}
-    # Prefer live history computation; fall back to regime_ctx fields already computed.
+        return dict(empty)
     behind = hist.get('sessions_behind')
-    if behind is None:
-        behind = regime_ctx.get('history_sessions_behind')
     try:
         behind_i = int(behind) if behind is not None else None
     except (TypeError, ValueError):
         behind_i = None
+    empty['previous_close_sessions_behind'] = behind_i
     if behind_i != 0:
-        return None, None
-    status = hist.get('status') or regime_ctx.get('history_status')
-    # FRESH with sessions_behind==0 is the only accepted authority for "previous close".
-    if status != 'FRESH':
-        return None, None
-    newest_date = hist.get('newest_date') or regime_ctx.get('history_newest_date')
+        return empty
+    if hist.get('status') != 'FRESH':
+        return empty
+    newest_date = hist.get('newest_date')
     if not newest_date:
-        return None, None
+        return empty
     today = ctx.get('today_ist') or ctx.get('today') or ctx.get('session_date')
     if not today:
-        return None, None
+        return empty
     if str(newest_date) >= str(today):
-        return None, None
+        return empty
     values = hist.get('values') or []
     if not isinstance(values, list) or not values:
-        return None, None
+        return empty
     try:
         close_f = float(values[-1])
     except (TypeError, ValueError):
-        return None, None
+        return empty
     if (not math.isfinite(close_f)) or close_f <= 0:
-        return None, None
-    return close_f, str(newest_date)
+        return empty
+    return {
+        'previous_close': close_f,
+        'previous_close_date': str(newest_date),
+        'previous_close_verified': True,
+        'previous_close_sessions_behind': 0,
+    }
 
 
 def _pc2_vix_regime_summary(ctx, latest_poll=None):
@@ -8641,7 +8656,7 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
             ctx, poll.get('vix') if poll.get('vix') is not None else poll.get('VIX'), ctx.get('ivPercentile')
         )
     shadow = regime_ctx.get('old_constant_shadow') if isinstance(regime_ctx.get('old_constant_shadow'), dict) else {}
-    prev_close, prev_close_date = _vix_immediate_previous_close(ctx, regime_ctx)
+    factual = _vix_immediate_previous_close(ctx, regime_ctx)
     return {
         'schema_version': regime_ctx.get('schema_version'),
         'regime': regime_ctx.get('regime'),
@@ -8663,10 +8678,13 @@ def _pc2_vix_regime_summary(ctx, latest_poll=None):
         'history_sessions_behind': regime_ctx.get('history_sessions_behind'),
         'history_max_sessions_behind': regime_ctx.get('history_max_sessions_behind'),
         'constant_band_regime': shadow.get('regime'),
-        # Factual previous-session close for trade attribution (independent of
-        # Paper-only VIX regime decision policy). Null when uncertain.
-        'previous_close': prev_close,
-        'previous_close_date': prev_close_date,
+        # Factual previous-session close for trade attribution. Verified fields
+        # are independent of regime history_sessions_behind (Real stays
+        # LEGACY_UNVERIFIED). PWA must gate on previous_close_verified.
+        'previous_close': factual.get('previous_close'),
+        'previous_close_date': factual.get('previous_close_date'),
+        'previous_close_verified': bool(factual.get('previous_close_verified')),
+        'previous_close_sessions_behind': factual.get('previous_close_sessions_behind'),
     }
 
 
