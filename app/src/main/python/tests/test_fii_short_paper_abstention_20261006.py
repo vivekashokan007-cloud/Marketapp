@@ -102,7 +102,8 @@ class ValueValidationTests(unittest.TestCase):
     def test_epoch_ms_values(self):
         self.assertEqual(brain._epoch_ms_value(PUBLISHED_MS), float(PUBLISHED_MS))
         self.assertEqual(brain._epoch_ms_value(str(PUBLISHED_MS)), float(PUBLISHED_MS))
-        for bad in (None, '', 'x', 0, -1, float('nan'), float('inf'), True, []):
+        for bad in (None, '', 'x', 0, -1, float('nan'), float('inf'), True, [],
+                    10 ** 20, 1e20, 1e300, 10 ** 400, '1e400', 1e12, 4102444800000):
             self.assertIsNone(brain._epoch_ms_value(bad), bad)
 
 
@@ -138,10 +139,21 @@ class PreviousObservationTests(unittest.TestCase):
         out = _verify([_row(PREV, 86)], now_ms=None)
         self.assertEqual(out['reason'], 'decision_time_unknown')
         for bad in (0, -5, 'x', float('nan')):
-            self.assertEqual(_verify([_row(PREV, 86)], now_ms=bad)['reason'], 'decision_time_unknown', bad)
+            self.assertEqual(_verify([_row(PREV, 86)], now_ms=bad)['reason'], 'decision_time_invalid', bad)
         # now_ms on a different IST date than today_ist (stale context).
         out = _verify([_row(PREV, 86)], now_ms=_ms(2026, 10, 7, 9, 20))
         self.assertEqual(out['reason'], 'decision_time_session_mismatch')
+
+    def test_out_of_range_decision_time_abstains_without_raising(self):
+        # 10**20 made datetime.fromtimestamp raise OSError, 1e300 OverflowError, 10**400 overflowed float().
+        for bad in (10 ** 20, 1e20, 1e300, 10 ** 400, float('inf'), -1e20, 1e12, '1e400'):
+            out = _verify([_row(PREV, 86)], now_ms=bad)
+            self.assertEqual((out['status'], out['reason']), ('UNVERIFIED', 'decision_time_invalid'), bad)
+
+    def test_out_of_range_publication_time_is_missing_provenance(self):
+        for bad in (10 ** 20, 1e300, 10 ** 400, -1):
+            out = _verify([_row(PREV, 86, published=bad)])
+            self.assertEqual(out['reason'], 'previous_provenance_missing', bad)
 
     def test_weekend_and_holiday_predecessor(self):
         # Mon 2026-10-05: Fri 2026-10-02 is an NSE holiday, so the previous session is Thu 2026-10-01.
@@ -245,6 +257,34 @@ class PaperVoteTests(unittest.TestCase):
             'morning_input': {'fiiCash': '600'}}), [])
         self.assertIsNone(_fii_signal(res))
         self.assertEqual(res['votes'], {'bull': 1, 'bear': 0})
+
+
+class OutOfRangeDecisionTimeTests(unittest.TestCase):
+    BAD = (10 ** 20, 1e20, 1e300, 10 ** 400, float('inf'), float('nan'), 'x')
+
+    def _morning(self):
+        return {'fiiShortPct': '88', 'fiiCash': '-600', 'upstoxBias': 'Bearish'}
+
+    def test_paper_abstains_and_other_signals_are_unchanged(self):
+        good = brain.compute_morning_bias(_ctx('88', [_row(PREV, 86)], extra={'morning_input': self._morning()}), [])
+        others = [s for s in good['signals'] if s.get('name') != 'FII Short%']
+        for bad in self.BAD:
+            res = brain.compute_morning_bias(_ctx('88', [_row(PREV, 86)], now_ms=bad,
+                                                  extra={'morning_input': self._morning()}), [])
+            sig = _fii_signal(res)
+            self.assertEqual((sig['dir'], sig['abstainReason']), ('NEUTRAL', 'decision_time_invalid'), bad)
+            self.assertEqual([s for s in res['signals'] if s.get('name') != 'FII Short%'], others, bad)
+            self.assertEqual(res['votes']['bull'], 0, bad)     # FII Cash BEAR remains the only vote
+            self.assertEqual(res['votes']['bear'], 1, bad)
+
+    def test_non_paper_output_is_independent_of_now_ms(self):
+        for mode in ('live', 'sandbox', None):
+            ref = brain.compute_morning_bias(_ctx('88', [_row(PREV, 86)], mode=mode,
+                                                 extra={'morning_input': self._morning()}), [])
+            for bad in self.BAD + (None,):
+                res = brain.compute_morning_bias(_ctx('88', [_row(PREV, 86)], mode=mode, now_ms=bad,
+                                                     extra={'morning_input': self._morning()}), [])
+                self.assertEqual(golden_gen.digest(res), golden_gen.digest(ref), (mode, bad))
 
 
 class NonPaperByteIdentityTests(unittest.TestCase):

@@ -2521,6 +2521,10 @@ FII_SHORT_PREV_POLICY_VERSION = 'fii_short_prev_v2_paper_published_before_decisi
 FII_SHORT_PREV_SOURCE_KEY = 'fii_short_pct_source'
 FII_SHORT_PREV_PUBLISHED_KEY = 'fii_short_pct_published_ms'
 _IST_TZ = timezone(timedelta(hours=5, minutes=30))
+# Plausible epoch-ms bounds for decision/publication times (2020-01-01 .. 2100-01-01 UTC). Values outside
+# are rejected before any datetime conversion, so out-of-range inputs abstain instead of raising.
+_FII_EPOCH_MS_MIN = 1577836800000.0
+_FII_EPOCH_MS_MAX = 4102444800000.0
 
 
 def _explicit_execution_mode(ctx):
@@ -2563,14 +2567,17 @@ def _fii_short_pct_value(value):
 
 
 def _epoch_ms_value(value):
-    """Finite positive epoch milliseconds as float; None otherwise (bools rejected)."""
+    """Epoch milliseconds as float within [2020-01-01, 2100-01-01) UTC; None otherwise.
+
+    Rejects bools, non-numerics, NaN/inf, integers too large for float (OverflowError) and any value
+    outside the plausible window, so no caller ever passes an out-of-range value to datetime."""
     if value is None or isinstance(value, bool):
         return None
     try:
         num = float(value)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
-    if not math.isfinite(num) or num <= 0:
+    if not math.isfinite(num) or num < _FII_EPOCH_MS_MIN or num >= _FII_EPOCH_MS_MAX:
         return None
     return num
 
@@ -2597,11 +2604,17 @@ def _verified_previous_fii_short(ctx):
     if session_dt is None:
         out['reason'] = 'session_date_unknown'
         return out
-    decision_ms = _epoch_ms_value(ctx.get('now_ms') if isinstance(ctx, dict) else None)
+    raw_now = ctx.get('now_ms') if isinstance(ctx, dict) else None
+    decision_ms = _epoch_ms_value(raw_now)
     if decision_ms is None:
-        out['reason'] = 'decision_time_unknown'
+        out['reason'] = 'decision_time_unknown' if raw_now in (None, '') else 'decision_time_invalid'
         return out
-    if datetime.fromtimestamp(decision_ms / 1000.0, _IST_TZ).date() != session_dt:
+    try:
+        decision_day = datetime.fromtimestamp(decision_ms / 1000.0, _IST_TZ).date()
+    except (OverflowError, OSError, ValueError):   # defence in depth; bounds above should prevent it
+        out['reason'] = 'decision_time_invalid'
+        return out
+    if decision_day != session_dt:
         out['reason'] = 'decision_time_session_mismatch'
         return out
     holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
