@@ -97,6 +97,7 @@ class Poll:
     rows: Dict[Tuple[str, int, str], List[Quote]] = field(default_factory=dict)   # (expiry|'X', strike, CE/PE)
     atm: Dict[str, AtmLine] = field(default_factory=dict)
     integrity: Optional[Tuple[int, int, int, int]] = None
+    expiry_inventory: Optional[Tuple[str, ...]] = None
 
     @property
     def ist_time(self) -> time:
@@ -127,6 +128,26 @@ def _ts(text: str) -> datetime:
     return datetime.fromisoformat(text.replace('Z', '+00:00')).astimezone(timezone.utc)
 
 
+class ExtractFormatError(ValueError):
+    """Explicit, line-numbered extract failure (never a silent skip, never a guess)."""
+
+
+def _real_date(text: str) -> bool:
+    if len(text) != 10:
+        return False
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _check_expiry(text: str, line_no: int, allow_x: bool = True) -> str:
+    if (allow_x and text == 'X') or _real_date(text):
+        return text
+    raise ExtractFormatError(f'line {line_no}: malformed expiry {text!r} (the extract maps non-dates to X)')
+
+
 def parse_extract(text: str) -> Dataset:
     """Strict parser for nf_quotes_v2. Raises on malformed or repeated keys; never guesses."""
     observed, windows, polls, seen_r = set(), {}, {}, set()
@@ -136,10 +157,12 @@ def parse_extract(text: str) -> Dataset:
         ts = _ts(ts_text)
         return polls.setdefault(ts, Poll(ts))
 
-    for raw in text.splitlines():
+    for line_no, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith('#'):
             continue
+        if '|' not in line:
+            raise ExtractFormatError(f'line {line_no}: no field separator')
         kind, rest = line.split('|', 1)
         if kind not in counts:
             raise ValueError(f'unknown extract line kind: {kind!r}')
@@ -159,6 +182,7 @@ def parse_extract(text: str) -> Dataset:
             windows[key] = (_ts(ts_text) if ts_text else None, int(nrows) if nrows else None)
         elif kind == 'A':
             ts_text, expiry, k0, spot, straddle, tied, npairs = rest.split('|')
+            _check_expiry(expiry, line_no, allow_x=False)
             p = poll(ts_text)
             if expiry in p.atm:
                 raise ValueError(f'duplicate A line {ts_text} {expiry}')
@@ -166,6 +190,7 @@ def parse_extract(text: str) -> Dataset:
                                     tuple(int(x) for x in tied.split(',')), int(npairs))
         elif kind == 'R':
             ts_text, expiry, body = rest.split('|', 2)
+            _check_expiry(expiry, line_no)
             p = poll(ts_text)
             if (ts_text, expiry) in seen_r:
                 raise ValueError(f'repeated R line {ts_text} {expiry} (overlapping parts would fabricate duplicates)')
@@ -182,11 +207,26 @@ def parse_extract(text: str) -> Dataset:
                     key = (expiry, strike, name)
                     p.rows.setdefault(key, []).append((_num(bid), _num(ask)))
         elif kind == 'D':
-            ts_text, *vals = rest.split('|')
+            fields = rest.split('|')
+            if len(fields) != 6:
+                raise ExtractFormatError(f'line {line_no}: malformed D line (expected 6 fields): {line!r}')
+            ts_text, *nums, inventory = fields
+            try:
+                vals = tuple(int(v) for v in nums)
+            except ValueError:
+                raise ExtractFormatError(f'line {line_no}: malformed D counts: {line!r}') from None
+            if any(v < 0 for v in vals):
+                raise ExtractFormatError(f'line {line_no}: negative D count: {line!r}')
+            inv = tuple(x for x in inventory.split(',') if x) if inventory else ()
+            for e in inv:
+                _check_expiry(e, line_no, allow_x=False)
+            if len(inv) != vals[2] or len(set(inv)) != len(inv):
+                raise ExtractFormatError(f'line {line_no}: D inventory {inv} disagrees with count {vals[2]}')
             p = poll(ts_text)
             if p.integrity is not None:
                 raise ValueError(f'duplicate D line {ts_text}')
-            p.integrity = tuple(int(v) for v in vals)
+            p.integrity = vals
+            p.expiry_inventory = inv
     return Dataset(sorted(observed), windows, polls, hashlib.sha256(text.encode('utf-8')).hexdigest(), counts)
 
 
@@ -230,6 +270,9 @@ def poll_integrity_problem(p: Poll) -> Optional[str]:
         return 'poll_mixed_expiries'
     if non_date > 0:
         return 'poll_non_date_expiry_rows'
+    emitted = {k[0] for k in p.rows if k[0] != 'X'} | set(p.atm)
+    if p.expiry_inventory is not None and not emitted <= set(p.expiry_inventory):
+        return 'poll_inventory_mismatch'
     return None
 
 
@@ -818,7 +861,7 @@ def run_legacy_sql_v0(ds: Dataset, rule: Rule, start: date, end: date, cutoff: d
 
     ledger = []
     counts = {k: 0 for k in ('sessions', 'not_observed', 'no_entry_poll', 'no_nf_atm', 'not_in_cell',
-                             'horizon_beyond_expiry', 'eligible')}
+                             'horizon_beyond_calendar', 'horizon_beyond_expiry', 'eligible')}
     days = sorted(set(exchange_sessions(start, end)) | {d for d in cal.sessions if start <= d <= end})
     for d in days:
         counts['sessions'] += 1
@@ -887,7 +930,13 @@ def run_legacy_sql_v0(ds: Dataset, rule: Rule, start: date, end: date, cutoff: d
             continue
         # xp rows: one per feat row whose C2 exit day exists and is on/before that row's entry expiry.
         xrows = [f for f in feat if xd is not None and xd <= date.fromisoformat(f['e_ex'])]
-        if not any(xd is not None and xd <= date.fromisoformat(f['e_ex']) for f in cell):
+        if xd is None:
+            # The observed calendar ends before s+2: the sweep had no C2 row (not yet matured at its cutoff).
+            row['status'] = 'horizon_beyond_calendar'
+            counts['horizon_beyond_calendar'] += 1
+            ledger.append(row)
+            continue
+        if not any(xd <= date.fromisoformat(f['e_ex']) for f in cell):
             row['status'] = 'horizon_beyond_expiry'
             counts['horizon_beyond_expiry'] += 1
             ledger.append(row)

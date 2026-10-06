@@ -83,6 +83,7 @@ class Fixture:
                                          'chains': {expiry_for(d).isoformat(): _quotes(spots[d])}}
         self.any_override = {}
         self.omit_integrity = set()
+        self.hidden = {}        # (d, slot) -> {expiry: rows}: stored rows the extract does not emit as R/A lines
 
     def overwrite_with_expiry(self, d, slot, expiry, keys, scale=160.0, spot=None):
         """Model the real upsert: ml_ocs_unique has no expiry, so writing another expiry's row at a
@@ -144,9 +145,15 @@ class Fixture:
                             keys.add((k, opt))
                     toks.append('/'.join(parts))
                 lines.append(f'R|{ts}|{expiry}|' + ';'.join(toks))
-            nexp = len([e for e, rows in p['chains'].items() if e != 'X' and rows])
+            for expiry, rows in self.hidden.get((d, slot), {}).items():
+                for (k, opt), qs in rows.items():
+                    total += len(qs)
+                    non_date += len(qs) if expiry == 'X' else 0
+                    keys.add((k, opt))
+            inv = sorted({e for e, rows in list(p['chains'].items()) + list(self.hidden.get((d, slot), {}).items())
+                          if e != 'X' and rows})
             if (d, slot) not in self.omit_integrity:
-                lines.append(f'D|{ts}|{total}|{len(keys)}|{nexp}|{non_date}')
+                lines.append(f'D|{ts}|{total}|{len(keys)}|{len(inv)}|{non_date}|{",".join(inv)}')
         return '\n'.join(sorted(lines))
 
     def dataset(self):
@@ -435,6 +442,57 @@ class CorrectedLedgerTests(unittest.TestCase):
         row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
         self.assertEqual(row['reason'], 'poll_non_date_expiry_rows')
 
+    def test_f3_omitted_earlier_expiry_without_atm_is_quarantined_not_skipped(self):
+        # Codex interim case: an earlier-dated expiry has stored NF rows but no valid ATM pair, the extract emits
+        # R/A lines only for the later expiry, and only the D line (whole chain) shows two valid expiries.
+        d = date(2026, 9, 3)
+        fx = self.fx()
+        fx.hidden[(d, 'E')] = {'2026-09-03': {(26000, 'CE'): [(None, 5.0)], (26050, 'PE'): [(3.0, 2.0)]}}
+        ds = fx.dataset()
+        p = ds.polls[_ts(d, 12, 31)]
+        self.assertEqual(p.valid_expiries(), ['2026-09-08'])            # the later one is all the rows show
+        self.assertEqual(p.expiry_inventory, ('2026-09-03', '2026-09-08'))
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual((row['status'], row['reason']), ('entry_poll_quarantined', 'poll_mixed_expiries'))
+        self.assertNotIn('expiry', row)                                  # never silently took the later one
+
+    def test_f3_single_incomplete_expiry(self):
+        d = date(2026, 9, 3)
+        fx = self.fx()
+        rows = fx.polls[(d, 'E')]['chains']['2026-09-08']
+        for key in [k for k in rows if k[1] == 'PE']:
+            del rows[key]                                                # no PE at all: no ATM pair, no A line
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['status'], 'atm_unavailable')
+        fx = self.fx()
+        k0 = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']['k0']
+        fx.drop_legs(d, 'E', [(k0 - 400, 'PE')])                           # ATM fine, one wing missing
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['status'], 'entry_quote_incomplete')
+
+    def test_f3_inventory_must_cover_emitted_expiries(self):
+        p = re_.Poll(datetime(2026, 9, 3, 7, 1, tzinfo=UTC))
+        p.rows[('2026-09-08', 23000, 'CE')] = [(10.0, 10.5)]
+        p.integrity, p.expiry_inventory = (1, 1, 1, 0), ('2026-09-15',)
+        self.assertEqual(re_.poll_integrity_problem(p), 'poll_inventory_mismatch')
+
+    def test_f3_f4_malformed_d_lines_and_impossible_dates_fail_explicitly(self):
+        ts = '2026-09-03T07:01:00.000000Z'
+        bad_lines = [
+            f'D|{ts}|10|10|1|0',                          # old 5-field shape
+            f'D|{ts}|10|x|1|0|2026-09-08',               # non-integer
+            f'D|{ts}|10|10|-1|0|',                       # negative
+            f'D|{ts}|10|10|2|0|2026-09-08',              # inventory shorter than count
+            f'D|{ts}|10|10|1|0|2026-99-99',              # shaped but impossible
+            f'R|{ts}|2026-02-30|23000/C:1,2',            # impossible date in a row line
+            f'A|{ts}|X|23000|1|1|23000|1',               # ATM on a non-date expiry
+        ]
+        for line in bad_lines:
+            with self.assertRaises(re_.ExtractFormatError, msg=line):
+                re_.parse_extract(line)
+        ok = re_.parse_extract(f'D|{ts}|10|10|1|2|2026-09-08')
+        self.assertEqual(ok.polls[re_._ts(ts)].integrity, (10, 10, 1, 2))
+
     # ---- expiry-boundary fixtures --------------------------------------------------------------
     def test_expiry_day_entry_is_horizon_beyond_expiry(self):
         rows = _by_session(_run_b(self.fx())['ledger'])
@@ -690,6 +748,13 @@ class RunnerTests(unittest.TestCase):
             self.load([('01', '2026-09-01', '2026-09-15'), ('02', '2026-09-17', '2026-10-05')])
         with self.assertRaises(SystemExit):
             self.load([('01', '2026-09-01', '2026-09-15'), ('02', '2026-09-15', '2026-10-05')])
+
+    def test_malformed_extract_is_an_explicit_extract_failure(self):
+        self.write('01', _part_text('01', '2026-09-01', '2026-09-15', 'R|2026-09-03T07:01:00.000000Z|2026-99-99|1/C:1,2'))
+        self.write('02', _part_text('02', '2026-09-16', '2026-10-05', 'S|2026-09-16'))
+        with self.assertRaises(runner.ExtractError) as cm:
+            self.load()
+        self.assertIn('malformed expiry', str(cm.exception))
 
     def test_stage_a_gate_fails_on_mismatch_extra_or_unproven(self):
         ledger = []

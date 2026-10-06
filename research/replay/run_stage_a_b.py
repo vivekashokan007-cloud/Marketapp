@@ -104,7 +104,10 @@ def load_parts(extract_dir, manifest=None):
         report.append({'part': part, 'range': f'{a}..{b}', 'md5': got, 'lines': len(lines),
                        'kinds': {k: sum(1 for l in lines if l.startswith(k + '|')) for k in 'SWARD'}})
     merged = '\n'.join(bodies)
-    ds = re_.parse_extract(merged)   # raises on any repeated key across parts
+    try:
+        ds = re_.parse_extract(merged)   # raises on any repeated key across parts or malformed field
+    except ValueError as exc:
+        raise ExtractError(f'extract rejected: {exc}') from None
     return ds, report
 
 

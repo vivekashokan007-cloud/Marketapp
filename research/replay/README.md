@@ -8,7 +8,9 @@ Research only. This directory lives outside `app/src/main/python`, so it is **no
 | `extract_nf_quotes.sql` | Bounded, read-only raw-row extract, run after market hours, one part at a time. Run `EXPLAIN` on part 01 first. |
 | `stage_a_sql_crosscheck.sql` | The executed 5 Oct sweep SQL, reduced only where the published cell cannot be affected. Gives an independent per-day Stage A. |
 | `run_stage_a_b.py` | Verifies the part manifest, runs both stages and writes the ledgers, a bridge, a report and `SHA256SUMS`. The exit code is non-zero unless the Stage A gate passes. |
-| `tests/test_replay_engine.py` | 47 synthetic fixtures (including an end-to-end part-file → runner test), rendered through the real extract format. |
+| `tests/test_replay_engine.py` | 52 synthetic fixtures (including an end-to-end part-file → runner test), rendered through the real extract format. |
+| `sqlkit.py` | Renders every research SQL file with validated date parameters (guarded `BEGIN READ ONLY` form, or a single-statement form for clients that return only the last result) and writes part files after checking the Postgres md5 and line count. The same text runs in the scratch tests and after hours. |
+| `tests/test_sql_scratch_pg.py` | 7 tests that run the real SQL on a throwaway LOCAL Postgres loaded with the fixtures. Skipped unless `MR_SCRATCH_PG` points at a local socket/localhost database whose name contains `scratch` or `test`. |
 
 ## Extract format `nf_quotes_v2`
 
@@ -20,7 +22,7 @@ W|<session>|<E|C|L>|<any|nf>|<poll_ts>|<NF rows>    window poll: any = first pol
                                                      nf = first poll with NF rows; L|nf = last NF poll when no NF C poll
 A|<poll_ts>|<expiry>|<k0>|<spot>|<straddle>|<tied strikes>|<distinct min pairs>   sweep ATM over valid rows
 R|<poll_ts>|<expiry>|<strike>/<C|P>:<bid>,<ask>[/...];...   one token per STORED row (duplicates repeat)
-D|<poll_ts>|<NF rows>|<distinct (strike,type)>|<valid expiries>|<non-date-expiry rows>   integrity counts
+D|<poll_ts>|<NF rows>|<distinct (strike,type)>|<valid expiries>|<non-date-expiry rows>|<expiry inventory>   whole-chain integrity
 ```
 
 A part file is a header followed by the exact body that Postgres hashed:
@@ -41,7 +43,10 @@ The runner rejects any of the following:
 - a manifest gap or overlap;
 - a format, part id, range, line-count or md5 mismatch;
 - an `S` or `W` line outside its part's range;
-- a repeated key across parts. A repeated `R` line would fabricate duplicates, so it is rejected too.
+- a repeated key across parts. A repeated `R` line would fabricate duplicates, so it is rejected too;
+- a malformed line: a `D` line without exactly 6 fields, non-integer or negative counts, an inventory that disagrees with its count, or any expiry that is neither `X` nor a real calendar date (`2026-99-99`, `2026-02-30`). The failure is an explicit, line-numbered extract error, never a crash or a skip.
+
+A "valid" expiry is a string equal to a real date from 2024-01-01 to 2030-12-31 (a lookup, never a cast), so impossible dates become `X` in the extract and count as non-date rows.
 
 The table's unique index is `ml_ocs_unique (poll_ts, index_key, strike, option_type)`, without expiry. Two consequences:
 
@@ -63,7 +68,7 @@ Stage A reproduces the sweep's own semantics:
 - **td:** weekdays + 0.48.
 - **RV:** RMS over every cross-expiry close pair from sn−6 to sn−2.
 - **Band:** `vb = v1.3`.
-- **Exit:** C2, observed, on or before expiry, on the first any-index close poll, inner join on all legs.
+- **Exit:** C2, observed, on or before expiry, on the first any-index close poll, inner join on all legs. An entry whose s+2 lies beyond the observed calendar is `horizon_beyond_calendar` (the sweep had no C2 row for it), never eligible.
 - **Lot:** fixed 65, labelled `legacy_fixed_65_historical_assumption`. This is an assumption, not an authority.
 - **Fees:** sweep fee formula.
 
@@ -82,7 +87,7 @@ Some rows can depend on SQL behaviour that isn't deterministic (ATM ties) or on 
 | --- | --- |
 | Poll | First poll with NF rows in [12:30, 12:55) / [15:20, 15:45) IST |
 | Expiry | Entry: nearest valid expiry ≥ session. Exit and marks: the entry expiry, explicitly. |
-| Poll quarantine | A poll is unusable if its NF rows carry more than one valid expiry, any non-date expiry, more rows than distinct `(strike, type)` keys, or no integrity line. The unique key has no expiry, so a second expiry overwrites shared strikes and leaves an interleaved chain whose ATM would come from an incomplete strike set. This applies to entry, RV closes, exits and deferred marks. |
+| Poll quarantine | A poll is unusable if its whole-chain `D` line shows more than one valid expiry (even when only one expiry's rows are emitted), any non-date expiry, more rows than distinct `(strike, type)` keys, an emitted expiry missing from the inventory, or no integrity line. The unique key has no expiry, so a second expiry overwrites shared strikes and leaves an interleaved chain whose ATM would come from an incomplete strike set. This applies to entry, RV closes, exits and deferred marks. |
 | Duplicates | Conflicting rows are never combined (second line of defence after the poll quarantine). |
 | ATM | Sweep metric; ties go to the lowest strike. |
 | Calendar | NSE exchange sessions (asserted equal to `brain.py` `NSE_HOLIDAYS`). |

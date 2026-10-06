@@ -6,13 +6,15 @@
 --   * output = per-entry-day rows for the cell instead of grouping-set summaries, plus eligible entries
 --     whose C2 exit produced no row (the inner join that dropped 23 Jul).
 -- Read-only; run AFTER market hours. Compare with Stage A (run_legacy_sql_v0) and the published list.
+-- Placeholders (substituted by sqlkit.render): :CAL_START = 2026-06-15, :WIN_START = 2026-06-22,
+-- :CUTOFF = 2026-10-05 (entry window end and calendar cap).
 begin read only;
 set local statement_timeout = '60s'; set local work_mem = '256MB'; set local enable_nestloop = off;
 with
 cal as (select d, row_number() over (order by d) sn
         from (select distinct session_date d from ml_brain_snapshots
-              where session_date >= '2026-06-15' and session_date <= '2026-10-05') x),
-rng as (select min(sn) a, max(sn) b from cal where d between '2026-06-22' and '2026-10-05'),
+              where session_date >= :CAL_START::date and session_date <= :CUTOFF::date) x),
+rng as (select min(sn) a, max(sn) b from cal where d between :WIN_START::date and :CUTOFF::date),
 win as (select c.d, c.sn from cal c, rng where c.sn between rng.a - 6 and rng.b + 6),
 pt as (select distinct poll_ts, (poll_ts at time zone 'Asia/Kolkata')::date d, (poll_ts at time zone 'Asia/Kolkata')::time t
        from ml_option_chain_snapshots
@@ -44,7 +46,7 @@ ent2 as materialized (
          e.td, (e.straddle/0.798) sig_t, (e.straddle/0.798)/e.spot/sqrt(e.td) ivd, r.rv_daily
   from mk e join cp on cp.d=e.d and cp.slot=e.slot join atm a on a.poll_ts=cp.poll_ts and a.ix=e.ix
   left join rv r on r.ix=e.ix and r.sn=e.sn
-  where e.slot = 'E1230' and e.d between '2026-06-22' and '2026-10-05'),
+  where e.slot = 'E1230' and e.d between :WIN_START::date and :CUTOFF::date),
 feat as materialized (
   select e.*,
     case when rv_daily is null or rv_daily=0 then 'vna' when ivd/rv_daily < 1.0 then 'v<1.0' when ivd/rv_daily < 1.3 then 'v1.0'

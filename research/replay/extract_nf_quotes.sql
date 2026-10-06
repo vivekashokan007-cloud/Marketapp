@@ -15,9 +15,12 @@
 --   R|<poll_ts>|<expiry>|<strike>/<C|P>:<bid>,<ask>[/<C|P>:<bid>,<ask>...];...
 --        RAW rows, one token per stored row (a duplicate row appears twice; an empty field is SQL NULL;
 --        an option with no stored row has no token). Rows with a non-date expiry are emitted with expiry 'X'.
---   D|<poll_ts>|<NF rows>|<distinct NF (strike,type)>|<distinct valid NF expiries>|<NF rows with non-date expiry>
---        per-poll integrity counts (unique index ml_ocs_unique is (poll_ts,index_key,strike,option_type), so
---        rows = distinct (strike,type) is expected; the engine re-checks).
+--   D|<poll_ts>|<NF rows>|<distinct NF (strike,type)>|<distinct valid NF expiries>|<NF rows with non-date expiry>|<inventory>
+--        per-poll integrity counts over the WHOLE NF chain at that poll, not just emitted strikes, plus the
+--        complete inventory of valid expiries (comma list). ml_ocs_unique is (poll_ts,index_key,strike,option_type)
+--        with no expiry, so rows = distinct (strike,type) is expected and >1 valid expiry means an interleaved chain.
+-- A 'valid' expiry is a string equal to a real calendar date 2024-01-01..2030-12-31 in YYYY-MM-DD form (lookup,
+-- never a cast), so shaped-but-impossible values ('2026-99-99', '2026-02-30') count as non-date ('X').
 -- Strikes emitted per (poll, expiry):
 --   E polls: every tied k0 of every expiry at the poll + {-400,-300,-150,-100,-50,0,50,100,150,300,400}.
 --   C polls: every tied k0 at the poll + {-150..150}; plus {0,+-300,+-400} around every tied k0 of every E poll
@@ -27,6 +30,7 @@ begin read only;
 set local statement_timeout = '45s';
 set local work_mem = '64MB';
 with
+vd as (select to_char(g, 'YYYY-MM-DD') s from generate_series(date '2024-01-01', date '2030-12-31', interval '1 day') g),
 days as (select g::date d from generate_series(:A::date - 15, :B::date, interval '1 day') g),
 rng as (select d, s.slot, ((d + s.t0) at time zone 'Asia/Kolkata') lo,
                ((d + s.t0 + interval '25 minutes') at time zone 'Asia/Kolkata') hi
@@ -46,7 +50,7 @@ lp as materialized (
 sel as (select d, slot, any_poll poll_ts from pw where any_poll is not null
         union select d, slot, nf_poll from pw where nf_poll is not null),
 q as materialized (
-  select s.d, s.slot, c.poll_ts, case when c.expiry ~ '^\d{4}-\d{2}-\d{2}$' then c.expiry else 'X' end expiry,
+  select s.d, s.slot, c.poll_ts, case when c.expiry in (select vd.s from vd) then c.expiry else 'X' end expiry,
          c.strike, c.option_type, c.bid, c.ask
   from (select distinct d, slot, poll_ts from sel) s
   join ml_option_chain_snapshots c on c.poll_ts = s.poll_ts and c.index_key = 'NF'),
@@ -117,8 +121,9 @@ lines as (
   union all
   select 'D|' || to_char(x.poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || '|' || count(*) || '|'
          || count(distinct (c.strike, c.option_type)) || '|'
-         || count(distinct c.expiry) filter (where c.expiry ~ '^\d{4}-\d{2}-\d{2}$') || '|'
-         || count(*) filter (where c.expiry !~ '^\d{4}-\d{2}-\d{2}$' or c.expiry is null)
+         || count(distinct c.expiry) filter (where c.expiry in (select vd.s from vd)) || '|'
+         || count(*) filter (where c.expiry is null or c.expiry not in (select vd.s from vd)) || '|'
+         || coalesce(string_agg(distinct c.expiry, ',' order by c.expiry) filter (where c.expiry in (select vd.s from vd)), '')
   from emit x join ml_option_chain_snapshots c on c.poll_ts = x.poll_ts and c.index_key = 'NF'
   group by x.poll_ts),
 body as (select string_agg(line, E'\n' order by line) b, count(*) n,
