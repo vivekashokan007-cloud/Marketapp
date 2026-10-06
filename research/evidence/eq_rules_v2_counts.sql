@@ -1,7 +1,7 @@
--- EQ reader v2, step 2 of 2 (read-only; after market hours): executed exclusion counts and legitimate-zero
--- counts outside each invalid window, for the rules whose tables are fully known. :BOUNDARY is the first
--- IST session at or above brain 2.6.66 from step 1, or the day after the last session checked when no such
--- snapshot exists (rule still open). Every window is half-open [start, end).
+-- EQ reader v2, step 2 (read-only; after market hours): executed exclusion counts inside each invalid window
+-- and plain (unverified) counts outside it, for the rules whose tables are fully known. :BOUNDARY is the
+-- first IST session at or above brain 2.6.66 from step 1 (eq_lot_report.boundary_from_versions), or the day
+-- after the last session checked when none exists (rule still open). Every window is half-open [start, end).
 begin read only;
 set local statement_timeout = '60s';
 with tv as (
@@ -31,9 +31,15 @@ eq2 as (
     'in_window_zero_treated_missing', count(*) filter (where in_window and fii = 0),
     'in_window_nonzero', count(*) filter (where in_window and fii <> 0),
     'in_window_absent', count(*) filter (where in_window and fii is null),
-    'outside_window_zero_legitimate', count(*) filter (where not in_window and fii = 0),
+    -- Outside the window a stored 0 is NOT verified as a measured observation by this count; it is only
+    -- outside the known-defect window. Do not admit these zeros to training without row-level provenance.
+    'outside_window_zero_unverified', count(*) filter (where not in_window and fii = 0),
     'outside_window_nonzero', count(*) filter (where not in_window and fii <> 0),
-    'outside_window_absent', count(*) filter (where not in_window and fii is null)) j
+    'outside_window_absent', count(*) filter (where not in_window and fii is null),
+    'before_window_trades', count(*) filter (where d < date '2026-07-02'),
+    'before_window_zero_unverified', count(*) filter (where d < date '2026-07-02' and fii = 0),
+    'on_or_after_boundary_trades', count(*) filter (where d >= :BOUNDARY::date),
+    'on_or_after_boundary_zero_unverified', count(*) filter (where d >= :BOUNDARY::date and fii = 0)) j
   from tv2),
 eq3 as (
   -- Per session: the stored morning FII Short% vote and whether it was a level-only fallback.

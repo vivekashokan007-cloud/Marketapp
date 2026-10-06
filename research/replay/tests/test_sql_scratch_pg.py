@@ -31,9 +31,12 @@ EVIDENCE = os.path.normpath(os.path.join(HERE, '..', '..', 'evidence'))
 EQ_VERSIONS = os.path.join(EVIDENCE, 'eq_rules_v2_versions.sql')
 EQ_COUNTS = os.path.join(EVIDENCE, 'eq_rules_v2_counts.sql')
 LOT_SQL = os.path.join(EVIDENCE, 'lot_captured_vs_authority.sql')
+EQ_SNAPSHOTS = os.path.join(EVIDENCE, 'eq_boundary_snapshots.sql')
+EQ_459 = os.path.join(EVIDENCE, 'eq_rules_v2_eq4_eq5_eq9.sql')
 
 SCHEMA = """
-drop table if exists ml_option_chain_snapshots, ml_brain_snapshots, ml_generated_candidates, trades_v2;
+drop table if exists ml_option_chain_snapshots, ml_brain_snapshots, ml_generated_candidates, trades_v2,
+  chain_snapshots, premium_history, ml_evaluation_outcomes;
 create table ml_option_chain_snapshots (id bigserial primary key, poll_ts timestamptz, session_date date,
   index_key text, expiry text, strike integer, option_type text, ltp double precision,
   bid double precision, ask double precision);
@@ -48,6 +51,11 @@ create table trades_v2 (id bigserial primary key, index_key text, expiry date, e
   friction_breakdown_json jsonb, lots integer,
   sell_strike numeric, sell_type text, sell_ltp numeric, buy_strike numeric, buy_type text, buy_ltp numeric,
   sell_strike2 numeric, sell_type2 text, sell_ltp2 numeric, buy_strike2 numeric, buy_type2 text, buy_ltp2 numeric);
+create table chain_snapshots (id bigserial primary key, date date, session text, created_at timestamptz);
+create table premium_history (id bigserial primary key, date date, session text, fii_short_pct numeric,
+  created_at timestamptz);
+create table ml_evaluation_outcomes (id bigserial primary key, session_date date, exit_ts timestamptz,
+  exit_reason text, label_version text);
 """
 
 
@@ -310,6 +318,8 @@ class ScratchPostgresTests(unittest.TestCase):
         versions['last_session_checked'] = str(versions['last_session_checked'])
         b = eq_lot_report.boundary_from_versions(versions)
         self.assertEqual((b['status'], b['boundary_session']), ('observed', '2026-09-21'))
+        self.assertEqual(b['first_candidate']['first_candidate_ts'][:16], '2026-09-21T06:50')   # 12:20 IST
+        self.assertIsNone(b['first_snapshot'])
         mixed = eq_lot_report.eq10_from_versions(versions)['mixed_version_sessions']
         self.assertEqual([m['session_date'] for m in mixed], ['2026-09-21'])
         eq10 = eq_lot_report.eq10_from_versions(versions)
@@ -320,11 +330,72 @@ class ScratchPostgresTests(unittest.TestCase):
         self.assertEqual((eq1['in_window_trades'], eq1['in_window_signature_entry_vix_minus_13_61']), (2, 1))
         self.assertEqual(eq1['outside_window_trades'], 1)
         self.assertEqual((eq2['in_window_zero_treated_missing'], eq2['in_window_nonzero']), (1, 1))
+        self.assertNotIn('outside_window_zero_legitimate', eq2)
+        self.assertEqual((eq2['outside_window_zero_unverified'], eq2['before_window_trades'],
+                          eq2['on_or_after_boundary_trades'], eq2['on_or_after_boundary_zero_unverified']), (0, 0, 1, 0))
         self.assertEqual(eq3['excluded_prev_na_level_only'], eq3['sessions'])
         self.assertEqual(eq8['paper_false_with_mode_paper'], 1)
         lots = self._query(sqlkit.select_body(LOT_SQL, FROM='2026-08-01'))[0][0]
         rep = eq_lot_report.lot_report(lots)
         self.assertEqual((rep['trades_agree'], rep['trades_disagree'], rep['trades_captured_missing']), (1, 1, 1))
+
+    def _json_row(self, sql):
+        cur = self.conn.cursor()
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+        return dict(zip(cols, cur.fetchone()))
+
+    def test_boundary_reports_first_snapshot_and_first_candidate_separately(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'evidence'))
+        import eq_lot_report  # noqa: E402
+        versions = self._json_row(sqlkit.select_body(EQ_VERSIONS, FROM='2026-08-20'))
+        snaps = self._json_row(sqlkit.select_body(EQ_SNAPSHOTS, FROM='2026-09-18', TO='2026-09-21'))
+        b = eq_lot_report.boundary_from_versions(versions, snaps, ('2026-09-18', '2026-09-21'))
+        self.assertEqual((b['status'], b['boundary_session']), ('observed', '2026-09-21'))
+        # The snapshot (09:20 IST) precedes the first candidate row at 2.6.66 (12:20 IST) on the same session.
+        self.assertEqual(b['first_snapshot']['status'], 'observed')
+        self.assertEqual(b['first_snapshot']['first_snapshot_ts'][:16], '2026-09-21T03:50')
+        self.assertEqual(b['first_candidate']['first_candidate_ts'][:16], '2026-09-21T06:50')
+        self.assertEqual(b['first_snapshot']['source'], eq_lot_report.SNAPSHOT_SOURCE)
+        self.assertEqual(b['first_candidate']['source'], eq_lot_report.CANDIDATE_SOURCE)
+        # A window that starts at or after the change cannot prove "first": refused, no boundary claimed.
+        late = self._json_row(sqlkit.select_body(EQ_SNAPSHOTS, FROM='2026-09-21', TO='2026-09-22'))
+        r = eq_lot_report.boundary_from_versions(versions, late, ('2026-09-21', '2026-09-22'))
+        self.assertEqual((r['status'], r['boundary_session']), ('refused_window_not_bracketing', None))
+
+    def test_eq4_eq5_eq9_counts_and_verdicts(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'evidence'))
+        import eq_lot_report  # noqa: E402
+        cur = self.conn.cursor()
+        cur.execute('delete from chain_snapshots; delete from premium_history; delete from ml_evaluation_outcomes')
+        cur.execute("insert into chain_snapshots (date, session, created_at) values "
+                    "('2026-06-26', 'eod', '2026-06-26 16:00+05:30'), ('2026-06-29', 'eod', '2026-06-29 16:00+05:30')")
+        cur.execute("insert into premium_history (date, session, fii_short_pct, created_at) values "
+                    "('2026-06-29', 'eod', 88, '2026-06-29 16:00+05:30')")
+        cur.execute("insert into ml_evaluation_outcomes (session_date, exit_ts, exit_reason, label_version) values "
+                    "('2026-09-03', '2026-09-03 15:20+05:30', 'eod', 'v1'), "
+                    "('2026-09-03', '2026-09-03 23:59+05:30', 'tp', 'v1'), "
+                    "('2026-09-04', null, 'no_path', 'v2')")
+        res = self._json_row(sqlkit.select_body(EQ_459, FROZEN='2026-06-30'))
+        m = eq_lot_report.build_manifest({'per_session': []}, {}, re_.parse_extract(''), (date(2026, 9, 1),
+                                         date(2026, 9, 1)), eq459=res)['rules']
+        self.assertEqual(m['EQ4_chain_snapshots_frozen']['status'], 'confirmed_no_row_on_or_after_frozen_date')
+        self.assertEqual(m['EQ5_premium_history_frozen']['status'], 'confirmed_no_row_on_or_after_frozen_date')
+        e9 = res['eq9_teacher_same_session_only']
+        self.assertEqual((e9['exit_same_session'], e9['exit_after_session'], e9['exit_ts_null']), (2, 0, 1))
+        self.assertEqual(m['EQ9_teacher_same_session_only']['status'],
+                         'confirmed_no_overnight_exit_with_unclassified_rows')
+        # Violations are reported, not hidden: a late chain_snapshots row and an overnight label.
+        cur.execute("insert into chain_snapshots (date, session, created_at) values "
+                    "('2026-07-01', 'eod', '2026-07-01 16:00+05:30')")
+        cur.execute("insert into ml_evaluation_outcomes (session_date, exit_ts, exit_reason, label_version) values "
+                    "('2026-09-03', '2026-09-04 09:20+05:30', 'tp', 'v1')")
+        res = self._json_row(sqlkit.select_body(EQ_459, FROZEN='2026-06-30'))
+        m = eq_lot_report.build_manifest({'per_session': []}, {}, re_.parse_extract(''), (date(2026, 9, 1),
+                                         date(2026, 9, 1)), eq459=res)['rules']
+        self.assertEqual(m['EQ4_chain_snapshots_frozen']['status'], 'violated_rows_exist_after_frozen_date')
+        self.assertEqual(m['EQ9_teacher_same_session_only']['status'], 'violated_labels_exit_after_entry_session')
+        cur.execute('delete from chain_snapshots; delete from premium_history; delete from ml_evaluation_outcomes')
 
     def test_payload_query_runs(self):
         res = self._query(sqlkit.select_body(sqlkit.PAYLOAD_SQL, D='2026-09-03'))[0]

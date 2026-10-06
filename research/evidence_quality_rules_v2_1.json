@@ -1,20 +1,58 @@
 {
- "version": "evidence_quality_rules_v2_20261006",
- "supersedes": "evidence_quality_rules_v1_20261006 (unimplemented manifest)",
+ "version": "evidence_quality_rules_v2_1_20261006",
+ "supersedes": "evidence_quality_rules_v2_20261006 (first-candidate-only boundary, EQ2 outside-window zeros mislabelled legitimate, EQ4/EQ5/EQ9 unexecuted)",
  "reader": {
   "sql": [
    "research/evidence/eq_rules_v2_versions.sql",
-   "research/evidence/eq_rules_v2_counts.sql"
+   "research/evidence/eq_rules_v2_counts.sql",
+   "research/evidence/eq_boundary_snapshots.sql",
+   "research/evidence/eq_rules_v2_eq4_eq5_eq9.sql"
   ],
   "python": "research/evidence/eq_lot_report.py",
   "extract": "nf_quotes_v2 parts (EQ7)"
  },
  "boundary_2_6_66": {
+  "first_candidate": {
+   "source": "ml_generated_candidates.brain_version",
+   "first_candidate_ts": "2026-10-06T03:55:00+00:00",
+   "first_candidate_session": "2026-10-06",
+   "note": "polls that generated no candidate leave no row here"
+  },
+  "first_snapshot": {
+   "source": "ml_brain_snapshots.context_json.snapshot_brain_version",
+   "window_checked": [
+    "2026-10-05",
+    "2026-10-06"
+   ],
+   "per_session": [
+    {
+     "session_date": "2026-10-05",
+     "snapshots": 72,
+     "version_list": "2.6.65",
+     "ge_2_6_66": 0,
+     "null_version_rows": 0,
+     "first_poll": "2026-10-05T03:45:03+00:00",
+     "last_poll": "2026-10-05T10:10:47+00:00"
+    },
+    {
+     "session_date": "2026-10-06",
+     "snapshots": 70,
+     "version_list": "2.6.66",
+     "ge_2_6_66": 70,
+     "null_version_rows": 0,
+     "first_poll": "2026-10-06T03:45:02+00:00",
+     "last_poll": "2026-10-06T10:10:34+00:00"
+    }
+   ],
+   "status": "observed",
+   "first_snapshot_ts": "2026-10-06T03:45:02+00:00",
+   "first_snapshot_session": "2026-10-06",
+   "version": "2.6.66",
+   "scope": "first stored snapshot at or above 2.6.66 within the window; the window start session holds only lower versions, and snapshots before the window are not read (the candidate-row read covers every earlier session)"
+  },
   "status": "observed",
-  "first_poll_ts": "2026-10-06T03:55:00+00:00",
   "boundary_session": "2026-10-06",
   "version": "2.6.66",
-  "source": "ml_generated_candidates.brain_version",
   "note": "EQ1/EQ2 windows end at this IST session (exclusive)"
  },
  "rules": {
@@ -43,14 +81,19 @@
     "2026-10-06"
    ],
    "action": "zero_means_missing",
+   "outside_window_zeros": "unverified; not admissible to training without row-level provenance",
    "executed": {
     "in_window_trades": 136,
     "in_window_zero_treated_missing": 136,
     "in_window_nonzero": 0,
     "in_window_absent": 0,
-    "outside_window_zero_legitimate": 49,
+    "outside_window_zero_unverified": 49,
     "outside_window_nonzero": 93,
-    "outside_window_absent": 12
+    "outside_window_absent": 12,
+    "before_window_trades": 154,
+    "before_window_zero_unverified": 49,
+    "on_or_after_boundary_trades": 0,
+    "on_or_after_boundary_zero_unverified": 0
    }
   },
   "EQ3_fii_short_vote_missing_history": {
@@ -66,13 +109,29 @@
   },
   "EQ4_chain_snapshots_frozen": {
    "action": "no_valid_rows",
-   "executed": null,
-   "status": "not_executed_table_schema_unverified"
+   "status": "confirmed_no_row_on_or_after_frozen_date",
+   "executed": {
+    "rows_total": 57,
+    "first_date": "2026-03-20",
+    "last_date": "2026-06-29",
+    "last_created_at": "2026-06-29T12:12:47.609282+00:00",
+    "rows_on_or_after_frozen": 0,
+    "rows_created_on_or_after_frozen": 0,
+    "sessions_on_last_date": "morning"
+   }
   },
   "EQ5_premium_history_frozen": {
    "action": "absent",
-   "executed": null,
-   "status": "not_executed_table_schema_unverified"
+   "status": "confirmed_no_row_on_or_after_frozen_date",
+   "executed": {
+    "rows_total": 146,
+    "first_date": "2025-10-23",
+    "last_date": "2026-06-29",
+    "last_created_at": "2026-06-29T12:12:47.541965+00:00",
+    "rows_on_or_after_frozen": 0,
+    "rows_created_on_or_after_frozen": 0,
+    "rows_with_fii_short_pct": 38
+   }
   },
   "EQ6_option_chain_partial_capture": {
    "action": "exclude_full_chain_research",
@@ -113,8 +172,35 @@
   },
   "EQ9_teacher_same_session_only": {
    "action": "same_session_horizon_only",
-   "executed": null,
-   "status": "established_by_code_reading_not_by_count"
+   "status": "confirmed_no_overnight_exit_with_unclassified_rows",
+   "executed": {
+    "rows_total": 316783,
+    "sessions": 70,
+    "first_session": "2026-06-12",
+    "last_session": "2026-10-05",
+    "exit_ts_null": 6600,
+    "exit_same_session": 310183,
+    "exit_after_session": 0,
+    "exit_before_session": 0,
+    "session_date_null": 6177,
+    "by_label_version": {
+     "teacher_v1": {
+      "rows": 310183,
+      "same_session": 310183,
+      "after_session": 0,
+      "exit_ts_null": 0
+     },
+     "null": {
+      "rows": 6600,
+      "same_session": 0,
+      "after_session": 0,
+      "exit_ts_null": 6600
+     }
+    },
+    "exit_reason_when_exit_ts_null": {
+     "null": 6600
+    }
+   }
   },
   "EQ10_device_version_mixing": {
    "action": "mixed_or_partial_sessions_not_homogeneous",
@@ -324,8 +410,10 @@
   }
  },
  "inputs": {
-  "versions": "eq/eq_versions_output.json (eq/eq_versions_rendered.sql, FROM=2026-06-15, commit b53a7c1)",
-  "counts": "eq/eq_counts_output.json (eq/eq_counts_rendered.sql, BOUNDARY=2026-10-06, commit b53a7c1)",
-  "extract": "extract/part01..08.txt, range 2026-06-15..2026-10-05 (EQ7)"
+  "versions": "eq/eq_versions_output.json (eq/eq_versions_rendered.sql, FROM=2026-06-15; same run as the 516e9de package)",
+  "snapshot_boundary": "eq/eq_boundary_snapshots_output.json (eq/eq_boundary_snapshots_rendered.sql, FROM=2026-10-05 TO=2026-10-06)",
+  "counts": "eq/eq_counts_output.json (eq/eq_counts_rendered.sql, BOUNDARY=2026-10-06)",
+  "eq4_eq5_eq9": "eq/eq_eq4_eq5_eq9_output.json (eq/eq_eq4_eq5_eq9_rendered.sql, FROZEN=2026-06-30)",
+  "extract": "final/extract/part01..08.txt (frozen, unchanged), range 2026-06-15..2026-10-05 (EQ7)"
  }
 }
