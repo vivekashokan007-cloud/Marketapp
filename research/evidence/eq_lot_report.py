@@ -17,16 +17,16 @@ MANIFEST_VERSION = 'evidence_quality_rules_v2_20261006'
 
 
 def boundary_from_versions(versions: dict) -> dict:
-    first = versions.get('first_snapshot_ge_2_6_66')
+    first = versions.get('first_poll_ge_2_6_66')
     last = versions.get('last_session_checked')
     if first:
-        return {'status': 'observed', 'first_snapshot_id': first['id'], 'first_poll_ts': first['poll_ts'],
-                'boundary_session': first['session_date'], 'version': first['v'],
+        return {'status': 'observed', 'first_poll_ts': first['poll_ts'], 'boundary_session': str(first['session_date']),
+                'version': first['v'], 'source': 'ml_generated_candidates.brain_version',
                 'note': 'EQ1/EQ2 windows end at this IST session (exclusive)'}
-    end = (date.fromisoformat(last) + timedelta(days=1)).isoformat() if last else None
-    return {'status': 'not_observed', 'last_session_checked': last, 'boundary_session': end,
-            'note': 'no stored snapshot at or above 2.6.66; rules stay open and are applied through the last '
-                    'session checked'}
+    end = (date.fromisoformat(str(last)) + timedelta(days=1)).isoformat() if last else None
+    return {'status': 'not_observed', 'last_session_checked': str(last) if last else None, 'boundary_session': end,
+            'source': 'ml_generated_candidates.brain_version',
+            'note': 'no stored poll at or above 2.6.66; rules stay open and are applied through the last session checked'}
 
 
 def eq7_from_extract(ds: 're_.Dataset', start: date, end: date) -> dict:
@@ -46,7 +46,9 @@ def eq10_from_versions(versions: dict) -> dict:
     per = versions.get('per_session') or []
     mixed = [r for r in per if (r.get('versions') or 0) > 1]
     return {'sessions_checked': len(per), 'mixed_version_sessions': mixed,
-            'unparseable_version_rows': sum(r.get('unparseable') or 0 for r in per)}
+            'null_version_rows': sum(r.get('null_version_rows') or 0 for r in per),
+            'unparseable_version_rows': sum(r.get('unparseable_rows') or 0 for r in per),
+            'sessions_without_any_version': [r['session_date'] for r in per if not r.get('versions')]}
 
 
 def build_manifest(versions: dict, counts: dict, ds, extract_range) -> dict:

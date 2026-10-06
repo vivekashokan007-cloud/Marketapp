@@ -36,7 +36,7 @@ eq2 as (
     'outside_window_absent', count(*) filter (where not in_window and fii is null)) j
   from tv2),
 eq3 as (
-  -- First stored snapshot per session: the morning FII Short% vote and whether it was a level-only fallback.
+  -- Per session: the stored morning FII Short% vote and whether it was a level-only fallback.
   select json_build_object(
     'sessions', count(*),
     'sessions_with_fii_short_signal', count(*) filter (where sig is not null),
@@ -44,11 +44,15 @@ eq3 as (
     'votes_bear', count(*) filter (where sig->>'dir' = 'BEAR'),
     'votes_bull', count(*) filter (where sig->>'dir' = 'BULL'),
     'neutral', count(*) filter (where sig->>'dir' = 'NEUTRAL')) j
-  from (select distinct on (session_date) session_date,
-               (select x from jsonb_array_elements(context_json->'morningBias'->'signals') x
+  -- LAST stored snapshot per session (the morning input is usually entered after the first polls, so the
+  -- first snapshot rarely carries the vote). Ids are picked first so only one large context_json per
+  -- session is read.
+  from (select b.session_date,
+               (select x from jsonb_array_elements(b.context_json->'morningBias'->'signals') x
                 where x->>'name' = 'FII Short%' limit 1) sig
-        from ml_brain_snapshots where session_date >= date '2026-06-15'
-        order by session_date, poll_ts, id) f),
+        from (select distinct on (session_date) id from ml_brain_snapshots where session_date >= date '2026-06-15'
+              order by session_date, poll_ts desc, id desc) lasts
+        join ml_brain_snapshots b on b.id = lasts.id) f),
 eq6 as (
   select json_build_object(
     'polls_before_2026_06_22', count(distinct poll_ts),

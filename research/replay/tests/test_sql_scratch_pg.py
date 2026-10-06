@@ -33,7 +33,7 @@ EQ_COUNTS = os.path.join(EVIDENCE, 'eq_rules_v2_counts.sql')
 LOT_SQL = os.path.join(EVIDENCE, 'lot_captured_vs_authority.sql')
 
 SCHEMA = """
-drop table if exists ml_option_chain_snapshots, ml_brain_snapshots, trades_v2;
+drop table if exists ml_option_chain_snapshots, ml_brain_snapshots, ml_generated_candidates, trades_v2;
 create table ml_option_chain_snapshots (id bigserial primary key, poll_ts timestamptz, session_date date,
   index_key text, expiry text, strike integer, option_type text, ltp double precision,
   bid double precision, ask double precision);
@@ -41,6 +41,8 @@ create unique index ml_ocs_unique on ml_option_chain_snapshots (poll_ts, index_k
 create table ml_brain_snapshots (id bigserial primary key, poll_ts timestamptz, session_date date,
   recommendation_id text, primary_candidate_json jsonb, top_candidates_json jsonb, context_json jsonb);
 create index idx_ml_brain_snapshots_session_date on ml_brain_snapshots (session_date);
+create table ml_generated_candidates (id bigserial primary key, snapshot_poll_ts timestamptz, session_date date,
+  recommendation_id text, candidate_id text, brain_version text);
 create table trades_v2 (id bigserial primary key, index_key text, expiry date, entry_date timestamptz,
   paper boolean, execution_mode text, strategy_type text, entry_vix numeric, entry_snapshot jsonb,
   friction_breakdown_json jsonb, lots integer,
@@ -98,6 +100,20 @@ class ScratchPostgresTests(unittest.TestCase):
                                      'snapshot_brain_version': '2.6.66' if d >= date(2026, 9, 21) else '2.6.65',
                                      'morningBias': {'bias': 'NEUTRAL', 'signals': [
                                          {'name': 'FII Short%', 'value': '88% (prev: N/A)', 'dir': 'BEAR'}]}})))
+        for d in fx.observed:
+            for hh in (9, 12):
+                cur.execute('insert into ml_generated_candidates (snapshot_poll_ts, session_date, candidate_id, brain_version) '
+                            'values (%s, %s, %s, %s)', (datetime.combine(d, time(hh, 20), re_.IST), d, 'c1',
+                                                        '2.6.66' if (d > date(2026, 9, 21) or (d == date(2026, 9, 21) and hh == 12))
+                                                        else '2.6.65'))
+        # EQ10 null vs unparseable: one candidate row with no version (pre-column era shape) on the first observed
+        # session >= 08-20, one non-numeric version string on the already-mixed 09-21 session.
+        d_null = min(d for d in fx.observed if d >= date(2026, 8, 20))
+        cur.execute('insert into ml_generated_candidates (snapshot_poll_ts, session_date, candidate_id, brain_version) '
+                    'values (%s, %s, %s, %s)', (datetime.combine(d_null, time(10, 20), re_.IST), d_null, 'c2', None))
+        cur.execute('insert into ml_generated_candidates (snapshot_poll_ts, session_date, candidate_id, brain_version) '
+                    'values (%s, %s, %s, %s)', (datetime.combine(date(2026, 9, 21), time(10, 20), re_.IST),
+                                                date(2026, 9, 21), 'c3', 'dev-build'))
         for (d, slot), p in fx.polls.items():
             for expiry, rows in list(p['chains'].items()) + list(fx.hidden.get((d, slot), {}).items()):
                 for (k, opt), qs in rows.items():
@@ -289,11 +305,16 @@ class ScratchPostgresTests(unittest.TestCase):
                      ts, json.dumps({'vix_direction': 0.5, 'fii_deriv_net': 1200, 'contract_lot_size': 75}), '{}',
                      datetime(2026, 9, 22, 13, 0, tzinfo=re_.IST), json.dumps({'vix_direction': 0.2}), '{}'))
         versions = self._query(sqlkit.select_body(EQ_VERSIONS, FROM='2026-08-20'))[0]
-        cols = ('first_snapshot_ge_2_6_66', 'last_session_checked', 'snapshots_checked', 'per_session')
+        cols = ('first_poll_ge_2_6_66', 'last_session_checked', 'rows_checked', 'per_session')
         versions = dict(zip(cols, versions))
         versions['last_session_checked'] = str(versions['last_session_checked'])
         b = eq_lot_report.boundary_from_versions(versions)
         self.assertEqual((b['status'], b['boundary_session']), ('observed', '2026-09-21'))
+        mixed = eq_lot_report.eq10_from_versions(versions)['mixed_version_sessions']
+        self.assertEqual([m['session_date'] for m in mixed], ['2026-09-21'])
+        eq10 = eq_lot_report.eq10_from_versions(versions)
+        self.assertEqual((eq10['null_version_rows'], eq10['unparseable_version_rows']), (1, 1))
+        self.assertEqual(eq10['sessions_without_any_version'], [])
         counts = self._query(sqlkit.select_body(EQ_COUNTS, BOUNDARY=b['boundary_session']))[0]
         eq1, eq2, eq3, eq6, eq8 = counts
         self.assertEqual((eq1['in_window_trades'], eq1['in_window_signature_entry_vix_minus_13_61']), (2, 1))

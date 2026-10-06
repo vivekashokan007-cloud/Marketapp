@@ -133,38 +133,40 @@ def stage_a_gate(stage_a):
 
 
 def bridge(a, b):
+    """Session-by-session Stage A -> Stage B bridge. 'change' compares eligibility (eligible vs not), then the
+    resolved outcome and net; label-only differences between the two engines' non-eligible statuses are not
+    reported as changes. Drivers name the definition differences that can explain each change."""
     ra = {r['session']: r for r in a['ledger']}
     rb = {r['session']: r for r in b['ledger']}
     out = []
     for s in sorted(set(ra) | set(rb)):
         x, y = ra.get(s, {}), rb.get(s, {})
-        lx = {'status': x.get('status'), 'outcome': x.get('outcome_status'), 'net_rs': x.get('net_rs'),
-              'entry_poll_ts': x.get('entry_poll_ts'), 'planned_exit_date': x.get('planned_exit_date'),
-              'rv_daily': x.get('rv_daily'), 'lot': x.get('lot'), 'flags': x.get('flags')}
-        ly = {'status': y.get('status'), 'outcome': y.get('outcome_status'), 'net_rs': y.get('net_rs'),
-              'entry_poll_ts': y.get('entry_poll_ts'), 'planned_exit_date': y.get('planned_exit_date'),
-              'rv_daily': y.get('rv_daily'), 'ivrv': y.get('ivrv'), 'td': y.get('td'), 'lot': y.get('lot'),
-              'lot_source': (y.get('lot_provenance') or {}).get('lot_source')}
+        ea, eb = x.get('status') == 'eligible', y.get('status') == 'eligible'
+        if not ea and not eb:
+            continue
+        change = 'both_eligible' if ea and eb else ('stage_a_only' if ea else 'stage_b_only')
         drivers = []
-        if x.get('status') == 'not_observed':
-            drivers.append('session_absent_from_observed_calendar')
-        if x.get('entry_poll_ts') != y.get('entry_poll_ts') and x.get('entry_poll_ts') and y.get('entry_poll_ts'):
-            drivers.append('entry_poll_any_index_vs_first_nf')
-        if 'legacy_multi_expiry_cross_join' in (x.get('flags') or []):
-            drivers.append('legacy_expiry_cross_join')
-        if x.get('planned_exit_date') != y.get('planned_exit_date') and x.get('planned_exit_date') and y.get('planned_exit_date'):
+        if x.get('planned_exit_date') != y.get('planned_exit_date'):
             drivers.append('holding_sessions_observed_vs_exchange_calendar')
         if x.get('rv_daily') != y.get('rv_daily'):
             drivers.append('rv_cross_pairs_vs_five_consecutive')
-        if x.get('status') != y.get('status'):
-            drivers.append('eligibility_changed')
+        if change != 'both_eligible':
+            drivers.append('td_actual_poll_time_and_exchange_sessions_shift_iv_rv')
         if x.get('net_rs') is not None and y.get('net_rs') is not None:
-            drivers.append('fees_legacy_v0_vs_replay_fee_v1_and_td_actual_time')
-        if (x.get('outcome_status'), y.get('outcome_status')) != (None, None) and \
-                x.get('outcome_status') != y.get('outcome_status'):
+            drivers.append('fees_legacy_v0_vs_replay_fee_v1')
+        if x.get('outcome_status') != y.get('outcome_status'):
             drivers.append('outcome_status_changed')
-        if lx['status'] == ly['status'] == 'eligible' or lx['status'] != ly['status'] or lx['net_rs'] != ly['net_rs']:
-            out.append({'session': s, 'stage_a': lx, 'stage_b': ly, 'drivers': drivers})
+        out.append({'session': s, 'change': change,
+                    'stage_a': {'status': x.get('status'), 'reason': x.get('reason'), 'outcome': x.get('outcome_status'),
+                                'net_rs': x.get('net_rs'), 'planned_exit_date': x.get('planned_exit_date'),
+                                'rv_daily': x.get('rv_daily'), 'lot': x.get('lot'), 'flags': x.get('flags')},
+                    'stage_b': {'status': y.get('status'), 'reason': y.get('reason'), 'outcome': y.get('outcome_status'),
+                                'net_rs': y.get('net_rs'), 'planned_exit_date': y.get('planned_exit_date'),
+                                'rv_daily': y.get('rv_daily'), 'ivrv': y.get('ivrv'), 'td': y.get('td'),
+                                'lot': y.get('lot'), 'lot_rule': (y.get('lot_provenance') or {}).get('rule_id')},
+                    'net_delta_rs': (round(y['net_rs'] - x['net_rs'], 2)
+                                     if x.get('net_rs') is not None and y.get('net_rs') is not None else None),
+                    'drivers': drivers})
     return out
 
 
