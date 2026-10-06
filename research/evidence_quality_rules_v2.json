@@ -1,0 +1,331 @@
+{
+ "version": "evidence_quality_rules_v2_20261006",
+ "supersedes": "evidence_quality_rules_v1_20261006 (unimplemented manifest)",
+ "reader": {
+  "sql": [
+   "research/evidence/eq_rules_v2_versions.sql",
+   "research/evidence/eq_rules_v2_counts.sql"
+  ],
+  "python": "research/evidence/eq_lot_report.py",
+  "extract": "nf_quotes_v2 parts (EQ7)"
+ },
+ "boundary_2_6_66": {
+  "status": "observed",
+  "first_poll_ts": "2026-10-06T03:55:00+00:00",
+  "boundary_session": "2026-10-06",
+  "version": "2.6.66",
+  "source": "ml_generated_candidates.brain_version",
+  "note": "EQ1/EQ2 windows end at this IST session (exclusive)"
+ },
+ "rules": {
+  "EQ1_vix_direction_invalid": {
+   "window": [
+    "2026-07-02",
+    "2026-10-06"
+   ],
+   "action": "exclude",
+   "executed": {
+    "window": [
+     "2026-07-02",
+     "2026-10-06"
+    ],
+    "in_window_trades": 136,
+    "in_window_with_value": 136,
+    "in_window_signature_entry_vix_minus_13_61": 136,
+    "excluded": 136,
+    "outside_window_trades": 154,
+    "outside_window_signature_matches_control": 0
+   }
+  },
+  "EQ2_fii_deriv_net_missing_as_zero": {
+   "window": [
+    "2026-07-02",
+    "2026-10-06"
+   ],
+   "action": "zero_means_missing",
+   "executed": {
+    "in_window_trades": 136,
+    "in_window_zero_treated_missing": 136,
+    "in_window_nonzero": 0,
+    "in_window_absent": 0,
+    "outside_window_zero_legitimate": 49,
+    "outside_window_nonzero": 93,
+    "outside_window_absent": 12
+   }
+  },
+  "EQ3_fii_short_vote_missing_history": {
+   "action": "exclude_from_fii_skill",
+   "executed": {
+    "sessions": 79,
+    "sessions_with_fii_short_signal": 42,
+    "excluded_prev_na_level_only": 42,
+    "votes_bear": 42,
+    "votes_bull": 0,
+    "neutral": 0
+   }
+  },
+  "EQ4_chain_snapshots_frozen": {
+   "action": "no_valid_rows",
+   "executed": null,
+   "status": "not_executed_table_schema_unverified"
+  },
+  "EQ5_premium_history_frozen": {
+   "action": "absent",
+   "executed": null,
+   "status": "not_executed_table_schema_unverified"
+  },
+  "EQ6_option_chain_partial_capture": {
+   "action": "exclude_full_chain_research",
+   "executed": {
+    "polls_before_2026_06_22": 1304,
+    "rows": 136896,
+    "non_date_expiry_rows": 4264,
+    "avg_rows_per_poll": 105
+   }
+  },
+  "EQ7_partial_sessions": {
+   "action": "scheduled_close_missing_outcome_unknown",
+   "executed": {
+    "sessions_checked": 78,
+    "sessions_without_scheduled_close": [
+     {
+      "session": "2026-07-27",
+      "last_nf_poll_ts": "2026-07-27T09:30:09+00:00",
+      "kind": "partial_session_no_scheduled_close"
+     },
+     {
+      "session": "2026-09-28",
+      "last_nf_poll_ts": "2026-09-28T09:20:11+00:00",
+      "kind": "partial_session_no_scheduled_close"
+     }
+    ]
+   }
+  },
+  "EQ8_paper_flag_semantics": {
+   "action": "no_verified_live_money_record",
+   "executed": {
+    "paper_false_rows": 4,
+    "paper_false_with_mode_paper": 4,
+    "mode_live_rows": 0,
+    "mode_sandbox_rows": 0,
+    "all_rows": 290
+   }
+  },
+  "EQ9_teacher_same_session_only": {
+   "action": "same_session_horizon_only",
+   "executed": null,
+   "status": "established_by_code_reading_not_by_count"
+  },
+  "EQ10_device_version_mixing": {
+   "action": "mixed_or_partial_sessions_not_homogeneous",
+   "executed": {
+    "sessions_checked": 77,
+    "mixed_version_sessions": [
+     {
+      "session_date": "2026-08-19",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.5.96,2.5.97,null",
+      "first_poll": "2026-08-19T03:55:00+00:00",
+      "last_poll": "2026-08-19T10:10:00+00:00",
+      "null_version_rows": 1850,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-08-25",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.0,2.6.1",
+      "first_poll": "2026-08-25T03:55:00+00:00",
+      "last_poll": "2026-08-25T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-08-27",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.1,2.6.2",
+      "first_poll": "2026-08-27T03:55:00+00:00",
+      "last_poll": "2026-08-27T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-08-31",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.7,2.6.8",
+      "first_poll": "2026-08-31T03:55:00+00:00",
+      "last_poll": "2026-08-31T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-01",
+      "polls": 74,
+      "versions": 2,
+      "version_list": "2.6.10,2.6.11",
+      "first_poll": "2026-09-01T03:55:00+00:00",
+      "last_poll": "2026-09-01T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-07",
+      "polls": 76,
+      "versions": 3,
+      "version_list": "2.6.12,2.6.15,2.6.16",
+      "first_poll": "2026-09-07T03:55:00+00:00",
+      "last_poll": "2026-09-07T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-09",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.17,2.6.18",
+      "first_poll": "2026-09-09T03:55:00+00:00",
+      "last_poll": "2026-09-09T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-10",
+      "polls": 72,
+      "versions": 3,
+      "version_list": "2.6.20,2.6.22,2.6.23",
+      "first_poll": "2026-09-10T03:55:00+00:00",
+      "last_poll": "2026-09-10T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-11",
+      "polls": 75,
+      "versions": 2,
+      "version_list": "2.6.26,2.6.27",
+      "first_poll": "2026-09-11T03:55:00+00:00",
+      "last_poll": "2026-09-11T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-16",
+      "polls": 76,
+      "versions": 5,
+      "version_list": "2.6.43,2.6.44,2.6.45,2.6.46,2.6.47",
+      "first_poll": "2026-09-16T03:55:00+00:00",
+      "last_poll": "2026-09-16T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-21",
+      "polls": 74,
+      "versions": 3,
+      "version_list": "2.6.51,2.6.52,2.6.53",
+      "first_poll": "2026-09-21T03:55:00+00:00",
+      "last_poll": "2026-09-21T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-22",
+      "polls": 74,
+      "versions": 2,
+      "version_list": "2.6.53,2.6.54",
+      "first_poll": "2026-09-22T03:55:00+00:00",
+      "last_poll": "2026-09-22T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-24",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.55,2.6.56",
+      "first_poll": "2026-09-24T03:55:00+00:00",
+      "last_poll": "2026-09-24T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-25",
+      "polls": 76,
+      "versions": 2,
+      "version_list": "2.6.56,2.6.58",
+      "first_poll": "2026-09-25T03:55:00+00:00",
+      "last_poll": "2026-09-25T10:10:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     },
+     {
+      "session_date": "2026-09-28",
+      "polls": 6,
+      "versions": 2,
+      "version_list": "2.6.59,2.6.60",
+      "first_poll": "2026-09-28T04:10:00+00:00",
+      "last_poll": "2026-09-28T09:20:00+00:00",
+      "null_version_rows": 0,
+      "unparseable_rows": 0
+     }
+    ],
+    "null_version_rows": 68668,
+    "unparseable_version_rows": 0,
+    "sessions_without_any_version": [
+     "2026-06-17",
+     "2026-06-18",
+     "2026-06-19",
+     "2026-06-22",
+     "2026-06-23",
+     "2026-06-24",
+     "2026-06-25",
+     "2026-06-29",
+     "2026-06-30",
+     "2026-07-01",
+     "2026-07-02",
+     "2026-07-03",
+     "2026-07-06",
+     "2026-07-07",
+     "2026-07-08",
+     "2026-07-09",
+     "2026-07-10",
+     "2026-07-13",
+     "2026-07-14",
+     "2026-07-15",
+     "2026-07-16",
+     "2026-07-17",
+     "2026-07-20",
+     "2026-07-21",
+     "2026-07-22",
+     "2026-07-23",
+     "2026-07-24",
+     "2026-07-27",
+     "2026-07-28",
+     "2026-07-29",
+     "2026-07-30",
+     "2026-07-31",
+     "2026-08-03",
+     "2026-08-04",
+     "2026-08-05",
+     "2026-08-06",
+     "2026-08-07",
+     "2026-08-10",
+     "2026-08-11",
+     "2026-08-12",
+     "2026-08-13",
+     "2026-08-14",
+     "2026-08-17",
+     "2026-08-18"
+    ]
+   }
+  }
+ },
+ "inputs": {
+  "versions": "eq/eq_versions_output.json (eq/eq_versions_rendered.sql, FROM=2026-06-15, commit b53a7c1)",
+  "counts": "eq/eq_counts_output.json (eq/eq_counts_rendered.sql, BOUNDARY=2026-10-06, commit b53a7c1)",
+  "extract": "extract/part01..08.txt, range 2026-06-15..2026-10-05 (EQ7)"
+ }
+}

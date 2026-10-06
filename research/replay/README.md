@@ -7,10 +7,10 @@ Research only. This directory lives outside `app/src/main/python`, so it is **no
 | `replay_engine.py` | Parser for `nf_quotes_v2`, Stage A legacy emulation (`run_legacy_sql_v0`) and Stage B corrected engine (`run_corrected`). |
 | `extract_nf_quotes.sql` | Bounded, read-only raw-row extract, run after market hours, one part at a time. Run `EXPLAIN` on part 01 first. |
 | `stage_a_sql_crosscheck.sql` | The executed 5 Oct sweep SQL, reduced only where the published cell cannot be affected. Gives an independent per-day Stage A. |
-| `run_stage_a_b.py` | Verifies the part manifest, runs both stages and writes the ledgers, a bridge, a report and `SHA256SUMS`. The exit code is non-zero unless the Stage A gate passes. |
+| `run_stage_a_b.py` | Verifies the part manifest, runs both stages and writes the ledgers, a bridge (sessions where either stage is eligible: `both_eligible` / `stage_a_only` / `stage_b_only`, with the net delta and the driver), a report and `SHA256SUMS`. The exit code is non-zero unless the Stage A gate passes. |
 | `tests/test_replay_engine.py` | 52 synthetic fixtures (including an end-to-end part-file → runner test), rendered through the real extract format. |
 | `sqlkit.py` | Renders every research SQL file with validated date parameters (guarded `BEGIN READ ONLY` form, or a single-statement form for clients that return only the last result) and writes part files after checking the Postgres md5 and line count. The same text runs in the scratch tests and after hours. |
-| `tests/test_sql_scratch_pg.py` | 7 tests that run the real SQL on a throwaway LOCAL Postgres loaded with the fixtures. Skipped unless `MR_SCRATCH_PG` points at a local socket/localhost database whose name contains `scratch` or `test`. |
+| `tests/test_sql_scratch_pg.py` | 8 tests that run the real SQL on a throwaway LOCAL Postgres loaded with the fixtures. Skipped unless `MR_SCRATCH_PG` points at a local socket/localhost database whose name contains `scratch` or `test`. |
 
 ## Extract format `nf_quotes_v2`
 
