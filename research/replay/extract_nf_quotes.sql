@@ -21,11 +21,12 @@
 --        with no expiry, so rows = distinct (strike,type) is expected and >1 valid expiry means an interleaved chain.
 -- A 'valid' expiry is a string equal to a real calendar date 2024-01-01..2030-12-31 in YYYY-MM-DD form (lookup,
 -- never a cast), so shaped-but-impossible values ('2026-99-99', '2026-02-30') count as non-date ('X').
--- Strikes emitted per (poll, expiry):
---   E polls: every tied k0 of every expiry at the poll + {-400,-300,-150,-100,-50,0,50,100,150,300,400}.
---   C polls: every tied k0 at the poll + {-150..150}; plus {0,+-300,+-400} around every tied k0 of every E poll
---            in the previous 14 calendar days (exit legs of open entries,
---            including observed-calendar C2 exits stretched by outages and deferred marks up to expiry).
+-- Strikes emitted per (poll, expiry) - only what the IB-400 rule and the engines read:
+--   E polls: every tied k0 of every expiry at the poll + {-400, 0, +400} (entry legs; k0 CE/PE also give spot).
+--   C polls: every tied k0 at the poll (close spot for RV) plus {-400, 0, +400} around every tied k0 of every
+--            E poll in the previous 14 calendar days (exit legs of open entries, including observed-calendar
+--            C2 exits stretched by outages and deferred marks up to expiry).
+--   The A line carries the full-chain ATM (all tied strikes); D carries whole-chain integrity and inventory.
 begin read only;
 set local statement_timeout = '45s';
 set local work_mem = '64MB';
@@ -77,16 +78,16 @@ pe as (select distinct poll_ts, expiry from q),
 want as (
   select pe.poll_ts, pe.expiry, k.k0 + off k
   from pe join k0s k on k.poll_ts = pe.poll_ts and k.slot = 'E',
-       unnest(array[-400,-300,-150,-100,-50,0,50,100,150,300,400]) off
+       unnest(array[-400,0,400]) off
   union
   select pe.poll_ts, pe.expiry, k.k0 + off
   from pe join k0s k on k.poll_ts = pe.poll_ts and k.slot = 'C',
-       unnest(array[-150,-100,-50,0,50,100,150]) off
+       unnest(array[0]) off
   union
   select pe.poll_ts, pe.expiry, en.k0 + off
   from pe join k0s cl on cl.poll_ts = pe.poll_ts and cl.slot = 'C'
           join k0s en on en.slot = 'E' and en.d >= cl.d - 14 and en.d < cl.d,
-       unnest(array[-400,-300,0,300,400]) off),
+       unnest(array[-400,0,400]) off),
 rtok as (
   select q.poll_ts, q.expiry, q.strike,
          string_agg(case q.option_type when 'CE' then 'C' when 'PE' then 'P' else '?' || q.option_type end

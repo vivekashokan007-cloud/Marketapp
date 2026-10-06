@@ -55,7 +55,7 @@ The table's unique index is `ml_ocs_unique (poll_ts, index_key, strike, option_t
 
 The extract measures both instead of assuming them. Stage B quarantines such polls. Stage A reproduces the sweep's behaviour on them and flags `parity_unproven`.
 
-C-poll exit legs cover E-poll ATMs from the previous **14** calendar days. That covers observed-calendar C2 exits stretched by outages and deferred marks up to a weekly expiry.
+Only the strikes the IB-400 rule and the engines read are emitted: at E polls every tied ATM ± {0, 400}; at C polls the tied ATM (close spot) plus ± {0, 400} around every E-poll ATM from the previous **14** calendar days (exit legs, including observed-calendar C2 exits stretched by outages and deferred marks up to a weekly expiry). The `A` line still carries the full-chain ATM and the `D` line the whole-chain integrity. A different rule (another wing, IC) needs a re-extract.
 
 ## Stage A: `run_legacy_sql_v0`
 
