@@ -2513,6 +2513,92 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         'drift_reasons': drift_reasons[:5]
     }
 
+FII_SHORT_PREV_POLICY_VERSION = 'fii_short_prev_v1_paper_verified_previous_session_abstain'
+
+
+def _explicit_execution_mode(ctx):
+    """Return 'paper', 'sandbox' or 'live' only when ctx states it unambiguously.
+
+    Unlike _paper_vix_policy, a missing, blank, unknown or conflicting mode is
+    NOT treated as Paper: it returns None so callers keep their pre-existing
+    decision path and can expose the unresolved mode.
+    """
+    if not isinstance(ctx, dict):
+        return None
+    values = []
+    for key in ('executionMode', 'execution_mode'):
+        raw = ctx.get(key)
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            continue
+        if not isinstance(raw, str):
+            return None
+        values.append(raw.strip().lower())
+    if not values or len(set(values)) != 1:
+        return None
+    return values[0] if values[0] in ('paper', 'sandbox', 'live') else None
+
+
+def _fii_short_pct_value(value):
+    """Finite FII index short percentage in [0, 100]; None otherwise (never 0 by default)."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        num = float(value)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(num) or num < 0.0 or num > 100.0:
+        return None
+    return num
+
+
+def _verified_previous_fii_short(ctx):
+    """Previous-session FII short % for the Paper comparison rule.
+
+    Verified means: the live session date is known, the NSE holiday calendar
+    covers it, a history row is dated exactly the preceding NSE session
+    (weekends and NSE_HOLIDAYS skipped; a 7-day freshness window is not
+    enough), its value is finite and within [0, 100], and duplicate rows for
+    that date agree. Row dates are observation dates (the session the morning
+    input was recorded for), compared like-for-like with today's input.
+    """
+    out = {'value': None, 'date': None, 'status': 'UNVERIFIED', 'reason': None}
+    session_dt = _context_session_date(ctx)
+    if session_dt is None:
+        out['reason'] = 'session_date_unknown'
+        return out
+    holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
+    if not any(str(h).startswith(f"{session_dt.year}-") for h in holidays):
+        out['reason'] = 'nse_holiday_calendar_not_current'
+        return out
+    expected = _nse_session_floor(session_dt, 1)
+    out['date'] = expected.strftime("%Y-%m-%d") if expected else None
+    rows = ctx.get('yesterdayHistory') if isinstance(ctx, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+    values = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _pc2_row_date(row) != expected:
+            continue
+        values.append(_fii_short_pct_value(row.get('fii_short_pct')))
+    if not values:
+        out['reason'] = 'previous_session_missing'
+        return out
+    if any(v is None for v in values):
+        out['reason'] = 'previous_value_invalid'
+        return out
+    if len(set(values)) > 1:
+        out['reason'] = 'previous_session_duplicates_conflict'
+        return out
+    out.update({'value': values[0], 'status': 'VERIFIED', 'reason': None})
+    return out
+
+
 def compute_morning_bias(ctx, polls):
     """Phase B: 7-signal voting + 8th chain-validation overlay.
     Replaces JS computeBias(). Reads from ctx. Returns dict.
@@ -2551,7 +2637,50 @@ def compute_morning_bias(ctx, polls):
             signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'NEUTRAL'})
 
     # 2. FII Short%
+    fii_mode = _explicit_execution_mode(ctx)
+    fii_short_policy = {
+        'version': FII_SHORT_PREV_POLICY_VERSION,
+        'executionMode': fii_mode,
+        'applied': fii_mode == 'paper',
+        'reason': None if fii_mode == 'paper' else (
+            'execution_mode_unresolved' if fii_mode is None else 'non_paper_mode_preserved'),
+    }
     fsp = _to_float(morning.get('fiiShortPct'))
+    if fii_mode == 'paper':
+        # Paper-only correction: compare against a verified previous-session
+        # observation or abstain. No level-only fallback in either direction.
+        raw_fsp = morning.get('fiiShortPct')
+        fsp_present = not (raw_fsp is None or (isinstance(raw_fsp, str) and not raw_fsp.strip()))
+        fsp = None  # the legacy branch below must not run in Paper
+        if fsp_present:
+            cur = _fii_short_pct_value(raw_fsp)
+            prev_info = _verified_previous_fii_short(ctx) if cur is not None else None
+            if cur is None:
+                fii_short_policy.update({'abstained': True, 'abstainReason': 'current_value_invalid'})
+                signals.append({'name': 'FII Short%', 'value': f'{raw_fsp} (invalid)', 'dir': 'NEUTRAL',
+                                'abstained': True, 'abstainReason': 'current_value_invalid',
+                                'policyVersion': FII_SHORT_PREV_POLICY_VERSION})
+            elif prev_info['status'] != 'VERIFIED':
+                fii_short_policy.update({'abstained': True, 'abstainReason': prev_info['reason'],
+                                         'expectedPreviousSession': prev_info['date']})
+                signals.append({'name': 'FII Short%', 'value': f'{cur}% (prev: unverified)', 'dir': 'NEUTRAL',
+                                'abstained': True, 'abstainReason': prev_info['reason'],
+                                'rawValue': cur, 'policyVersion': FII_SHORT_PREV_POLICY_VERSION})
+            else:
+                prev = prev_info['value']
+                fii_short_policy.update({'abstained': False, 'previousSession': prev_info['date']})
+                if cur > 85 and cur > prev:
+                    votes['bear'] += 1
+                    signals.append({'name': 'FII Short%', 'value': f'{cur}%↑ (was {prev})', 'dir': 'BEAR'})
+                elif cur > 85 and cur < prev:
+                    signals.append({'name': 'FII Short%', 'value': f'{cur}%↓ covering (was {prev})', 'dir': 'NEUTRAL'})
+                elif cur > 85 and cur == prev:
+                    signals.append({'name': 'FII Short%', 'value': f'{cur}% → flat (was {prev})', 'dir': 'NEUTRAL'})
+                elif cur < 70:
+                    votes['bull'] += 1
+                    signals.append({'name': 'FII Short%', 'value': f'{cur}%', 'dir': 'BULL'})
+                else:
+                    signals.append({'name': 'FII Short%', 'value': f'{cur}%', 'dir': 'NEUTRAL'})
     if fsp is not None:
         prev = float(yday_hist[0].get('fii_short_pct')) if (yday_hist and yday_hist[0].get('fii_short_pct') is not None) else None
         if prev is None:
@@ -2730,7 +2859,8 @@ def compute_morning_bias(ctx, polls):
     return {
         'bias': bias, 'strength': strength, 'net': net, 'votes': votes,
         'signals': signals, 'label': f'{strength} {bias}'.strip(),
-        'upstoxAgrees': u_agrees, 'chainValidation': chain_validation
+        'upstoxAgrees': u_agrees, 'chainValidation': chain_validation,
+        'fiiShortPolicy': fii_short_policy,
     }
 
 def compute_overnight_delta(ctx):
