@@ -71,7 +71,7 @@ def render(path: str, **params) -> str:
 
 def select_body(path: str, **params) -> str:
     sql = render(path, **params)
-    start = re.search(r'(?im)^with\b', sql).start()
+    start = re.search(r'(?im)^(with|select)\b', sql).start()
     end = sql.rindex('commit;')
     return sql[start:end].rstrip().rstrip(';')
 

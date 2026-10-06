@@ -207,6 +207,7 @@ class CalendarAndAuthorityTests(unittest.TestCase):
         self.assertEqual(lot, 65)
         self.assertEqual(prov['lot_source'], 'authoritative_contract_rule')
         self.assertEqual(prov['lot_provenance'], 'NSE_FAOP_70616')
+        self.assertEqual(prov['rule_id'], 'FAOP70616_NF_weekly_revised')
         self.assertTrue(prov['lot_table_version'])
         # Expiry before the first revised contract (Dec-2025 weekly kept 75): never 65 by date alone.
         lot_old, _ = re_.project_lot_resolver('NF', date(2025, 12, 1), date(2025, 12, 23))

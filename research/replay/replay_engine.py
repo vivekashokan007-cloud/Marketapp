@@ -70,7 +70,8 @@ def project_lot_resolver(index: str, session: date, expiry: date) -> Tuple[Optio
     prov = {k: res.get(k) for k in ('lot_source', 'lot_provenance', 'lot_provenance_quality',
                                     'unavailable_reason', 'lot_conflict', 'authoritative')}
     prov['lot_table_version'] = lot_table_version_id()
-    prov['rule_id'] = res.get('rule_id') or res.get('lot_rule_id')
+    prov['rule_id'] = res.get('matched_rule_id')
+    prov['expiry_cycle_inferred'] = res.get('expiry_cycle')
     if not res.get('resolved') or not res.get('contract_lot_size'):
         return None, prov
     return int(res['contract_lot_size']), prov

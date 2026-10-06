@@ -27,6 +27,10 @@ import sqlkit  # noqa: E402
 import test_replay_engine as tre  # noqa: E402
 
 DSN = os.environ.get('MR_SCRATCH_PG')
+EVIDENCE = os.path.normpath(os.path.join(HERE, '..', '..', 'evidence'))
+EQ_VERSIONS = os.path.join(EVIDENCE, 'eq_rules_v2_versions.sql')
+EQ_COUNTS = os.path.join(EVIDENCE, 'eq_rules_v2_counts.sql')
+LOT_SQL = os.path.join(EVIDENCE, 'lot_captured_vs_authority.sql')
 
 SCHEMA = """
 drop table if exists ml_option_chain_snapshots, ml_brain_snapshots, trades_v2;
@@ -38,7 +42,8 @@ create table ml_brain_snapshots (id bigserial primary key, poll_ts timestamptz, 
   recommendation_id text, primary_candidate_json jsonb, top_candidates_json jsonb, context_json jsonb);
 create index idx_ml_brain_snapshots_session_date on ml_brain_snapshots (session_date);
 create table trades_v2 (id bigserial primary key, index_key text, expiry date, entry_date timestamptz,
-  paper boolean, execution_mode text, strategy_type text,
+  paper boolean, execution_mode text, strategy_type text, entry_vix numeric, entry_snapshot jsonb,
+  friction_breakdown_json jsonb, lots integer,
   sell_strike numeric, sell_type text, sell_ltp numeric, buy_strike numeric, buy_type text, buy_ltp numeric,
   sell_strike2 numeric, sell_type2 text, sell_ltp2 numeric, buy_strike2 numeric, buy_type2 text, buy_ltp2 numeric);
 """
@@ -90,7 +95,9 @@ class ScratchPostgresTests(unittest.TestCase):
                         "values (%s, %s, %s, '[]')",
                         (datetime.combine(d, time(9, 20), re_.IST), d,
                          json.dumps({'executionMode': 'paper', 'snapshot_generated_candidates': [{}, {}],
-                                     'morningBias': {'bias': 'NEUTRAL'}})))
+                                     'snapshot_brain_version': '2.6.66' if d >= date(2026, 9, 21) else '2.6.65',
+                                     'morningBias': {'bias': 'NEUTRAL', 'signals': [
+                                         {'name': 'FII Short%', 'value': '88% (prev: N/A)', 'dir': 'BEAR'}]}})))
         for (d, slot), p in fx.polls.items():
             for expiry, rows in list(p['chains'].items()) + list(fx.hidden.get((d, slot), {}).items()):
                 for (k, opt), qs in rows.items():
@@ -265,6 +272,38 @@ class ScratchPostgresTests(unittest.TestCase):
             self.assertEqual(re_.poll_integrity_problem(p), 'poll_non_date_expiry_rows')
         finally:
             cur.execute("delete from ml_option_chain_snapshots where expiry = '2026-02-30'")
+
+    def test_eq_reader_and_lot_crosscheck_execute(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'evidence'))
+        import eq_lot_report  # noqa: E402
+        cur = self.conn.cursor()
+        cur.execute('delete from trades_v2')
+        ts = datetime(2026, 9, 3, 13, 0, tzinfo=re_.IST)
+        cur.execute("insert into trades_v2 (index_key, expiry, entry_date, paper, execution_mode, entry_vix, lots, "
+                    "entry_snapshot, friction_breakdown_json) values "
+                    "('NF', '2026-09-08', %s, true, 'paper', 11.0, 1, %s, %s), "
+                    "('NF', '2026-09-08', %s, false, 'paper', 11.0, 1, %s, %s), "
+                    "('NF', '2026-09-22', %s, true, 'paper', 12.0, 1, %s, %s)",
+                    (ts, json.dumps({'vix_direction': round(11.0 - 13.61, 2), 'fii_deriv_net': 0,
+                                     'contract_lot_size': 65}), json.dumps({'lot_size': 65}),
+                     ts, json.dumps({'vix_direction': 0.5, 'fii_deriv_net': 1200, 'contract_lot_size': 75}), '{}',
+                     datetime(2026, 9, 22, 13, 0, tzinfo=re_.IST), json.dumps({'vix_direction': 0.2}), '{}'))
+        versions = self._query(sqlkit.select_body(EQ_VERSIONS, FROM='2026-08-20'))[0]
+        cols = ('first_snapshot_ge_2_6_66', 'last_session_checked', 'snapshots_checked', 'per_session')
+        versions = dict(zip(cols, versions))
+        versions['last_session_checked'] = str(versions['last_session_checked'])
+        b = eq_lot_report.boundary_from_versions(versions)
+        self.assertEqual((b['status'], b['boundary_session']), ('observed', '2026-09-21'))
+        counts = self._query(sqlkit.select_body(EQ_COUNTS, BOUNDARY=b['boundary_session']))[0]
+        eq1, eq2, eq3, eq6, eq8 = counts
+        self.assertEqual((eq1['in_window_trades'], eq1['in_window_signature_entry_vix_minus_13_61']), (2, 1))
+        self.assertEqual(eq1['outside_window_trades'], 1)
+        self.assertEqual((eq2['in_window_zero_treated_missing'], eq2['in_window_nonzero']), (1, 1))
+        self.assertEqual(eq3['excluded_prev_na_level_only'], eq3['sessions'])
+        self.assertEqual(eq8['paper_false_with_mode_paper'], 1)
+        lots = self._query(sqlkit.select_body(LOT_SQL, FROM='2026-08-01'))[0][0]
+        rep = eq_lot_report.lot_report(lots)
+        self.assertEqual((rep['trades_agree'], rep['trades_disagree'], rep['trades_captured_missing']), (1, 1, 1))
 
     def test_payload_query_runs(self):
         res = self._query(sqlkit.select_body(sqlkit.PAYLOAD_SQL, D='2026-09-03'))[0]
