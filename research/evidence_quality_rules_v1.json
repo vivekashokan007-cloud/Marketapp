@@ -1,0 +1,21 @@
+{
+  "version": "evidence_quality_rules_v1_20261006",
+  "rules": [
+    {"id": "EQ1_vix_direction_invalid", "table": "trades_v2", "field": "entry_snapshot.vix_direction",
+     "from": "2026-07-02", "to": "release_2.6.66_observed_on_device", "action": "exclude"},
+    {"id": "EQ2_fii_deriv_net_missing_as_zero", "table": "trades_v2", "field": "entry_snapshot.fii_deriv_net",
+     "from": "2026-07-02", "to": "release_2.6.66_observed_on_device", "action": "zero_means_missing"},
+    {"id": "EQ3_fii_short_vote_missing_history", "table": "ml_brain_snapshots", "field": "context_json.morningBias.signals[FII Short%]",
+     "match": "value contains 'prev: N/A'", "action": "exclude_from_fii_skill"},
+    {"id": "EQ4_chain_snapshots_frozen", "table": "chain_snapshots", "from": "2026-06-30", "action": "no_valid_rows"},
+    {"id": "EQ5_premium_history_frozen", "table": "premium_history", "from": "2026-06-30", "action": "absent"},
+    {"id": "EQ6_option_chain_partial_capture", "table": "ml_option_chain_snapshots", "to": "2026-06-21",
+     "action": "exclude_full_chain_research", "also": "expiry not matching YYYY-MM-DD is invalid"},
+    {"id": "EQ7_partial_sessions", "table": "ml_option_chain_snapshots", "dates": ["2026-07-27", "2026-09-28"],
+     "action": "scheduled_close_missing_outcome_unknown"},
+    {"id": "EQ8_paper_flag_semantics", "table": "trades_v2", "field": "paper", "action": "no_verified_live_money_record"},
+    {"id": "EQ9_teacher_same_session_only", "table": "ml_evaluation_outcomes", "action": "same_session_horizon_only"},
+    {"id": "EQ10_device_version_mixing", "table": "ml_brain_snapshots", "field": "brain_version",
+     "action": "mixed_or_partial_sessions_not_homogeneous"}
+  ]
+}
