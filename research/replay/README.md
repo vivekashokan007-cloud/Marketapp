@@ -1,72 +1,107 @@
-# Offline holding-horizon replay (Batch 2)
+# Offline holding-horizon replay v2 (Batch 2, revised after Codex R1)
 
-Research only. This directory lives outside `app/src/main/python`, so it is **not bundled into the APK** and has no runtime effect.
+Research only. This directory lives outside `app/src/main/python`, so it is **not bundled into the APK** and has no runtime effect. It reads `app/src/main/python/contract_lot_table.py` only to resolve lots.
 
 | File | Purpose |
 | --- | --- |
-| `replay_engine.py` | Engine: two definition sets, an eligibility ledger, outcomes with explicit statuses, sequential occupancy, conservation counts and output hashes. |
-| `extract_nf_quotes.sql` | Rule-scoped, bounded, read-only NF quote extract, run after market hours in parts. Postgres returns an md5 for each part. |
-| `run_stage_a_b.py` | Verifies each part's md5, runs Stage A (`LEGACY_V0`) and Stage B (`CORRECTED_V1`), then writes the ledgers, a bridge, a report and `SHA256SUMS`. |
-| `tests/test_replay_engine.py` | Synthetic regression fixtures (listed below). |
+| `replay_engine.py` | Parser for `nf_quotes_v2`, Stage A legacy emulation (`run_legacy_sql_v0`) and Stage B corrected engine (`run_corrected`). |
+| `extract_nf_quotes.sql` | Bounded, read-only raw-row extract, run after market hours, one part at a time. Run `EXPLAIN` on part 01 first. |
+| `stage_a_sql_crosscheck.sql` | The executed 5 Oct sweep SQL, reduced only where the published cell cannot be affected. Gives an independent per-day Stage A. |
+| `run_stage_a_b.py` | Verifies the part manifest, runs both stages and writes the ledgers, a bridge, a report and `SHA256SUMS`. The exit code is non-zero unless the Stage A gate passes. |
+| `tests/test_replay_engine.py` | 38 synthetic fixtures, rendered through the real extract format. |
 
-## Extract format
+## Extract format `nf_quotes_v2`
 
-The data is UTF-8 text, one record per line:
+Nothing is aggregated, de-duplicated or validated in SQL.
 
 ```
-S|YYYY-MM-DD                                   brain-snapshot session (legacy observed calendar)
-P|<poll_ts UTC ISO>|<slot E|C|L>|<index>|<expiry YYYY-MM-DD>|<strike>:<ce_bid>,<ce_ask>,<pe_bid>,<pe_ask>;...
+S|<session>                                         date with ml_brain_snapshots rows (legacy observed calendar)
+W|<session>|<E|C|L>|<any|nf>|<poll_ts>|<NF rows>    window poll: any = first poll of ANY index (sweep rule),
+                                                     nf = first poll with NF rows; L|nf = last NF poll when no NF C poll
+A|<poll_ts>|<expiry>|<k0>|<spot>|<straddle>|<tied strikes>|<distinct min pairs>   sweep ATM over valid rows
+R|<poll_ts>|<expiry>|<strike>/<C|P>:<bid>,<ask>[/...];...   one token per STORED row (duplicates repeat)
+D|<poll_ts>|<NF rows>|<distinct (strike,type)>|<valid expiries>|<non-date-expiry rows>   integrity counts
 ```
 
-- An empty price field means the quote row was absent. Validity (`bid >= 0`, `ask > 0`, `ask >= bid`) is applied by the engine, never by the extract.
-- A part file is a header followed by the exact body that Postgres hashed:
+A part file is a header followed by the exact body that Postgres hashed:
 
-  ```
-  #part=NN
-  #range=A..B
-  #md5=<md5(body) from Postgres>
-  #body
-  <body>
-  ```
+```
+#format=nf_quotes_v2
+#part=NN
+#range=A..B
+#n=<lines>
+#md5=<md5(body) from Postgres>
+#body
+<body>
+```
 
-## Definitions
+The runner rejects any of the following:
 
-| | `LEGACY_V0` (Stage A, provenance fixture) | `CORRECTED_V1` (Stage B) |
-| --- | --- | --- |
-| Calendar | Dates that have brain snapshots (device outages shorten it) | NSE exchange sessions (weekdays minus `NSE_HOLIDAYS`, asserted equal to `brain.py`) |
-| Holding sessions | Counted on the observed calendar | Counted on the exchange calendar |
-| `td` | Weekdays to expiry + (15:30 − **nominal** 12:30) / 375 min | Exchange sessions to expiry + (15:30 − **actual** entry poll time) / 375 min |
-| RV | RMS of whatever close-to-close returns exist among the 5 ending at the previous session (≥ 1) | Exactly 5 consecutive returns (6 valid closes) or ineligible; zero RV is never bucketed |
-| Fees | The 5 Oct sweep formula (GST on brokerage and exchange only; no SEBI or IPFT) | `replay_fee_v1`: teacher_v1 rates plus STT on every option sale, including selling longs at exit. Spread is never added again as slippage. |
-| Missing exit | Unknown, kept in the ledger | Unknown, kept in the ledger |
+- a missing, extra or misnamed part;
+- a manifest gap or overlap;
+- a format, part id, range, line-count or md5 mismatch;
+- an `S` or `W` line outside its part's range;
+- a repeated key across parts. A repeated `R` line would fabricate duplicates, so it is rejected too.
 
-**Shared rules:**
+The table's unique index is `ml_ocs_unique (poll_ts, index_key, strike, option_type)`, without expiry. Two consequences:
 
-- **Entry:** the first poll in [12:30, 12:55) IST.
-- **Scheduled close:** the first poll in [15:20, 15:45). It is never replaced by an earlier poll.
-- **Expiry:** one explicitly selected nearest expiry per poll. Conflicting duplicates are rejected.
-- **Exit expiry:** must equal the entry expiry.
-- **Lots:** from a dated authority table. An unknown index or date fails closed.
-- **`exit_on_expiry`:** stored separately from `holding_sessions`.
-- **Horizon past expiry:** an entry whose planned exit falls after expiry is ineligible at decision time.
+- Stored duplicates at one key should be impossible.
+- Two expiries at one poll can only occupy disjoint strikes.
 
-## Sequential occupancy
+The extract measures both instead of assuming them.
 
-- One position at a time, occupied through the planned exit date.
-- An unpriced planned exit keeps capital blocked until the first later session whose scheduled close exists. That mark is never added to resolved P&L.
+## Stage A: `run_legacy_sql_v0`
 
-## Regression fixtures
+Stage A reproduces the sweep's own semantics:
 
-- 23 July-style missing scheduled close: the entry is retained and capital stays blocked.
-- Expiry-coincident two-session exit.
-- Holiday crossing (2 Oct, 14 Sep).
-- An observed-calendar outage versus the exchange calendar.
-- Duplicate and multi-expiry chains.
-- Zero RV.
-- Five-consecutive versus any-available RV.
-- Debit cost above width; credit above width.
-- Unknown index or unverified lot date.
-- Teacher fee reproduction of trade #278.
-- Determinism and conservation.
+- **Poll:** the first poll of any index in the window.
+- **Quotes:** valid rows only, with duplicates counted as separate rows.
+- **Expiry:** every valid expiry at the poll, cross-joined with every expiry's ATM (`ent2`).
+- **Calendar:** observed calendar from 2026-06-15.
+- **td:** weekdays + 0.48.
+- **RV:** RMS over every cross-expiry close pair from sn−6 to sn−2.
+- **Band:** `vb = v1.3`.
+- **Exit:** C2, observed, on or before expiry, on the first any-index close poll, inner join on all legs.
+- **Lot:** fixed 65, labelled `legacy_fixed_65_historical_assumption`. This is an assumption, not an authority.
+- **Fees:** sweep fee formula.
 
-Run with `python3 -m pytest -q research/replay/tests`.
+Some rows can depend on SQL behaviour that isn't deterministic (ATM ties) or on the cross join. Those rows carry `parity_unproven`, and an exact reproduction cannot be claimed for them.
+
+**Gate:** the run passes only if all of these hold:
+
+- all 17 published nets match within ₹0.05;
+- 23 Jul is `eligible` with outcome `missing_close`;
+- there are no extra eligible dates;
+- no published date is `parity_unproven`.
+
+## Stage B: `run_corrected`
+
+| | Rule |
+| --- | --- |
+| Poll | First poll with NF rows in [12:30, 12:55) / [15:20, 15:45) IST |
+| Expiry | Entry: nearest valid expiry ≥ session. Exit and marks: the entry expiry, explicitly. |
+| Duplicates | Identical duplicates are accepted. Any conflicting duplicate quarantines that chain. |
+| ATM | Sweep metric; ties go to the lowest strike. |
+| Calendar | NSE exchange sessions (asserted equal to `brain.py` `NSE_HOLIDAYS`). |
+| td | Exchange sessions to expiry + (15:30 − **actual** entry poll time) / 375 min, floor 0.05. |
+| RV | Exactly 5 consecutive close-to-close returns, or ineligible. Zero RV is never bucketed. |
+| Lot | `contract_lot_table.resolve_contract_lot(index, as_of=session, expiry=expiry)`; unresolved or ambiguous → `lot_unresolved`, counted. |
+| Fees | `replay_fee_v1`: teacher_v1 rates + STT on every option sale. |
+| Structures | `IB` and `IC` only. Other names raise. Directional families are **not wired** (deferred). |
+
+## Sequential occupancy (Stage B)
+
+- One position at a time, held through the planned exit.
+- If the planned exit is unpriced, the **same legs on the same expiry** are repriced on each later scheduled close:
+  - The first complete valuation becomes a separate `deferred_mark` and frees capital that session.
+  - A partial close, a missing expiry or invalid quotes do not free capital.
+  - If the contract expires first, the position is `unresolved_contract_expired` and capital stays blocked. No settlement assumption is made.
+  - If the cutoff comes first, it is `unresolved_open_at_cutoff`.
+- Unresolved exposure, as the sum of max loss, is reported separately from resolved net P&L.
+
+## Run
+
+```
+python3 -m pytest -q research/replay/tests          # or: python3 -m unittest discover -s research/replay/tests
+python3 research/replay/run_stage_a_b.py <extract_dir> <out_dir>
+```

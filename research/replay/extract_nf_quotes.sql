@@ -1,64 +1,129 @@
--- Rule-scoped NF quote extract for Stage A / Stage B (read-only, run AFTER market hours).
--- Replace :A and :B with the part's first/last IST session dates (YYYY-MM-DD).
--- Output: one row (part text body, md5 of the body). The body is written verbatim to
--- part<NN>.txt after the header lines '#part=', '#range=', '#md5=' and '#body'.
+-- NF quote extract v2 for Stage A / Stage B (read-only; run AFTER market hours, one part at a time).
+-- Replace :A and :B with the part's first/last IST session dates (YYYY-MM-DD). Run EXPLAIN on the
+-- first part before executing any part. Output: one row (n, md5(body), body, line-kind counts).
+-- The body is written verbatim to part<NN>.txt after the header lines
+--   #format=nf_quotes_v2  #part=NN  #range=A..B  #n=<n>  #md5=<md5>  #body
 --
--- Slots (IST): E = first poll in [12:30,12:55); C = first poll in [15:20,15:45);
---              L = last poll of the day, only when the day has no C poll.
--- Strikes per line:
---   E: ATM-150..ATM+150 (ATM detection) plus ATM+-300 and ATM+-400 (IB 300/400 legs).
---   C/L: own ATM-150..+150 (close spot for RV) plus {K0, K0+-300, K0+-400} of every
---        E poll in the previous 7 calendar days (exit legs of open entries).
--- ATM rule (same as the engine): valid quote = bid>=0, ask>0, ask>=bid; minimise
--- |mid(CE)-mid(PE)|, ties to the lower strike. Every expiry in the poll is kept on its
--- own line; the engine selects the nearest expiry explicitly.
+-- Line kinds (nothing is aggregated, de-duplicated or validated here; the engine does that):
+--   S|<session>                                      a date with ml_brain_snapshots rows (legacy observed calendar)
+--   W|<session>|<E|C|L>|<any|nf>|<poll_ts>|<nf rows>  window poll selection
+--        E = [12:30,12:55) IST, C = [15:20,15:45) IST. 'any' = first poll of ANY index (the 5 Oct sweep's
+--        rule), 'nf' = first poll with NF rows (corrected rule). L|nf = last NF poll of a day with no NF C poll.
+--   A|<poll_ts>|<expiry>|<k0>|<spot>|<straddle>|<tied strikes>|<distinct min pairs>
+--        legacy ATM exactly as the sweep computed it: over VALID rows (bid>=0, ask>0, ask>=bid), minimise
+--        |mid(CE)-mid(PE)|. All strikes achieving the minimum are listed; k0/spot/straddle use the lowest.
+--   R|<poll_ts>|<expiry>|<strike>/<C|P>:<bid>,<ask>[/<C|P>:<bid>,<ask>...];...
+--        RAW rows, one token per stored row (a duplicate row appears twice; an empty field is SQL NULL;
+--        an option with no stored row has no token). Rows with a non-date expiry are emitted with expiry 'X'.
+--   D|<poll_ts>|<NF rows>|<distinct NF (strike,type)>|<distinct valid NF expiries>|<NF rows with non-date expiry>
+--        per-poll integrity counts (unique index ml_ocs_unique is (poll_ts,index_key,strike,option_type), so
+--        rows = distinct (strike,type) is expected; the engine re-checks).
+-- Strikes emitted per (poll, expiry):
+--   E polls: every tied k0 of every expiry at the poll + {-400,-300,-150,-100,-50,0,50,100,150,300,400}.
+--   C polls: every tied k0 at the poll + {-150..150}; plus {0,+-300,+-400} around every tied k0 of every E poll
+--            in the previous 7 calendar days (exit legs of open entries).
 begin read only;
 set local statement_timeout = '45s';
+set local work_mem = '64MB';
 with
-pd as (
-  select distinct poll_ts, (poll_ts at time zone 'Asia/Kolkata')::date d, (poll_ts at time zone 'Asia/Kolkata')::time t
-  from ml_option_chain_snapshots
-  where index_key = 'NF'
-    and poll_ts >= ((:A::date - 8) + time '09:00') at time zone 'Asia/Kolkata'
-    and poll_ts <  (:B::date + time '16:00') at time zone 'Asia/Kolkata'),
-e as (select d, min(poll_ts) poll_ts, 'E'::text slot from pd where t >= '12:30' and t < '12:55' group by d),
-c as (select d, min(poll_ts) poll_ts, 'C'::text slot from pd where t >= '15:20' and t < '15:45' group by d),
-l as (select d, max(poll_ts) poll_ts, 'L'::text slot from pd where d not in (select d from c) group by d),
-sel as (select * from e union all select * from c union all select * from l),
-q as (select s.d, s.slot, x.poll_ts, x.expiry, x.strike, x.option_type, x.bid, x.ask
-      from sel s join ml_option_chain_snapshots x on x.poll_ts = s.poll_ts and x.index_key = 'NF'
-      where x.expiry ~ '^\d{4}-\d{2}-\d{2}$'),
-atm as (
-  select distinct on (a.poll_ts, a.expiry) a.d, a.slot, a.poll_ts, a.expiry, a.strike k0
-  from q a join q b on b.poll_ts = a.poll_ts and b.expiry = a.expiry and b.strike = a.strike and b.option_type = 'PE'
-  where a.option_type = 'CE' and a.bid >= 0 and a.ask > 0 and a.ask >= a.bid and b.bid >= 0 and b.ask > 0 and b.ask >= b.bid
-  order by a.poll_ts, a.expiry, abs((a.bid + a.ask) / 2 - (b.bid + b.ask) / 2), a.strike),
+days as (select g::date d from generate_series(:A::date - 8, :B::date, interval '1 day') g),
+rng as (select d, s.slot, ((d + s.t0) at time zone 'Asia/Kolkata') lo,
+               ((d + s.t0 + interval '25 minutes') at time zone 'Asia/Kolkata') hi
+        from days, (values ('E', time '12:30'), ('C', time '15:20')) s(slot, t0)),
+pw as materialized (
+  select r.d, r.slot, min(c.poll_ts) any_poll, min(c.poll_ts) filter (where c.index_key = 'NF') nf_poll
+  from rng r join ml_option_chain_snapshots c on c.poll_ts >= r.lo and c.poll_ts < r.hi
+  group by 1, 2),
+lp as materialized (
+  select d.d, (select max(c.poll_ts) from ml_option_chain_snapshots c
+               where c.index_key = 'NF'
+                 and c.poll_ts >= ((d.d + time '09:00') at time zone 'Asia/Kolkata')
+                 and c.poll_ts <  ((d.d + time '16:00') at time zone 'Asia/Kolkata')) last_nf
+  from days d
+  where d.d between :A::date and :B::date and extract(isodow from d.d) < 6
+    and not exists (select 1 from pw where pw.d = d.d and pw.slot = 'C' and pw.nf_poll is not null)),
+sel as (select d, slot, any_poll poll_ts from pw where any_poll is not null
+        union select d, slot, nf_poll from pw where nf_poll is not null),
+q as materialized (
+  select s.d, s.slot, c.poll_ts, case when c.expiry ~ '^\d{4}-\d{2}-\d{2}$' then c.expiry else 'X' end expiry,
+         c.strike, c.option_type, c.bid, c.ask
+  from (select distinct d, slot, poll_ts from sel) s
+  join ml_option_chain_snapshots c on c.poll_ts = s.poll_ts and c.index_key = 'NF'),
+v as (select * from q where expiry <> 'X' and ask > 0 and bid >= 0 and ask >= bid),
+pairs as (
+  select a.d, a.slot, a.poll_ts, a.expiry, a.strike k, a.bid cb, a.ask ca, b.bid pb, b.ask pa,
+         abs((a.bid + a.ask) / 2 - (b.bid + b.ask) / 2) gap
+  from v a join v b on b.poll_ts = a.poll_ts and b.expiry = a.expiry and b.strike = a.strike and b.option_type = 'PE'
+  where a.option_type = 'CE'),
+mins as (select poll_ts, expiry, min(gap) g from pairs group by 1, 2),
+atm as materialized (
+  select p.d, p.slot, p.poll_ts, p.expiry, min(p.k) k0,
+         array_to_string(array_agg(distinct p.k order by p.k), ',') tied,
+         count(distinct (p.k, p.cb, p.ca, p.pb, p.pa)) npairs
+  from pairs p join mins m on m.poll_ts = p.poll_ts and m.expiry = p.expiry and p.gap = m.g
+  group by 1, 2, 3, 4),
+atm_v as (
+  select a.*, p.k + (p.cb + p.ca) / 2 - (p.pb + p.pa) / 2 spot, (p.cb + p.ca) / 2 + (p.pb + p.pa) / 2 straddle
+  from atm a join lateral (
+    select * from pairs p where p.poll_ts = a.poll_ts and p.expiry = a.expiry and p.k = a.k0
+    order by p.gap, p.cb, p.ca, p.pb, p.pa limit 1) p on true),
+k0s as (select distinct poll_ts, d, slot, unnest(string_to_array(tied, ','))::int k0 from atm),
+pe as (select distinct poll_ts, expiry from q),
 want as (
-  select a.poll_ts, a.expiry, a.k0 + off k from atm a,
-    unnest(array[-150,-100,-50,0,50,100,150]) off
+  select pe.poll_ts, pe.expiry, k.k0 + off k
+  from pe join k0s k on k.poll_ts = pe.poll_ts and k.slot = 'E',
+       unnest(array[-400,-300,-150,-100,-50,0,50,100,150,300,400]) off
   union
-  select a.poll_ts, a.expiry, a.k0 + off from atm a, unnest(array[-400,-300,300,400]) off where a.slot = 'E'
+  select pe.poll_ts, pe.expiry, k.k0 + off
+  from pe join k0s k on k.poll_ts = pe.poll_ts and k.slot = 'C',
+       unnest(array[-150,-100,-50,0,50,100,150]) off
   union
-  select cl.poll_ts, cl.expiry, en.k0 + off
-  from atm cl join atm en on en.slot = 'E' and en.expiry = cl.expiry and en.d >= cl.d - 7 and en.d < cl.d,
-    unnest(array[-400,-300,0,300,400]) off
-  where cl.slot in ('C','L')),
-px as (
-  select w.poll_ts, w.expiry, w.k,
-    coalesce(round(max(q.bid) filter (where q.option_type='CE')::numeric, 2)::text, '') cb,
-    coalesce(round(max(q.ask) filter (where q.option_type='CE')::numeric, 2)::text, '') ca,
-    coalesce(round(max(q.bid) filter (where q.option_type='PE')::numeric, 2)::text, '') pb,
-    coalesce(round(max(q.ask) filter (where q.option_type='PE')::numeric, 2)::text, '') pa
-  from want w left join q on q.poll_ts = w.poll_ts and q.expiry = w.expiry and q.strike = w.k
-  group by 1,2,3),
+  select pe.poll_ts, pe.expiry, en.k0 + off
+  from pe join k0s cl on cl.poll_ts = pe.poll_ts and cl.slot = 'C'
+          join k0s en on en.slot = 'E' and en.d >= cl.d - 7 and en.d < cl.d,
+       unnest(array[-400,-300,0,300,400]) off),
+rtok as (
+  select q.poll_ts, q.expiry, q.strike,
+         string_agg(case q.option_type when 'CE' then 'C' when 'PE' then 'P' else '?' || q.option_type end
+                    || ':' || coalesce(round(q.bid::numeric, 2)::text, '') || ',' || coalesce(round(q.ask::numeric, 2)::text, ''),
+                    '/' order by q.option_type, q.bid nulls first, q.ask nulls first) tok
+  from q join want w on w.poll_ts = q.poll_ts and w.expiry = q.expiry and w.k = q.strike
+  group by 1, 2, 3),
+emit as (select distinct poll_ts, d from sel where d between :A::date and :B::date),
 lines as (
-  select 'P|' || to_char(s.poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || '|' || s.slot || '|NF|' || p.expiry || '|'
-         || string_agg(p.k || ':' || p.cb || ',' || p.ca || ',' || p.pb || ',' || p.pa, ';' order by p.k) line
-  from sel s join px p on p.poll_ts = s.poll_ts
-  where s.d between :A::date and :B::date
-  group by s.poll_ts, s.slot, p.expiry
+  select 'S|' || session_date line from (select distinct session_date from ml_brain_snapshots
+                                         where session_date between :A::date and :B::date) s
   union all
-  select distinct 'S|' || session_date from ml_brain_snapshots where session_date between :A::date and :B::date),
-body as (select string_agg(line, E'\n' order by line) b, count(*) n from lines)
-select n, md5(b) md5, b from body;
+  select 'W|' || pw.d || '|' || pw.slot || '|any|' || to_char(pw.any_poll at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+         || '|' || (select count(*) from ml_option_chain_snapshots c where c.poll_ts = pw.any_poll and c.index_key = 'NF')
+  from pw where pw.d between :A::date and :B::date and pw.any_poll is not null
+  union all
+  select 'W|' || pw.d || '|' || pw.slot || '|nf|' || to_char(pw.nf_poll at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+         || '|' || (select count(*) from ml_option_chain_snapshots c where c.poll_ts = pw.nf_poll and c.index_key = 'NF')
+  from pw where pw.d between :A::date and :B::date and pw.nf_poll is not null
+  union all
+  select 'W|' || lp.d || '|L|nf|' || coalesce(to_char(lp.last_nf at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), '') || '|'
+  from lp
+  union all
+  select 'A|' || to_char(a.poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || '|' || a.expiry || '|' || a.k0
+         || '|' || round(a.spot::numeric, 6) || '|' || round(a.straddle::numeric, 6) || '|' || a.tied || '|' || a.npairs
+  from atm_v a where a.poll_ts in (select poll_ts from emit)
+  union all
+  select 'R|' || to_char(r.poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || '|' || r.expiry || '|'
+         || string_agg(r.strike || '/' || r.tok, ';' order by r.strike)
+  from rtok r where r.poll_ts in (select poll_ts from emit)
+  group by r.poll_ts, r.expiry
+  union all
+  select 'D|' || to_char(x.poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') || '|' || count(*) || '|'
+         || count(distinct (c.strike, c.option_type)) || '|'
+         || count(distinct c.expiry) filter (where c.expiry ~ '^\d{4}-\d{2}-\d{2}$') || '|'
+         || count(*) filter (where c.expiry !~ '^\d{4}-\d{2}-\d{2}$' or c.expiry is null)
+  from emit x join ml_option_chain_snapshots c on c.poll_ts = x.poll_ts and c.index_key = 'NF'
+  group by x.poll_ts),
+body as (select string_agg(line, E'\n' order by line) b, count(*) n,
+                count(*) filter (where line like 'S|%') ns, count(*) filter (where line like 'W|%') nw,
+                count(*) filter (where line like 'A|%') na, count(*) filter (where line like 'R|%') nr,
+                count(*) filter (where line like 'D|%') nd
+         from lines)
+select n, md5(b) md5, ns, nw, na, nr, nd, b from body;
 commit;

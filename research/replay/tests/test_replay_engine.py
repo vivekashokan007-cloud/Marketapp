@@ -1,72 +1,175 @@
-"""Regression fixtures for the offline replay engine (synthetic data only)."""
+"""Regression fixtures for replay engine v2 (synthetic nf_quotes_v2 extracts only).
+
+Each fixture is rendered to the real extract text format and parsed, so the parser, the Stage A
+legacy emulation and the Stage B corrected engine are exercised end to end.
+"""
+import hashlib
 import math
 import os
+import shutil
 import sys
+import tempfile
 import unittest
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import replay_engine as re_  # noqa: E402
+import run_stage_a_b as runner  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
+UTC = timezone.utc
 
 
+# ---------------------------------------------------------------------------
+# Synthetic extract builder
+# ---------------------------------------------------------------------------
 def _price(spot, k, opt, scale):
     intrinsic = max(spot - k, 0) if opt == 'CE' else max(k - spot, 0)
     return round(intrinsic + scale * math.exp(-((k - spot) / 300.0) ** 2) + 2.0, 2)
 
 
-def _chain(d, hhmm, spot, expiry, scale=120.0, slot='E', index='NF', drop=(), override=None):
-    h, m = hhmm
-    ts = datetime.combine(d, time(h, m), re_.IST).astimezone(re_.timezone.utc)
-    quotes = {}
+def _ts(d, hh, mm):
+    return datetime.combine(d, time(hh, mm), re_.IST).astimezone(UTC)
+
+
+def _fmt(ts):
+    return ts.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+
+
+def _quotes(spot, scale=120.0):
+    out = {}
     center = int(round(spot / 50.0)) * 50
     for k in range(center - 1000, center + 1001, 50):
         for opt in ('CE', 'PE'):
-            if (k, opt) in drop:
-                continue
             p = _price(spot, k, opt, scale)
-            quotes[(k, opt)] = (round(p - 0.05, 2), round(p + 0.05, 2))
-    if override:
-        quotes.update(override)
-    return re_.Chain(ts, slot, index, expiry, quotes)
+            out[(k, opt)] = [(round(p - 0.05, 2), round(p + 0.05, 2))]
+    return out
 
 
-def _dataset(sessions, spots, expiry_for, skip_close=(), skip_entry=(), extra=(), observed=None, scale_for=None):
-    chains = []
-    for d in sessions:
-        exp = expiry_for(d)
-        sc = scale_for(d) if scale_for else 120.0
-        if d not in skip_entry:
-            chains.append(_chain(d, (12, 31), spots[d], exp, sc, 'E'))
-        if d not in skip_close:
-            chains.append(_chain(d, (15, 21), spots[d], exp, sc, 'C'))
-    chains.extend(extra)
-    return re_.Dataset(observed if observed is not None else list(sessions), chains, {}, 'synthetic')
+def _atm_line(rows):
+    """Exactly the extract's legacy ATM: valid rows, every CE x PE pair at a strike, min |mid diff|."""
+    pairs = []
+    for (k, opt), qs in rows.items():
+        if opt != 'CE':
+            continue
+        for c in qs:
+            for p in rows.get((k, 'PE'), []):
+                if re_.valid_quote(c) and re_.valid_quote(p):
+                    pairs.append((abs((c[0] + c[1]) / 2 - (p[0] + p[1]) / 2), k, c, p))
+    if not pairs:
+        return None
+    g = min(x[0] for x in pairs)
+    at = [x for x in pairs if x[0] == g]
+    tied = sorted({x[1] for x in at})
+    k0 = tied[0]
+    best = sorted([x for x in at if x[1] == k0], key=lambda x: (x[0], x[2][0], x[2][1], x[3][0], x[3][1]))[0]
+    _, _, c, p = best
+    spot = k0 + (c[0] + c[1]) / 2 - (p[0] + p[1]) / 2
+    straddle = (c[0] + c[1]) / 2 + (p[0] + p[1]) / 2
+    npairs = len({(x[1], x[2], x[3]) for x in at})
+    return k0, spot, straddle, tied, npairs
+
+
+class Fixture:
+    """polls[(d, slot)] = {'ts', 'chains': {expiry: rows}, 'index': 'NF'|'BNF'}"""
+
+    def __init__(self, sessions, spots, expiry_for, observed=None):
+        self.observed = list(observed if observed is not None else sessions)
+        self.polls = {}
+        for d in sessions:
+            for slot, hh, mm in (('E', 12, 31), ('C', 15, 21)):
+                self.polls[(d, slot)] = {'ts': _ts(d, hh, mm), 'index': 'NF',
+                                         'chains': {expiry_for(d).isoformat(): _quotes(spots[d])}}
+        self.any_override = {}
+
+    def drop_poll(self, d, slot):
+        self.polls.pop((d, slot), None)
+
+    def drop_legs(self, d, slot, legs, expiry=None):
+        chains = self.polls[(d, slot)]['chains']
+        for e in ([expiry] if expiry else list(chains)):
+            for leg in legs:
+                chains[e].pop(leg, None)
+
+    def set_rows(self, d, slot, expiry, key, rows):
+        self.polls[(d, slot)]['chains'].setdefault(expiry, {})[key] = rows
+
+    def render(self):
+        lines = [f'S|{d.isoformat()}' for d in sorted(set(self.observed))]
+        days = sorted({d for d, _ in self.polls} | set(self.observed))
+        for d in days:
+            for slot in ('E', 'C'):
+                p = self.polls.get((d, slot))
+                any_ts = self.any_override.get((d, slot), p['ts'] if p else None)
+                if any_ts is not None:
+                    n = sum(len(v) for ch in p['chains'].values() for v in ch.values()) \
+                        if p and any_ts == p['ts'] else 0
+                    lines.append(f'W|{d.isoformat()}|{slot}|any|{_fmt(any_ts)}|{n}')
+                if p:
+                    n = sum(len(v) for ch in p['chains'].values() for v in ch.values())
+                    lines.append(f'W|{d.isoformat()}|{slot}|nf|{_fmt(p["ts"])}|{n}')
+            if (d, 'C') not in self.polls and d.weekday() < 5:
+                e = self.polls.get((d, 'E'))
+                lines.append(f'W|{d.isoformat()}|L|nf|{_fmt(e["ts"]) if e else ""}|')
+        for (d, slot), p in sorted(self.polls.items()):
+            ts = _fmt(p['ts'])
+            total = distinct = 0
+            for expiry, rows in sorted(p['chains'].items()):
+                a = _atm_line(rows) if expiry != 'X' else None
+                if a:
+                    k0, spot, straddle, tied, npairs = a
+                    lines.append(f'A|{ts}|{expiry}|{k0}|{spot:.6f}|{straddle:.6f}|'
+                                 f'{",".join(map(str, tied))}|{npairs}')
+                toks = []
+                for k in sorted({k for k, _ in rows}):
+                    parts = [str(k)]
+                    for opt, tag in (('CE', 'C'), ('PE', 'P')):
+                        for b, a_ in rows.get((k, opt), []):
+                            parts.append(f'{tag}:{"" if b is None else b},{"" if a_ is None else a_}')
+                            total += 1
+                        distinct += 1 if rows.get((k, opt)) else 0
+                    toks.append('/'.join(parts))
+                lines.append(f'R|{ts}|{expiry}|' + ';'.join(toks))
+            nexp = len([e for e in p['chains'] if e != 'X'])
+            lines.append(f'D|{ts}|{total}|{distinct}|{nexp}|0')
+        return '\n'.join(sorted(lines))
+
+    def dataset(self):
+        return re_.parse_extract(self.render())
 
 
 def _sessions(start, end):
-    holidays = {date.fromisoformat(h) for h in re_.NSE_HOLIDAYS_2026}
-    out, cur = [], start
-    while cur <= end:
-        if cur.weekday() < 5 and cur not in holidays:
-            out.append(cur)
-        cur += timedelta(days=1)
-    return out
+    return re_.exchange_sessions(start, end)
 
 
 def _next_tuesday(d):
     return d + timedelta(days=(1 - d.weekday()) % 7)
 
 
-OPEN_BAND = re_.Rule(name='logic', ivrv_lo=0.0, ivrv_hi=1e9)
-
-
 def _wiggle(sessions, base=23000.0):
     return {d: base + (40 if i % 2 else -40) + i * 5 for i, d in enumerate(sessions)}
 
 
+OPEN_BAND = re_.Rule(name='logic', ivrv_lo=0.0, ivrv_hi=1e9)
+
+
+def _lot65(index, session, expiry):
+    return 65, {'lot_source': 'test_fixed_65'}
+
+
+def _run_b(fx, rule=OPEN_BAND, start=date(2026, 9, 1), end=date(2026, 9, 18), cutoff=date(2026, 9, 25),
+           resolver=_lot65):
+    return re_.run_corrected(fx.dataset(), rule, start, end, cutoff, lot_resolver=resolver)
+
+
+def _by_session(rows):
+    return {r['session']: r for r in rows}
+
+
+# ---------------------------------------------------------------------------
+# Calendar, authority, parser
+# ---------------------------------------------------------------------------
 class CalendarAndAuthorityTests(unittest.TestCase):
     def test_holidays_match_brain(self):
         sys.path.insert(0, os.path.join(REPO, 'app', 'src', 'main', 'python'))
@@ -74,29 +177,45 @@ class CalendarAndAuthorityTests(unittest.TestCase):
         self.assertEqual(sorted(brain._CONST['NSE_HOLIDAYS']), sorted(re_.NSE_HOLIDAYS_2026))
 
     def test_holiday_crossing_exchange_calendar(self):
-        cal = re_.Calendar(re_.CORRECTED_V1, [], date(2026, 9, 1), date(2026, 10, 15))
-        # Wed 30 Sep + 2 sessions: Thu 1 Oct, (Fri 2 Oct holiday), Mon 5 Oct.
-        self.assertEqual(cal.offset(date(2026, 9, 30), 2), date(2026, 10, 5))
-        # 14 Sep 2026 is a holiday: Fri 11 Sep + 1 -> Tue 15 Sep.
-        self.assertEqual(cal.offset(date(2026, 9, 11), 1), date(2026, 9, 15))
+        cal = re_.Calendar(re_.exchange_sessions(date(2026, 9, 1), date(2026, 10, 15)))
+        self.assertEqual(cal.offset(date(2026, 9, 30), 2), date(2026, 10, 5))   # 2 Oct holiday
+        self.assertEqual(cal.offset(date(2026, 9, 11), 1), date(2026, 9, 15))   # 14 Sep holiday
 
-    def test_observed_calendar_outage_shifts_legacy_only(self):
-        observed = [date(2026, 9, 28), date(2026, 9, 29), date(2026, 10, 1)]   # 30 Sep missing (outage)
-        legacy = re_.Calendar(re_.LEGACY_V0, observed, date(2026, 9, 20), date(2026, 10, 15))
-        corrected = re_.Calendar(re_.CORRECTED_V1, observed, date(2026, 9, 20), date(2026, 10, 15))
-        self.assertEqual(legacy.offset(date(2026, 9, 29), 1), date(2026, 10, 1))
-        self.assertEqual(corrected.offset(date(2026, 9, 29), 1), date(2026, 9, 30))
+    def test_project_lot_resolver_is_contract_specific_and_fails_closed(self):
+        lot, prov = re_.project_lot_resolver('NF', date(2026, 9, 16), date(2026, 9, 22))
+        self.assertEqual(lot, 65)
+        self.assertEqual(prov['lot_source'], 'authoritative_contract_rule')
+        self.assertEqual(prov['lot_provenance'], 'NSE_FAOP_70616')
+        self.assertTrue(prov['lot_table_version'])
+        # Expiry before the first revised contract (Dec-2025 weekly kept 75): never 65 by date alone.
+        lot_old, _ = re_.project_lot_resolver('NF', date(2025, 12, 1), date(2025, 12, 23))
+        self.assertNotEqual(lot_old, 65)
+        lot_unknown, prov_unknown = re_.project_lot_resolver('FINNIFTY', date(2026, 9, 16), date(2026, 9, 22))
+        self.assertIsNone(lot_unknown)
+        self.assertTrue(prov_unknown['unavailable_reason'])
 
-    def test_unknown_index_and_unverified_date_fail_closed(self):
-        self.assertIsNone(re_.lot_size('FINNIFTY', date(2026, 9, 1)))
-        self.assertIsNone(re_.lot_size('NF', date(2025, 12, 1)))
-        self.assertEqual(re_.lot_size('NF', date(2026, 9, 1)), 65)
-        self.assertIsNone(re_.strike_step('XYZ'))
+    def test_rule_rejects_unknown_structures_and_indices(self):
+        for kw in ({'structure': 'BC'}, {'structure': 'ib'}, {'structure': 'IC', 'short_off': 0},
+                   {'index': 'FINNIFTY'}, {'holding_sessions': -1}):
+            with self.assertRaises(ValueError, msg=kw):
+                re_.Rule(name='x', **kw)
+
+    def test_parser_is_strict(self):
+        with self.assertRaises(ValueError):
+            re_.parse_extract('Q|x')
+        with self.assertRaises(ValueError):
+            re_.parse_extract('W|2026-09-01|E|nf|2026-09-01T07:01:00.000000Z|1\n'
+                              'W|2026-09-01|E|nf|2026-09-01T07:01:00.000000Z|1')
+        r = 'R|2026-09-01T07:01:00.000000Z|2026-09-08|23000/C:1,2/P:1,2'
+        with self.assertRaises(ValueError):
+            re_.parse_extract(r + '\n' + r)        # overlapping parts would fabricate duplicates
+        with self.assertRaises(ValueError):
+            re_.parse_extract('R|2026-09-01T07:01:00.000000Z|2026-09-08|23000/Z:1,2')
 
 
 class StructureValidityTests(unittest.TestCase):
     def test_debit_cost_above_width_rejected(self):
-        s = re_.vertical('BLC', 23000, 23100)          # 100-point debit spread
+        s = re_.vertical('BLC', 23000, 23100)
         self.assertEqual(re_.validate_structure(s), [])
         self.assertEqual(re_.price_validity(s, -150.0), ['debit_not_below_width'])
         self.assertEqual(re_.price_validity(s, -60.0), [])
@@ -117,24 +236,6 @@ class StructureValidityTests(unittest.TestCase):
         self.assertIn('wing_orientation_invalid', re_.validate_structure(flipped))
         self.assertIn('nonpositive_width', re_.validate_structure(re_.vertical('BC', 23000, 23000)))
 
-
-class ChainSelectionTests(unittest.TestCase):
-    def test_duplicate_and_multi_expiry(self):
-        d = date(2026, 9, 16)
-        a = _chain(d, (12, 31), 23000, date(2026, 9, 22))
-        b = _chain(d, (12, 31), 23000, date(2026, 9, 22))
-        ch, flags = re_.select_chain([a, b], 'NF', d)
-        self.assertIsNotNone(ch)
-        self.assertIn('duplicate_chain_identical', flags)
-        c = _chain(d, (12, 31), 23100, date(2026, 9, 22))
-        ch, flags = re_.select_chain([a, c], 'NF', d)
-        self.assertIsNone(ch)
-        self.assertIn('duplicate_chain_conflict', flags)
-        far = _chain(d, (12, 31), 23000, date(2026, 9, 29))
-        ch, flags = re_.select_chain([far, a], 'NF', d)
-        self.assertEqual(ch.expiry, date(2026, 9, 22))
-        self.assertIn('multi_expiry_nearest_selected', flags)
-
     def test_invalid_quotes_never_priced(self):
         self.assertFalse(re_.valid_quote((None, 10.0)))
         self.assertFalse(re_.valid_quote((5.0, 4.0)))
@@ -142,88 +243,375 @@ class ChainSelectionTests(unittest.TestCase):
         self.assertTrue(re_.valid_quote((0.0, 0.05)))
 
 
-class LedgerTests(unittest.TestCase):
+# ---------------------------------------------------------------------------
+# Stage B corrected engine
+# ---------------------------------------------------------------------------
+class CorrectedLedgerTests(unittest.TestCase):
     def setUp(self):
         self.sessions = _sessions(date(2026, 8, 20), date(2026, 9, 25))
         self.spots = _wiggle(self.sessions)
 
-    def _run(self, defs=re_.CORRECTED_V1, rule=OPEN_BAND, **kw):
-        ds = _dataset(self.sessions, self.spots, _next_tuesday, **kw)
-        return re_.run(ds, defs, rule, date(2026, 9, 1), date(2026, 9, 18), date(2026, 9, 25))
+    def fx(self):
+        return Fixture(self.sessions, self.spots, _next_tuesday)
 
-    def test_missing_scheduled_close_keeps_entry_and_blocks_capital(self):
-        # Entry Thu 3 Sep (expiry Tue 8 Sep) -> planned exit Mon 7 Sep, whose close is missing.
-        out = self._run(skip_close={date(2026, 9, 7)})
-        row = {r['session']: r for r in out['ledger']}['2026-09-03']
-        self.assertEqual(row['status'], 'eligible')
-        self.assertEqual(row['outcome_status'], 'missing_close')
+    def test_missing_scheduled_close_keeps_entry(self):
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 7), 'C')
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual((row['status'], row['outcome_status']), ('eligible', 'missing_close'))
         self.assertNotIn('net_rs', row)
-        seq = {r['session']: r for r in out['sequential_ledger']}
-        self.assertIn('2026-09-03', seq)
 
-    def test_unpriced_exit_blocks_capital_past_planned_exit(self):
-        # Entry Wed 2 Sep -> planned exit Fri 4 Sep, close missing. First later priced close is Mon 7 Sep,
-        # so capital stays blocked through 7 Sep and the 3, 4 and 7 Sep entries are skipped.
-        out = self._run(skip_close={date(2026, 9, 4)})
-        seq = {r['session']: r for r in out['sequential_ledger']}
-        self.assertEqual(seq['2026-09-02']['action'], 'taken')
-        self.assertIsNone(seq['2026-09-02']['net_rs'])
-        self.assertEqual(seq['2026-09-02']['occupied_through'], '2026-09-07')
-        for s in ('2026-09-03', '2026-09-04', '2026-09-07'):
-            if s in seq:
-                self.assertEqual(seq[s]['action'], 'skipped_occupied', s)
-        self.assertEqual(out['summary']['sequential']['accepted_unresolved'], 1)
+    def test_b1_codex_counterexample_partial_later_close_does_not_free_capital(self):
+        # Entry 2 Sep (expiry 8 Sep), planned exit 4 Sep missing. 7 Sep close exists but lacks three legs.
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 4), 'C')
+        k0 = _by_session(_run_b(self.fx())['ledger'])['2026-09-02']['k0']
+        fx.drop_legs(date(2026, 9, 7), 'C', [(k0, 'CE'), (k0 + 400, 'CE'), (k0 - 400, 'PE')])
+        out = _run_b(fx)
+        seq = _by_session(out['sequential_ledger'])
+        taken = seq['2026-09-02']
+        self.assertNotEqual(taken['occupied_through'], '2026-09-07')
+        self.assertEqual(taken['mark_attempts'][0]['result'], 'missing_legs')
+        # The first COMPLETE later close of the same expiry is 8 Sep (expiry day).
+        self.assertEqual(taken['resolution'], 'deferred_mark')
+        self.assertEqual(taken['occupied_through'], '2026-09-08')
+        # 3 and 4 Sep entries (exits 7 and 8 Sep) are skipped; capital frees only after 8 Sep. (7-15 Sep
+        # entries lack five consecutive closes because 4 Sep has none; 16 Sep is the next accepted entry.)
+        self.assertEqual(seq['2026-09-03']['action'], 'skipped_occupied')
+        self.assertEqual(seq['2026-09-04']['action'], 'skipped_occupied')
+        self.assertEqual(seq['2026-09-16']['action'], 'taken')
+        # The mark is reported separately and never added to resolved P&L.
+        s = out['summary']['sequential']
+        self.assertEqual(s['accepted_deferred_mark'], 1)
+        self.assertNotIn('2026-09-02', [r['session'] for r in out['ledger'] if r.get('outcome_status') == 'resolved'])
 
-    def test_expiry_coincident_exit_is_flagged_not_dropped(self):
-        out = self._run()
-        rows = {r['session']: r for r in out['ledger']}
-        # Thu 10 Sep + 2 sessions = Tue 15 Sep = expiry (14 Sep is a holiday: Fri 11, Tue 15).
-        r = rows['2026-09-10']
+    def test_b1_later_close_with_wrong_expiry_or_no_usable_quotes(self):
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 4), 'C')
+        # 7 Sep close carries only the NEXT expiry; 8 Sep close has every quote invalid.
+        c7 = fx.polls[(date(2026, 9, 7), 'C')]['chains']
+        c7['2026-09-15'] = c7.pop('2026-09-08')
+        c8 = fx.polls[(date(2026, 9, 8), 'C')]['chains']['2026-09-08']
+        for key in list(c8):
+            c8[key] = [(None, None)]
+        out = _run_b(fx)
+        taken = _by_session(out['sequential_ledger'])['2026-09-02']
+        self.assertEqual([a['result'] for a in taken['mark_attempts']], ['exit_expiry_absent', 'missing_legs'])
+        self.assertEqual(taken['resolution'], 'unresolved_contract_expired')
+        self.assertEqual(taken['occupied_through'], 'unresolved_blocked')
+        s = out['summary']['sequential']
+        self.assertEqual(s['accepted_unresolved'], 1)
+        self.assertGreater(s['unresolved_max_loss_rs'], 0)
+        # Capital never frees: every later eligible entry is skipped.
+        later = [r for r in out['sequential_ledger'] if r['session'] > '2026-09-02']
+        self.assertTrue(later)
+        self.assertTrue(all(r['action'] == 'skipped_occupied' for r in later))
+
+    def test_b1_unresolved_at_cutoff(self):
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 4), 'C')
+        out = _run_b(fx, cutoff=date(2026, 9, 4))
+        taken = _by_session(out['sequential_ledger'])['2026-09-02']
+        self.assertEqual(taken['resolution'], 'unresolved_open_at_cutoff')
+
+    def test_expiry_coincident_exit_and_horizon_beyond_expiry(self):
+        rows = _by_session(_run_b(self.fx())['ledger'])
+        r = rows['2026-09-10']                   # Thu 10 + 2 sessions = Tue 15 (14 Sep holiday) = expiry
         self.assertEqual(r['planned_exit_date'], '2026-09-15')
         self.assertTrue(r['exit_on_expiry'])
         self.assertEqual(r['outcome_status'], 'resolved')
-        # Fri 11 Sep + 2 = Wed 16 Sep > expiry 15 Sep -> ineligible at decision time.
         self.assertEqual(rows['2026-09-11']['status'], 'horizon_beyond_expiry')
 
     def test_zero_rv_is_not_bucketed(self):
-        flat = {d: 23000.0 for d in self.sessions}
-        ds = _dataset(self.sessions, flat, _next_tuesday)
-        out = re_.run(ds, re_.CORRECTED_V1, OPEN_BAND, date(2026, 9, 1), date(2026, 9, 18), date(2026, 9, 25))
+        fx = Fixture(self.sessions, {d: 23000.0 for d in self.sessions}, _next_tuesday)
+        out = _run_b(fx)
         reasons = {r.get('reason') for r in out['ledger'] if r['status'] == 'rv_unavailable'}
         self.assertIn('rv_zero_or_invalid', reasons)
         self.assertEqual(out['counts']['eligible'], 0)
 
-    def test_five_consecutive_rule_vs_legacy_any_available(self):
-        gap = {date(2026, 8, 31)}                      # one missing close inside the RV window of early Sep
-        corrected = self._run(skip_close=gap)
-        legacy = self._run(defs=re_.LEGACY_V0, skip_close=gap)
-        c = {r['session']: r for r in corrected['ledger']}['2026-09-02']
-        l = {r['session']: r for r in legacy['ledger']}['2026-09-02']
-        self.assertEqual(c['status'], 'rv_unavailable')
-        self.assertEqual(c['reason'], 'rv_insufficient_consecutive_closes')
-        self.assertNotEqual(l['status'], 'rv_unavailable')
-        self.assertEqual(l['rv_returns'], 3)
+    def test_five_consecutive_rule(self):
+        fx = self.fx()
+        fx.drop_poll(date(2026, 8, 31), 'C')
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-02']
+        self.assertEqual((row['status'], row['reason']), ('rv_unavailable', 'rv_insufficient_consecutive_closes'))
 
     def test_session_outage_distinguished_from_missing_close(self):
-        out = self._run(skip_close={date(2026, 9, 7)}, skip_entry={date(2026, 9, 7)})
-        row = {r['session']: r for r in out['ledger']}['2026-09-03']
-        self.assertEqual(row['outcome_status'], 'session_outage')
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 7), 'C')
+        fx.drop_poll(date(2026, 9, 7), 'E')
+        self.assertEqual(_by_session(_run_b(fx)['ledger'])['2026-09-03']['outcome_status'], 'session_outage')
+
+    def test_b2_lot_comes_from_resolver_never_a_blanket(self):
+        def r75(index, session, expiry):
+            return 75, {'lot_source': 'test_75'}
+        a = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']
+        b = _by_session(_run_b(self.fx(), resolver=r75)['ledger'])['2026-09-03']
+        self.assertEqual((a['lot'], b['lot']), (65, 75))
+        self.assertNotEqual(a['net_rs'], b['net_rs'])
+        calls = []
+
+        def none(index, session, expiry):
+            calls.append((index, session, expiry))
+            return None, {'lot_source': 'ambiguous_expiry_cycle_coexistence',
+                          'unavailable_reason': 'ambiguous_expiry_cycle_coexistence'}
+        out = _run_b(self.fx(), resolver=none)
+        self.assertEqual(out['counts']['eligible'], 0)
+        self.assertGreater(out['counts']['lot_unresolved'], 0)
+        self.assertTrue(all(isinstance(c[2], date) for c in calls))   # expiry is part of the identity
+
+    def test_b4_conflicting_duplicate_quarantines_identical_duplicate_accepted(self):
+        d = date(2026, 9, 3)
+        base = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']
+        k0 = base['k0']
+        fx = self.fx()
+        rows = fx.polls[(d, 'E')]['chains']['2026-09-08']
+        rows[(k0 + 400, 'CE')] = rows[(k0 + 400, 'CE')] * 2
+        same = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(same['status'], 'eligible')
+        self.assertEqual(same['net_rs'], base['net_rs'])
+        b, a = rows[(k0 + 400, 'CE')][0]
+        rows[(k0 + 400, 'CE')] = [(b, a), (b + 1.0, a + 1.0)]
+        conflict = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(conflict['status'], 'chain_quarantined_conflict')
+
+    def test_b4_nf_poll_used_not_any_index_poll(self):
+        d = date(2026, 9, 3)
+        fx = self.fx()
+        fx.any_override[(d, 'E')] = _ts(d, 12, 30)       # a BNF-only poll at 12:30 precedes the NF poll
+        out_b = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(out_b['status'], 'eligible')
+        self.assertEqual(out_b['entry_poll_ts'], _ts(d, 12, 31).isoformat())
+
+    def test_b4_multi_expiry_and_atm_tie(self):
+        d = date(2026, 9, 3)
+        fx = self.fx()
+        fx.polls[(d, 'E')]['chains']['2026-09-15'] = _quotes(self.spots[d], 160.0)
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertIn('multi_expiry_nearest_selected', row['entry_flags'])
+        self.assertEqual(row['expiry'], '2026-09-08')
 
     def test_conservation_and_determinism(self):
-        a = self._run(skip_close={date(2026, 9, 7)})
-        b = self._run(skip_close={date(2026, 9, 7)})
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 7), 'C')
+        a, b = _run_b(fx), _run_b(fx)
         self.assertEqual(a['output_sha256'], b['output_sha256'])
         counts = a['counts']
         self.assertEqual(counts['sessions'], sum(v for k, v in counts.items() if k != 'sessions'))
         seq = a['summary']['sequential']
         self.assertEqual(seq['accepted'] + seq['skipped_occupied'], counts['eligible'])
+        self.assertEqual(seq['accepted'], seq['accepted_resolved'] + seq['accepted_pending']
+                         + seq['accepted_deferred_mark'] + seq['accepted_unresolved'])
 
-    def test_band_filter_and_pending(self):
-        out = re_.run(_dataset(self.sessions, self.spots, _next_tuesday), re_.CORRECTED_V1, OPEN_BAND,
-                      date(2026, 9, 1), date(2026, 9, 25), date(2026, 9, 23))
-        statuses = {r['session']: r.get('outcome_status') for r in out['ledger'] if r['status'] == 'eligible'}
-        self.assertEqual(statuses.get('2026-09-22'), None)   # expiry day: horizon beyond expiry
-        self.assertEqual(statuses.get('2026-09-23'), 'pending_not_matured')
+    def test_pending_at_cutoff(self):
+        out = _run_b(self.fx(), end=date(2026, 9, 25), cutoff=date(2026, 9, 23))
+        st = {r['session']: r.get('outcome_status') for r in out['ledger'] if r['status'] == 'eligible'}
+        self.assertEqual(st.get('2026-09-23'), 'pending_not_matured')
+
+
+# ---------------------------------------------------------------------------
+# Stage A legacy emulation
+# ---------------------------------------------------------------------------
+LEGACY_RULE = re_.Rule(name='legacy', ivrv_lo=1.3, ivrv_hi=1.7)
+
+
+class LegacyEmulationTests(unittest.TestCase):
+    def setUp(self):
+        self.sessions = _sessions(date(2026, 8, 20), date(2026, 9, 25))
+        self.spots = _wiggle(self.sessions)
+
+    def run_a(self, fx, rule=LEGACY_RULE):
+        return re_.run_legacy_sql_v0(fx.dataset(), rule, date(2026, 9, 1), date(2026, 9, 18), date(2026, 9, 25),
+                                     calendar_start=date(2026, 8, 20))
+
+    _scale = None
+
+    def _fixture_at(self, scale):
+        fx = Fixture(self.sessions, self.spots, _next_tuesday)
+        for p in fx.polls.values():
+            for e in p['chains']:
+                p['chains'][e] = _quotes(self.spots[p['ts'].astimezone(re_.IST).date()], scale)
+        return fx
+
+    def _force_in_band(self):
+        # Find (once) a premium scale that puts 3 Sep inside the legacy v1.3 band and makes it eligible.
+        scales = [LegacyEmulationTests._scale] if LegacyEmulationTests._scale else [x / 2.0 for x in range(40, 2000)]
+        for scale in scales:
+            fx = self._fixture_at(scale)
+            out = self.run_a(fx)
+            if _by_session(out['ledger'])['2026-09-03']['status'] == 'eligible':
+                LegacyEmulationTests._scale = scale
+                return fx, out
+        self.fail('no scale puts 3 Sep in band')
+
+    def test_reproduces_hand_computed_legacy_net(self):
+        fx, out = self._force_in_band()
+        row = _by_session(out['ledger'])['2026-09-03']
+        self.assertEqual(row['outcome_status'], 'resolved')
+        self.assertEqual(row['lot_label'], re_.LEGACY_LOT_LABEL)
+        # Independent hand computation from the fixture's own rows.
+        k0 = row['feat'][0]['k0']
+        e = fx.polls[(date(2026, 9, 3), 'E')]['chains']['2026-09-08']
+        x = fx.polls[(date(2026, 9, 7), 'C')]['chains']['2026-09-08']
+        sell = e[(k0, 'CE')][0][0] + e[(k0, 'PE')][0][0]
+        buy = e[(k0 + 400, 'CE')][0][1] + e[(k0 - 400, 'PE')][0][1]
+        xsell = x[(k0 + 400, 'CE')][0][0] + x[(k0 - 400, 'PE')][0][0]
+        xbuy = x[(k0, 'CE')][0][1] + x[(k0, 'PE')][0][1]
+        gross = (sell - buy + xsell - xbuy) * 65
+        fee = (4 * 2 * 20 * 1.18 + 0.0015 * (sell + xsell) * 65 + 0.0003553 * 1.18 * (sell + buy + xsell + xbuy) * 65
+               + 0.00003 * (buy + xbuy) * 65)
+        self.assertAlmostEqual(row['net_rs'], round(gross - fee, 2), places=2)
+        self.assertNotIn('parity_unproven', row['flags'])
+
+    def test_23_jul_style_missing_close_is_eligible_not_dropped(self):
+        fx, _ = self._force_in_band()
+        fx.drop_poll(date(2026, 9, 7), 'C')
+        row = _by_session(self.run_a(fx)['ledger'])['2026-09-03']
+        self.assertEqual((row['status'], row['outcome_status']), ('eligible', 'missing_close'))
+
+    def test_any_index_poll_rule_is_reproduced(self):
+        fx, _ = self._force_in_band()
+        d = date(2026, 9, 3)
+        fx.any_override[(d, 'E')] = _ts(d, 12, 30)        # BNF-only poll first: the sweep saw no NF rows
+        row = _by_session(self.run_a(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['status'], 'no_nf_atm')
+        self.assertIn('any_index_poll_differs_from_first_nf_poll', row['flags'])
+        self.assertEqual(_by_session(_run_b(fx, rule=OPEN_BAND)['ledger'])['2026-09-03']['status'], 'eligible')
+
+    def test_duplicate_rows_double_count_like_the_sql(self):
+        fx, _ = self._force_in_band()
+        d = date(2026, 9, 3)
+        k0 = _by_session(self.run_a(fx)['ledger'])['2026-09-03']['feat'][0]['k0']
+        rows = fx.polls[(d, 'E')]['chains']['2026-09-08']
+        rows[(k0 + 400, 'CE')] = rows[(k0 + 400, 'CE')] * 2
+        row = _by_session(self.run_a(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['nl'], 5)
+        self.assertEqual((row['status'], row['reason']), ('not_in_cell', 'structure_not_priced'))
+
+    def test_multi_expiry_cross_join_flags_parity_unproven(self):
+        fx, _ = self._force_in_band()
+        d = date(2026, 9, 3)
+        # A second expiry whose strikes are disjoint from the first (the unique key has no expiry column).
+        far = {(k + 25, o): v for (k, o), v in _quotes(self.spots[d], 200.0).items()}
+        fx.polls[(d, 'E')]['chains']['2026-09-15'] = far
+        row = _by_session(self.run_a(fx)['ledger'])['2026-09-03']
+        self.assertIn('legacy_multi_expiry_cross_join', row['flags'])
+        self.assertEqual(len(row['feat']), 4)
+
+    def test_observed_calendar_outage_shifts_legacy_exit_only(self):
+        fx, _ = self._force_in_band()
+        fx.observed.remove(date(2026, 9, 4))           # brain outage on 4 Sep (chain data still exists)
+        a = _by_session(self.run_a(fx)['ledger'])['2026-09-02']
+        b = _by_session(_run_b(fx)['ledger'])['2026-09-02']
+        if a['status'] == 'eligible':
+            self.assertEqual(a['planned_exit_date'], '2026-09-07')
+        self.assertEqual(b['planned_exit_date'], '2026-09-04')
+
+    def test_legacy_rejects_other_rules(self):
+        fx = Fixture(self.sessions, self.spots, _next_tuesday)
+        with self.assertRaises(ValueError):
+            self.run_a(fx, rule=re_.Rule(name='ic', structure='IC', short_off=100))
+
+    def test_conservation_and_determinism(self):
+        fx, a = self._force_in_band()
+        b = self.run_a(fx)
+        self.assertEqual(a['output_sha256'], b['output_sha256'])
+        c = a['counts']
+        self.assertEqual(c['sessions'], sum(v for k, v in c.items() if k != 'sessions'))
+
+
+# ---------------------------------------------------------------------------
+# Runner (B3)
+# ---------------------------------------------------------------------------
+def _part_text(part, a, b, body):
+    md5 = hashlib.md5(body.encode('utf-8')).hexdigest()
+    n = len(body.split('\n')) if body else 0
+    return f'#format=nf_quotes_v2\n#part={part}\n#range={a}..{b}\n#n={n}\n#md5={md5}\n#body\n{body}\n'
+
+
+class RunnerTests(unittest.TestCase):
+    MANIFEST = [('01', '2026-09-01', '2026-09-15'), ('02', '2026-09-16', '2026-10-05')]
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def write(self, part, text):
+        with open(os.path.join(self.dir, f'part{part}.txt'), 'w', encoding='utf-8') as fh:
+            fh.write(text)
+
+    def good(self):
+        self.write('01', _part_text('01', '2026-09-01', '2026-09-15', 'S|2026-09-01'))
+        self.write('02', _part_text('02', '2026-09-16', '2026-10-05', 'S|2026-09-16'))
+
+    def load(self, manifest=None):
+        old = runner.CALENDAR_START
+        runner.CALENDAR_START = date(2026, 9, 1)
+        try:
+            return runner.load_parts(self.dir, manifest or self.MANIFEST)
+        finally:
+            runner.CALENDAR_START = old
+
+    def test_empty_dir_fails(self):
+        with self.assertRaises(SystemExit):
+            self.load()
+
+    def test_good_parts_load(self):
+        self.good()
+        ds, report = self.load()
+        self.assertEqual(ds.observed_sessions, [date(2026, 9, 1), date(2026, 9, 16)])
+        self.assertEqual([r['part'] for r in report], ['01', '02'])
+
+    def test_missing_extra_tampered_and_misranged_parts_fail(self):
+        self.good()
+        os.remove(os.path.join(self.dir, 'part02.txt'))
+        with self.assertRaises(SystemExit):
+            self.load()
+        self.good()
+        self.write('03', _part_text('03', '2026-10-06', '2026-10-06', 'S|2026-10-06'))
+        with self.assertRaises(SystemExit):
+            self.load()
+        os.remove(os.path.join(self.dir, 'part03.txt'))
+        text = _part_text('02', '2026-09-16', '2026-10-05', 'S|2026-09-16')
+        self.write('02', text.replace('S|2026-09-16\n', 'S|2026-09-17\n'))           # body tampered
+        with self.assertRaises(SystemExit):
+            self.load()
+        self.write('02', _part_text('02', '2026-09-16', '2026-10-05', 'S|2026-09-01'))   # line outside range
+        with self.assertRaises(SystemExit):
+            self.load()
+        self.write('02', _part_text('02', '2026-09-17', '2026-10-05', 'S|2026-09-17'))   # range != manifest
+        with self.assertRaises(SystemExit):
+            self.load()
+
+    def test_manifest_gap_or_overlap_fails(self):
+        self.good()
+        with self.assertRaises(SystemExit):
+            self.load([('01', '2026-09-01', '2026-09-15'), ('02', '2026-09-17', '2026-10-05')])
+        with self.assertRaises(SystemExit):
+            self.load([('01', '2026-09-01', '2026-09-15'), ('02', '2026-09-15', '2026-10-05')])
+
+    def test_stage_a_gate_fails_on_mismatch_extra_or_unproven(self):
+        ledger = []
+        for s, v in runner.PUBLISHED_STAGE_A.items():
+            r = {'session': s, 'status': 'eligible', 'flags': []}
+            r.update({'outcome_status': 'missing_close'} if v is None else {'outcome_status': 'resolved', 'net_rs': v})
+            ledger.append(r)
+        self.assertTrue(runner.stage_a_gate({'ledger': ledger})['pass'])
+        bad = [dict(r) for r in ledger]
+        bad[0]['net_rs'] = bad[0]['net_rs'] + 1.0
+        self.assertFalse(runner.stage_a_gate({'ledger': bad})['pass'])
+        extra = ledger + [{'session': '2026-07-09', 'status': 'eligible', 'flags': [], 'outcome_status': 'resolved',
+                           'net_rs': 1.0}]
+        self.assertFalse(runner.stage_a_gate({'ledger': extra})['pass'])
+        unproven = [dict(r) for r in ledger]
+        unproven[1]['flags'] = ['parity_unproven']
+        self.assertFalse(runner.stage_a_gate({'ledger': unproven})['pass'])
+        jul23 = [dict(r) for r in ledger]
+        for r in jul23:
+            if r['session'] == '2026-07-23':
+                r.update({'outcome_status': 'resolved', 'net_rs': 10.0})
+        self.assertFalse(runner.stage_a_gate({'ledger': jul23})['pass'])
 
 
 class FeeTests(unittest.TestCase):
@@ -236,7 +624,6 @@ class FeeTests(unittest.TestCase):
         self.assertEqual(t['brokerage'], 160.0)
 
     def test_teacher_fee_matches_trade_278_breakdown(self):
-        # trades_v2 #278 friction_breakdown_json: total 226.5 (entry 22236.5 turnover, close 7013.5).
         entry = {'sell_px': 133.75 + 123.1, 'buy_px': 37.55 + 47.7}
         exit_ = {'exit_sell_px': 3.75 + 1.35, 'exit_buy_px': 7013.5 / 65 - (3.75 + 1.35)}
         t = re_.fees('teacher_v1', 4, 65, entry, exit_)
