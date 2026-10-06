@@ -2513,7 +2513,14 @@ def compute_effective_bias(polls, baseline, ctx, regime):
         'drift_reasons': drift_reasons[:5]
     }
 
-FII_SHORT_PREV_POLICY_VERSION = 'fii_short_prev_v1_paper_verified_previous_session_abstain'
+FII_SHORT_PREV_POLICY_VERSION = 'fii_short_prev_v2_paper_published_before_decision_abstain'
+# Provenance contract for a previous-session FII short % observation. A row
+# qualifies only with an explicit source and a publication time (epoch ms) that
+# is after the observation session closed and not after the decision. No
+# current producer supplies these fields, so Paper abstains until one does.
+FII_SHORT_PREV_SOURCE_KEY = 'fii_short_pct_source'
+FII_SHORT_PREV_PUBLISHED_KEY = 'fii_short_pct_published_ms'
+_IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 
 def _explicit_execution_mode(ctx):
@@ -2555,20 +2562,47 @@ def _fii_short_pct_value(value):
     return num
 
 
+def _epoch_ms_value(value):
+    """Finite positive epoch milliseconds as float; None otherwise (bools rejected)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except (ValueError, TypeError):
+        return None
+    if not math.isfinite(num) or num <= 0:
+        return None
+    return num
+
+
 def _verified_previous_fii_short(ctx):
     """Previous-session FII short % for the Paper comparison rule.
 
-    Verified means: the live session date is known, the NSE holiday calendar
-    covers it, a history row is dated exactly the preceding NSE session
-    (weekends and NSE_HOLIDAYS skipped; a 7-day freshness window is not
-    enough), its value is finite and within [0, 100], and duplicate rows for
-    that date agree. Row dates are observation dates (the session the morning
-    input was recorded for), compared like-for-like with today's input.
+    VERIFIED requires every one of:
+      * the live session date and decision time (ctx now_ms) are known and the
+        decision time falls on that IST session date;
+      * the NSE holiday calendar covers the session year;
+      * history rows dated exactly the preceding NSE session exist (weekends and
+        NSE_HOLIDAYS skipped; a freshness window is not enough);
+      * each such row carries a finite value in [0, 100], a non-empty source and
+        a publication time (epoch ms) that is at or after 15:30 IST on the
+        observation session and at or before the decision time — so a value
+        backfilled or published after the decision can never be used;
+      * duplicate rows for that session agree on the value.
+    Rows without provenance are never verified, however plausible the value.
     """
-    out = {'value': None, 'date': None, 'status': 'UNVERIFIED', 'reason': None}
+    out = {'value': None, 'date': None, 'status': 'UNVERIFIED', 'reason': None,
+           'source': None, 'publishedMs': None}
     session_dt = _context_session_date(ctx)
     if session_dt is None:
         out['reason'] = 'session_date_unknown'
+        return out
+    decision_ms = _epoch_ms_value(ctx.get('now_ms') if isinstance(ctx, dict) else None)
+    if decision_ms is None:
+        out['reason'] = 'decision_time_unknown'
+        return out
+    if datetime.fromtimestamp(decision_ms / 1000.0, _IST_TZ).date() != session_dt:
+        out['reason'] = 'decision_time_session_mismatch'
         return out
     holidays = set(_CONST.get('NSE_HOLIDAYS', [])) if '_CONST' in globals() else set()
     if not any(str(h).startswith(f"{session_dt.year}-") for h in holidays):
@@ -2576,26 +2610,44 @@ def _verified_previous_fii_short(ctx):
         return out
     expected = _nse_session_floor(session_dt, 1)
     out['date'] = expected.strftime("%Y-%m-%d") if expected else None
+    if expected is None:
+        out['reason'] = 'previous_session_missing'
+        return out
+    observation_close_ms = datetime(expected.year, expected.month, expected.day, 15, 30,
+                                    tzinfo=_IST_TZ).timestamp() * 1000.0
     rows = ctx.get('yesterdayHistory') if isinstance(ctx, dict) else None
     if not isinstance(rows, list):
         rows = []
-    values = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if _pc2_row_date(row) != expected:
-            continue
-        values.append(_fii_short_pct_value(row.get('fii_short_pct')))
-    if not values:
+    matched = [row for row in rows if isinstance(row, dict) and _pc2_row_date(row) == expected]
+    if not matched:
         out['reason'] = 'previous_session_missing'
         return out
-    if any(v is None for v in values):
-        out['reason'] = 'previous_value_invalid'
-        return out
+    values, sources, published = [], [], []
+    for row in matched:
+        value = _fii_short_pct_value(row.get('fii_short_pct'))
+        if value is None:
+            out['reason'] = 'previous_value_invalid'
+            return out
+        source = row.get(FII_SHORT_PREV_SOURCE_KEY)
+        pub_ms = _epoch_ms_value(row.get(FII_SHORT_PREV_PUBLISHED_KEY))
+        if not isinstance(source, str) or not source.strip() or pub_ms is None:
+            out['reason'] = 'previous_provenance_missing'
+            return out
+        if pub_ms < observation_close_ms:
+            out['reason'] = 'previous_published_before_observation_close'
+            return out
+        if pub_ms > decision_ms:
+            out['reason'] = 'previous_published_after_decision'
+            return out
+        values.append(value)
+        sources.append(source.strip())
+        published.append(pub_ms)
     if len(set(values)) > 1:
         out['reason'] = 'previous_session_duplicates_conflict'
         return out
-    out.update({'value': values[0], 'status': 'VERIFIED', 'reason': None})
+    out.update({'value': values[0], 'status': 'VERIFIED', 'reason': None,
+                'source': sorted(set(sources))[0] if len(set(sources)) == 1 else sorted(set(sources)),
+                'publishedMs': int(max(published))})
     return out
 
 
@@ -2637,16 +2689,14 @@ def compute_morning_bias(ctx, polls):
             signals.append({'name': 'FII Cash', 'value': f'₹{fc}Cr', 'dir': 'NEUTRAL'})
 
     # 2. FII Short%
+    # Paper-only. For sandbox, live and an unresolved mode the legacy branch
+    # below runs unchanged and the returned dict is byte-identical to the
+    # pre-patch output (no policy key is added outside Paper).
     fii_mode = _explicit_execution_mode(ctx)
-    fii_short_policy = {
-        'version': FII_SHORT_PREV_POLICY_VERSION,
-        'executionMode': fii_mode,
-        'applied': fii_mode == 'paper',
-        'reason': None if fii_mode == 'paper' else (
-            'execution_mode_unresolved' if fii_mode is None else 'non_paper_mode_preserved'),
-    }
+    fii_short_policy = None
     fsp = _to_float(morning.get('fiiShortPct'))
     if fii_mode == 'paper':
+        fii_short_policy = {'version': FII_SHORT_PREV_POLICY_VERSION, 'executionMode': 'paper', 'applied': True}
         # Paper-only correction: compare against a verified previous-session
         # observation or abstain. No level-only fallback in either direction.
         raw_fsp = morning.get('fiiShortPct')
@@ -2668,7 +2718,9 @@ def compute_morning_bias(ctx, polls):
                                 'rawValue': cur, 'policyVersion': FII_SHORT_PREV_POLICY_VERSION})
             else:
                 prev = prev_info['value']
-                fii_short_policy.update({'abstained': False, 'previousSession': prev_info['date']})
+                fii_short_policy.update({'abstained': False, 'previousSession': prev_info['date'],
+                                         'previousSource': prev_info['source'],
+                                         'previousPublishedMs': prev_info['publishedMs']})
                 if cur > 85 and cur > prev:
                     votes['bear'] += 1
                     signals.append({'name': 'FII Short%', 'value': f'{cur}%↑ (was {prev})', 'dir': 'BEAR'})
@@ -2856,12 +2908,14 @@ def compute_morning_bias(ctx, polls):
         u_agrees = (bias == u_dir) or (bias == 'NEUTRAL' and u_dir == 'NEUTRAL')
         signals.append({'name': 'Upstox', 'value': f"{ub} {'✅ agrees' if u_agrees else '⚠️ DISAGREES'}", 'dir': u_dir, 'isComparison': True})
 
-    return {
+    out = {
         'bias': bias, 'strength': strength, 'net': net, 'votes': votes,
         'signals': signals, 'label': f'{strength} {bias}'.strip(),
         'upstoxAgrees': u_agrees, 'chainValidation': chain_validation,
-        'fiiShortPolicy': fii_short_policy,
     }
+    if fii_short_policy is not None:
+        out['fiiShortPolicy'] = fii_short_policy
+    return out
 
 def compute_overnight_delta(ctx):
     """Phase B: compute Dow/Crude/GIFT deltas since evening close.
