@@ -118,7 +118,7 @@ class ScratchPostgresTests(unittest.TestCase):
         frozen = []
         for part, a, b in manifest:
             rows = self._query(sqlkit.select_body(sqlkit.EXTRACT_SQL, A=a, B=b))
-            n, md5, ns, nw, na, nr, nd, body = rows[0]
+            n, md5, ns, nw, na, nr, nd, secs, body = rows[0]
             frozen.append(sqlkit.write_part(out_dir, part, a, b, n, md5, body or ''))
         return frozen
 
@@ -265,7 +265,7 @@ class ScratchPostgresTests(unittest.TestCase):
                     "bid, ask) values (%s, %s, 'NF', '2026-02-30', 99950, 'CE', 1, 2)", (ts, d))
         try:
             rows = self._query(sqlkit.select_body(sqlkit.EXTRACT_SQL, A='2026-09-10', B='2026-09-10'))
-            body = rows[0][7]
+            body = rows[0][8]
             ds = re_.parse_extract(body)
             p = ds.polls[ts.astimezone(re_.timezone.utc)]
             self.assertEqual(p.integrity[3], 1)                       # counted as a non-date row

@@ -132,5 +132,6 @@ body as (select string_agg(line, E'\n' order by line) b, count(*) n,
                 count(*) filter (where line like 'A|%') na, count(*) filter (where line like 'R|%') nr,
                 count(*) filter (where line like 'D|%') nd
          from lines)
-select n, md5(b) md5, ns, nw, na, nr, nd, b from body;
+select n, md5(b) md5, ns, nw, na, nr, nd,
+       round(extract(epoch from clock_timestamp() - statement_timestamp())::numeric, 3) secs, b from body;
 commit;
