@@ -61,7 +61,8 @@ def verify_manifest(manifest):
         raise ExtractError('manifest does not cover calendar start .. cutoff')
 
 
-def load_parts(extract_dir, manifest=PART_MANIFEST):
+def load_parts(extract_dir, manifest=None):
+    manifest = PART_MANIFEST if manifest is None else manifest
     verify_manifest(manifest)
     found = sorted(os.path.basename(p) for p in glob.glob(os.path.join(extract_dir, 'part*.txt')))
     expected = [f'part{p}.txt' for p, _, _ in manifest]
@@ -179,7 +180,12 @@ def main(extract_dir, out_dir):
                  'polls_with_non_date_expiry_rows': sum(1 for p in ds.polls.values()
                                                         if p.integrity and p.integrity[3] > 0),
                  'polls_with_atm_ties': sum(1 for p in ds.polls.values()
-                                            if any(len(a.tied) > 1 or a.npairs > 1 for a in p.atm.values()))}
+                                            if any(len(a.tied) > 1 or a.npairs > 1 for a in p.atm.values())),
+                 'stage_b_poll_quarantine': {}}
+    for p in ds.polls.values():
+        why = re_.poll_integrity_problem(p)
+        if why:
+            integrity['stage_b_poll_quarantine'][why] = integrity['stage_b_poll_quarantine'].get(why, 0) + 1
     report = {'engine_version': re_.ENGINE_VERSION, 'dataset_sha256': ds.sha256, 'line_counts': ds.line_counts,
               'extract_manifest': manifest, 'integrity': integrity, 'stage_a_gate': gate,
               'stage_a_output_sha256': stage_a['output_sha256'], 'stage_b_output_sha256': stage_b['output_sha256'],

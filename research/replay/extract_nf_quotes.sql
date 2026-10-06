@@ -21,12 +21,13 @@
 -- Strikes emitted per (poll, expiry):
 --   E polls: every tied k0 of every expiry at the poll + {-400,-300,-150,-100,-50,0,50,100,150,300,400}.
 --   C polls: every tied k0 at the poll + {-150..150}; plus {0,+-300,+-400} around every tied k0 of every E poll
---            in the previous 7 calendar days (exit legs of open entries).
+--            in the previous 14 calendar days (exit legs of open entries,
+--            including observed-calendar C2 exits stretched by outages and deferred marks up to expiry).
 begin read only;
 set local statement_timeout = '45s';
 set local work_mem = '64MB';
 with
-days as (select g::date d from generate_series(:A::date - 8, :B::date, interval '1 day') g),
+days as (select g::date d from generate_series(:A::date - 15, :B::date, interval '1 day') g),
 rng as (select d, s.slot, ((d + s.t0) at time zone 'Asia/Kolkata') lo,
                ((d + s.t0 + interval '25 minutes') at time zone 'Asia/Kolkata') hi
         from days, (values ('E', time '12:30'), ('C', time '15:20')) s(slot, t0)),
@@ -80,7 +81,7 @@ want as (
   union
   select pe.poll_ts, pe.expiry, en.k0 + off
   from pe join k0s cl on cl.poll_ts = pe.poll_ts and cl.slot = 'C'
-          join k0s en on en.slot = 'E' and en.d >= cl.d - 7 and en.d < cl.d,
+          join k0s en on en.slot = 'E' and en.d >= cl.d - 14 and en.d < cl.d,
        unnest(array[-400,-300,0,300,400]) off),
 rtok as (
   select q.poll_ts, q.expiry, q.strike,

@@ -82,6 +82,17 @@ class Fixture:
                 self.polls[(d, slot)] = {'ts': _ts(d, hh, mm), 'index': 'NF',
                                          'chains': {expiry_for(d).isoformat(): _quotes(spots[d])}}
         self.any_override = {}
+        self.omit_integrity = set()
+
+    def overwrite_with_expiry(self, d, slot, expiry, keys, scale=160.0, spot=None):
+        """Model the real upsert: ml_ocs_unique has no expiry, so writing another expiry's row at a
+        (strike, type) REPLACES the stored row. The poll then holds an interleaved two-expiry chain."""
+        chains = self.polls[(d, slot)]['chains']
+        cur = [e for e in chains if e != expiry][0]
+        donor = _quotes(spot if spot is not None else 23000.0, scale)
+        for key in keys:
+            chains[cur].pop(key, None)
+            chains.setdefault(expiry, {})[key] = donor.get(key, [(1.0, 1.1)])
 
     def drop_poll(self, d, slot):
         self.polls.pop((d, slot), None)
@@ -114,7 +125,7 @@ class Fixture:
                 lines.append(f'W|{d.isoformat()}|L|nf|{_fmt(e["ts"]) if e else ""}|')
         for (d, slot), p in sorted(self.polls.items()):
             ts = _fmt(p['ts'])
-            total = distinct = 0
+            total, keys, non_date = 0, set(), 0
             for expiry, rows in sorted(p['chains'].items()):
                 a = _atm_line(rows) if expiry != 'X' else None
                 if a:
@@ -128,11 +139,14 @@ class Fixture:
                         for b, a_ in rows.get((k, opt), []):
                             parts.append(f'{tag}:{"" if b is None else b},{"" if a_ is None else a_}')
                             total += 1
-                        distinct += 1 if rows.get((k, opt)) else 0
+                            non_date += 1 if expiry == 'X' else 0
+                        if rows.get((k, opt)):
+                            keys.add((k, opt))
                     toks.append('/'.join(parts))
                 lines.append(f'R|{ts}|{expiry}|' + ';'.join(toks))
-            nexp = len([e for e in p['chains'] if e != 'X'])
-            lines.append(f'D|{ts}|{total}|{distinct}|{nexp}|0')
+            nexp = len([e for e, rows in p['chains'].items() if e != 'X' and rows])
+            if (d, slot) not in self.omit_integrity:
+                lines.append(f'D|{ts}|{total}|{len(keys)}|{nexp}|{non_date}')
         return '\n'.join(sorted(lines))
 
     def dataset(self):
@@ -359,20 +373,23 @@ class CorrectedLedgerTests(unittest.TestCase):
         self.assertGreater(out['counts']['lot_unresolved'], 0)
         self.assertTrue(all(isinstance(c[2], date) for c in calls))   # expiry is part of the identity
 
-    def test_b4_conflicting_duplicate_quarantines_identical_duplicate_accepted(self):
+    def test_b4_duplicate_stored_keys_quarantine_the_poll(self):
+        # Impossible under ml_ocs_unique; if the extract ever shows it, the poll is quarantined (identical or not).
         d = date(2026, 9, 3)
-        base = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']
-        k0 = base['k0']
-        fx = self.fx()
-        rows = fx.polls[(d, 'E')]['chains']['2026-09-08']
-        rows[(k0 + 400, 'CE')] = rows[(k0 + 400, 'CE')] * 2
-        same = _by_session(_run_b(fx)['ledger'])['2026-09-03']
-        self.assertEqual(same['status'], 'eligible')
-        self.assertEqual(same['net_rs'], base['net_rs'])
-        b, a = rows[(k0 + 400, 'CE')][0]
-        rows[(k0 + 400, 'CE')] = [(b, a), (b + 1.0, a + 1.0)]
-        conflict = _by_session(_run_b(fx)['ledger'])['2026-09-03']
-        self.assertEqual(conflict['status'], 'chain_quarantined_conflict')
+        k0 = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']['k0']
+        for dup in ('identical', 'conflicting'):
+            fx = self.fx()
+            rows = fx.polls[(d, 'E')]['chains']['2026-09-08']
+            b, a = rows[(k0 + 400, 'CE')][0]
+            rows[(k0 + 400, 'CE')] = [(b, a), (b, a) if dup == 'identical' else (b + 1.0, a + 1.0)]
+            row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+            self.assertEqual((row['status'], row['reason']), ('entry_poll_quarantined', 'poll_duplicate_keys'), dup)
+
+    def test_b4_conflicting_rows_never_combined_even_without_integrity_check(self):
+        p = re_.Poll(datetime(2026, 9, 3, 7, 1, tzinfo=UTC))
+        p.rows[('2026-09-08', 23000, 'CE')] = [(10.0, 10.5), (11.0, 11.5)]
+        self.assertEqual(re_.resolved_quote(p, '2026-09-08', 23000, 'CE'), (None, 'conflict'))
+        self.assertEqual(re_.chain_conflicts(p, '2026-09-08'), 1)
 
     def test_b4_nf_poll_used_not_any_index_poll(self):
         d = date(2026, 9, 3)
@@ -382,13 +399,82 @@ class CorrectedLedgerTests(unittest.TestCase):
         self.assertEqual(out_b['status'], 'eligible')
         self.assertEqual(out_b['entry_poll_ts'], _ts(d, 12, 31).isoformat())
 
-    def test_b4_multi_expiry_and_atm_tie(self):
+    def test_b4_interleaved_two_expiry_poll_is_quarantined(self):
+        # The unique key has no expiry: a second expiry overwrites the rows it shares. The nearest-expiry ATM
+        # would then come from an incomplete strike set, so the whole poll is unusable for Stage B.
+        d = date(2026, 9, 3)
+        k0 = _by_session(_run_b(self.fx())['ledger'])['2026-09-03']['k0']
+        fx = self.fx()
+        fx.overwrite_with_expiry(d, 'E', '2026-09-15', [(k0, 'CE'), (k0, 'PE'), (k0 + 50, 'CE')],
+                                 spot=self.spots[d])
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual((row['status'], row['reason']), ('entry_poll_quarantined', 'poll_mixed_expiries'))
+        # Without the quarantine the A line for the near expiry would point at a different strike.
+        ds = fx.dataset()
+        near = ds.polls[_ts(d, 12, 31)].atm['2026-09-08']
+        self.assertNotIn(k0, near.tied)
+
+    def test_b4_interleaved_close_poll_excluded_from_rv_and_exit(self):
+        d = date(2026, 9, 7)                      # planned exit of the 3 Sep entry, and an RV close
+        fx = self.fx()
+        fx.overwrite_with_expiry(d, 'C', '2026-09-15', [(23000, 'CE')], spot=self.spots[d])
+        out = _run_b(fx)
+        row = _by_session(out['ledger'])['2026-09-03']
+        self.assertEqual(row['outcome_status'], 'exit_poll_mixed_expiries')
+        later = _by_session(out['ledger'])['2026-09-09']
+        self.assertEqual((later['status'], later.get('reason')), ('rv_unavailable', 'rv_insufficient_consecutive_closes'))
+
+    def test_b4_missing_integrity_line_or_non_date_rows_fail_closed(self):
         d = date(2026, 9, 3)
         fx = self.fx()
-        fx.polls[(d, 'E')]['chains']['2026-09-15'] = _quotes(self.spots[d], 160.0)
+        fx.omit_integrity.add((d, 'E'))
         row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
-        self.assertIn('multi_expiry_nearest_selected', row['entry_flags'])
-        self.assertEqual(row['expiry'], '2026-09-08')
+        self.assertEqual(row['reason'], 'poll_integrity_missing')
+        fx = self.fx()
+        fx.polls[(d, 'E')]['chains']['X'] = {(30000, 'CE'): [(1.0, 1.1)]}
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['reason'], 'poll_non_date_expiry_rows')
+
+    # ---- expiry-boundary fixtures --------------------------------------------------------------
+    def test_expiry_day_entry_is_horizon_beyond_expiry(self):
+        rows = _by_session(_run_b(self.fx())['ledger'])
+        self.assertEqual(rows['2026-09-01']['expiry'], '2026-09-01')
+        self.assertEqual(rows['2026-09-01']['status'], 'horizon_beyond_expiry')
+
+    def test_stale_expired_rows_are_never_selected(self):
+        d = date(2026, 9, 3)
+        fx = self.fx()
+        chains = fx.polls[(d, 'E')]['chains']
+        chains['2026-09-01'] = chains.pop('2026-09-08')     # chain stored with an already-expired date
+        row = _by_session(_run_b(fx)['ledger'])['2026-09-03']
+        self.assertEqual(row['status'], 'no_valid_expiry')
+
+    def test_exit_on_expiry_day_with_rolled_chain_stays_unresolved(self):
+        # Entry Thu 10 Sep, expiry Tue 15 Sep, planned exit 15 Sep (14 Sep holiday). The 15 Sep close carries
+        # only the next expiry (rolled). No later close can price an expired contract: blocked, unresolved.
+        fx = self.fx()
+        chains = fx.polls[(date(2026, 9, 15), 'C')]['chains']
+        chains['2026-09-22'] = chains.pop('2026-09-15')
+        out = _run_b(fx, start=date(2026, 9, 10))           # 10 Sep is then the first accepted entry
+        row = _by_session(out['ledger'])['2026-09-10']
+        self.assertTrue(row['exit_on_expiry'])
+        self.assertEqual(row['outcome_status'], 'exit_expiry_absent')
+        seq = _by_session(out['sequential_ledger'])
+        taken = seq['2026-09-10']
+        self.assertEqual(taken['resolution'], 'unresolved_contract_expired')
+        self.assertEqual(taken['mark_attempts'], [])
+        self.assertEqual(taken['occupied_through'], 'unresolved_blocked')
+        self.assertTrue(all(r['action'] == 'skipped_occupied' for r in out['sequential_ledger']
+                            if r['session'] > '2026-09-10'))
+        self.assertGreater(out['summary']['sequential']['unresolved_max_loss_rs'], 0)
+
+    def test_exit_on_expiry_day_missing_close_is_not_marked_on_a_later_day(self):
+        fx = self.fx()
+        fx.drop_poll(date(2026, 9, 15), 'C')
+        out = _run_b(fx, start=date(2026, 9, 10))
+        self.assertEqual(_by_session(out['ledger'])['2026-09-10']['outcome_status'], 'missing_close')
+        taken = _by_session(out['sequential_ledger'])['2026-09-10']
+        self.assertEqual((taken['resolution'], taken['mark_attempts']), ('unresolved_contract_expired', []))
 
     def test_conservation_and_determinism(self):
         fx = self.fx()
@@ -506,6 +592,20 @@ class LegacyEmulationTests(unittest.TestCase):
             self.assertEqual(a['planned_exit_date'], '2026-09-07')
         self.assertEqual(b['planned_exit_date'], '2026-09-04')
 
+    def test_legacy_expiry_day_exit_with_rolled_chain_is_missing_exit_legs(self):
+        fx, out = self._force_in_band()
+        on_exp = [r for r in out['ledger'] if r['status'] == 'eligible' and r.get('exit_on_expiry')]
+        self.assertTrue(on_exp, 'fixture must contain an expiry-day C2 exit')
+        r = on_exp[0]
+        xd = date.fromisoformat(r['planned_exit_date'])
+        chains = fx.polls[(xd, 'C')]['chains']
+        exp = xd.isoformat()
+        chains[(xd + timedelta(days=7)).isoformat()] = chains.pop(exp)
+        row = _by_session(self.run_a(fx)['ledger'])[r['session']]
+        # The sweep's inner join on the entry expiry finds no exit legs: no row, never a fabricated close.
+        self.assertEqual((row['status'], row['outcome_status']), ('eligible', 'missing_exit_legs'))
+        self.assertNotIn('net_rs', row)
+
     def test_legacy_rejects_other_rules(self):
         fx = Fixture(self.sessions, self.spots, _next_tuesday)
         with self.assertRaises(ValueError):
@@ -612,6 +712,61 @@ class RunnerTests(unittest.TestCase):
             if r['session'] == '2026-07-23':
                 r.update({'outcome_status': 'resolved', 'net_rs': 10.0})
         self.assertFalse(runner.stage_a_gate({'ledger': jul23})['pass'])
+
+
+class EndToEndRunnerTests(unittest.TestCase):
+    """Synthetic fixture -> real part files -> runner.main: proves the whole pipeline before real data."""
+
+    def test_pipeline_writes_outputs_and_fails_gate_on_unpublished_data(self):
+        sessions = _sessions(date(2026, 8, 20), date(2026, 9, 25))
+        fx = Fixture(sessions, _wiggle(sessions), _next_tuesday)
+        text = fx.render()
+        manifest = [('01', '2026-08-20', '2026-09-07'), ('02', '2026-09-08', '2026-09-25')]
+
+        def line_day(line):
+            kind, rest = line.split('|', 1)
+            if kind in ('S', 'W'):
+                return date.fromisoformat(rest.split('|')[0])
+            return re_._ts(rest.split('|')[0]).astimezone(re_.IST).date()
+
+        tmp = tempfile.mkdtemp()
+        out = os.path.join(tmp, 'out')
+        try:
+            for part, a, b in manifest:
+                a_d, b_d = date.fromisoformat(a), date.fromisoformat(b)
+                body = '\n'.join(l for l in text.split('\n') if a_d <= line_day(l) <= b_d)
+                with open(os.path.join(tmp, f'part{part}.txt'), 'w', encoding='utf-8') as fh:
+                    fh.write(_part_text(part, a, b, body))
+            saved = (runner.PART_MANIFEST, runner.WINDOW, runner.CUTOFF, runner.CALENDAR_START)
+            runner.PART_MANIFEST = manifest
+            runner.WINDOW = (date(2026, 9, 1), date(2026, 9, 18))
+            runner.CUTOFF = date(2026, 9, 25)
+            runner.CALENDAR_START = date(2026, 8, 20)
+            try:
+                import io
+                import contextlib
+                with contextlib.redirect_stdout(io.StringIO()):
+                    code = runner.main(tmp, out)
+            finally:
+                runner.PART_MANIFEST, runner.WINDOW, runner.CUTOFF, runner.CALENDAR_START = saved
+            self.assertEqual(code, 2)          # synthetic data cannot reproduce the published list
+            for name in ('stage_a.json', 'stage_b.json', 'bridge.json', 'report.json', 'SHA256SUMS'):
+                self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+            with open(os.path.join(out, 'SHA256SUMS')) as fh:
+                sums = dict(reversed(l.split('  ')) for l in fh.read().strip().split('\n'))
+            for name, digest in sums.items():
+                with open(os.path.join(out, name.strip()), 'rb') as fh:
+                    self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), digest)
+            import json as _json
+            with open(os.path.join(out, 'report.json')) as fh:
+                rep = _json.load(fh)
+            self.assertFalse(rep['stage_a_gate']['pass'])
+            self.assertEqual(rep['dataset_sha256'], re_.parse_extract('\n'.join(
+                b for b in [open(os.path.join(tmp, f'part{p}.txt')).read().split('#body\n', 1)[1].rstrip('\n')
+                            for p, _, _ in manifest])).sha256)
+            self.assertEqual(rep['integrity']['stage_b_poll_quarantine'], {})
+        finally:
+            shutil.rmtree(tmp)
 
 
 class FeeTests(unittest.TestCase):

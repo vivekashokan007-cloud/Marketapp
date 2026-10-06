@@ -8,7 +8,7 @@ Research only. This directory lives outside `app/src/main/python`, so it is **no
 | `extract_nf_quotes.sql` | Bounded, read-only raw-row extract, run after market hours, one part at a time. Run `EXPLAIN` on part 01 first. |
 | `stage_a_sql_crosscheck.sql` | The executed 5 Oct sweep SQL, reduced only where the published cell cannot be affected. Gives an independent per-day Stage A. |
 | `run_stage_a_b.py` | Verifies the part manifest, runs both stages and writes the ledgers, a bridge, a report and `SHA256SUMS`. The exit code is non-zero unless the Stage A gate passes. |
-| `tests/test_replay_engine.py` | 38 synthetic fixtures, rendered through the real extract format. |
+| `tests/test_replay_engine.py` | 47 synthetic fixtures (including an end-to-end part-file → runner test), rendered through the real extract format. |
 
 ## Extract format `nf_quotes_v2`
 
@@ -46,9 +46,11 @@ The runner rejects any of the following:
 The table's unique index is `ml_ocs_unique (poll_ts, index_key, strike, option_type)`, without expiry. Two consequences:
 
 - Stored duplicates at one key should be impossible.
-- Two expiries at one poll can only occupy disjoint strikes.
+- Two expiries at one poll can only occupy disjoint strikes: writing one expiry's row replaces the other's at that strike.
 
-The extract measures both instead of assuming them.
+The extract measures both instead of assuming them. Stage B quarantines such polls. Stage A reproduces the sweep's behaviour on them and flags `parity_unproven`.
+
+C-poll exit legs cover E-poll ATMs from the previous **14** calendar days. That covers observed-calendar C2 exits stretched by outages and deferred marks up to a weekly expiry.
 
 ## Stage A: `run_legacy_sql_v0`
 
@@ -80,7 +82,8 @@ Some rows can depend on SQL behaviour that isn't deterministic (ATM ties) or on 
 | --- | --- |
 | Poll | First poll with NF rows in [12:30, 12:55) / [15:20, 15:45) IST |
 | Expiry | Entry: nearest valid expiry ≥ session. Exit and marks: the entry expiry, explicitly. |
-| Duplicates | Identical duplicates are accepted. Any conflicting duplicate quarantines that chain. |
+| Poll quarantine | A poll is unusable if its NF rows carry more than one valid expiry, any non-date expiry, more rows than distinct `(strike, type)` keys, or no integrity line. The unique key has no expiry, so a second expiry overwrites shared strikes and leaves an interleaved chain whose ATM would come from an incomplete strike set. This applies to entry, RV closes, exits and deferred marks. |
+| Duplicates | Conflicting rows are never combined (second line of defence after the poll quarantine). |
 | ATM | Sweep metric; ties go to the lowest strike. |
 | Calendar | NSE exchange sessions (asserted equal to `brain.py` `NSE_HOLIDAYS`). |
 | td | Exchange sessions to expiry + (15:30 − **actual** entry poll time) / 375 min, floor 0.05. |
@@ -95,7 +98,7 @@ Some rows can depend on SQL behaviour that isn't deterministic (ATM ties) or on 
 - If the planned exit is unpriced, the **same legs on the same expiry** are repriced on each later scheduled close:
   - The first complete valuation becomes a separate `deferred_mark` and frees capital that session.
   - A partial close, a missing expiry or invalid quotes do not free capital.
-  - If the contract expires first, the position is `unresolved_contract_expired` and capital stays blocked. No settlement assumption is made.
+  - If the contract expires first, the position is `unresolved_contract_expired` and capital stays blocked. No settlement assumption is made. A planned exit ON expiry day whose close is missing, or whose close carries only the next (rolled) expiry, therefore stays unresolved with no later marks.
   - If the cutoff comes first, it is `unresolved_open_at_cutoff`.
 - Unresolved exposure, as the sum of max loss, is reported separately from resolved net P&L.
 

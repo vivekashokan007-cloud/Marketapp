@@ -214,6 +214,25 @@ def chain_conflicts(p: Poll, expiry: str) -> int:
     return sum(1 for (e, _, _), rows in p.rows.items() if e == expiry and any(r != rows[0] for r in rows[1:]))
 
 
+def poll_integrity_problem(p: Poll) -> Optional[str]:
+    """Stage B poll-level quarantine, from the extract's D line (whole NF chain, not just emitted strikes).
+
+    ml_ocs_unique is (poll_ts, index_key, strike, option_type) with NO expiry, so a poll whose NF rows carry
+    more than one valid expiry holds an interleaved chain: each strike keeps whichever expiry was written last.
+    The ATM of either expiry would then be chosen from an incomplete strike set, so the poll is unusable.
+    Non-date-expiry rows can likewise shadow strikes. Missing integrity counts fail closed."""
+    if p.integrity is None:
+        return 'poll_integrity_missing'
+    rows, distinct_keys, valid_expiries, non_date = p.integrity
+    if rows != distinct_keys:
+        return 'poll_duplicate_keys'
+    if valid_expiries > 1:
+        return 'poll_mixed_expiries'
+    if non_date > 0:
+        return 'poll_non_date_expiry_rows'
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Calendar
 # ---------------------------------------------------------------------------
@@ -441,8 +460,11 @@ def _iso(ts: Optional[datetime]) -> Optional[str]:
 CORRECTED_DEFINITIONS = {
     'name': 'corrected_v2_20261006',
     'poll': 'first poll with NF rows in [12:30,12:55) / [15:20,15:45) IST',
-    'expiry': 'entry: nearest valid expiry >= session; exit/mark: the entry expiry explicitly',
-    'duplicates': 'identical duplicate rows accepted; any conflicting duplicate in the chain quarantines it',
+    'expiry': 'entry: nearest valid expiry >= session; exit/mark: the entry expiry explicitly; a poll whose NF '
+              'rows carry >1 valid expiry, non-date expiries, duplicate keys or no integrity line is quarantined '
+              '(unique key has no expiry, so such chains are interleaved)',
+    'duplicates': 'a poll whose NF rows exceed its distinct (strike, type) keys is quarantined (impossible under '
+                  'ml_ocs_unique, so it signals a broken extract); conflicting rows are never combined',
     'atm': 'legacy ATM metric, ties to the lowest strike',
     'calendar': 'NSE exchange sessions (weekdays minus NSE_HOLIDAYS_2026)',
     'td': 'exchange sessions after entry to expiry + (15:30 - actual entry poll time)/375 min, floor 0.05',
@@ -472,8 +494,7 @@ def run_corrected(ds: Dataset, rule: Rule, start: date, end: date, cutoff: date,
         exps = [e for e in p.valid_expiries() if date.fromisoformat(e) >= d]
         if not exps:
             return p, None, ['no_valid_expiry']
-        flags = ['multi_expiry_nearest_selected'] if len(exps) > 1 else []
-        return p, exps[0], flags
+        return p, exps[0], []
 
     def atm_of(p: Poll, expiry: str) -> Optional[Tuple[int, float, float]]:
         a = p.atm.get(expiry)
@@ -493,7 +514,7 @@ def run_corrected(ds: Dataset, rule: Rule, start: date, end: date, cutoff: date,
         if d not in close_cache:
             p = nf_poll(d, rule.close_slot)
             spot = None
-            if p is not None:
+            if p is not None and poll_integrity_problem(p) is None:
                 exps = [e for e in p.valid_expiries() if date.fromisoformat(e) >= d]
                 if exps and not chain_conflicts(p, exps[0]):
                     a = atm_of(p, exps[0])
@@ -522,13 +543,17 @@ def run_corrected(ds: Dataset, rule: Rule, start: date, end: date, cutoff: date,
             if last is None or last[0] is None:
                 return None, 'session_outage'
             return None, 'missing_close'
+        bad = poll_integrity_problem(p)
+        if bad:
+            return None, f'exit_{bad}'
         if not any(k[0] == expiry for k in p.rows):
             return None, 'exit_expiry_absent'
         if chain_conflicts(p, expiry):
             return None, 'exit_chain_quarantined_conflict'
         return p, 'ok'
 
-    keys = ('sessions', 'no_entry_poll', 'no_valid_expiry', 'chain_quarantined_conflict', 'atm_unavailable',
+    keys = ('sessions', 'no_entry_poll', 'entry_poll_quarantined', 'no_valid_expiry', 'chain_quarantined_conflict',
+            'atm_unavailable',
             'lot_unresolved', 'rv_unavailable', 'ivrv_outside_band', 'horizon_beyond_expiry',
             'horizon_beyond_calendar', 'structure_invalid', 'entry_quote_incomplete', 'entry_price_invalid',
             'eligible')
@@ -550,6 +575,10 @@ def run_corrected(ds: Dataset, rule: Rule, start: date, end: date, cutoff: date,
             stop('no_entry_poll')
             continue
         row['entry_poll_ts'] = _iso(p.poll_ts)
+        bad = poll_integrity_problem(p)
+        if bad:
+            stop('entry_poll_quarantined', reason=bad, integrity=list(p.integrity) if p.integrity else None)
+            continue
         if expiry is None:
             stop('no_valid_expiry')
             continue
