@@ -7075,7 +7075,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.67"
+BRAIN_VERSION = "2.6.68"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -20980,6 +20980,30 @@ def _watchlist_evidence_view(candidate):
     }
 
 
+def _candidate_evaluation_snapshot_view(raw):
+    """Evaluable evidence, without repeated diagnostic trees or null padding.
+
+    This is a persistence projection only, never a live selector input. Keep
+    every scalar emitted by the existing view (including identity, economics,
+    rank and sampling) plus the structured entry/contract provenance.
+    """
+    row = _candidate_android_snapshot_view(raw)
+    structured = {
+        'legs', 'contract_identity', 'entryEligibility',
+        'paperAnalysisEligibility', 'pc2PaperSortComponents',
+    }
+    def without_nulls(value):
+        if isinstance(value, dict):
+            return {k: without_nulls(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [without_nulls(v) for v in value]
+        return value
+    return {
+        k: without_nulls(v) for k, v in row.items()
+        if v is not None and (not isinstance(v, (dict, list)) or k in structured)
+    }
+
+
 def _compact_android_snapshot_context(snapshot_context):
     """Drop live-only bulk while retaining replay, PC2, and C3 evidence."""
     source = snapshot_context if isinstance(snapshot_context, dict) else {}
@@ -21064,13 +21088,13 @@ def _compact_android_snapshot_context(snapshot_context):
     ranked_full = compact.get('snapshot_ranked_candidates_full')
     if isinstance(ranked_full, list) and ranked_full:
         compact['snapshot_ranked_candidates_full'] = [
-            _candidate_android_snapshot_view(row) if isinstance(row, dict) else row
+            _candidate_evaluation_snapshot_view(row) if isinstance(row, dict) else row
             for row in ranked_full
         ]
     ranked_below_cap_sample = compact.get('snapshot_ranked_below_cap_sample')
     if isinstance(ranked_below_cap_sample, list) and ranked_below_cap_sample:
         compact['snapshot_ranked_below_cap_sample'] = [
-            _candidate_android_snapshot_view(row) if isinstance(row, dict) else row
+            _candidate_evaluation_snapshot_view(row) if isinstance(row, dict) else row
             for row in ranked_below_cap_sample
         ]
 
@@ -21157,7 +21181,7 @@ def _compact_android_snapshot_context(snapshot_context):
             + '+watchlist_shrunk_for_budget'
         )
     compaction_meta = {
-        'schema_version': 'android_compact_v3',
+        'schema_version': 'android_compact_v4_evaluable',
         'context_bytes': encoded_bytes,
         'context_byte_cap': context_byte_cap,
         'removed': removed,
@@ -23889,6 +23913,8 @@ def _evaluation_batch_chain_keys(snapshots):
         generated, _ = _snapshot_candidate_menu_for_evaluation(snap, context)
         if isinstance(generated, list):
             candidates.extend(cand for cand in generated if isinstance(cand, dict))
+        sampled, _ = _snapshot_ranked_below_cap_sample_for_evaluation(context)
+        candidates.extend(cand for cand in sampled if isinstance(cand, dict))
         supply = context.get('snapshot_pc2_supply_quality_shadow')
         if isinstance(supply, dict) and isinstance(supply.get('sample_candidates'), list):
             candidates.extend(cand for cand in supply['sample_candidates'] if isinstance(cand, dict))

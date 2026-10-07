@@ -358,6 +358,9 @@ class NativeBridge(private val context: Context) {
             compactContext.put("snapshot_generation_skip_reasons", skipReasons)
         }
 
+        EvaluationEvidenceMenu.copyCoverageEvidence(context, compactContext) { raw, cap ->
+            compactTeacherResearchCandidates(raw, cap)
+        }
         compact.put("context_json", compactContext.toString())
         compact.put("top_candidates_json", compactGenerated.toString())
         return compact
@@ -1404,6 +1407,12 @@ class NativeBridge(private val context: Context) {
             if (g5Run != null) {
                 status.put("labelsSaved", g5Run.optBoolean("labels_saved", false))
                 status.put("learningComplete", g5Run.optBoolean("learning_complete", false))
+                status.put("evidenceReady", g5Run.optBoolean("evidence_ready", false))
+                status.put("modelTrained", g5Run.optBoolean("model_trained", false))
+                status.put("modelValidated", g5Run.optBoolean("model_validated", false))
+                status.put("paperModelActive", g5Run.optBoolean("paper_model_active", false))
+
+                status.put("installedModelAtRunStart", g5Run.optJSONObject("installed_model_at_run_start") ?: JSONObject())
                 status.put("labelsSavedKnown", true)
                 status.put("missingIdentityCount", g5Run.optInt("missing_identity_count", 0))
                 val missingArr = g5Run.optJSONArray("missing_identity_ids")
@@ -1429,6 +1438,9 @@ class NativeBridge(private val context: Context) {
             )
             // Prefer truthful learningComplete over legacy evaluationDone aliases for UI.
             status.put("learningCompleteRequiresC3", true)
+            status.put("learningStatusContract", "evidence_and_model_v1")
+            status.put("trainingStatus", "DISABLED_PENDING_NET_TARGET_VALIDATION")
+
             // R8: Paper position_ticks overflow / history capture visibility for Position tab.
             val tickTracking = readPositionTickTrackingStatus(prefs)
             status.put("positionTickTrackingComplete", tickTracking.trackingComplete)

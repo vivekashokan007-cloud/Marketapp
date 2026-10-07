@@ -180,14 +180,18 @@ object EvaluationRunLedger {
                 break
             }
         }
-        for (name in listOf("training", "promotion")) {
-            val st = stages.optJSONObject(name)?.optString("state") ?: "pending"
-            if (st !in setOf("disabled", "not_attempted")) learningOk = false
-        }
-        if ((stages.optJSONObject("percentile_finalization")?.optString("state") ?: "") == "failed") {
-            learningOk = false
-        }
-        run.put("learning_complete", learningOk && labelsSaved)
+        val evidenceReady = learningOk && labelsSaved
+        val trained = stages.optJSONObject("training")?.optString("state") == "verified"
+        val validated = trained && stages.optJSONObject("model_validation")?.optString("state") == "verified"
+        val promotion = stages.optJSONObject("promotion")
+        val paperActive = validated && promotion?.optString("state") == "verified" &&
+            promotion.optJSONObject("detail")?.optString("execution_mode") == "paper"
+        run.put("evidence_ready", evidenceReady)
+        run.put("model_trained", trained)
+        run.put("model_validated", validated)
+        run.put("paper_model_active", paperActive)
+        run.put("learning_complete", evidenceReady && paperActive)
+        run.put("learning_status_contract", "evidence_and_model_v1")
         return run
     }
 
@@ -478,7 +482,7 @@ object EvaluationRunLedger {
         val file = mirrorFile(context, sessionDate)
         if (file.exists()) {
             return try {
-                JSONObject(file.readText())
+                refreshCompletionFlags(JSONObject(file.readText()))
             } catch (_: Exception) {
                 null
             }
@@ -487,7 +491,7 @@ object EvaluationRunLedger {
         if (cachedSession == sessionDate) {
             val raw = prefs.getString(PREF_RUN_JSON, null) ?: return null
             return try {
-                JSONObject(raw)
+                refreshCompletionFlags(JSONObject(raw))
             } catch (_: Exception) {
                 null
             }

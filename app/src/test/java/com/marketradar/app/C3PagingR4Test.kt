@@ -83,6 +83,7 @@ class C3PagingR4Test {
             if (name != "percentile_finalization") run = EvaluationRunLedger.setStage(run, name, "verified")
         }
         run = EvaluationRunLedger.setStage(run, "percentile_finalization", plan.ledgerState, reasonCode = plan.reasonCode, lastError = plan.lastError)
+        assertFalse(run.getBoolean("evidence_ready"))
         assertFalse(run.getBoolean("learning_complete"))
         assertEquals("percentile_finalization", EvaluationRunLedger.nextResumableStage(run))
         assertFalse(plan.c3Phase in setOf("DONE", "INELIGIBLE", "SKIPPED_NO_FRAMES"))

@@ -266,17 +266,16 @@ def refresh_completion_flags(run: dict[str, Any]) -> dict[str, Any]:
         if st not in COMPLETION_OK_STATES:
             learning_ok = False
             break
-    # Gated stages must remain disabled/not_attempted (not failed).
-    for name in GATED_STAGES:
-        st = (stages.get(name) or {}).get("state")
-        if st not in {"disabled", "not_attempted"}:
-            learning_ok = False
-            break
-    # Explicit: failed C3 cannot masquerade as full success even if somehow marked ok above.
-    c3 = stages.get("percentile_finalization") or {}
-    if c3.get("state") == "failed":
-        learning_ok = False
-    run["learning_complete"] = bool(learning_ok and labels_saved)
+    evidence_ready = bool(learning_ok and labels_saved)
+    trained = (stages.get("training") or {}).get("state") == "verified"
+    validated = trained and (stages.get("model_validation") or {}).get("state") == "verified"
+    promotion = stages.get("promotion") or {}
+    paper_active = bool(validated and promotion.get("state") == "verified"
+                        and (promotion.get("detail") or {}).get("execution_mode") == "paper")
+    run.update(evidence_ready=evidence_ready, model_trained=trained,
+               model_validated=bool(validated), paper_model_active=paper_active,
+               learning_complete=bool(evidence_ready and paper_active),
+               learning_status_contract="evidence_and_model_v1")
     return run
 
 

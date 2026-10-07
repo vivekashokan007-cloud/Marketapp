@@ -142,7 +142,8 @@ class EvaluationRunLedgerTests(unittest.TestCase):
             "active_recommendation_unchanged": True,
             "detail": {"variants": ["ACTIVE"]},
         })
-        self.assertTrue(run["learning_complete"])  # C3 ineligible + metrics verified
+        self.assertTrue(run["evidence_ready"])
+        self.assertFalse(run["learning_complete"])  # C3 ineligible + metrics verified
         self.assertEqual(run["stages"]["percentile_finalization"]["state"], "ineligible")
 
     def test_nonlabelable_accounted(self):

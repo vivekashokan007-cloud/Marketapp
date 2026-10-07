@@ -1352,7 +1352,7 @@ class MarketMLService : Service() {
             "upstoxSpanMargin",
             "upstoxExposureMargin",
             "upstoxNetBuyPremium"
-        ) + CONTRACT_IDENTITY_COMPACTION_KEYS
+        ) + CONTRACT_IDENTITY_COMPACTION_KEYS + EvaluationEvidenceMenu.PROVENANCE_KEYS
         for (key in keys) {
             val value = cand.opt(key)
             if (value != null && value != org.json.JSONObject.NULL) {
@@ -1468,6 +1468,9 @@ class MarketMLService : Service() {
             compactContext.put("snapshot_generation_skip_reasons", skipReasons)
         }
 
+        EvaluationEvidenceMenu.copyCoverageEvidence(context, compactContext) { raw, cap ->
+            compactTeacherResearchCandidates(raw, cap)
+        }
         compact.put("context_json", compactContext.toString())
         compact.put("top_candidates_json", compactGenerated.toString())
         return compact
@@ -1510,56 +1513,9 @@ class MarketMLService : Service() {
 
     private fun extractEvaluationLegKeys(snapshots: org.json.JSONArray): List<SupabaseClient.EvaluationLegKey> {
         val keys = linkedSetOf<SupabaseClient.EvaluationLegKey>()
-
-        fun addCandidate(raw: Any?) {
-            val cand = parseJsonObject(raw) ?: return
-            val indexKey = optStringAny(cand, "index", "index_key", "underlying").ifBlank { "BNF" }
-            val expiry = optStringAny(cand, "expiry", "expiry_date")
-
-            fun addLeg(strikeNames: Array<String>, typeNames: Array<String>) {
-                val strike = optDoubleAny(cand, *strikeNames)
-                val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
-                if (strike.isNaN() || optionType.isBlank()) return
-                keys += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
-            }
-
-            addLeg(arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"))
-            addLeg(arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"))
-            addLeg(arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"))
-            addLeg(arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"))
-        }
-
         for (i in 0 until snapshots.length()) {
-            val snap = snapshots.optJSONObject(i) ?: continue
-            addCandidate(snap.opt("primary_candidate_json"))
-
-            val context = parseJsonObject(snap.opt("context_json"))
-            val generated = parseJsonArray(context?.opt("snapshot_ranked_candidates_full"))
-                ?: parseJsonArray(context?.opt("snapshot_generated_candidates"))
-                ?: parseJsonArray(snap.opt("top_candidates_json"))
-
-            if (generated != null) {
-                for (j in 0 until generated.length()) {
-                    addCandidate(generated.opt(j))
-                }
-            }
-
-            val rejected = parseJsonArray(context?.opt("snapshot_rejected_candidates_full"))
-                ?: parseJsonArray(context?.opt("snapshot_rejected_candidates"))
-            if (rejected != null) {
-                for (j in 0 until rejected.length()) {
-                    addCandidate(rejected.opt(j))
-                }
-            }
-            val supplyShadow = parseJsonObject(context?.opt("snapshot_pc2_supply_quality_shadow"))
-            val supplySample = parseJsonArray(supplyShadow?.opt("sample_candidates"))
-            if (supplySample != null) {
-                for (j in 0 until supplySample.length()) {
-                    addCandidate(supplySample.opt(j))
-                }
-            }
+            snapshots.optJSONObject(i)?.let { collectEvaluationLegKeysFromSnapshot(it, keys) }
         }
-
         return keys.toList()
     }
 
@@ -1567,50 +1523,9 @@ class MarketMLService : Service() {
         snapshot: org.json.JSONObject,
         out: MutableCollection<SupabaseClient.EvaluationLegKey>
     ) {
-        fun addCandidate(raw: Any?) {
-            val cand = parseJsonObject(raw) ?: return
-            val indexKey = optStringAny(cand, "index", "index_key", "underlying").ifBlank { "BNF" }
-            val expiry = optStringAny(cand, "expiry", "expiry_date")
-
-            fun addLeg(strikeNames: Array<String>, typeNames: Array<String>) {
-                val strike = optDoubleAny(cand, *strikeNames)
-                val optionType = optStringAny(cand, *typeNames).uppercase(Locale.US)
-                if (strike.isNaN() || optionType.isBlank()) return
-                out += SupabaseClient.EvaluationLegKey(indexKey, expiry, strike, optionType)
-            }
-
-            addLeg(arrayOf("sellStrike", "sell_strike"), arrayOf("sellType", "sell_type"))
-            addLeg(arrayOf("buyStrike", "buy_strike"), arrayOf("buyType", "buy_type"))
-            addLeg(arrayOf("sellStrike2", "sell_strike2"), arrayOf("sellType2", "sell_type2"))
-            addLeg(arrayOf("buyStrike2", "buy_strike2"), arrayOf("buyType2", "buy_type2"))
-        }
-
-        addCandidate(snapshot.opt("primary_candidate_json"))
-
-        val context = parseJsonObject(snapshot.opt("context_json"))
-        val generated = parseJsonArray(context?.opt("snapshot_ranked_candidates_full"))
-            ?: parseJsonArray(context?.opt("snapshot_generated_candidates"))
-            ?: parseJsonArray(snapshot.opt("top_candidates_json"))
-        if (generated != null) {
-            for (j in 0 until generated.length()) {
-                addCandidate(generated.opt(j))
-            }
-        }
-
-        val rejected = parseJsonArray(context?.opt("snapshot_rejected_candidates_full"))
-            ?: parseJsonArray(context?.opt("snapshot_rejected_candidates"))
-        if (rejected != null) {
-            for (j in 0 until rejected.length()) {
-                addCandidate(rejected.opt(j))
-            }
-        }
-        val supplyShadow = parseJsonObject(context?.opt("snapshot_pc2_supply_quality_shadow"))
-        val supplySample = parseJsonArray(supplyShadow?.opt("sample_candidates"))
-        if (supplySample != null) {
-            for (j in 0 until supplySample.length()) {
-                addCandidate(supplySample.opt(j))
-            }
-        }
+        out.addAll(EvaluationEvidenceMenu.legKeys(snapshot).map {
+            SupabaseClient.EvaluationLegKey(it.index, it.expiry, it.strike, it.optionType)
+        })
     }
 
     private data class EvaluationInputPreparation(
@@ -2507,6 +2422,9 @@ class MarketMLService : Service() {
     private var activeEvaluationRun: org.json.JSONObject? = null
 
     private fun persistEvaluationRun(run: org.json.JSONObject) {
+        if (!run.has("installed_model_at_run_start")) {
+            run.put("installed_model_at_run_start", LearningModelEvidence.read(File(filesDir, "ml_model.json")))
+        }
         activeEvaluationRun = run
         EvaluationRunLedger.persistLocal(this@MarketMLService, prefs, run)
     }
@@ -3679,13 +3597,14 @@ class MarketMLService : Service() {
             // complete requires C3 (and other stages) verified or explicitly ineligible.
             prefs.edit().putString("evaluation_done_date", sessionDate).commit()
             val labelsSaved = activeEvaluationRun?.optBoolean("labels_saved", false) == true
-            val learningComplete = activeEvaluationRun?.optBoolean("learning_complete", false) == true
+            val evidenceReady = activeEvaluationRun?.optBoolean("evidence_ready", false) == true
             val truthfulMessage = buildString {
                 append(evaluationMessage)
                 append(" Labels saved: ")
                 append(if (labelsSaved) "YES" else "NO")
-                append(". Learning complete: ")
-                append(if (learningComplete) "YES" else "NO (awaiting C3 / remaining stages)")
+                append(". Evidence ready: ")
+                append(if (evidenceReady) "YES" else "NO (awaiting C3 / remaining stages)")
+                append(". Model training: DISABLED; no model update performed")
                 append(".")
             }
             updateEvaluationJobState(

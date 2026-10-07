@@ -86,7 +86,8 @@ class EvaluationRunLedgerTest {
                 .put("verified_count", 0)
                 .put("active_recommendation_unchanged", true)
         )
-        assertTrue(run.optBoolean("learning_complete"))
+        assertTrue(run.optBoolean("evidence_ready"))
+        assertFalse(run.optBoolean("learning_complete"))
     }
 
     @Test

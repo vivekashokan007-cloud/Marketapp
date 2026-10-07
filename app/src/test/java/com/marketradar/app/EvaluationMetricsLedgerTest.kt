@@ -39,7 +39,8 @@ class EvaluationMetricsLedgerTest {
             "verified",
             run.getJSONObject("stages").getJSONObject("performance_metrics").optString("state")
         )
-        assertTrue(run.optBoolean("learning_complete"))
+        assertTrue(run.optBoolean("evidence_ready"))
+        assertFalse(run.optBoolean("learning_complete"))
         assertTrue(
             run.getJSONObject("stages")
                 .getJSONObject("performance_metrics")

@@ -121,11 +121,13 @@ class C3PagingR2Test {
     }
 
     @Test
-    fun ledgerControl_verifiedC3_makesLearningComplete_soFailedAssertionIsMeaningful() {
+    fun ledgerControl_verifiedC3_makesEvidenceReady_soFailedAssertionIsMeaningful() {
         val run = EvaluationRunLedger.refreshCompletionFlags(
             EvaluationRunLedger.setStage(readyRun(), "percentile_finalization", "verified")
         )
-        assertTrue(run.getBoolean("learning_complete"))
+        assertTrue(run.getBoolean("evidence_ready"))
+        assertFalse(run.getBoolean("evidence_ready"))
+        assertFalse(run.getBoolean("learning_complete"))
     }
 
     private fun assertC3FailedRetryable(outcome: C3CollectOutcome, expectedReason: String) {
@@ -141,6 +143,7 @@ class C3PagingR2Test {
         val run = ledgerAfter(outcome)
         val stage = run.getJSONObject("stages").getJSONObject("percentile_finalization")
         assertEquals("failed", stage.getString("state"))
+        assertFalse(run.optBoolean("evidence_ready", true))
         assertFalse(run.optBoolean("learning_complete", true))
         // Retryable: not a terminal-ok ledger state and resumable for this session.
         assertFalse(stage.getString("state") in setOf("verified", "ineligible"))
