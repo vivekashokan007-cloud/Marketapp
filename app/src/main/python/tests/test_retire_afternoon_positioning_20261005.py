@@ -31,7 +31,7 @@ def _ctx(mode, today="2026-10-05", rows=None, **extra):
 
 class TestRetireAfternoonPositioning(unittest.TestCase):
     def test_brain_version(self):
-        self.assertEqual(brain.BRAIN_VERSION, "2.6.66")
+        self.assertEqual(brain.BRAIN_VERSION, "2.6.67")
 
     def test_retired_symbols_gone(self):
         for name in (
