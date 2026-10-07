@@ -126,7 +126,6 @@ class C3PagingR2Test {
             EvaluationRunLedger.setStage(readyRun(), "percentile_finalization", "verified")
         )
         assertTrue(run.getBoolean("evidence_ready"))
-        assertFalse(run.getBoolean("evidence_ready"))
         assertFalse(run.getBoolean("learning_complete"))
     }
 
