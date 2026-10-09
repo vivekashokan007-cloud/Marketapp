@@ -58,6 +58,8 @@ class MarketWatchService : Service() {
     private var pollLoopIteration = 0L
     private var marginQuoteCachePollKey = ""
     private val marginQuoteCache = mutableMapOf<String, MarginQuote>()
+    // Evidence batch 1 (Item C): previous poll's spot provenance, for unchanged/repeated-feed detection.
+    private var lastSpotProvenance: JSONObject? = null
 
     private data class BreadthStock(
         val symbol: String,
@@ -179,6 +181,10 @@ class MarketWatchService : Service() {
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
+        // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
+        private const val PAPER_MENU_STATE_KEY = "paper_menu_capture_state_v1"
+        private const val PAPER_MENU_PREV_STATE_KEY = "paper_menu_capture_prev_state_v1"
+        private const val PAPER_MENU_EXTRA_MARGIN_REQUESTS = 2
         private const val PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS = "last_brain_analysis_success_ms"
         private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS = "last_brain_analysis_failure_ms"
         private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON = "last_brain_analysis_failure_reason"
@@ -1084,10 +1090,16 @@ class MarketWatchService : Service() {
             val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks"
             val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
 
+            // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
+            var quotesFetchStartedAtMs = 0L
+            var quotesFetchCompletedAtMs = 0L
             val parallel = coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
-                    async(Dispatchers.IO) { fetchSync(quotesUrl, token) },
+                    async(Dispatchers.IO) {
+                        quotesFetchStartedAtMs = System.currentTimeMillis()
+                        fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
+                    },
                     async(Dispatchers.IO) { fetchSync(bnfUrl, token) },
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
                     async(Dispatchers.IO) { fetchSync(nfUrl, token) }
@@ -1163,6 +1175,31 @@ class MarketWatchService : Service() {
                 return
             }
 
+            // Evidence batch 1 (Item C): per-index spot provenance. Evidence only; it never changes the
+            // spot values, the abort behaviour below, ranking, gates, sizing or exits. An unchanged LTP is
+            // not called stale (index frozen by design during CAS 15:15-15:35); freshness is judged on the
+            // provider feed timestamp, and each clock is stored under its own name.
+            val spotProvenance = try {
+                val session = todayIstDate()
+                SpotProvenance.build(
+                    quotesJson.optJSONObject("data"),
+                    quotesFetchStartedAtMs,
+                    quotesFetchCompletedAtMs,
+                    session,
+                    lastSpotProvenance?.takeIf { it.optString("session_date") == session }
+                ).also { prov ->
+                    lastSpotProvenance = prov
+                    LogBuffer.add(
+                        if (prov.optBoolean("all_identities_present", false)) 'I' else 'E',
+                        TAG,
+                        "SPOT_PROVENANCE: phase=${prov.optString("session_phase")} NF=${prov.optJSONObject("NF")?.optString("status")}/${prov.optJSONObject("NF")?.optString("freshness")} BNF=${prov.optJSONObject("BNF")?.optString("status")}/${prov.optJSONObject("BNF")?.optString("freshness")}"
+                    )
+                }
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "SPOT_PROVENANCE_FAIL: ${e.message}")
+                null
+            }
+
             val data = quotesJson.getJSONObject("data")
             val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
             val nfSpot = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
@@ -1182,7 +1219,7 @@ class MarketWatchService : Service() {
             // timed-out, or failed Python call cannot erase the 15:15-15:40 marks
             // required by the post-close teacher. The database write is
             // idempotent on (poll_ts,index_key,strike,option_type).
-            persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
+            val chainEvidenceRef = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1196,7 +1233,9 @@ class MarketWatchService : Service() {
                 bnfStocksJson,
                 nf50Breadth,
                 bnfExpiry,
-                nfExpiry
+                nfExpiry,
+                spotProvenance,
+                chainEvidenceRef
             )
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
@@ -2167,9 +2206,13 @@ class MarketWatchService : Service() {
                                          bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
                                          nf50Breadth: JSONObject,
                                          liveBnfExpiry: String,
-                                         liveNfExpiry: String) {
+                                         liveNfExpiry: String,
+                                         spotProvenance: JSONObject? = null,
+                                         chainEvidenceRef: JSONObject? = null) {
         var brainSuccess = false
         var brainAnalyzeStartedAtMs = 0L
+        // Evidence batch 1 (Item B): slot key of an in-flight Paper decision-menu capture attempt.
+        var paperMenuAttemptSlot: String? = null
 
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
@@ -2431,6 +2474,9 @@ class MarketWatchService : Service() {
             ctxObj.put("vix",        vix)
             ctxObj.put("bnfSpot",    bnfSpot)
             ctxObj.put("nfSpot",     nfSpot)
+            // Evidence batch 1 (Item C): provenance travels beside the unchanged spot values.
+            if (spotProvenance != null) ctxObj.put("spot_provenance", spotProvenance) else ctxObj.remove("spot_provenance")
+            if (chainEvidenceRef != null) ctxObj.put("chain_evidence_ref", chainEvidenceRef) else ctxObj.remove("chain_evidence_ref")
             val authToken = (prefs.getString("auth_token", "") ?: "").trim()
             val stage2aMode = when ((prefs.getString("stage2a_guard_mode", "paper") ?: "paper").trim().lowercase(Locale.US)) {
                 "off" -> "off"
@@ -2645,6 +2691,15 @@ class MarketWatchService : Service() {
             // H1: effective timeout (PyTimeout); the old coroutine timeout never fired around a blocking callAttr.
             // The poll path shares one key, so a timed-out poll call still running
             // in the background never overlaps a later poll's Python calls.
+            // Evidence batch 1 (Item B): ask Brain for the frozen decision menu only on the capture slot.
+            // Without the request, analyze() output is unchanged (tested in test_paper_menu_evidence.py).
+            ctxObj.remove("paper_menu_capture_request")
+            paperMenuAttemptSlot = try {
+                preparePaperMenuCaptureRequest(poll.optString("slot_key", "").ifBlank { null }, ctxObj)
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "PAPER_MENU_REQUEST_FAIL: ${e.message}")
+                null
+            }
             brainAnalyzeStartedAtMs = System.currentTimeMillis()
             val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",
@@ -2665,6 +2720,10 @@ class MarketWatchService : Service() {
                     .put("brain_result_started_at_ms", brainAnalyzeStartedAtMs)
                     .put("brain_result_completed_at_ms", brainAnalyzeCompletedAtMs)
                     .put("brain_result_duration_ms", brainAnalyzeDurationMs)
+                // Evidence batch 1 (Item B): detach the menu before anything else reads, caches,
+                // broadcasts or snapshots the result; it is persisted only through its own path.
+                val paperDecisionMenu = resultObj.optJSONObject("paper_decision_menu")
+                resultObj.remove("paper_decision_menu")
                 LogBuffer.add(
                     'I',
                     TAG,
@@ -2688,6 +2747,14 @@ class MarketWatchService : Service() {
                 }
                 val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
                 enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
+                paperMenuAttemptSlot?.let { slot ->
+                    paperMenuAttemptSlot = null
+                    try {
+                        capturePaperDecisionMenu(slot, paperDecisionMenu, ctxObj, authToken, brainAnalyzeCompletedAtMs)
+                    } catch (e: Exception) {
+                        recordPaperMenuAttemptFailure(slot, "capture_exception:${e.javaClass.simpleName}:${e.message?.take(120)}")
+                    }
+                }
                 processUnifiedBrainNotifications(brain, resultObj, ctxObj)
 
                 try {
@@ -3120,6 +3187,8 @@ class MarketWatchService : Service() {
                     .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "TIMEOUT")
                     .apply()
                 Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after ${PY_POLL_ANALYZE_TIMEOUT_MS}ms")
+                paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_analyze_timeout") }
+                paperMenuAttemptSlot = null
             }
             
         } catch (e: Exception) {
@@ -3131,6 +3200,8 @@ class MarketWatchService : Service() {
                 .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "EXCEPTION:${e.javaClass.simpleName}")
                 .apply()
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
+            paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_exception:${e.javaClass.simpleName}") }
+            paperMenuAttemptSlot = null
         } finally {
             // Keep the Binder payload empty. The WebView pulls the latest native
             // state directly, and sending the full brain payload here can exceed
@@ -3208,10 +3279,237 @@ class MarketWatchService : Service() {
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Evidence batch 1 (Item B / Item C margin): once-per-session Paper decision-menu capture.
+    // Evidence only. Nothing below is read by ranking, gates, sizing, exits or primary selection.
+    // ---------------------------------------------------------------------------------------------
+    private val paperMenuStateLock = Any()
+    private val paperMenuUploadInFlight = AtomicBoolean(false)
+
+    private fun loadPaperMenuState(): JSONObject = synchronized(paperMenuStateLock) {
+        PaperMenuCapture.stateFor(prefs.getString(PAPER_MENU_STATE_KEY, null), todayIstDate())
+    }
+
+    private fun savePaperMenuState(state: JSONObject) = synchronized(paperMenuStateLock) {
+        prefs.edit().putString(PAPER_MENU_STATE_KEY, state.toString()).commit()
+    }
+
+    /** Returns the slot key when this poll is a capture attempt (request placed into ctx), else null. */
+    private fun preparePaperMenuCaptureRequest(slotKey: String?, ctxObj: JSONObject): String? {
+        val now = currentIstIso()
+        var attemptSlot: String? = null
+        synchronized(paperMenuStateLock) {
+            val (state, previousMissed) = PaperMenuCapture.rollover(
+                prefs.getString(PAPER_MENU_STATE_KEY, null), todayIstDate(), now
+            )
+            if (previousMissed != null) {
+                previousMissed.put("missed_payload_sha256",
+                    PaperMenuCapture.sha256Hex(previousMissed.getJSONObject("missed_manifest").toString()))
+                prefs.edit().putString(PAPER_MENU_PREV_STATE_KEY, previousMissed.toString()).commit()
+                LogBuffer.add('W', TAG, "PAPER_MENU_MISSED_SESSION: session=${previousMissed.optString("session_date")} menu=${previousMissed.optString("menu_id")} reason=no_completed_scheduled_slot_in_window_before_session_end attempts=${previousMissed.optJSONArray("attempts")?.length() ?: 0}")
+            }
+            val ordinal = slotKey?.let { slotOrdinalFromSlotKey(it) }
+            when (PaperMenuCapture.decide(state, ordinal)) {
+                PaperMenuCapture.Action.ATTEMPT_CAPTURE -> {
+                    ctxObj.put("paper_menu_capture_request", PaperMenuCapture.captureRequest(state, slotKey!!, ordinal!!, now))
+                    attemptSlot = slotKey
+                    LogBuffer.add('I', TAG, "PAPER_MENU_CAPTURE_ATTEMPT: menu=${state.optString("menu_id")} slot=$slotKey attempt=${state.getJSONArray("attempts").length() + 1}")
+                }
+                PaperMenuCapture.Action.RECORD_MISSED -> {
+                    val missed = PaperMenuCapture.missedManifest(state, "no_completed_scheduled_slot_in_12_30_12_55_ist_window", now)
+                    state.put("missed_manifest", missed)
+                    state.put("missed_payload_sha256", PaperMenuCapture.sha256Hex(missed.toString()))
+                    LogBuffer.add('W', TAG, "PAPER_MENU_MISSED_SESSION: session=${state.optString("session_date")} menu=${state.optString("menu_id")} slot=$slotKey attempts=${state.getJSONArray("attempts").length()}")
+                }
+                else -> Unit
+            }
+            prefs.edit().putString(PAPER_MENU_STATE_KEY, state.toString()).commit()
+        }
+        launchPaperMenuUploadIfPending()
+        return attemptSlot
+    }
+
+    private fun recordPaperMenuAttemptFailure(slotKey: String, reason: String) {
+        synchronized(paperMenuStateLock) {
+            val state = loadPaperMenuState()
+            if (state.optString("status") != "OPEN") return
+            PaperMenuCapture.recordAttempt(state, slotKey, "FAILED", reason, currentIstIso())
+            savePaperMenuState(state)
+        }
+        LogBuffer.add('W', TAG, "PAPER_MENU_CAPTURE_FAILED: slot=$slotKey reason=$reason")
+    }
+
+    /**
+     * Item C (decision 3): broker margin for the PRIMARY and the REGISTERED_UNIFORM_PEER only. The poll's
+     * margin cache (already filled by enrichTopCandidateMargin for up to MARGIN_SHADOW_CANDIDATE_CAP
+     * candidates) is reused; at most PAPER_MENU_EXTRA_MARGIN_REQUESTS new broker requests are made.
+     * Quantity is the dated authority lot recorded on the menu row (1 lot, product D, all legs).
+     */
+    private fun collectPaperMenuRoleMargins(menu: JSONObject, authToken: String): Pair<JSONObject, JSONObject> {
+        val byCandidate = JSONObject()
+        var extra = 0
+        var reused = 0
+        val rows = menu.optJSONArray("candidates") ?: JSONArray()
+        for (i in 0 until rows.length()) {
+            val row = rows.optJSONObject(i) ?: continue
+            val role = row.optString("control_role", "")
+            if (role != "PRIMARY" && role != "REGISTERED_UNIFORM_PEER") continue
+            val id = row.optString("candidate_id")
+            val lot = row.optInt("lot_size", 0)
+            val payload = if (lot > 0) buildMarginPayload(JSONObject().put("lotSize", lot).put("legs", row.optJSONArray("legs") ?: JSONArray())) else null
+            val entry = JSONObject()
+            if (payload == null) {
+                entry.put("origin", if (lot > 0) "PAYLOAD_UNAVAILABLE" else "LOT_AUTHORITY_UNRESOLVED")
+            } else {
+                val (cacheKey, instruments) = payload
+                entry.put("instruments", instruments)
+                val cached = marginQuoteCache[cacheKey]
+                when {
+                    cached != null -> { entry.put("origin", "POLL_CACHE_REUSE").put("quote", cached.toJson()); reused++ }
+                    authToken.isBlank() -> entry.put("origin", "NO_BROKER_TOKEN")
+                    extra >= PAPER_MENU_EXTRA_MARGIN_REQUESTS -> entry.put("origin", "EXTRA_REQUEST_CAP_REACHED")
+                    else -> {
+                        val q = fetchMarginQuote(authToken, instruments)
+                        marginQuoteCache[cacheKey] = q
+                        extra++
+                        entry.put("origin", "EXTRA_REQUEST").put("quote", q.toJson())
+                    }
+                }
+            }
+            byCandidate.put(id, entry)
+        }
+        val stats = JSONObject()
+            .put("extra_request_cap", PAPER_MENU_EXTRA_MARGIN_REQUESTS)
+            .put("extra_requests", extra)
+            .put("cache_reused", reused)
+            .put("cache_poll_key", marginQuoteCachePollKey)
+        return byCandidate to stats
+    }
+
+    private fun capturePaperDecisionMenu(
+        slotKey: String,
+        menu: JSONObject?,
+        ctxObj: JSONObject,
+        authToken: String,
+        brainCompletedAtMs: Long
+    ) {
+        val now = currentIstIso()
+        val state = loadPaperMenuState()
+        if (state.optString("status") != "OPEN") return
+        val unusable = PaperMenuCapture.usableMenu(state, menu)
+        if (unusable != null) {
+            recordPaperMenuAttemptFailure(slotKey, unusable)
+            return
+        }
+        val (margins, stats) = collectPaperMenuRoleMargins(menu!!, authToken)
+        val enriched = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
+            Python.getInstance().getModule("paper_menu_evidence")
+                .callAttr("attach_margin_evidence_json", menu.toString(), margins.toString(), stats.toString())
+                .toString()
+        }
+        if (enriched == null) {
+            recordPaperMenuAttemptFailure(slotKey, "margin_attach_timeout")
+            return
+        }
+        val frozen = JSONObject(enriched)
+        val manifest = frozen.getJSONObject("manifest")
+        manifest.put("brain_completed_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US)
+            .apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date(brainCompletedAtMs)))
+        if (manifest.optString("app_version").isBlank()) manifest.put("app_version", BuildConfig.VERSION_NAME)
+        manifest.put("execution_mode", ctxObj.optString("executionMode", "").ifBlank { JSONObject.NULL })
+        synchronized(paperMenuStateLock) {
+            val live = loadPaperMenuState()
+            if (live.optString("status") != "OPEN") return
+            // The frozen payload carries every attempt including this successful one.
+            val attempts = JSONArray(live.getJSONArray("attempts").toString()).put(
+                JSONObject().put("slot_key", slotKey).put("outcome", "CAPTURED").put("detail", JSONObject.NULL).put("at", now)
+            )
+            frozen.put("attempts", attempts)
+            val payload = frozen.toString()
+            val sha = PaperMenuCapture.sha256Hex(payload)
+            val dir = File(filesDir, "paper_decision_menus").apply { mkdirs() }
+            val target = File(dir, "${live.getString("menu_id")}.json")
+            val tmp = File(dir, "${live.getString("menu_id")}.json.tmp")
+            val written = runCatching { tmp.writeText(payload, Charsets.UTF_8); tmp.renameTo(target) }.getOrDefault(false)
+            if (!written) {
+                tmp.delete()
+                PaperMenuCapture.recordAttempt(live, slotKey, "FAILED", "frozen_file_write_failed", now)
+                savePaperMenuState(live)
+                LogBuffer.add('E', TAG, "PAPER_MENU_CAPTURE_FAILED: slot=$slotKey reason=frozen_file_write_failed")
+                return
+            }
+            PaperMenuCapture.recordAttempt(live, slotKey, "CAPTURED", null, now)
+            PaperMenuCapture.markCaptured(live, sha, target.absolutePath, now)
+            savePaperMenuState(live)
+            LogBuffer.add(
+                'I', TAG,
+                "PAPER_MENU_CAPTURED: menu=${live.optString("menu_id")} slot=$slotKey population=${manifest.optString("population_status")} rows=${manifest.optInt("expected_candidate_rows")} generated=${manifest.opt("generated_count")} control=${manifest.optJSONObject("control")?.optString("status")} marginExtra=${stats.optInt("extra_requests")} bytes=${payload.toByteArray(Charsets.UTF_8).size} sha=${sha.take(12)}"
+            )
+        }
+        launchPaperMenuUploadIfPending()
+    }
+
+    /** Uploads the frozen menu (or a missed-session manifest) for the current and previous session. */
+    private fun launchPaperMenuUploadIfPending() {
+        if (!paperMenuUploadInFlight.compareAndSet(false, true)) return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                for (key in listOf(PAPER_MENU_PREV_STATE_KEY, PAPER_MENU_STATE_KEY)) {
+                    val state = synchronized(paperMenuStateLock) {
+                        prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                    } ?: continue
+                    if (!PaperMenuCapture.uploadPending(state)) continue
+                    val menuId = state.optString("menu_id")
+                    val (outcome, completeness) = when (state.optString("status")) {
+                        "CAPTURED" -> {
+                            val file = File(state.optString("frozen_path"))
+                            val text = if (file.isFile) file.readText(Charsets.UTF_8) else null
+                            val sha = state.optString("payload_sha256")
+                            if (text == null) {
+                                "FROZEN_FILE_MISSING" to null
+                            } else if (PaperMenuCapture.sha256Hex(text) != sha) {
+                                "FROZEN_FILE_SHA_MISMATCH" to null
+                            } else {
+                                val frozen = JSONObject(text)
+                                val rows = JSONArray()
+                                val cands = frozen.optJSONArray("candidates") ?: JSONArray()
+                                for (i in 0 until cands.length()) cands.optJSONObject(i)?.let { rows.put(PaperMenuCapture.candidateRow(it)) }
+                                SupabaseClient.savePaperDecisionMenu(PaperMenuCapture.manifestRow(frozen, sha), rows, sha)
+                            }
+                        }
+                        "MISSED" -> {
+                            val missed = state.optJSONObject("missed_manifest")
+                            val sha = state.optString("missed_payload_sha256")
+                            if (missed == null || sha.isBlank()) "MISSED_MANIFEST_MISSING" to null
+                            else SupabaseClient.savePaperDecisionMenu(PaperMenuCapture.missedRow(missed, sha), JSONArray(), sha)
+                        }
+                        else -> continue
+                    }
+                    synchronized(paperMenuStateLock) {
+                        val live = prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
+                        if (live != null && live.optString("menu_id") == menuId) {
+                            PaperMenuCapture.recordUpload(live, outcome, completeness, currentIstIso())
+                            prefs.edit().putString(key, live.toString()).commit()
+                            LogBuffer.add(
+                                if (completeness == "COMPLETE" || completeness == "NO_ROWS_EXPECTED") 'I' else 'W',
+                                TAG,
+                                "PAPER_MENU_UPLOAD: menu=$menuId outcome=$outcome completeness=${completeness ?: "unknown"} state=${live.optJSONObject("upload")?.optString("state")} attempts=${live.optJSONObject("upload")?.optInt("attempts")}"
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "PAPER_MENU_UPLOAD_FAIL: ${e.message}")
+            } finally {
+                paperMenuUploadInFlight.set(false)
+            }
+        }
+    }
+
     private suspend fun persistFetchedChainEvidenceBeforeBrain(
         bnfChain: JSONObject,
         nfChain: JSONObject
-    ) {
+    ): JSONObject {
         val pollTs = currentIstIso()
         val chainSliceRows = extractChainSlice(bnfChain, nfChain, pollTs)
         val chainRowsJson = JSONArray()
@@ -3227,6 +3525,13 @@ class MarketWatchService : Service() {
             TAG,
             "ML_CHAIN_PRE_BRAIN_SAVE: rows=${chainSliceRows.size} saved=$saved pollTs=$pollTs"
         )
+        // Evidence batch 1: the exact poll_ts under which these quotes were written, so the decision menu
+        // can reference ml_option_chain_snapshots rows instead of duplicating every quote.
+        return JSONObject()
+            .put("table", "ml_option_chain_snapshots")
+            .put("poll_ts", pollTs)
+            .put("rows", chainSliceRows.size)
+            .put("saved", saved)
     }
 
     private fun extractChainSlice(

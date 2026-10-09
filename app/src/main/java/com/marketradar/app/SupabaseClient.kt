@@ -1893,6 +1893,36 @@ object SupabaseClient {
     }
 
     /**
+     * Evidence batch 1 (Item B): upload one frozen Paper decision menu. Idempotent: the manifest and
+     * candidate rows are inserted with ON CONFLICT DO NOTHING on their primary keys, so a transport retry
+     * of the same frozen payload never duplicates or rewrites evidence. Completeness is NOT inferred from
+     * HTTP success; it is the server reconciliation result of paper_decision_menu_finalize(), which counts
+     * durable rows against the declared expectation and the ordered candidate-id digest.
+     * Returns (outcome, serverCompleteness) where outcome is OK | MANIFEST_FAILED | ROWS_FAILED_AT_CHUNK_n |
+     * FINALIZE_FAILED. Rows are attempted even after an earlier failed chunk is retried on the next call.
+     */
+    fun savePaperDecisionMenu(manifestRow: JSONObject, candidateRows: JSONArray, payloadSha256: String): Pair<String, String?> {
+        val ignore = "resolution=ignore-duplicates,return=minimal"
+        val manifest = postArrayToTableDetailed("ml_paper_decision_menus", JSONArray().put(manifestRow), ignore)
+        if (!manifest.success) return "MANIFEST_FAILED:${manifest.code ?: manifest.exceptionMessage}" to null
+        var outcome = "OK"
+        val chunks = PaperMenuCapture.chunks(candidateRows)
+        for ((i, chunk) in chunks.withIndex()) {
+            val r = postArrayToTableDetailed("ml_paper_decision_menu_candidates", chunk, ignore)
+            if (!r.success) { outcome = "ROWS_FAILED_AT_CHUNK_${i + 1}_OF_${chunks.size}:${r.code ?: r.exceptionMessage}"; break }
+        }
+        // Finalize even after a failed chunk: the server then reports PARTIAL with the durable count.
+        val body = JSONObject().put("p_menu_id", manifestRow.getString("menu_id")).put("p_payload_sha256", payloadSha256)
+        val resp = fetchSync(
+            getBaseRequest("rpc/paper_decision_menu_finalize")
+                .post(body.toString().toRequestBody("application/json".toMediaTypeOrNull()))
+                .build()
+        ) ?: return (if (outcome == "OK") "FINALIZE_FAILED" else outcome) to null
+        val completeness = runCatching { JSONObject(resp).optString("completeness_state").ifBlank { null } }.getOrNull()
+        return outcome to completeness
+    }
+
+    /**
      * Dual-write target for the lossless compact PC2 format. The outbox caller
      * may acknowledge a file only when this method has verified both rows by
      * readback. Missing tables, denied writes, or mismatched content fail closed.

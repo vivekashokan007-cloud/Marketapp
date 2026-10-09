@@ -16947,6 +16947,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     candidates = json.loads(candidates_json) if candidates_json else []
     strike_oi = json.loads(strike_oi_json) if strike_oi_json else {}
     ctx = json.loads(context_json) if context_json else {}
+    # Evidence batch 1 (Item B): ranked population the Paper primary is selected from; None means the
+    # population was never produced (distinct from an empty menu). Read only by the bounded menu capture.
+    _pmc_ranked_population = None
 
     # TASK 5.2 — trace init
     # Install trace if debug enabled. Source tag 'replay' overridden by replay() endpoint.
@@ -17535,6 +17538,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             result['generated_candidates'] = []
             result['ranked_candidates_full'] = []
             result['watchlist'] = []
+            _pmc_ranked_population = []
             empty_a8_summary = {
                 'n_candidates_pre_a8': 0,
                 'n_ev_below_floor': 0,
@@ -18004,6 +18008,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             ranked_below_cap_sample, ranked_below_cap_sampling = _build3_ranked_below_cap_sample(ranked)
             result["ranked_below_cap_sample"] = ranked_below_cap_sample
             result["ranked_below_cap_sampling"] = ranked_below_cap_sampling
+            _pmc_ranked_population = ranked
             _finalize_pc2_supply_quality_shadow(result.get('pc2_supply_quality_shadow'), ranked)
             result["rejected_candidates"] = all_rejected
             result["build3_flow"] = _build3_candidate_flow_summary(
@@ -18112,6 +18117,19 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         )
     except Exception as e:
         result['elephant_fact_pack_error'] = str(e)
+
+    # Evidence batch 1 (Item B): bounded Paper decision-menu capture. Built only when Android requests
+    # it for the once-per-session 12:30-12:55 IST slot; evidence only, after ranking/primary selection.
+    _pmc_request = ctx.get('paper_menu_capture_request')
+    if isinstance(_pmc_request, dict) and _pmc_request.get('menu_id'):
+        try:
+            import paper_menu_evidence as _pme
+            result['paper_decision_menu'] = _pme.build_paper_decision_menu(
+                _pmc_ranked_population, result, ctx, _pmc_request)
+        except Exception as e:
+            result['paper_decision_menu'] = {'manifest': {
+                'menu_id': _pmc_request.get('menu_id'), 'population_status': 'BUILD_ERROR',
+                'error': str(e)[:300]}, 'candidates': []}
 
     # The full objects have already served live ranking and fact-pack creation.
     # Return evaluator-grade projections across the Android bridge so a normal
@@ -21019,6 +21037,8 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_capture_failure_reason',
     )
     object_keys = (
+        # Evidence batch 1: NF/BNF spot source-time provenance, chain join key, margin summary.
+        'spot_provenance', 'chain_evidence_ref', 'marginShadowSummary',
         'effective_bias',
         'snapshot_rejected_candidate_stats',
         'snapshot_rejected_candidate_selection',
@@ -21431,6 +21451,19 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             'pc2PaperSortComponents': pc2_sort_components or top_cand.get('pc2PaperSortComponents'),
             'entryEligibility': top_cand.get('entryEligibility'),
         }
+        # Evidence batch 1 (decision 3): the primary is watchlist[0], which the existing broker
+        # margin enrichment already annotates; this only stops primary_candidate_json dropping it.
+        # Evidence only: nothing downstream ranks, gates or sizes on these keys.
+        for _mk in ('marginQuoteStatus', 'marginQuoteSource', 'marginQuotedAt', 'marginQuoteError',
+                    'upstoxRequiredMargin', 'upstoxFinalMargin', 'upstoxSpanMargin', 'upstoxExposureMargin',
+                    'marginModelVersion', 'marginFallbackUsed', 'marginSource'):
+            if top_cand.get(_mk) is not None:
+                primary[_mk] = top_cand.get(_mk)
+        try:
+            import paper_menu_evidence as _pme
+            primary['margin_evidence'] = _pme.normalize_margin_evidence(top_cand, role='PRIMARY')
+        except Exception as e:
+            primary['margin_evidence'] = {'status': 'EVIDENCE_BUILD_ERROR', 'error': str(e)[:200]}
 
     # Clean top-5 candidates for secondary research only
     clean_cands = []
