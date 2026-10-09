@@ -113,3 +113,23 @@ Some rows can depend on SQL behaviour that isn't deterministic (ATM ties) or on 
 python3 -m pytest -q research/replay/tests          # or: python3 -m unittest discover -s research/replay/tests
 python3 research/replay/run_stage_a_b.py <extract_dir> <out_dir>
 ```
+
+## Dated research fee model `replay_fee_v2` (9 Oct 2026)
+
+`fee_models.py` adds `replay_fee_v2`; `replay_fee_v1` in `replay_engine.fees` is unchanged for exact reproduction.
+v2 keeps v1's transaction sides (STT on short-entry + long-exit sales; stamp on long-entry + short-exit buys;
+exchange/IPFT/SEBI on all four amounts; brokerage per leg per order; GST on brokerage + exchange + IPFT) but:
+
+* every rate comes from a dated window with primary-source references (`SOURCES`), table `RATES_TABLE_VERSION`;
+* entry-side charges use the entry date's window and exit-side charges the exit date's window;
+* dates before 2024-10-01 or after `RATES_VERIFIED_THROUGH` raise `UnknownHistoricalRate` (no defaulting);
+* exchange is split per NSE/FA/73061 (Rs 3,552.99 + IPFT 0.01 per crore from 1 Mar 2026). v1 charges
+  0.0003553 **plus** 1e-9 IPFT, i.e. Rs 0.01/crore more; on the 7 Oct sample that is Rs 0.00005.
+
+Research only: the Brain teacher (`_teacher_round_trip_cost`) is untouched (queued separately).
+
+`fee_correction_20261009.py` independently reproduces the supplied 9 Oct fee-side correction ledger from the
+vendored ORIGINAL inputs (`fixtures/fee_correction_20261009/*.gz`, SHA-256 pinned) and refuses the
+already-corrected rows. `tests/test_fee_models.py` covers the 7 Oct golden (gross 344.50, net 102.9969,
+wrong-side 90.7097), side invariants on unequal credit/debit structures, and exact ledger reconciliation
+(2,040 rows, 51 menus, 5,356 priced outcomes; max deviation 0.0).

@@ -429,7 +429,17 @@ def price_exit(s: Structure, p: Poll, expiry: str) -> Tuple[Optional[dict], List
     return {'exit_cash_pts': sellout - buyback, 'exit_sell_px': sellout, 'exit_buy_px': buyback}, []
 
 
-def fees(model: str, legs: int, lot: int, entry: dict, exit_: dict) -> dict:
+def fees(model: str, legs: int, lot: int, entry: dict, exit_: dict, *,
+         entry_date: Optional[date] = None, exit_date: Optional[date] = None) -> dict:
+    if model == 'replay_fee_v2':
+        # Dated research model (fee_models.py). replay_fee_v1 below is kept unchanged for reproduction.
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import fee_models  # noqa: E402
+        if entry_date is None or exit_date is None:
+            raise fee_models.UnknownHistoricalRate('replay_fee_v2 requires entry_date and exit_date')
+        return fee_models.fees_v2(entry_date, exit_date, legs, lot, entry, exit_)
     sell_entry = entry['sell_px'] * lot
     buy_entry = entry['buy_px'] * lot
     sell_exit = exit_['exit_sell_px'] * lot
