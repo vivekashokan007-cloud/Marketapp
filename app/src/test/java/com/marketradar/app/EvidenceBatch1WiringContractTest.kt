@@ -59,8 +59,13 @@ class EvidenceBatch1WiringContractTest {
         assertTrue(up.contains("PaperMenuCapture.sha256Hex(text) != sha"))
         assertTrue(up.contains("SupabaseClient.savePaperDecisionMenu("))
         val sc = source("SupabaseClient.kt")
-        val fn = sc.substring(sc.indexOf("fun savePaperDecisionMenu"))
-        assertTrue(fn.contains("resolution=ignore-duplicates"))
-        assertTrue(fn.contains("rpc/paper_decision_menu_finalize"))
+        val fn = sc.substring(sc.indexOf("fun savePaperDecisionMenu"), sc.indexOf("fun paperMenuCollectorActive"))
+        // R4: writes only through the authorized RPCs, with the device credential, then readback.
+        assertTrue(fn.contains("postRpc(\"paper_decision_menu_ingest_manifest\""))
+        assertTrue(fn.contains("postRpc(\"paper_decision_menu_ingest_candidates\""))
+        assertTrue(fn.contains("postRpc(\"paper_decision_menu_finalize\""))
+        assertTrue(fn.contains(".put(\"p_device_key\", deviceKey)"))
+        assertTrue(fn.contains("PaperMenuCapture.readbackDifference(canonicalRowsInRankOrder, arr)"))
+        assertFalse("no direct table INSERT any more", fn.contains("postArrayToTableDetailed(\"ml_paper_decision_menu"))
     }
 }

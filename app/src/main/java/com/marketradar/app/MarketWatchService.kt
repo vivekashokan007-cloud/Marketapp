@@ -3497,11 +3497,33 @@ class MarketWatchService : Service() {
         launchPaperMenuUploadIfPending()
     }
 
+    @Volatile
+    private var paperMenuCollectorLogged = false
+
+    /**
+     * R4: the existing install credential (Pc2IngestCredential, same key as compact PC2). The server also
+     * requires the key's hash to be the single designated collector (pdm_private.collectors). Only the hash
+     * is ever logged, so the owner can register/designate it.
+     */
+    private fun paperMenuDeviceKey(): String? {
+        val key = Pc2IngestCredential.loadOrCreate(
+            read = { prefs.getString(Pc2IngestCredential.PREF_DEVICE_KEY, null) },
+            write = { k -> prefs.edit().putString(Pc2IngestCredential.PREF_DEVICE_KEY, k).commit() }
+        )
+        if (key != null && !paperMenuCollectorLogged) {
+            paperMenuCollectorLogged = true
+            LogBuffer.add('I', TAG, "PAPER_MENU_COLLECTOR: key_hash=${Pc2IngestCredential.keyHash(key)} " +
+                "(must be an active pc2_private.ingest_devices row AND the active pdm_private.collectors row)")
+        }
+        return key
+    }
+
     /** Uploads the frozen menu (or a missed-session manifest) for the current and previous session. */
     private fun launchPaperMenuUploadIfPending() {
         if (!paperMenuUploadInFlight.compareAndSet(false, true)) return
         serviceScope.launch(Dispatchers.IO) {
             try {
+                val deviceKey = paperMenuDeviceKey()
                 for (key in listOf(PAPER_MENU_PREV_STATE_KEY, PAPER_MENU_STATE_KEY)) {
                     val state = synchronized(paperMenuStateLock) {
                         prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
@@ -3519,17 +3541,19 @@ class MarketWatchService : Service() {
                                 "FROZEN_FILE_SHA_MISMATCH" to null
                             } else {
                                 val frozen = JSONObject(text)
-                                val rows = JSONArray()
-                                val cands = frozen.optJSONArray("candidates") ?: JSONArray()
-                                for (i in 0 until cands.length()) cands.optJSONObject(i)?.let { rows.put(PaperMenuCapture.candidateRow(it)) }
-                                SupabaseClient.savePaperDecisionMenu(PaperMenuCapture.manifestRow(frozen, sha), rows, sha)
+                                val rows = PaperMenuCapture.canonicalCandidates(frozen).map { it.second }
+                                SupabaseClient.savePaperDecisionMenu(deviceKey ?: "", PaperMenuCapture.manifestRow(frozen, sha), rows, sha)
+                                    .let { r -> r.outcome to (if (r.disposition == "ACKNOWLEDGED") r.completeness
+                                        else if (r.disposition == "RETRY") null else "MISMATCH") }
                             }
                         }
                         "MISSED" -> {
                             val missed = state.optJSONObject("missed_manifest")
                             val sha = state.optString("missed_payload_sha256")
                             if (missed == null || sha.isBlank()) "MISSED_MANIFEST_MISSING" to null
-                            else SupabaseClient.savePaperDecisionMenu(PaperMenuCapture.missedRow(missed, sha), JSONArray(), sha)
+                            else SupabaseClient.savePaperDecisionMenu(deviceKey ?: "", PaperMenuCapture.missedRow(missed, sha), emptyList(), sha)
+                                .let { r -> r.outcome to (if (r.disposition == "ACKNOWLEDGED") r.completeness
+                                    else if (r.disposition == "RETRY") null else "MISMATCH") }
                         }
                         else -> continue
                     }

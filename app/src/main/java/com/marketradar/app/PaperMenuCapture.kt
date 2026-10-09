@@ -193,6 +193,8 @@ object PaperMenuCapture {
             .put("attempts", frozen.optJSONArray("attempts") ?: JSONArray())
             .put("manifest", m)
             .put("payload_sha256", payloadSha256)
+            .put("content_sha256", contentDigest(canonicalCandidates(frozen).map { it.second }))
+            .put("content_canonicalization", CONTENT_CANONICALIZATION)
     }
 
     /** Manifest row for a MISSED_SESSION (no candidate rows; attempts carried). */
@@ -202,25 +204,47 @@ object PaperMenuCapture {
         .put("capture_policy_version", missed.getString("capture_policy_version"))
         .put("capture_status", "MISSED_SESSION")
         .put("population_status", JSONObject.NULL)
+        .put("generated_count", JSONObject.NULL)
+        .put("captured_count", JSONObject.NULL)
+        .put("duplicate_count", JSONObject.NULL)
         .put("expected_candidate_rows", 0)
         .put("attempts", missed.optJSONArray("attempts") ?: JSONArray())
         .put("manifest", missed)
         .put("payload_sha256", payloadSha256)
+        .put("content_sha256", EMPTY_CONTENT_SHA256)
+        .put("content_canonicalization", CONTENT_CANONICALIZATION)
 
-    private val CANDIDATE_COLUMNS = listOf(
-        "menu_id", "candidate_id", "generated_rank", "watchlist_rank", "surfaced", "selected_primary",
-        "control_role", "index_key", "expiry", "strategy_family", "lane", "lot_size", "control_eligible"
-    )
+    // ---- R4: durable-content contract (see the migration header and DURABLE_CONTENT_READBACK_CONTRACT) ----
+    const val CONTENT_CANONICALIZATION = Pc2CompactBatch.COMPACT_CONTRACT_VERSION
+    val EMPTY_CONTENT_SHA256: String = sha256Hex("")
 
-    /** Candidate row: typed columns + legs + margin_evidence; everything else stays in row_json. */
-    fun candidateRow(r: JSONObject): JSONObject {
-        val row = JSONObject()
-        CANDIDATE_COLUMNS.forEach { k -> row.put(k, if (r.has(k) && !r.isNull(k)) r.get(k) else JSONObject.NULL) }
-        row.put("legs", r.optJSONArray("legs") ?: JSONArray())
-        row.put("margin_evidence", if (r.has("margin_evidence") && !r.isNull("margin_evidence")) r.get("margin_evidence") else JSONObject.NULL)
-        val rest = JSONObject(r.toString())
-        (CANDIDATE_COLUMNS + listOf("legs", "margin_evidence")).forEach { rest.remove(it) }
-        row.put("row_json", rest)
-        return row
+    /** Exact bytes stored per candidate: canonical JSON of the frozen candidate object, ordered by rank. */
+    fun canonicalCandidates(frozen: JSONObject): List<Pair<Int, String>> {
+        val cands = frozen.optJSONArray("candidates") ?: JSONArray()
+        return (0 until cands.length()).mapNotNull { cands.optJSONObject(it) }
+            .map { it.optInt("generated_rank", 0) to Pc2CompactBatch.canonicalJson(it) }
+            .sortedBy { it.first }
     }
+
+    /** sha256( join("\n", sha256(row) for rows ordered by generated_rank) ); sha256("") for no rows. */
+    fun contentDigest(canonicalRowsInRankOrder: List<String>): String =
+        sha256Hex(canonicalRowsInRankOrder.joinToString("\n") { sha256Hex(it) })
+
+    /**
+     * Readback comparison (R4): the server's per-row (candidate_id, generated_rank, content_sha256), ordered
+     * by rank, must equal the frozen local rows exactly. Returns null when equal, else the first difference.
+     */
+    fun readbackDifference(localCanonicalInRankOrder: List<String>, readback: JSONArray): String? {
+        if (readback.length() != localCanonicalInRankOrder.size)
+            return "row_count:${readback.length()}!=${localCanonicalInRankOrder.size}"
+        for ((i, c) in localCanonicalInRankOrder.withIndex()) {
+            val local = JSONObject(c)
+            val r = readback.optJSONObject(i) ?: return "row_$i:not_object"
+            if (r.optString("candidate_id") != local.optString("candidate_id")) return "row_$i:candidate_id"
+            if (r.optInt("generated_rank", -1) != local.optInt("generated_rank", -2)) return "row_$i:generated_rank"
+            if (r.optString("content_sha256") != sha256Hex(c)) return "row_$i:content_sha256"
+        }
+        return null
+    }
+
 }
