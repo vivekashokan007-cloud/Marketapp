@@ -185,6 +185,7 @@ class MarketWatchService : Service() {
         private const val PAPER_MENU_STATE_KEY = "paper_menu_capture_state_v1"
         private const val PAPER_MENU_PREV_STATE_KEY = "paper_menu_capture_prev_state_v1"
         private const val PAPER_MENU_EXTRA_MARGIN_REQUESTS = 2
+        private const val PAPER_MENU_LOCAL_RETENTION_DAYS = 30L
         private const val PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS = "last_brain_analysis_success_ms"
         private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_MS = "last_brain_analysis_failure_ms"
         private const val PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON = "last_brain_analysis_failure_reason"
@@ -3324,9 +3325,33 @@ class MarketWatchService : Service() {
                 else -> Unit
             }
             prefs.edit().putString(PAPER_MENU_STATE_KEY, state.toString()).commit()
+            if (previousMissed != null || state.getJSONArray("attempts").length() == 0) prunePaperMenuFiles()
         }
         launchPaperMenuUploadIfPending()
         return attemptSlot
+    }
+
+    /**
+     * Device-local retention for frozen menu files (~1.2 MB each): keep the current and previous session's
+     * files and anything younger than PAPER_MENU_LOCAL_RETENTION_DAYS. Remote evidence is never touched.
+     */
+    private fun prunePaperMenuFiles() {
+        try {
+            val dir = File(filesDir, "paper_decision_menus")
+            if (!dir.isDirectory) return
+            val keepIds = listOf(PAPER_MENU_STATE_KEY, PAPER_MENU_PREV_STATE_KEY).mapNotNull { k ->
+                prefs.getString(k, null)?.let { runCatching { JSONObject(it).optString("menu_id") }.getOrNull() }
+            }.toSet()
+            val cutoff = System.currentTimeMillis() - PAPER_MENU_LOCAL_RETENTION_DAYS * 24L * 60L * 60L * 1000L
+            dir.listFiles()?.forEach { f ->
+                val id = f.name.substringBefore(".json")
+                if (id !in keepIds && f.lastModified() < cutoff && f.delete()) {
+                    LogBuffer.add('I', TAG, "PAPER_MENU_LOCAL_PRUNE: removed=${f.name}")
+                }
+            }
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "PAPER_MENU_LOCAL_PRUNE_FAIL: ${e.message}")
+        }
     }
 
     private fun recordPaperMenuAttemptFailure(slotKey: String, reason: String) {
