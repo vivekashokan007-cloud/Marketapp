@@ -74,37 +74,6 @@ class EvidenceBatch1PaperMenuCaptureTest {
         assertEquals("OPEN", PaperMenuCapture.stateFor("{not json", day).getString("status"))
     }
 
-    @Test
-    fun uploadRetriesUntilServerDeclaresCompleteness() {
-        val s = PaperMenuCapture.newState(day)
-        PaperMenuCapture.markCaptured(s, "abc", "/f", "t")
-        assertTrue(PaperMenuCapture.uploadPending(s))
-        PaperMenuCapture.recordUpload(s, "HTTP_503_ON_CHUNK_2", null, "t1")
-        assertTrue(PaperMenuCapture.uploadPending(s))
-        PaperMenuCapture.recordUpload(s, "ROWS_POSTED", "PARTIAL", "t2")
-        assertEquals("RETRY_PENDING", s.getJSONObject("upload").getString("state"))
-        PaperMenuCapture.recordUpload(s, "ROWS_POSTED", "COMPLETE", "t3")
-        assertFalse(PaperMenuCapture.uploadPending(s))
-        assertEquals(3, s.getJSONObject("upload").getInt("attempts"))
-        val m = PaperMenuCapture.newState(day)
-        PaperMenuCapture.markCaptured(m, "abc", "/f", "t")
-        PaperMenuCapture.recordUpload(m, "ROWS_POSTED", "MISMATCH", "t1")
-        assertFalse(PaperMenuCapture.uploadPending(m))
-        val g = PaperMenuCapture.newState(day)
-        PaperMenuCapture.markCaptured(g, "abc", "/f", "t")
-        repeat(PaperMenuCapture.MAX_UPLOAD_ATTEMPTS) { PaperMenuCapture.recordUpload(g, "IO", null, "t") }
-        assertEquals("GAVE_UP", g.getJSONObject("upload").getString("state"))
-    }
-
-    @Test
-    fun chunkingPreservesMembership() {
-        val rows = JSONArray()
-        for (i in 0 until 451) rows.put(JSONObject().put("candidate_id", "c$i"))
-        val ch = PaperMenuCapture.chunks(rows, 200)
-        assertEquals(listOf(200, 200, 51), ch.map { it.length() })
-        assertEquals("c450", ch.last().getJSONObject(50).getString("candidate_id"))
-    }
-
     companion object {
         const val PY_MENU_ID_20261009 = "pdm_1e41b0da3cb95d88568ab210"
     }
@@ -121,7 +90,7 @@ class EvidenceBatch1PaperMenuCaptureTest {
         val mm = missed.getJSONObject("missed_manifest")
         assertEquals("MISSED_SESSION", mm.getString("capture_status"))
         assertEquals(1, mm.getJSONArray("attempts").length())
-        assertTrue(PaperMenuCapture.uploadPending(missed))
+        assertEquals(PaperMenuCapture.menuIdFor("2026-10-08"), mm.getString("menu_id"))
         // A captured previous session is not re-labelled missed.
         val cap = PaperMenuCapture.markCaptured(PaperMenuCapture.newState("2026-10-08"), "a".repeat(64), "/x", "t")
         assertNull(PaperMenuCapture.rollover(cap.toString(), "2026-10-09", "t").second)

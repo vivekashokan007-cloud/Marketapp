@@ -17,7 +17,6 @@ object PaperMenuCapture {
     const val POLICY_VERSION = "paper_menu_capture_v1_first_completed_1230_1255_ist"
     const val FIRST_SLOT_ORDINAL = 40   // 09:15 + 39*5 = 12:30
     const val LAST_SLOT_ORDINAL = 45    // 12:55
-    const val MAX_UPLOAD_ATTEMPTS = 12
     const val CANDIDATE_CHUNK = 200
 
     enum class Action { WAIT_FOR_WINDOW, ATTEMPT_CAPTURE, ALREADY_CAPTURED, RECORD_MISSED, NOTHING }
@@ -38,7 +37,6 @@ object PaperMenuCapture {
         .put("menu_id", menuIdFor(sessionDate))
         .put("status", "OPEN")
         .put("attempts", JSONArray())
-        .put("upload", JSONObject().put("attempts", 0).put("state", "NOT_STARTED"))
 
     /** Load-or-reset: a state from another session is discarded (never carried across sessions). */
     fun stateFor(raw: String?, sessionDate: String): JSONObject {
@@ -109,37 +107,7 @@ object PaperMenuCapture {
     fun sha256Hex(s: String): String =
         MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
-    /** Rows are idempotent on (menu_id, candidate_id); chunking never changes membership. */
-    fun chunks(rows: JSONArray, size: Int = CANDIDATE_CHUNK): List<JSONArray> {
-        val out = mutableListOf<JSONArray>()
-        var cur = JSONArray()
-        for (i in 0 until rows.length()) {
-            cur.put(rows.get(i))
-            if (cur.length() >= size) { out.add(cur); cur = JSONArray() }
-        }
-        if (cur.length() > 0) out.add(cur)
-        return out
-    }
-
-    /** Upload bookkeeping. Completeness is declared only by the server-side reconciliation result. */
-    fun recordUpload(state: JSONObject, outcome: String, completeness: String?, atIso: String): JSONObject {
-        val u = state.optJSONObject("upload") ?: JSONObject().also { state.put("upload", it) }
-        u.put("attempts", u.optInt("attempts") + 1).put("last_outcome", outcome).put("last_at", atIso)
-        if (completeness != null) u.put("server_completeness", completeness)
-        u.put("state", when {
-            completeness == "COMPLETE" || completeness == "NO_ROWS_EXPECTED" -> "DONE"
-            completeness == "MISMATCH" -> "MISMATCH_NO_RETRY"
-            u.optInt("attempts") >= MAX_UPLOAD_ATTEMPTS -> "GAVE_UP"
-            else -> "RETRY_PENDING"
-        })
-        return state
-    }
-
-    fun uploadPending(state: JSONObject): Boolean {
-        val s = state.optString("status")
-        if (s != "CAPTURED" && s != "MISSED") return false
-        return state.optJSONObject("upload")?.optString("state") in setOf("NOT_STARTED", "RETRY_PENDING")
-    }
+    // R2: upload bookkeeping (attempts/ack/retention) lives per menu in PaperMenuOutbox, not in session state.
 
     /**
      * Session rollover. Returns (state for [sessionDate], previous session's state if it ended OPEN, now
@@ -154,7 +122,6 @@ object PaperMenuCapture {
         val missedPrev = if (prev != null && prev.optString("policy") == POLICY_VERSION &&
             prev.optString("status") == "OPEN" && prev.optString("session_date") < sessionDate) {
             prev.put("missed_manifest", missedManifest(prev, "no_completed_scheduled_slot_in_window_before_session_end", atIso))
-            prev.put("upload", JSONObject().put("attempts", 0).put("state", "NOT_STARTED"))
         } else null
         return newState(sessionDate) to missedPrev
     }
@@ -247,4 +214,56 @@ object PaperMenuCapture {
         return null
     }
 
+
+    // ---- R2/R3: pure capture coordinator (JVM-testable; the service only applies its result) ----
+
+    data class Prepared(
+        /** New capture-state JSON to persist, or null = do not touch state (non-Paper). */
+        val stateToSave: String?,
+        /** Frozen MISSED_SESSION manifests to put in the durable outbox (previous session and/or today). */
+        val missedToEnqueue: List<JSONObject>,
+        /** Capture request to place into the brain ctx, or null. */
+        val request: JSONObject?,
+        val attemptSlot: String?,
+        val events: List<String>
+    )
+
+    /**
+     * R3: returns a no-op result for any population not ranked in Paper, BEFORE state is loaded, rolled over or
+     * written: no menu is created and no capture slot is consumed. R2: missed manifests leave via the outbox.
+     */
+    fun prepare(populationMode: String?, rawState: String?, sessionDate: String, slotKey: String?,
+                slotOrdinal: Int?, nowIso: String): Prepared {
+        if (!ExecutionModeResolver.isPaper(populationMode)) return Prepared(null, emptyList(), null, null, emptyList())
+        val (state, previousMissed) = rollover(rawState, sessionDate, nowIso)
+        val missed = mutableListOf<JSONObject>()
+        val events = mutableListOf<String>()
+        previousMissed?.optJSONObject("missed_manifest")?.let {
+            missed.add(it); events.add("PAPER_MENU_MISSED_SESSION: session=${previousMissed.optString("session_date")} menu=${previousMissed.optString("menu_id")} reason=no_completed_scheduled_slot_in_window_before_session_end")
+        }
+        var request: JSONObject? = null
+        var attemptSlot: String? = null
+        when (decide(state, slotOrdinal)) {
+            Action.ATTEMPT_CAPTURE -> {
+                request = captureRequest(state, slotKey!!, slotOrdinal!!, nowIso)
+                attemptSlot = slotKey
+                events.add("PAPER_MENU_CAPTURE_ATTEMPT: menu=${state.optString("menu_id")} slot=$slotKey attempt=${state.getJSONArray("attempts").length() + 1}")
+            }
+            Action.RECORD_MISSED -> {
+                val m = missedManifest(state, "no_completed_scheduled_slot_in_12_30_12_55_ist_window", nowIso)
+                state.put("missed_menu_id", m.getString("menu_id"))
+                missed.add(m)
+                events.add("PAPER_MENU_MISSED_SESSION: session=${state.optString("session_date")} menu=${state.optString("menu_id")} slot=$slotKey attempts=${state.getJSONArray("attempts").length()}")
+            }
+            else -> Unit
+        }
+        return Prepared(state.toString(), missed, request, attemptSlot, events)
+    }
+
+    /**
+     * R3: evidence-only margin requests run only when the app is in Paper now AND the population was ranked in
+     * Paper; otherwise [fetch] is never invoked and null is returned.
+     */
+    fun <T> collectIfPaper(modeNow: String?, populationMode: String?, fetch: () -> T): T? =
+        if (ExecutionModeResolver.isPaper(modeNow) && ExecutionModeResolver.isPaper(populationMode)) fetch() else null
 }

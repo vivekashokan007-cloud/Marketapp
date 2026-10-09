@@ -56,7 +56,11 @@ class EvidenceBatch1WiringContractTest {
         assertTrue(svc.contains("recordPaperMenuAttemptFailure(it, \"brain_analyze_timeout\")"))
         assertTrue(svc.contains("recordPaperMenuAttemptFailure(it, \"brain_exception:"))
         val up = svc.substring(svc.indexOf("private fun launchPaperMenuUploadIfPending"))
-        assertTrue(up.contains("PaperMenuCapture.sha256Hex(text) != sha"))
+        // R2: uploads drain the durable per-menu outbox (frozen-bytes sha check lives in PaperMenuOutbox.drain).
+        assertTrue(up.contains("PaperMenuOutbox.drain(dir, todayIstDate()"))
+        assertTrue(svc.contains("PaperMenuOutbox.enqueueCaptured(paperMenuDir()"))
+        assertTrue(svc.contains("PaperMenuOutbox.prune(paperMenuDir()"))
+        assertTrue(source("PaperMenuOutbox.kt").contains("PaperMenuCapture.sha256Hex(text) != e.payloadSha256"))
         assertTrue(up.contains("SupabaseClient.savePaperDecisionMenu("))
         val sc = source("SupabaseClient.kt")
         val fn = sc.substring(sc.indexOf("fun savePaperDecisionMenu"), sc.indexOf("fun paperMenuCollectorActive"))

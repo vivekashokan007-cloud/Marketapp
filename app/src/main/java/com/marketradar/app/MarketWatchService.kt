@@ -183,7 +183,7 @@ class MarketWatchService : Service() {
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
         // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
         private const val PAPER_MENU_STATE_KEY = "paper_menu_capture_state_v1"
-        private const val PAPER_MENU_PREV_STATE_KEY = "paper_menu_capture_prev_state_v1"
+        private const val PAPER_MENU_OUTBOX_SUMMARY_KEY = "paper_menu_outbox_summary_v1"
         private const val PAPER_MENU_EXTRA_MARGIN_REQUESTS = 2
         private const val PAPER_MENU_LOCAL_RETENTION_DAYS = 30L
         private const val PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS = "last_brain_analysis_success_ms"
@@ -3313,57 +3313,40 @@ class MarketWatchService : Service() {
             return null
         }
         val now = currentIstIso()
-        var attemptSlot: String? = null
-        synchronized(paperMenuStateLock) {
-            val (state, previousMissed) = PaperMenuCapture.rollover(
-                prefs.getString(PAPER_MENU_STATE_KEY, null), todayIstDate(), now
+        val dir = paperMenuDir()
+        val prepared = synchronized(paperMenuStateLock) {
+            val p = PaperMenuCapture.prepare(
+                populationMode, prefs.getString(PAPER_MENU_STATE_KEY, null), todayIstDate(),
+                slotKey, slotKey?.let { slotOrdinalFromSlotKey(it) }, now
             )
-            if (previousMissed != null) {
-                previousMissed.put("missed_payload_sha256",
-                    PaperMenuCapture.sha256Hex(previousMissed.getJSONObject("missed_manifest").toString()))
-                prefs.edit().putString(PAPER_MENU_PREV_STATE_KEY, previousMissed.toString()).commit()
-                LogBuffer.add('W', TAG, "PAPER_MENU_MISSED_SESSION: session=${previousMissed.optString("session_date")} menu=${previousMissed.optString("menu_id")} reason=no_completed_scheduled_slot_in_window_before_session_end attempts=${previousMissed.optJSONArray("attempts")?.length() ?: 0}")
-            }
-            val ordinal = slotKey?.let { slotOrdinalFromSlotKey(it) }
-            when (PaperMenuCapture.decide(state, ordinal)) {
-                PaperMenuCapture.Action.ATTEMPT_CAPTURE -> {
-                    ctxObj.put("paper_menu_capture_request", PaperMenuCapture.captureRequest(state, slotKey!!, ordinal!!, now))
-                    attemptSlot = slotKey
-                    LogBuffer.add('I', TAG, "PAPER_MENU_CAPTURE_ATTEMPT: menu=${state.optString("menu_id")} slot=$slotKey attempt=${state.getJSONArray("attempts").length() + 1}")
+            // R2: missed manifests are frozen into the durable outbox BEFORE the rolled-over state is saved, so a
+            // crash in between re-derives the same MISSED manifest instead of losing it.
+            val frozenOk = p.missedToEnqueue.all { m ->
+                (PaperMenuOutbox.enqueueMissed(dir, m, System.currentTimeMillis()) != null).also { ok ->
+                    if (!ok) LogBuffer.add('E', TAG, "PAPER_MENU_OUTBOX_ENQUEUE_FAIL: menu=${m.optString("menu_id")} kind=MISSED (state not advanced; retried next poll)")
                 }
-                PaperMenuCapture.Action.RECORD_MISSED -> {
-                    val missed = PaperMenuCapture.missedManifest(state, "no_completed_scheduled_slot_in_12_30_12_55_ist_window", now)
-                    state.put("missed_manifest", missed)
-                    state.put("missed_payload_sha256", PaperMenuCapture.sha256Hex(missed.toString()))
-                    LogBuffer.add('W', TAG, "PAPER_MENU_MISSED_SESSION: session=${state.optString("session_date")} menu=${state.optString("menu_id")} slot=$slotKey attempts=${state.getJSONArray("attempts").length()}")
-                }
-                else -> Unit
             }
-            prefs.edit().putString(PAPER_MENU_STATE_KEY, state.toString()).commit()
-            if (previousMissed != null || state.getJSONArray("attempts").length() == 0) prunePaperMenuFiles()
+            if (frozenOk) p.stateToSave?.let { prefs.edit().putString(PAPER_MENU_STATE_KEY, it).commit() }
+            p
         }
+        prepared.events.forEach { LogBuffer.add(if (it.contains("MISSED")) 'W' else 'I', TAG, it) }
+        prepared.request?.let { ctxObj.put("paper_menu_capture_request", it) }
+        prunePaperMenuFiles()
         launchPaperMenuUploadIfPending()
-        return attemptSlot
+        return prepared.attemptSlot
     }
 
+    private fun paperMenuDir(): File = File(filesDir, "paper_decision_menus")
+
     /**
-     * Device-local retention for frozen menu files (~1.2 MB each): keep the current and previous session's
-     * files and anything younger than PAPER_MENU_LOCAL_RETENTION_DAYS. Remote evidence is never touched.
+     * R2: device-local retention. Only outbox entries the server ACKNOWLEDGED more than
+     * PAPER_MENU_LOCAL_RETENTION_DAYS ago are removed; unacknowledged / exhausted / conflict files are kept.
      */
     private fun prunePaperMenuFiles() {
         try {
-            val dir = File(filesDir, "paper_decision_menus")
-            if (!dir.isDirectory) return
-            val keepIds = listOf(PAPER_MENU_STATE_KEY, PAPER_MENU_PREV_STATE_KEY).mapNotNull { k ->
-                prefs.getString(k, null)?.let { runCatching { JSONObject(it).optString("menu_id") }.getOrNull() }
-            }.toSet()
-            val cutoff = System.currentTimeMillis() - PAPER_MENU_LOCAL_RETENTION_DAYS * 24L * 60L * 60L * 1000L
-            dir.listFiles()?.forEach { f ->
-                val id = f.name.substringBefore(".json")
-                if (id !in keepIds && f.lastModified() < cutoff && f.delete()) {
-                    LogBuffer.add('I', TAG, "PAPER_MENU_LOCAL_PRUNE: removed=${f.name}")
-                }
-            }
+            PaperMenuOutbox.prune(paperMenuDir(), System.currentTimeMillis(),
+                PAPER_MENU_LOCAL_RETENTION_DAYS * 24L * 60L * 60L * 1000L)
+                .forEach { LogBuffer.add('I', TAG, "PAPER_MENU_LOCAL_PRUNE: removed_acked=$it") }
         } catch (e: Exception) {
             LogBuffer.add('W', TAG, "PAPER_MENU_LOCAL_PRUNE_FAIL: ${e.message}")
         }
@@ -3449,7 +3432,9 @@ class MarketWatchService : Service() {
             recordPaperMenuAttemptFailure(slotKey, "execution_mode_not_paper:now=$modeNow:population=$populationMode")
             return
         }
-        val (margins, stats) = collectPaperMenuRoleMargins(menu, authToken)
+        val (margins, stats) = PaperMenuCapture.collectIfPaper(modeNow, populationMode) {
+            collectPaperMenuRoleMargins(menu, authToken)
+        } ?: return
         val enriched = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
             Python.getInstance().getModule("paper_menu_evidence")
                 .callAttr("attach_margin_evidence_json", menu.toString(), margins.toString(), stats.toString())
@@ -3475,17 +3460,17 @@ class MarketWatchService : Service() {
             frozen.put("attempts", attempts)
             val payload = frozen.toString()
             val sha = PaperMenuCapture.sha256Hex(payload)
-            val dir = File(filesDir, "paper_decision_menus").apply { mkdirs() }
-            val target = File(dir, "${live.getString("menu_id")}.json")
-            val tmp = File(dir, "${live.getString("menu_id")}.json.tmp")
-            val written = runCatching { tmp.writeText(payload, Charsets.UTF_8); tmp.renameTo(target) }.getOrDefault(false)
-            if (!written) {
-                tmp.delete()
-                PaperMenuCapture.recordAttempt(live, slotKey, "FAILED", "frozen_file_write_failed", now)
+            // R2: freeze the bytes once into the durable per-menu outbox; every retry sends exactly these bytes.
+            val entry = PaperMenuOutbox.enqueueCaptured(paperMenuDir(), live.getString("menu_id"),
+                live.optString("session_date"), payload, System.currentTimeMillis())
+            if (entry == null || entry.optString("payload_sha256") != sha) {
+                PaperMenuCapture.recordAttempt(live, slotKey, "FAILED",
+                    if (entry == null) "frozen_file_write_failed" else "outbox_entry_exists_with_other_bytes", now)
                 savePaperMenuState(live)
                 LogBuffer.add('E', TAG, "PAPER_MENU_CAPTURE_FAILED: slot=$slotKey reason=frozen_file_write_failed")
                 return
             }
+            val target = File(paperMenuDir(), entry.optString("payload_file"))
             PaperMenuCapture.recordAttempt(live, slotKey, "CAPTURED", null, now)
             PaperMenuCapture.markCaptured(live, sha, target.absolutePath, now)
             savePaperMenuState(live)
@@ -3518,58 +3503,35 @@ class MarketWatchService : Service() {
         return key
     }
 
-    /** Uploads the frozen menu (or a missed-session manifest) for the current and previous session. */
+    /** R2: drains the durable per-menu outbox (any number of sessions, oldest first). */
     private fun launchPaperMenuUploadIfPending() {
         if (!paperMenuUploadInFlight.compareAndSet(false, true)) return
         serviceScope.launch(Dispatchers.IO) {
             try {
+                val dir = paperMenuDir()
+                if (!dir.isDirectory) return@launch
                 val deviceKey = paperMenuDeviceKey()
-                for (key in listOf(PAPER_MENU_PREV_STATE_KEY, PAPER_MENU_STATE_KEY)) {
-                    val state = synchronized(paperMenuStateLock) {
-                        prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-                    } ?: continue
-                    if (!PaperMenuCapture.uploadPending(state)) continue
-                    val menuId = state.optString("menu_id")
-                    val (outcome, completeness) = when (state.optString("status")) {
-                        "CAPTURED" -> {
-                            val file = File(state.optString("frozen_path"))
-                            val text = if (file.isFile) file.readText(Charsets.UTF_8) else null
-                            val sha = state.optString("payload_sha256")
-                            if (text == null) {
-                                "FROZEN_FILE_MISSING" to null
-                            } else if (PaperMenuCapture.sha256Hex(text) != sha) {
-                                "FROZEN_FILE_SHA_MISMATCH" to null
-                            } else {
-                                val frozen = JSONObject(text)
-                                val rows = PaperMenuCapture.canonicalCandidates(frozen).map { it.second }
-                                SupabaseClient.savePaperDecisionMenu(deviceKey ?: "", PaperMenuCapture.manifestRow(frozen, sha), rows, sha)
-                                    .let { r -> r.outcome to (if (r.disposition == "ACKNOWLEDGED") r.completeness
-                                        else if (r.disposition == "RETRY") null else "MISMATCH") }
-                            }
-                        }
-                        "MISSED" -> {
-                            val missed = state.optJSONObject("missed_manifest")
-                            val sha = state.optString("missed_payload_sha256")
-                            if (missed == null || sha.isBlank()) "MISSED_MANIFEST_MISSING" to null
-                            else SupabaseClient.savePaperDecisionMenu(deviceKey ?: "", PaperMenuCapture.missedRow(missed, sha), emptyList(), sha)
-                                .let { r -> r.outcome to (if (r.disposition == "ACKNOWLEDGED") r.completeness
-                                    else if (r.disposition == "RETRY") null else "MISMATCH") }
-                        }
-                        else -> continue
+                val drain = PaperMenuOutbox.drain(dir, todayIstDate(), System.currentTimeMillis()) { entry, text ->
+                    if (deviceKey == null) return@drain PaperMenuOutbox.Delivery("RETRY", "DEVICE_CREDENTIAL_UNAVAILABLE")
+                    val r = if (entry.kind == PaperMenuOutbox.KIND_CAPTURED) {
+                        val frozen = JSONObject(text)
+                        SupabaseClient.savePaperDecisionMenu(deviceKey, PaperMenuCapture.manifestRow(frozen, entry.payloadSha256),
+                            PaperMenuCapture.canonicalCandidates(frozen).map { it.second }, entry.payloadSha256)
+                    } else {
+                        SupabaseClient.savePaperDecisionMenu(deviceKey, PaperMenuCapture.missedRow(JSONObject(text), entry.payloadSha256),
+                            emptyList(), entry.payloadSha256)
                     }
-                    synchronized(paperMenuStateLock) {
-                        val live = prefs.getString(key, null)?.let { runCatching { JSONObject(it) }.getOrNull() }
-                        if (live != null && live.optString("menu_id") == menuId) {
-                            PaperMenuCapture.recordUpload(live, outcome, completeness, currentIstIso())
-                            prefs.edit().putString(key, live.toString()).commit()
-                            LogBuffer.add(
-                                if (completeness == "COMPLETE" || completeness == "NO_ROWS_EXPECTED") 'I' else 'W',
-                                TAG,
-                                "PAPER_MENU_UPLOAD: menu=$menuId outcome=$outcome completeness=${completeness ?: "unknown"} state=${live.optJSONObject("upload")?.optString("state")} attempts=${live.optJSONObject("upload")?.optInt("attempts")}"
-                            )
-                        }
-                    }
+                    LogBuffer.add(if (r.disposition == "ACKNOWLEDGED") 'I' else 'W', TAG,
+                        "PAPER_MENU_UPLOAD: menu=${entry.menuId} kind=${entry.kind} disposition=${r.disposition} outcome=${r.outcome} completeness=${r.completeness ?: "unknown"}")
+                    PaperMenuOutbox.Delivery(r.disposition, r.outcome, r.detail)
                 }
+                val summary = PaperMenuOutbox.summary(dir)
+                prefs.edit().putString(PAPER_MENU_OUTBOX_SUMMARY_KEY, summary.toString()).apply()
+                val clean = drain.retryPending == 0 && drain.exhausted == 0 && drain.retained == 0
+                LogBuffer.add(if (clean) 'I' else 'W', TAG,
+                    "PAPER_MENU_OUTBOX: attempted=${drain.attempted} acked=${drain.acknowledged} retry_pending=${drain.retryPending} " +
+                        "exhausted=${drain.exhausted} retained=${drain.retained} requeued=${drain.requeued} " +
+                        "unacked=${summary.optJSONArray("unacked_menu_ids")}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "PAPER_MENU_UPLOAD_FAIL: ${e.message}")
             } finally {
