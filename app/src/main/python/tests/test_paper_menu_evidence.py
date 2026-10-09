@@ -1,5 +1,6 @@
 """Evidence batch 1: bounded Paper decision menu, registered control peer, margin evidence."""
 import copy
+import importlib
 import json
 import os
 import sys
@@ -335,6 +336,7 @@ class BrainIntegrationTests(unittest.TestCase):
         for name in ('fixture_a_bull_credit_range', 'fixture_c_neutral_conflict'):
             inp = self._fx(name)
             ctx = json.loads(inp['ctx_json'])
+            ctx['executionMode'] = 'paper'
             args = (inp['poll_json'], inp['closed_trades_json'], inp['baseline_json'], inp['open_trades_json'], '[]', '{}')
             a = json.loads(brain.analyze(*args, json.dumps(ctx)))
             ctx['paper_menu_capture_request'] = {'menu_id': 'pdm_it', 'session_date': SESSION}
@@ -345,6 +347,86 @@ class BrainIntegrationTests(unittest.TestCase):
                                  json.dumps(b.get(k), sort_keys=True, default=str), (name, k))
             self.assertNotIn('paper_decision_menu', a)
             self.assertIn(menu['manifest']['population_status'], ('EMPTY_MENU', 'MENU_BUILT', 'POPULATION_UNAVAILABLE'))
+
+    @staticmethod
+    def _synthetic_chain(atm, step, n, spot, iv=0.14, dte=4):
+        import math
+        strikes, allk = {}, []
+        sd = spot * iv * math.sqrt(dte / 365)
+        for i in range(-n, n + 1):
+            k = atm + i * step
+            allk.append(k)
+            row = {}
+            for t in ('CE', 'PE'):
+                intrinsic = max(0, (spot - k) if t == 'CE' else (k - spot))
+                p = round(intrinsic + 0.4 * sd * math.exp(-abs(k - spot) / sd) + 1, 2)
+                row[t] = {'bid': round(p * 0.995, 2), 'ask': round(p * 1.005, 2), 'ltp': p, 'oi': 100000,
+                          'delta': 0.5, 'theta': -5, 'iv': iv * 100}
+            strikes[str(k)] = row
+        return {'atm': atm, 'strikes': strikes, 'allStrikes': allk, 'callWallStrike': atm + 5 * step,
+                'putWallStrike': atm - 5 * step, 'atmIv': iv * 100, 'pcr': 1.0, 'nearAtmPCR': 1.0}
+
+    def _args_ctx(self, name, with_chains=False):
+        inp = self._fx(name)
+        args = (inp['poll_json'], inp['closed_trades_json'], inp['baseline_json'], inp['open_trades_json'], '[]', '{}')
+        ctx = json.loads(inp['ctx_json'])
+        if with_chains:
+            last = json.loads(inp['poll_json'])[-1]
+            ctx['nfChain'] = self._synthetic_chain(round(last['nf'] / 50) * 50, 50, 20, last['nf'])
+            ctx['bnfChain'] = self._synthetic_chain(round(last['bnf'] / 100) * 100, 100, 20, last['bnf'])
+        return args, ctx
+
+    def test_r3_live_and_sandbox_requests_are_refused_and_output_is_unchanged(self):
+        populated = 0
+        for name, chains in (('fixture_a_bull_credit_range', True), ('fixture_c_neutral_conflict', True),
+                             ('fixture_a_bull_credit_range', False)):
+            args, ctx0 = self._args_ctx(name, with_chains=chains)
+            for mode in ('live', 'sandbox', None, 'LIVE ', ''):
+                ctx = dict(ctx0)
+                if mode is None:
+                    ctx.pop('executionMode', None)
+                else:
+                    ctx['executionMode'] = mode
+                plain = brain.analyze(*args, json.dumps(ctx))
+                plain2 = brain.analyze(*args, json.dumps(ctx))
+                ctx_req = dict(ctx, paper_menu_capture_request={'menu_id': 'pdm_live', 'session_date': SESSION,
+                                                                'slot_key': 'x'})
+                req = brain.analyze(*args, json.dumps(ctx_req))
+                a, a2, b = json.loads(plain), json.loads(plain2), json.loads(req)
+                self.assertNotIn('paper_decision_menu', b, (name, mode))
+                populated += 1 if (b.get('watchlist') and b.get('ranked_candidates_full')) else 0
+                nondeterministic = {k for k in set(a) | set(a2) if json.dumps(a.get(k), sort_keys=True, default=str)
+                                    != json.dumps(a2.get(k), sort_keys=True, default=str)}
+                self.assertEqual(set(a), set(b), (name, mode))
+                for k in set(a) - nondeterministic:
+                    self.assertEqual(json.dumps(a.get(k), sort_keys=True, default=str),
+                                     json.dumps(b.get(k), sort_keys=True, default=str), (name, mode, k))
+                self.assertFalse(pme.capture_allowed(ctx_req))
+                # Notification processing (stateful across calls) gets identical output from a fresh module
+                # state for the with-request and without-request results.
+                outs = []
+                for res in (a, b):
+                    importlib.reload(brain)
+                    n = brain.brain_notification_process(json.dumps(res), json.dumps(ctx))
+                    outs.append(json.dumps(json.loads(n) if isinstance(n, str) and n not in ('', 'null') else n,
+                                           sort_keys=True, default=str))
+                self.assertEqual(outs[0], outs[1], (name, mode))
+        self.assertGreaterEqual(populated, 10)   # real ranked populations, not only empty menus
+
+    def test_r3_switching_to_paper_captures(self):
+        args, ctx = self._args_ctx('fixture_a_bull_credit_range', with_chains=True)
+        req = {'menu_id': 'pdm_switch', 'session_date': SESSION}
+        live = json.loads(brain.analyze(*args, json.dumps(dict(ctx, executionMode='live', paper_menu_capture_request=req))))
+        paper = json.loads(brain.analyze(*args, json.dumps(dict(ctx, executionMode='paper', paper_menu_capture_request=req))))
+        self.assertNotIn('paper_decision_menu', live)
+        self.assertEqual(paper['paper_decision_menu']['manifest']['menu_id'], 'pdm_switch')
+        self.assertEqual(paper['paper_decision_menu']['manifest']['population_execution_mode'], 'paper')
+        self.assertEqual(paper['paper_decision_menu']['manifest']['population_status'], 'MENU_BUILT')
+        self.assertGreater(len(paper['paper_decision_menu']['candidates']), 10)
+        self.assertTrue(pme.capture_allowed({'executionMode': 'paper'}))
+        self.assertTrue(pme.capture_allowed({'executionMode': ' Paper '}))
+        for bad in ({}, {'executionMode': 'live'}, {'executionMode': 'sandbox'}, {'executionMode': None}, None, []):
+            self.assertFalse(pme.capture_allowed(bad), bad)
 
     def test_primary_snapshot_carries_existing_margin_and_never_static(self):
         quoted = ib(22300)

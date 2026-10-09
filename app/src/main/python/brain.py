@@ -18120,12 +18120,17 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     # Evidence batch 1 (Item B): bounded Paper decision-menu capture. Built only when Android requests
     # it for the once-per-session 12:30-12:55 IST slot; evidence only, after ranking/primary selection.
+    # R3: defensive Paper-only boundary. A request arriving with any non-Paper executionMode is refused
+    # silently (nothing is added to the result, so Real/sandbox output is byte-identical to no request).
     _pmc_request = ctx.get('paper_menu_capture_request')
-    if isinstance(_pmc_request, dict) and _pmc_request.get('menu_id'):
+    _pmc_mode = ctx.get('executionMode')
+    _pmc_paper = isinstance(_pmc_mode, str) and _pmc_mode.strip().lower() == 'paper'
+    if _pmc_paper and isinstance(_pmc_request, dict) and _pmc_request.get('menu_id'):
         try:
             import paper_menu_evidence as _pme
-            result['paper_decision_menu'] = _pme.build_paper_decision_menu(
-                _pmc_ranked_population, result, ctx, _pmc_request)
+            if _pme.capture_allowed(ctx):
+                result['paper_decision_menu'] = _pme.build_paper_decision_menu(
+                    _pmc_ranked_population, result, ctx, _pmc_request)
         except Exception as e:
             result['paper_decision_menu'] = {'manifest': {
                 'menu_id': _pmc_request.get('menu_id'), 'population_status': 'BUILD_ERROR',

@@ -29,6 +29,16 @@ BROKER_MARGIN_SOURCE = 'UPSTOX_MARGIN_API'
 VALID_FAMILIES = ('IRON_BUTTERFLY', 'IRON_CONDOR', 'BEAR_CALL', 'BULL_PUT', 'BULL_CALL', 'BEAR_PUT')
 
 
+def capture_allowed(ctx) -> bool:
+    """R3: the Brain-boundary guard. A Paper decision-menu capture is built ONLY when the context the
+    population was ranked under explicitly says executionMode == 'paper'. Missing, 'live', 'sandbox' or
+    any other value is refused (fail closed; Android always sends the derived mode)."""
+    if not isinstance(ctx, dict):
+        return False
+    mode = ctx.get('executionMode')
+    return isinstance(mode, str) and mode.strip().lower() == 'paper'
+
+
 def menu_id_for(session_date: str, policy: str = CAPTURE_POLICY_VERSION) -> str:
     return 'pdm_' + hashlib.sha256(f'{session_date}|{policy}'.encode()).hexdigest()[:24]
 
@@ -261,6 +271,7 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
         'chain_ref_problems': chain['problems'],
         'spot_provenance': ctx.get('spot_provenance'),
         'storage_strategy': STORAGE_STRATEGY, 'truncation_reason': None,
+        'population_execution_mode': ctx.get('executionMode'),
         'verdict_action': verdict.get('action'), 'decision_source': result.get('decisionSource'),
         'primary_candidate_id': primary_id,
         'build3_flow_counts': {k: (result.get('build3_flow') or {}).get(k) for k in

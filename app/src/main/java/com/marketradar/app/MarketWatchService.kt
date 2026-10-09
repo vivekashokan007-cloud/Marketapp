@@ -2418,13 +2418,9 @@ class MarketWatchService : Service() {
 
             val sandboxEnabled = prefs.getBoolean("execution_sandbox_enabled", false)
             val orderProxyUrl = (prefs.getString("order_proxy_url", "") ?: "").trim()
-            val explicitExecutionMode = (prefs.getString("execution_mode", "") ?: "").trim().lowercase(Locale.US)
-            val derivedExecutionMode = when {
-                explicitExecutionMode in setOf("paper", "sandbox", "live") -> explicitExecutionMode
-                sandboxEnabled -> "sandbox"
-                orderProxyUrl.startsWith("https://") -> "live"
-                else -> "paper"
-            }
+            val derivedExecutionMode = ExecutionModeResolver.derive(
+                prefs.getString("execution_mode", ""), sandboxEnabled, orderProxyUrl
+            )
 
             // Always overlay history from SharedPreferences for brain.py (Persistence)
             val premHist = JSONArray(prefs.getString("premium_history", "[]") ?: "[]")
@@ -3299,8 +3295,23 @@ class MarketWatchService : Service() {
         prefs.edit().putString(PAPER_MENU_STATE_KEY, state.toString()).commit()
     }
 
+    /** R3: fresh derivation of the execution mode from preferences (same rule as runBrainAnalysis). */
+    private fun currentExecutionMode(): String = ExecutionModeResolver.derive(
+        prefs.getString("execution_mode", ""),
+        prefs.getBoolean("execution_sandbox_enabled", false),
+        prefs.getString("order_proxy_url", "")
+    )
+
     /** Returns the slot key when this poll is a capture attempt (request placed into ctx), else null. */
     private fun preparePaperMenuCaptureRequest(slotKey: String?, ctxObj: JSONObject): String? {
+        // R3: Paper only. Checked BEFORE any capture state is loaded, rolled over or written, so a live or
+        // sandbox decision never creates a menu, consumes the session's capture slot or reaches the
+        // evidence-only margin path. Recovery uploads of already-frozen Paper evidence still run.
+        val populationMode = ctxObj.optString("executionMode", "")
+        if (!ExecutionModeResolver.isPaper(populationMode)) {
+            launchPaperMenuUploadIfPending()
+            return null
+        }
         val now = currentIstIso()
         var attemptSlot: String? = null
         synchronized(paperMenuStateLock) {
@@ -3430,7 +3441,15 @@ class MarketWatchService : Service() {
             recordPaperMenuAttemptFailure(slotKey, unusable)
             return
         }
-        val (margins, stats) = collectPaperMenuRoleMargins(menu!!, authToken)
+        // R3: re-check before the expensive capture-side work (extra margin requests, file write). The
+        // population must have been ranked in Paper AND the app must still be in Paper now.
+        val modeNow = currentExecutionMode()
+        val populationMode = menu!!.optJSONObject("manifest")?.optString("population_execution_mode", "") ?: ""
+        if (!ExecutionModeResolver.isPaper(modeNow) || !ExecutionModeResolver.isPaper(populationMode)) {
+            recordPaperMenuAttemptFailure(slotKey, "execution_mode_not_paper:now=$modeNow:population=$populationMode")
+            return
+        }
+        val (margins, stats) = collectPaperMenuRoleMargins(menu, authToken)
         val enriched = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
             Python.getInstance().getModule("paper_menu_evidence")
                 .callAttr("attach_margin_evidence_json", menu.toString(), margins.toString(), stats.toString())
