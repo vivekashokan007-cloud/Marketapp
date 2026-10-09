@@ -19,13 +19,20 @@ import java.util.TimeZone
  * Session phase (NSE): continuous trading 09:15-15:15 for CAS-eligible constituents, Closing Auction
  * Session 15:15-15:35 (live from 2026-08-03, NSE/CMTR/75479), derivatives until 15:40. During CAS the
  * actual index uses constituents' continuous-session LTPs (NSE/CMTR/73362 s.6.5), so an unchanged index
- * with an advancing feed timestamp is FRESH_UNCHANGED, never stale. Phase is derived from the device
+ * with an advancing, recent feed timestamp is FRESH_UNCHANGED, never stale. Phase is derived from the device
  * fetch-completion clock and labelled as such.
+ *
+ * v2 (R5): observations (`observations`: feed age, repeated feed timestamp, unchanged price, future/invalid
+ * timestamp) are recorded separately from the conclusion (`status`/`freshness`/`freshness_basis`). During CAS
+ * an old or repeated index feed timestamp is UNKNOWN - the provider may legitimately stop refreshing a frozen
+ * index - and is concluded neither STALE nor FRESH, because this object has no independent evidence of
+ * staleness (index last_trade_time is not meaningful). A missing, unparseable or future feed timestamp is
+ * UNKNOWN in every phase; fetch time is never substituted.
  *
  * Evidence only: nothing in ranking, gates, sizing or exits reads this object.
  */
 object SpotProvenance {
-    const val VERSION = "spot_provenance_v1"
+    const val VERSION = "spot_provenance_v2"
     const val PROVIDER = "UPSTOX"
     const val ENDPOINT = "GET /v2/market-quote/quotes (full market quote)"
     const val ENDPOINT_VERSION = "v2"
@@ -34,6 +41,8 @@ object SpotProvenance {
     /** Feed timestamp older than this, relative to fetch completion, is STALE_SOURCE (declared, evidence-only). */
     const val STALE_FEED_AGE_MS = 180_000L
     const val CAS_EFFECTIVE_DATE = "2026-08-03"
+    /** A feed timestamp this far ahead of the device fetch clock is a clock disagreement, not freshness. */
+    const val FUTURE_TOLERANCE_MS = 60_000L
 
     val INDEX_KEYS = linkedMapOf("NF" to "NSE_INDEX:Nifty 50", "BNF" to "NSE_INDEX:Nifty Bank")
 
@@ -116,6 +125,7 @@ object SpotProvenance {
         val lttRaw = q.opt("last_trade_time")
         val ts = parseProviderTime(tsRaw)
         val ltt = parseProviderTime(lttRaw)
+        val tsPresent = tsRaw != null && tsRaw != JSONObject.NULL && tsRaw.toString().trim().let { it.isNotEmpty() && it != "null" }
         o.put("last_price", price ?: JSONObject.NULL)
             .put("feed_timestamp_raw", if (tsRaw == null || tsRaw == JSONObject.NULL) JSONObject.NULL else tsRaw.toString())
             .put("feed_timestamp_ms", ts ?: JSONObject.NULL)
@@ -124,35 +134,44 @@ object SpotProvenance {
             .put("last_trade_time_ms", ltt ?: JSONObject.NULL)
             .put("last_trade_time_available", ltt != null)
             .put("available", price != null)
-        if (price == null) return o.put("status", "PRICE_MISSING")
-        if (ts == null) {
-            // Never substitute fetch time for the missing feed time: freshness is UNKNOWN.
-            return o.put("status", "SOURCE_TS_MISSING").put("freshness", "UNKNOWN").put("feed_age_ms", JSONObject.NULL)
-        }
-        val age = fetchedAt - ts
-        o.put("feed_age_ms", age)
+            .put("fetched_at_ms", fetchedAt)
+        if (price == null) return o.put("status", "PRICE_MISSING").put("freshness", "UNKNOWN")
+            .put("freshness_basis", "no_price")
+
+        // ---- observations (facts only; no conclusion) ----
+        val inCas = sessionPhase(fetchedAt, sessionDate).startsWith("CAS_")
+        val age = ts?.let { fetchedAt - it }
         val prevTs = prev?.optLong("feed_timestamp_ms", -1L)?.takeIf { it > 0 }
         val prevPrice = prev?.optDouble("last_price", Double.NaN)?.takeIf { it.isFinite() }
         val unchanged = prevPrice != null && prevPrice == price
         val prevFetchedAt = prev?.optLong("fetched_at_ms", 0L) ?: 0L
-        val repeatedFeedTs = prevTs != null && prevTs == ts && (fetchedAt - prevFetchedAt) >= 60_000L
-        val inCas = sessionPhase(fetchedAt, sessionDate).startsWith("CAS_")
-        val status = when {
-            age > STALE_FEED_AGE_MS -> "STALE_SOURCE"
-            // Same feed timestamp a poll later: outside CAS the feed did not update (stale cache). During CAS
-            // the provider may legitimately not refresh a frozen index, so freshness is only UNKNOWN there.
-            repeatedFeedTs && inCas -> "REPEATED_FEED_TS_DURING_CAS"
-            repeatedFeedTs -> "STALE_REPEATED_FEED_TS"
-            unchanged -> "FRESH_UNCHANGED"
-            else -> "FRESH"
-        }
-        val freshness = when {
-            status.startsWith("FRESH") -> "FRESH"
-            status == "REPEATED_FEED_TS_DURING_CAS" -> "UNKNOWN"
-            else -> "STALE"
-        }
-        return o.put("status", status).put("freshness", freshness)
+        val repeatedFeedTs = ts != null && prevTs != null && prevTs == ts && (fetchedAt - prevFetchedAt) >= 60_000L
+        val future = age != null && age < -FUTURE_TOLERANCE_MS
+        val old = age != null && age > STALE_FEED_AGE_MS
+        val obs = JSONObject()
+            .put("feed_timestamp_state", when { ts != null -> "PARSED"; tsPresent -> "UNPARSEABLE"; else -> "ABSENT" })
+            .put("feed_age_ms", age ?: JSONObject.NULL)
+            .put("feed_age_exceeds_threshold", if (age == null) JSONObject.NULL else old)
+            .put("feed_timestamp_in_future", if (age == null) JSONObject.NULL else future)
+            .put("repeated_feed_timestamp", if (prevTs == null || ts == null) JSONObject.NULL else repeatedFeedTs)
             .put("price_unchanged_vs_previous", if (prevPrice == null) JSONObject.NULL else unchanged)
-            .put("fetched_at_ms", fetchedAt)
+            .put("in_cas_phase", inCas)
+        o.put("observations", obs)
+            .put("feed_age_ms", age ?: JSONObject.NULL)
+            .put("price_unchanged_vs_previous", if (prevPrice == null) JSONObject.NULL else unchanged)
+
+        // ---- conclusion (separate; evidence-only) ----
+        val (status, freshness, basis) = when {
+            ts == null && tsPresent -> Triple("SOURCE_TS_INVALID", "UNKNOWN", "feed_timestamp_unparseable")
+            ts == null -> Triple("SOURCE_TS_MISSING", "UNKNOWN", "feed_timestamp_absent_fetch_time_not_substituted")
+            future -> Triple("SOURCE_TS_IN_FUTURE", "UNKNOWN", "feed_timestamp_ahead_of_device_clock")
+            inCas && repeatedFeedTs -> Triple("REPEATED_FEED_TS_DURING_CAS", "UNKNOWN", "cas_index_may_not_refresh_no_independent_staleness_evidence")
+            inCas && old -> Triple("OLD_FEED_TS_DURING_CAS", "UNKNOWN", "cas_index_may_not_refresh_no_independent_staleness_evidence")
+            old -> Triple("STALE_SOURCE", "STALE", "feed_age_exceeds_threshold_outside_cas")
+            repeatedFeedTs -> Triple("STALE_REPEATED_FEED_TS", "STALE", "feed_timestamp_repeated_outside_cas")
+            unchanged -> Triple("FRESH_UNCHANGED", "FRESH", "recent_advancing_feed_timestamp_price_unchanged")
+            else -> Triple("FRESH", "FRESH", "recent_feed_timestamp")
+        }
+        return o.put("status", status).put("freshness", freshness).put("freshness_basis", basis)
     }
 }
