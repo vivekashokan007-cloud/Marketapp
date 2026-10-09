@@ -2588,18 +2588,29 @@ object SupabaseClient {
 
     fun saveChainRows(rows: JSONArray): Boolean {
         if (rows.length() == 0) return true
+        return saveChainRowsDetailed(rows) != null
+    }
+
+    /**
+     * Evidence batch 1 (R1): same writes as [saveChainRows], but reports WHICH table acknowledged them
+     * (null when none did), so a fallback `chain_slices` save is never mistaken for rows that a
+     * `ml_option_chain_snapshots` quote reference can resolve.
+     */
+    fun saveChainRowsDetailed(rows: JSONArray): String? {
+        if (rows.length() == 0) return null
         val payload = rows.toString()
         // The primary table has ml_ocs_unique on these four columns. Naming the
         // conflict target makes a replay of a fetched poll genuinely idempotent;
         // relying on the id primary key would reject the duplicate business key.
-        val primarySaved = postToFirstWorkingTable(
+        val primary = postToFirstWorkingTableDetailed(
             listOf(
                 "ml_option_chain_snapshots?on_conflict=poll_ts,index_key,strike,option_type"
             ),
             payload
         )
-        if (primarySaved) return true
-        return postToFirstWorkingTable(listOf("chain_slices"), payload)
+        if (primary.success) return primary.table
+        val fallback = postToFirstWorkingTableDetailed(listOf("chain_slices"), payload)
+        return if (fallback.success) fallback.table else null
     }
 
     fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {

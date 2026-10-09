@@ -1220,7 +1220,7 @@ class MarketWatchService : Service() {
             // timed-out, or failed Python call cannot erase the 15:15-15:40 marks
             // required by the post-close teacher. The database write is
             // idempotent on (poll_ts,index_key,strike,option_type).
-            val chainEvidenceRef = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
+            val (chainEvidenceRef, chainEvidenceCoverage) = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1236,7 +1236,8 @@ class MarketWatchService : Service() {
                 bnfExpiry,
                 nfExpiry,
                 spotProvenance,
-                chainEvidenceRef
+                chainEvidenceRef,
+                chainEvidenceCoverage
             )
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
@@ -2209,7 +2210,8 @@ class MarketWatchService : Service() {
                                          liveBnfExpiry: String,
                                          liveNfExpiry: String,
                                          spotProvenance: JSONObject? = null,
-                                         chainEvidenceRef: JSONObject? = null) {
+                                         chainEvidenceRef: JSONObject? = null,
+                                         chainEvidenceCoverage: JSONObject? = null) {
         var brainSuccess = false
         var brainAnalyzeStartedAtMs = 0L
         // Evidence batch 1 (Item B): slot key of an in-flight Paper decision-menu capture attempt.
@@ -2478,6 +2480,8 @@ class MarketWatchService : Service() {
             // Evidence batch 1 (Item C): provenance travels beside the unchanged spot values.
             if (spotProvenance != null) ctxObj.put("spot_provenance", spotProvenance) else ctxObj.remove("spot_provenance")
             if (chainEvidenceRef != null) ctxObj.put("chain_evidence_ref", chainEvidenceRef) else ctxObj.remove("chain_evidence_ref")
+            // Per-poll only (not kept by the snapshot compactor): the keys a quote_ref may resolve to.
+            if (chainEvidenceCoverage != null) ctxObj.put("chain_evidence_coverage", chainEvidenceCoverage) else ctxObj.remove("chain_evidence_coverage")
             val authToken = (prefs.getString("auth_token", "") ?: "").trim()
             val stage2aMode = when ((prefs.getString("stage2a_guard_mode", "paper") ?: "paper").trim().lowercase(Locale.US)) {
                 "off" -> "off"
@@ -3534,29 +3538,27 @@ class MarketWatchService : Service() {
     private suspend fun persistFetchedChainEvidenceBeforeBrain(
         bnfChain: JSONObject,
         nfChain: JSONObject
-    ): JSONObject {
+    ): Pair<JSONObject, JSONObject> {
         val pollTs = currentIstIso()
         val chainSliceRows = extractChainSlice(bnfChain, nfChain, pollTs)
         val chainRowsJson = JSONArray()
         chainSliceRows.forEach { chainRowsJson.put(it) }
-        val saved = try {
-            withContext(Dispatchers.IO) { SupabaseClient.saveChainRows(chainRowsJson) }
+        val persistTable = try {
+            withContext(Dispatchers.IO) { SupabaseClient.saveChainRowsDetailed(chainRowsJson) }
         } catch (e: Exception) {
             Log.e(TAG, "ML_CHAIN_PRE_BRAIN_SAVE_EXCEPTION: ${e.message}", e)
-            false
+            null
         }
+        val saved = chainSliceRows.isEmpty() || persistTable != null
         LogBuffer.add(
             if (saved) 'I' else 'E',
             TAG,
-            "ML_CHAIN_PRE_BRAIN_SAVE: rows=${chainSliceRows.size} saved=$saved pollTs=$pollTs"
+            "ML_CHAIN_PRE_BRAIN_SAVE: rows=${chainSliceRows.size} saved=$saved table=${persistTable?.substringBefore('?') ?: "none"} pollTs=$pollTs"
         )
-        // Evidence batch 1: the exact poll_ts under which these quotes were written, so the decision menu
-        // can reference ml_option_chain_snapshots rows instead of duplicating every quote.
-        return JSONObject()
-            .put("table", "ml_option_chain_snapshots")
-            .put("poll_ts", pollTs)
-            .put("rows", chainSliceRows.size)
-            .put("saved", saved)
+        // Evidence batch 1 (R1): one explicit schema (chain_evidence_ref_v1, ChainEvidenceRef.kt). poll_ts is
+        // the exact join key written into every row; persist_status keeps a failed or fallback-table save
+        // distinguishable from rows a quote reference can resolve; coverage lists the posted keys.
+        return ChainEvidenceRef.build(pollTs, chainSliceRows, persistTable)
     }
 
     private fun extractChainSlice(

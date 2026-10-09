@@ -63,7 +63,119 @@ def _lot_authority(index, session_date, expiry, resolver=None):
     return resolver(index, session_date, expiry)
 
 
-def _leg_rows(cand, lot, chain_poll_ts):
+CHAIN_REF_SCHEMA = 'chain_evidence_ref_v1'
+CHAIN_REF_TABLE = 'ml_option_chain_snapshots'
+CHAIN_REF_KEYS_V1 = frozenset(('schema', 'table', 'poll_ts', 'rows', 'persist_status', 'persist_table', 'saved',
+                               'coverage_keys', 'coverage_sha256'))
+# The e225959 Kotlin shape (pre-schema): exactly these keys, no 'schema'. Accepted read-only so the
+# reviewed reproduction resolves; it carries no coverage, so its refs are never 'VERIFIED'.
+CHAIN_REF_KEYS_PRE_V1 = frozenset(('table', 'poll_ts', 'rows', 'saved'))
+
+
+def _canon(obj):
+    """Same bytes as Pc2CompactBatch.canonicalJson for the int/str-only coverage object."""
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+
+
+def parse_chain_evidence_ref(raw, coverage=None):
+    """R1: the single Kotlin->Python chain reference contract (ChainEvidenceRef.kt).
+
+    Returns {'status', 'schema', 'poll_ts', 'persist_status', 'rows', 'coverage', 'coverage_verified',
+    'problems'}. 'status' is one of:
+      SAVED              rows saved in ml_option_chain_snapshots; coverage supplied and hash-verified
+      SAVED_NO_COVERAGE  rows saved (v1 or pre-v1 shape) but no verifiable coverage list
+      FALLBACK_TABLE     rows went to a fallback table; ml_option_chain_snapshots refs cannot resolve
+      PERSIST_FAILED     the pre-Brain chain write failed
+      NO_ROWS            nothing was posted
+      ABSENT             no reference supplied
+      SCHEMA_INVALID     wrong/unknown shape (e.g. the misnamed 'chain_poll_ts')
+    Only SAVED / SAVED_NO_COVERAGE yield quote references."""
+    out = {'status': 'ABSENT', 'schema': None, 'poll_ts': None, 'persist_status': None, 'rows': None,
+           'coverage': None, 'coverage_verified': False, 'problems': []}
+    if raw is None:
+        return out
+    if not isinstance(raw, dict):
+        out.update(status='SCHEMA_INVALID', problems=['chain_evidence_ref_not_object'])
+        return out
+    keys = frozenset(raw.keys())
+    schema = raw.get('schema')
+    if schema == CHAIN_REF_SCHEMA:
+        missing = sorted(CHAIN_REF_KEYS_V1 - keys)
+        extra = sorted(keys - CHAIN_REF_KEYS_V1)
+        out['schema'] = CHAIN_REF_SCHEMA
+    elif schema is None and keys == CHAIN_REF_KEYS_PRE_V1:
+        missing, extra = [], []
+        out['schema'] = 'pre_v1_e225959'
+    else:
+        out.update(status='SCHEMA_INVALID', problems=['unrecognized_chain_evidence_ref_keys:' + ','.join(sorted(keys))])
+        return out
+    if missing or extra:
+        out.update(status='SCHEMA_INVALID',
+                   problems=[f'missing:{",".join(missing)}' if missing else None,
+                             f'unexpected:{",".join(extra)}' if extra else None])
+        out['problems'] = [p for p in out['problems'] if p]
+        return out
+    poll_ts = raw.get('poll_ts')
+    if raw.get('table') != CHAIN_REF_TABLE or not isinstance(poll_ts, str) or not poll_ts.strip():
+        out.update(status='SCHEMA_INVALID', problems=['table_or_poll_ts_invalid'])
+        return out
+    out['poll_ts'] = poll_ts
+    out['rows'] = raw.get('rows')
+    if out['schema'] == CHAIN_REF_SCHEMA:
+        ps = raw.get('persist_status')
+        out['persist_status'] = ps
+        if ps == 'SAVED_PRIMARY' and raw.get('saved') is True:
+            if isinstance(coverage, dict):
+                if hashlib.sha256(_canon(coverage).encode()).hexdigest() == raw.get('coverage_sha256'):
+                    out.update(status='SAVED', coverage=coverage, coverage_verified=True)
+                else:
+                    out.update(status='SAVED_NO_COVERAGE', problems=['coverage_sha256_mismatch'])
+            else:
+                out.update(status='SAVED_NO_COVERAGE', problems=['coverage_not_supplied'])
+        elif ps == 'SAVED_FALLBACK_TABLE':
+            out['status'] = 'FALLBACK_TABLE'
+        elif ps == 'FAILED':
+            out['status'] = 'PERSIST_FAILED'
+        elif ps == 'NO_ROWS':
+            out['status'] = 'NO_ROWS'
+        else:
+            out.update(status='SCHEMA_INVALID', problems=[f'persist_status_inconsistent:{ps}:{raw.get("saved")}'])
+    else:
+        out['persist_status'] = 'PRE_V1_SAVED' if raw.get('saved') is True else 'PRE_V1_NOT_SAVED'
+        if raw.get('saved') is True:
+            out.update(status='SAVED_NO_COVERAGE', problems=['pre_v1_shape_without_coverage'])
+        else:
+            out['status'] = 'PERSIST_FAILED'
+    return out
+
+
+def _int_strike(strike):
+    if strike is None:
+        return None
+    return int(strike) if float(strike).is_integer() else None
+
+
+def _quote_ref(cand, leg_expiry, strike, opt, chain):
+    """(quote_ref or None, quote_ref_status). A ref is emitted only when it names a row that the chain
+    write put into ml_option_chain_snapshots (VERIFIED) or, without a coverage list, a row that write
+    is reported to contain (UNVERIFIED_NO_COVERAGE)."""
+    st = chain['status']
+    if st not in ('SAVED', 'SAVED_NO_COVERAGE'):
+        return None, 'CHAIN_' + st
+    k = _int_strike(strike)
+    if k is None or opt not in ('CE', 'PE') or cand.get('index') not in ('NF', 'BNF'):
+        return None, 'LEG_IDENTITY_INCOMPLETE'
+    ref = {'table': CHAIN_REF_TABLE, 'poll_ts': chain['poll_ts'], 'index_key': cand.get('index'),
+           'strike': k, 'option_type': opt, 'expiry': leg_expiry}
+    if st == 'SAVED_NO_COVERAGE':
+        return ref, 'UNVERIFIED_NO_COVERAGE'
+    strikes = ((chain['coverage'] or {}).get(f"{cand.get('index')}|{leg_expiry}") or {}).get(opt) or []
+    if k in strikes:
+        return ref, 'VERIFIED_IN_SAVED_CHAIN'
+    return None, 'NOT_IN_SAVED_CHAIN'
+
+
+def _leg_rows(cand, lot, chain):
     rows, problems = [], []
     legs = cand.get('legs') if isinstance(cand.get('legs'), list) else []
     if not legs:
@@ -88,16 +200,16 @@ def _leg_rows(cand, lot, chain_poll_ts):
             qstat = 'VALID'
         if qstat != 'VALID':
             problems.append(f'leg{i}_{qstat.lower()}')
+        leg_expiry = leg.get('expiry') or cand.get('expiry')
+        qref, qref_status = _quote_ref(cand, leg_expiry, strike, opt, chain)
         rows.append({
-            'leg_index': i, 'index': cand.get('index'), 'expiry': leg.get('expiry') or cand.get('expiry'),
+            'leg_index': i, 'index': cand.get('index'), 'expiry': leg_expiry,
             'strike': strike, 'option_type': opt, 'action': action,
             'quantity': lot if isinstance(lot, int) and lot > 0 else None, 'lots': 1,
             'instrument_key': leg.get('instrument_key'),
             'entry_bid': bid, 'entry_ask': ask, 'entry_ltp': _f(leg.get('ltp')), 'quote_validation': qstat,
             # Reference into ml_option_chain_snapshots (unique: poll_ts, index_key, strike, option_type).
-            'quote_ref': {'table': 'ml_option_chain_snapshots', 'poll_ts': chain_poll_ts,
-                          'index_key': cand.get('index'), 'strike': strike, 'option_type': opt}
-            if chain_poll_ts else None,
+            'quote_ref': qref, 'quote_ref_status': qref_status,
         })
     return rows, problems
 
@@ -126,8 +238,7 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
     request = request if isinstance(request, dict) else {}
     session_date = str(request.get('session_date') or ctx.get('today_ist') or '')
     menu_id = request.get('menu_id') or menu_id_for(session_date)
-    chain_ref = ctx.get('chain_evidence_ref') if isinstance(ctx.get('chain_evidence_ref'), dict) else {}
-    chain_poll_ts = chain_ref.get('chain_poll_ts') if chain_ref.get('saved') else None
+    chain = parse_chain_evidence_ref(ctx.get('chain_evidence_ref'), ctx.get('chain_evidence_coverage'))
     watchlist = [c for c in (result.get('watchlist') or []) if isinstance(c, dict)]
     watch_rank = {}
     for i, c in enumerate(watchlist, start=1):
@@ -142,7 +253,12 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
         'slot_key': request.get('slot_key'), 'slot_scheduled_ist': request.get('slot_scheduled_ist'),
         'dispatch_at': request.get('dispatch_at'), 'attempt_no': request.get('attempt_no'),
         'decision_poll_t': (ctx.get('live') or {}).get('t') if isinstance(ctx.get('live'), dict) else None,
-        'chain_poll_ts': chain_poll_ts, 'chain_rows_saved': chain_ref.get('saved'),
+        # R1: chain_poll_ts is the reference's poll_ts whenever a reference was supplied and parsed, so a
+        # failed save keeps its timestamp; chain_rows_saved is True only for rows in the referenced table.
+        'chain_poll_ts': chain['poll_ts'], 'chain_rows_saved': chain['status'] in ('SAVED', 'SAVED_NO_COVERAGE'),
+        'chain_ref_status': chain['status'], 'chain_ref_schema': chain['schema'],
+        'chain_persist_status': chain['persist_status'], 'chain_rows_posted': chain['rows'],
+        'chain_ref_problems': chain['problems'],
         'spot_provenance': ctx.get('spot_provenance'),
         'storage_strategy': STORAGE_STRATEGY, 'truncation_reason': None,
         'verdict_action': verdict.get('action'), 'decision_source': result.get('decisionSource'),
@@ -156,6 +272,7 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
         manifest.update({'population_status': 'POPULATION_UNAVAILABLE', 'generated_count': None,
                          'captured_count': 0, 'duplicate_count': 0, 'expected_candidate_rows': 0,
                          'control': {'status': 'NO_POPULATION'}})
+        manifest['evidence_readiness'] = evidence_readiness(manifest, [])
         return {'manifest': manifest, 'candidates': []}
 
     rows, seen, dup = [], set(), 0
@@ -181,7 +298,7 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
             lot_problem = 'lot_authority_unresolved'
         elif cand_lot is not None and int(cand_lot) != int(lot):
             lot_problem = 'candidate_lot_disagrees_with_authority'
-        legs, leg_problems = _leg_rows(c, lot, chain_poll_ts)
+        legs, leg_problems = _leg_rows(c, lot, chain)
         family = c.get('type')
         try:
             pre_expiry = bool(expiry) and date.fromisoformat(str(expiry)) > date.fromisoformat(session_date)
@@ -229,7 +346,45 @@ def build_paper_decision_menu(ranked, result, ctx, request, lot_resolver=None):
         'candidate_ids_sha256': hashlib.sha256('\n'.join(r['candidate_id'] for r in rows).encode()).hexdigest(),
         'control': control,
     })
+    manifest['evidence_readiness'] = evidence_readiness(manifest, rows)
     return {'manifest': manifest, 'candidates': rows}
+
+
+def evidence_readiness(manifest, rows):
+    """R1: research readiness is declared from reference coverage and identity, never from row counts.
+
+    quote_refs: ALL_VERIFIED (every leg resolves to a row the chain write put into
+    ml_option_chain_snapshots), PARTIAL, UNVERIFIED (refs present but no coverage list), NONE, or
+    NOT_APPLICABLE (no candidate legs)."""
+    counts = {}
+    legs_total = 0
+    for r in rows:
+        for l in r.get('legs') or []:
+            legs_total += 1
+            counts[l.get('quote_ref_status')] = counts.get(l.get('quote_ref_status'), 0) + 1
+    verified = counts.get('VERIFIED_IN_SAVED_CHAIN', 0)
+    unverified = counts.get('UNVERIFIED_NO_COVERAGE', 0)
+    if legs_total == 0:
+        qr = 'NOT_APPLICABLE'
+    elif verified == legs_total:
+        qr = 'ALL_VERIFIED'
+    elif verified > 0:
+        qr = 'PARTIAL'
+    elif unverified > 0:
+        qr = 'UNVERIFIED'
+    else:
+        qr = 'NONE'
+    reasons = []
+    if manifest.get('population_status') != 'MENU_BUILT':
+        reasons.append('population_' + str(manifest.get('population_status')).lower())
+    if manifest.get('chain_ref_status') != 'SAVED':
+        reasons.append('chain_ref_' + str(manifest.get('chain_ref_status')).lower())
+    if qr != 'ALL_VERIFIED':
+        reasons.append('quote_refs_' + qr.lower())
+    return {'quote_refs': qr, 'leg_ref_status_counts': counts, 'legs_total': legs_total,
+            'ready_for_research': not reasons, 'not_ready_reasons': reasons,
+            'rule': 'ready only if MENU_BUILT, chain_ref SAVED (v1, coverage hash-verified) and every leg ref verified; '
+                    'never inferred from candidate or chain row counts'}
 
 
 def register_control_peer(menu_id, primary_row, rows):

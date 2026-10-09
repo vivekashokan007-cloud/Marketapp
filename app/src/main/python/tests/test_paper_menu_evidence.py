@@ -26,14 +26,28 @@ def ib(cid_center, width=250, index='NF', expiry=EXP, lot=65, family='IRON_BUTTE
     return {'id': f'IB_{index}_{k}_W{width}', 'type': family, 'index': index, 'expiry': expiry, 'lotSize': lot,
             'lane': f'{index}_intraday', 'netPremium': 120.0, 'maxLoss': 5000.0, 'maxProfit': 9000.0,
             'entryEligible': True, 'executionGate': 'READY', 'executionReady': True, 'poll_ts': '2026-10-09T12:30:00+0530',
-            'legs': [leg(k, 'CE', 'SELL', bid_short, bid_short + 0.3), leg(k + width, 'CE', 'BUY', 30.0, 30.2),
-                     leg(k, 'PE', 'SELL', bid_short - 5, bid_short - 4.6), leg(k - width, 'PE', 'BUY', 28.0, 28.4)]}
+            'legs': [leg(k, 'CE', 'SELL', bid_short, bid_short + 0.3, expiry), leg(k + width, 'CE', 'BUY', 30.0, 30.2, expiry),
+                     leg(k, 'PE', 'SELL', bid_short - 5, bid_short - 4.6, expiry),
+                     leg(k - width, 'PE', 'BUY', 28.0, 28.4, expiry)]}
+
+
+# R1: the exact Kotlin-emitted objects (ChainEvidenceRef.build), shared golden fixture with the Kotlin test.
+_REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..', '..'))
+CHAIN_FIXTURE_PATH = os.path.join(_REPO, 'app', 'src', 'test', 'resources', 'evidence_batch1', 'chain_evidence_ref_v1.json')
+with open(CHAIN_FIXTURE_PATH) as _f:
+    CHAIN_FX = json.load(_f)
+
+
+def kotlin_chain_ctx():
+    return {'chain_evidence_ref': copy.deepcopy(CHAIN_FX['chain_evidence_ref']),
+            'chain_evidence_coverage': copy.deepcopy(CHAIN_FX['chain_evidence_coverage'])}
 
 
 def menu_for(ranked, watch_ids, ctx_extra=None, menu_id='pdm_unit'):
     by = {c['id']: c for c in ranked}
     result = {'watchlist': [by[i] for i in watch_ids], 'brain_version': '2.6.68', 'verdict': {'action': 'WAIT'}}
-    ctx = {'today_ist': SESSION, 'chain_evidence_ref': {'chain_poll_ts': '2026-10-09T12:30:05+05:30', 'saved': True}}
+    # The previous helper supplied a differently named 'chain_poll_ts' key, masking the R1 defect.
+    ctx = {'today_ist': SESSION, **kotlin_chain_ctx()}
     ctx.update(ctx_extra or {})
     return pme.build_paper_decision_menu(ranked, result, ctx, {'menu_id': menu_id, 'session_date': SESSION})
 
@@ -63,7 +77,8 @@ class MenuBuildTests(unittest.TestCase):
         self.assertTrue(p['lot_authority']['rule_id'])
         self.assertEqual([l['action'] for l in p['legs']], ['SELL', 'BUY', 'SELL', 'BUY'])
         self.assertTrue(all(l['quantity'] == 65 and l['quote_validation'] == 'VALID' for l in p['legs']))
-        self.assertEqual(p['legs'][0]['quote_ref']['poll_ts'], '2026-10-09T12:30:05+05:30')
+        self.assertEqual(p['legs'][0]['quote_ref']['poll_ts'], CHAIN_FX['poll_ts'])
+        self.assertEqual(p['legs'][0]['quote_ref_status'], 'VERIFIED_IN_SAVED_CHAIN')
         bnf = rows['IB_BNF_52000_W500']
         self.assertEqual(bnf['lot_size'], 30)
 
@@ -105,6 +120,114 @@ class MenuBuildTests(unittest.TestCase):
         self.assertNotEqual(pme.menu_id_for(SESSION), pme.menu_id_for('2026-10-08'))
         self.assertTrue(pme.in_capture_window(12, 30) and pme.in_capture_window(12, 55))
         self.assertFalse(pme.in_capture_window(12, 25) or pme.in_capture_window(12, 56))
+
+
+def _saved_row_index():
+    idx = {}
+    for r in CHAIN_FX['posted_rows']:
+        k = (r['poll_ts'], r['index_key'], r['strike'], r['option_type'])
+        idx.setdefault(k, []).append(r)
+    return idx
+
+
+class ChainReferenceContractTests(unittest.TestCase):
+    """R1: one explicit chain_evidence_ref_v1 schema across Kotlin -> Python."""
+
+    def test_exact_kotlin_shape_yields_timestamp_and_refs_that_resolve_to_saved_rows(self):
+        ranked = [ib(22300), ib(22500, width=500), ib(52000, width=500, index='BNF', lot=30, expiry='2026-10-27')]
+        m = menu_for(ranked, [ranked[0]['id']])
+        man = m['manifest']
+        self.assertEqual(man['chain_poll_ts'], CHAIN_FX['poll_ts'])
+        self.assertIs(man['chain_rows_saved'], True)
+        self.assertEqual((man['chain_ref_status'], man['chain_ref_schema'], man['chain_persist_status']),
+                         ('SAVED', 'chain_evidence_ref_v1', 'SAVED_PRIMARY'))
+        saved = _saved_row_index()
+        n = 0
+        for r in m['candidates']:
+            for l in r['legs']:
+                q = l['quote_ref']
+                self.assertIsNotNone(q, (r['candidate_id'], l))
+                self.assertEqual(l['quote_ref_status'], 'VERIFIED_IN_SAVED_CHAIN')
+                hits = saved.get((q['poll_ts'], q['index_key'], q['strike'], q['option_type']), [])
+                self.assertEqual(len(hits), 1, q)              # resolves to exactly one saved row (ml_ocs_unique)
+                self.assertEqual(hits[0]['expiry'], q['expiry'])
+                self.assertIsInstance(q['strike'], int)
+                n += 1
+        self.assertEqual(n, 12)
+        self.assertEqual(man['evidence_readiness']['quote_refs'], 'ALL_VERIFIED')
+        self.assertTrue(man['evidence_readiness']['ready_for_research'])
+
+    def test_reviewer_reproduction_now_yields_actual_timestamp_and_refs(self):
+        # CHATGPT_REVIEW_R1 reproduction, verbatim input (the e225959 Kotlin shape, no coverage list).
+        c = ib(22300)
+        result = {'watchlist': [c], 'brain_version': '2.6.68', 'verdict': {'action': 'WAIT'}}
+        ctx = {'today_ist': SESSION, 'chain_evidence_ref': {
+            'table': 'ml_option_chain_snapshots', 'poll_ts': '2026-10-09T12:30:05+05:30', 'rows': 40000, 'saved': True}}
+        m = pme.build_paper_decision_menu([c], result, ctx, {'menu_id': 'pdm_unit', 'session_date': SESSION})
+        self.assertIs(m['manifest']['chain_rows_saved'], True)
+        self.assertEqual(m['manifest']['chain_poll_ts'], '2026-10-09T12:30:05+05:30')
+        legs = [l for r in m['candidates'] for l in r['legs']]
+        self.assertEqual(len(legs), 4)
+        for l in legs:
+            self.assertEqual(l['quote_ref']['poll_ts'], '2026-10-09T12:30:05+05:30')
+            self.assertEqual((l['quote_ref']['table'], l['quote_ref']['index_key']), ('ml_option_chain_snapshots', 'NF'))
+            self.assertEqual(l['quote_ref_status'], 'UNVERIFIED_NO_COVERAGE')
+        # No coverage list -> refs are well formed but not verified; readiness is not claimed.
+        self.assertFalse(m['manifest']['evidence_readiness']['ready_for_research'])
+        self.assertEqual(m['manifest']['evidence_readiness']['quote_refs'], 'UNVERIFIED')
+
+    def test_failed_and_fallback_persistence_stay_distinguishable(self):
+        c = ib(22300)
+        for ps, saved, table, want in (('FAILED', False, None, 'PERSIST_FAILED'),
+                                       ('SAVED_FALLBACK_TABLE', False, 'chain_slices', 'FALLBACK_TABLE'),
+                                       ('NO_ROWS', False, None, 'NO_ROWS')):
+            ctx = kotlin_chain_ctx()
+            ctx['chain_evidence_ref'].update(persist_status=ps, saved=saved, persist_table=table)
+            m = menu_for([c], [c['id']], ctx)
+            man = m['manifest']
+            self.assertEqual(man['chain_ref_status'], want)
+            self.assertIs(man['chain_rows_saved'], False)
+            self.assertEqual(man['chain_poll_ts'], CHAIN_FX['poll_ts'])   # timestamp kept, refs withheld
+            self.assertTrue(all(l['quote_ref'] is None and l['quote_ref_status'] == 'CHAIN_' + want
+                                for r in m['candidates'] for l in r['legs']))
+            # Not inferred from row counts: 1 captured candidate, yet not research-ready.
+            self.assertEqual(man['captured_count'], 1)
+            self.assertFalse(man['evidence_readiness']['ready_for_research'])
+
+    def test_misnamed_or_tampered_reference_is_rejected_not_guessed(self):
+        c = ib(22300)
+        old_helper = {'chain_evidence_ref': {'chain_poll_ts': '2026-10-09T12:30:05+05:30', 'saved': True},
+                      'chain_evidence_coverage': None}
+        m = menu_for([c], [c['id']], old_helper)
+        self.assertEqual(m['manifest']['chain_ref_status'], 'SCHEMA_INVALID')
+        self.assertIsNone(m['manifest']['chain_poll_ts'])
+        ctx = kotlin_chain_ctx()
+        ctx['chain_evidence_coverage']['NF|2026-10-13']['CE'].append(99999)
+        m = menu_for([c], [c['id']], ctx)
+        self.assertEqual(m['manifest']['chain_ref_status'], 'SAVED_NO_COVERAGE')
+        self.assertIn('coverage_sha256_mismatch', m['manifest']['chain_ref_problems'])
+        ctx = kotlin_chain_ctx()
+        ctx['chain_evidence_ref']['chain_poll_ts'] = 'x'
+        self.assertEqual(menu_for([c], [c['id']], ctx)['manifest']['chain_ref_status'], 'SCHEMA_INVALID')
+
+    def test_leg_outside_saved_chain_gets_no_ref(self):
+        far = ib(23400, width=500)       # 23900 CE wing is outside the posted NF strikes
+        other_exp = ib(22300, expiry='2026-10-20')
+        other_exp['id'] = 'IB_NF_OTHER_EXP'
+        m = menu_for([far, other_exp], [far['id']])
+        rows = {r['candidate_id']: r for r in m['candidates']}
+        st = [l['quote_ref_status'] for l in rows[far['id']]['legs']]
+        self.assertEqual(st, ['VERIFIED_IN_SAVED_CHAIN', 'NOT_IN_SAVED_CHAIN', 'VERIFIED_IN_SAVED_CHAIN', 'VERIFIED_IN_SAVED_CHAIN'])
+        self.assertIsNone(rows[far['id']]['legs'][1]['quote_ref'])
+        self.assertTrue(all(l['quote_ref_status'] == 'NOT_IN_SAVED_CHAIN' for l in rows['IB_NF_OTHER_EXP']['legs']))
+        self.assertEqual(m['manifest']['evidence_readiness']['quote_refs'], 'PARTIAL')
+        self.assertFalse(m['manifest']['evidence_readiness']['ready_for_research'])
+
+    def test_coverage_hash_matches_kotlin_canonical_form(self):
+        cov = CHAIN_FX['chain_evidence_coverage']
+        import hashlib
+        self.assertEqual(hashlib.sha256(pme._canon(cov).encode()).hexdigest(),
+                         CHAIN_FX['chain_evidence_ref']['coverage_sha256'])
 
 
 class ControlPeerTests(unittest.TestCase):
@@ -245,13 +368,16 @@ class BrainIntegrationTests(unittest.TestCase):
         self.assertIsNone(primary['margin_evidence']['final_margin_inr'])
 
     def test_compaction_keeps_provenance_and_margin_summary(self):
-        ctx = {'spot_provenance': {'NF': {'status': 'FRESH_UNCHANGED'}}, 'chain_evidence_ref': {'chain_poll_ts': 't'},
+        ctx = {'spot_provenance': {'NF': {'status': 'FRESH_UNCHANGED'}},
+               'chain_evidence_ref': copy.deepcopy(CHAIN_FX['chain_evidence_ref']),
+               'chain_evidence_coverage': copy.deepcopy(CHAIN_FX['chain_evidence_coverage']),
                'marginShadowSummary': {'quoted': 9}, 'marginByCandidate': {'X': {'request_payload': {}}}}
         c = brain._compact_android_snapshot_context(ctx)
         self.assertEqual(c['spot_provenance'], ctx['spot_provenance'])
         self.assertEqual(c['chain_evidence_ref'], ctx['chain_evidence_ref'])
         self.assertEqual(c['marginShadowSummary'], ctx['marginShadowSummary'])
         self.assertNotIn('marginByCandidate', c)
+        self.assertNotIn('chain_evidence_coverage', c)   # per-poll only; never bloats snapshots
 
 
 if __name__ == '__main__':
