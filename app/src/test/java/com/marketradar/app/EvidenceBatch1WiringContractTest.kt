@@ -66,13 +66,21 @@ class EvidenceBatch1WiringContractTest {
         assertTrue(up.contains("SupabaseClient.savePaperDecisionMenu("))
         val sc = source("SupabaseClient.kt")
         val fn = sc.substring(sc.indexOf("fun savePaperDecisionMenu"), sc.indexOf("fun paperMenuCollectorActive"))
+        // R2-review Blocker A: the client delegates to PaperMenuUploader over the same OkHttp client/headers.
+        assertTrue(fn.contains("PaperMenuUploader.upload(paperMenuTransport"))
+        val up2 = source("PaperMenuUploader.kt")
         // R4: writes only through the authorized RPCs, with the device credential, then readback.
-        assertTrue(fn.contains("postRpc(\"paper_decision_menu_ingest_manifest\""))
-        assertTrue(fn.contains("postRpc(\"paper_decision_menu_ingest_candidates\""))
-        assertTrue(fn.contains("postRpc(\"paper_decision_menu_finalize\""))
-        assertTrue(fn.contains(".put(\"p_device_key\", deviceKey)"))
-        assertTrue(fn.contains("PaperMenuCapture.readbackDifference(canonicalRowsInRankOrder, arr)"))
+        assertTrue(up2.contains("t.rpc(\"paper_decision_menu_ingest_manifest\""))
+        assertTrue(up2.contains("t.rpc(\"paper_decision_menu_ingest_candidates\""))
+        assertTrue(up2.contains("t.rpc(\"paper_decision_menu_finalize\""))
+        assertTrue(up2.contains(".put(\"p_device_key\", deviceKey)"))
+        assertTrue(up2.contains("PaperMenuCapture.readbackDifference(local, collected)"))
+        // Keyset pagination by the unique rank, no offset, bounded page budget.
+        assertTrue(up2.contains("generated_rank=gt.\$cursor"))
+        assertFalse(up2.contains("offset="))
+        assertTrue(up2.contains("val budget = local.size + 2"))
         assertFalse("no direct table INSERT any more", fn.contains("postArrayToTableDetailed(\"ml_paper_decision_menu"))
+        assertFalse("no direct table INSERT any more", up2.contains("postArrayToTableDetailed"))
     }
 
     @Test

@@ -1894,7 +1894,7 @@ object SupabaseClient {
 
     /** Outcome of one Paper decision-menu upload attempt (R4). */
     data class PaperMenuUploadResult(
-        /** ACKNOWLEDGED | RETRY | CONFLICT | MISMATCH | REJECTED_PERMANENT */
+        /** ACKNOWLEDGED | RETRY | READBACK_INCOMPLETE | CONFLICT | MISMATCH | REJECTED_PERMANENT */
         val disposition: String,
         val outcome: String,
         val completeness: String? = null,
@@ -1915,15 +1915,12 @@ object SupabaseClient {
         RpcResponse(null, null, e.message)
     }
 
-    private fun failure(stage: String, r: RpcResponse): PaperMenuUploadResult {
-        val code = r.pgCode
-        // Payload-shape faults cannot be fixed by retrying the same frozen bytes; the item is retained.
-        val permanent = code in setOf("23514", "22P02", "PT413", "23502", "22003", "22007", "22008", "23505")
-        return PaperMenuUploadResult(
-            if (permanent) "REJECTED_PERMANENT" else "RETRY",
-            "${stage}_FAILED:${r.code ?: r.exception}:${code ?: "-"}",
-            detail = r.body?.take(300)
-        )
+    /** R2-review Blocker A: the paper-menu uploader talks to PostgREST through this transport (same client/headers). */
+    private val paperMenuTransport by lazy {
+        PaperMenuUploader.OkHttpTransport(client, "$URL/rest/v1") {
+            mapOf("apikey" to ANON_KEY, "Authorization" to "Bearer ${AuthAccess.resolveBearerToken(ANON_KEY)}",
+                "Content-Type" to "application/json")
+        }
     }
 
     /**
@@ -1932,9 +1929,12 @@ object SupabaseClient {
      * (Pc2IngestCredential; the server also requires it to be the single designated collector).
      *
      * ACKNOWLEDGED is returned only when the server declared COMPLETE / NO_ROWS_EXPECTED, its durable
-     * content digest equals the local digest, AND a readback of every row's (candidate_id, generated_rank,
-     * content_sha256) equals the frozen local rows. A conflicting server answer (another payload already
-     * accepted for this menu id, or a changed candidate) is CONFLICT and never retried automatically.
+     * content digest equals the local digest, AND a complete keyset-paginated readback of every row's
+     * (candidate_id, generated_rank, content_sha256) equals the frozen local rows (PaperMenuUploader.readback;
+     * a server page cap below the requested limit is handled, never treated as end-of-data). An unproven or
+     * partial readback is READBACK_INCOMPLETE (retryable), distinct from an established MISMATCH. A conflicting
+     * server answer (another payload already accepted for this menu id, or a changed candidate) is CONFLICT and
+     * never retried automatically.
      */
     fun savePaperDecisionMenu(
         deviceKey: String,
@@ -1942,60 +1942,8 @@ object SupabaseClient {
         canonicalRowsInRankOrder: List<String>,
         payloadSha256: String
     ): PaperMenuUploadResult {
-        if (!Pc2IngestCredential.isValidKey(deviceKey)) return PaperMenuUploadResult("RETRY", "NO_DEVICE_CREDENTIAL")
-        val menuId = manifestRow.getString("menu_id")
-        val m = postRpc("paper_decision_menu_ingest_manifest",
-            JSONObject().put("p_device_key", deviceKey).put("p_manifest", manifestRow))
-        if (!m.ok) return failure("MANIFEST", m)
-        val ms = runCatching { JSONObject(m.body ?: "") }.getOrNull()
-        when (ms?.optString("status")) {
-            "ACCEPTED", "REPLAY" -> Unit
-            "REJECTED_CONFLICT" -> return PaperMenuUploadResult("CONFLICT", "MANIFEST_CONFLICT:${ms.optString("conflict")}",
-                detail = "accepted_payload_sha256=${ms.optString("accepted_payload_sha256")}")
-            else -> return PaperMenuUploadResult("RETRY", "MANIFEST_UNEXPECTED_RESPONSE", detail = m.body?.take(300))
-        }
-        for ((i, chunk) in canonicalRowsInRankOrder.chunked(PaperMenuCapture.CANDIDATE_CHUNK).withIndex()) {
-            val r = postRpc("paper_decision_menu_ingest_candidates", JSONObject()
-                .put("p_device_key", deviceKey).put("p_menu_id", menuId).put("p_payload_sha256", payloadSha256)
-                .put("p_rows", JSONArray(chunk)))
-            if (!r.ok) return failure("ROWS_CHUNK_${i + 1}", r)
-            val rs = runCatching { JSONObject(r.body ?: "") }.getOrNull()
-            when (rs?.optString("status")) {
-                "OK", "REJECTED_TERMINAL" -> Unit
-                "REJECTED_CONFLICT" -> return PaperMenuUploadResult("CONFLICT", "ROWS_CONFLICT:${rs.optString("conflict")}",
-                    detail = "candidate_id=${rs.optString("candidate_id")}")
-                else -> return PaperMenuUploadResult("RETRY", "ROWS_UNEXPECTED_RESPONSE", detail = r.body?.take(300))
-            }
-        }
-        val f = postRpc("paper_decision_menu_finalize", JSONObject()
-            .put("p_device_key", deviceKey).put("p_menu_id", menuId).put("p_payload_sha256", payloadSha256))
-        if (!f.ok) return failure("FINALIZE", f)
-        val fs = runCatching { JSONObject(f.body ?: "") }.getOrNull()
-            ?: return PaperMenuUploadResult("RETRY", "FINALIZE_UNPARSEABLE")
-        if (fs.optString("status") == "REJECTED_CONFLICT")
-            return PaperMenuUploadResult("CONFLICT", "FINALIZE_CONFLICT:${fs.optString("conflict")}")
-        val completeness = fs.optString("completeness_state").ifBlank { null }
-        val localDigest = PaperMenuCapture.contentDigest(canonicalRowsInRankOrder)
-        return when (completeness) {
-            "COMPLETE", "NO_ROWS_EXPECTED" -> {
-                if (fs.optString("durable_content_sha256") != localDigest)
-                    return PaperMenuUploadResult("MISMATCH", "DURABLE_DIGEST_DIFFERS", completeness)
-                val diff = if (canonicalRowsInRankOrder.isEmpty()) null else {
-                    val rb = fetchSync(getBaseRequest(
-                        "ml_paper_decision_menu_candidates?menu_id=eq.$menuId" +
-                            "&select=candidate_id,generated_rank,content_sha256&order=generated_rank.asc" +
-                            "&limit=${canonicalRowsInRankOrder.size + 1}"
-                    ).get().build()) ?: return PaperMenuUploadResult("RETRY", "READBACK_FAILED", completeness)
-                    val arr = runCatching { JSONArray(rb) }.getOrNull()
-                        ?: return PaperMenuUploadResult("RETRY", "READBACK_UNPARSEABLE", completeness)
-                    PaperMenuCapture.readbackDifference(canonicalRowsInRankOrder, arr)
-                }
-                if (diff == null) PaperMenuUploadResult("ACKNOWLEDGED", "OK", completeness)
-                else PaperMenuUploadResult("MISMATCH", "READBACK_DIFFERS:$diff", completeness)
-            }
-            "MISMATCH" -> PaperMenuUploadResult("MISMATCH", "SERVER_MISMATCH", completeness)
-            else -> PaperMenuUploadResult("RETRY", "NOT_YET_COMPLETE", completeness)
-        }
+        val r = PaperMenuUploader.upload(paperMenuTransport, deviceKey, manifestRow, canonicalRowsInRankOrder, payloadSha256)
+        return PaperMenuUploadResult(r.disposition, r.outcome, r.completeness, r.detail)
     }
 
     /** True only when the server reports this key as a registered device AND the active collector. */
