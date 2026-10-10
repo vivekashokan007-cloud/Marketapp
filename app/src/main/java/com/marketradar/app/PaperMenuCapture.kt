@@ -215,6 +215,27 @@ object PaperMenuCapture {
     }
 
 
+    // ---- R2-review Blocker B: preference state reconciled with already-frozen captures ----
+
+    /** Lookup of a VALID frozen CAPTURED outbox entry for a menu id: (payload_sha256, frozen path), else null. */
+    fun interface FrozenCaptures { fun find(menuId: String): Pair<String, String>? }
+
+    /**
+     * If the outbox already holds a valid frozen capture for this state's menu id but the state was not committed
+     * as CAPTURED (interrupted between the outbox write and the preference commit), mark it CAPTURED with the frozen
+     * sha. Returns true when the state changed. A frozen capture is never superseded by a recapture or by MISSED.
+     */
+    fun reconcileWithFrozen(state: JSONObject, frozen: FrozenCaptures?, atIso: String): Boolean {
+        if (frozen == null || state.optString("status") == "CAPTURED") return false
+        val (sha, path) = frozen.find(state.optString("menu_id")) ?: return false
+        val before = state.optString("status")
+        state.remove("missed_at"); state.remove("missed_menu_id"); state.remove("missed_manifest")
+        state.put("status", "CAPTURED").put("payload_sha256", sha).put("frozen_path", path)
+            .put("captured_at", state.optString("captured_at").ifBlank { atIso })
+            .put("reconciled_from_outbox", JSONObject().put("at", atIso).put("previous_status", before))
+        return true
+    }
+
     // ---- R2/R3: pure capture coordinator (JVM-testable; the service only applies its result) ----
 
     data class Prepared(
@@ -233,11 +254,19 @@ object PaperMenuCapture {
      * written: no menu is created and no capture slot is consumed. R2: missed manifests leave via the outbox.
      */
     fun prepare(populationMode: String?, rawState: String?, sessionDate: String, slotKey: String?,
-                slotOrdinal: Int?, nowIso: String): Prepared {
+                slotOrdinal: Int?, nowIso: String, frozen: FrozenCaptures? = null): Prepared {
         if (!ExecutionModeResolver.isPaper(populationMode)) return Prepared(null, emptyList(), null, null, emptyList())
-        val (state, previousMissed) = rollover(rawState, sessionDate, nowIso)
-        val missed = mutableListOf<JSONObject>()
         val events = mutableListOf<String>()
+        // Blocker B: reconcile the stored state (any session) with frozen captures BEFORE rollover can derive MISSED.
+        val raw = try { if (rawState.isNullOrBlank()) null else JSONObject(rawState) } catch (_: Exception) { null }
+        val rawReconciled = if (raw != null && reconcileWithFrozen(raw, frozen, nowIso)) {
+            events.add("PAPER_MENU_STATE_RECONCILED: session=${raw.optString("session_date")} menu=${raw.optString("menu_id")} status=CAPTURED source=frozen_outbox_capture")
+            raw.toString()
+        } else rawState
+        val (state, previousMissed) = rollover(rawReconciled, sessionDate, nowIso)
+        if (reconcileWithFrozen(state, frozen, nowIso))
+            events.add("PAPER_MENU_STATE_RECONCILED: session=${state.optString("session_date")} menu=${state.optString("menu_id")} status=CAPTURED source=frozen_outbox_capture")
+        val missed = mutableListOf<JSONObject>()
         previousMissed?.optJSONObject("missed_manifest")?.let {
             missed.add(it); events.add("PAPER_MENU_MISSED_SESSION: session=${previousMissed.optString("session_date")} menu=${previousMissed.optString("menu_id")} reason=no_completed_scheduled_slot_in_window_before_session_end")
         }

@@ -58,7 +58,9 @@ class EvidenceBatch1WiringContractTest {
         val up = svc.substring(svc.indexOf("private fun launchPaperMenuUploadIfPending"))
         // R2: uploads drain the durable per-menu outbox (frozen-bytes sha check lives in PaperMenuOutbox.drain).
         assertTrue(up.contains("PaperMenuOutbox.drain(dir, todayIstDate()"))
-        assertTrue(svc.contains("PaperMenuOutbox.enqueueCaptured(paperMenuDir()"))
+        // R2-review Blocker B: capture freeze + checked state commit go through PaperMenuRecovery.commitCapture.
+        assertTrue(svc.contains("PaperMenuRecovery.commitCapture(paperMenuDir()"))
+        assertTrue(source("PaperMenuRecovery.kt").contains("PaperMenuOutbox.enqueueCaptured(dir, menuId"))
         assertTrue(svc.contains("PaperMenuOutbox.prune(paperMenuDir()"))
         assertTrue(source("PaperMenuOutbox.kt").contains("PaperMenuCapture.sha256Hex(text) != e.payloadSha256"))
         assertTrue(up.contains("SupabaseClient.savePaperDecisionMenu("))
@@ -71,5 +73,23 @@ class EvidenceBatch1WiringContractTest {
         assertTrue(fn.contains(".put(\"p_device_key\", deviceKey)"))
         assertTrue(fn.contains("PaperMenuCapture.readbackDifference(canonicalRowsInRankOrder, arr)"))
         assertFalse("no direct table INSERT any more", fn.contains("postArrayToTableDetailed(\"ml_paper_decision_menu"))
+    }
+
+    @Test
+    fun r2ReviewBlockerB_reconcileRunsBeforeRolloverAndBeforeDrain() {
+        assertTrue(svc.contains("PaperMenuRecovery.preparePoll("))
+        assertFalse("the service no longer runs its own prepare/enqueue sequence", svc.contains("PaperMenuCapture.prepare("))
+        val rec = source("PaperMenuRecovery.kt")
+        val fn = rec.substring(rec.indexOf("fun preparePoll"), rec.indexOf("data class CommitResult"))
+        val reconcile = fn.indexOf("PaperMenuOutbox.reconcile(dir, nowMs)")
+        val prepare = fn.indexOf("PaperMenuCapture.prepare(populationMode, rawState, sessionDate, slotKey, slotOrdinal, nowIso, frozenLookup(dir))")
+        val enqueue = fn.indexOf("PaperMenuOutbox.enqueueMissed(dir, m, nowMs)")
+        val save = fn.indexOf("saveState(p.stateToSave)")
+        assertTrue(reconcile in 1 until prepare); assertTrue(prepare < enqueue); assertTrue(enqueue < save)
+        val ob = source("PaperMenuOutbox.kt")
+        val drain = ob.substring(ob.indexOf("fun drain("))
+        assertTrue(drain.trimStart().contains("val rec = reconcile(dir, nowMs)"))
+        assertTrue(drain.indexOf("val rec = reconcile(dir, nowMs)") < drain.indexOf("for (e in entries(dir))"))
+        assertTrue(svc.contains("drain.storageErrors.forEach"))
     }
 }
