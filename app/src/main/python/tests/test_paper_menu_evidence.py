@@ -6,6 +6,7 @@ import os
 import sys
 import unittest
 from collections import Counter
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
@@ -387,11 +388,15 @@ class BrainIntegrationTests(unittest.TestCase):
                     ctx.pop('executionMode', None)
                 else:
                     ctx['executionMode'] = mode
-                plain = brain.analyze(*args, json.dumps(ctx))
-                plain2 = brain.analyze(*args, json.dumps(ctx))
                 ctx_req = dict(ctx, paper_menu_capture_request={'menu_id': 'pdm_live', 'session_date': SESSION,
                                                                 'slot_key': 'x'})
-                req = brain.analyze(*args, json.dumps(ctx_req))
+                # Fallback poll timestamps must not cross a wall-clock second
+                # between these three otherwise equivalent calls. A two-call
+                # heuristic can miss a change that appears only on call three.
+                with patch.object(brain, '_current_ist_poll_ts', return_value=SESSION + 'T10:05:00+0530'):
+                    plain = brain.analyze(*args, json.dumps(ctx))
+                    plain2 = brain.analyze(*args, json.dumps(ctx))
+                    req = brain.analyze(*args, json.dumps(ctx_req))
                 a, a2, b = json.loads(plain), json.loads(plain2), json.loads(req)
                 self.assertNotIn('paper_decision_menu', b, (name, mode))
                 populated += 1 if (b.get('watchlist') and b.get('ranked_candidates_full')) else 0
