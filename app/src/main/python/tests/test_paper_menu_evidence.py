@@ -393,7 +393,11 @@ class BrainIntegrationTests(unittest.TestCase):
                 # Fallback poll timestamps must not cross a wall-clock second
                 # between these three otherwise equivalent calls. A two-call
                 # heuristic can miss a change that appears only on call three.
-                with patch.object(brain, '_current_ist_poll_ts', return_value=SESSION + 'T10:05:00+0530'):
+                # The directional shadow's diagnostic membership also depends
+                # on its elapsed-time budget. Give all calls the same budget
+                # usage, rather than masking whole payloads as nondeterministic.
+                with patch.object(brain, '_current_ist_poll_ts', return_value=SESSION + 'T10:05:00+0530'), \
+                     patch.object(brain.time, 'perf_counter', return_value=1.0):
                     plain = brain.analyze(*args, json.dumps(ctx))
                     plain2 = brain.analyze(*args, json.dumps(ctx))
                     req = brain.analyze(*args, json.dumps(ctx_req))
