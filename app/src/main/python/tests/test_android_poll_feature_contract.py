@@ -110,7 +110,9 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         snapshot_persist_body = snapshot_persist_body.split("val snapshotSessionDate", 1)[0]
         self.assertNotIn("rawSnapObj.toString()", snapshot_persist_body)
         self.assertIn('"android_compact_v1"', service)
-        self.assertIn('listOf("ml_brain_snapshots")', supabase)
+        self.assertIn('listOf("ml_brain_snapshots?on_conflict=poll_ts")', supabase)
+        self.assertIn('resolution=ignore-duplicates,return=minimal', supabase)
+        self.assertIn('BrainSnapshotOutbox.enqueue(filesDir, snapObj)', service)
         self.assertNotIn('val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")', supabase)
         self.assertIn('"snapshot_pc2_authority_policy"', cache)
         self.assertIn('"snapshot_pc2_authority_decisions"', cache)
@@ -145,7 +147,8 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         with open(SERVICE_PATH, "r", encoding="utf-8") as handle:
             service = handle.read()
 
-        snapshot_save = service.index("val snapshotSaved = SupabaseClient.saveBrainSnapshot(snapObj)")
+        snapshot_save = service.index("val snapshotSaved = if (snapshotQueued)")
+        self.assertIn("drainBrainSnapshotOutbox()", service[snapshot_save:])
         authority_save = service.index("val authorityTelemetrySaved = SupabaseClient.savePc2AuthorityDecisions(snapObj)")
         generated_save = service.index("generatedSaved = persistCompactGeneratedCandidates(generatedFactPack, snapObj)")
         success_gate = service.index("if (snapshotSaved && generatedSaved)")
