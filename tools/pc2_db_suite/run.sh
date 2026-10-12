@@ -38,7 +38,7 @@ create table public.ml_option_chain_snapshots (poll_ts timestamptz not null, ind
 grant select, insert on public.ml_pc2_authority_decisions to anon, authenticated;
 grant usage, select on sequence public.ml_pc2_authority_decisions_id_seq to anon, authenticated;
 SQL
-psql_db -f supabase/migrations/20261012060000_ml_brain_snapshots_poll_ts_idempotency.sql >/dev/null 2>&1
+psql_db -f supabase/migrations/20261012101537_ml_brain_snapshots_poll_ts_idempotency.sql >/dev/null 2>&1
 psql_db -f supabase/migrations/20260929100000_pc2_compact_dual_write.sql >/dev/null 2>&1
 psql_db -f supabase/migrations/20260929100000_pc2_compact_dual_write.sql >/dev/null 2>&1
 echo "PASS  migration applies, and re-applies idempotently"
