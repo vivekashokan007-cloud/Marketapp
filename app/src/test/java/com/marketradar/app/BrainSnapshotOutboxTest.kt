@@ -106,6 +106,20 @@ class BrainSnapshotOutboxTest {
         }
     }
 
+    @Test fun throwingUploaderRetainsBytesAndReleasesSingleFlight() {
+        val root = Files.createTempDirectory("snapshot-outbox").toFile()
+        try {
+            val ts = "2026-10-12T09:40:40+0530"
+            BrainSnapshotOutbox.enqueue(root, snapshot(ts))
+            assertThrows(OutOfMemoryError::class.java) {
+                BrainSnapshotOutbox.drain(root) { throw OutOfMemoryError("simulated") }
+            }
+            assertTrue(BrainSnapshotOutbox.isPending(root, ts))
+            val result = BrainSnapshotOutbox.drain(root) { BrainSnapshotOutbox.Outcome.ACKNOWLEDGED }
+            assertEquals(1, result.acknowledged)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun concurrentDrainSkipsAndEnqueueNeverWaitsOnUpload() {
         val root = Files.createTempDirectory("snapshot-outbox").toFile()
         val entered = CountDownLatch(1)
