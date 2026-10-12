@@ -1749,12 +1749,16 @@ object SupabaseClient {
     }
 
     /** Frozen outbox bytes. The poll_ts unique index must be deployed before this client version. */
-    fun saveBrainSnapshotPayload(payload: String): Boolean {
+    fun saveBrainSnapshotPayload(payload: String): Boolean =
+        uploadBrainSnapshotPayload(payload) == BrainSnapshotOutbox.Outcome.ACKNOWLEDGED
+
+    fun uploadBrainSnapshotPayload(payload: String): BrainSnapshotOutbox.Outcome {
         val result = postToFirstWorkingTableDetailed(
             listOf("ml_brain_snapshots?on_conflict=poll_ts"),
             payload,
             preferHeader = "resolution=ignore-duplicates,return=minimal"
         )
+        if (result.success) return BrainSnapshotOutbox.Outcome.ACKNOWLEDGED
         if (!result.success) {
             val details = buildString {
                 append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: table=")
@@ -1773,7 +1777,9 @@ object SupabaseClient {
             LogBuffer.add('E', TAG, details)
             Log.e(TAG, details)
         }
-        return result.success
+        // A malformed payload cannot succeed unchanged. Authentication, throttle,
+        // and transport failures remain retryable after configuration or network recovery.
+        return BrainSnapshotOutbox.classifyHttpFailure(result.code)
     }
 
     /**

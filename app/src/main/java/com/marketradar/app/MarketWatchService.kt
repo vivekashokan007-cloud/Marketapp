@@ -447,7 +447,10 @@ class MarketWatchService : Service() {
         maintainSessionWakeLock()
         ensurePollAlarmScheduled()
         serviceScope.launch(Dispatchers.IO) { drainPc2CompactOutbox() }
-        serviceScope.launch(Dispatchers.IO) { drainBrainSnapshotOutbox() }
+        serviceScope.launch(Dispatchers.IO) {
+            try { drainBrainSnapshotOutbox() }
+            catch (t: Throwable) { LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_DRAIN_THROW: ${t.javaClass.simpleName}") }
+        }
 
         if (intent?.action == ACTION_POLL_TICK) {
             serviceScope.launch { maybeRunPollFromAlarm() }
@@ -2904,19 +2907,27 @@ class MarketWatchService : Service() {
                             val generatedFactPack = resultObj.optJSONObject("elephant_fact_pack")
                             val localSaved = EvaluationLocalCache.appendBrainSnapshot(this@MarketWatchService, snapshotSessionDate, snapObj)
                             if (!localSaved) LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_LOCAL_SAVE_FAIL: date=$snapshotSessionDate")
+                            val snapshotQueued = runCatching { BrainSnapshotOutbox.enqueue(filesDir, snapObj) }
+                                .onFailure { error ->
+                                    LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_ENQUEUE_FAIL: ${error.javaClass.simpleName}")
+                                }.isSuccess
                             serviceScope.launch(Dispatchers.IO) {
-                                val snapshotQueued = runCatching { BrainSnapshotOutbox.enqueue(filesDir, snapObj) }
-                                    .onFailure { error ->
-                                        LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_ENQUEUE_FAIL: ${error.javaClass.simpleName}")
-                                    }.isSuccess
                                 val snapshotSaved = if (snapshotQueued) {
-                                    drainBrainSnapshotOutbox()
-                                    !BrainSnapshotOutbox.isPending(filesDir, snapObj.optString("poll_ts"))
-                                } else if (BrainSnapshotOutbox.isPending(filesDir, snapObj.optString("poll_ts"))) {
+                                    try {
+                                        val drained = drainBrainSnapshotOutbox()
+                                        val ts = snapObj.optString("poll_ts")
+                                        drained.acknowledgedPolls.contains(ts) ||
+                                            (drained.stopReason == "busy" && !BrainSnapshotOutbox.isUnacknowledged(filesDir, ts))
+                                    } catch (t: Throwable) {
+                                        LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_DRAIN_THROW: ${t.javaClass.simpleName}")
+                                        false
+                                    }
+                                } else if (BrainSnapshotOutbox.isUnacknowledged(filesDir, snapObj.optString("poll_ts"))) {
                                     // Keep a conflicting frozen poll visible for investigation.
                                     false
                                 } else {
                                     // A failed local enqueue must not block a healthy network write.
+                                    LogBuffer.add('W', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_BYPASS: pollTs=${snapObj.optString("poll_ts")}")
                                     SupabaseClient.saveBrainSnapshot(snapObj)
                                 }
                                 var generatedSaved = true
@@ -3297,17 +3308,20 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun drainBrainSnapshotOutbox() {
+    private fun drainBrainSnapshotOutbox(): BrainSnapshotOutbox.Status {
         val status = BrainSnapshotOutbox.drain(filesDir) { payload ->
-            SupabaseClient.saveBrainSnapshotPayload(payload)
+            SupabaseClient.uploadBrainSnapshotPayload(payload)
         }
         LogBuffer.add(
-            if (status.pending == 0 && status.faults.isEmpty()) 'I' else 'W', TAG,
+            if (status.pending == 0 && status.faults.isEmpty() && status.quarantinedTotal == 0) 'I' else 'W', TAG,
             "ML_BRAIN_SNAPSHOT_OUTBOX_DRAIN: attempted=${status.attempted} " +
                 "acknowledged=${status.acknowledged} pending=${status.pending} " +
-                "pendingBytes=${status.pendingBytes} faults=${status.faults.size}"
+                "pendingBytes=${status.pendingBytes} quarantined=${status.quarantined} " +
+                "quarantinedTotal=${status.quarantinedTotal} quarantinedBytes=${status.quarantinedBytes} retried=${status.retried} " +
+                "stop=${status.stopReason} faults=${status.faults.size}"
         )
         status.faults.forEach { LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_FAULT: $it") }
+        return status
     }
 
     // ---------------------------------------------------------------------------------------------
