@@ -7075,7 +7075,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.70"
+BRAIN_VERSION = "2.6.71"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -17508,7 +17508,16 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
         result['pc2_batch_f_paper_context'] = batch_f_paper_context
         ctx['pc2_batch_f_paper_context'] = batch_f_paper_context
-        result['pc2_authority_decisions'] = list(ctx.get('_pc2_authority_decisions') or [])[-128:]
+        pc2_source_decisions = list(ctx.get('_pc2_authority_decisions') or [])
+        result['pc2_authority_decisions'] = pc2_source_decisions[-128:]
+        result['pc2_authority_capture'] = {
+            'schema_version': 'pc2_retained_tail_capture_v1',
+            'source_count': len(pc2_source_decisions),
+            'retained_count': len(result['pc2_authority_decisions']),
+            'source_tail_cap': 128,
+            'truncated': len(pc2_source_decisions) > 128,
+            'scope': 'RETAINED_TAIL_TELEMETRY',
+        }
         result['pc2_authority_policy'] = dict(PC2_AUTHORITY_POLICY)
         result['context_percentiles'] = context_percentiles
         ctx['context_percentiles'] = context_percentiles
@@ -21068,6 +21077,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_pc2_supply_quality_shadow',
         'snapshot_pc2_batch_f_paper_context',
         'snapshot_pc2_authority_policy',
+        'snapshot_pc2_authority_capture',
         'snapshot_shadow_selector_suite',
         'snapshot_menu_abstention_shadow',
         'snapshot_brain_notification',
@@ -21772,6 +21782,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
     snapshot_context['snapshot_pc2_authority_decisions'] = result.get('pc2_authority_decisions') if isinstance(result.get('pc2_authority_decisions'), list) else []
     snapshot_context['snapshot_pc2_authority_policy'] = result.get('pc2_authority_policy') if isinstance(result.get('pc2_authority_policy'), dict) else {}
+    snapshot_context['snapshot_pc2_authority_capture'] = result.get('pc2_authority_capture') if isinstance(result.get('pc2_authority_capture'), dict) else {}
     snapshot_context['snapshot_pc2_composite_shadow'] = result.get('pc2_composite_shadow') if isinstance(result.get('pc2_composite_shadow'), dict) else {}
     snapshot_context['snapshot_pc2_supply_quality_shadow'] = result.get('pc2_supply_quality_shadow') if isinstance(result.get('pc2_supply_quality_shadow'), dict) else {}
     snapshot_context['snapshot_shadow_selector_suite'] = shadow_selector_suite
@@ -23707,6 +23718,13 @@ def _managed_teacher_outcome(chain_rows, snap, cand, config, drop_sink=None, rol
 def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sink=None, role=None):
     """Evaluate one candidate with both legacy H2 labels and teacher_v1 shadow labels.
     Returns outcome dict, or None if the candidate has no evaluable price path."""
+    # Ranked snapshot rows may omit lotSize before the final UI/primary stamp.
+    # Their historical contract lookup must use the immutable snapshot date;
+    # expiry alone cannot resolve a dated NSE lot rule. Work on a copy so the
+    # retained evidence and live candidate remain unchanged.
+    cand = dict(cand)
+    if not cand.get('session_date'):
+        cand['session_date'] = snap.get('session_date')
     h2 = _legacy_h2_structure_valuation(chain_rows, cand)
     sim_pnl = h2.get('sim_pnl_h2')
 

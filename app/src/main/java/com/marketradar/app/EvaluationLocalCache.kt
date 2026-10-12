@@ -789,6 +789,7 @@ object EvaluationLocalCache {
             "snapshot_phase5_gate_registry",
             "snapshot_c3_const_inventory",
             "snapshot_pc2_parameter_authority",
+            "snapshot_pc2_authority_capture",
             "snapshot_pc2_batch_a_width_wall",
             "snapshot_pc2_batch_b_regime_sigma",
             "snapshot_pc2_vix_regime_context",

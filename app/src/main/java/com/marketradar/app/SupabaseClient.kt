@@ -2118,7 +2118,11 @@ object SupabaseClient {
      * affecting the live poll path.
      */
     fun saveGeneratedCandidates(rows: JSONArray): Boolean {
-        if (rows.length() == 0) return true
+        return uploadGeneratedCandidateRows(rows) == GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
+    }
+
+    fun uploadGeneratedCandidateRows(rows: JSONArray): GeneratedCandidateOutbox.Outcome {
+        if (rows.length() == 0) return GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
         val body = rows.toString()
         val result = postToFirstWorkingTableDetailed(
             listOf("ml_generated_candidates?on_conflict=snapshot_poll_ts,candidate_id"),
@@ -2149,7 +2153,8 @@ object SupabaseClient {
             LogBuffer.add('E', TAG, details)
             Log.e(TAG, details)
         }
-        return result.success
+        return if (result.success) GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
+            else GeneratedCandidateOutbox.classifyHttpFailure(result.code)
     }
 
     fun saveBuild3AbDecision(row: JSONObject): Boolean {

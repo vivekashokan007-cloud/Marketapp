@@ -15,6 +15,7 @@ android {
     defaultConfig {
         // Keep release retries rooted in this file because GitHub signed-release
         // workflow is path-filtered to app/build.gradle.kts.
+        // b502 / 2.6.71: snapshot-stage diagnostics, generated-row recovery and dated secondary valuation.
         // b501 / 2.6.70: retry frozen brain snapshots after transient upload failures.
         // b500 / 2.6.69: Evidence Batch 1 paper decision-menu evidence (durable outbox, keyset readback, recovery).
         // b499 / 2.6.68: bounded evaluation evidence and explicit model-learning status.
@@ -42,8 +43,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 501
-        versionName = "2.6.70"
+        versionCode = 502
+        versionName = "2.6.71"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

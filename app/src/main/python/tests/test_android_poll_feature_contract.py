@@ -149,12 +149,14 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
 
         snapshot_save = service.index("val snapshotSaved = if (snapshotQueued)")
         self.assertIn("drainBrainSnapshotOutbox()", service[snapshot_save:])
-        authority_save = service.index("val authorityTelemetrySaved = SupabaseClient.savePc2AuthorityDecisions(snapObj)")
-        generated_save = service.index("generatedSaved = persistCompactGeneratedCandidates(generatedFactPack, snapObj)")
+        authority_save = service.index("val authorityTelemetrySaved = runCatching { SupabaseClient.savePc2AuthorityDecisions(snapObj) }")
+        generated_save = service.index("generatedSaved = when {")
+        generated_freeze = service.index("GeneratedCandidateOutbox.enqueue(filesDir")
         success_gate = service.index("if (snapshotSaved && generatedSaved)")
         self.assertLess(snapshot_save, authority_save)
         self.assertLess(authority_save, success_gate)
         self.assertLess(generated_save, success_gate)
+        self.assertLess(generated_freeze, snapshot_save)
         self.assertIn('"app_version"', service)
         self.assertIn('"brain_version"', service)
 

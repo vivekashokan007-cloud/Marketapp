@@ -54,6 +54,7 @@ class MarketWatchService : Service() {
     private val pollDispatchLock = Any()
     private val pollDispatchInFlightKeys = mutableSetOf<String>()
     private val mlPersistLock = Any()
+    private val snapshotHealthLock = Any()
     private val mlPersistInFlightKeys = mutableSetOf<String>()
     private var pollLoopIteration = 0L
     private var marginQuoteCachePollKey = ""
@@ -181,6 +182,8 @@ class MarketWatchService : Service() {
         private const val PY_SNAPSHOT_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
+        private const val PY_SNAPSHOT_TIMEOUT_KEY = "poll.snapshot"
+        private const val PY_PAPER_MENU_TIMEOUT_KEY = "poll.paper_menu_capture"
         // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
         private const val PAPER_MENU_STATE_KEY = "paper_menu_capture_state_v1"
         private const val PAPER_MENU_OUTBOX_SUMMARY_KEY = "paper_menu_outbox_summary_v1"
@@ -450,6 +453,10 @@ class MarketWatchService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             try { drainBrainSnapshotOutbox() }
             catch (t: Throwable) { LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_DRAIN_THROW: ${t.javaClass.simpleName}") }
+        }
+        serviceScope.launch(Dispatchers.IO) {
+            try { drainGeneratedCandidateOutbox() }
+            catch (t: Throwable) { LogBuffer.add('E', TAG, "ML_GENERATED_OUTBOX_DRAIN_THROW: ${t.javaClass.simpleName}") }
         }
 
         if (intent?.action == ACTION_POLL_TICK) {
@@ -2791,9 +2798,13 @@ class MarketWatchService : Service() {
                 }
 
                 // ML Arch V2: Chain slice extraction + brain snapshot
+                var reservedSnapshotKey: String? = null
+                val snapshotStageStarted = SystemClock.elapsedRealtime()
                 try {
                     val mlPersistKey = mlPersistKeyForPoll(poll)
                     if (reserveMlPollPersist(mlPersistKey)) {
+                        reservedSnapshotKey = mlPersistKey
+                        recordSnapshotStage("attempt", mlPersistKey)
                         // Batch A: lift marketPhase onto ctx before snapshot so
                         // producer→compact→upload can retain session phase evidence.
                         // (The later A1 ctx merge still runs for the next poll.)
@@ -2803,8 +2814,9 @@ class MarketWatchService : Service() {
                         } catch (_: Exception) { /* non-fatal */ }
 
                         // Take poll snapshot and save to ml_brain_snapshots
-                        // H1: effective timeout (PyTimeout, shared poll key).
-                        val snapResult = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
+                        // Snapshot capture has its own in-flight guard. A timed-out
+                        // auxiliary call must not suppress this evidence stage.
+                        val snapWait = PyTimeout.callWithOutcome(PY_SNAPSHOT_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
                             brain.callAttr(
                                 "take_poll_snapshot",
                                 resultObj.toString(),
@@ -2813,11 +2825,15 @@ class MarketWatchService : Service() {
                                 "android_compact_v1"
                             ).toString()
                         }
+                        val snapResult = snapWait.value
                         if (snapResult == null) {
-                            Log.w(TAG, "ML_SNAPSHOT_TIMEOUT: take_poll_snapshot exceeded ${PY_SNAPSHOT_TIMEOUT_MS}ms")
-                            LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_ABORTED: reason=timeout poll=$mlPersistKey")
+                            val reason = if (snapWait.state == PyTimeout.WaitState.IN_FLIGHT_SKIPPED)
+                                "inflight_skip" else "timeout"
+                            recordSnapshotStage(reason, mlPersistKey, SystemClock.elapsedRealtime() - snapshotStageStarted)
+                            LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_ABORTED: reason=$reason poll=$mlPersistKey")
                             releaseMlPollPersist(mlPersistKey)
                         } else {
+                            recordSnapshotStage("built", mlPersistKey, SystemClock.elapsedRealtime() - snapshotStageStarted)
                             val rawSnapObj = JSONObject(snapResult)
                             // FIX: brain.py returns JSONB payload fields as pre-serialised json.dumps()
                             // strings. Re-parse each into a proper JSONObject/JSONArray so PostgREST
@@ -2839,6 +2855,9 @@ class MarketWatchService : Service() {
                                     catch (_: Exception) { /* leave as-is — don't drop the row */ }
                                 }
                             }
+                            val snapshotSummary = rawSnapObj.optJSONObject("poll_summary_json") ?: JSONObject()
+                            snapshotSummary.put("snapshot_stage_health", snapshotStageHealth())
+                            rawSnapObj.put("poll_summary_json", snapshotSummary)
                             for (field in jsonArrayFields) {
                                 val raw = rawSnapObj.optString(field, "")
                                 if (raw.isNotBlank()) {
@@ -2911,7 +2930,20 @@ class MarketWatchService : Service() {
                                 .onFailure { error ->
                                     LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_ENQUEUE_FAIL: ${error.javaClass.simpleName}")
                                 }.isSuccess
+                            recordSnapshotStage(if (snapshotQueued) "queued" else "enqueue_failed", mlPersistKey)
+                            // Freeze the independently retained candidate cohort before any
+                            // snapshot/legacy network request can fail or delay it.
+                            val generatedRows = runCatching {
+                                generatedFactPack?.let { buildCompactGeneratedCandidates(it, snapObj) } ?: JSONArray()
+                            }.onFailure { LogBuffer.add('E', TAG, "ML_GENERATED_BUILD_FAIL: ${it.javaClass.simpleName}") }.getOrNull()
+                            val generatedQueued = generatedRows != null &&
+                                (generatedRows.length() == 0 || runCatching {
+                                    GeneratedCandidateOutbox.enqueue(filesDir, JSONObject()
+                                        .put("poll_ts", generatedRows.getJSONObject(0).getString("snapshot_poll_ts"))
+                                        .put("rows", generatedRows))
+                                }.onFailure { LogBuffer.add('E', TAG, "ML_GENERATED_OUTBOX_ENQUEUE_FAIL: ${it.javaClass.simpleName}") }.isSuccess)
                             serviceScope.launch(Dispatchers.IO) {
+                                try {
                                 val snapshotSaved = if (snapshotQueued) {
                                     try {
                                         val drained = drainBrainSnapshotOutbox()
@@ -2936,34 +2968,61 @@ class MarketWatchService : Service() {
                                     TAG,
                                     "ML_BRAIN_SNAPSHOT_SAVE: saved=$snapshotSaved date=$snapshotSessionDate pollTs=${snapObj.optString("poll_ts")}"
                                 )
-                                val authorityTelemetrySaved = SupabaseClient.savePc2AuthorityDecisions(snapObj)
+                                recordSnapshotStage(if (snapshotSaved) "upload_ack" else "upload_unacknowledged", mlPersistKey)
+                                val authorityTelemetrySaved = runCatching { SupabaseClient.savePc2AuthorityDecisions(snapObj) }
+                                    .onFailure { LogBuffer.add('E', TAG, "PC2_AUTHORITY_TELEMETRY_THROW: ${it.javaClass.simpleName}") }
+                                    .getOrDefault(false)
                                 LogBuffer.add(
                                     if (authorityTelemetrySaved) 'I' else 'W',
                                     TAG,
                                     "PC2_AUTHORITY_TELEMETRY_SAVE: saved=$authorityTelemetrySaved pollTs=${snapObj.optString("poll_ts")} snapshotSaved=$snapshotSaved"
                                 )
-                                drainPc2CompactOutbox()
+                                runCatching { drainPc2CompactOutbox() }
+                                    .onFailure { LogBuffer.add('E', TAG, "PC2_COMPACT_OUTBOX_DRAIN_THROW: ${it.javaClass.simpleName}") }
                                 try {
-                                    if (generatedFactPack != null) {
-                                        generatedSaved = persistCompactGeneratedCandidates(generatedFactPack, snapObj)
+                                    generatedSaved = when {
+                                        generatedRows == null -> false
+                                        generatedRows.length() == 0 -> true
+                                        generatedQueued -> {
+                                            val ts = generatedRows.getJSONObject(0).getString("snapshot_poll_ts")
+                                            val drained = drainGeneratedCandidateOutbox()
+                                            drained.acknowledgedPolls.contains(ts) ||
+                                                (drained.stopReason == "busy" && !GeneratedCandidateOutbox.isUnacknowledged(filesDir, ts))
+                                        }
+                                        GeneratedCandidateOutbox.isUnacknowledged(filesDir,
+                                            generatedRows.getJSONObject(0).getString("snapshot_poll_ts")) -> false
+                                        else -> SupabaseClient.saveGeneratedCandidates(generatedRows)
                                     }
-                                } catch (e: Exception) {
+                                } catch (e: Throwable) {
                                     generatedSaved = false
-                                    Log.w(TAG, "ML_GENERATED_CANDIDATES_FAIL: ${e.message}")
+                                    LogBuffer.add('E', TAG, "ML_GENERATED_CANDIDATES_FAIL: ${e.javaClass.simpleName}")
                                 }
                                 if (snapshotSaved && generatedSaved) {
                                     markMlPollPersistSuccess(mlPersistKey)
                                 } else {
                                     releaseMlPollPersist(mlPersistKey)
                                 }
+                                } catch (t: Throwable) {
+                                    LogBuffer.add('E', TAG, "ML_EVIDENCE_PERSIST_THROW: ${t.javaClass.simpleName}")
+                                    if (t is CancellationException) throw t
+                                } finally {
+                                    // Includes enqueue-bypass upload errors and service cancellation.
+                                    // Frozen outbox bytes stay available to the next service start.
+                                    releaseMlPollPersist(mlPersistKey)
+                                }
                             }
+                            reservedSnapshotKey = null // asynchronous persistence owns release
                         }
 
                         launchElephantObserveOnly(resultObj)
                     } else {
+                        recordSnapshotStage("reservation_skip", mlPersistKey)
                         LogBuffer.add('W', TAG, "ML_PERSIST_DEDUP_SKIP: key=$mlPersistKey")
                     }
                 } catch (e: Exception) {
+                    reservedSnapshotKey?.let { releaseMlPollPersist(it) }
+                    recordSnapshotStage("exception", reservedSnapshotKey ?: "unreserved",
+                        SystemClock.elapsedRealtime() - snapshotStageStarted, e.javaClass.simpleName)
                     Log.w(TAG, "ML_SNAPSHOT_FAIL: ${e.message}")
                     LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_ABORTED: reason=${e.javaClass.simpleName}")
                 }
@@ -3324,6 +3383,18 @@ class MarketWatchService : Service() {
         return status
     }
 
+    private fun drainGeneratedCandidateOutbox(): GeneratedCandidateOutbox.Status {
+        val status = GeneratedCandidateOutbox.drain(filesDir) { payload ->
+            SupabaseClient.uploadGeneratedCandidateRows(JSONObject(payload).getJSONArray("rows"))
+        }
+        LogBuffer.add(if (status.pending == 0 && status.quarantinedTotal == 0 && status.faults.isEmpty()) 'I' else 'W',
+            TAG, "ML_GENERATED_OUTBOX_DRAIN: acknowledged=${status.acknowledged} pending=${status.pending} " +
+                "pendingBytes=${status.pendingBytes} quarantinedTotal=${status.quarantinedTotal} " +
+                "quarantinedBytes=${status.quarantinedBytes} stop=${status.stopReason} faults=${status.faults.size}")
+        status.faults.forEach { LogBuffer.add('E', TAG, "ML_GENERATED_OUTBOX_FAULT: $it") }
+        return status
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Evidence batch 1 (Item B / Item C margin): once-per-session Paper decision-menu capture.
     // Evidence only. Nothing below is read by ranking, gates, sizing, exits or primary selection.
@@ -3477,7 +3548,7 @@ class MarketWatchService : Service() {
         val (margins, stats) = PaperMenuCapture.collectIfPaper(modeNow, populationMode) {
             collectPaperMenuRoleMargins(menu, authToken)
         } ?: return
-        val enriched = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
+        val enriched = PyTimeout.callWithTimeout(PY_PAPER_MENU_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS) {
             Python.getInstance().getModule("paper_menu_evidence")
                 .callAttr("attach_margin_evidence_json", menu.toString(), margins.toString(), stats.toString())
                 .toString()
@@ -3651,6 +3722,28 @@ class MarketWatchService : Service() {
         val date = todayIstDate()
         val slotKey = currentPollSlotKey() ?: "closed"
         return "$date|$slotKey"
+    }
+
+    private fun snapshotStageHealth(): JSONObject = synchronized(snapshotHealthLock) {
+        runCatching { JSONObject(prefs.getString("snapshot_stage_health", "{}") ?: "{}") }
+            .getOrDefault(JSONObject())
+    }
+
+    private fun recordSnapshotStage(event: String, pollKey: String, elapsedMs: Long = 0,
+                                    exceptionClass: String? = null) {
+        try {
+            synchronized(snapshotHealthLock) {
+                val state = SnapshotStageHealth.record(prefs.getString("snapshot_stage_health", null),
+                    pollKey.substringBefore('|').takeIf { it.matches(Regex("20\\d{2}-\\d{2}-\\d{2}")) }
+                        ?: todayIstDate(), event, pollKey, elapsedMs, exceptionClass)
+                if (!prefs.edit().putString("snapshot_stage_health", state.toString()).commit()) {
+                    LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_HEALTH_SAVE_FAIL")
+                }
+            }
+            LogBuffer.add('I', TAG, "ML_SNAPSHOT_STAGE: event=$event poll=$pollKey elapsedMs=$elapsedMs exception=${exceptionClass ?: "none"}")
+        } catch (t: Throwable) {
+            LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_HEALTH_FAIL: ${t.javaClass.simpleName}")
+        }
     }
 
     private fun reserveMlPollPersist(key: String): Boolean = synchronized(mlPersistLock) {
@@ -3935,8 +4028,8 @@ class MarketWatchService : Service() {
         }
     }
 
-    private fun persistCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject): Boolean {
-        val candidates = factPack.optJSONArray("candidates") ?: return true
+    private fun buildCompactGeneratedCandidates(factPack: JSONObject, snapObj: JSONObject): JSONArray {
+        val candidates = factPack.optJSONArray("candidates") ?: return JSONArray()
         val candidateCounts = factPack.optJSONObject("candidate_counts") ?: JSONObject()
         val persistedCandidateCount = if (!candidateCounts.isNull("ranked_evidence")) {
             candidateCounts.opt("ranked_evidence")
@@ -3986,7 +4079,7 @@ class MarketWatchService : Service() {
                 }
             }
             LogBuffer.add('W', TAG, diag)
-            if (rejectedRows == null || rejectedRows.length() == 0) return true
+            if (rejectedRows == null || rejectedRows.length() == 0) return JSONArray()
 
             val syntheticRows = buildRejectedCandidateRows(
                 rejectedRows = rejectedRows,
@@ -3996,25 +4089,12 @@ class MarketWatchService : Service() {
                 persistedCandidateCount = persistedCandidateCount,
                 generationSkipSummary = generationSkipSummary
             )
-            if (syntheticRows.length() == 0) return true
-            val savedRejected = SupabaseClient.saveGeneratedCandidates(syntheticRows)
-            if (!savedRejected) {
-                val sampleRow = syntheticRows.optJSONObject(0)?.toString() ?: "{}"
-                Log.w(
-                    TAG,
-                    "ML_GENERATED_CANDIDATES_FAIL_DETAIL: rejectedOnly=true pollTs=$pollTs rows=${syntheticRows.length()} sample=${sampleRow.take(1200)}"
-                )
-            }
-            LogBuffer.add(
-                if (savedRejected) 'I' else 'W',
-                TAG,
-                "ML_GENERATED_CANDIDATES: saved=$savedRejected rows=${syntheticRows.length()} pollTs=$pollTs rejectedOnly=true"
-            )
-            return savedRejected
+            if (syntheticRows.length() == 0) return JSONArray()
+            return syntheticRows
         }
 
         val selected = boundedGeneratedCandidates(candidates, GENERATED_CANDIDATE_PERSIST_CAP)
-        if (selected.length() == 0) return true
+        if (selected.length() == 0) return JSONArray()
 
         val pollTs = factPack.optString("poll_timestamp", snapObj.optString("poll_ts", "")).trim()
         val sessionDate = factPack.optString("session_date", snapObj.optString("session_date", "")).trim()
@@ -4144,21 +4224,8 @@ class MarketWatchService : Service() {
             rows.put(row)
         }
 
-        if (rows.length() == 0) return true
-        val saved = SupabaseClient.saveGeneratedCandidates(rows)
-        if (!saved) {
-            val sampleRow = rows.optJSONObject(0)?.toString() ?: "{}"
-            Log.w(
-                TAG,
-                "ML_GENERATED_CANDIDATES_FAIL_DETAIL: pollTs=$pollTs rows=${rows.length()} sample=${sampleRow.take(1200)}"
-            )
-        }
-        LogBuffer.add(
-            if (saved) 'I' else 'W',
-            TAG,
-            "ML_GENERATED_CANDIDATES: saved=$saved rows=${rows.length()} pollTs=$pollTs"
-        )
-        return saved
+        if (rows.length() == 0) return JSONArray()
+        return rows
     }
 
     private fun buildRejectedCandidateRows(

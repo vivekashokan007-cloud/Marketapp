@@ -35,6 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger
 object PyTimeout {
     private const val TAG = "PyTimeout"
 
+    enum class WaitState { COMPLETED, TIMED_OUT, IN_FLIGHT_SKIPPED }
+    data class WaitResult<T>(val value: T?, val state: WaitState)
+
     private class InFlight(val future: Future<*>, val startedMs: Long, val timeoutMs: Long)
 
     private val timedOutInFlight = ConcurrentHashMap<String, InFlight>()
@@ -64,7 +67,11 @@ object PyTimeout {
      * No lock is taken on the fast path, so same-key calls that haven't timed
      * out run concurrently, exactly as they did on their caller threads before.
      */
-    fun <T : Any> callWithTimeout(key: String, timeoutMs: Long, block: () -> T): T? {
+    fun <T : Any> callWithTimeout(key: String, timeoutMs: Long, block: () -> T): T? =
+        callWithOutcome(key, timeoutMs, block).value
+
+    /** Same wait semantics, with distinct evidence for timeout versus an in-flight skip. */
+    fun <T : Any> callWithOutcome(key: String, timeoutMs: Long, block: () -> T): WaitResult<T> {
         val prior = timedOutInFlight[key]
         if (prior != null) {
             if (!prior.future.isDone) {
@@ -74,7 +81,7 @@ object PyTimeout {
                         "(age=${System.currentTimeMillis() - prior.startedMs}ms); not starting a second " +
                         "Python call, taking the timeout path"
                 )
-                return null
+                return WaitResult(null, WaitState.IN_FLIGHT_SKIPPED)
             }
             timedOutInFlight.remove(key, prior)
         }
@@ -93,7 +100,7 @@ object PyTimeout {
         }
         executor.execute(task)
         return try {
-            getUninterruptibly(task, timeoutMs)
+            WaitResult(getUninterruptibly(task, timeoutMs), WaitState.COMPLETED)
         } catch (e: TimeoutException) {
             val entry = InFlight(task, startedMs, timeoutMs)
             timedOutInFlight[key] = entry
@@ -103,7 +110,7 @@ object PyTimeout {
                 "PY_TIMEOUT: key=$key exceeded ${timeoutMs}ms; the Python call keeps running " +
                     "in the background (not interrupted); taking the timeout path"
             )
-            null
+            WaitResult(null, WaitState.TIMED_OUT)
         } catch (e: ExecutionException) {
             throw e.cause ?: e
         }

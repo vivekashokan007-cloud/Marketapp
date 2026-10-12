@@ -17,6 +17,19 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** H1 (2.6.59): effective timeout helper for blocking Chaquopy calls. */
 class PyTimeoutTest {
+    @Test fun explicitOutcomeDistinguishesTimeoutFromAnInFlightSkip() {
+        val release = CountDownLatch(1)
+        val k = "snapshot-outcome-${System.nanoTime()}"
+        try {
+            val first = PyTimeout.callWithOutcome(k, 20L) { release.await(5, TimeUnit.SECONDS); "late" }
+            assertEquals(PyTimeout.WaitState.TIMED_OUT, first.state)
+            val second = PyTimeout.callWithOutcome(k, 20L) { "must-not-run" }
+            assertEquals(PyTimeout.WaitState.IN_FLIGHT_SKIPPED, second.state)
+            val independent = PyTimeout.callWithOutcome("snapshot-other-${System.nanoTime()}", 1000L) { "ok" }
+            assertEquals(PyTimeout.WaitState.COMPLETED, independent.state)
+            assertEquals("ok", independent.value)
+        } finally { release.countDown() }
+    }
 
     private val logs = Collections.synchronizedList(mutableListOf<String>())
     private val releases = mutableListOf<CountDownLatch>()
