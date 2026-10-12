@@ -1745,16 +1745,20 @@ object SupabaseClient {
      * Requires ALTER TABLE ml_brain_snapshots ADD COLUMN top_candidates_json JSONB;
      */
     fun saveBrainSnapshot(body: JSONObject): Boolean {
-        val payload = BrainSnapshotPayloadSanitizer.sanitize(body).toString()
+        return saveBrainSnapshotPayload(BrainSnapshotPayloadSanitizer.sanitize(body).toString())
+    }
+
+    /** Frozen outbox bytes. The poll_ts unique index must be deployed before this client version. */
+    fun saveBrainSnapshotPayload(payload: String): Boolean =
+        uploadBrainSnapshotPayload(payload) == BrainSnapshotOutbox.Outcome.ACKNOWLEDGED
+
+    fun uploadBrainSnapshotPayload(payload: String): BrainSnapshotOutbox.Outcome {
         val result = postToFirstWorkingTableDetailed(
-            listOf("ml_brain_snapshots"),
+            listOf("ml_brain_snapshots?on_conflict=poll_ts"),
             payload,
-            preferHeader = "return=minimal"
+            preferHeader = "resolution=ignore-duplicates,return=minimal"
         )
-        if (!result.success && result.code == 409 && (result.errorBody ?: "").contains("duplicate", ignoreCase = true)) {
-            LogBuffer.add('W', TAG, "ML_BRAIN_SNAPSHOT_DUPLICATE_INSERT: treated_as_saved payloadChars=${payload.length}")
-            return true
-        }
+        if (result.success) return BrainSnapshotOutbox.Outcome.ACKNOWLEDGED
         if (!result.success) {
             val details = buildString {
                 append("ML_BRAIN_SNAPSHOT_SAVE_FAIL: table=")
@@ -1773,7 +1777,9 @@ object SupabaseClient {
             LogBuffer.add('E', TAG, details)
             Log.e(TAG, details)
         }
-        return result.success
+        // A malformed payload cannot succeed unchanged. Authentication, throttle,
+        // and transport failures remain retryable after configuration or network recovery.
+        return BrainSnapshotOutbox.classifyHttpFailure(result.code)
     }
 
     /**
