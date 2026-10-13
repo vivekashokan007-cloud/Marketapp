@@ -17,6 +17,10 @@
 #    instead of raising, so a malformed row cannot abort the export. Every
 #    malformed row in the WHOLE batch table is counted into the manifest,
 #    and the audit fails on any.
+#  - b503 R6: each snapshot carries poll_summary_json.capture_provenance; a late capture whose origin
+#    session is this day is exported even when it completed after midnight.
+#  - b503 C3: generated.jsonl holds the retained generated-candidate sample rows for the cohort audit
+#    (CaptureCohortAudit / CaptureReadiness: PC2_AUDIT_DIR=out_dir ... --tests 'com.marketradar.app.CaptureReadinessRunTest').
 #  - manifest.json is written last, atomically, with each file's row count and
 #    SHA-256. Without it, or if anything disagrees with it, the audit cannot
 #    certify. Any manifest left from an earlier run is removed first.
@@ -29,7 +33,7 @@ out="${2:-pc2_parity_${day}}"
 mkdir -p "$out"
 rm -f "$out/manifest.json" "$out/manifest.json.tmp" "$out/pc2_parity_report.json" \
       "$out/snapshots.jsonl" "$out/batches.jsonl" "$out/legacy.jsonl" "$out/inventory.jsonl" \
-      "$out/malformed.json"
+      "$out/malformed.json" "$out/generated.jsonl" "$out/capture_cohort_report.json" "$out/capture_readiness_report.json"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 export PGOPTIONS='-c default_transaction_read_only=on'
@@ -48,9 +52,14 @@ select pg_catalog.json_build_object(
          'compact_ref', context_json -> 'snapshot_pc2_authority_compact_ref',
          'decisions', context_json -> 'snapshot_pc2_authority_decisions',
          'policy', context_json -> 'snapshot_pc2_authority_policy',
-         'brain_version', context_json -> 'snapshot_brain_version')::text
+         'brain_version', context_json -> 'snapshot_brain_version',
+         'capture_provenance', poll_summary_json -> 'capture_provenance',
+         'recommendation_id', recommendation_id,
+         'generated_cohort_manifest', poll_summary_json -> 'generated_cohort_manifest')::text
   from public.ml_brain_snapshots
- where poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz
+ where (poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz)
+    -- b503 R6: a late capture of this day that completed after midnight belongs to this day's audit.
+    or (poll_summary_json -> 'capture_provenance' ->> 'session_date') = :'day'
  order by poll_ts;
 
 \o :out/batches.jsonl
@@ -73,6 +82,33 @@ select pg_catalog.json_build_object(
   from public.ml_pc2_authority_decisions
  where poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz
  order by poll_ts, decision_index;
+
+set extra_float_digits = 1;
+\o :out/generated.jsonl
+-- b503 C3 (round 4, generated_row_witness_v2): the retained generated-candidate sample rows of the same origin
+-- session (lineage = the frozen fact-pack poll time in snapshot_poll_ts, NOT the snapshot completion time), with
+-- EVERY column except the server-owned id/created_at, so the audit recomputes the full typed witness from the
+-- actual stored values. float8 columns are exported as their float8out text (extra_float_digits = 1: shortest
+-- text that reads back to the identical double), never through numeric, which would lose -0 and widen NaN.
+select ((pg_catalog.to_jsonb(g) - 'id' - 'created_at' - array['net_premium','max_profit','max_loss','premium_edge','ev_per_1k','est_cost','sigma_otm','iv_richness','credit_width_ratio','brain_score','p_ml','ml_edge','signal_independence_score']::text[]) || pg_catalog.jsonb_build_object(
+         'snapshot_poll_ts_utc', to_char(g.snapshot_poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         'net_premium', g.net_premium::text,
+         'max_profit', g.max_profit::text,
+         'max_loss', g.max_loss::text,
+         'premium_edge', g.premium_edge::text,
+         'ev_per_1k', g.ev_per_1k::text,
+         'est_cost', g.est_cost::text,
+         'sigma_otm', g.sigma_otm::text,
+         'iv_richness', g.iv_richness::text,
+         'credit_width_ratio', g.credit_width_ratio::text,
+         'brain_score', g.brain_score::text,
+         'p_ml', g.p_ml::text,
+         'ml_edge', g.ml_edge::text,
+         'signal_independence_score', g.signal_independence_score::text))::text
+  from public.ml_generated_candidates g
+ where session_date = :'day'::date
+    or (snapshot_poll_ts >= :'lo'::timestamptz and snapshot_poll_ts < :'hi'::timestamptz)
+ order by snapshot_poll_ts, index_key, candidate_id, rank;
 
 \o :out/inventory.jsonl
 select pg_catalog.json_build_object(
@@ -97,7 +133,7 @@ python3 - "$out" "$day" "$started" "$finished" <<'PY'
 import hashlib, json, os, sys
 out, day, started, finished = sys.argv[1:5]
 files = {}
-for name in ("snapshots.jsonl", "batches.jsonl", "legacy.jsonl", "inventory.jsonl"):
+for name in ("snapshots.jsonl", "batches.jsonl", "legacy.jsonl", "inventory.jsonl", "generated.jsonl"):
     raw = open(os.path.join(out, name), "rb").read()
     rows = sum(1 for line in raw.decode("utf-8").split("\n") if line.strip())
     files[name] = {"rows": rows, "sha256": hashlib.sha256(raw).hexdigest()}

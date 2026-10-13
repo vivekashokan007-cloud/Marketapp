@@ -29,8 +29,17 @@ object BrainSnapshotOutbox {
         val quarantined: Int = 0, val quarantinedTotal: Int = 0,
         val quarantinedBytes: Long = 0,
         val retried: Int = 0, val stopReason: String = "queue_empty",
-        val acknowledgedPolls: Set<String> = emptySet()
+        val acknowledgedPolls: Set<String> = emptySet(),
+        /** b503 R1: acknowledged poll_ts -> validated origin capture key from the payload's own provenance (or null). */
+        val acknowledgedOrigins: Map<String, String?> = emptyMap()
     )
+
+    /** b503 R1: the capture key a frozen payload carries (poll_summary_json.capture_provenance), validated, or null. */
+    fun originKeyOf(payload: String): String? = runCatching {
+        val o = JSONObject(payload)
+        val summary = o.optJSONObject("poll_summary_json") ?: JSONObject(o.optString("poll_summary_json"))
+        summary.optJSONObject("capture_provenance")?.optString("capture_key")
+    }.getOrNull()?.takeIf { FrozenCaptureRequest.sessionOfKey(it) != null }
 
     private fun dir(filesDir: File) = File(filesDir, DIRECTORY)
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -72,10 +81,14 @@ object BrainSnapshotOutbox {
 
     /** Freeze sanitized bytes before any network call. A conflicting poll is retained separately. */
     @Synchronized
-    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean {
-        val pollTs = snapshot.optString("poll_ts", "")
+    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean =
+        enqueuePayload(filesDir, BrainSnapshotPayloadSanitizer.sanitize(snapshot).toString())
+
+    /** b503: freezes exact, already-sanitized bytes (capture bundle resume keeps them byte-identical). */
+    @Synchronized
+    fun enqueuePayload(filesDir: File, payload: String): Boolean {
+        val pollTs = JSONObject(payload).optString("poll_ts", "")
         require(POLL_TS.matches(pollTs)) { "Invalid snapshot poll timestamp" }
-        val payload = BrainSnapshotPayloadSanitizer.sanitize(snapshot).toString()
         val target = fileFor(filesDir, pollTs)
         val folder = dir(filesDir)
         check(folder.isDirectory || folder.mkdirs()) { "Cannot create snapshot outbox" }
@@ -160,6 +173,7 @@ object BrainSnapshotOutbox {
             var consecutiveRetry = 0
             var stop = "queue_empty"
             val ackPolls = mutableSetOf<String>()
+            val ackOrigins = linkedMapOf<String, String?>()
             for (file in files) {
                 if (attempted >= maxAttempts) { stop = "budget"; break }
                 if (consecutiveRetry >= MAX_RETRYABLE_IN_A_ROW) { stop = "consecutive_retries"; break }
@@ -178,7 +192,7 @@ object BrainSnapshotOutbox {
                     when (upload(payload)) {
                         Outcome.ACKNOWLEDGED -> synchronized(this) {
                             consecutiveRetry = 0
-                            if (file.delete()) { acknowledged++; ackPolls += pollTs }
+                            if (file.delete()) { acknowledged++; ackPolls += pollTs; ackOrigins[pollTs] = originKeyOf(payload) }
                             else faults += "ack_delete_failed:${file.name.take(64)}"
                         }
                         Outcome.QUARANTINE -> synchronized(this) {
@@ -195,6 +209,7 @@ object BrainSnapshotOutbox {
                 } finally { synchronized(this) { inFlightName = null } }
             }
             return status(filesDir, attempted, acknowledged, quarantined, retried, faults, stop, ackPolls)
+                .copy(acknowledgedOrigins = ackOrigins)
         } finally { draining.set(false) }
     }
 }

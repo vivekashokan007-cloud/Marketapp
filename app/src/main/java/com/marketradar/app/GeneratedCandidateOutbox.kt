@@ -72,7 +72,12 @@ object GeneratedCandidateOutbox {
 
     /** Freeze sanitized bytes before any network call. A conflicting poll is retained separately. */
     @Synchronized
-    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean {
+    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean = enqueuePayload(filesDir, snapshot.toString())
+
+    /** b503: freezes the exact cohort bytes built from the frozen fact pack (byte-identical on resume). */
+    @Synchronized
+    fun enqueuePayload(filesDir: File, payload: String): Boolean {
+        val snapshot = JSONObject(payload)
         val rows = snapshot.getJSONArray("rows")
         require(rows.length() > 0) { "Empty generated-candidate envelope" }
         val pollTs = snapshot.optString("poll_ts", "")
@@ -85,7 +90,6 @@ object GeneratedCandidateOutbox {
             }
         }
         require(POLL_TS.matches(pollTs)) { "Invalid snapshot poll timestamp" }
-        val payload = snapshot.toString()
         val target = fileFor(filesDir, pollTs)
         val folder = dir(filesDir)
         check(folder.isDirectory || folder.mkdirs()) { "Cannot create snapshot outbox" }

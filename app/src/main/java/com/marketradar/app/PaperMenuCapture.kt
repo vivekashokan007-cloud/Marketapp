@@ -14,6 +14,20 @@ import java.security.MessageDigest
  * becomes MISSED_SESSION. Evidence only: nothing here affects ranking, gates, sizing or exits.
  */
 object PaperMenuCapture {
+    /**
+     * b503 R7: stamps the native app version into a manifest about to be frozen. Python emits app_version as JSON
+     * null; Android's org.json coerces JSONObject.NULL to the STRING "null" in optString (modern JVM org.json returns
+     * ""), so the old `optString("app_version").isBlank()` check never fired on the phone and menus froze with
+     * app_version NULL (13 Oct 12:30 menu). Missing, JSON null, non-string, blank and the literal "null" are all
+     * "absent" here, independent of the org.json flavour. A real frozen version is never overwritten.
+     */
+    fun stampNativeVersion(manifest: JSONObject, nativeVersion: String): JSONObject {
+        val v = if (!manifest.has("app_version") || manifest.isNull("app_version")) null else manifest.opt("app_version")
+        val text = (v as? String)?.trim()
+        if (text.isNullOrEmpty() || text.equals("null", ignoreCase = true)) manifest.put("app_version", nativeVersion)
+        return manifest
+    }
+
     const val POLICY_VERSION = "paper_menu_capture_v1_first_completed_1230_1255_ist"
     const val FIRST_SLOT_ORDINAL = 40   // 09:15 + 39*5 = 12:30
     const val LAST_SLOT_ORDINAL = 45    // 12:55

@@ -11,15 +11,25 @@ class Pc2CompactSourceContractTest {
 
     @Test
     fun durableEnqueuePrecedesSnapshotCompactionAndLegacyDualWriteRemains() {
+        // b503: the post-build path moved to CaptureEngine. The lossless compact envelope is
+        // captured as canonical bytes BEFORE compaction, frozen into the durable capture bundle,
+        // then enqueued; the legacy PC2 rows remain a separate (now restart-safe) channel.
+        val engine = source("src/main/java/com/marketradar/app/CaptureEngine.kt")
+        val build = engine.indexOf("Pc2CompactBatch.build(rawSnapObj)")
+        val bytes = engine.indexOf("Pc2CompactBatch.canonicalJson(compact.envelope())", build)
+        // b503 R3: the legacy cohort is frozen from the ORIGINAL snapshot, before destructive compaction.
+        val legacy = engine.indexOf("Pc2LegacyAuthorityRows.build(rawSnapObj)", bytes)
+        val compact = engine.indexOf("EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)", legacy)
+        val bundle = engine.indexOf("journal.writeBundle(", compact)
+        val enqueue = engine.indexOf("channels.enqueueCompact(", bundle)
+        assertTrue(build >= 0 && bytes > build && legacy > bytes && compact > legacy && bundle > compact && enqueue > bundle)
+        assertTrue(!engine.contains("Pc2LegacyAuthorityRows.build(snapObj)"))
+        val runtime = source("src/main/java/com/marketradar/app/CaptureRuntime.kt")
+        assertTrue(runtime.contains("Pc2TelemetryOutbox.enqueue(filesDir, built)"))
+        assertTrue(runtime.contains("SupabaseClient.uploadPc2AuthorityDecisionRows("))
         val service = source("src/main/java/com/marketradar/app/MarketWatchService.kt")
-        // Review correction C1 wraps the call in runCatching, so match the call
-        // itself rather than the whole assignment line.
-        val build = service.indexOf("Pc2CompactBatch.build(rawSnapObj)")
-        val enqueue = service.indexOf("Pc2TelemetryOutbox.enqueue(", build)
-        val compact = service.indexOf("EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)", enqueue)
-        val legacy = service.indexOf("SupabaseClient.savePc2AuthorityDecisions(snapObj)", compact)
-        val newDrain = service.indexOf("drainPc2CompactOutbox()", legacy)
-        assertTrue(build >= 0 && enqueue > build && compact > enqueue && legacy > compact && newDrain > legacy)
+        val legacyDrain = service.indexOf("CaptureRuntime.drainLegacy()")
+        assertTrue(legacyDrain >= 0 && service.indexOf("drainPc2CompactOutbox()", legacyDrain) > legacyDrain)
     }
 
     @Test

@@ -42,10 +42,16 @@ class H1M1SourceContractTest {
         assertTrue(mw.contains("brain_result_completed_at_ms"))
         assertTrue(mw.contains("BRAIN_ANALYZE_COMPLETE"))
         assertTrue(mw.contains("PY_SNAPSHOT_TIMEOUT_KEY = \"poll.snapshot\""))
-        assertTrue(mw.contains("PyTimeout.callWithOutcome(PY_SNAPSHOT_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
-        assertTrue(mw.contains("PyTimeout.WaitState.IN_FLIGHT_SKIPPED"))
+        // b503: snapshot capture goes through the late-delivery coordinator (same 4 s wait);
+        // the in-flight guard is the coordinator's registered computation slot.
+        assertTrue(mw.contains("capture.coordinator.submit(frozen, PY_SNAPSHOT_TIMEOUT_MS)"))
+        assertFalse(mw.contains("PyTimeout.callWithOutcome(PY_SNAPSHOT_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
+        assertTrue(src("CaptureCoordinator.kt").contains("SKIPPED_INFLIGHT"))
         assertTrue(mw.contains("PY_PAPER_MENU_TIMEOUT_KEY = \"poll.paper_menu_capture\""))
-        assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_PAPER_MENU_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
+        // b503: Paper enrichment has its own constant and no longer shares the capture constant.
+        assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_PAPER_MENU_TIMEOUT_KEY, PY_PAPER_MENU_ENRICH_TIMEOUT_MS)"))
+        assertFalse(mw.contains("PyTimeout.callWithTimeout(PY_PAPER_MENU_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
+        assertTrue(mw.contains("PY_PAPER_MENU_ENRICH_TIMEOUT_MS = 4_000L"))
         assertFalse(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_SNAPSHOT_TIMEOUT_MS)"))
         assertTrue(mw.contains("PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_AGENT_TIMEOUT_MS)"))
         assertTrue(mw.contains("PY_SNAPSHOT_TIMEOUT_MS = 4_000L"))
