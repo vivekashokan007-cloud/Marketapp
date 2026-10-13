@@ -7075,7 +7075,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.72"
+BRAIN_VERSION = "2.6.73"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -18144,6 +18144,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             result['paper_decision_menu'] = {'manifest': {
                 'menu_id': _pmc_request.get('menu_id'), 'population_status': 'BUILD_ERROR',
                 'error': str(e)[:300]}, 'candidates': []}
+
+    # Implied-EV v1.2 Paper experiment (Grok handoff 2026-10-13). Runs only for an explicit Paper
+    # executionMode AND ctx evExperimentMode observe/active; otherwise nothing is added (Real/sandbox/off
+    # output unchanged). Reads the v7 primary as comparator only; never mutates ranking, gates, sizing,
+    # exits, watchlist or the teacher fee. A failure here is contained to its own result key.
+    if _explicit_execution_mode(ctx) == 'paper' and str(ctx.get('evExperimentMode') or 'off').strip().lower() in ('observe', 'active'):
+        try:
+            import ev_v12_integration as _ev12
+            _ev12_out = _ev12.run(ctx, result, _explicit_execution_mode(ctx),
+                                  open_trades=open_trades, closed_trades=closed_trades)
+            if _ev12_out is not None:
+                result['implied_ev_v12'] = _ev12_out
+        except Exception as e:
+            result['implied_ev_v12'] = {'status': 'WAIT', 'wait_reason': 'ENGINE_EXCEPTION',
+                                        'source_label': 'IMPLIED_EV_V12_EXPERIMENT', 'error': str(e)[:300]}
 
     # The full objects have already served live ranking and fact-pack creation.
     # Return evaluator-grade projections across the Android bridge so a normal

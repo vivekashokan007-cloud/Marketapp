@@ -1,0 +1,868 @@
+{
+ "policy_id": "paper_rule_b_v1",
+ "schema": "ev_v12_rule_b_vectors_v1",
+ "vectors": [
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "BEFORE_PLANNED_SESSION",
+    "state": "OPEN"
+   },
+   "name": "before_planned_session",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791539399000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791539399000.0
+     }
+    },
+    "ts_iso": "2026-10-09T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "BEFORE_EXIT_WINDOW",
+    "state": "OPEN"
+   },
+   "name": "planned_before_window",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798298000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798298000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:14:59+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "FILL",
+    "fill": {
+     "close_value_pts": -8.5,
+     "kind": "PLANNED_EXIT",
+     "legs": [
+      {
+       "ask": 10.5,
+       "bid": 10.0,
+       "instrument_key": "S",
+       "price": 10.5,
+       "qty": -1,
+       "quote_ts_ms": 1791798299000.0
+      },
+      {
+       "ask": 2.2,
+       "bid": 2.0,
+       "instrument_key": "L",
+       "price": 2.0,
+       "qty": 1,
+       "quote_ts_ms": 1791798299000.0
+      }
+     ],
+     "ts_iso": "2026-10-12T15:15:00+05:30"
+    },
+    "reason": "PLANNED_EXIT",
+    "state": "EXIT_FILLED"
+   },
+   "name": "planned_window_open_fill",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798299000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798299000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:15:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "FILL",
+    "fill": {
+     "close_value_pts": -8.5,
+     "kind": "PLANNED_EXIT",
+     "legs": [
+      {
+       "ask": 10.5,
+       "bid": 10.0,
+       "instrument_key": "S",
+       "price": 10.5,
+       "qty": -1,
+       "quote_ts_ms": 1791799078000.0
+      },
+      {
+       "ask": 2.2,
+       "bid": 2.0,
+       "instrument_key": "L",
+       "price": 2.0,
+       "qty": 1,
+       "quote_ts_ms": 1791799078000.0
+      }
+     ],
+     "ts_iso": "2026-10-12T15:27:59+05:30"
+    },
+    "reason": "PLANNED_EXIT",
+    "state": "EXIT_FILLED"
+   },
+   "name": "planned_window_last_second",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791799078000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791799078000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:27:59+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "MARK_LATE",
+    "reason": "OUTSIDE_LATE_WINDOW",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "name": "planned_window_end_marks_late",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791799079000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791799079000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:28:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "LEG_QUOTE_INVALID",
+    "state": "OPEN"
+   },
+   "name": "planned_stale_quote_waits",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798479000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798479000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "LEG_QUOTE_INVALID",
+    "state": "OPEN"
+   },
+   "name": "planned_missing_leg_waits",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798599000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "LEG_QUOTE_INVALID",
+    "state": "OPEN"
+   },
+   "name": "planned_crossed_quote_waits",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798599000.0
+     },
+     "S": {
+      "ask": 10.0,
+      "bid": 11.0,
+      "ts_ms": 1791798599000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "OUTSIDE_LATE_WINDOW",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "name": "late_pending_same_day_no_fill",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791799139000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791799139000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:29:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "OUTSIDE_LATE_WINDOW",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "name": "late_pending_next_session_before_0920",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791863398000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791863398000.0
+     }
+    },
+    "ts_iso": "2026-10-13T09:19:59+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "FILL",
+    "fill": {
+     "close_value_pts": -8.5,
+     "kind": "LATE_EXIT",
+     "legs": [
+      {
+       "ask": 10.5,
+       "bid": 10.0,
+       "instrument_key": "S",
+       "price": 10.5,
+       "qty": -1,
+       "quote_ts_ms": 1791863399000.0
+      },
+      {
+       "ask": 2.2,
+       "bid": 2.0,
+       "instrument_key": "L",
+       "price": 2.0,
+       "qty": 1,
+       "quote_ts_ms": 1791863399000.0
+      }
+     ],
+     "ts_iso": "2026-10-13T09:20:00+05:30"
+    },
+    "reason": "LATE_EXIT",
+    "state": "EXIT_FILLED"
+   },
+   "name": "late_pending_next_session_fill",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791863399000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791863399000.0
+     }
+    },
+    "ts_iso": "2026-10-13T09:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "LEG_QUOTE_INVALID",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "name": "late_pending_invalid_quote",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791865799000.0
+     }
+    },
+    "ts_iso": "2026-10-13T10:00:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "MARK_UNRESOLVED",
+    "reason": "NO_VALID_QUOTE_BY_EXPIRY_DEADLINE",
+    "state": "UNRESOLVED"
+   },
+   "name": "expiry_deadline_unresolved",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791885479000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791885479000.0
+     }
+    },
+    "ts_iso": "2026-10-13T15:28:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "MARK_UNRESOLVED",
+    "reason": "NO_VALID_QUOTE_BY_EXPIRY_DEADLINE",
+    "state": "UNRESOLVED"
+   },
+   "name": "after_expiry_unresolved",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791952199000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791952199000.0
+     }
+    },
+    "ts_iso": "2026-10-14T10:00:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "FILL",
+    "fill": {
+     "close_value_pts": -8.5,
+     "kind": "LATE_EXIT",
+     "legs": [
+      {
+       "ask": 10.5,
+       "bid": 10.0,
+       "instrument_key": "S",
+       "price": 10.5,
+       "qty": -1,
+       "quote_ts_ms": 1791869399000.0
+      },
+      {
+       "ask": 2.2,
+       "bid": 2.0,
+       "instrument_key": "L",
+       "price": 2.0,
+       "qty": 1,
+       "quote_ts_ms": 1791869399000.0
+      }
+     ],
+     "ts_iso": "2026-10-13T11:00:00+05:30"
+    },
+    "reason": "LATE_EXIT",
+    "state": "EXIT_FILLED"
+   },
+   "name": "missed_planned_session_open_next_day",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791869399000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791869399000.0
+     }
+    },
+    "ts_iso": "2026-10-13T11:00:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "TERMINAL",
+    "state": "EXIT_FILLED"
+   },
+   "name": "terminal_filled_idempotent",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "EXIT_FILLED"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798599000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798599000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "TERMINAL",
+    "state": "UNRESOLVED"
+   },
+   "name": "terminal_unresolved_idempotent",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "UNRESOLVED"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798599000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798599000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "POLICY_UNKNOWN",
+    "state": "OPEN"
+   },
+   "name": "unknown_policy_fails_closed",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_c",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798599000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798599000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "LEG_QUOTE_INVALID",
+    "state": "OPEN"
+   },
+   "name": "future_quote_rejected",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-12",
+    "policy_id": "paper_rule_b_v1",
+    "state": "OPEN"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791798606000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791798606000.0
+     }
+    },
+    "ts_iso": "2026-10-12T15:20:00+05:30"
+   }
+  },
+  {
+   "expect": {
+    "action": "NONE",
+    "reason": "OUTSIDE_LATE_WINDOW",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "name": "weekend_late_pending",
+   "position": {
+    "expiry": "2026-10-13",
+    "legs": [
+     {
+      "instrument_key": "S",
+      "qty": -1
+     },
+     {
+      "instrument_key": "L",
+      "qty": 1
+     }
+    ],
+    "planned_exit_session": "2026-10-09",
+    "policy_id": "paper_rule_b_v1",
+    "state": "LATE_EXIT_PENDING"
+   },
+   "tick": {
+    "quotes": {
+     "L": {
+      "ask": 2.2,
+      "bid": 2.0,
+      "ts_ms": 1791606599000.0
+     },
+     "S": {
+      "ask": 10.5,
+      "bid": 10.0,
+      "ts_ms": 1791606599000.0
+     }
+    },
+    "ts_iso": "2026-10-10T10:00:00+05:30"
+   }
+  }
+ ]
+}
