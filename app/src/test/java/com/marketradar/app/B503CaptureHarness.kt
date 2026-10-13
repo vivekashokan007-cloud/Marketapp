@@ -158,6 +158,33 @@ class B503Harness(
                 .put("candidate_counts", JSONObject().put("generated", nf + bnf)).put("brain_version", "2.6.72").put("app_version", "2.6.72")
         }
 
+        /**
+         * b503 round 4: a fact pack whose candidates populate every generated column with typed, awkward values
+         * (exact-binary-unfriendly decimals, negatives, -0.0, max/min finite doubles, numeric risk_reward text,
+         * null-vs-value surfacing) so the typed witness and the scratch-Postgres round trip are exercised fully.
+         */
+        fun richFactPack(slotTs: String, nf: Int, bnf: Int): JSONObject {
+            val fp = factPack(slotTs, nf, bnf).put("quality_tag", "qualitative_prompt_v2").put("decision_source", "ELEPHANT")
+                .put("signal_independence", JSONObject().put("score", 0.1 + 0.2))
+            fp.getJSONObject("candidate_counts").put("watchlist", 7)
+            val c = fp.getJSONArray("candidates")
+            for (i in 0 until c.length()) {
+                val o = c.getJSONObject(i)
+                o.put("strategy_type", if (i % 2 == 0) "BEAR_CALL" else "IRON_CONDOR").put("trade_mode", "intraday")
+                if (i == 0) o.put("watchlist_rank", 1)
+                o.put("economics", JSONObject().put("net_premium", 12.35 + i).put("max_profit", 1e5).put("max_loss", 1000.25)
+                    .put("risk_reward", if (i % 2 == 0) "1:2.5" else 2.5).put("premium_edge", -0.1 * (i + 1))
+                    .put("ev_per_1k", if (i == 0) Double.MAX_VALUE else 1.0 / 3).put("est_cost", if (i == 1) Double.MIN_VALUE else 40.0)
+                    .put("capital_blocked", i % 2 == 0))
+                o.put("structure", JSONObject().put("width", 100 + i).put("expiry", "2026-10-14").put("sigma_otm", if (i == 2) -0.0 else 1.2345678901234567)
+                    .put("iv_richness", 1.0).put("credit_width_ratio", 2.0 / 3).put("is_credit", true))
+                o.put("execution", JSONObject().put("execution_ready", i == 0).put("execution_gate", "OPEN").put("entry_action", "ENTER").put("direction_safe", false))
+                o.put("ml_overlay", JSONObject().put("brain_score", 0.12345678901234568).put("p_ml", 0.5).put("ml_action", "TAKE")
+                    .put("ml_edge", -2.5e-7).put("ml_regime", "RANGE").put("ml_unsure", false).put("ml_ood_flag", true))
+            }
+            return fp
+        }
+
         fun result(slotTs: String?, nf: Int = 30, bnf: Int = 30): JSONObject {
             val r = JSONObject().put("brain_version", "2.6.72").put("watchlist", JSONArray())
             if (slotTs != null) r.put("elephant_fact_pack", factPack(slotTs, nf, bnf))

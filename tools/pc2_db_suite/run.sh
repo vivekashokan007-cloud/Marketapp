@@ -32,9 +32,16 @@ do $$ begin
 end $$;
 -- Minimal stand-ins for the legacy tables the audit reads; the migration must not touch them.
 create table public.ml_brain_snapshots (id bigserial primary key, poll_ts timestamptz not null, session_date date, context_json jsonb, poll_summary_json jsonb, recommendation_id text);
-create table public.ml_generated_candidates (id bigserial primary key, snapshot_poll_ts timestamptz, session_date date, recommendation_id text,
-  quality_tag text, decision_source text, candidate_id text, lane text, index_key text, strategy_type text, trade_mode text, rank integer,
-  watchlist_rank integer, was_surfaced boolean, width integer, expiry text, execution_gate text, entry_action text, app_version text, brain_version text);
+-- b503 round 4: the full production column set and PostgreSQL types of ml_generated_candidates (read-only, 13 Oct 2026)
+create table public.ml_generated_candidates (id bigserial primary key, snapshot_poll_ts timestamptz, session_date date,
+  recommendation_id text, quality_tag text, decision_source text, candidate_id text, lane text, index_key text, strategy_type text,
+  trade_mode text, rank integer, watchlist_rank integer, was_surfaced boolean, net_premium double precision, max_profit double precision,
+  max_loss double precision, risk_reward text, premium_edge double precision, ev_per_1k double precision, est_cost double precision,
+  capital_blocked boolean, width integer, expiry text, sigma_otm double precision, iv_richness double precision,
+  credit_width_ratio double precision, is_credit boolean, execution_ready boolean, execution_gate text, entry_action text,
+  direction_safe boolean, brain_score double precision, p_ml double precision, ml_action text, ml_edge double precision, ml_regime text,
+  ml_unsure boolean, ml_ood_flag boolean, signal_independence_score double precision, generated_count integer, watchlist_count integer,
+  app_version text, brain_version text, created_at timestamptz not null default now());
 create table public.ml_pc2_authority_decisions (id bigserial primary key, poll_ts timestamptz not null, decision_index integer not null, decision_json jsonb not null);
 create table public.ml_option_chain_snapshots (poll_ts timestamptz not null, index_key text not null, strike numeric not null, option_type text not null,
   primary key (poll_ts, index_key, strike, option_type));
@@ -205,12 +212,32 @@ c3case "wrong index (NF/BNF mixture)" "update public.ml_generated_candidates set
 c3case "extra row" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) select snapshot_poll_ts, session_date, recommendation_id, 'NF-77', lane, index_key, 77 from g_keep where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_EXTRA_ROWS "$RESTORE" extra
 c3case "orphan rows (no snapshot claims them)" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) values ('2026-10-07 09:45:00+05:30', '2026-10-07', 'rec-x', 'NF-0', 'NF_intraday', 'NF', 1)" ORPHAN_GENERATED_ROWS "$RESTORE" orphan
 c3case "rows of a legitimate empty cohort (slot 4)" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) values ('2026-10-07 09:30:00+05:30', '2026-10-07', 'rec-y', 'NF-0', 'NF_intraday', 'NF', 1)" COHORT_EXTRA_ROWS "$RESTORE" emptyextra
-c3case "lineage: rows of another recommendation" "update public.ml_generated_candidates set recommendation_id = 'rec-other' where snapshot_poll_ts = '2026-10-07 09:25:00+05:30'" COHORT_LINEAGE_MISMATCH "$RESTORE" lineage
+c3case "lineage: rows of another recommendation" "update public.ml_generated_candidates set recommendation_id = 'rec-other' where snapshot_poll_ts = '2026-10-07 09:25:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" lineage
 c3case "wrong manifest version" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,schema}', '\"generated_cohort_manifest_v0\"') where poll_ts = '2026-10-07 09:15:20+05:30'" COHORT_WRONG_VERSION "$RESTORE" version
 c3case "empty expectation without an original reason" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,reason}', '\"\"') where poll_ts = '2026-10-07 09:30:30+05:30'" INVALID_COHORT_MANIFEST "$RESTORE" noreason
 c3case "b503 snapshot without a manifest" "update public.ml_brain_snapshots set poll_summary_json = poll_summary_json - 'generated_cohort_manifest' where poll_ts = '2026-10-07 09:22:40+05:30'" MISSING_COHORT_MANIFEST "$RESTORE" nomanifest
 c3case "pre-b503 snapshot is unverifiable, not certified" "insert into public.ml_brain_snapshots (poll_ts, session_date, context_json) values ('2026-10-07 09:35:20+05:30', '2026-10-07', '{}')" COHORT_UNVERIFIABLE_PRE_B503 "$RESTORE" pre
 c3case "generation failed at capture" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,status}', '\"BUILD_FAILED\"') where poll_ts = '2026-10-07 09:30:30+05:30'" GENERATED_BUILD_FAILED "$RESTORE" failed
+c3case "typed: max_loss material change" "update public.ml_generated_candidates set max_loss = 999999.75 where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" f8big
+c3case "typed: max_loss 1-ulp change (small representable)" "update public.ml_generated_candidates set max_loss = 1000.2500000000001 where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" f8ulp
+c3case "typed: sigma_otm -0 -> 0 (sign of zero)" "update public.ml_generated_candidates set sigma_otm = 0 where candidate_id = 'NF-2' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" negzero
+c3case "typed: premium_edge sign flip" "update public.ml_generated_candidates set premium_edge = -premium_edge where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" neg
+c3case "typed: p_ml null" "update public.ml_generated_candidates set p_ml = null where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" nullv
+c3case "typed: watchlist_rank null -> value" "update public.ml_generated_candidates set watchlist_rank = 3 where candidate_id = 'NF-1' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" valnull
+c3case "typed: execution_ready flip" "update public.ml_generated_candidates set execution_ready = not execution_ready where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" bool
+c3case "typed: ml_regime text" "update public.ml_generated_candidates set ml_regime = 'MUTATED_REGIME' where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" text
+c3case "typed: generated_count" "update public.ml_generated_candidates set generated_count = generated_count + 1 where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_FIELD_CONFLICT "$RESTORE" int
+c3case "typed: snapshot_poll_ts +1 us is a different instant (row leaves its lineage)" "update public.ml_generated_candidates set snapshot_poll_ts = snapshot_poll_ts + interval '1 microsecond' where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" ORPHAN_GENERATED_ROWS "$RESTORE" tsus
+c3case "typed: stored NaN is rejected" "update public.ml_generated_candidates set ev_per_1k = 'NaN' where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_INVALID_STORED_VALUE "$RESTORE" nan
+c3case "typed: stored Infinity is rejected" "update public.ml_generated_candidates set est_cost = 'Infinity' where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_INVALID_STORED_VALUE "$RESTORE" inf
+c3case "B: NOT_EXPECTED with injected entries" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,rows}', '[{\"k\":\"S:NF-0|S:NF_intraday|I:1\",\"i\":\"NF\",\"w\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]') where poll_ts = '2026-10-07 09:30:30+05:30'" INVALID_COHORT_MANIFEST "$RESTORE" neentries
+c3case "B: NOT_EXPECTED with per_index NF=1" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,per_index,NF}', '1') where poll_ts = '2026-10-07 09:30:30+05:30'" INVALID_COHORT_MANIFEST "$RESTORE" neper
+c3case "B: EXPECTED with sample_cap 60" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,sample_cap}', '60') where poll_ts = '2026-10-07 09:15:20+05:30'" INVALID_COHORT_MANIFEST "$RESTORE" cap
+c3case "v1 partial witness cannot pass" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,schema}', '\"generated_cohort_manifest_v1\"') where poll_ts = '2026-10-07 09:15:20+05:30'" COHORT_WRONG_VERSION "$RESTORE" v1
+psql_db -c "update public.ml_generated_candidates set max_loss = '1.00025e3'::float8, iv_richness = '1.000'::float8, rank = rank * 1.0 where snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" >/dev/null
+c3rep=$(cohort_run c3rep); psql_db -c "$RESTORE" >/dev/null
+check "C3 typed: representation-only rewrites (1.00025e3, 1.000, rank*1.0) still verify (got: $c3rep)" "[[ '$c3rep' == NONE ]]"
+check "C3 typed: exporter exports every covered column (43) of every row" "python3 -c \"import json; rows=[json.loads(l) for l in open('$WORK/c3ok/generated.jsonl')]; assert rows and all(len(set(r)-{'snapshot_poll_ts_utc'})==43 for r in rows)\""
 check "C3 late (slot 2, +160 s) and rollover (slot 3, completed after slot 4 poll) lineage verified in the intact run" \
   "python3 -c \"import json; r=json.load(open('$c3j')); assert not any(f['severity']=='FAIL' for f in r['findings'])\""
 psql_db -c "drop table g_keep; drop table s_keep" >/dev/null

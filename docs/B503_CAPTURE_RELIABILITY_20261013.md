@@ -96,3 +96,90 @@ after-midnight completion exceeds 6 h; the midnight tests are negative detection
 - Always: `full_population_verified = false`, `c3_gate = CLOSED`, `source_cap_gate = CLOSED`. A 50-row sample is not the generator
   population; C3 and source-cap decisions need separate evidence.
 - Pre-b503 days cannot pass the cohort audit (no capture-time manifest), by design.
+
+## Round 4 (Codex review of 64e7424): C3 parts A and B
+
+C1, C2 and the quota/six-hour wording were accepted and are unchanged. Versions are still 2.6.72 / 503, and the PWA is unchanged.
+
+### A. The full-content sampled witness (`generated_cohort_manifest_v2`, contract `generated_row_witness_v2`)
+
+- **Columns covered:** every capture-written column of `public.ml_generated_candidates` — 43 columns. Only the server-owned `id` and `created_at` are excluded. A unit test pins both the names and the PostgreSQL types to the schema Codex supplied, and checks that both row builders (normal rows and synthetic rejected rows) write exactly these keys.
+- **Canonicalisation:** each value is canonicalised by its COLUMN type, by one pure function. The same function runs on the capture-time JSON and on the exported stored row:
+
+  | Type | Canonical form | Notes |
+  |---|---|---|
+  | timestamptz | instant in epoch µs | any offset or format of the same instant is equal |
+  | date | ISO date | |
+  | text | exact string | a JSON number in a text column → org.json literal |
+  | integer | exact int32 | 3, 3.0 and 3e0 are equal; non-integral or out-of-range values are a type error |
+  | boolean | true / false | |
+  | float8 | exact IEEE-754 binary64 bits | no epsilon, no rounding; 1, 1.0, 1e0, 1.000 and 1.00025E3 → identical bits; any other double (1 ulp, −0 vs 0, sign) differs |
+  | null | `N` | null is never equal to a value |
+
+  - NaN and ±Infinity give `!nonfinite`.
+  - Unparseable or mistyped values give `!type:<T>`.
+- **Per-row entry:** `{k: candidate_id|lane|rank, i: index_key, w: sha256 of the 43 canonical lines}`.
+- **Manifest level:**
+  - `cohort_sha256` over the sorted entries;
+  - `col_sha` — one 128-bit digest per column, in entry order, so the audit can name the changed column;
+  - `columns` — the embedded column:type contract;
+  - `type_errors` — capture-time type errors, which must be empty.
+- **When it is frozen:** in `CaptureEngine.build`, into `poll_summary_json.generated_cohort_manifest`, before any channel is uploaded.
+- **Size:** bounded at ≤ 50 rows × (k, i, 64-hex) plus 43 × 32 hex. A full 50-row manifest is under 16 KB (tested).
+- **Version check:** the audit requires v2 exactly. A v1 (partial) manifest gives `COHORT_WRONG_VERSION`, and the cohort is never certified.
+- **Exporter:** `generated.jsonl` now holds `to_jsonb(row) - id - created_at` (every covered column), plus `snapshot_poll_ts_utc`.
+  - float8 columns are exported as float8out text with `extra_float_digits = 1` (shortest exact text).
+  - They are not passed through numeric, which would turn −0 into 0.
+- **Audit:**
+  - recomputes every stored row's witness;
+  - a missing exported column gives `INPUT_INCOMPLETE`;
+  - a mismatch gives `COHORT_CONTENT_CONFLICT`, plus `COHORT_FIELD_CONFLICT` naming the differing columns;
+  - non-finite or mistyped stored values give `COHORT_INVALID_STORED_VALUE`.
+- **What a pass means:** the result is still named **SAMPLED content completeness**. `full_population_verified=false`, and `c3_gate` / `source_cap_gate` stay CLOSED.
+
+### B. Common manifest contract for every status (`GeneratedCohort.validate`)
+
+**Checked for every status:**
+- schema, contract and column contract;
+- status ∈ {EXPECTED, NOT_EXPECTED, BUILD_FAILED};
+- `sample_cap` is the integer 50;
+- population string;
+- session date;
+- lineage (snapshot_poll_ts is null or a valid instant);
+- `recommendation_id` type;
+- `row_count` is an int ≥ 0 and equals the number of entries;
+- entries are well-typed (`k` / `i` strings, `w` 64-hex);
+- at most 50 entries;
+- identities are unique;
+- `i` ∈ {NF, BNF};
+- `per_index` has exactly the keys {NF, BNF}, ints ≥ 0, matching the entries;
+- `cohort_sha256` is recomputed and matches;
+- entries are in canonical order;
+- `col_sha` has exactly the 43 columns;
+- `type_errors` is an empty array.
+
+**NOT_EXPECTED and BUILD_FAILED** additionally need:
+- zero count and empty entries;
+- NF = BNF = 0;
+- the empty `cohort_sha256` and the empty `col_sha`.
+
+**NOT_EXPECTED** also needs:
+- an original reason ∈ {no_fact_pack, zero_candidates};
+- for zero_candidates, a lineage.
+
+**EXPECTED** also needs:
+- at least one entry;
+- a lineage;
+- no reason.
+
+**BUILD_FAILED** always fails the audit (`GENERATED_BUILD_FAILED`).
+
+**Production check (read-only, last 30 days):** `index_key` is only NF (25,206 rows) or BNF (40,313 rows). There are no null index keys and no non-finite net_premium/max_loss values. 60 BNF rows have a null rank.
+
+### Tests
+
+| Test | What it covers |
+|---|---|
+| `CodexB503Round4CounterexamplesTest` | Codex's reproduction. Fails 4/5 on 64e7424, passes 5/5 now. |
+| `B503ReviewRound4Test` (14 tests) | per-column independent mutation of all 43 columns × all rows; Codex's named fields; representation variants; small representable / null↔value / negative / −0 / extreme finite; non-finite and type errors; missing exported column; NOT_EXPECTED / EXPECTED contradictions and every missing field; BUILD_FAILED; preserved missing / extra / orphan / duplicate / wrong-index cases; gates CLOSED |
+| Scratch PostgreSQL (`tools/pc2_db_suite/run.sh`) | Full typed `ml_generated_candidates` schema. Fixtures come from the real capture engine and are inserted the way PostgREST does (`json_populate_recordset`). Covers typed mutations, NaN/Infinity, representation-only rewrites that still verify, and B contradictions — all through the real exporter and audit. |

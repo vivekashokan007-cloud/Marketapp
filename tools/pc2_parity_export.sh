@@ -83,19 +83,29 @@ select pg_catalog.json_build_object(
  where poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz
  order by poll_ts, decision_index;
 
+set extra_float_digits = 1;
 \o :out/generated.jsonl
--- b503 C3: the retained generated-candidate sample rows of the same origin session (lineage = the frozen
--- fact-pack poll time in snapshot_poll_ts, NOT the snapshot completion time). Float columns are not exported:
--- the cohort contract compares identities, index and a text/int/bool content digest.
-select pg_catalog.json_build_object(
-         'snapshot_poll_ts_utc', to_char(snapshot_poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-         'session_date', session_date::text, 'recommendation_id', recommendation_id,
-         'quality_tag', quality_tag, 'decision_source', decision_source, 'candidate_id', candidate_id, 'lane', lane,
-         'index_key', index_key, 'strategy_type', strategy_type, 'trade_mode', trade_mode, 'rank', rank,
-         'watchlist_rank', watchlist_rank, 'was_surfaced', was_surfaced, 'width', width, 'expiry', expiry,
-         'execution_gate', execution_gate, 'entry_action', entry_action,
-         'app_version', app_version, 'brain_version', brain_version)::text
-  from public.ml_generated_candidates
+-- b503 C3 (round 4, generated_row_witness_v2): the retained generated-candidate sample rows of the same origin
+-- session (lineage = the frozen fact-pack poll time in snapshot_poll_ts, NOT the snapshot completion time), with
+-- EVERY column except the server-owned id/created_at, so the audit recomputes the full typed witness from the
+-- actual stored values. float8 columns are exported as their float8out text (extra_float_digits = 1: shortest
+-- text that reads back to the identical double), never through numeric, which would lose -0 and widen NaN.
+select ((pg_catalog.to_jsonb(g) - 'id' - 'created_at' - array['net_premium','max_profit','max_loss','premium_edge','ev_per_1k','est_cost','sigma_otm','iv_richness','credit_width_ratio','brain_score','p_ml','ml_edge','signal_independence_score']::text[]) || pg_catalog.jsonb_build_object(
+         'snapshot_poll_ts_utc', to_char(g.snapshot_poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         'net_premium', g.net_premium::text,
+         'max_profit', g.max_profit::text,
+         'max_loss', g.max_loss::text,
+         'premium_edge', g.premium_edge::text,
+         'ev_per_1k', g.ev_per_1k::text,
+         'est_cost', g.est_cost::text,
+         'sigma_otm', g.sigma_otm::text,
+         'iv_richness', g.iv_richness::text,
+         'credit_width_ratio', g.credit_width_ratio::text,
+         'brain_score', g.brain_score::text,
+         'p_ml', g.p_ml::text,
+         'ml_edge', g.ml_edge::text,
+         'signal_independence_score', g.signal_independence_score::text))::text
+  from public.ml_generated_candidates g
  where session_date = :'day'::date
     or (snapshot_poll_ts >= :'lo'::timestamptz and snapshot_poll_ts < :'hi'::timestamptz)
  order by snapshot_poll_ts, index_key, candidate_id, rank;

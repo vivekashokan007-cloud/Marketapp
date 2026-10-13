@@ -223,7 +223,7 @@ class B503CohortFixtureTest {
         val sql = StringBuilder()
         for ((p, completion) in plan) {
             val (slot, hm, counts) = p
-            val fp = B503Harness.factPack("${day}T$hm:00+0530", counts.first, counts.second).put("session_date", day)
+            val fp = B503Harness.richFactPack("${day}T$hm:00+0530", counts.first, counts.second).put("session_date", day)
             val r = FrozenCaptureRequest.freeze("$day|$slot", day, hm, JSONObject().put("elephant_fact_pack", fp),
                 JSONObject().put("today_ist", day), "[]", "2.6.72", 503, "2.6.72", "run-F", attemptId = "fx-$slot")
             val py = JSONObject(pythonSnapshot("${day}T$completion+0530")).put("session_date", day).toString()
@@ -232,9 +232,10 @@ class B503CohortFixtureTest {
                 .append("select (p->>'poll_ts')::timestamptz, (p->>'session_date')::date, p->>'recommendation_id', '{}'::jsonb, p->'poll_summary_json' from (select ")
                 .append(d("s", b.channels.getString("snapshot"))).append("::jsonb p) x;\n")
             b.channels.optString("generated").takeIf { it.isNotEmpty() }?.let {
-                sql.append("insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, quality_tag, decision_source, candidate_id, lane, index_key, strategy_type, trade_mode, rank, watchlist_rank, was_surfaced, width, expiry, execution_gate, entry_action, app_version, brain_version) ")
-                    .append("select snapshot_poll_ts, session_date, recommendation_id, quality_tag, decision_source, candidate_id, lane, index_key, strategy_type, trade_mode, rank, watchlist_rank, was_surfaced, width, expiry, execution_gate, entry_action, app_version, brain_version ")
-                    .append("from jsonb_populate_recordset(null::public.ml_generated_candidates, ").append(d("g", JSONObject(it).getJSONArray("rows").toString())).append("::jsonb);\n")
+                val cols = GeneratedCohort.COLUMNS.joinToString(", ") { c -> c.first }
+                // json (not jsonb), as PostgREST's bulk insert does: every covered column, typed by the table.
+                sql.append("insert into public.ml_generated_candidates ($cols) select $cols ")
+                    .append("from json_populate_recordset(null::public.ml_generated_candidates, ").append(d("g", JSONObject(it).getJSONArray("rows").toString())).append("::json);\n")
             }
         }
         File(out).also { it.parentFile?.mkdirs() }.writeText(sql.toString())

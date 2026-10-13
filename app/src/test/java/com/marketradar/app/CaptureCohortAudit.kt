@@ -27,8 +27,8 @@ object CaptureCohortAudit {
         val verified: Boolean get() = findings.none { it.severity == Severity.FAIL } && snapshots > 0
         fun count(category: String) = findings.count { it.category == category }
         fun toJson(): JSONObject = JSONObject()
-            .put("schema", "capture_cohort_report_v1").put("ist_day", istDay)
-            .put("certifies", "generated sampled cohort (<= ${GeneratedCandidateRows.PERSIST_CAP}/poll) matches the capture-time manifest; NOT full population, NOT C3")
+            .put("schema", "capture_cohort_report_v2").put("ist_day", istDay)
+            .put("certifies", "generated sampled cohort (<= ${GeneratedCandidateRows.PERSIST_CAP}/poll) SAMPLED content completeness: every capture-written column of every sampled row matches the capture-time typed witness (${GeneratedCohort.CONTRACT}); NOT full population, NOT C3")
             .put("snapshots", snapshots).put("verified_cohorts", verifiedCohorts).put("empty_cohorts", emptyCohorts)
             .put("generated_rows", generatedRows).put("sampled_cohort_verified", verified)
             .put("full_population_verified", false)
@@ -70,9 +70,12 @@ object CaptureCohortAudit {
                 continue
             }
             if (prov is CaptureSlotReconciler.Validation.Invalid) { fail("INVALID_CAPTURE_PROVENANCE", key, prov.reason); continue }
-            if (m.optString("schema") != GeneratedCohort.SCHEMA) { fail("COHORT_WRONG_VERSION", key, "manifest schema '${m.optString("schema")}'"); continue }
-            val status = m.optString("status")
-            val sess = m.optString("session_date")
+            if (m.optString("schema") != GeneratedCohort.SCHEMA) { fail("COHORT_WRONG_VERSION", key, "manifest schema '${m.optString("schema")}' (v1 partial witnesses cannot certify; ${GeneratedCohort.SCHEMA} required)"); continue }
+            // B: the common manifest contract, for EVERY status, before any status-specific rule.
+            val problems = GeneratedCohort.validate(m)
+            if (problems.isNotEmpty()) { fail("INVALID_COHORT_MANIFEST", key, "manifest contract violated: $problems"); continue }
+            val status = m.getString("status")
+            val sess = m.getString("session_date")
             if (sess != istDay || (s.optString("session_date").isNotEmpty() && s.optString("session_date") != sess)) {
                 fail("COHORT_LINEAGE_MISMATCH", key, "manifest session '$sess', snapshot session '${s.optString("session_date")}', day '$istDay'"); continue
             }
@@ -85,50 +88,46 @@ object CaptureCohortAudit {
             val snapRec = if (s.isNull("recommendation_id")) null else s.optString("recommendation_id").ifEmpty { null }
             val manRec = if (m.isNull("recommendation_id")) null else m.optString("recommendation_id").ifEmpty { null }
             if (s.has("recommendation_id") && snapRec != manRec) { fail("COHORT_LINEAGE_MISMATCH", key, "snapshot recommendation '$snapRec' vs manifest '$manRec'"); continue }
+            if (status == "BUILD_FAILED") { fail("GENERATED_BUILD_FAILED", key, "generation failed at capture: ${m.optString("reason")}"); continue }
             if (lineage != null && !claimed.add(lineage)) { fail("DUPLICATE_COHORT_LINEAGE", lineage.toString(), "two snapshots claim one generated lineage"); continue }
             val rows = lineage?.let { byLineage[it] }.orEmpty()
-            when (status) {
-                "BUILD_FAILED" -> { fail("GENERATED_BUILD_FAILED", key, "generation failed at capture: ${m.optString("reason")}"); continue }
-                "NOT_EXPECTED" -> {
-                    val reason = m.optString("reason")
-                    if (reason !in GeneratedCohort.EMPTY_REASONS) { fail("INVALID_COHORT_MANIFEST", key, "empty expectation without a legitimate original reason ('$reason')"); continue }
-                    if (rows.isNotEmpty()) { fail("COHORT_EXTRA_ROWS", key, "${rows.size} rows stored for an empty expectation ($reason)"); continue }
-                    empty++; verified++; continue
-                }
-                "EXPECTED" -> {}
-                else -> { fail("INVALID_COHORT_MANIFEST", key, "unknown status '$status'"); continue }
+            if (status == "NOT_EXPECTED") {
+                if (rows.isNotEmpty()) { fail("COHORT_EXTRA_ROWS", key, "${rows.size} rows stored for an empty expectation (${m.optString("reason")})"); continue }
+                empty++; verified++; continue
             }
-            if (lineage == null) { fail("INVALID_COHORT_MANIFEST", key, "EXPECTED cohort without snapshot_poll_ts"); continue }
-            val exp = m.optJSONArray("rows")
-            val expEntries = (0 until (exp?.length() ?: 0)).mapNotNull { exp!!.optJSONObject(it) }
-            val per = m.optJSONObject("per_index")
-            val consistent = exp != null && expEntries.size == m.optInt("row_count", -1) && expEntries.isNotEmpty() &&
-                GeneratedCohort.cohortSha(expEntries) == m.optString("cohort_sha256") &&
-                per != null && GeneratedCohort.perIndex(expEntries).let { calc ->
-                    (calc.keys().asSequence() + per.keys().asSequence()).toSet().all { k -> calc.optInt(k) == per.optInt(k, -1) || (calc.optInt(k) == 0 && !per.has(k)) } } &&
-                expEntries.size <= m.optInt("sample_cap", GeneratedCandidateRows.PERSIST_CAP)
-            if (!consistent) { fail("INVALID_COHORT_MANIFEST", key, "manifest rows/count/per_index/sha are inconsistent"); continue }
+            lineage!!
+            val exp = m.getJSONArray("rows")
+            val expEntries = (0 until exp.length()).map { exp.getJSONObject(it) }
             if (rows.isEmpty()) { fail("GENERATED_COHORT_ABSENT", key, "expected ${expEntries.size} rows, none stored for lineage $lineage"); continue }
             val before = f.count { it.severity == Severity.FAIL }
+            // The audit verifies the ACTUAL stored values: every covered column must have been exported.
+            val unexported = GeneratedCohort.COLUMNS.map { it.first }.filter { c -> rows.any { !it.has(c) } }
+            if (unexported.isNotEmpty()) { fail("INPUT_INCOMPLETE", key, "generated export lacks covered columns $unexported; content cannot be verified"); continue }
             val got = GeneratedCohort.entries(rows)
-            val dupIds = got.groupBy { it.getString("k") }.filter { it.value.size > 1 }.keys
+            val dupIds = got.groupBy { it.first.getString("k") }.filter { it.value.size > 1 }.keys
             if (dupIds.isNotEmpty()) fail("COHORT_DUPLICATE_ROWS", key, "duplicate stored identities: ${dupIds.take(3)}")
             val expByK = expEntries.associateBy { it.getString("k") }
-            val gotByK = got.associateBy { it.getString("k") }
+            val gotByK = got.associateBy { it.first.getString("k") }
             val missing = expByK.keys - gotByK.keys
             val extra = gotByK.keys - expByK.keys
             if (missing.isNotEmpty()) fail("COHORT_ROWS_MISSING", key, "${missing.size} of ${expByK.size} expected rows absent: ${missing.take(3)}")
             if (extra.isNotEmpty()) fail("COHORT_EXTRA_ROWS", key, "${extra.size} unexpected rows: ${extra.take(3)}")
+            var contentDiffers = false
             for (k in expByK.keys intersect gotByK.keys) {
-                val e = expByK.getValue(k); val g = gotByK.getValue(k)
+                val e = expByK.getValue(k); val g = gotByK.getValue(k).first
                 if (e.getString("i") != g.getString("i")) fail("COHORT_WRONG_INDEX", key, "$k expected ${e.getString("i")} stored ${g.getString("i")}")
-                else if (e.getString("c") != g.getString("c")) fail("COHORT_CONTENT_CONFLICT", key, "$k content digest differs")
+                else if (e.getString("w") != g.getString("w")) { contentDiffers = true; fail("COHORT_CONTENT_CONFLICT", key, "$k full-row witness differs") }
             }
-            rows.forEach { r ->
-                val rr = if (r.isNull("recommendation_id")) null else r.optString("recommendation_id")
-                if (rr != manRec || r.optString("session_date") != sess) {
-                    fail("COHORT_LINEAGE_MISMATCH", key, "row ${GeneratedCohort.identity(r)} belongs to recommendation '$rr' / ${r.optString("session_date")}"); return@forEach
+            gotByK.values.forEach { (_, r) ->
+                GeneratedCohort.canonicalLines(r).filter { it.substringAfter('=').startsWith("!") }.forEach {
+                    fail("COHORT_INVALID_STORED_VALUE", key, "${GeneratedCohort.identity(r)} $it")
                 }
+            }
+            if (contentDiffers && dupIds.isEmpty() && missing.isEmpty() && extra.isEmpty()) {
+                val ordered = expEntries.map { gotByK.getValue(it.getString("k")).second }
+                val stored = GeneratedCohort.columnShas(ordered); val frozen = m.getJSONObject("col_sha")
+                val cols = GeneratedCohort.COLUMNS.map { it.first }.filter { stored.getString(it) != frozen.optString(it) }
+                fail("COHORT_FIELD_CONFLICT", key, "columns differing from the capture-time witness: $cols")
             }
             if (f.count { it.severity == Severity.FAIL } == before) verified++
         }
@@ -178,7 +177,7 @@ object CaptureReadiness {
         .put("pc2_parity_certified", pc2.certified)
         .put("pc2_parity_certifies", "snapshot/compact/retained-legacy PC2 decisions vs independent chain inventory")
         .put("generated_sampled_cohort_verified", cohort.verified)
-        .put("generated_sampled_cohort_certifies", "stored generated rows == capture-time expected bounded sample (<= ${GeneratedCandidateRows.PERSIST_CAP}/poll)")
+        .put("generated_sampled_cohort_certifies", "SAMPLED content completeness: stored generated rows (all capture-written columns, typed witness ${GeneratedCohort.CONTRACT}) == capture-time expected bounded sample (<= ${GeneratedCandidateRows.PERSIST_CAP}/poll)")
         .put("capture_cohort_complete", pc2.certified && cohort.verified)
         .put("full_population_verified", false)
         .put("c3_gate", "CLOSED").put("source_cap_gate", "CLOSED")
