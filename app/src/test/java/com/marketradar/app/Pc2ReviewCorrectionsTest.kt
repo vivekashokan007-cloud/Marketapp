@@ -237,10 +237,10 @@ class Pc2ReviewCorrectionsTest {
     @Test
     fun compactBuildIsGuardedInThePollPersistencePath() {
         val source = listOf(
-            File("app/src/main/java/com/marketradar/app/MarketWatchService.kt"),
-            File("src/main/java/com/marketradar/app/MarketWatchService.kt"),
-            File("../app/src/main/java/com/marketradar/app/MarketWatchService.kt")
-        ).first { it.exists() }.readText()
+            File("app/src/main/java/com/marketradar/app/CaptureEngine.kt"),
+            File("src/main/java/com/marketradar/app/CaptureEngine.kt"),
+            File("../app/src/main/java/com/marketradar/app/CaptureEngine.kt")
+        ).first { it.exists() }.readText() // b503: post-build path extracted from MarketWatchService
         assertTrue(
             "Pc2CompactBatch.build must be wrapped: an uncaught throw is swallowed by the " +
                 "outer ML_SNAPSHOT_FAIL catch and would abort snapshot + legacy PC2 persistence",

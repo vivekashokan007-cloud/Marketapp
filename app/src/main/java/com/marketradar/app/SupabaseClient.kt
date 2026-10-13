@@ -1788,79 +1788,18 @@ object SupabaseClient {
      * never interfere with live snapshot/candidate capture.
      */
     fun savePc2AuthorityDecisions(snapshot: JSONObject): Boolean {
-        val context = snapshot.optJSONObject("context_json") ?: try {
-            JSONObject(snapshot.optString("context_json", ""))
-        } catch (_: Exception) {
-            return true
-        }
-        val decisions = context.optJSONArray("snapshot_pc2_authority_decisions") ?: return true
-        if (decisions.length() == 0) return true
+        val built = Pc2LegacyAuthorityRows.build(snapshot)
+        if (!built.ok) return false
+        val rows = built.rows ?: return true
+        return uploadPc2AuthorityDecisionRows(rows, built.pollTs) == FrozenEvidenceOutbox.Outcome.ACKNOWLEDGED
+    }
 
-        val policy = context.optJSONObject("snapshot_pc2_authority_policy") ?: JSONObject()
-        val sessionDate = snapshot.optString("session_date", "").trim()
-        val pollTs = snapshot.optString("poll_ts", "").trim()
-        val brainVersion = context.optString("snapshot_brain_version", "unknown").trim()
-        val policyVersion = policy.optString("version", "pc2_authority_policy_v1").trim()
-        val policyDiagnosticsVersion = policy.optString(
-            "authority_diagnostics_version",
-            "pc2_authority_diagnostics_v1"
-        ).trim()
-        if (sessionDate.isEmpty() || pollTs.isEmpty()) return false
-
-        val rows = JSONArray()
-        for (index in 0 until decisions.length()) {
-            val decision = decisions.optJSONObject(index) ?: continue
-            val variableName = decision.optString("variable_name", "").trim()
-            if (variableName.isEmpty()) continue
-            val diagnosticsVersion = decision.optString(
-                "authority_diagnostics_version",
-                policyDiagnosticsVersion
-            ).trim().ifEmpty { "pc2_authority_diagnostics_v1" }
-            rows.put(
-                JSONObject()
-                    .put("id", "$pollTs|$policyVersion|$diagnosticsVersion|$index")
-                    .put("session_date", sessionDate)
-                    .put("poll_ts", pollTs)
-                    .put("decision_index", index)
-                    .put("variable_name", variableName)
-                    .put("constant", decision.opt("constant"))
-                    .put("context_variable", decision.opt("context_variable"))
-                    .put("slice_key", decision.opt("slice_key"))
-                    .put("authority_kind", decision.opt("authority_kind"))
-                    .put("authority_state", decision.optString("authority_state", "SHADOW"))
-                    .put("authority_state_reason", decision.optString("authority_state_reason", "authority_contract_not_ready"))
-                    .put("authority_diagnostics_version", diagnosticsVersion)
-                    .put("provenance_policy", decision.optString("provenance_policy", "unknown"))
-                    .put("support_count", decision.optInt("support_count", 0))
-                    .put("stability_ratio", decision.opt("stability_ratio"))
-                    .put("stability_bar", decision.opt("stability_bar"))
-                    .put("stability_pass", decision.opt("stability_pass"))
-                    .put("diversity_pass", decision.opt("diversity_pass"))
-                    .put("diversity_status", decision.opt("diversity_status"))
-                    .put("censor_guard_status", decision.opt("censor_guard_status"))
-                    .put("censor_guard_flags", decision.opt("censor_guard_flags"))
-                    .put("population_provenance_verified", decision.opt("population_provenance_verified"))
-                    .put("population_provenance_scope", decision.opt("population_provenance_scope"))
-                    .put("population_provenance_version", decision.opt("population_provenance_version"))
-                    .put("neutrality_tick", decision.opt("neutrality_tick"))
-                    .put("neutrality_delta", decision.opt("neutrality_delta"))
-                    .put("neutrality_pass", decision.opt("neutrality_pass"))
-                    .put("hard_threshold", decision.opt("hard_threshold_value"))
-                    .put("percentile_threshold", decision.opt("percentile_threshold_value"))
-                    .put("observed_value", decision.opt("observed_value"))
-                    .put("hard_passed", decision.opt("hard_passed"))
-                    .put("percentile_passed", decision.opt("percentile_passed"))
-                    .put("counterfactual_behavior_differs", decision.opt("counterfactual_behavior_differs"))
-                    .put("promotion_id", decision.opt("promotion_id"))
-                    .put("promotion_valid_until", decision.opt("promotion_valid_until"))
-                    .put("fallback_reason", decision.opt("fallback_reason"))
-                    .put("brain_version", brainVersion)
-                    .put("policy_version", policyVersion)
-                    .put("policy_json", policy)
-                    .put("decision_json", decision)
-            )
-        }
-        if (rows.length() == 0) return true
+    /**
+     * b503: upload of frozen legacy rows (restart-safe outbox). Same table, unique key and
+     * ignore-duplicates upsert as before; a 409 duplicate is the existing "treated as saved".
+     */
+    fun uploadPc2AuthorityDecisionRows(rows: JSONArray, pollTs: String): FrozenEvidenceOutbox.Outcome {
+        if (rows.length() == 0) return FrozenEvidenceOutbox.Outcome.ACKNOWLEDGED
         val result = postArrayToTableDetailed(
             "ml_pc2_authority_decisions?on_conflict=poll_ts,policy_version,authority_diagnostics_version,decision_index",
             rows,
@@ -1873,12 +1812,15 @@ object SupabaseClient {
                 TAG,
                 "PC2_AUTHORITY_TELEMETRY_DUPLICATE: treated_as_saved rows=${rows.length()} pollTs=$pollTs"
             )
-            return true
+            return FrozenEvidenceOutbox.Outcome.ACKNOWLEDGED
         }
         if (!result.success) {
             Log.w(TAG, "PC2_AUTHORITY_TELEMETRY_SAVE_FAIL: ${result.errorBody ?: result.exceptionMessage ?: result.message.orEmpty()}")
         }
-        return result.success
+        if (result.success) return FrozenEvidenceOutbox.Outcome.ACKNOWLEDGED
+        val code = result.code
+        return if (code != null && code in 400..499 && code !in listOf(401, 403, 404, 408, 409, 429))
+            FrozenEvidenceOutbox.Outcome.QUARANTINE else FrozenEvidenceOutbox.Outcome.RETRY
     }
 
     /**
@@ -1950,6 +1892,18 @@ object SupabaseClient {
     ): PaperMenuUploadResult {
         val r = PaperMenuUploader.upload(paperMenuTransport, deviceKey, manifestRow, canonicalRowsInRankOrder, payloadSha256)
         return PaperMenuUploadResult(r.disposition, r.outcome, r.completeness, r.detail)
+    }
+
+    /**
+     * b503: one capture event through public.capture_event_record (migration 20261013120000).
+     * Authorized by the same registered, active PC2 ingest device credential; no table writes.
+     * A missing function (server capability not yet deployed) keeps the event queued.
+     */
+    fun recordCaptureEvent(deviceKey: String, eventJson: String): FrozenEvidenceOutbox.Outcome {
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return FrozenEvidenceOutbox.Outcome.RETRY
+        val event = runCatching { JSONObject(eventJson) }.getOrNull() ?: return FrozenEvidenceOutbox.Outcome.QUARANTINE
+        val r = postRpc("capture_event_record", JSONObject().put("p_device_key", deviceKey).put("p_event", event))
+        return CaptureEventProtocol.classify(r.code, r.body)
     }
 
     /** True only when the server reports this key as a registered device AND the active collector. */

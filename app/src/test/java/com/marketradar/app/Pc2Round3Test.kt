@@ -439,9 +439,13 @@ class Pc2Round3Test {
     @Test
     fun theServiceGatesTheChannelAndNeverLogsTheKey() {
         val service = source("MarketWatchService.kt")
-        val gate = service.indexOf("Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)")
-        val build = service.indexOf("runCatching { Pc2CompactBatch.build(rawSnapObj) }")
+        // b503: the post-build path lives in CaptureEngine; its compactEnabled() port is the
+        // same registration flag (CaptureRuntime) and is checked before the build.
+        val engine = source("CaptureEngine.kt")
+        val gate = engine.indexOf("channels.compactEnabled()")
+        val build = engine.indexOf("runCatching { Pc2CompactBatch.build(rawSnapObj) }")
         assertTrue("the build is gated on registration", gate in 0 until build)
+        assertTrue(source("CaptureRuntime.kt").contains("compactEnabled() = prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)"))
         assertTrue(service.contains("key_hash=\${Pc2IngestCredential.keyHash(deviceKey)}"))
         assertFalse("the key itself must never be logged", Regex("LogBuffer\\.add\\([^)]*\\\$deviceKey").containsMatchIn(service))
         assertFalse(Regex("LogBuffer\\.add\\([^)]*\\{deviceKey\\}").containsMatchIn(service))

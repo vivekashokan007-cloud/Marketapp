@@ -72,10 +72,14 @@ object BrainSnapshotOutbox {
 
     /** Freeze sanitized bytes before any network call. A conflicting poll is retained separately. */
     @Synchronized
-    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean {
-        val pollTs = snapshot.optString("poll_ts", "")
+    fun enqueue(filesDir: File, snapshot: JSONObject): Boolean =
+        enqueuePayload(filesDir, BrainSnapshotPayloadSanitizer.sanitize(snapshot).toString())
+
+    /** b503: freezes exact, already-sanitized bytes (capture bundle resume keeps them byte-identical). */
+    @Synchronized
+    fun enqueuePayload(filesDir: File, payload: String): Boolean {
+        val pollTs = JSONObject(payload).optString("poll_ts", "")
         require(POLL_TS.matches(pollTs)) { "Invalid snapshot poll timestamp" }
-        val payload = BrainSnapshotPayloadSanitizer.sanitize(snapshot).toString()
         val target = fileFor(filesDir, pollTs)
         val folder = dir(filesDir)
         check(folder.isDirectory || folder.mkdirs()) { "Cannot create snapshot outbox" }

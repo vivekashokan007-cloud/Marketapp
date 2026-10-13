@@ -15,6 +15,10 @@ SERVICE_PATH = os.path.join(
     "app",
     "MarketWatchService.kt",
 )
+_APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "java", "com", "marketradar", "app")
+ENGINE_PATH = os.path.join(_APP_DIR, "CaptureEngine.kt")
+CONTRACTS_PATH = os.path.join(_APP_DIR, "CaptureContracts.kt")
+RUNTIME_PATH = os.path.join(_APP_DIR, "CaptureRuntime.kt")
 SUPABASE_PATH = os.path.join(
     ROOT, "app", "src", "main", "java", "com", "marketradar", "app", "SupabaseClient.kt"
 )
@@ -105,14 +109,22 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         with open(LOCAL_CACHE_PATH, "r", encoding="utf-8") as handle:
             cache = handle.read()
 
-        self.assertIn("compactBrainSnapshotForPersistence(rawSnapObj)", service)
-        snapshot_persist_body = service.split("val rawSnapObj = JSONObject(snapResult)", 1)[1]
-        snapshot_persist_body = snapshot_persist_body.split("val snapshotSessionDate", 1)[0]
+        # b503: the post-build persistence path moved verbatim into CaptureEngine.build().
+        with open(ENGINE_PATH, "r", encoding="utf-8") as handle:
+            engine = handle.read()
+        self.assertIn("compactBrainSnapshotForPersistence(rawSnapObj)", engine)
+        snapshot_persist_body = engine.split("val rawSnapObj = JSONObject(computed.value)", 1)[1]
+        snapshot_persist_body = snapshot_persist_body.split("val legacy = ", 1)[0]
         self.assertNotIn("rawSnapObj.toString()", snapshot_persist_body)
-        self.assertIn('"android_compact_v1"', service)
+        with open(CONTRACTS_PATH, "r", encoding="utf-8") as handle:
+            contracts = handle.read()
+        self.assertIn('"android_compact_v1"', contracts)
+        self.assertIn("req.persistenceMode", service)
         self.assertIn('listOf("ml_brain_snapshots?on_conflict=poll_ts")', supabase)
         self.assertIn('resolution=ignore-duplicates,return=minimal', supabase)
-        self.assertIn('BrainSnapshotOutbox.enqueue(filesDir, snapObj)', service)
+        with open(RUNTIME_PATH, "r", encoding="utf-8") as handle:
+            runtime = handle.read()
+        self.assertIn('BrainSnapshotOutbox.enqueuePayload(filesDir, payload)', runtime)
         self.assertNotIn('val tables = listOf("ml_brain_snapshots", "ml_poll_sequences")', supabase)
         self.assertIn('"snapshot_pc2_authority_policy"', cache)
         self.assertIn('"snapshot_pc2_authority_decisions"', cache)
@@ -144,21 +156,23 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         self.assertNotIn('"pre_alignment_action"', persistence_compactor)
 
     def test_pc2_telemetry_does_not_depend_on_snapshot_save(self):
+        # b503: every channel is frozen into the durable bundle first, then checkpointed independently;
+        # the legacy PC2 rows are built from the frozen snapshot regardless of the snapshot upload, and the
+        # drains run independently (a snapshot failure never gates the legacy, compact or generated drains).
         with open(SERVICE_PATH, "r", encoding="utf-8") as handle:
             service = handle.read()
-
-        snapshot_save = service.index("val snapshotSaved = if (snapshotQueued)")
-        self.assertIn("drainBrainSnapshotOutbox()", service[snapshot_save:])
-        authority_save = service.index("val authorityTelemetrySaved = runCatching { SupabaseClient.savePc2AuthorityDecisions(snapObj) }")
-        generated_save = service.index("generatedSaved = when {")
-        generated_freeze = service.index("GeneratedCandidateOutbox.enqueue(filesDir")
-        success_gate = service.index("if (snapshotSaved && generatedSaved)")
-        self.assertLess(snapshot_save, authority_save)
-        self.assertLess(authority_save, success_gate)
-        self.assertLess(generated_save, success_gate)
-        self.assertLess(generated_freeze, snapshot_save)
-        self.assertIn('"app_version"', service)
-        self.assertIn('"brain_version"', service)
+        with open(ENGINE_PATH, "r", encoding="utf-8") as handle:
+            engine = handle.read()
+        bundle = engine.index("journal.writeBundle(")
+        fan_out = engine.index("fanOut(req.attemptId")
+        self.assertLess(bundle, fan_out)
+        self.assertIn("val legacy = runCatching { Pc2LegacyAuthorityRows.build(snapObj) }", engine)
+        self.assertIn('"legacy" -> { channels.enqueueLegacy(', engine)
+        drains = service.split("private fun launchCaptureDrains()", 1)[1].split("private fun drainBrainSnapshotOutbox", 1)[0]
+        self.assertLess(drains.index("drainBrainSnapshotOutbox()"), drains.index("runCatching { CaptureRuntime.drainLegacy() }"))
+        self.assertIn("runCatching { drainGeneratedCandidateOutbox() }", drains)
+        self.assertIn('"app_version"', engine)
+        self.assertIn('"brain_version"', engine)
 
     def test_webview_recreation_is_diagnosable_and_recovers(self):
         with open(MAIN_ACTIVITY_PATH, "r", encoding="utf-8") as handle:

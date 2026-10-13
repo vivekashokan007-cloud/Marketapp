@@ -116,5 +116,31 @@ SQL
 tools/pc2_parity_export.sh 2026-10-01 "$WORK/malformed" >/dev/null && echo "PASS  the export survives a malformed stored timestamp" || { echo "FAIL  export aborted"; failures=$((failures+1)); }
 expect_fail "A3 malformed stored timestamp is surfaced, not omitted" "$WORK/malformed" MALFORMED_TIMESTAMP_ROWS
 
+echo "== b503 capture events, legacy replay and collector designation"
+psql_db -f supabase/migrations/20261009120000_paper_decision_menu_evidence.sql >/dev/null 2>&1
+psql_db -f supabase/migrations/20261013120000_capture_events.sql >/dev/null 2>&1
+psql_db -f supabase/migrations/20261013120000_capture_events.sql >/dev/null 2>&1
+echo "PASS  capture-event migration applies, and re-applies idempotently"
+psql -X -d "$DB" -f tools/pc2_db_suite/b503_capture.sql >"$WORK/b503.out" 2>&1 || true
+grep -E "^(PASS|FAIL)|ERROR" "$WORK/b503.out" || true
+b503_fail=$(grep -cE "^FAIL|ERROR" "$WORK/b503.out" || true)
+b503_pass=$(grep -c "^PASS" "$WORK/b503.out" || true)
+check "b503 capture suite: $b503_pass passed, $b503_fail failed" "[[ $b503_fail -eq 0 && $b503_pass -ge 20 ]]"
+HA="$(python3 -c 'import hashlib; print(hashlib.sha256(b"a"*64).hexdigest())')"
+HB="$(python3 -c 'import hashlib; print(hashlib.sha256(b"b"*64).hexdigest())')"
+psql_db -c "update pc2_private.ingest_devices set active = true where label = 'b503 B'" >/dev/null
+# psql exits non-zero on a refusal; capture first so pipefail does not mask the matched message.
+designate() { psql -X -q -d "$DB" -v hash="$1" -v label="$2" -f tools/pdm_collector/designate.sql 2>&1 || true; }
+revoke() { psql -X -q -d "$DB" -v hash="$1" -f tools/pdm_collector/revoke.sql 2>&1 || true; }
+check "designation inserts the first collector" "designate $HA 'Vivek phone' | grep -q 'DESIGNATED hash'"
+check "re-running for the same hash is the ALREADY_DESIGNATED no-op" "designate $HA 'Vivek phone' | grep -q ALREADY_DESIGNATED"
+check "a second device is refused (ANOTHER_COLLECTOR_ACTIVE)" "designate $HB 'other' | grep -q ANOTHER_COLLECTOR_ACTIVE"
+check "a malformed hash is refused" "designate nothex 'x' | grep -q HASH_MALFORMED"
+check "exactly one active collector after all attempts" "[[ \$(psql -X -At -d $DB -c 'select count(*) from pdm_private.collectors where active') == 1 ]]"
+check "revocation touches exactly the one row" "revoke $HA | grep -q REVOKED"
+check "revoking again is refused" "revoke $HA | grep -q NOT_AN_ACTIVE_COLLECTOR"
+check "a revoked collector is not silently re-activated" "designate $HA 'Vivek phone' | grep -q PREVIOUSLY_REVOKED"
+check "read-only checks run" "psql -X -q -d $DB -v day=2026-10-14 -f tools/pdm_collector/checks.sql >/dev/null 2>&1"
+
 echo "== $failures failure(s)"
 exit $(( failures > 0 ? 1 : 0 ))

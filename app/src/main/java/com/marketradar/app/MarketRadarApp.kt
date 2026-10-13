@@ -55,6 +55,16 @@ class MarketRadarApp : Application() {
                 Python.start(AndroidPlatform(this))
             }
 
+            // b503: process-owned capture runtime. Reconcile local capture journals at process
+            // start (a different run id proves the previous process ended); network drains
+            // follow when the service starts.
+            try {
+                CaptureRuntime.ensure(this)
+                applicationScope.launch(Dispatchers.IO) { CaptureRuntime.reconcile() }
+            } catch (t: Throwable) {
+                LogBuffer.add('E', "MarketRadarApp", "CAPTURE_RUNTIME_INIT_FAIL: ${t.javaClass.simpleName}")
+            }
+
             // Always install fatal crash capture regardless of log capture mode.
             LogTap.install(this)
 
