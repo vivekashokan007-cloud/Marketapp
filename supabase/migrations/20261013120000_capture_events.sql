@@ -23,12 +23,12 @@
 --     else PT429 (the client cools down until the next IST day; events stay queued on the device).
 --   * every response names the event_id it is about; the client acknowledges only a matching id (R5).
 --
--- Storage bound (measured on scratch Postgres by tools/pc2_db_suite/run.sh, incompressible payloads):
---   input bytes are capped at 8 MiB/device/IST day (the old 5000 x 8192 = 40.96 MB allowance no longer applies).
---   byte-cap shape (1072 max-size events + 22 conflicts): 9.6 MB total persisted (events 9.4 MB incl. toast+indexes)
---   row-cap shape (5000 small events, 6.95 MB charged):  11.0 MB persisted
---   conflicts are <= 500 rows/day of fixed ~100-byte rows (+ unique index), < 0.5 MB
---   => justified bound ~12 MiB per active device per IST day; the suite fails above 24 MiB.
+-- Daily size (b503 round 3 wording): the ENFORCED limit is 8 MiB charged input per active device per IST day plus the
+-- row (5000), conflict (500) and per-event variant (8) limits above. Two scratch Postgres measurements (CI run
+-- 38367934746, incompressible payloads): byte-limit shape 8,388,602 charged bytes -> 9,625,600 bytes relation growth;
+-- row-limit shape 5000 events / 6,952,786 charged bytes -> 10,985,472 bytes event relation growth. The suite fails
+-- above 24 MiB. Measurements, not a proven physical bound or a live Supabase figure. This quota covers only these new
+-- event tables (not snapshots, generated/legacy rows, WAL or the bill); no cost guarantee.
 --
 -- Rollback (owner, only if no consumer depends on it):
 --   begin;
