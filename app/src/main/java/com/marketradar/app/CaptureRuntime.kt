@@ -35,6 +35,7 @@ object CaptureRuntime {
     lateinit var journal: CaptureJournal; private set
     lateinit var legacyOutbox: FrozenEvidenceOutbox; private set
     lateinit var eventOutbox: FrozenEvidenceOutbox; private set
+    private lateinit var eventDrainer: CaptureEventDrainer
     val finisher = CaptureFinisher("capture-finisher", 2)
     private val control = CaptureFinisher("capture-control", 64)
     private val reconciling = AtomicBoolean(false)
@@ -53,6 +54,7 @@ object CaptureRuntime {
         journal = CaptureJournal(filesDir)
         legacyOutbox = FrozenEvidenceOutbox(filesDir, LEGACY_DIR, 150, 64L * 1024 * 1024)
         eventOutbox = FrozenEvidenceOutbox(filesDir, EVENTS_DIR, 2000, 8L * 1024 * 1024)
+        eventDrainer = CaptureEventDrainer(eventOutbox, java.io.File(filesDir, "capture_event_quota_cooldown_v1"))
         val channels = object : CaptureChannels {
             override fun compactEnabled() = prefs.getBoolean(Pc2IngestCredential.PREF_REGISTERED_CONFIRMED, false)
             override fun stageHealth(): JSONObject = engine.healthSnapshot()
@@ -89,7 +91,7 @@ object CaptureRuntime {
     fun reconcile(): CaptureEngine.ReconcileReport? {
         if (!initialized || !reconciling.compareAndSet(false, true)) return null
         return try {
-            engine.reconcile(coordinator.liveAttemptIds()).also { r ->
+            engine.reconcile { coordinator.isLive(it) }.also { r ->
                 if (r.resumed + r.uncertain + r.lost + r.stillPending + r.faults.size > 0) {
                     val inv = journal.inventory()
                     log('W', "CAPTURE_RECONCILE: live=${r.live} resumed=${r.resumed} finalized=${r.finalized} " +
@@ -123,11 +125,13 @@ object CaptureRuntime {
     fun drainEvents(): FrozenEvidenceOutbox.Status? {
         if (!initialized) return null
         val key = deviceKey() ?: return eventOutbox.status(stop = "no_device_key")
-        val s = eventOutbox.drain(maxAttempts = 20) { _, payload -> SupabaseClient.recordCaptureEvent(key, payload) }
+        val r = eventDrainer.drain(maxAttempts = 20) { _, payload -> SupabaseClient.recordCaptureEvent(key, payload) }
+        val s = r.status
         if (s.attempted > 0 || s.pending > 0 || s.quarantinedTotal > 0) {
             log(if (s.pending == 0 && s.quarantinedTotal == 0) 'I' else 'W',
                 "CAPTURE_EVENT_OUTBOX_DRAIN: attempted=${s.attempted} acknowledged=${s.acknowledged} retried=${s.retried} " +
-                    "pending=${s.pending} quarantinedTotal=${s.quarantinedTotal} stop=${s.stopReason}")
+                    "pending=${s.pending} quarantinedTotal=${s.quarantinedTotal} stop=${s.stopReason} " +
+                    "quotaCooldownUntilMs=${r.cooldownUntilMs} skippedForCooldown=${r.skippedForCooldown}")
         }
         return s
     }

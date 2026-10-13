@@ -47,7 +47,8 @@ object LogBuffer {
 
         // Mirror to system logcat for ADB visibility unless caller disables it.
         // This is important for logcat ingestion paths to avoid feedback loops.
-        if (mirrorToLogcat) {
+        // b503: logcat mirroring is best effort (also keeps pure-JVM tests of production code paths running).
+        if (mirrorToLogcat) try {
             when (level) {
                 'V' -> Log.v(tag, message)
                 'D' -> Log.d(tag, message)
@@ -57,7 +58,7 @@ object LogBuffer {
                 'F' -> Log.wtf(tag, message)
                 else -> Log.i(tag, message)
             }
-        }
+        } catch (_: RuntimeException) { }
 
         appendPersistent(entry)
 

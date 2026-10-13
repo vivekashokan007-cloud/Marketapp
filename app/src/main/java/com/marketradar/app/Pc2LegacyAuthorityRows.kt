@@ -27,12 +27,20 @@ object Pc2LegacyAuthorityRows {
     private val MISSING = JSONArray()
 
     private fun buildRows(snapshot: JSONObject): JSONArray? {
+        // b503 R3: absence is NOT_EXPECTED only when the source genuinely has no cohort. A present but
+        // unparseable context or decisions value is an explicit build failure (MISSING), never "nothing expected".
+        if (!snapshot.has("context_json") || snapshot.isNull("context_json")) return null
         val context = snapshot.optJSONObject("context_json") ?: try {
-            JSONObject(snapshot.optString("context_json", ""))
+            val raw = snapshot.optString("context_json", "")
+            if (raw.isBlank()) return null
+            JSONObject(raw)
         } catch (_: Exception) {
-            return null
+            return MISSING
         }
-        val decisions = context.optJSONArray("snapshot_pc2_authority_decisions") ?: return null
+        if (!context.has("snapshot_pc2_authority_decisions") || context.isNull("snapshot_pc2_authority_decisions")) return null
+        val decisions = context.optJSONArray("snapshot_pc2_authority_decisions")
+            ?: (context.opt("snapshot_pc2_authority_decisions") as? String)?.let { runCatching { JSONArray(it) }.getOrNull() }
+            ?: return MISSING
         if (decisions.length() == 0) return null
 
         val policy = context.optJSONObject("snapshot_pc2_authority_policy") ?: JSONObject()

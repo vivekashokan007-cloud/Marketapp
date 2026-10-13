@@ -134,6 +134,10 @@ class CaptureCoordinator(
     fun liveAttemptIds(): Set<String> = admitted.values.map { it.req.attemptId }.toSet() +
         listOfNotNull(running.get()?.req?.attemptId)
 
+    /** R2: per-marker liveness for reconciliation (admission is registered before the intent is written). */
+    fun isLive(attemptId: String): Boolean =
+        admitted.values.any { it.req.attemptId == attemptId } || running.get()?.req?.attemptId == attemptId
+
     fun isComputationOutstanding(): Boolean = running.get() != null
     fun pendingAdmissions(): Int = admitted.size
 
@@ -152,7 +156,7 @@ class CaptureCoordinator(
                 blocking.skipped.incrementAndGet()
                 checkStuck(blocking)
             }
-            lightly {
+            durably {
                 owner.onSkipped(req, Outcome.SKIPPED_INFLIGHT, blocking?.req?.captureKey,
                     blocking?.let { monoClock() - it.startedMono } ?: 0L)
             }
@@ -236,9 +240,13 @@ class CaptureCoordinator(
             } finally { admitted.remove(cell.req.captureKey, cell) }
         }
         if (!finisher.offer(job)) {
-            // Saturated: ownership ends here with an explicit terminal record, never silently.
-            admitted.remove(cell.req.captureKey, cell)
-            lightly { owner.onFinisherRejected(cell.req, CaptureDelivery.LATE) }
+            // Saturated: an explicit terminal record, never silently. R2: ownership (admission) is released only
+            // AFTER the owner has durably recorded the outcome, so reconciliation never sees an ownerless intent.
+            val record = Runnable {
+                try { owner.onFinisherRejected(cell.req, CaptureDelivery.LATE) } catch (_: Throwable) { }
+                finally { admitted.remove(cell.req.captureKey, cell) }
+            }
+            if (!control.offer(record)) { control.recordOverflow(); record.run() }
         }
     }
 
@@ -248,6 +256,12 @@ class CaptureCoordinator(
         if (!task.isDone && age >= stuckAfterMs && cell.stuckReported.compareAndSet(false, true)) {
             lightly { owner.onStuck(cell.req, age) }
         }
+    }
+
+    /** Terminal evidence: control lane, or inline when the lane is saturated (never dropped). */
+    private fun durably(block: () -> Unit) {
+        val r = Runnable { runCatching(block) }
+        if (!control.offer(r)) { control.recordOverflow(); r.run() }
     }
 
     private fun lightly(block: () -> Unit) {

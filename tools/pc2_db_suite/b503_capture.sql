@@ -63,6 +63,44 @@ select public.b503_expect($$select public.capture_event_record(repeat('a',64), p
 reset role;
 select case when (select count(*) from public.ml_capture_events) = 1 then 'PASS  capped event not stored' else 'FAIL  capped event stored' end;
 
+\echo '== R4: every persistent row is charged; conflicts are bounded and deduplicated'
+select case when (select conflicts from capture_private.writer_ledger) = 1 and (select bytes from capture_private.writer_ledger) > 256
+  then 'PASS  the first conflict variant was charged (1 conflict, bytes include event + 256)' else 'FAIL  conflict not charged' end;
+-- (a) over quota: a NEW changed-payload variant at the row cap is PT429 and writes nothing
+set role anon;
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|8','att1','LATE_DELIVERED','third'))$$, 'PT429', 'R4 new conflict variant over the daily row cap is PT429');
+-- (b) a repeat of the KNOWN variant writes nothing and needs no quota
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|8','att1','LATE_DELIVERED','other'))$$, 'status:REJECTED_CONFLICT', 'R4 repeated identical conflict at the cap is answered without a row');
+reset role;
+select case when (select count(*) from capture_private.conflicts) = 1 and (select events from capture_private.writer_ledger) = 5000
+  and (select conflicts from capture_private.writer_ledger) = 1 then 'PASS  R4 over-cap conflicts stored no row and charged nothing (rolled back)' else 'FAIL  R4 conflict growth past cap' end;
+-- (c) many distinct variants of one event: at most 8 rows, all charged
+update capture_private.writer_ledger set events = 0, conflicts = 0, bytes = 0;
+set role anon;
+select count(*) filter (where (public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|8','att1','LATE_DELIVERED','v'||g)))->>'status' = 'REJECTED_CONFLICT') = 40 as ok
+  from generate_series(1, 40) g \gset many_
+reset role;
+select case when :'many_ok' = 't' and (select count(*) from capture_private.conflicts where event_id = (public.b503_ev('2026-10-13|8','att1','LATE_DELIVERED'))->>'event_id') = 8
+  and (select conflicts from capture_private.writer_ledger) = 7
+  then 'PASS  R4 40 distinct variants -> 8 stored rows per event, 7 newly charged' else 'FAIL  R4 variant bound' end;
+-- (d) daily conflict cap (500) on another event
+set role anon;
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|11','att11','CAPTURE_STUCK'))$$, 'status:INSERTED', 'R4 a fresh event inserts under the cap');
+reset role;
+update capture_private.writer_ledger set conflicts = 500;
+set role anon;
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|11','att11','CAPTURE_STUCK','changed'))$$, 'PT429', 'R4 the 501st conflict variant of the day is PT429');
+reset role;
+-- (e) byte cap; exact replay at the cap stays DUPLICATE
+update capture_private.writer_ledger set conflicts = 0, bytes = 8388608 - 100;
+set role anon;
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|12','att12','CAPTURE_STUCK'))$$, 'PT429', 'R4 an event that would exceed 8 MiB/day is PT429');
+select public.b503_expect($$select public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|11','att11','CAPTURE_STUCK'))$$, 'status:DUPLICATE', 'R4 exact replay at the byte cap is DUPLICATE (free)');
+select case when (public.capture_event_record(repeat('a',64), public.b503_ev('2026-10-13|11','att11','CAPTURE_STUCK')))->>'event_id'
+  = (public.b503_ev('2026-10-13|11','att11','CAPTURE_STUCK'))->>'event_id' then 'PASS  R5 responses name the event_id' else 'FAIL  R5 response id' end;
+reset role;
+select case when (select bytes from capture_private.writer_ledger) = 8388608 - 100 then 'PASS  R4 rejected/duplicate calls charged no bytes' else 'FAIL  R4 byte charge leaked' end;
+
 \echo '== legacy PC2 replay idempotence (production unique index, PostgREST ignore-duplicates semantics)'
 create table public.b503_legacy (id bigserial primary key, poll_ts timestamptz not null, policy_version text not null,
   authority_diagnostics_version text, decision_index integer not null, decision_json jsonb not null);

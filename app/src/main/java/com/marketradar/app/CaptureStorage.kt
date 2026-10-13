@@ -220,9 +220,12 @@ class CaptureJournal(
     }
 
     @Synchronized
-    fun writeBundle(attemptId: String, channels: JSONObject): String {
+    fun writeBundle(attemptId: String, channels: JSONObject, identity: JSONObject? = null): String {
         val existing = dir.listFiles()?.filter { it.name.endsWith(".bundle.json") }?.sumOf { it.length() } ?: 0L
-        val body = JSONObject().put("schema", "capture_bundle_v1").put("attempt_id", attemptId).put("channels", channels).toString()
+        // R2: the bundle carries its own frozen identity so a bundle whose intent was never written (intent
+        // storage fault) can still be recovered with verified provenance.
+        val body = JSONObject().put("schema", "capture_bundle_v1").put("attempt_id", attemptId)
+            .put("identity", identity ?: JSONObject.NULL).put("channels", channels).toString()
         if (existing + body.length > maxBundleBytes) throw IOException("bundle_capacity_exceeded")
         fs.atomicWrite(bundleFile(attemptId), body)
         return FrozenCaptureRequest.sha256Hex(body)
@@ -241,19 +244,96 @@ class CaptureJournal(
     @Synchronized fun hasBundle(attemptId: String) = bundleFile(attemptId).isFile
     @Synchronized fun hasBundleTemp(attemptId: String) = File(dir, bundleFile(attemptId).name + ".tmp").exists()
 
-    /** Deletes the bundle, then the intent. Called only once every channel is resolved. */
+    /**
+     * Deletes the bundle (if any), then the intent. Called only once every channel is resolved AND every
+     * required event is durably enqueued (R2: refuses while pending events remain).
+     */
     @Synchronized
     fun finalizeAttempt(attemptId: String): Boolean {
+        if (pendingEvents(attemptId).isNotEmpty()) return false
         update(attemptId) { it.put("stage", "FINAL") }
         val b = fs.delete(bundleFile(attemptId))
         return b && fs.delete(intentFile(attemptId))
     }
 
+    /**
+     * R2: persists a terminal outcome and its exact event bytes BEFORE ownership is released. Creates a
+     * marker when no intent exists (intent write failed, skipped slot). Terminal markers may exceed
+     * [maxIntents] (they are the evidence of refusals) up to a hard 2x cap.
+     */
+    @Synchronized
+    fun markTerminal(attemptId: String, identity: JSONObject, reason: String, eventId: String, eventText: String) {
+        val f = intentFile(attemptId)
+        if (f.isFile && update(attemptId) {
+                it.put("stage", "TERMINAL").put("terminal_reason", reason)
+                (it.optJSONObject("pending_events") ?: JSONObject().also { p -> it.put("pending_events", p) }).put(eventId, eventText)
+            }) return
+        if (f.isFile) throw IOException("terminal_update_failed")
+        val count = dir.listFiles()?.count { it.name.endsWith(".intent.json") } ?: 0
+        if (count >= maxIntents * 2) throw IOException("journal_hard_capacity_exceeded:$count")
+        val st = JSONObject(identity.toString()).put("schema", "capture_intent_v1").put("attempt_id", attemptId)
+            .put("stage", "TERMINAL").put("stage_seq", 1).put("terminal_reason", reason).put("marker_only", true)
+            .put("pending_events", JSONObject().put(eventId, eventText))
+        fs.atomicWrite(f, st.toString())
+    }
+
+    /** R2: a required (non-terminal) event that must be durable before the attempt can finalize. */
+    @Synchronized
+    fun addPendingEvent(attemptId: String, eventId: String, eventText: String): Boolean = update(attemptId) {
+        (it.optJSONObject("pending_events") ?: JSONObject().also { p -> it.put("pending_events", p) }).put(eventId, eventText)
+    }
+
+    @Synchronized
+    fun resolvePendingEvent(attemptId: String, eventId: String): Boolean =
+        update(attemptId) { it.optJSONObject("pending_events")?.remove(eventId) }
+
+    /** id -> exact event bytes; a non-string entry is reported as malformed (key -> null). */
+    @Synchronized
+    fun pendingEvents(attemptId: String): Map<String, String?> {
+        val p = read(attemptId)?.optJSONObject("pending_events") ?: return emptyMap()
+        return p.keys().asSequence().associateWith { k -> p.opt(k) as? String }
+    }
+
+    /** Releases a TERMINAL marker once its evidence is durable. */
+    @Synchronized
+    fun releaseTerminal(attemptId: String): Boolean {
+        val cur = read(attemptId) ?: return true
+        if (cur.optString("stage") != "TERMINAL" || pendingEvents(attemptId).isNotEmpty()) return false
+        return fs.delete(intentFile(attemptId))
+    }
+
+    /** Legacy entry point kept for callers that already hold durable evidence. */
     @Synchronized
     fun terminal(attemptId: String, reason: String): Boolean {
         val ok = update(attemptId) { it.put("stage", "TERMINAL").put("terminal_reason", reason) }
-        return ok && fs.delete(intentFile(attemptId))
+        return ok && pendingEvents(attemptId).isEmpty() && fs.delete(intentFile(attemptId))
     }
+
+    /** R2: bundles whose intent is absent (intent write failed, then a crash). */
+    @Synchronized
+    fun bundlesWithoutIntent(): List<String> = dir.listFiles()
+        ?.filter { it.isFile && it.name.endsWith(".bundle.json") && !File(dir, it.name.removeSuffix(".bundle.json") + ".intent.json").exists() }
+        ?.map { it.name.removeSuffix(".bundle.json") }?.sorted().orEmpty()
+
+    @Synchronized
+    fun readBundleBody(attemptId: String): Pair<JSONObject, String>? {
+        val f = bundleFile(attemptId)
+        if (!f.isFile) return null
+        val text = runCatching { fs.read(f) }.getOrNull() ?: return null
+        return runCatching { JSONObject(text) to FrozenCaptureRequest.sha256Hex(text) }.getOrNull()
+    }
+
+    /** R2: re-creates the intent of a verified orphan bundle (stage BUILT, initial channel expectations). */
+    @Synchronized
+    fun restoreIntent(attemptId: String, identity: JSONObject, channels: JSONObject, bundleSha: String) {
+        val st = JSONObject(identity.toString()).put("schema", "capture_intent_v1").put("attempt_id", attemptId)
+            .put("stage", "BUILT").put("stage_seq", 1).put("bundle_sha256", bundleSha).put("channels", channels)
+            .put("restored_from_bundle", true)
+        fs.atomicWrite(intentFile(attemptId), st.toString())
+    }
+
+    @Synchronized
+    fun quarantineBundle(attemptId: String, reason: String): Boolean = quarantine(bundleFile(attemptId), reason)
 
     @Synchronized
     fun quarantine(file: File, reason: String): Boolean {

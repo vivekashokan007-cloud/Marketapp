@@ -62,6 +62,9 @@ object Pc2ParityAudit {
     /** Chain evidence precedes its snapshot by 2-18 s in production; polls are >= 289 s apart. */
     val INVENTORY_MATCH_WINDOW: Duration = Duration.ofSeconds(60)
 
+    /** b503 R6: a provenance snapshot claims the chain poll in [slot start, slot start + 120 s) (observed +2..6 s). */
+    val ORIGIN_CLAIM_WINDOW: Duration = Duration.ofSeconds(120)
+
     /** Only session-continuity gaps may be excepted, never integrity failures. */
     val EXCEPTABLE = setOf("MISSING_SNAPSHOT_FOR_POLL", "SNAPSHOT_WITHOUT_INVENTORY", "LEGACY_WITHOUT_SNAPSHOT")
 
@@ -243,10 +246,59 @@ object Pc2ParityAudit {
         }
         val snapshotInstants = byInstant.keys.sorted()
 
-        // ---- A1: reconcile against the independent inventory --------------------
+        // ---- b503 R6: provenance claims ---------------------------------------------
+        // A snapshot carrying valid capture_provenance claims its ORIGIN slot's inventory poll, however late it
+        // completed (next slot, after midnight). Invalid/inconsistent provenance fails; it is never re-bucketed.
         val matchedSnapshots = HashSet<Instant>()
-        for (poll in inventory.sorted()) {
-            val candidates = snapshotInstants.filter {
+        val claimedPolls = HashSet<Instant>()
+        val provenanceInstants = HashSet<Instant>()
+        val otherSession = HashSet<Instant>()
+        val originInDay = HashSet<Instant>()
+        val inventorySorted = inventory.sorted()
+        for (instant in snapshotInstants) {
+            val rows = byInstant.getValue(instant)
+            val checks = rows.map { r ->
+                CaptureSlotReconciler.validate(if (r.has("capture_provenance")) r.opt("capture_provenance") else null,
+                    r.optString("session_date").ifEmpty { null }, instant.epochSecond)
+            }
+            if (checks.all { it is CaptureSlotReconciler.Validation.Absent }) continue
+            provenanceInstants += instant
+            val key = instant.toString()
+            val bad = checks.filterNot { it is CaptureSlotReconciler.Validation.Valid }
+            if (bad.isNotEmpty()) {
+                matchedSnapshots += instant // accounted for by this explicit failure
+                fail("INVALID_CAPTURE_PROVENANCE", key, bad.joinToString { (it as? CaptureSlotReconciler.Validation.Invalid)?.reason ?: "missing_on_duplicate_row" })
+                continue
+            }
+            val origins = checks.map { (it as CaptureSlotReconciler.Validation.Valid).provenance }.distinctBy { it.captureKey }
+            if (origins.size > 1) {
+                matchedSnapshots += instant
+                fail("INVALID_CAPTURE_PROVENANCE", key, "duplicate rows claim different origins: ${origins.map { it.captureKey }}"); continue
+            }
+            val p = origins.single()
+            if (day != null && p.sessionDate != day.toString()) {
+                matchedSnapshots += instant; otherSession += instant
+                visible("ORIGIN_OTHER_SESSION", key, "late capture of ${p.captureKey}; audited with session ${p.sessionDate}")
+                continue
+            }
+            originInDay += instant
+            val start = p.slotStartEpochSec?.let { Instant.ofEpochSecond(it) }
+            if (start == null) { provenanceInstants -= instant; originInDay -= instant; continue } // closed-market key: legacy rule
+            val polls = inventorySorted.filter { !it.isBefore(start) && Duration.between(start, it) < ORIGIN_CLAIM_WINDOW }
+            matchedSnapshots += instant
+            when {
+                polls.isEmpty() -> fail("MISSING_INVENTORY_FOR_ORIGIN", key, "${p.captureKey} has no chain poll in [$start, +$ORIGIN_CLAIM_WINDOW)")
+                polls.size > 1 -> fail("AMBIGUOUS_INVENTORY_MATCH", key, "${polls.size} chain polls in origin slot ${p.captureKey}")
+                !claimedPolls.add(polls.single()) -> fail("DUPLICATE_ORIGIN_CLAIM", polls.single().toString(),
+                    "two snapshot instants claim origin ${p.captureKey}")
+            }
+        }
+
+        // ---- A1: reconcile the remaining (pre-b503) snapshots against the independent inventory ----
+        val legacyInstants = snapshotInstants.filter { it !in provenanceInstants }
+        for (poll in inventorySorted) {
+            if (poll in claimedPolls) continue
+            val candidates = legacyInstants.filter {
                 !it.isBefore(poll) && Duration.between(poll, it) <= INVENTORY_MATCH_WINDOW
             }
             when {
@@ -278,9 +330,10 @@ object Pc2ParityAudit {
         var fromLegacy = 0
 
         for (instant in snapshotInstants) {
+            if (instant in otherSession) continue // verified in its origin session's export
             val rows = byInstant.getValue(instant)
             val key = instant.toString()
-            if (!inSession(instant)) fail("SESSION_MISMATCH", key, "snapshot is outside IST day $day")
+            if (!inSession(instant) && instant !in originInDay) fail("SESSION_MISMATCH", key, "snapshot is outside IST day $day")
             if (rows.size > 1) {
                 visible("DUPLICATE_SNAPSHOT_POLL", key, "${rows.size} snapshot rows for one poll; counted once")
                 val ids = rows.map { it.optJSONObject("compact_ref")?.optString("batch_id") }.toSet()

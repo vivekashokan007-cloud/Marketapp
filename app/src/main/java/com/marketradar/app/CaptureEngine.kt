@@ -71,7 +71,19 @@ class CaptureEngine(
         } catch (_: Throwable) { /* diagnostics never abort capture */ }
     }
 
-    private fun sessionOf(key: String) = key.substringBefore('|').takeIf { it.matches(Regex("20\\d{2}-\\d{2}-\\d{2}")) } ?: "unknown"
+    /** R1: validated origin session of a capture key, or null (unattributed: never resets session health). */
+    private fun sessionOf(key: String): String? = FrozenCaptureRequest.sessionOfKey(key)
+
+    /**
+     * R1: snapshot upload acknowledgement. [originKey] is the capture key carried by the acknowledged payload's own
+     * capture_provenance (validated); without one (pre-b503 payloads) the ACK is counted as unattributed.
+     */
+    fun recordUploadAck(pollTs: String, originKey: String?) {
+        val key = originKey?.takeIf { FrozenCaptureRequest.sessionOfKey(it) != null }
+        recordHealth("upload_ack", key ?: "unattributed:${pollTs.take(40)}")
+    }
+
+    fun recordUploadPending(pending: Int) = recordHealth("upload_unacknowledged", "pending=$pending")
 
     fun healthSnapshot(): JSONObject = synchronized(healthLock) {
         runCatching { JSONObject(health.read() ?: "{}") }.getOrDefault(JSONObject())
@@ -81,9 +93,9 @@ class CaptureEngine(
     fun eventIdFor(captureKey: String, attemptId: String, type: String): String =
         "cev_" + FrozenCaptureRequest.sha256Hex("capture_event_v1|$captureKey|$attemptId|$type").take(32)
 
-    /** Deterministic for a given (attempt, type): replays after restarts are byte-identical. */
-    fun recordEvent(identity: JSONObject, type: String, reason: String, detail: JSONObject = JSONObject(),
-                    occurredAtMs: Long = identity.optLong("requested_wall_ms")): String? {
+    /** Deterministic id + exact bytes for one event. */
+    fun buildEvent(identity: JSONObject, type: String, reason: String, detail: JSONObject = JSONObject(),
+                   occurredAtMs: Long = identity.optLong("requested_wall_ms")): Pair<String, String> {
         val key = identity.optString("capture_key")
         val attempt = identity.optString("attempt_id")
         val id = eventIdFor(key, attempt, type)
@@ -97,16 +109,83 @@ class CaptureEngine(
             .put("brain_version", identity.optString("brain_version"))
             .put("reason", reason.take(120)).put("occurred_at_ms", occurredAtMs)
             .put("detail", boundedDetail(detail))
+        return id to event.toString()
+    }
+
+    /**
+     * Enqueues exact event bytes. True when the event is durably owned by the outbox (new, identical copy
+     * pending, or a same-id collision whose bytes the outbox archived to its quarantine for inspection).
+     */
+    private fun enqueueEvent(id: String, text: String): Boolean {
+        val ev = runCatching { JSONObject(text) }.getOrNull()
+        val type = ev?.optString("event_type") ?: "?"; val key = ev?.optString("capture_key") ?: "?"
         return try {
-            if (events.isPending(id)) return id
-            events.enqueue(id, event.toString())
-            log('W', "CAPTURE_EVENT: type=$type key=$key attempt=${attempt.take(8)} reason=$reason")
-            id
+            if (events.isPending(id)) return true
+            events.enqueue(id, text)
+            log('W', "CAPTURE_EVENT: type=$type key=$key reason=${ev?.optString("reason")}")
+            true
+        } catch (e: IllegalStateException) {
+            log('E', "CAPTURE_EVENT_COLLISION_RETAINED: type=$type key=$key id=$id (archived for inspection)")
+            events.isQuarantined(id)
         } catch (t: Throwable) {
             recordHealth("event_ledger_fault", key, 0, t.javaClass.simpleName)
             log('E', "CAPTURE_EVENT_LEDGER_FAULT: type=$type key=$key ${t.javaClass.simpleName}:${t.message?.take(80)}")
-            null
+            false
         }
+    }
+
+    /** Informational (non-terminal) event. Deterministic for a given (attempt, type). */
+    fun recordEvent(identity: JSONObject, type: String, reason: String, detail: JSONObject = JSONObject(),
+                    occurredAtMs: Long = identity.optLong("requested_wall_ms")): String? {
+        val (id, text) = buildEvent(identity, type, reason, detail, occurredAtMs)
+        return if (enqueueEvent(id, text)) id else null
+    }
+
+    /**
+     * R2: a terminal outcome. The exact event bytes are persisted in the journal marker FIRST; the marker is
+     * released only after the event outbox durably owns them. If the ledger is full or failing the marker stays,
+     * and every reconciliation retries delivery idempotently. Returns true when the evidence is durable somewhere.
+     */
+    private fun terminalize(identity: JSONObject, attemptId: String, type: String, reason: String,
+                            detail: JSONObject, terminalReason: String): Boolean {
+        val (id, text) = buildEvent(identity, type, reason, detail)
+        val marked = try { journal.markTerminal(attemptId, identity, terminalReason, id, text); true }
+        catch (t: Throwable) {
+            recordHealth("journal_fault", identity.optString("capture_key"), 0, t.javaClass.simpleName)
+            log('E', "CAPTURE_TERMINAL_MARKER_WRITE_FAILED: key=${identity.optString("capture_key")} ${t.javaClass.simpleName}")
+            false
+        }
+        crashPoint("terminal_marked")
+        val delivered = enqueueEvent(id, text)
+        crashPoint("terminal_event_enqueued")
+        if (marked && delivered) {
+            runCatching { journal.resolvePendingEvent(attemptId, id); journal.releaseTerminal(attemptId) }
+        }
+        if (!marked && !delivered) {
+            log('E', "CAPTURE_TERMINAL_EVIDENCE_UNDURABLE: key=${identity.optString("capture_key")} type=$type (journal AND ledger failed)")
+        }
+        return marked || delivered
+    }
+
+    /** R2: delivers every pending event of an attempt; returns ids still pending (malformed entries -> "!id"). */
+    private fun deliverPending(attemptId: String): List<String> {
+        val remaining = mutableListOf<String>()
+        for ((id, text) in journal.pendingEvents(attemptId)) {
+            if (text == null) { remaining += "!$id"; continue }
+            if (enqueueEvent(id, text)) runCatching { journal.resolvePendingEvent(attemptId, id) }
+            else remaining += id
+        }
+        return remaining
+    }
+
+    /** R2: required (non-terminal) event, durable in the journal before it is enqueued. */
+    private fun requireEvent(attemptId: String, identity: JSONObject, type: String, reason: String, detail: JSONObject) {
+        val (id, text) = buildEvent(identity, type, reason, detail)
+        val held = runCatching { journal.addPendingEvent(attemptId, id, text) }.getOrDefault(false)
+        if (enqueueEvent(id, text)) { if (held) runCatching { journal.resolvePendingEvent(attemptId, id) }; return }
+        // Neither the intent nor the ledger owns it: keep an evidence-only marker that reconciliation delivers.
+        if (!held) runCatching { journal.markTerminal(attemptId, identity, "evidence_only", id, text) }
+            .onFailure { log('E', "CAPTURE_REQUIRED_EVENT_UNDURABLE: type=$type ${it.javaClass.simpleName}") }
     }
 
     private fun boundedDetail(d: JSONObject): JSONObject {
@@ -148,8 +227,8 @@ class CaptureEngine(
         // A different origin slot could not be captured: an explicit terminal loss for THAT slot.
         recordHealth("inflight_skip", req.captureKey, blockingAgeMs)
         recordHealth("terminal_loss", req.captureKey)
-        recordEvent(req.identityJson(), "INFLIGHT_SKIPPED_SLOT", "prior_capture_inflight",
-            JSONObject().put("blocking_capture_key", blockingKey ?: JSONObject.NULL).put("blocking_age_ms", blockingAgeMs))
+        terminalize(req.identityJson(), req.attemptId, "INFLIGHT_SKIPPED_SLOT", "prior_capture_inflight",
+            JSONObject().put("blocking_capture_key", blockingKey ?: JSONObject.NULL).put("blocking_age_ms", blockingAgeMs), "inflight_skip")
         log('E', "PY_TIMEOUT_INFLIGHT_SKIP: key=poll.snapshot capture=${req.captureKey} blockedBy=$blockingKey ageMs=$blockingAgeMs")
     }
 
@@ -162,19 +241,17 @@ class CaptureEngine(
         val cls = (failure as? CaptureCoordinator.Failure.Exception)?.error?.javaClass?.simpleName
         recordHealth(healthEvent, req.captureKey, 0, cls)
         recordHealth("terminal_loss", req.captureKey)
-        recordEvent(req.identityJson(), type, failure.reason,
-            JSONObject().put("exception_class", cls ?: JSONObject.NULL).put("skipped_slots_while_running", skippedWhileRunning))
-        if (!runCatching { journal.terminal(req.attemptId, failure.reason) }.getOrDefault(false)) {
-            log('W', "CAPTURE_JOURNAL_TERMINAL_WRITE_FAILED: key=${req.captureKey}")
-        }
+        terminalize(req.identityJson(), req.attemptId, type, failure.reason,
+            JSONObject().put("exception_class", cls ?: JSONObject.NULL).put("skipped_slots_while_running", skippedWhileRunning),
+            failure.reason)
         log('E', "ML_SNAPSHOT_STAGE_ABORTED: reason=${failure.reason} poll=${req.captureKey} class=${cls ?: "none"}")
     }
 
     override fun onFinisherRejected(req: FrozenCaptureRequest, delivery: CaptureDelivery) {
         recordHealth("finisher_rejected", req.captureKey)
         recordHealth("terminal_loss", req.captureKey)
-        recordEvent(req.identityJson(), "FINISHER_REJECTED", "finisher_queue_full", JSONObject().put("delivery", delivery.name))
-        runCatching { journal.terminal(req.attemptId, "finisher_rejected") }
+        terminalize(req.identityJson(), req.attemptId, "FINISHER_REJECTED", "finisher_queue_full",
+            JSONObject().put("delivery", delivery.name), "finisher_rejected")
         log('E', "CAPTURE_FINISHER_REJECTED: key=${req.captureKey} delivery=$delivery (bounded queue full; explicit loss)")
     }
 
@@ -188,10 +265,15 @@ class CaptureEngine(
             persist(req, delivery, computed, waitedMs, skippedWhileRunning)
         } catch (e: Exception) {
             recordHealth("exception", req.captureKey, elapsed, e.javaClass.simpleName)
-            recordHealth("terminal_loss", req.captureKey)
-            recordEvent(req.identityJson(), "BUILD_FANOUT_FAILED", "post_build_exception",
-                JSONObject().put("exception_class", e.javaClass.simpleName).put("delivery", delivery.name))
-            runCatching { journal.terminal(req.attemptId, "post_build_exception") }
+            if (runCatching { journal.hasBundle(req.attemptId) }.getOrDefault(false)) {
+                // Original bytes are durable: not a loss; reconciliation resumes the remaining channels.
+                recordEvent(req.identityJson(), "BUILD_FANOUT_FAILED", "post_build_exception_bundle_retained",
+                    JSONObject().put("exception_class", e.javaClass.simpleName).put("delivery", delivery.name))
+            } else {
+                recordHealth("terminal_loss", req.captureKey)
+                terminalize(req.identityJson(), req.attemptId, "BUILD_FANOUT_FAILED", "post_build_exception",
+                    JSONObject().put("exception_class", e.javaClass.simpleName).put("delivery", delivery.name), "post_build_exception")
+            }
             log('E', "ML_SNAPSHOT_STAGE_ABORTED: reason=post_build_${e.javaClass.simpleName} poll=${req.captureKey}")
             null
         }
@@ -252,6 +334,10 @@ class CaptureEngine(
             ch.put("compact", Pc2CompactBatch.canonicalJson(compact.envelope()))
             states["compact"] = "PENDING"
         }
+        // R3: freeze the retained legacy cohort from the ORIGINAL parsed snapshot, BEFORE compaction can trim
+        // snapshot_pc2_authority_decisions to meet the local budget (identical rows otherwise: compaction copies
+        // the array, poll_ts, session_date, policy and brain version unchanged).
+        val legacy = runCatching { Pc2LegacyAuthorityRows.build(rawSnapObj) }.getOrNull()
         val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
         val pollTs = snapObj.optString("poll_ts")
         val sessionDate = snapObj.optString("session_date", req.sessionDate).ifBlank { req.sessionDate }
@@ -271,7 +357,6 @@ class CaptureEngine(
                 states["generated"] = "PENDING"
             }
         }
-        val legacy = runCatching { Pc2LegacyAuthorityRows.build(snapObj) }.getOrNull()
         when {
             legacy == null || !legacy.ok -> states["legacy"] = "BUILD_FAILED"
             legacy.rows == null -> { states["legacy"] = "NOT_EXPECTED"; ch.put("legacy_reason", "no_retained_decisions") }
@@ -289,7 +374,7 @@ class CaptureEngine(
         val built = build(req, delivery, computed, waitedMs, skippedWhileRunning)
         var durable = true
         try {
-            val sha = journal.writeBundle(req.attemptId, built.channels)
+            val sha = journal.writeBundle(req.attemptId, built.channels, req.identityJson())
             crashPoint("bundle")
             val ok = journal.update(req.attemptId) {
                 it.put("stage", "BUILT").put("bundle_sha256", sha).put("delivery", delivery.name)
@@ -328,7 +413,6 @@ class CaptureEngine(
             }
             states[name] = next
             if (next == "FAILED_RETRYABLE") recordHealth("channel_enqueue_failed", captureKey, 0, name)
-            if (next == "COLLISION_RETAINED") recordEvent(identityOf(attemptId, captureKey), "CHANNEL_COLLISION_RETAINED", name)
             if (durable) {
                 runCatching { journal.update(attemptId) { it.put("channels", JSONObject(states as Map<*, *>)) } }
                     .onFailure { recordHealth("journal_fault", captureKey, 0, it.javaClass.simpleName) }
@@ -342,77 +426,105 @@ class CaptureEngine(
         journal.read(attemptId) ?: JSONObject().put("capture_key", captureKey).put("attempt_id", attemptId)
 
     private fun completeIfResolved(attemptId: String, captureKey: String, states: Map<String, String>, durable: Boolean): Boolean {
+        val identity = identityOf(attemptId, captureKey)
         val resolved = states.values.all { it in CaptureJournal.RESOLVED || it == "BUILD_FAILED" }
-        if (states.values.any { it == "BUILD_FAILED" }) {
-            recordEvent(identityOf(attemptId, captureKey), "CHANNEL_BUILD_FAILED", "build_failed",
-                JSONObject(states.filterValues { it == "BUILD_FAILED" } as Map<*, *>))
-        }
+        val buildFailed = states.filterValues { it == "BUILD_FAILED" }
+        val collided = states.filterValues { it == "COLLISION_RETAINED" }
+        // R2: build-failure / collision outcomes are required evidence, durable before any finalization.
+        if (buildFailed.isNotEmpty()) requireEvent(attemptId, identity, "CHANNEL_BUILD_FAILED", "build_failed",
+            JSONObject(buildFailed as Map<*, *>))
+        if (collided.isNotEmpty()) requireEvent(attemptId, identity, "CHANNEL_COLLISION_RETAINED", "collision_retained",
+            JSONObject(collided as Map<*, *>))
         if (!resolved) {
             if (!durable) {
-                // No durable copy: the unresolved channels are lost; say so explicitly.
+                // No durable copy: the unresolved channels are lost; say so explicitly and durably.
                 recordHealth("terminal_loss", captureKey)
-                recordEvent(identityOf(attemptId, captureKey), "CHANNEL_LOST_NO_DURABLE_COPY", "enqueue_failed_without_bundle",
-                    JSONObject(states as Map<*, *>))
+                terminalize(identity, attemptId, "CHANNEL_LOST_NO_DURABLE_COPY", "enqueue_failed_without_bundle",
+                    JSONObject(states as Map<*, *>), "channels_lost_no_bundle")
             }
             return false
         }
+        val intentExists = journal.read(attemptId) != null
+        if (intentExists && deliverPending(attemptId).isNotEmpty()) return false
         runCatching { journal.markCompleted(captureKey) }.onFailure { recordHealth("journal_fault", captureKey, 0, it.javaClass.simpleName) }
-        return runCatching { journal.finalizeAttempt(attemptId) }.getOrDefault(false)
+        if (!intentExists) return true
+        val stage = journal.read(attemptId)?.optString("stage")
+        return if (stage == "TERMINAL") runCatching { journal.releaseTerminal(attemptId) }.getOrDefault(false)
+        else runCatching { journal.finalizeAttempt(attemptId) }.getOrDefault(false)
     }
 
     // ------------------------------------------------------------------ reconciliation
     data class ReconcileReport(val live: Int, val resumed: Int, val finalized: Int, val uncertain: Int, val lost: Int,
                                val stillPending: Int, val faults: List<String>)
 
+    /** Test seam: called at "scan_start" (after nothing has been read) to interleave admissions. */
+    @Volatile var reconcileHook: (String) -> Unit = {}
+
+    fun reconcile(liveAttemptIds: Set<String>): ReconcileReport = reconcile { it in liveAttemptIds }
+
     /**
-     * Startup / service-restart / per-poll reconciliation. [liveAttemptIds] are attempts still owned by
-     * THIS process (coordinator). A leftover intent is never assumed to be a loss: live owners are
-     * skipped, built bundles are resumed, and only a different-run intent with no durable built
-     * bytes is recorded as a loss (process ended before durable build).
+     * Startup / service-restart / per-poll reconciliation. [isLive] is consulted PER MARKER, immediately before
+     * the marker is read (R2): the coordinator registers an admission before its intent is written and releases it
+     * only after the owner callback finished, so an attempt admitted during this scan is never mistaken for an
+     * interrupted one. A leftover intent is never assumed to be a loss: live owners are skipped, built bundles are
+     * resumed, and only a different-run intent with no durable built bytes is recorded as a loss.
      */
-    fun reconcile(liveAttemptIds: Set<String>): ReconcileReport {
+    fun reconcile(isLive: (String) -> Boolean): ReconcileReport {
         var live = 0; var resumed = 0; var finalized = 0; var uncertain = 0; var lost = 0; var pending = 0
         val faults = mutableListOf<String>()
+        reconcileHook("scan_start")
         for (file in journal.intents()) {
             val attemptId = journal.attemptIdOf(file)
-            if (attemptId in liveAttemptIds) { live++; continue }
+            if (isLive(attemptId)) { live++; continue }
             val intent = journal.read(attemptId)
             if (intent == null) {
+                if (!file.exists()) continue // finished concurrently
                 uncertain++
                 val id = JSONObject().put("capture_key", "unknown").put("attempt_id", attemptId)
                 recordEvent(id, "UNCERTAIN_INTERRUPTED", "journal_unreadable")
+                // The quarantined file itself is the retained, inspectable evidence.
                 if (!journal.quarantine(file, "unreadable")) faults += "quarantine_failed:${file.name.take(40)}"
                 continue
             }
             val key = intent.optString("capture_key")
             val sameRun = intent.optString("run_id") == runId
             when (intent.optString("stage")) {
-                "FINAL" -> { if (journal.finalizeAttempt(attemptId)) finalized++ }
-                "TERMINAL" -> { journal.terminal(attemptId, intent.optString("terminal_reason", "terminal")); finalized++ }
+                "FINAL" -> {
+                    if (deliverPending(attemptId).isEmpty() && journal.finalizeAttempt(attemptId)) finalized++ else pending++
+                }
+                "TERMINAL" -> {
+                    val rem = deliverPending(attemptId)
+                    when {
+                        rem.any { it.startsWith("!") } -> {
+                            // A permanently malformed ledger entry: retained for inspection, never silently dropped.
+                            faults += "malformed_pending_event:${attemptId.take(40)}"
+                            if (!journal.quarantine(file, "malformed_pending_event")) faults += "quarantine_failed:${file.name.take(40)}"
+                        }
+                        rem.isEmpty() -> if (journal.releaseTerminal(attemptId)) finalized++ else faults += "release_failed:${attemptId.take(40)}"
+                        else -> pending++
+                    }
+                }
                 "BUILT" -> {
                     val bundle = journal.readBundle(attemptId, intent.optString("bundle_sha256").ifBlank { null })
                     if (bundle == null) {
                         uncertain++
                         recordHealth("uncertain_interrupted", key)
-                        recordEvent(intent, "UNCERTAIN_INTERRUPTED", "bundle_missing_or_digest_mismatch",
-                            JSONObject().put("channels", intent.optJSONObject("channels") ?: JSONObject()))
-                        journal.quarantine(file, "bundle_missing")
+                        terminalize(intent, attemptId, "UNCERTAIN_INTERRUPTED", "bundle_missing_or_digest_mismatch",
+                            JSONObject().put("channels", intent.optJSONObject("channels") ?: JSONObject()), "bundle_missing")
                         continue
                     }
                     val chState = intent.optJSONObject("channels") ?: JSONObject()
                     val states = linkedMapOf<String, String>()
                     chState.keys().forEach { states[it] = chState.getString(it) }
                     val unresolvedBefore = states.filterValues { it == "PENDING" || it == "FAILED_RETRYABLE" }.keys
-                    val after = fanOut(attemptId, key, bundle, states, true)
-                    if (unresolvedBefore.isNotEmpty()) {
-                        resumed++
-                        if (!sameRun) {
-                            recordHealth("partial_recovered", key)
-                            recordEvent(intent, "PARTIAL_RECOVERY_RESUMED", "prior_run_built_bundle",
-                                JSONObject().put("resumed_channels", JSONArray(unresolvedBefore.toList()))
-                                    .put("prior_run_id", intent.optString("run_id")).put("prior_pid", intent.optInt("pid")))
-                        }
+                    if (unresolvedBefore.isNotEmpty() && !sameRun) {
+                        recordHealth("partial_recovered", key)
+                        requireEvent(attemptId, intent, "PARTIAL_RECOVERY_RESUMED", "prior_run_built_bundle",
+                            JSONObject().put("resumed_channels", JSONArray(unresolvedBefore.toList()))
+                                .put("prior_run_id", intent.optString("run_id")).put("prior_pid", intent.optInt("pid")))
                     }
+                    val after = fanOut(attemptId, key, bundle, states, true)
+                    if (unresolvedBefore.isNotEmpty()) resumed++
                     if (completeIfResolved(attemptId, key, after, true)) finalized++ else pending++
                 }
                 else -> { // INTENT stage
@@ -426,12 +538,12 @@ class CaptureEngine(
                         runCatching { journal.update(attemptId) {
                             it.put("stage", "BUILT").put("channels", JSONObject(states as Map<*, *>))
                                 .put("poll_ts", orphanBundle.optString("poll_ts")) } }
-                        val after = fanOut(attemptId, key, orphanBundle, states, true)
-                        resumed++
                         recordHealth("partial_recovered", key)
-                        recordEvent(intent, "PARTIAL_RECOVERY_RESUMED", "bundle_before_built_checkpoint",
+                        requireEvent(attemptId, intent, "PARTIAL_RECOVERY_RESUMED", "bundle_before_built_checkpoint",
                             JSONObject().put("resumed_channels", JSONArray(states.keys.toList()))
                                 .put("prior_run_id", intent.optString("run_id")).put("prior_pid", intent.optInt("pid")))
+                        val after = fanOut(attemptId, key, orphanBundle, states, true)
+                        resumed++
                         if (completeIfResolved(attemptId, key, after, true)) finalized++ else pending++
                         continue
                     }
@@ -440,23 +552,72 @@ class CaptureEngine(
                         // recorded outcome. We cannot prove what happened -> uncertain.
                         uncertain++
                         recordHealth("uncertain_interrupted", key)
-                        recordEvent(intent, "UNCERTAIN_INTERRUPTED", "same_run_owner_absent_no_bundle")
+                        terminalize(intent, attemptId, "UNCERTAIN_INTERRUPTED", "same_run_owner_absent_no_bundle", JSONObject(), "reconciled_no_build")
                     } else if (journal.hasBundleTemp(attemptId)) {
                         uncertain++
                         recordHealth("uncertain_interrupted", key)
-                        recordEvent(intent, "UNCERTAIN_INTERRUPTED", "bundle_write_interrupted",
-                            JSONObject().put("prior_run_id", intent.optString("run_id")))
+                        terminalize(intent, attemptId, "UNCERTAIN_INTERRUPTED", "bundle_write_interrupted",
+                            JSONObject().put("prior_run_id", intent.optString("run_id")), "reconciled_no_build")
                     } else {
                         lost++
                         recordHealth("terminal_loss", key)
-                        recordEvent(intent, "LOST_PROCESS_ENDED_BEFORE_DURABLE_BUILD", "prior_run_ended_no_built_bytes",
-                            JSONObject().put("prior_run_id", intent.optString("run_id")).put("prior_pid", intent.optInt("pid")))
+                        terminalize(intent, attemptId, "LOST_PROCESS_ENDED_BEFORE_DURABLE_BUILD", "prior_run_ended_no_built_bytes",
+                            JSONObject().put("prior_run_id", intent.optString("run_id")).put("prior_pid", intent.optInt("pid")),
+                            "reconciled_no_build")
                     }
-                    journal.terminal(attemptId, "reconciled_no_build")
                 }
             }
         }
+        // R2: a durable bundle whose intent was never written (intent storage fault, then a crash).
+        for (attemptId in journal.bundlesWithoutIntent()) {
+            if (isLive(attemptId)) { live++; continue }
+            val read = journal.readBundleBody(attemptId)
+            if (read == null) { if (journal.hasBundle(attemptId)) faults += "orphan_bundle_unreadable:${attemptId.take(40)}"; continue }
+            val (body, sha) = read
+            val identity = body.optJSONObject("identity")
+            val channels = body.optJSONObject("channels")
+            val problem = verifyOrphanBundle(attemptId, body, identity, channels)
+            if (problem != null) {
+                uncertain++
+                val id = JSONObject().put("capture_key", identity?.optString("capture_key")?.ifBlank { null } ?: "unknown")
+                    .put("attempt_id", attemptId)
+                recordEvent(id, "UNCERTAIN_INTERRUPTED", "orphan_bundle_unverified:$problem")
+                // Not abandoned: the original bytes are retained in the journal quarantine for inspection.
+                if (!journal.quarantineBundle(attemptId, "unverified_$problem")) faults += "quarantine_failed:${attemptId.take(40)}"
+                continue
+            }
+            val key = identity!!.getString("capture_key")
+            val initial = channels!!.getJSONObject("initial_states")
+            runCatching { journal.restoreIntent(attemptId, identity, initial, sha) }
+                .onFailure { faults += "orphan_restore_failed:${attemptId.take(40)}" }
+            val states = linkedMapOf<String, String>()
+            initial.keys().forEach { states[it] = initial.getString(it) }
+            recordHealth("partial_recovered", key)
+            requireEvent(attemptId, identity, "PARTIAL_RECOVERY_RESUMED", "bundle_without_intent",
+                JSONObject().put("resumed_channels", JSONArray(states.keys.toList())).put("prior_run_id", identity.optString("run_id")))
+            val after = fanOut(attemptId, key, channels, states, true)
+            resumed++
+            if (completeIfResolved(attemptId, key, after, true)) finalized++ else pending++
+        }
         return ReconcileReport(live, resumed, finalized, uncertain, lost, pending, faults)
+    }
+
+    /** null when the orphan bundle's frozen identity is verified against its own snapshot provenance. */
+    private fun verifyOrphanBundle(attemptId: String, body: JSONObject, identity: JSONObject?, channels: JSONObject?): String? {
+        if (body.optString("schema") != "capture_bundle_v1") return "schema"
+        if (identity == null) return "identity_absent"
+        if (channels == null || channels.optJSONObject("initial_states") == null) return "channels"
+        val attempt = identity.optString("attempt_id")
+        if (attempt.isBlank() || body.optString("attempt_id") != attempt) return "attempt_mismatch"
+        if (attempt.replace(Regex("[^A-Za-z0-9_-]"), "_").take(64) != attemptId) return "file_name_mismatch"
+        val key = identity.optString("capture_key")
+        if (FrozenCaptureRequest.sessionOfKey(key) == null) return "capture_key"
+        val snap = runCatching { JSONObject(channels.getString("snapshot")) }.getOrNull() ?: return "snapshot_unreadable"
+        val summary = snap.optJSONObject("poll_summary_json")
+            ?: runCatching { JSONObject(snap.optString("poll_summary_json")) }.getOrNull() ?: return "provenance_absent"
+        val prov = summary.optJSONObject("capture_provenance") ?: return "provenance_absent"
+        if (prov.optString("capture_key") != key || prov.optString("attempt_id") != attempt) return "provenance_mismatch"
+        return null
     }
 
     fun isCompleted(key: String): Boolean = key in runCatching { journal.completedKeys() }.getOrDefault(emptyList())

@@ -17,6 +17,8 @@
 #    instead of raising, so a malformed row cannot abort the export. Every
 #    malformed row in the WHOLE batch table is counted into the manifest,
 #    and the audit fails on any.
+#  - b503 R6: each snapshot carries poll_summary_json.capture_provenance; a late capture whose origin
+#    session is this day is exported even when it completed after midnight.
 #  - manifest.json is written last, atomically, with each file's row count and
 #    SHA-256. Without it, or if anything disagrees with it, the audit cannot
 #    certify. Any manifest left from an earlier run is removed first.
@@ -48,9 +50,12 @@ select pg_catalog.json_build_object(
          'compact_ref', context_json -> 'snapshot_pc2_authority_compact_ref',
          'decisions', context_json -> 'snapshot_pc2_authority_decisions',
          'policy', context_json -> 'snapshot_pc2_authority_policy',
-         'brain_version', context_json -> 'snapshot_brain_version')::text
+         'brain_version', context_json -> 'snapshot_brain_version',
+         'capture_provenance', poll_summary_json -> 'capture_provenance')::text
   from public.ml_brain_snapshots
- where poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz
+ where (poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz)
+    -- b503 R6: a late capture of this day that completed after midnight belongs to this day's audit.
+    or (poll_summary_json -> 'capture_provenance' ->> 'session_date') = :'day'
  order by poll_ts;
 
 \o :out/batches.jsonl

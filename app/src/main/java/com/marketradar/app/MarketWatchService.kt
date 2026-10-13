@@ -3224,8 +3224,10 @@ class MarketWatchService : Service() {
             catch (t: Throwable) { LogBuffer.add('E', TAG, "CAPTURE_RECONCILE_THROW: ${t.javaClass.simpleName}") }
             try {
                 val drained = drainBrainSnapshotOutbox()
-                drained.acknowledgedPolls.forEach { recordSnapshotStage("upload_ack", it) }
-                if (drained.pending > 0) recordSnapshotStage("upload_unacknowledged", "pending=${drained.pending}")
+                // b503 R1: ACKs carry the payload's own validated origin key; a pending summary is unattributed.
+                val captureEngine = CaptureRuntime.ensure(applicationContext).engine
+                drained.acknowledgedPolls.forEach { captureEngine.recordUploadAck(it, drained.acknowledgedOrigins[it]) }
+                if (drained.pending > 0) captureEngine.recordUploadPending(drained.pending)
             } catch (t: Throwable) { LogBuffer.add('E', TAG, "ML_BRAIN_SNAPSHOT_OUTBOX_DRAIN_THROW: ${t.javaClass.simpleName}") }
             runCatching { CaptureRuntime.drainLegacy() }
                 .onFailure { LogBuffer.add('E', TAG, "PC2_AUTHORITY_TELEMETRY_THROW: ${it.javaClass.simpleName}") }
@@ -3432,7 +3434,7 @@ class MarketWatchService : Service() {
         val manifest = frozen.getJSONObject("manifest")
         manifest.put("brain_completed_at", SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date(brainCompletedAtMs)))
-        if (manifest.optString("app_version").isBlank()) manifest.put("app_version", BuildConfig.VERSION_NAME)
+        PaperMenuCapture.stampNativeVersion(manifest, BuildConfig.VERSION_NAME) // b503 R7 (Android NULL -> "null")
         manifest.put("execution_mode", ctxObj.optString("executionMode", "").ifBlank { JSONObject.NULL })
         synchronized(paperMenuStateLock) {
             // R2: freeze the bytes once into the durable per-menu outbox; every retry sends exactly these bytes.

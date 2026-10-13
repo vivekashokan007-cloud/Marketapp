@@ -166,7 +166,9 @@ class AndroidPollFeatureContractTests(unittest.TestCase):
         bundle = engine.index("journal.writeBundle(")
         fan_out = engine.index("fanOut(req.attemptId")
         self.assertLess(bundle, fan_out)
-        self.assertIn("val legacy = runCatching { Pc2LegacyAuthorityRows.build(snapObj) }", engine)
+        # b503 R3: the legacy cohort is frozen from the ORIGINAL snapshot, before destructive compaction.
+        legacy = engine.index("val legacy = runCatching { Pc2LegacyAuthorityRows.build(rawSnapObj) }")
+        self.assertLess(legacy, engine.index("EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)"))
         self.assertIn('"legacy" -> { channels.enqueueLegacy(', engine)
         drains = service.split("private fun launchCaptureDrains()", 1)[1].split("private fun drainBrainSnapshotOutbox", 1)[0]
         self.assertLess(drains.index("drainBrainSnapshotOutbox()"), drains.index("runCatching { CaptureRuntime.drainLegacy() }"))

@@ -1899,11 +1899,12 @@ object SupabaseClient {
      * Authorized by the same registered, active PC2 ingest device credential; no table writes.
      * A missing function (server capability not yet deployed) keeps the event queued.
      */
-    fun recordCaptureEvent(deviceKey: String, eventJson: String): FrozenEvidenceOutbox.Outcome {
-        if (!Pc2IngestCredential.isValidKey(deviceKey)) return FrozenEvidenceOutbox.Outcome.RETRY
-        val event = runCatching { JSONObject(eventJson) }.getOrNull() ?: return FrozenEvidenceOutbox.Outcome.QUARANTINE
+    fun recordCaptureEvent(deviceKey: String, eventJson: String): CaptureEventProtocol.Response {
+        if (!Pc2IngestCredential.isValidKey(deviceKey)) return CaptureEventProtocol.Response(null, null)
+        val event = runCatching { JSONObject(eventJson) }.getOrNull()
+            ?: return CaptureEventProtocol.Response(400, "{\"code\":\"22P02\",\"message\":\"local_event_unparseable\"}")
         val r = postRpc("capture_event_record", JSONObject().put("p_device_key", deviceKey).put("p_event", event))
-        return CaptureEventProtocol.classify(r.code, r.body)
+        return CaptureEventProtocol.Response(r.code, r.body)
     }
 
     /** True only when the server reports this key as a registered device AND the active collector. */

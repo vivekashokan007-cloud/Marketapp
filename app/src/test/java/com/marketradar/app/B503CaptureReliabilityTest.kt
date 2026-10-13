@@ -559,10 +559,18 @@ class B503CaptureReliabilityTest {
     // ------------------------------------------------------------ event protocol / health
     @Test fun captureEventResponses_areClassifiedConservatively() {
         val ack = FrozenEvidenceOutbox.Outcome.ACKNOWLEDGED; val retry = FrozenEvidenceOutbox.Outcome.RETRY; val q = FrozenEvidenceOutbox.Outcome.QUARANTINE
-        assertEquals(ack, CaptureEventProtocol.classify(200, """{"status":"INSERTED"}"""))
-        assertEquals(ack, CaptureEventProtocol.classify(200, """{"status":"DUPLICATE"}"""))
-        assertEquals(q, CaptureEventProtocol.classify(200, """{"status":"REJECTED_CONFLICT"}"""))
-        assertEquals(retry, CaptureEventProtocol.classify(200, """{}"""))
+        val id = "cev_0123456789abcdef0123456789abcdef"
+        // R5: real response envelopes; the acknowledgement must name the queued event.
+        assertEquals(ack, CaptureEventProtocol.classify(200, """{"status":"INSERTED","event_id":"$id"}""", id))
+        assertEquals(ack, CaptureEventProtocol.classify(200, """{"status":"DUPLICATE","event_id":"$id"}""", id))
+        assertEquals(q, CaptureEventProtocol.classify(200, """{"status":"REJECTED_CONFLICT","event_id":"$id","accepted_payload_sha256":"${"0".repeat(64)}"}""", id))
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{"status":"INSERTED"}""", id))                     // id missing
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{"status":"INSERTED","event_id":null}""", id))     // id null
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{"status":"INSERTED","event_id":"cev_other"}""", id)) // mismatch
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{"status":"REJECTED_CONFLICT","event_id":"cev_other"}""", id))
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{"status":"INSERTED","event_id":"$id"}"""))      // unbound form
+        assertEquals(retry, CaptureEventProtocol.classify(200, """not json""", id))
+        assertEquals(retry, CaptureEventProtocol.classify(200, """{}""", id))
         assertEquals(retry, CaptureEventProtocol.classify(403, """{"code":"PT403","message":"CAPTURE_DEVICE_NOT_AUTHORIZED"}"""))
         assertEquals(retry, CaptureEventProtocol.classify(404, """{"code":"PGRST202"}"""))       // capability absent: keep queued
         assertEquals(q, CaptureEventProtocol.classify(400, """{"code":"23514","message":"CAPTURE_EVENT_TOO_LARGE"}"""))

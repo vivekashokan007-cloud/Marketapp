@@ -136,6 +136,23 @@ class FrozenCaptureRequest internal constructor(
             )
         }
 
+        private val CLOSED_KEY = Regex("^(20\\d{2}-\\d{2}-\\d{2})\\|closed$")
+
+        /**
+         * b503 R1/R6: the validated origin session of a capture key ("date|ordinal" with ordinal 1..78, or
+         * "date|closed"), or null. ISO poll timestamps, summaries ("pending=N") and b502 "d|d|n" keys are NOT
+         * capture keys and return null (callers must treat them as unattributed, never as a session change).
+         */
+        fun sessionOfKey(key: String?): String? {
+            if (key == null) return null
+            val slot = SLOT_KEY.matchEntire(key)
+            val date = when {
+                slot != null -> slot.groupValues[1].takeIf { slot.groupValues[2].toInt() in 1..FULL_DAY_SLOTS }
+                else -> CLOSED_KEY.matchEntire(key)?.groupValues?.get(1)
+            } ?: return null
+            return date.takeIf { runCatching { java.time.LocalDate.parse(it) }.isSuccess }
+        }
+
         fun sha256Hex(text: String): String = MessageDigest.getInstance("SHA-256")
             .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
@@ -146,9 +163,71 @@ class FrozenCaptureRequest internal constructor(
  * provenance (b503+) over the Python poll_ts bucket, because a LATE result can
  * complete after its own five-minute bucket ended. Older snapshots (no provenance)
  * fall back to the historical poll_ts bucket, which is what existing audits use.
+ *
+ * b503 R6: [validate] is the single provenance contract used by the operator completeness audit
+ * (Pc2ParityAudit) over the exporter's `capture_provenance` column. Provenance that is present but
+ * inconsistent is an explicit failure, never a silent fallback.
  */
 object CaptureSlotReconciler {
     data class Origin(val sessionDate: String, val slotOrdinal: Int?, val source: String)
+
+    /** Validated b503 origin of one snapshot. [slotStartUtcEpochSec] is the scheduled slot start (null for "closed"). */
+    data class Provenance(val captureKey: String, val sessionDate: String, val slotOrdinal: Int?,
+                          val slotStartEpochSec: Long?, val attemptId: String, val delivery: String)
+
+    sealed class Validation {
+        object Absent : Validation()
+        data class Valid(val provenance: Provenance) : Validation()
+        data class Invalid(val reason: String) : Validation()
+    }
+
+    private val IST_TS = Regex("^(20\\d{2}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})\\+0530$")
+    /** A late result may legitimately complete long after its slot (stuck call); beyond this it is not that slot's capture. */
+    const val MAX_COMPLETION_AFTER_SLOT_SEC = 6L * 3600
+
+    private fun istEpochSec(text: String?): Long? {
+        val m = IST_TS.matchEntire(text ?: return null) ?: return null
+        return runCatching {
+            java.time.LocalDateTime.of(java.time.LocalDate.parse(m.groupValues[1]),
+                java.time.LocalTime.of(m.groupValues[2].toInt(), m.groupValues[3].toInt(), m.groupValues[4].toInt()))
+                .toEpochSecond(java.time.ZoneOffset.ofHoursMinutes(5, 30))
+        }.getOrNull()
+    }
+
+    /**
+     * [provenance] is poll_summary_json.capture_provenance (null/JSON null = absent), [snapshotSessionDate] the stored
+     * snapshot session_date, [completionEpochSec] the snapshot's own (original Python) poll_ts instant.
+     */
+    fun validate(provenance: Any?, snapshotSessionDate: String?, completionEpochSec: Long?): Validation {
+        if (provenance == null || provenance == JSONObject.NULL) return Validation.Absent
+        val p = provenance as? JSONObject ?: return Validation.Invalid("not_an_object")
+        if (p.optString("schema") != "capture_provenance_v1") return Validation.Invalid("schema")
+        val key = p.optString("capture_key")
+        val session = FrozenCaptureRequest.sessionOfKey(key) ?: return Validation.Invalid("capture_key")
+        if (p.optString("session_date") != session) return Validation.Invalid("session_date_vs_key")
+        if (snapshotSessionDate != null && snapshotSessionDate != session) return Validation.Invalid("snapshot_session_vs_key")
+        val ordinal = key.substringAfter('|').toIntOrNull()
+        val ordinalField = if (p.isNull("slot_ordinal")) null else p.opt("slot_ordinal") as? Int
+        if (ordinal != ordinalField) return Validation.Invalid("slot_ordinal_vs_key")
+        val delivery = p.optString("delivery")
+        if (delivery != "ON_TIME" && delivery != "LATE") return Validation.Invalid("delivery")
+        val attempt = p.optString("attempt_id")
+        if (attempt.isBlank() || attempt.length > 64) return Validation.Invalid("attempt_id")
+        var slotStart: Long? = null
+        if (ordinal != null) {
+            val expected = "${session}T${FrozenCaptureRequest.slotStartHm(ordinal)}:00+0530"
+            if (p.optString("slot_scheduled_ist") != expected) return Validation.Invalid("slot_scheduled_ist")
+            slotStart = istEpochSec(expected)
+            val origin = if (p.isNull("origin_poll_ts")) null else istEpochSec(p.optString("origin_poll_ts"))
+                ?: return Validation.Invalid("origin_poll_ts")
+            if (origin != null && (origin < slotStart!! || origin >= slotStart + FrozenCaptureRequest.POLL_SLOT_MINUTES * 60))
+                return Validation.Invalid("origin_poll_ts_outside_slot")
+            if (completionEpochSec != null &&
+                (completionEpochSec < slotStart!! || completionEpochSec - slotStart > MAX_COMPLETION_AFTER_SLOT_SEC))
+                return Validation.Invalid("completion_outside_capture_window")
+        }
+        return Validation.Valid(Provenance(key, session, ordinal, slotStart, attempt, delivery))
+    }
 
     fun originOf(snapshot: JSONObject): Origin? {
         val summary = snapshot.optJSONObject("poll_summary_json")
@@ -156,9 +235,9 @@ object CaptureSlotReconciler {
         val prov = summary?.optJSONObject("capture_provenance")
         if (prov != null) {
             val key = prov.optString("capture_key")
-            val date = key.substringBefore('|')
-            val ord = key.substringAfter('|', "").toIntOrNull()
-            if (date.isNotBlank()) return Origin(date, ord, "capture_provenance")
+            val date = FrozenCaptureRequest.sessionOfKey(key)
+            if (date != null) return Origin(date, key.substringAfter('|', "").toIntOrNull(), "capture_provenance")
+            return null // present but invalid provenance is never silently re-bucketed
         }
         val ts = snapshot.optString("poll_ts")
         val m = Regex("^(20\\d{2}-\\d{2}-\\d{2})T(\\d{2}):(\\d{2})").find(ts) ?: return null

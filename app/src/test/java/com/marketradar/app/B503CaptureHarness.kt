@@ -55,14 +55,16 @@ class B503Harness(
     val journalFs: CaptureFs = CaptureFs.REAL,
     val legacyFs: CaptureFs = CaptureFs.REAL,
     val sharedLocalCache: MutableList<String> = mutableListOf(),
-    val mono: AtomicLong = AtomicLong(1_000_000L)
+    val mono: AtomicLong = AtomicLong(1_000_000L),
+    val eventCapacity: Int = 2000,
+    val eventsFs: CaptureFs = CaptureFs.REAL
 ) {
     val logs = mutableListOf<String>()
     var healthText: String? = null
     val channelFaults = mutableMapOf<String, () -> Unit>()
     val enqueueCalls = mutableMapOf<String, Int>()
     val legacy = FrozenEvidenceOutbox(root, CaptureRuntime.LEGACY_DIR, 150, 64L * 1024 * 1024, legacyFs)
-    val events = FrozenEvidenceOutbox(root, CaptureRuntime.EVENTS_DIR, 2000, 8L * 1024 * 1024)
+    val events = FrozenEvidenceOutbox(root, CaptureRuntime.EVENTS_DIR, eventCapacity, 8L * 1024 * 1024, eventsFs)
     val journal = CaptureJournal(root, journalFs)
 
     private fun hit(ch: String) { enqueueCalls[ch] = (enqueueCalls[ch] ?: 0) + 1; channelFaults[ch]?.invoke() }

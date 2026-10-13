@@ -10,9 +10,25 @@
 --   * shape: schema capture_event_v1, known fields typed, event_id == canonical id
 --       cev_ || left(sha256('capture_event_v1|' || capture_key || '|' || attempt_id || '|' || event_type), 32)
 --     else 22023 CAPTURE_EVENT_INVALID
---   * idempotence: a replay with identical content is DUPLICATE; a different content under the same
---     event_id is recorded in capture_private.conflicts and answered REJECTED_CONFLICT (never overwrites)
---   * quota: at most 5000 new events per device per IST day, else PT429 (client retries later)
+--   * idempotence: a replay with identical content is DUPLICATE (free: no row, no quota); a different content
+--     under the same event_id is answered REJECTED_CONFLICT and never overwrites. Each distinct conflicting
+--     variant (event_id, supplied sha256) is recorded ONCE in capture_private.conflicts; a repeat of a known
+--     variant, or a variant beyond 8 per event, writes nothing.
+--   * quota (b503 R4): EVERY path that creates a persistent row is charged to the device's IST-day ledger row
+--     BEFORE the row is written, under that ledger row's lock (concurrent calls serialize; a rejected call
+--     rolls its charge back with its transaction):
+--       rows   = events + conflict variants  <= 5000 / device / IST day
+--       conflicts                            <=  500 / device / IST day
+--       bytes  = sum(octet_length(event text)) + 256 per conflict row <= 8 MiB / device / IST day
+--     else PT429 (the client cools down until the next IST day; events stay queued on the device).
+--   * every response names the event_id it is about; the client acknowledges only a matching id (R5).
+--
+-- Storage bound (measured on scratch Postgres by tools/pc2_db_suite/run.sh, incompressible payloads):
+--   input bytes are capped at 8 MiB/device/IST day (the old 5000 x 8192 = 40.96 MB allowance no longer applies).
+--   byte-cap shape (1072 max-size events + 22 conflicts): 9.6 MB total persisted (events 9.4 MB incl. toast+indexes)
+--   row-cap shape (5000 small events, 6.95 MB charged):  11.0 MB persisted
+--   conflicts are <= 500 rows/day of fixed ~100-byte rows (+ unique index), < 0.5 MB
+--   => justified bound ~12 MiB per active device per IST day; the suite fails above 24 MiB.
 --
 -- Rollback (owner, only if no consumer depends on it):
 --   begin;
@@ -54,6 +70,8 @@ create table if not exists capture_private.writer_ledger (
     events          integer not null default 0 check (events >= 0),
     primary key (device_key_hash, ist_day)
 );
+alter table capture_private.writer_ledger add column if not exists conflicts integer not null default 0 check (conflicts >= 0);
+alter table capture_private.writer_ledger add column if not exists bytes bigint not null default 0 check (bytes >= 0);
 
 create table if not exists capture_private.conflicts (
     id                      bigserial primary key,
@@ -63,6 +81,7 @@ create table if not exists capture_private.conflicts (
     accepted_payload_sha256 text not null,
     recorded_at             timestamptz not null default now()
 );
+create unique index if not exists conflicts_variant_uidx on capture_private.conflicts (event_id, supplied_payload_sha256);
 
 alter table public.ml_capture_events enable row level security;
 alter table capture_private.writer_ledger enable row level security;
@@ -83,6 +102,8 @@ declare
     v_existing text;
     v_day date := (pg_catalog.now() at time zone 'Asia/Kolkata')::date;
     v_count integer;
+    v_conflicts integer;
+    v_bytes bigint;
 begin
     if p_device_key is null or p_device_key !~ '^[0-9a-f]{64}$' then
         raise exception using errcode = 'PT403', message = 'CAPTURE_EVENT_NOT_AUTHORIZED';
@@ -120,18 +141,33 @@ begin
     select e.payload_sha256 into v_existing from public.ml_capture_events e where e.event_id = v_id;
     if found then
         if v_existing = v_sha then
-            return pg_catalog.jsonb_build_object('status', 'DUPLICATE', 'event_id', v_id);
+            return pg_catalog.jsonb_build_object('status', 'DUPLICATE', 'event_id', v_id);   -- free
+        end if;
+        -- Known variant, or per-event variant bound reached: answer without writing anything.
+        perform 1 from capture_private.conflicts c where c.event_id = v_id and c.supplied_payload_sha256 = v_sha;
+        if found or (select pg_catalog.count(*) from capture_private.conflicts c where c.event_id = v_id) >= 8 then
+            return pg_catalog.jsonb_build_object('status', 'REJECTED_CONFLICT', 'event_id', v_id,
+                                                 'accepted_payload_sha256', v_existing, 'conflict_recorded', false);
+        end if;
+        -- A new variant is a new persistent row: charge it first (row lock serializes this device's writers).
+        insert into capture_private.writer_ledger as l (device_key_hash, ist_day, events, conflicts, bytes)
+        values (v_hash, v_day, 0, 1, 256)
+        on conflict (device_key_hash, ist_day) do update set conflicts = l.conflicts + 1, bytes = l.bytes + 256
+        returning l.events, l.conflicts, l.bytes into v_count, v_conflicts, v_bytes;
+        if v_count + v_conflicts > 5000 or v_conflicts > 500 or v_bytes > 8388608 then
+            raise exception using errcode = 'PT429', message = 'CAPTURE_EVENT_DAILY_CAP';
         end if;
         insert into capture_private.conflicts (event_id, device_key_hash, supplied_payload_sha256, accepted_payload_sha256)
         values (v_id, v_hash, v_sha, v_existing);
         return pg_catalog.jsonb_build_object('status', 'REJECTED_CONFLICT', 'event_id', v_id,
-                                             'accepted_payload_sha256', v_existing);
+                                             'accepted_payload_sha256', v_existing, 'conflict_recorded', true);
     end if;
 
-    insert into capture_private.writer_ledger as l (device_key_hash, ist_day, events) values (v_hash, v_day, 1)
-    on conflict (device_key_hash, ist_day) do update set events = l.events + 1
-    returning l.events into v_count;
-    if v_count > 5000 then
+    insert into capture_private.writer_ledger as l (device_key_hash, ist_day, events, conflicts, bytes)
+    values (v_hash, v_day, 1, 0, pg_catalog.octet_length(v_text))
+    on conflict (device_key_hash, ist_day) do update set events = l.events + 1, bytes = l.bytes + pg_catalog.octet_length(v_text)
+    returning l.events, l.conflicts, l.bytes into v_count, v_conflicts, v_bytes;
+    if v_count + v_conflicts > 5000 or v_bytes > 8388608 then
         raise exception using errcode = 'PT429', message = 'CAPTURE_EVENT_DAILY_CAP';
     end if;
 
