@@ -31,7 +31,10 @@ do $$ begin
   if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated nologin; end if;
 end $$;
 -- Minimal stand-ins for the legacy tables the audit reads; the migration must not touch them.
-create table public.ml_brain_snapshots (id bigserial primary key, poll_ts timestamptz not null, session_date date, context_json jsonb, poll_summary_json jsonb);
+create table public.ml_brain_snapshots (id bigserial primary key, poll_ts timestamptz not null, session_date date, context_json jsonb, poll_summary_json jsonb, recommendation_id text);
+create table public.ml_generated_candidates (id bigserial primary key, snapshot_poll_ts timestamptz, session_date date, recommendation_id text,
+  quality_tag text, decision_source text, candidate_id text, lane text, index_key text, strategy_type text, trade_mode text, rank integer,
+  watchlist_rank integer, was_surfaced boolean, width integer, expiry text, execution_gate text, entry_action text, app_version text, brain_version text);
 create table public.ml_pc2_authority_decisions (id bigserial primary key, poll_ts timestamptz not null, decision_index integer not null, decision_json jsonb not null);
 create table public.ml_option_chain_snapshots (poll_ts timestamptz not null, index_key text not null, strike numeric not null, option_type text not null,
   primary key (poll_ts, index_key, strike, option_type));
@@ -161,6 +164,56 @@ check "R6 midnight: completion outside the capture window fails INVALID_CAPTURE_
 tools/pc2_parity_export.sh 2026-10-06 "$WORK/r6next" >/dev/null; audit "$WORK/r6next" || true
 check "R6 midnight: the next day's audit does not count it (other-session/invalid, not SNAPSHOT_WITHOUT_INVENTORY)" "! grep -q SNAPSHOT_WITHOUT_INVENTORY <<<'$(r6_cat "$WORK/r6next")'"
 psql_db -c "drop table r6keep" >/dev/null
+
+echo "== b503 C2: a delayed but valid origin (09:52 in slot 09:50) through the real exporter and audit (2026-10-08)"
+psql_db -c "insert into public.ml_option_chain_snapshots values ('2026-10-08 09:52:31+05:30','NIFTY',1,'CE')" >/dev/null
+psql_db -c "insert into public.ml_brain_snapshots (poll_ts, session_date, context_json, poll_summary_json) values ('2026-10-08 09:54:00+05:30', '2026-10-08', '{}', jsonb_build_object('capture_provenance', '{\"schema\":\"capture_provenance_v1\",\"capture_key\":\"2026-10-08|8\",\"session_date\":\"2026-10-08\",\"slot_ordinal\":8,\"delivery\":\"LATE\",\"attempt_id\":\"d8\",\"slot_scheduled_ist\":\"2026-10-08T09:50:00+0530\",\"origin_poll_ts\":\"2026-10-08T09:52:00+0530\"}'::jsonb))" >/dev/null
+tools/pc2_parity_export.sh 2026-10-08 "$WORK/c2" >/dev/null; audit "$WORK/c2" || true
+c2_fails="$(r6_cat "$WORK/c2")"
+check "C2 origin 09:52 + chain 09:52:31 (+151 s) is matched (fails: '$c2_fails')" "! grep -qE 'MISSING_INVENTORY_FOR_ORIGIN|MISSING_SNAPSHOT_FOR_POLL|SNAPSHOT_WITHOUT_INVENTORY|AMBIGUOUS' <<<'$c2_fails'"
+psql_db -c "update public.ml_option_chain_snapshots set poll_ts = '2026-10-08 09:50:04+05:30' where poll_ts = '2026-10-08 09:52:31+05:30'" >/dev/null
+tools/pc2_parity_export.sh 2026-10-08 "$WORK/c2bad" >/dev/null; audit "$WORK/c2bad" || true
+check "C2 inventory unrelated to the recorded origin still fails" "grep -q MISSING_INVENTORY_FOR_ORIGIN <<<'$(r6_cat "$WORK/c2bad")'"
+
+echo "== b503 C3: generated sampled-cohort audit + readiness through the real exporter (fixtures from the real capture engine, 2026-10-07)"
+B503_COHORT_FIXTURE_OUT="$WORK/cohort.sql" $JVM_TEST com.marketradar.app.B503CohortFixtureTest >"$WORK/cohortfx.log" 2>&1 \
+  || { cat "$WORK/cohortfx.log"; echo "FAIL  cohort fixture generation"; failures=$((failures+1)); }
+psql_db -f "$WORK/cohort.sql" >/dev/null
+psql_db -c "insert into public.ml_option_chain_snapshots values ('2026-10-07 09:15:04+05:30','NIFTY',1,'CE'), ('2026-10-07 09:20:03+05:30','NIFTY',1,'CE'), ('2026-10-07 09:25:05+05:30','NIFTY',1,'CE'), ('2026-10-07 09:30:02+05:30','NIFTY',1,'CE')" >/dev/null
+readiness() { PC2_AUDIT_DIR="$1" $JVM_TEST com.marketradar.app.CaptureReadinessRunTest >"$1.rlog" 2>&1 || true; }
+cohort_fails() { python3 -c "import json; r=json.load(open('$1/capture_cohort_report.json')); print(' '.join(sorted(k for k,v in r['categories'].items() if v['fail']>0)) or 'NONE')"; }
+cohort_run() { tools/pc2_parity_export.sh 2026-10-07 "$WORK/$1" >/dev/null; readiness "$WORK/$1"; cohort_fails "$WORK/$1"; }
+c3=$(cohort_run c3ok)
+c3j="$WORK/c3ok/capture_cohort_report.json"; c3r="$WORK/c3ok/capture_readiness_report.json"
+check "C3 exporter writes generated.jsonl declared in the manifest" "python3 -c \"import json; m=json.load(open('$WORK/c3ok/manifest.json')); assert m['files']['generated.jsonl']['rows']==9\""
+check "C3 all channels intact: sampled cohort verified, 4 cohorts incl. 1 legitimate empty (fails: $c3)" \
+  "[[ '$c3' == NONE ]] && python3 -c \"import json; r=json.load(open('$c3j')); assert r['sampled_cohort_verified'] and r['verified_cohorts']==4 and r['empty_cohorts']==1 and not r['full_population_verified']\""
+check "C3 readiness keeps C3 and source-cap gates CLOSED; full population not verified" \
+  "python3 -c \"import json; r=json.load(open('$c3r')); assert r['generated_sampled_cohort_verified'] and r['c3_gate']=='CLOSED' and r['source_cap_gate']=='CLOSED' and r['full_population_verified'] is False\""
+check "C3 readiness: capture cohort NOT complete while PC2 parity is not certified" "python3 -c \"import json; r=json.load(open('$c3r')); assert r['capture_cohort_complete'] is False and r['pc2_parity_certified'] is False\""
+c3case() { # label, setup SQL, expected category, undo SQL
+  psql_db -c "$2" >/dev/null; local got; got=$(cohort_run "c3_$5"); psql_db -c "$4" >/dev/null
+  check "C3 $1 -> $3 (got: $got)" "grep -qw '$3' <<<'$got'"
+}
+psql_db -c "create table g_keep as select * from public.ml_generated_candidates; create table s_keep as select * from public.ml_brain_snapshots where session_date = '2026-10-07'" >/dev/null
+RESTORE="truncate public.ml_generated_candidates; insert into public.ml_generated_candidates select * from g_keep; delete from public.ml_brain_snapshots where session_date = '2026-10-07'; insert into public.ml_brain_snapshots select * from s_keep"
+c3case "generated upload absent (slot 1)" "delete from public.ml_generated_candidates where snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" GENERATED_COHORT_ABSENT "$RESTORE" absent
+c3case "one row missing (slot 2, NF only)" "delete from public.ml_generated_candidates where id = (select min(id) from public.ml_generated_candidates where snapshot_poll_ts = '2026-10-07 09:20:00+05:30')" COHORT_ROWS_MISSING "$RESTORE" missing
+c3case "changed identity" "update public.ml_generated_candidates set candidate_id = 'NF-99' where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_EXTRA_ROWS "$RESTORE" ident
+c3case "changed content" "update public.ml_generated_candidates set strategy_type = 'IRON_FLY' where candidate_id = 'BNF-1' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_CONTENT_CONFLICT "$RESTORE" content
+c3case "wrong index (NF/BNF mixture)" "update public.ml_generated_candidates set index_key = 'BNF' where candidate_id = 'NF-1' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_WRONG_INDEX "$RESTORE" index
+c3case "extra row" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) select snapshot_poll_ts, session_date, recommendation_id, 'NF-77', lane, index_key, 77 from g_keep where candidate_id = 'NF-0' and snapshot_poll_ts = '2026-10-07 09:15:00+05:30'" COHORT_EXTRA_ROWS "$RESTORE" extra
+c3case "orphan rows (no snapshot claims them)" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) values ('2026-10-07 09:45:00+05:30', '2026-10-07', 'rec-x', 'NF-0', 'NF_intraday', 'NF', 1)" ORPHAN_GENERATED_ROWS "$RESTORE" orphan
+c3case "rows of a legitimate empty cohort (slot 4)" "insert into public.ml_generated_candidates (snapshot_poll_ts, session_date, recommendation_id, candidate_id, lane, index_key, rank) values ('2026-10-07 09:30:00+05:30', '2026-10-07', 'rec-y', 'NF-0', 'NF_intraday', 'NF', 1)" COHORT_EXTRA_ROWS "$RESTORE" emptyextra
+c3case "lineage: rows of another recommendation" "update public.ml_generated_candidates set recommendation_id = 'rec-other' where snapshot_poll_ts = '2026-10-07 09:25:00+05:30'" COHORT_LINEAGE_MISMATCH "$RESTORE" lineage
+c3case "wrong manifest version" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,schema}', '\"generated_cohort_manifest_v0\"') where poll_ts = '2026-10-07 09:15:20+05:30'" COHORT_WRONG_VERSION "$RESTORE" version
+c3case "empty expectation without an original reason" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,reason}', '\"\"') where poll_ts = '2026-10-07 09:30:30+05:30'" INVALID_COHORT_MANIFEST "$RESTORE" noreason
+c3case "b503 snapshot without a manifest" "update public.ml_brain_snapshots set poll_summary_json = poll_summary_json - 'generated_cohort_manifest' where poll_ts = '2026-10-07 09:22:40+05:30'" MISSING_COHORT_MANIFEST "$RESTORE" nomanifest
+c3case "pre-b503 snapshot is unverifiable, not certified" "insert into public.ml_brain_snapshots (poll_ts, session_date, context_json) values ('2026-10-07 09:35:20+05:30', '2026-10-07', '{}')" COHORT_UNVERIFIABLE_PRE_B503 "$RESTORE" pre
+c3case "generation failed at capture" "update public.ml_brain_snapshots set poll_summary_json = jsonb_set(poll_summary_json, '{generated_cohort_manifest,status}', '\"BUILD_FAILED\"') where poll_ts = '2026-10-07 09:30:30+05:30'" GENERATED_BUILD_FAILED "$RESTORE" failed
+check "C3 late (slot 2, +160 s) and rollover (slot 3, completed after slot 4 poll) lineage verified in the intact run" \
+  "python3 -c \"import json; r=json.load(open('$c3j')); assert not any(f['severity']=='FAIL' for f in r['findings'])\""
+psql_db -c "drop table g_keep; drop table s_keep" >/dev/null
 
 echo "== b503 capture events, legacy replay and collector designation"
 psql_db -f supabase/migrations/20261009120000_paper_decision_menu_evidence.sql >/dev/null 2>&1

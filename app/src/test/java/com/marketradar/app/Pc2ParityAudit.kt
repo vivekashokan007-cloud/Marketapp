@@ -62,8 +62,29 @@ object Pc2ParityAudit {
     /** Chain evidence precedes its snapshot by 2-18 s in production; polls are >= 289 s apart. */
     val INVENTORY_MATCH_WINDOW: Duration = Duration.ofSeconds(60)
 
-    /** b503 R6: a provenance snapshot claims the chain poll in [slot start, slot start + 120 s) (observed +2..6 s). */
+    /** b503 R6 fallback (provenance without origin_poll_ts): chain poll in [slot start, slot start + 120 s). */
     val ORIGIN_CLAIM_WINDOW: Duration = Duration.ofSeconds(120)
+
+    /**
+     * C2: the chain row is written right after the phone's own poll (observed +2..6 s, bounded here by 30 s).
+     * origin_poll_ts is frozen at MINUTE precision (HH:mm:00) by the current app, so the true poll lies anywhere in
+     * [origin, origin + 60 s); with exact seconds the precision term is 0.
+     */
+    val CHAIN_LAG_BOUND: Duration = Duration.ofSeconds(30)
+    val MINUTE_PRECISION: Duration = Duration.ofSeconds(60)
+
+    /** [from, until) for the independent chain poll of a validated origin, clipped to the origin's five-minute slot. */
+    fun originWindow(p: CaptureSlotReconciler.Provenance): Pair<Instant, Instant>? {
+        val slotStart = p.slotStartEpochSec?.let { Instant.ofEpochSecond(it) } ?: return null
+        val slotEnd = slotStart.plusSeconds(FrozenCaptureRequest.POLL_SLOT_MINUTES * 60L)
+        val origin = p.originEpochSec?.let { Instant.ofEpochSecond(it) }
+            ?: return slotStart to slotStart.plus(ORIGIN_CLAIM_WINDOW)
+        val precision = if (p.originHasSeconds) Duration.ZERO else MINUTE_PRECISION
+        // Clipped at slot end: the next slot's polls are >= slot end, so a claim can never reach into another slot
+        // (fail-closed: a chain row stamped after slot end is reported missing rather than guessed).
+        val until = minOf(origin.plus(precision).plus(CHAIN_LAG_BOUND), slotEnd)
+        return origin to until
+    }
 
     /** Only session-continuity gaps may be excepted, never integrity failures. */
     val EXCEPTABLE = setOf("MISSING_SNAPSHOT_FOR_POLL", "SNAPSHOT_WITHOUT_INVENTORY", "LEGACY_WITHOUT_SNAPSHOT")
@@ -282,12 +303,13 @@ object Pc2ParityAudit {
                 continue
             }
             originInDay += instant
-            val start = p.slotStartEpochSec?.let { Instant.ofEpochSecond(it) }
-            if (start == null) { provenanceInstants -= instant; originInDay -= instant; continue } // closed-market key: legacy rule
-            val polls = inventorySorted.filter { !it.isBefore(start) && Duration.between(start, it) < ORIGIN_CLAIM_WINDOW }
+            val window = originWindow(p)
+            if (window == null) { provenanceInstants -= instant; originInDay -= instant; continue } // closed-market key: legacy rule
+            val (from, until) = window
+            val polls = inventorySorted.filter { !it.isBefore(from) && it.isBefore(until) }
             matchedSnapshots += instant
             when {
-                polls.isEmpty() -> fail("MISSING_INVENTORY_FOR_ORIGIN", key, "${p.captureKey} has no chain poll in [$start, +$ORIGIN_CLAIM_WINDOW)")
+                polls.isEmpty() -> fail("MISSING_INVENTORY_FOR_ORIGIN", key, "${p.captureKey} has no chain poll in [$from, $until)")
                 polls.size > 1 -> fail("AMBIGUOUS_INVENTORY_MATCH", key, "${polls.size} chain polls in origin slot ${p.captureKey}")
                 !claimedPolls.add(polls.single()) -> fail("DUPLICATE_ORIGIN_CLAIM", polls.single().toString(),
                     "two snapshot instants claim origin ${p.captureKey}")

@@ -173,7 +173,11 @@ object CaptureSlotReconciler {
 
     /** Validated b503 origin of one snapshot. [slotStartUtcEpochSec] is the scheduled slot start (null for "closed"). */
     data class Provenance(val captureKey: String, val sessionDate: String, val slotOrdinal: Int?,
-                          val slotStartEpochSec: Long?, val attemptId: String, val delivery: String)
+                          val slotStartEpochSec: Long?, val attemptId: String, val delivery: String,
+                          /** C2: validated origin poll instant (inside the slot), null when not recorded. */
+                          val originEpochSec: Long? = null,
+                          /** C2: true when origin_poll_ts carries real seconds; false = minute precision (":00"). */
+                          val originHasSeconds: Boolean = false)
 
     sealed class Validation {
         object Absent : Validation()
@@ -214,6 +218,8 @@ object CaptureSlotReconciler {
         val attempt = p.optString("attempt_id")
         if (attempt.isBlank() || attempt.length > 64) return Validation.Invalid("attempt_id")
         var slotStart: Long? = null
+        var originSec: Long? = null
+        var originSeconds = false
         if (ordinal != null) {
             val expected = "${session}T${FrozenCaptureRequest.slotStartHm(ordinal)}:00+0530"
             if (p.optString("slot_scheduled_ist") != expected) return Validation.Invalid("slot_scheduled_ist")
@@ -222,11 +228,13 @@ object CaptureSlotReconciler {
                 ?: return Validation.Invalid("origin_poll_ts")
             if (origin != null && (origin < slotStart!! || origin >= slotStart + FrozenCaptureRequest.POLL_SLOT_MINUTES * 60))
                 return Validation.Invalid("origin_poll_ts_outside_slot")
+            originSec = origin
+            originSeconds = origin != null && !p.optString("origin_poll_ts").substring(17, 19).equals("00")
             if (completionEpochSec != null &&
                 (completionEpochSec < slotStart!! || completionEpochSec - slotStart > MAX_COMPLETION_AFTER_SLOT_SEC))
                 return Validation.Invalid("completion_outside_capture_window")
         }
-        return Validation.Valid(Provenance(key, session, ordinal, slotStart, attempt, delivery))
+        return Validation.Valid(Provenance(key, session, ordinal, slotStart, attempt, delivery, originSec, originSeconds))
     }
 
     fun originOf(snapshot: JSONObject): Origin? {

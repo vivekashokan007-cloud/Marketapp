@@ -60,5 +60,39 @@ the b502 path discarded the finished result, so slot 09:50 has no snapshot/compa
 | R6 | `pc2_parity_export.sh` exports `capture_provenance` and includes rows whose provenance session is the day. `Pc2ParityAudit`: valid provenance claims the chain poll in [slot start, +120 s); DUPLICATE_ORIGIN_CLAIM, INVALID_CAPTURE_PROVENANCE, MISSING_INVENTORY_FOR_ORIGIN fail; ORIGIN_OTHER_SESSION is visible; pre-b503 rows keep the 60 s rule. | scratch run.sh R6 block (real exporter + real audit): 97 s completion, next-slot rollover, legacy row, no-provenance control, duplicate claim, inconsistent and corrupt provenance, midnight |
 | R7 | `PaperMenuCapture.stampNativeVersion`: missing / JSON null / non-string / blank / "null" → native version; a real version is kept. Android's `optString(NULL)` = "null" made the old check a no-op (13 Oct 12:30 menu froze with app_version null). Frozen menus are not rewritten. | `r7_nativeVersionStamp_handlesAndroidNullSemantics` (incl. Android optString emulation) |
 
-### Storage bound (R4)
-Measured on scratch Postgres with incompressible payloads (tools/pc2_db_suite/run.sh): byte-cap shape 1072 events + 22 conflicts = 9.6 MB persisted; row-cap shape 5000 small events = 11.0 MB; conflicts ≤ 500 fixed-size rows (< 0.5 MB). Justified bound ≈ 12 MiB per active device per IST day (suite fails above 24 MiB). The local queue is bounded too (events 2000 / 8 MiB; journal markers 2× intents cap), so "no event lost" holds within these bounds, not unconditionally.
+### Daily size of the NEW capture-event tables (R4, clarified in round 3)
+Enforced by the migration (staged, not applied): at most 8 MiB of charged input per active device per IST day, plus at most
+5000 new rows (events + conflict variants), 500 conflict variants and 8 variants per event. Two scratch Postgres measurements in
+CI (run 38367934746, incompressible payloads), not a live Supabase figure:
+- byte-limit shape: 8,388,602 charged bytes → 9,625,600 bytes total relation-size growth (events, conflicts, ledger);
+- row-limit shape: 5000 events, 6,952,786 charged bytes → 10,985,472 bytes event relation-size growth.
+The suite fails above 24 MiB. These are measurements of two shapes, not a proven physical bound. The quota covers only the new
+event tables: it does not cap snapshots, generated rows, retained legacy rows, WAL, other indexes or the Supabase bill, and no
+cost/invoice guarantee is made. Locally the phone also bounds its queues (events 2000 / 8 MiB; journal markers 2× intents), so
+"no event lost" holds only within those bounds.
+
+### Six-hour cutoff (R6)
+Provenance whose completion is more than 6 h after its slot start is flagged INVALID_CAPTURE_PROVENANCE for audit ELIGIBILITY only.
+It is a conservative restriction, not proof that the result is fabricated; the stored original bytes and their origin-session
+attribution are kept unchanged, and nothing is reassigned to the current day. Because the slot grid ends at 15:40, every
+after-midnight completion exceeds 6 h; the midnight tests are negative detection tests, not positive certification.
+
+## Round 3 — Codex C1–C3 (13 Oct 2026)
+| # | Fix | Proof |
+|---|-----|-------|
+| C1 | `CaptureCoordinator.submit` (SKIPPED_INFLIGHT) now calls `Owner.checkpointSkipped` synchronously on the submitting thread BEFORE returning and before any control job exists. `CaptureEngine.checkpointSkipped` writes a TERMINAL journal marker holding the exact INFLIGHT_SKIPPED_SLOT event bytes (detail records that no NF/BNF cohort was computed). The queued `onSkipped` re-uses the identical bytes (no collision); restart reconciliation delivers once. If the checkpoint is refused (I/O error, marker hard capacity) the fault is logged (`CAPTURE_SKIP_CHECKPOINT_FAILED`) and counted (`journal_fault`), and the outcome is recorded inline instead of trusting the queue. No Python/network work runs in the checkpoint; one-owner/bounded-worker rules unchanged. | Codex reproduction `c1_…` (fails on 3bee8bb); `B503ReviewRound3Test.c1_*` (normal queue admission + process death + restart once, control job runs → same bytes, storage refusal, full marker capacity, one owner) |
+| C2 | The audit matches the chain poll to the VALIDATED `origin_poll_ts`: window [origin, origin + precision + 30 s), with precision = 60 s for the app's minute-precision origin (`HH:mm:00`) and 0 for exact seconds, clipped at the slot end (so it never reaches the next slot). Two polls in the window → AMBIGUOUS; two claims → DUPLICATE_ORIGIN_CLAIM; round-2 provenance without origin keeps the [slot start, +120 s) fallback; pre-b503 rows keep the 60 s rule. | Codex reproduction `c2_…`; `c2_originPrecisionBounds_at119_120_151_299`, `c2_unrelatedInventory…`, `c2_preB503Fallback…`; run.sh C2 (real exporter + audit) |
+| C3 | Capture-time `poll_summary_json.generated_cohort_manifest` (`GeneratedCohort`, schema `generated_cohort_manifest_v1`), frozen in the snapshot before any upload: status EXPECTED / NOT_EXPECTED (reason `no_fact_pack` or `zero_candidates` only) / BUILD_FAILED (incl. an unreadable frozen fact pack — no longer turned into "no fact pack"); lineage (fact-pack `snapshot_poll_ts`, recommendation_id, session); row identities `candidate_id|lane|rank`, index, text/int/bool content digest, per-index NF/BNF counts, cohort sha256, sample cap 50, `population = bounded_sample_not_full_population`. Exporter writes `generated.jsonl` (declared in manifest.json). `CaptureCohortAudit` (separate from the PC2 certificate) + `CaptureReadiness` report. | `c3_*` unit tests; run.sh C3: fixtures from the real engine, intact run verified, 15 negative/positive scenarios |
+
+### Generated sampled-cohort contract (C3) — what each result certifies
+- `pc2_parity_certified` (Pc2ParityAudit, unchanged scope): snapshot/compact/retained-legacy PC2 decisions vs the independent chain inventory.
+- `generated_sampled_cohort_verified` (CaptureCohortAudit): for every snapshot whose origin session is the day, the stored
+  `ml_generated_candidates` rows for its lineage equal the capture-time expected bounded sample (identities, NF/BNF index, content
+  digest, recommendation/session lineage), every empty expectation has an explicit original reason, and no row is orphaned.
+  Failures: GENERATED_COHORT_ABSENT, COHORT_ROWS_MISSING, COHORT_EXTRA_ROWS, COHORT_CONTENT_CONFLICT, COHORT_WRONG_INDEX,
+  COHORT_DUPLICATE_ROWS, COHORT_LINEAGE_MISMATCH, COHORT_WRONG_VERSION, INVALID_COHORT_MANIFEST, MISSING_COHORT_MANIFEST,
+  GENERATED_BUILD_FAILED, ORPHAN_GENERATED_ROWS, DUPLICATE_COHORT_LINEAGE, COHORT_UNVERIFIABLE_PRE_B503, INPUT_INCOMPLETE.
+- `capture_cohort_complete` = both of the above.
+- Always: `full_population_verified = false`, `c3_gate = CLOSED`, `source_cap_gate = CLOSED`. A 50-row sample is not the generator
+  population; C3 and source-cap decisions need separate evidence.
+- Pre-b503 days cannot pass the cohort audit (no capture-time manifest), by design.

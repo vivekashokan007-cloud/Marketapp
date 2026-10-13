@@ -19,6 +19,8 @@
 #    and the audit fails on any.
 #  - b503 R6: each snapshot carries poll_summary_json.capture_provenance; a late capture whose origin
 #    session is this day is exported even when it completed after midnight.
+#  - b503 C3: generated.jsonl holds the retained generated-candidate sample rows for the cohort audit
+#    (CaptureCohortAudit / CaptureReadiness: PC2_AUDIT_DIR=out_dir ... --tests 'com.marketradar.app.CaptureReadinessRunTest').
 #  - manifest.json is written last, atomically, with each file's row count and
 #    SHA-256. Without it, or if anything disagrees with it, the audit cannot
 #    certify. Any manifest left from an earlier run is removed first.
@@ -31,7 +33,7 @@ out="${2:-pc2_parity_${day}}"
 mkdir -p "$out"
 rm -f "$out/manifest.json" "$out/manifest.json.tmp" "$out/pc2_parity_report.json" \
       "$out/snapshots.jsonl" "$out/batches.jsonl" "$out/legacy.jsonl" "$out/inventory.jsonl" \
-      "$out/malformed.json"
+      "$out/malformed.json" "$out/generated.jsonl" "$out/capture_cohort_report.json" "$out/capture_readiness_report.json"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 export PGOPTIONS='-c default_transaction_read_only=on'
@@ -51,7 +53,9 @@ select pg_catalog.json_build_object(
          'decisions', context_json -> 'snapshot_pc2_authority_decisions',
          'policy', context_json -> 'snapshot_pc2_authority_policy',
          'brain_version', context_json -> 'snapshot_brain_version',
-         'capture_provenance', poll_summary_json -> 'capture_provenance')::text
+         'capture_provenance', poll_summary_json -> 'capture_provenance',
+         'recommendation_id', recommendation_id,
+         'generated_cohort_manifest', poll_summary_json -> 'generated_cohort_manifest')::text
   from public.ml_brain_snapshots
  where (poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz)
     -- b503 R6: a late capture of this day that completed after midnight belongs to this day's audit.
@@ -79,6 +83,23 @@ select pg_catalog.json_build_object(
  where poll_ts >= :'lo'::timestamptz and poll_ts < :'hi'::timestamptz
  order by poll_ts, decision_index;
 
+\o :out/generated.jsonl
+-- b503 C3: the retained generated-candidate sample rows of the same origin session (lineage = the frozen
+-- fact-pack poll time in snapshot_poll_ts, NOT the snapshot completion time). Float columns are not exported:
+-- the cohort contract compares identities, index and a text/int/bool content digest.
+select pg_catalog.json_build_object(
+         'snapshot_poll_ts_utc', to_char(snapshot_poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         'session_date', session_date::text, 'recommendation_id', recommendation_id,
+         'quality_tag', quality_tag, 'decision_source', decision_source, 'candidate_id', candidate_id, 'lane', lane,
+         'index_key', index_key, 'strategy_type', strategy_type, 'trade_mode', trade_mode, 'rank', rank,
+         'watchlist_rank', watchlist_rank, 'was_surfaced', was_surfaced, 'width', width, 'expiry', expiry,
+         'execution_gate', execution_gate, 'entry_action', entry_action,
+         'app_version', app_version, 'brain_version', brain_version)::text
+  from public.ml_generated_candidates
+ where session_date = :'day'::date
+    or (snapshot_poll_ts >= :'lo'::timestamptz and snapshot_poll_ts < :'hi'::timestamptz)
+ order by snapshot_poll_ts, index_key, candidate_id, rank;
+
 \o :out/inventory.jsonl
 select pg_catalog.json_build_object(
          'poll_ts_utc', to_char(poll_ts at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))::text
@@ -102,7 +123,7 @@ python3 - "$out" "$day" "$started" "$finished" <<'PY'
 import hashlib, json, os, sys
 out, day, started, finished = sys.argv[1:5]
 files = {}
-for name in ("snapshots.jsonl", "batches.jsonl", "legacy.jsonl", "inventory.jsonl"):
+for name in ("snapshots.jsonl", "batches.jsonl", "legacy.jsonl", "inventory.jsonl", "generated.jsonl"):
     raw = open(os.path.join(out, name), "rb").read()
     rows = sum(1 for line in raw.decode("utf-8").split("\n") if line.strip())
     files[name] = {"rows": rows, "sha256": hashlib.sha256(raw).hexdigest()}

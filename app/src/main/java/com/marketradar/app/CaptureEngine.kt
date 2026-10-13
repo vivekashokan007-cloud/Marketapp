@@ -149,6 +149,11 @@ class CaptureEngine(
     private fun terminalize(identity: JSONObject, attemptId: String, type: String, reason: String,
                             detail: JSONObject, terminalReason: String): Boolean {
         val (id, text) = buildEvent(identity, type, reason, detail)
+        return terminalizeExact(identity, attemptId, id, text, terminalReason)
+    }
+
+    private fun terminalizeExact(identity: JSONObject, attemptId: String, id: String, text: String, terminalReason: String): Boolean {
+        val type = runCatching { JSONObject(text).optString("event_type") }.getOrDefault("?")
         val marked = try { journal.markTerminal(attemptId, identity, terminalReason, id, text); true }
         catch (t: Throwable) {
             recordHealth("journal_fault", identity.optString("capture_key"), 0, t.javaClass.simpleName)
@@ -218,6 +223,31 @@ class CaptureEngine(
         log('E', "CAPTURE_STUCK: key=${req.captureKey} ageMs=$ageMs (original call kept; no replacement started)")
     }
 
+    private fun skippedEvent(req: FrozenCaptureRequest, blockingKey: String?, blockingAgeMs: Long): Pair<String, String> =
+        buildEvent(req.identityJson(), "INFLIGHT_SKIPPED_SLOT", "prior_capture_inflight",
+            JSONObject().put("blocking_capture_key", blockingKey ?: JSONObject.NULL).put("blocking_age_ms", blockingAgeMs)
+                // C1: a skipped slot computed nothing: no NF/BNF generated cohort, compact or legacy rows exist for it.
+                .put("expected_channels", "none_slot_not_computed")
+                .put("generated_cohort", JSONObject().put("NF", "not_computed").put("BNF", "not_computed")))
+
+    /** C1: durable terminal marker (exact event bytes) for a skipped origin, before the skip is returned. */
+    override fun checkpointSkipped(req: FrozenCaptureRequest, blockingKey: String?, blockingAgeMs: Long): Boolean {
+        val (id, text) = skippedEvent(req, blockingKey, blockingAgeMs)
+        return try {
+            journal.markTerminal(req.attemptId, req.identityJson(), "inflight_skip", id, text)
+            crashPoint("skip_checkpointed")
+            true
+        } catch (e: java.io.IOException) {
+            recordHealth("journal_fault", req.captureKey, 0, e.javaClass.simpleName)
+            log('E', "CAPTURE_SKIP_CHECKPOINT_FAILED: key=${req.captureKey} ${e.message?.take(80)} (recording inline)")
+            false
+        } catch (e: RuntimeException) {
+            recordHealth("journal_fault", req.captureKey, 0, e.javaClass.simpleName)
+            log('E', "CAPTURE_SKIP_CHECKPOINT_FAILED: key=${req.captureKey} ${e.javaClass.simpleName} (recording inline)")
+            false
+        }
+    }
+
     override fun onSkipped(req: FrozenCaptureRequest, outcome: CaptureCoordinator.Outcome, blockingKey: String?, blockingAgeMs: Long) {
         if (outcome == CaptureCoordinator.Outcome.SKIPPED_DUPLICATE) {
             recordHealth("duplicate_skip", req.captureKey, blockingAgeMs)
@@ -227,8 +257,8 @@ class CaptureEngine(
         // A different origin slot could not be captured: an explicit terminal loss for THAT slot.
         recordHealth("inflight_skip", req.captureKey, blockingAgeMs)
         recordHealth("terminal_loss", req.captureKey)
-        terminalize(req.identityJson(), req.attemptId, "INFLIGHT_SKIPPED_SLOT", "prior_capture_inflight",
-            JSONObject().put("blocking_capture_key", blockingKey ?: JSONObject.NULL).put("blocking_age_ms", blockingAgeMs), "inflight_skip")
+        val (id, text) = skippedEvent(req, blockingKey, blockingAgeMs)
+        terminalizeExact(req.identityJson(), req.attemptId, id, text, "inflight_skip")
         log('E', "PY_TIMEOUT_INFLIGHT_SKIP: key=poll.snapshot capture=${req.captureKey} blockedBy=$blockingKey ageMs=$blockingAgeMs")
     }
 
@@ -341,14 +371,30 @@ class CaptureEngine(
         val snapObj = EvaluationLocalCache.compactBrainSnapshotForPersistence(rawSnapObj)
         val pollTs = snapObj.optString("poll_ts")
         val sessionDate = snapObj.optString("session_date", req.sessionDate).ifBlank { req.sessionDate }
+        // Generated cohort from the FROZEN fact pack (never from the caller's mutable result).
+        val factPack = req.factPackJson?.let { runCatching { JSONObject(it) }.getOrNull() }
+        var genError: Throwable? = null
+        // C3: a frozen fact pack that is present but unreadable is a generation FAILURE, never "no fact pack".
+        val factPackBroken = req.factPackJson != null && factPack == null
+        val rows = if (factPackBroken) { genError = IllegalStateException("fact_pack_unparseable"); log('E', "ML_GENERATED_BUILD_FAIL: fact_pack_unparseable"); null }
+        else runCatching { factPack?.let { GeneratedCandidateRows.build(it, snapObj) } ?: JSONArray() }
+            .onFailure { genError = it; log('E', "ML_GENERATED_BUILD_FAIL: ${it.javaClass.simpleName}") }.getOrNull()
+        // C3: the authoritative expected sampled cohort, frozen into the snapshot itself before any upload.
+        val factPollTs = factPack?.optString("poll_timestamp")?.ifBlank { null }
+        val recId = snapObj.opt("recommendation_id")?.takeIf { it != JSONObject.NULL }
+        val cohortManifest = runCatching {
+            when {
+                rows == null -> GeneratedCohort.buildFailed(if (factPackBroken) "fact_pack_unparseable" else genError?.javaClass?.simpleName ?: "build_failed", factPollTs, sessionDate, recId)
+                rows.length() == 0 -> GeneratedCohort.notExpected(if (factPack == null) "no_fact_pack" else "zero_candidates", factPollTs, sessionDate, recId)
+                else -> GeneratedCohort.expected(rows, sessionDate, recId)
+            }
+        }.getOrElse { GeneratedCohort.buildFailed("manifest_" + it.javaClass.simpleName, factPollTs, sessionDate, recId) }
+        (snapObj.optJSONObject("poll_summary_json") ?: JSONObject().also { snapObj.put("poll_summary_json", it) })
+            .put("generated_cohort_manifest", cohortManifest)
         val snapshotPayload = BrainSnapshotPayloadSanitizer.sanitize(snapObj).toString()
         ch.put("snapshot", snapshotPayload)
         states["local_cache"] = "PENDING"
         states["snapshot"] = "PENDING"
-        // Generated cohort from the FROZEN fact pack (never from the caller's mutable result).
-        val factPack = req.factPackJson?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val rows = runCatching { factPack?.let { GeneratedCandidateRows.build(it, snapObj) } ?: JSONArray() }
-            .onFailure { log('E', "ML_GENERATED_BUILD_FAIL: ${it.javaClass.simpleName}") }.getOrNull()
         when {
             rows == null -> states["generated"] = "BUILD_FAILED"
             rows.length() == 0 -> { states["generated"] = "NOT_EXPECTED"; ch.put("generated_reason", if (factPack == null) "no_fact_pack" else "zero_candidates") }

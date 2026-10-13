@@ -92,6 +92,12 @@ class CaptureCoordinator(
         /** Light diagnostics (run on the control lane). */
         fun onStuck(req: FrozenCaptureRequest, ageMs: Long)
         fun onSkipped(req: FrozenCaptureRequest, outcome: Outcome, blockingKey: String?, blockingAgeMs: Long)
+        /**
+         * C1: synchronous, small, durable checkpoint of a skipped origin slot, called on the submitting thread BEFORE
+         * SKIPPED_INFLIGHT is returned and before any in-memory queue owns the outcome. True only when persisted.
+         * Must not throw; no Python/network work.
+         */
+        fun checkpointSkipped(req: FrozenCaptureRequest, blockingKey: String?, blockingAgeMs: Long): Boolean = false
         fun onLatePending(req: FrozenCaptureRequest, waitedMs: Long)
         /** A late completion could not be queued (finisher saturated). Evidence only; bytes are lost. */
         fun onFinisherRejected(req: FrozenCaptureRequest, delivery: CaptureDelivery)
@@ -156,10 +162,13 @@ class CaptureCoordinator(
                 blocking.skipped.incrementAndGet()
                 checkStuck(blocking)
             }
-            durably {
-                owner.onSkipped(req, Outcome.SKIPPED_INFLIGHT, blocking?.req?.captureKey,
-                    blocking?.let { monoClock() - it.startedMono } ?: 0L)
-            }
+            val blockingKey = blocking?.req?.captureKey
+            val blockingAge = blocking?.let { monoClock() - it.startedMono } ?: 0L
+            // C1: the skipped origin is durable before this method returns. An accepted Runnable is NOT evidence.
+            val persisted = try { owner.checkpointSkipped(req, blockingKey, blockingAge) } catch (_: Throwable) { false }
+            val record = Runnable { runCatching { owner.onSkipped(req, Outcome.SKIPPED_INFLIGHT, blockingKey, blockingAge) } }
+            // Not checkpointed (storage refused): record inline now rather than trusting an in-memory queue.
+            if (!persisted || !control.offer(record)) { if (persisted) control.recordOverflow(); record.run() }
             return Outcome.SKIPPED_INFLIGHT
         }
         // (2) durable intent. The owner reports its own storage faults; it never blocks capture.
