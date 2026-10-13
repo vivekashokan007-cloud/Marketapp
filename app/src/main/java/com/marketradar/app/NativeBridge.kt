@@ -2574,6 +2574,53 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getPositionMarkStates(): String = PositionMarkStore.presentationJson(prefs)
 
+    // ---------------- Implied-EV v1.2 Paper experiment ----------------
+    @JavascriptInterface
+    fun evGetMode(): String = EvExperiment.mode(prefs)
+
+    /** off | observe | active. Only affects Paper polls (MarketWatchService adds ctx keys only in Paper). */
+    @JavascriptInterface
+    fun evSetMode(mode: String): String {
+        val m = when (mode.trim().lowercase()) { "observe" -> "observe"; "active" -> "active"; else -> "off" }
+        prefs.edit().putString(EvExperiment.PREF_MODE, m).apply()
+        return m
+    }
+
+    /** Start acceptance revalidation with fresh quotes; poll evGetAcceptance(request_id). */
+    @JavascriptInterface
+    fun evRequestAcceptance(sessionDate: String, openEngineJson: String, capitalAvailable: Double): String {
+        val requestId = java.util.UUID.randomUUID().toString()
+        context.getSharedPreferences(PositionTickService.EV_ACCEPT_PREFS, Context.MODE_PRIVATE).edit()
+            .putString(requestId, JSONObject().put("status", "PENDING").put("request_id", requestId).toString()).commit()
+        return try {
+            val intent = Intent(context, PositionTickService::class.java).apply {
+                action = PositionTickService.ACTION_EV_ACCEPT
+                putExtra(PositionTickService.EXTRA_EV_REQUEST_ID, requestId)
+                putExtra(PositionTickService.EXTRA_EV_SESSION_DATE, sessionDate.trim())
+                putExtra(PositionTickService.EXTRA_EV_OPEN_ENGINE_JSON, openEngineJson)
+                putExtra(PositionTickService.EXTRA_EV_CAPITAL, capitalAvailable)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            JSONObject().put("ok", true).put("request_id", requestId).put("status", "PENDING").toString()
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("status", "FAILED").put("reason", t.javaClass.simpleName).toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun evGetAcceptance(requestId: String): String =
+        context.getSharedPreferences(PositionTickService.EV_ACCEPT_PREFS, Context.MODE_PRIVATE)
+            .getString(requestId.trim(), null) ?: JSONObject().put("status", "UNKNOWN").toString()
+
+    /** Rule B fills / unresolved marks not yet applied by the PWA. */
+    @JavascriptInterface
+    fun evRuleBPending(): String = RuleBFillLedger.pending(EvExperiment.stateDir(context.filesDir)).toString()
+
+    /** PWA has closed (or marked) the trade idempotently; the ledger entry stops being offered. */
+    @JavascriptInterface
+    fun evRuleBAck(tradeId: String): Boolean =
+        RuleBFillLedger.ack(EvExperiment.stateDir(context.filesDir), tradeId.trim(), System.currentTimeMillis())
+
     /** Start a request-scoped fresh Paper-close quote capture. */
     @JavascriptInterface
     fun requestPaperCloseQuote(tradeId: String): String {

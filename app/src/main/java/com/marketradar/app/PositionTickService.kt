@@ -89,6 +89,23 @@ class PositionTickService : Service() {
                 Log.w(TAG, "PAPER_CLOSE_QUOTE_REJECTED: REQUEST_MISMATCH")
             }
         }
+        if (intent?.action == ACTION_EV_ACCEPT) {
+            val requestId = intent.getStringExtra(EXTRA_EV_REQUEST_ID)?.trim().orEmpty()
+            val sessionDate = intent.getStringExtra(EXTRA_EV_SESSION_DATE)?.trim().orEmpty()
+            val openJson = intent.getStringExtra(EXTRA_EV_OPEN_ENGINE_JSON) ?: "[]"
+            val capital = intent.getDoubleExtra(EXTRA_EV_CAPITAL, Double.NaN)
+            if (requestId.isNotEmpty() && sessionDate.isNotEmpty() && !paperCloseJobs.containsKey(requestId)) {
+                paperCloseJobs[requestId] = serviceScope.launch {
+                    try {
+                        captureEvAcceptance(requestId, sessionDate, openJson, capital)
+                    } finally {
+                        paperCloseJobs.remove(requestId)
+                        if (loopJob?.isActive != true) stopSelf()
+                    }
+                }
+            }
+            return START_STICKY
+        }
         if (intent?.action != ACTION_CAPTURE_PAPER_CLOSE_QUOTE && loopJob?.isActive != true) {
             loopJob = serviceScope.launch { runLoop() }
         }
@@ -205,7 +222,18 @@ class PositionTickService : Service() {
             if (refreshed) {
                 row.optJSONObject("policy_trace_json")?.put("quote_refresh", refresh!!.traceFor(tradeIdForRefresh))
             }
-            maybeNotifyShadowExit(row, trade)
+            // Implied-EV v1.2 Rule B (Paper only): the planned exit replaces the intraday EOD alert for these
+            // trades; the first valid executable close in the exit window is recorded in the durable ledger.
+            val ruleB = isPaperTrade && RuleBExitPolicy.isRuleBTrade(trade)
+            if (ruleB) {
+                try {
+                    stepRuleB(trade, if (refreshed) refresh!!.fetchForTrade(extractLegs(trade).mapNotNull {
+                        it.instrumentKey?.takeIf { k -> k.isNotBlank() } }) else quoteFetch, row)
+                } catch (e: Exception) {
+                    LogBuffer.add('W', TAG, "RULE_B_STEP_FAIL: trade=$tradeIdForRefresh ${e.message}")
+                }
+            }
+            if (!(ruleB && row.optString("policy_action") == "SHADOW_EOD")) maybeNotifyShadowExit(row, trade)
             if (isPaperTrade) maybeEscalatePersistentMarkFailure(row, trade, sessionDate)
             rows.put(row)
         }
@@ -1230,6 +1258,71 @@ class PositionTickService : Service() {
      * 24 alerts across four open positions — five of six per trade being
      * SHADOW_DEGRADED with a null P&L.
      */
+    /**
+     * Implied-EV v1.2 acceptance (user tap, Paper only): fetch FRESH executable quotes for the decided legs
+     * and let Python revalidate validity window, price tolerance, duplicates, max-2, EV, fees, risk and
+     * capital. The result (never a fill at the old decision prices) is stored for the PWA to poll.
+     */
+    private fun captureEvAcceptance(requestId: String, sessionDate: String, openJson: String, capital: Double) {
+        val store = getSharedPreferences(EV_ACCEPT_PREFS, MODE_PRIVATE)
+        fun done(o: JSONObject) { store.edit().putString(requestId, o.put("request_id", requestId).toString()).commit() }
+        try {
+            val dir = EvExperiment.stateDir(filesDir)
+            val slotFile = java.io.File(dir, "slot_NF_$sessionDate.json")
+            val ctx = JSONObject(slotFile.readText()).optJSONObject("acceptance_context")
+                ?: return done(JSONObject().put("status", "REJECTED").put("reason", "NO_DECIDED_SLOT"))
+            val legs = ctx.optJSONArray("legs") ?: JSONArray()
+            val keys = (0 until legs.length()).mapNotNull { legs.optJSONObject(it)?.optString("instrument_key")?.ifBlank { null } }
+            val fetch = fetchQuotesWithFallback(keys)
+            val nowMs = System.currentTimeMillis()
+            val quotes = JSONObject()
+            keys.forEach { k ->
+                if (fetch.exactKeys.contains(k)) fetch.quotes[k]?.let { q ->
+                    quotes.put(k, JSONObject().put("bid", q.bid ?: JSONObject.NULL).put("ask", q.ask ?: JSONObject.NULL)
+                        .put("ts_ms", nowMs))
+                }
+            }
+            val py = com.chaquo.python.Python.getInstance().getModule("ev_v12_integration")
+            val raw = py.callAttr("revalidate_acceptance_json", dir.absolutePath, sessionDate, quotes.toString(), nowMs,
+                openJson, if (capital.isFinite()) capital else null).toString()
+            done(JSONObject(raw).put("quote_fetch_status", fetch.fetchStatus))
+            LogBuffer.add('I', TAG, "EV12_ACCEPT: request=$requestId session=$sessionDate result=${JSONObject(raw).optString("status")} " +
+                "reason=${JSONObject(raw).optString("reason")}")
+        } catch (e: Exception) {
+            done(JSONObject().put("status", "FAILED").put("reason", "ACCEPT_INTERNAL_ERROR:${e.javaClass.simpleName}"))
+        }
+    }
+
+    /** Rule B step for one Paper trade; quotes are the same executable book this tick valued. */
+    private fun stepRuleB(trade: JSONObject, fetch: QuoteFetch, row: JSONObject) {
+        val tradeId = trade.optStringAny("id").trim()
+        val es = RuleBExitPolicy.policyOf(trade) ?: return
+        val dir = EvExperiment.stateDir(filesDir)
+        val legs = extractLegs(trade)
+        val pos = RuleBExitPolicy.Position(
+            es.optString("position_policy_id"), RuleBFillLedger.stateOf(dir, tradeId) ?: "OPEN",
+            es.optString("planned_exit_session"), es.optString("expiry"),
+            legs.mapNotNull { l -> l.instrumentKey?.takeIf { it.isNotBlank() }?.let {
+                RuleBExitPolicy.Leg(if (l.closeSide == CloseSide.BUY_TO_CLOSE) -1 else 1, it) } })
+        if (pos.legs.size != legs.size || pos.plannedExitSession.isBlank() || pos.expiry.isBlank()) {
+            row.optJSONObject("policy_trace_json")?.put("rule_b", JSONObject().put("status", "POLICY_FIELDS_MISSING"))
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        val tsIso = java.time.Instant.ofEpochMilli(nowMs).atOffset(java.time.ZoneOffset.ofHoursMinutes(5, 30)).toString()
+        // Quote timestamp = this fetch's completion (the quote API's per-contract time is not used as authority).
+        val quotes = pos.legs.associate { l ->
+            val q = fetch.quotes[l.instrumentKey]
+            l.instrumentKey to RuleBExitPolicy.LegQuote(q?.bid, q?.ask, nowMs.toDouble())
+        }
+        val step = RuleBExitPolicy.step(pos, RuleBExitPolicy.Tick(tsIso, quotes))
+        val changed = RuleBFillLedger.record(dir, tradeId, es.optString("ev_decision_id").ifBlank { null }, step, nowMs)
+        row.optJSONObject("policy_trace_json")?.put("rule_b", JSONObject().put("policy_id", RuleBExitPolicy.POLICY_ID)
+            .put("state", step.state ?: JSONObject.NULL).put("action", step.action).put("reason", step.reason)
+            .put("ledger_changed", changed))
+        if (changed) LogBuffer.add('I', TAG, "RULE_B: trade=$tradeId action=${step.action} state=${step.state} reason=${step.reason}")
+    }
+
     private fun maybeNotifyShadowExit(row: JSONObject, trade: JSONObject) {
         val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }
         if (tradeId.isBlank()) return
@@ -1549,6 +1642,12 @@ class PositionTickService : Service() {
         private const val TAG = "PositionTickService"
         const val ACTION_POSITION_MARK_TICK = "com.marketradar.POSITION_MARK_TICK"
         const val ACTION_CAPTURE_PAPER_CLOSE_QUOTE = "com.marketradar.CAPTURE_PAPER_CLOSE_QUOTE"
+        const val ACTION_EV_ACCEPT = "com.marketradar.EV12_ACCEPT"
+        const val EXTRA_EV_REQUEST_ID = "ev_request_id"
+        const val EXTRA_EV_SESSION_DATE = "ev_session_date"
+        const val EXTRA_EV_OPEN_ENGINE_JSON = "ev_open_engine_json"
+        const val EXTRA_EV_CAPITAL = "ev_capital"
+        const val EV_ACCEPT_PREFS = "ev_v12_acceptance"
         const val ACTION_PAPER_CLOSE_QUOTE_READY = "com.marketradar.PAPER_CLOSE_QUOTE_READY"
         const val EXTRA_PAPER_CLOSE_REQUEST_ID = "paper_close_request_id"
         const val EXTRA_PAPER_CLOSE_TRADE_ID = "paper_close_trade_id"

@@ -150,6 +150,10 @@ class EngineRun(unittest.TestCase):
         self.assertEqual(len(outs), 1)
         self.assertLessEqual(outs[0]["outcome_bytes"], P.MAX_OUTCOME_BYTES)
         body = json.loads(outs[0]["outcome_text"])
+        # finite local state: once outside the keep window the finished tracker is pruned
+        far = int(CAL.ist_dt(date(2026, 11, 9), 11, 0).timestamp() * 1000)
+        I.run(ctx_for(self.d, poll_ms=far), {}, "paper")
+        self.assertFalse([f for f in os.listdir(self.d) if f.startswith("tracker_NF_2026-10-08")])
         self.assertEqual(body["accepted"], {"status": "NOT_ACCEPTED"})
         self.assertEqual(body["components"][0]["rule_b"]["kind"], "PLANNED_EXIT")
 
@@ -200,6 +204,19 @@ class BrainAnalyze(unittest.TestCase):
                         self.assertEqual(_norm(a.get(k)), _norm(b.get(k)), (mode, em, k))
         finally:
             shutil.rmtree(d)
+
+
+class LearningExclusion(unittest.TestCase):
+    def test_rule_b_trades_excluded_from_v7_calibration_only(self):
+        rb = {"id": "x", "paper": True, "entry_snapshot": json.dumps({"position_policy_id": "paper_rule_b_v1"})}
+        self.assertTrue(brain._is_ev_rule_b_trade(rb))
+        self.assertTrue(brain._is_ev_rule_b_trade({"entry_snapshot": {"position_policy_id": "paper_rule_b_v1"}}))
+        for t in ({"entry_snapshot": "{bad"}, {"entry_snapshot": {"position_policy_id": "v1"}}, {}, None, "s"):
+            self.assertFalse(brain._is_ev_rule_b_trade(t))
+        import inspect
+        src = inspect.getsource(brain.analyze)
+        self.assertIn("build_calibration([t for t in closed_trades if not _is_ev_rule_b_trade(t)])", src)
+        self.assertIn("_apply_daily_risk_state(ctx, closed_trades, open_trades)", src)
 
 
 class ResearchReplay(unittest.TestCase):

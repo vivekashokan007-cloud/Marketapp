@@ -490,6 +490,27 @@ def step_trackers(state_dir, ctx, now_ms, cal, open_trades, closed_trades):
     return out
 
 
+def prune_trackers(state_dir, keep_dates):
+    """Finite local cache: a tracker whose outcome is built and whose session left the keep window is removed
+    (its outcome text lives in the Kotlin outbox until ACKed). Unfinished trackers are never removed."""
+    removed = []
+    try:
+        names = os.listdir(state_dir)
+    except OSError:
+        return removed
+    for fn in names:
+        if not (fn.startswith("tracker_NF_") and fn.endswith(".json")):
+            continue
+        d = fn[len("tracker_NF_"):-5]
+        if d in keep_dates:
+            continue
+        doc = _load_json(os.path.join(state_dir, fn))
+        if doc is not None and doc.get("outcome"):
+            os.remove(os.path.join(state_dir, fn))
+            removed.append(fn)
+    return removed
+
+
 def pending_envelopes(state_dir, session_dates):
     envs = []
     for d in session_dates[-MAX_PENDING_ENVELOPES:]:
@@ -533,6 +554,10 @@ def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal
         out["pending_outcomes"] = step_trackers(state_dir, ctx, poll_ms, cal, open_trades, closed_trades)
     except Exception as e:  # tracker evidence must never break the poll or the decision
         out["tracker_error"] = str(e)[:200]
+    try:
+        prune_trackers(state_dir, set(recent[-KEEP_SLOT_SESSIONS:]))
+    except OSError:
+        pass
     if not is_session:
         out["status"] = "NOT_A_SESSION"
         return out

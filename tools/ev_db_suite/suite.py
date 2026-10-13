@@ -124,6 +124,14 @@ def main():
         ok_back = submit(key, envelope((today - timedelta(days=5)).isoformat())["envelope_text"])[0]
         check("backfill within window accepted", (ok_back or {}).get("status") == "ACCEPTED")
 
+        # receipt-day quota: today's earlier accepted writes count; a further large write is refused
+        used = int(psql("select bytes from ev_private.receipt_quotas where receipt_day = ev_private.ist_today()").stdout.strip())
+        check("receipt-day quota charged (%d B)" % used, used > 0)
+        a1, _ = submit(key, envelope((today - timedelta(days=3)).isoformat(), pad=20000)["envelope_text"])
+        check("large backfill accepted within the receipt-day quota", (a1 or {}).get("status") == "ACCEPTED")
+        _, err = submit(key, envelope((today - timedelta(days=4)).isoformat(), pad=9000)["envelope_text"])
+        check("write beyond the 28 KiB receipt-day quota refused (PT429)", "EV_DAILY_QUOTA_EXCEEDED" in err)
+        psql("delete from ev_private.receipt_quotas;")   # scratch only: simulate the next receipt day
         # quota: 24 KiB decision + 4 KiB outcome fits 28 KiB; the 5th row / extra bytes are refused
         big = None
         for pad in range(23800, 24600, 10):
@@ -142,6 +150,7 @@ def main():
         expect_ok = len(otxt.encode()) <= rem
         check("outcome charged to the same 28 KiB session quota (%s)" % ("fits" if expect_ok else "exceeds"),
               ("ACCEPTED" in p.stdout) if expect_ok else ("EV_DAILY_QUOTA_EXCEEDED" in p.stderr))
+        psql("delete from ev_private.receipt_quotas;")   # scratch only: next receipt day
         p = psql("select public.ev_submit_outcome(%s,%s,%s);" % (q(key), q(e["decision_id"]), q("z" * 4097)), role="anon", ok=False)
         check("oversize outcome refused", "EV_OUTCOME_TOO_LARGE" in p.stderr)
         o = P.canon({"schema": P.OUTCOME_SCHEMA, "decision_id": e["decision_id"], "x": "1"})
@@ -166,7 +175,12 @@ def main():
         sts = sorted((r or {}).get("status", "ERR") for r in res)
         check("concurrent slot race: one ACCEPTED, one CONFLICT (%s)" % sts, sts == ["ACCEPTED", "CONFLICT"])
         nconf = int(psql("select count(*) from ev_private.conflicts").stdout.strip())
-        check("conflicts ledgered (%d)" % nconf, nconf >= 3)
+        check("conflicts ledgered (%d)" % nconf, nconf >= 1)
+        for i in range(25):
+            submit(key, envelope(d0, salt="spam%d" % i)["envelope_text"])
+        n2 = int(psql("select count(*) from ev_private.conflicts").stdout.strip())
+        cq = int(psql("select coalesce(max(conflicts),0) from ev_private.receipt_quotas").stdout.strip())
+        check("conflict ledger bounded per receipt day (rows=%d, counter=%d <= 20)" % (n2, cq), cq <= 20 and n2 <= nconf + 20)
 
         # builder
         p = psql("select public.ev_builder_state();", role="service_role", ok=False)

@@ -16939,6 +16939,19 @@ def _first_poll_paper_position_monitor(result, polls, baseline, open_trades, str
     return monitored
 
 
+def _is_ev_rule_b_trade(t):
+    """True for an implied-EV v1.2 Rule B Paper trade (excluded from v7 learning inputs)."""
+    if not isinstance(t, dict):
+        return False
+    es = t.get('entry_snapshot') if 'entry_snapshot' in t else t.get('entrySnapshot')
+    if isinstance(es, str):
+        try:
+            es = json.loads(es)
+        except Exception:
+            es = None
+    return isinstance(es, dict) and es.get('position_policy_id') == 'paper_rule_b_v1'
+
+
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -17019,7 +17032,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     global _capital
     _capital = ctx.get('capital', 250000)
 
-    build_calibration(closed_trades)
+    # Implied-EV v1.2: Rule B experiment trades (Paper, entry_snapshot.position_policy_id = paper_rule_b_v1)
+    # follow a different exit policy; they must not train the v7 calibration. Daily risk still counts them.
+    build_calibration([t for t in closed_trades if not _is_ev_rule_b_trade(t)])
     regime = detect_regime(polls, baseline)
     ctx['rangeSigma'] = regime.get('sigma', 0)
     ctx['regime'] = regime

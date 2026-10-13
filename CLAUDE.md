@@ -252,3 +252,13 @@ GitHub Actions/CI status for this repo still cannot be verified from a working s
 - **New notification type** → add a channel to `NotificationHelper.createChannels()` and a branch in `send()`.
 - **Tweak ML features / model** → `ml_engine.py` (inference path) and `ml_train.py` (training path) must stay in sync on feature order; regenerate `app/src/main/assets/ml_model.json` and bump `versionCode` so the asset-copy block in `MainActivity` re-copies it.
 - **Change PWA URL** → `MainActivity.kt` (search for `github.io/MarketVivi`).
+
+
+## Implied-EV v1.2 Paper experiment (b504 / 2.6.73)
+Paper-only, default off (`ev_experiment_mode`). Engine modules `app/src/main/python/implied_ev_v12.py` and
+`ev_v12_*.py`; called from `brain.analyze` only for explicit Paper + observe/active (result key `implied_ev_v12`,
+detached by `EvExperiment.detach` before anything else reads the result). Rule B exit = `RuleBExitPolicy.kt`
+(parity vectors `app/src/test/resources/ev_v12/rule_b_vectors.json`, regenerate with `tools/ev_rule_b_vectors.py`).
+Server contract: `supabase/migrations/20261013150000_ev_v12_paper_experiment.sql` (scratch suite
+`tools/ev_db_suite/run.sh`). Design, storage bounds and phone checklist: `docs/ev_v12/README.md`.
+Do not change v7 ranking/gates/sizing/exits/teacher fee from this code path.

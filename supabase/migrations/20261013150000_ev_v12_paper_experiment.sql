@@ -17,7 +17,8 @@
 -- business object is present. Documented limitation.
 --
 -- Storage bounds (Supabase budget): per (index, session_date) at most 28 KiB and 4 rows across decisions+outcomes
--- (one decision <= 24 KiB, one outcome <= 4 KiB); session_date must be within the last 7 calendar days (covers the
+-- (one decision <= 24 KiB, one outcome <= 4 KiB), AND per IST receipt day at most 28 KiB / 8 rows / 20 conflict
+-- ledger rows (=> <= ~0.85 MiB payload per 31 receipt days, before row/index/WAL overhead); session_date must be within the last 7 calendar days (covers the
 -- 3-session backfill across a weekend+holiday) and not in the future (IST); outcomes only up to 10 calendar days
 -- after the decision's expiry. Expected steady state: ~7 KiB decision + ~2 KiB outcome per NF session
 -- (~2.3 MB/year incl. TOAST/index overhead estimate), plus ~1 KiB/observation and ~1.5 KiB/publication weekly.
@@ -93,6 +94,14 @@ create table if not exists ev_private.quotas (
     primary key (index_key, session_date),
     constraint evq_caps check ((bytes <= 28672 and rows_written <= 4) is true)
 );
+-- Global receipt-day quota (IST day the server received the write), version- and device-independent.
+create table if not exists ev_private.receipt_quotas (
+    receipt_day     date primary key,
+    bytes           integer not null default 0,
+    rows_written    integer not null default 0,
+    conflicts       integer not null default 0,
+    constraint evrq_caps check ((bytes <= 28672 and rows_written <= 8 and conflicts <= 20) is true)
+);
 create table if not exists ev_private.conflicts (
     id              bigserial primary key,
     rpc             text not null,
@@ -133,6 +142,7 @@ create table if not exists ev_private.builder_runs (
 alter table ev_private.writers enable row level security;
 alter table ev_private.quotas enable row level security;
 alter table ev_private.conflicts enable row level security;
+alter table ev_private.receipt_quotas enable row level security;
 alter table ev_private.observations enable row level security;
 alter table ev_private.builder_state enable row level security;
 alter table ev_private.builder_runs enable row level security;
@@ -163,9 +173,17 @@ language sql stable set search_path = '' as $$ select (pg_catalog.now() at time 
 
 create or replace function ev_private.conflict(p_rpc text, p_kind text, p_id text, p_hash text, p_sup text, p_acc text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
+declare v_day date := ev_private.ist_today(); n integer;
 begin
-    insert into ev_private.conflicts (rpc, kind, decision_id, device_key_hash, supplied_sha256, accepted_sha256)
-    values (p_rpc, p_kind, left(p_id, 80), p_hash, p_sup, p_acc);
+    -- Ledger writes are quota-bound too: at most 20 conflict rows per receipt day; beyond that the answer is
+    -- still CONFLICT but nothing is written (counted in receipt_quotas.conflicts up to the cap).
+    insert into ev_private.receipt_quotas (receipt_day) values (v_day) on conflict do nothing;
+    update ev_private.receipt_quotas set conflicts = conflicts + 1 where receipt_day = v_day and conflicts < 20;
+    get diagnostics n = row_count;
+    if n = 1 then
+        insert into ev_private.conflicts (rpc, kind, decision_id, device_key_hash, supplied_sha256, accepted_sha256)
+        values (p_rpc, p_kind, left(p_id, 80), p_hash, p_sup, p_acc);
+    end if;
     return pg_catalog.jsonb_build_object('status', 'CONFLICT', 'conflict', p_kind, 'decision_id', p_id,
                                          'accepted_sha256', p_acc);
 end $$;
@@ -173,13 +191,18 @@ end $$;
 -- Charge the per-session quota atomically (row lock on the quota row serializes concurrent submits).
 create or replace function ev_private.charge(p_index text, p_date date, p_bytes integer) returns boolean
 language plpgsql security definer set search_path = '' as $$
-declare q ev_private.quotas%rowtype;
+declare q ev_private.quotas%rowtype; rq ev_private.receipt_quotas%rowtype; v_day date := ev_private.ist_today();
 begin
+    -- Lock order: receipt day, then session (every caller uses the same order).
+    insert into ev_private.receipt_quotas (receipt_day) values (v_day) on conflict do nothing;
+    select * into rq from ev_private.receipt_quotas where receipt_day = v_day for update;
     insert into ev_private.quotas (index_key, session_date) values (p_index, p_date) on conflict do nothing;
     select * into q from ev_private.quotas where index_key = p_index and session_date = p_date for update;
-    if q.bytes + p_bytes > 28672 or q.rows_written + 1 > 4 then
+    if q.bytes + p_bytes > 28672 or q.rows_written + 1 > 4
+       or rq.bytes + p_bytes > 28672 or rq.rows_written + 1 > 8 then
         return false;
     end if;
+    update ev_private.receipt_quotas set bytes = bytes + p_bytes, rows_written = rows_written + 1 where receipt_day = v_day;
     update ev_private.quotas set bytes = bytes + p_bytes, rows_written = rows_written + 1
      where index_key = p_index and session_date = p_date;
     return true;
@@ -342,6 +365,7 @@ language plpgsql security definer set search_path = '' as $$
 declare n1 integer; n2 integer; n3 integer;
 begin
     delete from ev_private.quotas where session_date < ev_private.ist_today() - 60;
+    delete from ev_private.receipt_quotas where receipt_day < ev_private.ist_today() - 60;
     get diagnostics n1 = row_count;
     delete from ev_private.conflicts where recorded_at < pg_catalog.now() - interval '90 days';
     get diagnostics n2 = row_count;

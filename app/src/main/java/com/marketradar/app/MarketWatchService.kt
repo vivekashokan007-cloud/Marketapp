@@ -1122,7 +1122,7 @@ class MarketWatchService : Service() {
                     },
                     async(Dispatchers.IO) { fetchSync(bnfUrl, token) },
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
-                    async(Dispatchers.IO) { fetchSync(nfUrl, token) }
+                    async(Dispatchers.IO) { fetchSync(nfUrl, token).also { evNfChainFetchedAtMs = System.currentTimeMillis() } }
                 ).map { it.await() }
             }
             val nf50Breadth = parallel[0] ?: JSONObject()
@@ -2720,6 +2720,16 @@ class MarketWatchService : Service() {
                 LogBuffer.add('W', TAG, "PAPER_MENU_REQUEST_FAIL: ${e.message}")
                 null
             }
+            // Implied-EV v1.2: keys only for an explicit Paper poll with the experiment enabled (default off).
+            val evMode = EvExperiment.mode(prefs)
+            val evApplied = try {
+                EvExperiment.applyContext(ctxObj, evMode, ctxObj.optString("executionMode", ""), filesDir,
+                    System.currentTimeMillis(), evNfChainFetchedAtMs.takeIf { it > 0L },
+                    prefs.getString(EvExperiment.PREF_CALIBRATION, null), BuildConfig.VERSION_NAME)
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "EV12_CTX_FAIL: ${e.message}"); false
+            }
+            if (evApplied) evRefreshCalibrationIfDue(System.currentTimeMillis())
             brainAnalyzeStartedAtMs = System.currentTimeMillis()
             val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",
@@ -2744,6 +2754,20 @@ class MarketWatchService : Service() {
                 // broadcasts or snapshots the result; it is persisted only through its own path.
                 val paperDecisionMenu = resultObj.optJSONObject("paper_decision_menu")
                 resultObj.remove("paper_decision_menu")
+                // Implied-EV v1.2: envelopes/outcomes leave the result here (exact bytes -> outbox); only the
+                // small recommendation view stays for the PWA.
+                if (resultObj.has(EvExperiment.RESULT_KEY)) {
+                    try {
+                        val det = EvExperiment.detach(resultObj, EvExperiment.outboxDir(filesDir), System.currentTimeMillis())
+                        val view = det.view
+                        LogBuffer.add('I', TAG, "EV12_RESULT: status=${view?.optString("status")} " +
+                            "wait=${view?.optString("wait_reason")} queued=${det.queued}")
+                        launchEvUploadIfPending()
+                    } catch (e: Exception) {
+                        resultObj.remove(EvExperiment.RESULT_KEY)
+                        LogBuffer.add('W', TAG, "EV12_DETACH_FAIL: ${e.message}")
+                    }
+                }
                 LogBuffer.add(
                     'I',
                     TAG,
@@ -3274,6 +3298,53 @@ class MarketWatchService : Service() {
     // ---------------------------------------------------------------------------------------------
     private val paperMenuStateLock = Any()
     private val paperMenuUploadInFlight = AtomicBoolean(false)
+
+    // ---------------- Implied-EV v1.2 Paper experiment (off by default; Paper only) ----------------
+    /** Completion time of the NF chain fetch: the quote timestamp (Upstox gives no per-contract time). */
+    @Volatile private var evNfChainFetchedAtMs: Long = 0L
+    private val evUploadInFlight = AtomicBoolean(false)
+    private val evCalibrationInFlight = AtomicBoolean(false)
+
+    private fun evRefreshCalibrationIfDue(nowMs: Long) {
+        val last = prefs.getLong(EvExperiment.PREF_CALIBRATION_FETCHED_MS, 0L)
+        if (nowMs - last < EvExperiment.CALIBRATION_REFRESH_MS) return
+        if (!evCalibrationInFlight.compareAndSet(false, true)) return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val pub = SupabaseClient.fetchEvCalibration()
+                val ed = prefs.edit().putLong(EvExperiment.PREF_CALIBRATION_FETCHED_MS, System.currentTimeMillis())
+                if (pub != null) ed.putString(EvExperiment.PREF_CALIBRATION, pub)
+                ed.apply()
+                LogBuffer.add(if (pub != null) 'I' else 'W', TAG, "EV12_CALIBRATION_FETCH: found=${pub != null}")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "EV12_CALIBRATION_FETCH_FAIL: ${e.message}")
+            } finally {
+                evCalibrationInFlight.set(false)
+            }
+        }
+    }
+
+    private fun launchEvUploadIfPending() {
+        val dir = EvExperiment.outboxDir(filesDir)
+        if (!dir.isDirectory) return
+        if (!evUploadInFlight.compareAndSet(false, true)) return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val key = paperMenuDeviceKey()
+                val r = EvTelemetryOutbox.drain(dir, System.currentTimeMillis()) { e ->
+                    if (key == null) null
+                    else if (e.kind == EvTelemetryOutbox.KIND_DECISION) SupabaseClient.evSubmitDecision(key, e.text)
+                    else SupabaseClient.evSubmitOutcome(key, e.id, e.text)
+                }
+                LogBuffer.add(if (r.retry == 0 && r.conflicts == 0) 'I' else 'W', TAG,
+                    "EV12_OUTBOX: attempted=${r.attempted} acked=${r.acked} retry=${r.retry} conflicts=${r.conflicts} dropped=${r.dropped}")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "EV12_OUTBOX_FAIL: ${e.message}")
+            } finally {
+                evUploadInFlight.set(false)
+            }
+        }
+    }
 
     private fun loadPaperMenuState(): JSONObject = synchronized(paperMenuStateLock) {
         PaperMenuCapture.stateFor(prefs.getString(PAPER_MENU_STATE_KEY, null), todayIstDate())
