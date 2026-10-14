@@ -104,6 +104,48 @@ jobs:
               test_ev_v12_integration.BrainAnalyze test_ev_v12_review_r3 test_ev_v12_review_r4
           done
 
+      # b506 (Codex option A): execute the REAL injected window.NativeBridge facade (extracted from MainActivity.kt)
+      # against an AndroidBridge spy (coverage 22/22 + forwarding contract + lifecycle), then the paired MarketVivi
+      # PWA chain (AndroidBridge only -> real facade -> real app.js EV code).
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: EV bridge facade tests (real MainActivity wrapper source)
+        run: |
+          set -o pipefail
+          node --test tools/bridge_facade/test_native_bridge_facade.mjs | tee /tmp/facade.log
+          grep -q '22/22 ev methods exported by the real facade' /tmp/facade.log
+          grep -q '22/22 ev methods correctly forwarded through the real facade' /tmp/facade.log
+          grep -q '^# fail 0' /tmp/facade.log
+
+      - name: Resolve paired MarketVivi ref
+        id: pair
+        run: |
+          ref="${{ github.head_ref || github.ref_name }}"
+          if git ls-remote --exit-code --heads https://github.com/vivekashokan007-cloud/MarketVivi.git "$ref" >/dev/null; then
+            echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout paired MarketVivi (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: vivekashokan007-cloud/MarketVivi
+          ref: ${{ steps.pair.outputs.ref }}
+          path: _marketvivi
+          persist-credentials: false
+
+      - name: EV PWA chain through the real facade (AndroidBridge only)
+        run: |
+          set -o pipefail
+          (cd _marketvivi && git rev-parse HEAD)
+          MARKETAPP_DIR="$PWD" node --test _marketvivi/tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
+          grep -q '^# pass 5' /tmp/chain.log
+          grep -q '^# fail 0' /tmp/chain.log
+
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
