@@ -14,7 +14,11 @@ import java.io.File
 object EvExperiment {
     const val PREF_MODE = "ev_experiment_mode"           // off | observe | active (default off)
     const val PREF_CALIBRATION = "ev_calibration_cache"  // last fetched publication (validated by Python)
+    /** Last fetch ATTEMPT (updated even when the fetch returned nothing): never proof of a successful refresh. */
     const val PREF_CALIBRATION_FETCHED_MS = "ev_calibration_fetched_ms"
+    /** 2.6.74: time a fetched row was actually stored into the cache (written only when a row was returned). */
+    const val PREF_CALIBRATION_STORED_MS = "ev_calibration_stored_ms"
+    const val STATUS_SCHEMA = "ev_native_status_v1"
     const val CALIBRATION_REFRESH_MS = 30L * 60 * 1000
     const val RESULT_KEY = "implied_ev_v12"
 
@@ -22,6 +26,102 @@ object EvExperiment {
         when ((prefs.getString(PREF_MODE, "off") ?: "off").trim().lowercase()) {
             "observe" -> "observe"; "active" -> "active"; else -> "off"
         }
+
+    /** Off and Observe may be selected in this batch; Active entry awaits its separate acceptance stage. */
+    val SELECTABLE_MODES = setOf("off", "observe")
+
+    /** Only a refresh for a poll the experiment actually applied to (Paper and not Off), on the existing cadence. */
+    fun shouldRefreshCalibration(applied: Boolean, nowMs: Long, lastAttemptMs: Long): Boolean =
+        applied && nowMs - lastAttemptMs >= CALIBRATION_REFRESH_MS
+
+    const val SET_ACK_SCHEMA = "ev_set_ack_v1"
+
+    /**
+     * Outcome of an explicit change. ok only when persistence succeeded (commit() == true) AND the authoritative
+     * readback equals the request. persisted is the commit() result (null when no write was attempted).
+     * inMemoryChanged reports a visible transition even when persistence failed (it may revert after a restart);
+     * no rollback is attempted or claimed.
+     */
+    data class SetResult(val mode: String, val written: Boolean, val reason: String, val previous: String = mode,
+                         val persisted: Boolean? = null, val inMemoryChanged: Boolean = false) {
+        fun toAck(requested: String): JSONObject = JSONObject()
+            .put("schema", SET_ACK_SCHEMA)
+            .put("ok", written)
+            .put("reason", reason)
+            .put("requested", if (requested in SELECTABLE_MODES || requested == "active") requested else JSONObject.NULL)
+            .put("previous_mode", previous)
+            .put("effective_mode", mode)
+            .put("persisted", persisted ?: JSONObject.NULL)
+            .put("in_memory_changed", inMemoryChanged)
+    }
+
+    /**
+     * Explicit user change. Native authority: refused unless the execution mode is Paper; Active cannot be newly
+     * entered (an existing Active value is left as is, never silently rewritten). Unrecognized requests are refused.
+     * A failed or thrown commit() is PREFERENCE_WRITE_FAILED even if the in-memory readback matches.
+     */
+    fun setMode(prefs: SharedPreferences, requested: String, executionMode: String): SetResult {
+        val cur = mode(prefs)
+        val req = requested.trim().lowercase()
+        if (!ExecutionModeResolver.isPaper(executionMode)) return SetResult(cur, false, "NOT_PAPER")
+        if (req !in SELECTABLE_MODES) return SetResult(cur, false, if (req == "active") "ACTIVE_NOT_ENABLED" else "INVALID_MODE")
+        val committed = try { prefs.edit().putString(PREF_MODE, req).commit() } catch (e: Exception) { false }
+        val back = mode(prefs)
+        val changed = back != cur
+        return when {
+            !committed -> SetResult(back, false, "PREFERENCE_WRITE_FAILED", cur, false, changed)
+            back != req -> SetResult(back, false, "READBACK_MISMATCH", cur, true, changed)
+            else -> SetResult(back, true, "OK", cur, true, changed)
+        }
+    }
+
+    private val SAFE = Regex("^[A-Za-z0-9_.:+\\-]{1,96}$")
+    private fun safe(v: Any?): Any = if (v is String && SAFE.matches(v)) v else JSONObject.NULL
+
+    /**
+     * Bounded read-only status (2.6.74): the persisted preference, the native execution mode, cache presence and
+     * the cached publication's version/available_at, the last fetch ATTEMPT and the last cache store time.
+     * Never returns the publication body, quotes, keys or credentials. Native does not validate the publication:
+     * validation is the brain's (Python) result for a poll.
+     */
+    fun status(prefs: SharedPreferences, executionMode: String, appVersion: String): JSONObject {
+        val raw = prefs.getString(PREF_MODE, null)
+        val m = mode(prefs)
+        val stored = when {
+            raw == null -> "UNSET"
+            raw.trim().lowercase() in setOf("off", "observe", "active") -> "RECOGNIZED"
+            else -> "UNRECOGNIZED"
+        }
+        val cache = prefs.getString(PREF_CALIBRATION, null)
+        var parse = "ABSENT"; var ver: Any = JSONObject.NULL; var avail: Any = JSONObject.NULL
+        if (!cache.isNullOrBlank()) {
+            try {
+                val o = JSONObject(cache)
+                ver = safe(o.opt("calibration_version")); avail = safe(o.opt("available_at"))
+                parse = if (ver == JSONObject.NULL) "UNREADABLE" else "PARSED"
+            } catch (e: Exception) { parse = "UNREADABLE" }
+        }
+        val attempt = prefs.getLong(PREF_CALIBRATION_FETCHED_MS, 0L)
+        val storedMs = prefs.getLong(PREF_CALIBRATION_STORED_MS, 0L)
+        val exec = executionMode.trim().lowercase().ifBlank { "unknown" }
+        return JSONObject()
+            .put("schema", STATUS_SCHEMA)
+            .put("mode", m)
+            .put("mode_stored", stored)
+            .put("execution_mode", exec)
+            .put("experiment_applies", ExecutionModeResolver.isPaper(executionMode) && m != "off")
+            .put("selectable_modes", org.json.JSONArray(SELECTABLE_MODES.toList()))
+            .put("can_change", ExecutionModeResolver.isPaper(executionMode))
+            .put("cache_present", parse != "ABSENT")
+            .put("cache_parse", parse)
+            .put("cached_calibration_version", ver)
+            .put("cached_available_at", avail)
+            .put("last_fetch_attempt_ms", if (attempt > 0) attempt else JSONObject.NULL)
+            .put("cache_stored_ms", if (storedMs > 0) storedMs else JSONObject.NULL)
+            .put("fetch_success_recorded", storedMs > 0)
+            .put("native_validation", "NOT_PERFORMED")
+            .put("app_version", safe(appVersion))
+    }
 
     fun stateDir(filesDir: File) = File(filesDir, "ev_v12")
     fun outboxDir(filesDir: File) = File(filesDir, "ev_v12_outbox")
