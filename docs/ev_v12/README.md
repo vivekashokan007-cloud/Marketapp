@@ -146,3 +146,19 @@ not modified; the only v7-adjacent change is that Rule B experiment trades are e
   (`tau_basis=DECISION_TO_ACTUAL_EXIT`); missing times → `EXIT_OR_ORIGIN_TIME_MISSING`, calendar failure →
   `CALENDAR_UNAVAILABLE`.
 * Tests: `tests/test_ev_v12_review_r4.py`, `EvV12ReviewR4Test.kt`, MarketVivi `tests/test_ev_v12_review_r4.mjs`.
+
+## Rollout hold: builder RPC ACL + public-table RLS (14 Oct 2026)
+
+* Production finding: Supabase default privileges (`postgres` in `public`) grant EXECUTE on new functions directly to
+  anon/authenticated/service_role; the original migration only revoked from PUBLIC, so the four builder RPCs were
+  client-executable. Contained in production on 14 Oct 2026 (exact four-function REVOKE/GRANT, effective-privilege
+  verified: anon/authenticated false, service_role true, owner postgres; submit RPCs unchanged).
+* Follow-up migration `supabase/migrations/20261014071354_ev_v12_builder_acl_public_rls.sql` (created with
+  `supabase migration new`): the same idempotent ACL statements + RLS on `ev_decisions`, `ev_outcomes`,
+  `ev_calibration_published` with SELECT-only `USING (true)` policies for anon/authenticated (no write policies).
+* History mapping: source `20261013150000_ev_v12_paper_experiment.sql` (sha256
+  `fffa479c655bf5463a696265ceb036863a74be188c9d40123a90ba794190dcfa`) is recorded in production as version
+  `20261014064444` / `ev_v12_paper_experiment` (applied via MCP apply_migration). Not rewritten or replayed.
+* Tests: `EV_SUITE_PROFILE=baseline|supabase` for `tools/ev_db_suite/suite.py` and `rest_suite.py`; the supabase
+  profile emulates the default privileges before the migrations, reproduces the leak with the original migration
+  alone, and proves the follow-up (applied twice) refuses it with unrelated ACLs/policies unchanged.

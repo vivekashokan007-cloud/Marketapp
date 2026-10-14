@@ -116,14 +116,32 @@ jobs:
           PC2_SCRATCH_OK: '1'
         run: tools/pc2_db_suite/run.sh
 
-      - name: EV v1.2 scratch DB suite (migration, RLS, quotas, trade_uid index)
+      - name: EV v1.2 scratch DB suite (migration + builder ACL follow-up, RLS, quotas, trade_uid index; baseline profile)
         env:
           PGHOST: localhost
           PGPORT: '5432'
           PGUSER: postgres
           PGPASSWORD: postgres
           EV_SCRATCH_OK: '1'
-        run: tools/ev_db_suite/run.sh
+          EV_SUITE_PROFILE: baseline
+        run: |
+          set -o pipefail
+          tools/ev_db_suite/run.sh | tee /tmp/ev_baseline.log
+          grep -q 'follow-up applied (2)' /tmp/ev_baseline.log
+
+      - name: EV v1.2 scratch DB suite (Supabase default-privilege profile; leak reproduction + correction)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          EV_SCRATCH_OK: '1'
+          EV_SUITE_PROFILE: supabase
+        run: |
+          set -o pipefail
+          tools/ev_db_suite/run.sh | tee /tmp/ev_supabase.log
+          grep -q 'PASS  \[supabase\] original migration ALONE reproduces the leak' /tmp/ev_supabase.log
+          grep -q 'PASS  \[supabase\] follow-up applied (2)' /tmp/ev_supabase.log
 
       - name: EV v1.2 PostgREST HTTP contract suite (scratch only)
         env:
@@ -134,9 +152,12 @@ jobs:
           EV_SCRATCH_OK: '1'
           EV_REST_REQUIRED: '1'
         run: |
+          set -o pipefail
           curl -fsSL -o /tmp/pgrst.tar.xz https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
           tar -xJf /tmp/pgrst.tar.xz -C /tmp
-          EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py
+          EV_SUITE_PROFILE=baseline EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py
+          EV_SUITE_PROFILE=supabase EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py | tee /tmp/rest_supabase.log
+          grep -q 'PASS  \[supabase\] REST ev_builder_seed as authenticated -> HTTP 403 42501' /tmp/rest_supabase.log
 
       - name: Confirm publication artifacts were not built
         run: |
