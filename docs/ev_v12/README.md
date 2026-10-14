@@ -43,8 +43,10 @@ not modified; the only v7-adjacent change is that Rule B experiment trades are e
   decision_id ↔ business_sha256 prefix.
 
 ## Storage (supersedes the 13 Oct figures; SQL header of the migration is the contract)
-* Payload sizes (fixtures): decision envelope ≈ 6.7 KB (≤ 24 KiB protocol cap); outcome ≈ 0.7–3.1 KB (≤ 4 KiB cap,
-  now including the C4 pricing diagnostic); publication ≈ 1.1 KB/week; observation ≈ 760 B (≈ 4/week).
+* Payload sizes (fixtures): decision envelope ≈ 6.7 KB (≤ 24 KiB protocol cap); outcome ≤ 4096 B always (hard cap, never raised): a
+  full matrix (engine pick + 4-leg v7 comparator + 6 G3 samples, TP and SL first-hits, managed close, pricing
+  diagnostic) is ≈ 4.1 KB uncompacted and is brought under the cap by the D3 staged compaction (≈ 3.8 KB, level 3);
+  the earlier "0.7–3.1 KB" figure covered small fixtures only; publication ≈ 1.1 KB/week; observation ≈ 760 B (≈ 4/week).
 * **Accounted server budget (declared revision, R7):** every phone-written row is charged to ONE IST receipt-day
   ledger: ≤ 32 KiB accounted bytes AND ≤ 24 counted rows per receipt day; within it ≤ 28 KiB payload and 4 payload rows
   per decision session. Quota bookkeeping rows (1 receipt row/day + ≤ 1 session row per write) are separate and pruned
@@ -124,3 +126,23 @@ not modified; the only v7-adjacent change is that Rule B experiment trades are e
 - **C5 parity determinism:** the brain parity test fixes the existing PC2 directional-shadow diagnostic budget
   (never-abort and immediate-abort passes) instead of depending on wall-clock load; the production 150 ms budget is
   asserted unchanged.
+
+## Re-review D1–D4 corrections (14 Oct 2026, still 2.6.73 / b504)
+
+* **D1 atomic manual intent.** `RuleBFillLedger.manualCloseRequest` validates the frozen patch (≤ 16 KiB, JSON,
+  `status=CLOSED`) and records the manual intent and its patch in one save; a refusal records nothing. A legacy
+  patchless `MANUAL_CLOSED`/`manual_pending` entry is now offered by `pending()`; the PWA reconciles it against the
+  remote row (remote OPEN → `abandonUnjournaledManual` restores OPEN / LATE_EXIT_PENDING, no fill is invented).
+  `RuleBExitPolicy.step` (and `rule_b_exit_step`) route MANUAL_CLOSED → NONE and any unknown state →
+  `STATE_UNKNOWN_FAIL_CLOSED`; they never throw.
+* **D2 canonical close evidence.** The close digest (`ev12close2:` FNV-1a 64 over canonical sorted-key JSON) covers
+  writer, decision, uid, status, exit reason, exit_date, gross, net and the Rule B fill kind/time/close value and
+  every leg (instrument_key, qty, price, bid, ask, quote_ts_ms). Proof and opposing-winner checks recompute it from
+  the STORED fields; only key order and numeric/timestamp representation are normalized.
+* **D3 bounded outcome.** `build_outcome` applies deterministic stages (`OUTCOME_COMPACTION_STAGES`) until the
+  outcome fits 4096 B and records `compaction {v, level, dropped}`; every field the report reads is kept, and the
+  report counts compaction levels (`G1.outcome_compaction`).
+* **D4 horizon tau.** The pricing diagnostic uses `cal.tau(decision poll, actual Rule B exit poll, expiry)`
+  (`tau_basis=DECISION_TO_ACTUAL_EXIT`); missing times → `EXIT_OR_ORIGIN_TIME_MISSING`, calendar failure →
+  `CALENDAR_UNAVAILABLE`.
+* Tests: `tests/test_ev_v12_review_r4.py`, `EvV12ReviewR4Test.kt`, MarketVivi `tests/test_ev_v12_review_r4.mjs`.

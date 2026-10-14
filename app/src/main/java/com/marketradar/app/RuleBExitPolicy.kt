@@ -66,6 +66,9 @@ object RuleBExitPolicy {
         if (position.policyId != POLICY_ID) return Step(position.state, "NONE", "POLICY_UNKNOWN")
         var state = position.state ?: "OPEN"
         if (state == "EXIT_FILLED" || state == "UNRESOLVED") return Step(state, "NONE", "TERMINAL")
+        // Codex D1: explicit routing - a manual close owns the position; any other state fails closed (no throw)
+        if (state == "MANUAL_CLOSED") return Step(state, "NONE", "MANUAL_CLOSED")
+        if (state != "OPEN" && state != "LATE_EXIT_PENDING") return Step(state, "NONE", "STATE_UNKNOWN_FAIL_CLOSED")
         val ts = OffsetDateTime.parse(tick.tsIso).withOffsetSameInstant(IST)
         val nowMs = ts.toInstant().toEpochMilli().toDouble() + ts.nano % 1_000_000 / 1e6
         val day = ts.toLocalDate()
@@ -103,7 +106,8 @@ object RuleBExitPolicy {
             fills.add(FillLeg(leg.instrumentKey, leg.qty, px, q.bid!!, q.ask!!, q.tsMs!!))
         }
         val close = fills.sumOf { it.qty * it.price }
-        return Step("EXIT_FILLED", "FILL", kind!!, Fill(kind, ts.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), fills, close))
+        val k = kind ?: return Step(state, "NONE", "STATE_UNKNOWN_FAIL_CLOSED")
+        return Step("EXIT_FILLED", "FILL", k, Fill(k, ts.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), fills, close))
     }
 
     // ---------- JSON adapters (shared vector format) ----------

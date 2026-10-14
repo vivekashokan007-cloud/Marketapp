@@ -455,7 +455,9 @@ def _init_trackers(state_dir, session_date, business, local, now_ms):
     doc = {"session_date": session_date, "expiry": business["expiry"],
            "planned_exit_session": business["planned_exit_session"], "decision_id": None,
            "trackers": trs, "created_ms": int(now_ms), "g4": business.get("g4"), "F_entry": business.get("F"),
-           "F_exit": None, "outcome": None, "v7_coverage": v7_cov}
+           "F_exit": None, "outcome": None, "v7_coverage": v7_cov,
+           # Codex D4: the decision origin of the horizon tau (the actual exit time is the Rule B fill poll)
+           "decision_poll_ms": int(business.get("decision_poll_ms") or now_ms)}
     return doc
 
 
@@ -602,18 +604,39 @@ def pricing_diagnostic(atoms, tau, legs, F_exit, quotes, exec_value_pts, contrac
     return out
 
 
-def _pick_pricing_diag(state_dir, doc, tr, q):
+def _pick_pricing_diag(state_dir, doc, tr, q, cal=None):
+    """Codex D4: the horizon tau runs from the decision poll to the ACTUAL tracker exit time (rule_b.ts, the poll
+    that froze the Rule B exit), not the planned 15:15 tau stored in the acceptance context."""
     slot = P.load_slot(state_dir, "NF", doc["session_date"]) or {}
     ac = slot.get("acceptance_context") or {}
     model = ac.get("model") or {}
+    rb = tr.get("rule_b") or {}
+    origin_ms = doc.get("decision_poll_ms")
+    if origin_ms is None:
+        origin_ms = ((slot.get("business") or {}).get("decision_poll_ms"))
+    exit_ts = rb.get("ts")
+    if not isinstance(origin_ms, (int, float)) or isinstance(origin_ms, bool) or not exit_ts:
+        return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": "EXIT_OR_ORIGIN_TIME_MISSING"}
+    try:
+        cal = cal or CAL.DEFAULT_CALENDAR
+        origin_dt = datetime.fromtimestamp(float(origin_ms) / 1000.0, CAL.IST)
+        exit_dt = datetime.fromisoformat(str(exit_ts))
+        if exit_dt.tzinfo is None:
+            exit_dt = exit_dt.replace(tzinfo=CAL.IST)
+        tau = cal.tau(origin_dt, exit_dt, doc["expiry"])
+    except Exception:   # noqa: BLE001 - diagnostic only, coverage is reported instead
+        return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": "CALENDAR_UNAVAILABLE"}
+    if tau is None or not (float(tau) > 0):
+        return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": "CALENDAR_UNAVAILABLE"}
     Fx = None
     try:
         Fx, _f, _s = M.parity_forward(q)
     except Exception:   # noqa: BLE001 - diagnostic only, coverage is reported instead
         Fx = None
-    rb = tr.get("rule_b") or {}
-    return pricing_diagnostic(model.get("atoms"), ac.get("tau"), tr["legs"], Fx, rb.get("quotes"), rb.get("mark_pts"),
-                              ac.get("contract_lot"), rb.get("exit_fee"))
+    out = pricing_diagnostic(model.get("atoms"), tau, tr["legs"], Fx, rb.get("quotes"), rb.get("mark_pts"),
+                             ac.get("contract_lot"), rb.get("exit_fee"))
+    out["tau_basis"] = "DECISION_TO_ACTUAL_EXIT"
+    return out
 
 
 def _local_fill(rec, rb):
@@ -660,6 +683,74 @@ def _tracker_summary(tr):
     return out
 
 
+# Codex D3: deterministic staged compaction keeping every outcome inside the 4096-byte cap (the cap is never raised).
+# Each stage removes only evidence DETAIL; every field the report reads (net, rule_b_status, tpsl_policy, structure,
+# entry.units, pricing residuals/status, accepted, g4_labels, F_entry/F_exit) is kept. The applied stages are recorded
+# in body["compaction"] as coverage metadata.
+OUTCOME_COMPACTION_VERSION = "ev_v12_outcome_compaction_v1"
+_EVENT_KEYS = ("tp_first", "sl_first", "managed_exit", "rule_b")
+
+
+def _cmp_events(body, keep, roles=None):
+    for c in body["components"]:
+        if roles and c.get("role") not in roles:
+            continue
+        for k in _EVENT_KEYS:
+            if isinstance(c.get(k), dict):
+                c[k] = {kk: v for kk, v in c[k].items() if kk in keep}
+
+
+def _cmp_pricing(body):
+    for c in body["components"]:
+        px = c.get("pricing_diag")
+        if isinstance(px, dict):
+            c["pricing_diag"] = {k: v for k, v in px.items() if k in (
+                "v", "status", "reason", "tau", "tau_basis", "model_price_residual_per_lot_rupees",
+                "execution_residual_per_lot_rupees", "exit_fee_rupees")}
+
+
+def _cmp_entry_legs(body):
+    for c in body["components"]:
+        if isinstance(c.get("entry"), dict):
+            c["entry"] = {k: v for k, v in c["entry"].items() if k != "legs"}
+
+
+def _cmp_essential(body):
+    keep = ("role", "structure", "rule_b", "rule_b_status", "tp_first", "sl_first", "managed_exit", "tpsl_policy",
+            "entry", "pricing_diag")
+    omitted = set()
+    for c in body["components"]:
+        omitted.update(k for k in c if k not in keep)
+        for k in list(c):
+            if k not in keep:
+                del c[k]
+        if isinstance(c.get("entry"), dict):
+            c["entry"] = {"units": c["entry"].get("units")}
+    _cmp_events(body, ("net",))
+    if isinstance(body.get("v7_coverage"), dict):
+        body["v7_coverage"] = {"status": body["v7_coverage"].get("status")}
+    body["components_omitted"] = sorted(omitted)
+
+
+OUTCOME_COMPACTION_STAGES = (
+    ("Q_TP_SL_MANAGED_G3", lambda b: _stage1(b)),
+    ("Q_ALL", lambda b: _cmp_events(b, ("ts", "net", "gross", "fee", "kind"))),
+    ("EVENT_DETAIL_G3", lambda b: _cmp_events(b, ("net", "kind"), roles=("G3_SAMPLE",))),
+    ("PRICING_DIAG_SUMMARY", _cmp_pricing),
+    ("ENTRY_LEGS", _cmp_entry_legs),
+    ("EVENT_DETAIL_ALL", lambda b: _cmp_events(b, ("net", "kind"))),
+    ("ESSENTIAL_ONLY", _cmp_essential),
+)
+
+
+def _stage1(body):
+    """The pre-D3 first stage (unchanged): quotes dropped from TP/SL/managed evidence and from G3 Rule B evidence."""
+    for c in body["components"]:
+        for k in ("tp_first", "sl_first", "managed_exit") + (("rule_b",) if c["role"] == "G3_SAMPLE" else ()):
+            if c.get(k):
+                c[k].pop("q", None)
+
+
 def build_outcome(doc, accepted, now_ms):
     body = {"schema": P.OUTCOME_SCHEMA, "decision_id": doc["decision_id"], "index": "NF",
             "session_date": doc["session_date"], "expiry": doc["expiry"],
@@ -670,12 +761,14 @@ def build_outcome(doc, accepted, now_ms):
             "threshold_basis": L.THRESHOLD_BASIS,
             "g4_labels": L.g4_labels(doc.get("g4") or [], doc.get("F_exit")) if doc.get("g4") else None}
     text = P.canon(body)
-    if len(text.encode("utf-8")) > P.MAX_OUTCOME_BYTES:
-        for c in body["components"]:
-            for k in ("tp_first", "sl_first", "managed_exit") + (("rule_b",) if c["role"] == "G3_SAMPLE" else ()):
-                if c.get(k):
-                    c[k].pop("q", None)
-        body["truncated"] = "QUOTES_DROPPED_FROM_TP_SL_AND_SAMPLE_EVIDENCE"
+    dropped = []
+    for name, stage in OUTCOME_COMPACTION_STAGES:
+        if len(text.encode("utf-8")) <= P.MAX_OUTCOME_BYTES:
+            break
+        stage(body)
+        dropped.append(name)
+        body["compaction"] = {"v": OUTCOME_COMPACTION_VERSION, "level": len(dropped), "dropped": list(dropped)}
+        body["truncated"] = "+".join(dropped)
         text = P.canon(body)
     if len(text.encode("utf-8")) > P.MAX_OUTCOME_BYTES:
         raise P.CanonError("OUTCOME_OVERSIZE")
@@ -711,7 +804,7 @@ def step_trackers(state_dir, ctx, now_ms, cal, open_trades, closed_trades):
                 had = tr.get("rule_b") is not None
                 L.tracker_step(tr, q, now_dt, doc["planned_exit_session"], doc["expiry"], doc["session_date"])
                 if tr["role"] == "ENGINE_PICK" and not had and tr.get("rule_b") is not None:
-                    tr["pricing_diag"] = _pick_pricing_diag(state_dir, doc, tr, q)   # same poll as the fill
+                    tr["pricing_diag"] = _pick_pricing_diag(state_dir, doc, tr, q, cal)   # same poll as the fill
             secs = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
             if now_dt.date().isoformat() == doc["planned_exit_session"] and 15 * 3600 + 15 * 60 <= secs < 15 * 3600 + 28 * 60 \
                     and doc.get("F_exit") is None:

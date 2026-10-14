@@ -111,7 +111,9 @@ object RuleBFillLedger {
             val e = trades.optJSONObject(k) ?: continue
             val st = e.optString("state")
             if (st in setOf("EXIT_FILLED", "UNRESOLVED") && e.optString("delivery") !in DELIVERED) out.put(e)
-            else if (st == "MANUAL_CLOSED" && e.optString("delivery") == MANUAL_PENDING && e.has("manual_patch")) out.put(e)
+            // Codex D1: a MANUAL_PENDING intent is ALWAYS offered (with or without patch); a patchless one is
+            // reconciled by the PWA (remote OPEN -> abandonUnjournaledManual), never left undiscoverable.
+            else if (st == "MANUAL_CLOSED" && e.optString("delivery") == MANUAL_PENDING) out.put(e)
         }
         return out
     }
@@ -161,11 +163,84 @@ object RuleBFillLedger {
     }
 
     /**
-     * The user closed a Rule B trade manually (Codex C2). Before any Rule B terminal state: MANUAL_CLOSED with
-     * delivery MANUAL_PENDING (Rule B stops; the remote write is NOT yet proven). If a Rule B fill is terminal but
-     * undelivered, both writers compete (manual_pending=true) and the conditional remote update decides. If the
-     * Rule B close is already remote-confirmed, the manual writer must not write at all.
+     * Codex D1: ONE durable transaction for a manual close of a Rule B trade. Validates the complete frozen manual
+     * patch FIRST (size / JSON / object), then - in a single save under the ledger lock - records the manual intent
+     * AND its retry patch. A refused patch changes nothing (Rule B keeps the position). Results:
+     *   MANUAL_PENDING                    new MANUAL_CLOSED intent with its journaled patch (Rule B stops)
+     *   RULE_B_TERMINAL_PENDING_DELIVERY  a frozen Rule B fill is undelivered: both writers compete (fill preserved)
+     *   ALREADY_JOURNALED / JOURNALED_PATCH_DIFFERS  an earlier manual request exists (that one is retried)
+     *   RULE_B_ALREADY_CONFIRMED / ALREADY_MANUAL     nothing to write
+     *   REFUSED_OVERSIZE / REFUSED_INVALID_JSON       nothing recorded
      */
+    fun manualCloseRequest(dir: File, tradeId: String, decisionId: String?, patchJson: String, nowMs: Long): String =
+        synchronized(lock) {
+            if (patchJson.length > MAX_PATCH_CHARS) return "REFUSED_OVERSIZE"
+            val patch = try { JSONObject(patchJson) } catch (e: Exception) { return "REFUSED_INVALID_JSON" }
+            if (patch.optString("status") != "CLOSED") return "REFUSED_INVALID_JSON"
+            val doc = load(dir)
+            val trades = trades(doc)
+            val cur = trades.optJSONObject(tradeId)
+            val st = cur?.optString("state")
+            fun existing(e: JSONObject): String? = e.optJSONObject("manual_patch")?.let {
+                if (it.toString() == patch.toString()) "ALREADY_JOURNALED" else "JOURNALED_PATCH_DIFFERS" }
+            when (st) {
+                "MANUAL_CLOSED" -> {
+                    val cur = cur!!
+                    if (cur.optString("delivery") != MANUAL_PENDING) return "ALREADY_MANUAL"
+                    existing(cur)?.let { return it }
+                    // legacy patchless intent: journal now (same transaction)
+                    cur.put("manual_patch", patch).put("manual_journaled_ms", nowMs)
+                    save(dir, doc); return MANUAL_PENDING
+                }
+                "EXIT_FILLED", "UNRESOLVED" -> {
+                    val cur = cur!!
+                    val d = cur.optString("delivery")
+                    if (d == MANUAL_CLOSE_CONFLICT) return "ALREADY_MANUAL"
+                    if (d == REMOTE_CONFIRMED && st == "EXIT_FILLED") return "RULE_B_ALREADY_CONFIRMED"
+                    existing(cur)?.let { return it }
+                    cur.put("manual_pending", true).put("manual_close_seen_ms", nowMs)
+                        .put("manual_patch", patch).put("manual_journaled_ms", nowMs)
+                    save(dir, doc); return "RULE_B_TERMINAL_PENDING_DELIVERY"
+                }
+            }
+            val e = JSONObject().put("trade_id", tradeId).put("decision_id", decisionId ?: JSONObject.NULL)
+                .put("policy_id", RuleBExitPolicy.POLICY_ID).put("state", "MANUAL_CLOSED").put("reason", "USER_MANUAL_CLOSE")
+                .put("recorded_at_ms", nowMs).put("delivery", MANUAL_PENDING).put("delivery_updated_ms", nowMs)
+                .put("manual_patch", patch).put("manual_journaled_ms", nowMs)
+            cur?.optLong("late_since_ms", 0L)?.takeIf { it > 0 }?.let { e.put("late_since_ms", it) }
+            trades.put(tradeId, e)
+            prune(trades, nowMs)
+            save(dir, doc)
+            return MANUAL_PENDING
+        }
+
+    /**
+     * Codex D1: reconcile a PATCHLESS manual intent (written by the pre-D1 two-call sequence, interrupted before
+     * journaling). The remote row was read back OPEN, so no manual close landed: the intent is withdrawn and Rule B
+     * owns the position again (no old executable fill is ever invented). A frozen Rule B fill is kept untouched.
+     */
+    fun abandonUnjournaledManual(dir: File, tradeId: String, nowMs: Long): String = synchronized(lock) {
+        val doc = load(dir)
+        val trades = trades(doc)
+        val e = trades.optJSONObject(tradeId) ?: return "UNKNOWN_TRADE"
+        if (e.has("manual_patch")) return "JOURNALED_NOT_ABANDONED"
+        when {
+            e.optString("state") == "MANUAL_CLOSED" && e.optString("delivery") == MANUAL_PENDING -> {
+                val restored = JSONObject().put("trade_id", tradeId).put("decision_id", e.opt("decision_id"))
+                    .put("policy_id", RuleBExitPolicy.POLICY_ID)
+                    .put("state", if (e.optLong("late_since_ms", 0L) > 0) "LATE_EXIT_PENDING" else "OPEN")
+                    .put("reason", "MANUAL_INTENT_UNJOURNALED_WITHDRAWN").put("recorded_at_ms", nowMs)
+                e.optLong("late_since_ms", 0L).takeIf { it > 0 }?.let { restored.put("late_since_ms", it) }
+                trades.put(tradeId, restored)
+            }
+            e.optBoolean("manual_pending") -> e.remove("manual_pending")
+            else -> return "NOTHING_TO_ABANDON"
+        }
+        save(dir, doc)
+        return "WITHDRAWN"
+    }
+
+    /** Legacy entry point kept for the pre-D1 bridge; prefer [manualCloseRequest]. */
     fun noteManualClose(dir: File, tradeId: String, decisionId: String?, nowMs: Long): String = synchronized(lock) {
         val doc = load(dir)
         val trades = trades(doc)
@@ -174,10 +249,7 @@ object RuleBFillLedger {
         if (st == "MANUAL_CLOSED") return if (cur!!.optString("delivery") == MANUAL_PENDING) MANUAL_PENDING else "ALREADY_MANUAL"
         if (st == "EXIT_FILLED" || st == "UNRESOLVED") {
             when (cur!!.optString("delivery")) {
-                REMOTE_CONFIRMED -> return if (st == "EXIT_FILLED") "RULE_B_ALREADY_CONFIRMED" else {
-                    // UNRESOLVED stays OPEN remotely (manual review): the manual close is the resolution
-                    cur.put("manual_pending", true).put("manual_close_seen_ms", nowMs); save(dir, doc); "RULE_B_TERMINAL_PENDING_DELIVERY"
-                }
+                REMOTE_CONFIRMED -> if (st == "EXIT_FILLED") return "RULE_B_ALREADY_CONFIRMED"
                 MANUAL_CLOSE_CONFLICT -> return "ALREADY_MANUAL"
             }
             cur.put("manual_pending", true).put("manual_close_seen_ms", nowMs)

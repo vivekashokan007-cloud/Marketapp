@@ -82,6 +82,10 @@ def rule_b_exit_step(position, tick, cal=None):
     state = position.get("state") or "OPEN"
     if state in ("EXIT_FILLED", "UNRESOLVED"):
         return {"state": state, "action": "NONE", "reason": "TERMINAL"}
+    if state == "MANUAL_CLOSED":   # Codex D1: the user's manual close owns the position; Rule B never fills
+        return {"state": state, "action": "NONE", "reason": "MANUAL_CLOSED"}
+    if state not in ("OPEN", "LATE_EXIT_PENDING"):
+        return {"state": state, "action": "NONE", "reason": "STATE_UNKNOWN_FAIL_CLOSED"}
     ts = datetime.fromisoformat(tick["ts_iso"]).astimezone(CAL.IST)
     now_ms = ts.timestamp() * 1000.0
     day = ts.date()

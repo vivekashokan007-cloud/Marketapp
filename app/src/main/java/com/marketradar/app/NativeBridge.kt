@@ -2690,6 +2690,17 @@ class NativeBridge(private val context: Context) {
         RuleBFillLedger.noteManualClose(EvExperiment.stateDir(context.filesDir), tradeId.trim(),
             decisionId.trim().ifBlank { null }, System.currentTimeMillis())
 
+    /** Codex D1: manual intent + its complete frozen retry patch in ONE durable transaction. */
+    @JavascriptInterface
+    fun evManualCloseRequest(tradeId: String, decisionId: String, patchJson: String): String =
+        RuleBFillLedger.manualCloseRequest(EvExperiment.stateDir(context.filesDir), tradeId.trim(),
+            decisionId.trim().ifBlank { null }, patchJson, System.currentTimeMillis())
+
+    /** Codex D1: withdraw a patchless (pre-D1, interrupted) manual intent after the remote row was read back OPEN. */
+    @JavascriptInterface
+    fun evManualIntentAbandon(tradeId: String): String =
+        RuleBFillLedger.abandonUnjournaledManual(EvExperiment.stateDir(context.filesDir), tradeId.trim(), System.currentTimeMillis())
+
     /** Codex C2: journal the exact manual close patch before the conditional remote write. */
     @JavascriptInterface
     fun evManualCloseJournal(tradeId: String, patchJson: String): String =

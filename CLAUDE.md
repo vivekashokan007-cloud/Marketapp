@@ -268,3 +268,6 @@ See docs/ev_v12/README.md "Review R2 corrections": native-owned acceptance (EvAc
 
 ### Implied-EV v1.2 re-review C1–C5 (14 Oct 2026)
 See docs/ev_v12/README.md "Re-review C1–C5 corrections": accepted outcome stays PENDING_ARBITRATION until remote proof (UNKNOWN_PENDING_ARBITRATION at the bounded timeout); manual and Rule B closes share one digest-proven conditional arbitration; PERSISTED acceptances are reconciled into native open_trades; durable acceptance-ledger quarantine; G5b forecast residual vs conditional pricing residual; checked FORWARD provenance; deterministic parity test.
+
+### Implied-EV v1.2 re-review D1–D4 (14 Oct 2026)
+See docs/ev_v12/README.md "Re-review D1–D4 corrections": atomic native manual close request (intent + patch in one save, refusal changes nothing, patchless legacy intent offered and withdrawn), RuleBExitPolicy.step never throws on MANUAL_CLOSED; canonical close-evidence digest; outcome ≤ 4096 B via staged compaction metadata; pricing diagnostic tau at the actual exit time.

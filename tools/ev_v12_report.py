@@ -150,7 +150,8 @@ def evaluate(envelopes, outcomes):
 
 
 def _cohort_report(items):
-    g1 = {"by_status": {}, "outcome_coverage": {}, "accepted_status": {}, "observations": {}}
+    g1 = {"by_status": {}, "outcome_coverage": {}, "accepted_status": {}, "observations": {},
+          "outcome_compaction": {}}
     obs = {"SCHEDULED_HYPOTHETICAL": [], "ACTUAL_ACCEPTED": [], "COMMON_RULE_B": [], "V7_HYPOTHETICAL_MANAGED": [],
            "ENGINE_TP_SL": []}
     g5_px = {"model_price_residual_per_lot_rupees": [], "execution_residual_per_lot_rupees": [],
@@ -167,6 +168,10 @@ def _cohort_report(items):
             g1["outcome_coverage"]["NO_OUTCOME_YET"] = g1["outcome_coverage"].get("NO_OUTCOME_YET", 0) + 1
             continue
         comps = out.get("components") or []
+        # Codex D3: compacted outcomes keep every field read below; the applied stages are reported as coverage
+        cmp_ = out.get("compaction") or {}
+        ck = "level_%s" % cmp_.get("level", 0)
+        g1["outcome_compaction"][ck] = g1["outcome_compaction"].get(ck, 0) + 1
         roles = {}
         for comp in comps:
             roles.setdefault(comp.get("role"), []).append(comp)

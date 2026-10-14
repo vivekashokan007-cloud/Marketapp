@@ -101,7 +101,7 @@ jobs:
         run: |
           for i in 1 2 3; do
             PYTHONPATH=app/src/main/python:app/src/main/python/tests python3 -m unittest \
-              test_ev_v12_integration.BrainAnalyze test_ev_v12_review_r3
+              test_ev_v12_integration.BrainAnalyze test_ev_v12_review_r3 test_ev_v12_review_r4
           done
 
       - name: Run complete Android unit suite

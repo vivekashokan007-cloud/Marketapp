@@ -152,7 +152,7 @@ class EvV12ReviewR2Test {
         assertEquals(RuleBFillLedger.MANUAL_PENDING, RuleBFillLedger.noteManualClose(dir, "t3", "d3", 1))
         assertFalse(RuleBFillLedger.record(dir, "t3", "d3", fillStep(), 2))     // Rule B never fills after a manual close
         assertEquals("MANUAL_CLOSED", RuleBFillLedger.stateOf(dir, "t3"))
-        assertEquals(0, RuleBFillLedger.pending(dir).length())                  // nothing journaled yet
+        assertEquals(1, RuleBFillLedger.pending(dir).length())                  // Codex D1: a patchless intent is offered for reconciliation, never hidden
         // racing fill: the conditional remote update decides
         RuleBFillLedger.record(dir, "t4", "d4", fillStep(), 3)
         assertEquals("RULE_B_TERMINAL_PENDING_DELIVERY", RuleBFillLedger.noteManualClose(dir, "t4", "d4", 4))
