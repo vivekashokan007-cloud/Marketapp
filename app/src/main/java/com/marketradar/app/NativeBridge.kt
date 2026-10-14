@@ -2588,6 +2588,19 @@ class NativeBridge(private val context: Context) {
         EvExperiment.setMode(prefs, mode, EvAcceptance.executionMode(prefs)).mode
     } catch (e: Exception) { EvExperiment.mode(prefs) }
 
+    /**
+     * 2.6.74 checked setter (Codex b505 R1): bounded acknowledgment (schema ev_set_ack_v1: ok, reason, requested,
+     * previous_mode, effective_mode, persisted, in_memory_changed). ok requires commit() success AND matching
+     * readback. No sensitive data.
+     */
+    @JavascriptInterface
+    fun evSetModeChecked(mode: String): String = try {
+        EvExperiment.setMode(prefs, mode, EvAcceptance.executionMode(prefs)).toAck(mode.trim().lowercase()).toString()
+    } catch (e: Exception) {
+        JSONObject().put("schema", EvExperiment.SET_ACK_SCHEMA).put("ok", false).put("reason", "SETTER_FAILED")
+            .put("effective_mode", try { EvExperiment.mode(prefs) } catch (x: Exception) { JSONObject.NULL }).toString()
+    }
+
     /** 2.6.74 read-only bounded EV status (schema ev_native_status_v1); no publication body, quotes or keys. */
     @JavascriptInterface
     fun evGetStatus(): String = try {

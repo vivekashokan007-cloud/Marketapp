@@ -34,20 +34,45 @@ object EvExperiment {
     fun shouldRefreshCalibration(applied: Boolean, nowMs: Long, lastAttemptMs: Long): Boolean =
         applied && nowMs - lastAttemptMs >= CALIBRATION_REFRESH_MS
 
-    data class SetResult(val mode: String, val written: Boolean, val reason: String)
+    const val SET_ACK_SCHEMA = "ev_set_ack_v1"
+
+    /**
+     * Outcome of an explicit change. ok only when persistence succeeded (commit() == true) AND the authoritative
+     * readback equals the request. persisted is the commit() result (null when no write was attempted).
+     * inMemoryChanged reports a visible transition even when persistence failed (it may revert after a restart);
+     * no rollback is attempted or claimed.
+     */
+    data class SetResult(val mode: String, val written: Boolean, val reason: String, val previous: String = mode,
+                         val persisted: Boolean? = null, val inMemoryChanged: Boolean = false) {
+        fun toAck(requested: String): JSONObject = JSONObject()
+            .put("schema", SET_ACK_SCHEMA)
+            .put("ok", written)
+            .put("reason", reason)
+            .put("requested", if (requested in SELECTABLE_MODES || requested == "active") requested else JSONObject.NULL)
+            .put("previous_mode", previous)
+            .put("effective_mode", mode)
+            .put("persisted", persisted ?: JSONObject.NULL)
+            .put("in_memory_changed", inMemoryChanged)
+    }
 
     /**
      * Explicit user change. Native authority: refused unless the execution mode is Paper; Active cannot be newly
      * entered (an existing Active value is left as is, never silently rewritten). Unrecognized requests are refused.
+     * A failed or thrown commit() is PREFERENCE_WRITE_FAILED even if the in-memory readback matches.
      */
     fun setMode(prefs: SharedPreferences, requested: String, executionMode: String): SetResult {
         val cur = mode(prefs)
         val req = requested.trim().lowercase()
         if (!ExecutionModeResolver.isPaper(executionMode)) return SetResult(cur, false, "NOT_PAPER")
         if (req !in SELECTABLE_MODES) return SetResult(cur, false, if (req == "active") "ACTIVE_NOT_ENABLED" else "INVALID_MODE")
-        prefs.edit().putString(PREF_MODE, req).commit()
+        val committed = try { prefs.edit().putString(PREF_MODE, req).commit() } catch (e: Exception) { false }
         val back = mode(prefs)
-        return SetResult(back, back == req, if (back == req) "OK" else "READBACK_MISMATCH")
+        val changed = back != cur
+        return when {
+            !committed -> SetResult(back, false, "PREFERENCE_WRITE_FAILED", cur, false, changed)
+            back != req -> SetResult(back, false, "READBACK_MISMATCH", cur, true, changed)
+            else -> SetResult(back, true, "OK", cur, true, changed)
+        }
     }
 
     private val SAFE = Regex("^[A-Za-z0-9_.:+\\-]{1,96}$")
