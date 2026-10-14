@@ -28,6 +28,7 @@ import ev_v12_calendar as CAL
 import ev_v12_calibration as CB
 import ev_v12_protocol as P
 import ev_v12_lifecycle as L
+import ev_v12_acceptance as A
 
 EXPERIMENT_ID = "nf_paper_implied_ev_v1_2"
 SOURCE_LABEL = "IMPLIED_EV_V12_EXPERIMENT"
@@ -38,6 +39,17 @@ TOP_OK = 8
 MAX_REJECTED_SAMPLE = 9
 KEEP_SLOT_SESSIONS = 10
 MAX_PENDING_ENVELOPES = 3
+# R5: declared bounded G3 cohort (frozen in the envelope at decision time)
+G3_COHORT_VERSION = "ev_v12_g3_cohort_v1"
+G3_COHORT_RULE = ("valid (status OK) candidates other than the pick, ranked by robust EV desc (risk, name tie-break): "
+                  "the first 3 with EV>0 and the first 3 with EV<=0; invalid/rejected candidates are counted only")
+G3_POS, G3_NONPOS = 3, 3
+# R4: an outcome waits for an authoritative accepted component at most this long after the expiry deadline
+ACCEPTED_MAX_WAIT_MS = 5 * 24 * 3600 * 1000
+# R7: an unfinished tracker older than this after its expiry is evicted (coverage recorded, never zero P&L)
+TRACKER_EVICT_AFTER_EXPIRY_DAYS = 20
+COVERAGE_FILE = "ev_coverage.json"
+MAX_COVERAGE_EVENTS = 50
 
 
 def _fmt_leg(l):
@@ -135,6 +147,8 @@ def _v7_comparator(result, ref, ctx_eval, expiry):
         out["status"] = "ENGINE_MODEL_UNAVAILABLE"
         return out, None
     r = ENG.evaluate_candidate(ref, "V7:" + str(cid)[:80], "V7", legs, **ctx_eval)
+    r["v7_type"] = cand.get("type")
+    out["managed_mode"] = "intraday" if cand.get("type") in L.INTRADAY_TYPES else "UNVERIFIED_TRADE_MODE"
     out["engine_status"] = r.get("status")
     if r.get("status") == "OK":
         out["engine_ev_robust"] = P.fx(r["ev_robust"], 2)
@@ -215,6 +229,45 @@ def _lot(session_date, expiry, chain):
                                             "lot_source": res.get("lot_source")}
 
 
+def g3_cohort(pick, ok_sorted):
+    others = [r for r in ok_sorted if not pick or r["name"] != pick["name"]]
+    pos = [r for r in others if r["ev_robust"] > 0][:G3_POS]
+    nonpos = [r for r in others if not r["ev_robust"] > 0][:G3_NONPOS]
+    return pos + nonpos
+
+
+def _g3_business(members, ok_sorted, records):
+    return {"version": G3_COHORT_VERSION, "rule": G3_COHORT_RULE, "n_valid": len(ok_sorted),
+            "n_valid_pos": sum(1 for r in ok_sorted if r["ev_robust"] > 0),
+            "n_invalid": sum(1 for r in records if r.get("status") != "OK"),
+            "members": [{"name": r["name"], "ev_robust": P.fx(r["ev_robust"], 2), "legs": [_fmt_leg(l) for l in r["legs"]],
+                         "entry_cash": P.fx(r["entry_cash_pts"], 2), "entry_fee": P.fx(r["entry_fee"], 2)}
+                        for r in members]}
+
+
+def executable_entry(ref, legs, units, entry_date):
+    """Entry cash/fee/structural bounds of signed legs at the decision book, independent of engine scoring
+    (R5: a v7 comparator rejected only by engine scoring keeps a comparable executable path)."""
+    q = ref["q"]
+    exe = {}
+    for n, K, cp in legs:
+        ba = q.get((float(K), "CE" if cp == 1 else "PE"))
+        if ba is None or ba[0] <= 0 or ba[1] < ba[0]:
+            return None, "V7_LEG_QUOTES_UNAVAILABLE"
+        exe[(K, cp)] = ba[1] if n > 0 else ba[0]
+    lo, hi = M.structural_range(legs)
+    if lo is None:
+        return None, "V7_UNBOUNDED"
+    entry_cash = -sum(n * exe[(K, cp)] for n, K, cp in legs)
+    try:
+        fee = FEES.one_side_fee(sum(abs(n) * exe[(K, cp)] for n, K, cp in legs if n < 0),
+                                sum(abs(n) * exe[(K, cp)] for n, K, cp in legs if n > 0), len(legs), units, entry_date)
+    except FEES.FeeUnavailable as e:
+        return None, "V7_" + str(e)
+    return {"entry_cash_pts": entry_cash, "entry_fee": fee, "structural_loss_pts": -(lo + entry_cash),
+            "structural_max_profit_pts": (None if hi is None else hi + entry_cash), "units": units}, "OK"
+
+
 def compute_decision(ctx, result, *, now_ms, session_date, expiry, ste, planned, cal, kset, cal_pub,
                      deadline=None):
     """Pure computation of one scheduled decision. Returns (status, business, local, timings)."""
@@ -283,6 +336,7 @@ def compute_decision(ctx, result, *, now_ms, session_date, expiry, ste, planned,
     ctx_eval.pop("deadline", None)
     v7, v7_rec = _v7_comparator(result, ref, ctx_eval, expiry)
     details = detail_records(pick, ok_sorted, records, kset)
+    g3 = g3_cohort(pick, ok_sorted)
     for d in details:
         if d["name"] in es:
             d["es5"] = P.fx(es[d["name"]], 2)
@@ -290,7 +344,7 @@ def compute_decision(ctx, result, *, now_ms, session_date, expiry, ste, planned,
                     candidates=details, v7_comparator=v7, es_status=es_status, g4_version=ENG.G4_VERSION,
                     g4=[{"c": P.fx(x["c"], 2), "threshold": P.fx(x["threshold"], 2), "p_engine": P.fx(x["p_engine"], 6),
                          "p_k1": P.fx(x["p_k1"], 6), "inversion": x["inversion"]} for x in g4],
-                    g4_k_engine=P.fx(k_central, 6))
+                    g4_k_engine=P.fx(k_central, 6), g3_cohort=_g3_business(g3, ok_sorted, records))
     if not by_status.get("OK"):
         status = "NO_ELIGIBLE"
     elif pick is None:
@@ -302,7 +356,8 @@ def compute_decision(ctx, result, *, now_ms, session_date, expiry, ste, planned,
         cal_days = (CAL._d(planned) - CAL._d(session_date)).days
         business["rate_sensitivity_diag_rupees"] = P.fx(ENG.rate_sensitivity(pick, cal_days), 2)
     business["status"] = status
-    local = {"ref": ref, "pick": pick, "v7": v7_rec, "lot": lot, "tau": tau, "kset": kset, "band_lim": band_lim}
+    local = {"ref": ref, "pick": pick, "v7": v7_rec, "v7_view": v7, "lot": lot, "tau": tau, "kset": kset,
+             "band_lim": band_lim, "g3": g3}
     return status, business, local, {"engine_ms": dl.elapsed_ms(), "engine_select_ms": engine_select_ms,
                                      "py_wall_ms": (time.perf_counter() - t_start) * 1000.0,
                                      "deadline_checks": dl.checks}
@@ -328,8 +383,9 @@ def acceptance_context(decision_id, business, local):
                       "band_lim": local["band_lim"]}}
 
 
-def recommendation_view(slot, now_ms, mode):
-    """What the PWA may show. Only an unexpired, unconsumed, active-mode DECIDED pick is actionable."""
+def recommendation_view(slot, now_ms, mode, state_dir=None):
+    """What the PWA may show. Only an unexpired, unconsumed, active-mode DECIDED pick is actionable. The acceptance
+    status comes from the authoritative acceptance ledger (R1), not from a cached view."""
     env = slot.get("envelope") or {}
     try:
         biz = json.loads(env.get("envelope_text") or "{}").get("business") or {}
@@ -339,7 +395,10 @@ def recommendation_view(slot, now_ms, mode):
             "decision_id": env.get("decision_id"), "status": biz.get("status") or slot.get("state"),
             "failure": biz.get("failure"), "mode": mode}
     pick = biz.get("pick")
-    acc = slot.get("acceptance") or {}
+    led = A.entry(state_dir, env.get("decision_id")) if (state_dir and env.get("decision_id")) else None
+    if led and led.get("state") == "RESERVED" and now_ms > int(led.get("confirm_by_ms") or 0):
+        led = None
+    acc_state = (led or {}).get("state") or ("COMMITTED" if slot.get("acceptance") else None)
     if pick:
         valid_until = pick.get("valid_until_ms")
         view["pick"] = {"structure": pick["name"], "family": pick["family"], "type": L.FAMILY_TYPE.get(pick["family"]),
@@ -349,10 +408,12 @@ def recommendation_view(slot, now_ms, mode):
                         "planned_exit_session": biz.get("planned_exit_session"), "expiry": biz.get("expiry"),
                         "calibration_version": biz.get("calibration_version"), "model_version": biz.get("model_version"),
                         "valid_until_ms": valid_until}
-        actionable = (mode == "active" and not acc and valid_until is not None and now_ms <= valid_until)
+        consumed = acc_state in ("COMMITTED", "PERSISTED", "CLOSED")
+        actionable = (mode == "active" and not consumed and valid_until is not None and now_ms <= valid_until)
         view["actionable"] = bool(actionable)
         view["expired"] = bool(valid_until is not None and now_ms > valid_until)
-        view["acceptance_status"] = acc.get("status")
+        view["acceptance_status"] = {"COMMITTED": "PENDING_SYNC", "PERSISTED": "ACCEPTED", "CLOSED": "CLOSED",
+                                     "RESERVED": "CONFIRMING"}.get(acc_state)
     else:
         view["actionable"] = False
     if biz.get("counts_by_status"):
@@ -366,20 +427,30 @@ def _tracker_path(state_dir, session_date):
 
 def _init_trackers(state_dir, session_date, business, local, now_ms):
     trs = []
-    units = local.get("lot")
     pick = local.get("pick")
     if pick is not None:
         trs.append(L.new_tracker("ENGINE_PICK", pick["name"], pick["legs"], pick["entry_cash_pts"], pick["units"],
                                  pick["entry_fee"], pick.get("structural_max_profit_pts"), pick["structural_loss_pts"],
-                                 "INFORMATIONAL_TP_SL"))
-    v7 = local.get("v7")
-    if v7 is not None and v7.get("status") in ("OK", "RISK_BUDGET_EXCEEDED") and "entry_fee" in v7:
-        trs.append(L.new_tracker("V7_COMPARATOR", v7["name"], v7["legs"], v7["entry_cash_pts"], v7["units"],
-                                 v7["entry_fee"], v7.get("structural_max_profit_pts"), v7["structural_loss_pts"],
-                                 "POSITION_POLICY_V1_INTRADAY"))
+                                 L.ENGINE_TPSL_POLICY))
+    v7v = local.get("v7_view") or {}
+    v7 = local.get("v7") or {}
+    v7_cov = {"status": v7v.get("status"), "engine_status": v7v.get("engine_status")}
+    if v7v.get("legs") and local.get("ref") is not None:
+        legs = [tuple(l) for l in v7v["legs"]]
+        ent, st = executable_entry(local["ref"], legs, int(local["lot"]), session_date)
+        v7_cov["path_status"] = st
+        if ent is not None:
+            trs.append(L.new_tracker("V7_COMPARATOR", v7.get("name") or ("V7:" + str(v7v.get("candidate_id"))[:60]),
+                                     legs, ent["entry_cash_pts"], ent["units"], ent["entry_fee"],
+                                     ent["structural_max_profit_pts"], ent["structural_loss_pts"],
+                                     L.MANAGED_V7_POLICY, managed_mode=v7v.get("managed_mode")))
+    for r in local.get("g3") or []:
+        trs.append(L.new_tracker("G3_SAMPLE", r["name"], r["legs"], r["entry_cash_pts"], r["units"], r["entry_fee"],
+                                 r.get("structural_max_profit_pts"), r["structural_loss_pts"], None, tpsl=False))
     doc = {"session_date": session_date, "expiry": business["expiry"],
            "planned_exit_session": business["planned_exit_session"], "decision_id": None,
-           "trackers": trs, "created_ms": int(now_ms), "g4": business.get("g4"), "F_exit": None, "outcome": None}
+           "trackers": trs, "created_ms": int(now_ms), "g4": business.get("g4"), "F_entry": business.get("F"),
+           "F_exit": None, "outcome": None, "v7_coverage": v7_cov}
     return doc
 
 
@@ -395,37 +466,113 @@ def _load_json(path):
         return None
 
 
-def _accepted_outcome(decision_id, open_trades, closed_trades):
-    def did(t):
-        es = t.get("entry_snapshot") if isinstance(t, dict) else None
-        if isinstance(es, str):
-            try:
-                es = json.loads(es)
-            except ValueError:
-                es = None
-        return (es or {}).get("ev_decision_id") if isinstance(es, dict) else None
-    for t in closed_trades or []:
-        if isinstance(t, dict) and did(t) == decision_id:
-            reason = str(t.get("exit_reason") or "")
-            kind = ("RULE_B_" + reason.split("RULE_B_")[-1]) if "RULE_B_" in reason else "MANUAL_EARLY_CLOSE"
-            return {"status": "CLOSED", "kind": kind, "net_pnl": P.fx(t.get("net_pnl"), 2) if t.get("net_pnl") is not None else None,
-                    "trade_id": str(t.get("id") or t.get("trade_id") or "")[:64]}
-    for t in open_trades or []:
-        if isinstance(t, dict) and did(t) == decision_id:
-            return {"status": "OPEN", "trade_id": str(t.get("id") or t.get("trade_id") or "")[:64]}
-    return {"status": "NOT_ACCEPTED"}
+def _snapshot(t):
+    es = t.get("entry_snapshot") if isinstance(t, dict) else None
+    if isinstance(es, str):
+        try:
+            es = json.loads(es)
+        except ValueError:
+            es = None
+    return es if isinstance(es, dict) else {}
+
+
+def rule_b_ledger_entry(state_dir, trade_id):
+    doc = _load_json(os.path.join(state_dir, "rule_b_ledger.json")) or {}
+    return ((doc.get("trades") or {}).get(str(trade_id))) if trade_id else None
+
+
+def _accepted_outcome(state_dir, decision_id, open_trades, closed_trades):
+    """R4: (accepted component, authoritative?). Joins on the authoritative acceptance ledger and the native Rule B
+    fill ledger (same state dir), not on a lossy closed-trade projection; computes net with ev_v12_fees."""
+    e = A.entry(state_dir, decision_id) if state_dir else None
+
+    def find(trades, uid):
+        for t in trades or []:
+            if isinstance(t, dict) and (_snapshot(t).get("ev_decision_id") == decision_id
+                                        or (uid and str(t.get("id") or t.get("trade_id") or "") == uid)):
+                return t
+        return None
+    uid = (e or {}).get("trade_uid")
+    row_id = (e or {}).get("trade_id")
+
+    def find2(trades):
+        hit = find(trades, row_id) if row_id else None
+        if hit is None:
+            for t in trades or []:
+                if isinstance(t, dict) and uid and _snapshot(t).get("ev_trade_uid") == uid:
+                    return t
+        return hit or find(trades, None)
+    closed = find2(closed_trades)
+    if not row_id:   # persisted but the PWA never reported it (crash): recover the row id from the uid-stamped row
+        hit = closed or next((t for t in open_trades or [] if isinstance(t, dict) and uid
+                              and _snapshot(t).get("ev_trade_uid") == uid), None)
+        row_id = str(hit.get("id") or "") if hit and hit.get("id") is not None else None
+    if e is None or e.get("state") == "RESERVED":
+        if closed is not None or find(open_trades, None) is not None:
+            return {"status": "ACCEPTED_LEDGER_MISSING", "evidence": "trade_identity_without_acceptance_ledger"}, False
+        return {"status": "NEVER_ACCEPTED"}, True
+    rec = e.get("record") or {}
+    base = {"trade_id": row_id, "trade_uid": uid, "accepted_at_ms": rec.get("accepted_at_ms"),
+            "entry_fee": P.fx(((rec.get("entry_fill") or {}).get("entry_fee")), 2)}
+    rb = rule_b_ledger_entry(state_dir, row_id) if row_id else None
+    if rb and (rb.get("state") == "MANUAL_CLOSED" or rb.get("delivery") == "MANUAL_CLOSE_CONFLICT"):
+        # the user closed it before (or racing) Rule B: the manual close is the accepted component
+        if closed is None:
+            return dict(base, status="MANUAL_EARLY_CLOSE", net_pnl=None,
+                        net_status="MANUAL_CLOSE_PENDING_PROJECTION"), False
+        net = closed.get("net_pnl")
+        return dict(base, status="MANUAL_EARLY_CLOSE", gross_pnl=P.fx(closed.get("actual_pnl"), 2),
+                    net_pnl=P.fx(net, 2) if isinstance(net, (int, float)) else None,
+                    net_status="RECORDED" if isinstance(net, (int, float)) else "MANUAL_CLOSE_NET_NOT_RECORDED"), True
+    if rb and rb.get("state") == "EXIT_FILLED" and rb.get("fill"):
+        kind = "PLANNED_CLOSE" if (rb["fill"].get("kind") == "PLANNED_EXIT") else "LATE_CLOSE"
+        try:
+            econ = L.rule_b_close_economics(rec["entry_fill"], rb["fill"])
+        except (KeyError, ValueError, TypeError, FEES.FeeUnavailable) as x:
+            return dict(base, status=kind, net_pnl=None, economics_error=str(x)[:60],
+                        delivery=rb.get("delivery")), True
+        return dict(base, status=kind, gross_pnl=P.fx(econ["gross_pnl"], 2), exit_fee=P.fx(econ["exit_fee"], 2),
+                    net_pnl=P.fx(econ["net_pnl"], 2), exit_ts=str(rb["fill"].get("ts_iso"))[:25],
+                    delivery=rb.get("delivery") or "PENDING_APPLY",
+                    fee_identity=(econ["exit_fee_identity"] or {}).get("fee_contract_version")), True
+    if rb and rb.get("state") == "UNRESOLVED":
+        return dict(base, status="UNRESOLVED", reason=rb.get("reason"), delivery=rb.get("delivery")), True
+    if closed is not None:
+        reason = str(closed.get("exit_reason") or "")
+        if "RULE_B_" not in reason:
+            net = closed.get("net_pnl")
+            return dict(base, status="MANUAL_EARLY_CLOSE", gross_pnl=P.fx(closed.get("actual_pnl"), 2),
+                        net_pnl=P.fx(net, 2) if isinstance(net, (int, float)) else None,
+                        net_status="RECORDED" if isinstance(net, (int, float)) else "MANUAL_CLOSE_NET_NOT_RECORDED"), True
+    if e.get("state") == "COMMITTED":
+        return dict(base, status="PENDING_COMMIT_SYNC"), False
+    return dict(base, status="OPEN"), False
+
+
+def _ev(e, keep_q=True):
+    if not e:
+        return None
+    out = {"ts": e["ts"][:19], "net": P.fx(e["net"], 2), "gross": P.fx(e.get("gross"), 2), "fee": P.fx(e["exit_fee"], 2),
+           "kind": e.get("kind")}
+    if keep_q:
+        out["q"] = [[P.fx(b, 2), P.fx(a, 2)] for b, a in e["quotes"]]
+    return out
 
 
 def _tracker_summary(tr):
-    def ev(e):
-        if not e:
-            return None
-        return {"ts": e["ts"][:19], "net": P.fx(e["net"], 2), "fee": P.fx(e["exit_fee"], 2),
-                "q": [[P.fx(b, 2), P.fx(a, 2)] for b, a in e["quotes"]], "kind": e.get("kind")}
-    return {"role": tr["role"], "structure": str(tr["structure"])[:60], "rule_b": ev(tr["rule_b"]),
-            "rule_b_status": tr.get("rule_b_status"), "tp_first": ev(tr["tp_first"]), "sl_first": ev(tr["sl_first"]),
-            "managed_exit": ev(tr["managed_exit"]), "polls_seen": tr["polls_seen"],
-            "path_resolution": "brain_poll_5min"}
+    if tr["role"] == "G3_SAMPLE":
+        return {"role": "G3_SAMPLE", "structure": str(tr["structure"])[:60], "rule_b": _ev(tr["rule_b"]),
+                "rule_b_status": tr.get("rule_b_status"), "polls_quoted": tr.get("polls_quoted", 0)}
+    out = {"role": tr["role"], "structure": str(tr["structure"])[:60], "rule_b": _ev(tr["rule_b"]),
+           "rule_b_status": tr.get("rule_b_status"), "tp_first": _ev(tr["tp_first"]), "sl_first": _ev(tr["sl_first"]),
+           "polls_seen": tr["polls_seen"], "polls_quoted": tr.get("polls_quoted", 0),
+           "path_resolution": "brain_poll_5min", "tpsl_policy": tr.get("managed_policy"),
+           "entry": {"cash": P.fx(tr["entry_cash_pts"], 2), "fee": P.fx(tr["entry_fee"], 2), "units": tr["units"],
+                     "legs": [_fmt_leg(l) for l in tr["legs"]]}}
+    if tr.get("managed_policy") == L.MANAGED_V7_POLICY:
+        out["managed_exit"] = _ev(tr["managed_exit"])
+        out["managed_mode"] = tr.get("managed_mode")
+    return out
 
 
 def build_outcome(doc, accepted, now_ms):
@@ -433,15 +580,17 @@ def build_outcome(doc, accepted, now_ms):
             "session_date": doc["session_date"], "expiry": doc["expiry"],
             "planned_exit_session": doc["planned_exit_session"], "policy_id": L.POLICY_ID,
             "outcome_time_ms": int(now_ms), "components": [_tracker_summary(t) for t in doc["trackers"]],
-            "accepted": accepted, "F_exit": P.fx(doc.get("F_exit"), 2),
+            "accepted": accepted, "F_entry": doc.get("F_entry"), "F_exit": P.fx(doc.get("F_exit"), 2),
+            "v7_coverage": doc.get("v7_coverage"), "g3_cohort_version": G3_COHORT_VERSION,
+            "threshold_basis": L.THRESHOLD_BASIS,
             "g4_labels": L.g4_labels(doc.get("g4") or [], doc.get("F_exit")) if doc.get("g4") else None}
     text = P.canon(body)
     if len(text.encode("utf-8")) > P.MAX_OUTCOME_BYTES:
         for c in body["components"]:
-            for k in ("tp_first", "sl_first"):
+            for k in ("tp_first", "sl_first", "managed_exit") + (("rule_b",) if c["role"] == "G3_SAMPLE" else ()):
                 if c.get(k):
                     c[k].pop("q", None)
-        body["truncated"] = "QUOTES_DROPPED_FROM_TP_SL_EVIDENCE"
+        body["truncated"] = "QUOTES_DROPPED_FROM_TP_SL_AND_SAMPLE_EVIDENCE"
         text = P.canon(body)
     if len(text.encode("utf-8")) > P.MAX_OUTCOME_BYTES:
         raise P.CanonError("OUTCOME_OVERSIZE")
@@ -483,16 +632,31 @@ def step_trackers(state_dir, ctx, now_ms, cal, open_trades, closed_trades):
         deadline = CAL.ist_dt(doc["expiry"], 15, 28, 0)
         if now_dt >= deadline and doc.get("decision_id"):
             L.finalize_trackers(doc["trackers"], now_dt, doc["expiry"])
-            accepted = _accepted_outcome(doc["decision_id"], open_trades, closed_trades)
-            doc["outcome"] = build_outcome(doc, accepted, now_ms)
-            out.append(doc["outcome"])
+            accepted, authoritative = _accepted_outcome(state_dir, doc["decision_id"], open_trades, closed_trades)
+            waited = now_ms - deadline.timestamp() * 1000.0
+            if authoritative or waited >= ACCEPTED_MAX_WAIT_MS:
+                if not authoritative:
+                    accepted = dict(accepted, finalized_without_authoritative_accepted=True)
+                doc["outcome"] = build_outcome(doc, accepted, now_ms)
+                out.append(doc["outcome"])
+            else:
+                doc["awaiting_accepted_component"] = accepted.get("status")
         _save_json(path, doc)
     return out
 
 
-def prune_trackers(state_dir, keep_dates):
+def _coverage_event(state_dir, ev):
+    path = os.path.join(state_dir, COVERAGE_FILE)
+    doc = _load_json(path) or {"schema": "ev_v12_coverage_v1", "events": [], "counts": {}}
+    doc["counts"][ev["kind"]] = doc["counts"].get(ev["kind"], 0) + 1
+    doc["events"] = (doc["events"] + [ev])[-MAX_COVERAGE_EVENTS:]
+    _save_json(path, doc)
+
+
+def prune_trackers(state_dir, keep_dates, now_dt=None):
     """Finite local cache: a tracker whose outcome is built and whose session left the keep window is removed
-    (its outcome text lives in the Kotlin outbox until ACKed). Unfinished trackers are never removed."""
+    (its outcome text lives in the Kotlin outbox until ACKed). An UNFINISHED tracker is evicted only when it is
+    TRACKER_EVICT_AFTER_EXPIRY_DAYS past its expiry; the eviction is recorded in the bounded coverage file."""
     removed = []
     try:
         names = os.listdir(state_dir)
@@ -504,10 +668,21 @@ def prune_trackers(state_dir, keep_dates):
         d = fn[len("tracker_NF_"):-5]
         if d in keep_dates:
             continue
-        doc = _load_json(os.path.join(state_dir, fn))
-        if doc is not None and doc.get("outcome"):
-            os.remove(os.path.join(state_dir, fn))
+        path = os.path.join(state_dir, fn)
+        doc = _load_json(path)
+        if doc is None:
+            continue
+        if doc.get("outcome"):
+            os.remove(path)
             removed.append(fn)
+        elif now_dt is not None and doc.get("expiry") and \
+                (now_dt.date() - CAL._d(doc["expiry"])).days > TRACKER_EVICT_AFTER_EXPIRY_DAYS:
+            os.remove(path)
+            removed.append(fn)
+            _coverage_event(state_dir, {"kind": "TRACKER_EVICTED_UNFINISHED", "session_date": doc.get("session_date"),
+                                        "decision_id": doc.get("decision_id"),
+                                        "awaiting": doc.get("awaiting_accepted_component"),
+                                        "at": now_dt.isoformat()[:19]})
     return removed
 
 
@@ -555,7 +730,7 @@ def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal
     except Exception as e:  # tracker evidence must never break the poll or the decision
         out["tracker_error"] = str(e)[:200]
     try:
-        prune_trackers(state_dir, set(recent[-KEEP_SLOT_SESSIONS:]))
+        prune_trackers(state_dir, set(recent[-KEEP_SLOT_SESSIONS:]), now_dt)
     except OSError:
         pass
     if not is_session:
@@ -631,7 +806,7 @@ def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal
             _save_json(_tracker_path(state_dir, session_date), doc)
         out["timings"] = metrics
     P.prune_slots(state_dir, set(recent[-KEEP_SLOT_SESSIONS:]))
-    out["recommendation"] = recommendation_view(slot, poll_ms, mode)
+    out["recommendation"] = recommendation_view(slot, poll_ms, mode, state_dir)
     out["status"] = out["recommendation"]["status"]
     if action == "SLOT_CONSUMED":
         out["slot_consumed"] = True
@@ -640,24 +815,25 @@ def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal
 
 
 # ---------------- bridge entry points (called from Kotlin on IO threads) ----------------
-def revalidate_acceptance_json(state_dir, session_date, quotes_json, now_ms, open_engine_json, capital_available):
-    slot = P.load_slot(state_dir, "NF", session_date)
-    if not slot or not slot.get("acceptance_context"):
-        return json.dumps({"status": "REJECTED", "reason": "NO_DECIDED_SLOT"})
-    if slot.get("acceptance"):
-        return json.dumps(dict(slot["acceptance"], replay=True))
-    ctx = slot["acceptance_context"]
-    rec = L.revalidate_acceptance(ctx, json.loads(quotes_json or "{}"), float(now_ms),
-                                  open_engine_positions=json.loads(open_engine_json or "[]"),
-                                  capital_available=capital_available)
-    # Linked acceptance record; the original decision/envelope is never modified. Only a successful
-    # acceptance consumes the decision; a rejected tap (stale quote, price moved) may be retried
-    # while the decision is still valid.
-    if rec.get("status") == "ACCEPTED":
-        slot["acceptance"] = {k: rec[k] for k in rec if k in ("status", "reason", "accepted_at_ms", "decision_id")}
-        slot["acceptance_record"] = rec
-        P.save_slot(state_dir, slot)
-    return json.dumps(rec, default=float)
+# Acceptance transaction: ev_v12_acceptance.{prepare,confirm,cancel,mark_persisted,mark_closed,recovery}_json.
+
+
+def rule_b_close_economics_json(state_dir, decision_id, fill_json, entry_fill_json=None):
+    """Net economics of a frozen Rule B fill. The frozen entry comes from the authoritative acceptance ledger;
+    the trade's own entry_snapshot.entry_fill is used only when the ledger entry is absent (status says so)."""
+    e = A.entry(state_dir, decision_id) if decision_id else None
+    ef = ((e or {}).get("record") or {}).get("entry_fill")
+    source = "ACCEPTANCE_LEDGER"
+    if ef is None and entry_fill_json:
+        ef = json.loads(entry_fill_json)
+        source = "TRADE_ENTRY_SNAPSHOT"
+    if ef is None:
+        return json.dumps({"status": "UNKNOWN", "reason": "ENTRY_FILL_UNAVAILABLE"})
+    try:
+        econ = L.rule_b_close_economics(ef, json.loads(fill_json))
+    except (KeyError, ValueError, TypeError, FEES.FeeUnavailable) as x:
+        return json.dumps({"status": "UNKNOWN", "reason": str(x)[:80]})
+    return json.dumps(dict(econ, status="OK", entry_source=source), default=float)
 
 
 def rule_b_exit_step_json(position_json, tick_json):

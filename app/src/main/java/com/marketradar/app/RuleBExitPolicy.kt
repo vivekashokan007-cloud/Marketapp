@@ -156,6 +156,36 @@ object RuleBExitPolicy {
         return obj.optString("position_policy_id") == POLICY_ID
     }
 
+    /** Experiment policy identities this build knows how to execute. */
+    val KNOWN_EXPERIMENT_POLICIES: Set<String> = setOf(POLICY_ID)
+
+    enum class PolicyClass { LEGACY, RULE_B, UNKNOWN_EXPERIMENT }
+
+    /**
+     * Codex R2: which exit policy governs a trade. Paper trades whose entry_snapshot names a known experiment
+     * policy are RULE_B; a Paper trade naming any OTHER non-blank position_policy_id is UNKNOWN_EXPERIMENT and
+     * fails closed (no legacy alerts, no fills). Everything else, including every Real trade and every older
+     * non-experiment Paper trade, stays LEGACY and is byte-identical to before.
+     */
+    fun policyClass(trade: JSONObject): PolicyClass {
+        if (!trade.optBoolean("paper", false)) return PolicyClass.LEGACY
+        val id = policyOf(trade)?.optString("position_policy_id")?.trim().orEmpty()
+        return when {
+            id.isEmpty() -> PolicyClass.LEGACY
+            id in KNOWN_EXPERIMENT_POLICIES -> PolicyClass.RULE_B
+            else -> PolicyClass.UNKNOWN_EXPERIMENT
+        }
+    }
+
+    /** Published row action for an experiment trade (the legacy action is kept as an informational trace only). */
+    fun publishedAction(step: Step?): String = when {
+        step == null -> "RULE_B_HOLD"
+        step.state == "EXIT_FILLED" -> "RULE_B_EXIT_FILLED"
+        step.state == "UNRESOLVED" -> "RULE_B_UNRESOLVED"
+        step.state == "LATE_EXIT_PENDING" -> "RULE_B_LATE_EXIT_PENDING"
+        else -> "RULE_B_HOLD"
+    }
+
     fun policyOf(trade: JSONObject): JSONObject? {
         val es = trade.opt("entry_snapshot") ?: trade.opt("entrySnapshot")
         return when (es) {

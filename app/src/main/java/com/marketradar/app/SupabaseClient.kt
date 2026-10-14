@@ -1864,25 +1864,19 @@ object SupabaseClient {
     }
 
     // ---------------- Implied-EV v1.2 Paper experiment (20261013150000_ev_v12_paper_experiment.sql) ----------------
-    /** Submit one exact decision envelope; returns the parsed ACK or null (retry). Never logs the device key. */
-    fun evSubmitDecision(deviceKey: String, envelopeText: String): EvTelemetryOutbox.Ack? {
+    /**
+     * Submit one exact decision envelope. Returns the RAW response; EvTelemetryOutbox.classify decides
+     * (PT429/23503 are retries, not conflicts). Never logs the device key.
+     */
+    fun evSubmitDecision(deviceKey: String, envelopeText: String): EvTelemetryOutbox.Response {
         val r = postRpc("ev_submit_decision", JSONObject().put("p_device_key", deviceKey).put("p_envelope_text", envelopeText))
-        if (!r.ok) {
-            // permanent refusals (oversize/malformed/quota/date) are reported as CONFLICT so they are kept aside
-            val pg = r.pgCode
-            return if (pg in setOf("PT413", "23514", "PT429")) EvTelemetryOutbox.Ack("CONFLICT", null, null) else null
-        }
-        return EvTelemetryOutbox.parseAck(r.body, EvTelemetryOutbox.KIND_DECISION)
+        return EvTelemetryOutbox.Response(r.code, r.body)
     }
 
-    fun evSubmitOutcome(deviceKey: String, decisionId: String, outcomeText: String): EvTelemetryOutbox.Ack? {
+    fun evSubmitOutcome(deviceKey: String, decisionId: String, outcomeText: String): EvTelemetryOutbox.Response {
         val r = postRpc("ev_submit_outcome", JSONObject().put("p_device_key", deviceKey).put("p_decision_id", decisionId)
             .put("p_outcome_text", outcomeText))
-        if (!r.ok) {
-            val pg = r.pgCode
-            return if (pg in setOf("PT413", "23514", "PT429", "23503")) EvTelemetryOutbox.Ack("CONFLICT", null, null) else null
-        }
-        return EvTelemetryOutbox.parseAck(r.body, EvTelemetryOutbox.KIND_OUTCOME)
+        return EvTelemetryOutbox.Response(r.code, r.body)
     }
 
     /** Latest published calibration payload (SELECT-only table); Python validates digest/version/staleness. */

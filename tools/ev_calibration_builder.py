@@ -140,6 +140,35 @@ def fetch_window(url, key, day, t0, t1):
                                                "ask": r["ask"]} for r in sel if r["expiry"] == exp]}
 
 
+LIVE_FAMILY = "ev_k_v1_2_live"
+
+
+def seed_plan(through_expiry="2026-10-13", available_at=None, cal=None, family=LIVE_FAMILY):
+    """R6: ONE explicit, bounded retrospective seed operation. Installs the COMPLETE reviewed observation history
+    (every scheduled slot with its status), the exact frozen R and its source, the publication and the watermark
+    (= latest processed expiry) consistently, via public.ev_builder_seed (service_role, empty state only).
+    available_at must be the actual publication instant; the default is now (never backdated)."""
+    cal = cal or CAL.DEFAULT_CALENDAR
+    full = build_from_fixtures(cal=cal)
+    obs = [o for o in full["observations"] if o["expiry"] <= through_expiry]
+    available_at = available_at or datetime.now(timezone.utc).astimezone(CAL.IST).isoformat()
+    R_source = "training_block_eligible_expiries_le_%s_n%d" % (CB.TRAINING_END, full["n_train"])
+    pub, _agg = CB.build_publication(obs, R=full["R_train"], R_source=R_source, available_at=available_at,
+                                     retrospective_seed=True, cal=cal, seed_label=family)
+    return {"p_observations": obs, "p_publication": pub, "p_watermark_expiry": pub["latest_processed_expiry"],
+            "p_r_value": "%.17g" % full["R_train"], "p_r_source": R_source, "p_family": family}
+
+
+def incremental_plan(state, new_obs, now, cal=None):
+    """Pure: the publication an incremental run would publish from server state + newly finalized observations."""
+    cal = cal or CAL.DEFAULT_CALENDAR
+    prior = state.get("observations") or []
+    pub, agg = CB.build_publication(prior + new_obs, R=float(state["R"]), R_source=state["R_source"],
+                                    available_at=now.isoformat(), retrospective_seed=False, cal=cal,
+                                    seed_label=state.get("calibration_family"), checkpoint=state.get("checkpoint"))
+    return pub
+
+
 def build_incremental_supabase(url, key, dry_run=True, cal=None):
     cal = cal or CAL.DEFAULT_CALENDAR
     state = _rpc(url, key, "ev_builder_state", {})
@@ -159,24 +188,25 @@ def build_incremental_supabase(url, key, dry_run=True, cal=None):
         rec = CB.build_observation(cal, slot, ent, exi)
         rec["observation_sha256"] = CB.observation_identity(rec)
         new_obs.append(rec)
-    prior = state.get("observations") or []
-    pub, agg = CB.build_publication(prior + new_obs, R=float(state["R"]), R_source=state["R_source"],
-                                    available_at=now.isoformat(), retrospective_seed=False, cal=cal,
-                                    seed_label=state.get("calibration_family"))
+    pub = incremental_plan(state, new_obs, now, cal)
     if dry_run:
         return {"status": "DRY_RUN", "publication": pub, "new_observations": new_obs}
+    # A lost response is safe: the server answers DUPLICATE for the same content/version at the same watermark.
     ack = _rpc(url, key, "ev_builder_publish", {"p_observations": new_obs, "p_publication": pub,
-                                                 "p_watermark_expiry": target.isoformat()})
-    return {"status": "PUBLISHED", "ack": ack}
+                                                 "p_watermark_expiry": pub["latest_processed_expiry"]})
+    return {"status": ack.get("status"), "ack": ack}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", choices=("fixtures", "supabase"), default="fixtures")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--seed-plan", action="store_true", help="print the complete one-time seed RPC body (no write)")
     ap.add_argument("--out")
     a = ap.parse_args()
-    if a.source == "fixtures":
+    if a.seed_plan:
+        txt = json.dumps(seed_plan(), indent=1, default=str)
+    elif a.source == "fixtures":
         res = build_from_fixtures()
         txt = json.dumps({k: res[k] for k in ("publication", "aggregates", "coverage", "R_train", "n_train")},
                          indent=1, default=str)
@@ -187,7 +217,8 @@ def main():
             return 3
         txt = json.dumps(build_incremental_supabase(url, key, dry_run=a.dry_run), indent=1, default=str)
     if a.out:
-        open(a.out, "w").write(txt)
+        with open(a.out, "w") as fh:
+            fh.write(txt)
     print(txt)
     return 0
 

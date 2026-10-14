@@ -1973,6 +1973,10 @@ class MarketMLService : Service() {
 
             // Parse trade dict
             val tradeDict = org.json.JSONObject(tradeJson)
+            if (EvExperiment.isExperimentTrade(tradeDict)) {
+                Log.i(TAG, "Online update skipped: implied-EV experiment trade (Rule B) is not v7 training data")
+                return@withContext
+            }
 
             // MLS13: Pass numeric fields as numbers, not strings, to avoid 'None' rejection in Python
             val pyDict = py.builtins.callAttr("dict")
@@ -2195,7 +2199,10 @@ class MarketMLService : Service() {
                 pageSize = pageSize,
                 maxPages = maxPages
             )
-            val resp = paged.optJSONArray("rows") ?: org.json.JSONArray()
+            // Codex R4: implied-EV v1.2 Rule B experiment trades follow a different exit policy and are
+            // excluded from every v7 learning export (counted, not silently dropped).
+            val (resp, experimentExcluded) = EvExperiment.excludeExperimentTrades(
+                paged.optJSONArray("rows") ?: org.json.JSONArray())
             val truncated = paged.optBoolean("truncated_at_max_pages", false)
             val statusName = paged.optString("status", if (resp.length() == 0) "empty" else "complete")
             val status = org.json.JSONObject()
@@ -2214,6 +2221,7 @@ class MarketMLService : Service() {
                 .put("multi_page", true)
                 .put("training_enabled", false)
                 .put("row_count", resp.length())
+                .put("experiment_rows_excluded", experimentExcluded)
                 .put("checksum_sha256", sha256Hex(resp.toString().toByteArray(Charsets.UTF_8)))
                 .put("note", when (statusName) {
                     "incomplete_error" -> "Page failure — retained last good export; do not train."

@@ -160,10 +160,11 @@ def train_R(agg, training_end=TRAINING_END):
     return st.pvariance(train), len(train)
 
 
-def kalman(eligible_rs, R, gain):
+def kalman(eligible_rs, R, gain, start=None):
+    """start: optional (k, P_variance) checkpoint from compacted history (R7); default the cold prior."""
     lam = gain * gain / (1 - gain)
     qn = lam * R
-    k, P = K0, P0
+    k, P = (K0, P0) if start is None else (float(start[0]), float(start[1]))
     path = []
     for x in eligible_rs:
         path.append((k, math.sqrt(P)))
@@ -213,34 +214,69 @@ def expected_latest_finalized_expiry(cal, at_dt):
     return best
 
 
-def build_publication(obs, *, R, R_source, available_at, retrospective_seed, cal, seed_label=None):
+def filter_checkpoint(obs, R, through_expiry, prior=None):
+    """Compaction checkpoint (R7): filter state after every eligible expiry <= through_expiry, plus the identity of
+    the compacted observations, so deleting them later cannot change any subsequent publication."""
+    sub = [o for o in obs if o["expiry"] <= through_expiry]
+    agg = [a for a in expiry_aggregates(sub) if a["eligible"]]
+    rs = [a["r_e"] for a in agg]
+    st = (prior or {}).get("slow"), (prior or {}).get("fast")
+    (ks, ss), _ = kalman(rs, R, SLOW_GAIN, start=st[0])
+    (kf, sf), _ = kalman(rs, R, FAST_GAIN, start=st[1])
+    return {"through_expiry": through_expiry, "slow": ["%.17g" % ks, "%.17g" % (ss * ss)],
+            "fast": ["%.17g" % kf, "%.17g" % (sf * sf)],
+            "n_eligible": len(agg) + int((prior or {}).get("n_eligible", 0)),
+            "processed_expiries": sorted({o["expiry"] for o in sub} | set((prior or {}).get("processed_expiries", []))),
+            "latest_eligible": (agg[-1]["expiry"] if agg else (prior or {}).get("latest_eligible")),
+            "compacted_observation_set_sha256": sha256_text("\n".join(sorted(observation_identity(o) for o in sub)))}
+
+
+def _content_sha(pub):
+    return sha256_text(canon({k: v for k, v in pub.items()
+                              if k not in ("payload_sha256", "available_at", "calibration_version", "content_sha256")}))
+
+
+def build_publication(obs, *, R, R_source, available_at, retrospective_seed, cal, seed_label=None, checkpoint=None):
+    """checkpoint: optional compaction checkpoint; obs then holds only expiries AFTER checkpoint.through_expiry.
+    calibration_version = <family>:p<latest processed expiry>:<content digest prefix> - unique per processed state
+    and content/model configuration (R6); latest eligible expiry used is a separate field."""
     agg = expiry_aggregates(obs)
     elig = [a for a in agg if a["eligible"]]
-    if elig:
-        (ks, ss), _ = kalman([a["r_e"] for a in elig], R, SLOW_GAIN)
-        (kf, sf), _ = kalman([a["r_e"] for a in elig], R, FAST_GAIN)
+    cp = checkpoint or {}
+    start_s = tuple(cp["slow"]) if cp.get("slow") else None
+    start_f = tuple(cp["fast"]) if cp.get("fast") else None
+    n_prior = int(cp.get("n_eligible", 0))
+    if elig or n_prior:
+        (ks, ss), _ = kalman([a["r_e"] for a in elig], R, SLOW_GAIN, start=start_s)
+        (kf, sf), _ = kalman([a["r_e"] for a in elig], R, FAST_GAIN, start=start_f)
         cold = False
     else:
         ks, ss, kf, sf, cold = K0, math.sqrt(P0), K0, math.sqrt(P0), True
     kset, clipped = kset_from(ks, ss, kf, sf)
-    processed = [a["expiry"] for a in agg]
+    processed = sorted(set(cp.get("processed_expiries", [])) | {a["expiry"] for a in agg})
+    latest_elig = elig[-1]["expiry"] if elig else cp.get("latest_eligible")
     pub = {
         "schema": CALIBRATION_SCHEMA,
-        "calibration_version": (seed_label or RETRO_SEED_VERSION) + ":" + (elig[-1]["expiry"] if elig else "cold"),
         "model_version": M.MODEL_VERSION,
         "convention": CONVENTION_VERSION,
         "calendar_version": cal.version,
         "R": "%.12f" % R, "R_source": R_source,
         "k_slow": "%.12f" % ks, "sd_slow": "%.12f" % ss, "k_fast": "%.12f" % kf, "sd_fast": "%.12f" % sf,
         "kset": ["%.12f" % k for k in kset], "k_clipped": bool(clipped), "cold_start": cold,
-        "n_eligible_expiries": len(elig), "n_processed_expiries": len(processed),
+        "n_eligible_expiries": len(elig) + n_prior, "n_processed_expiries": len(processed),
         "latest_processed_expiry": processed[-1] if processed else None,
-        "latest_eligible_expiry_used": elig[-1]["expiry"] if elig else None,
+        "latest_eligible_expiry_used": latest_elig,
         "excluded_expiries": [a["expiry"] for a in agg if not a["eligible"]],
         "retrospective_seed": bool(retrospective_seed),
+        "calibration_family": seed_label or RETRO_SEED_VERSION,
+        "checkpoint_through_expiry": cp.get("through_expiry"),
+        "checkpoint_sha256": sha256_text(canon(cp)) if cp else None,
         "available_at": available_at,
         "observation_set_sha256": sha256_text("\n".join(sorted(observation_identity(o) for o in obs))),
     }
+    pub["content_sha256"] = _content_sha(pub)
+    pub["calibration_version"] = "%s:p%s:%s" % (pub["calibration_family"], pub["latest_processed_expiry"] or "none",
+                                                pub["content_sha256"][:12])
     pub["payload_sha256"] = sha256_text(canon({k: v for k, v in pub.items() if k != "payload_sha256"}))
     return pub, agg
 
@@ -259,6 +295,20 @@ def validate_publication(pub, *, now_dt, cal):
     except (KeyError, TypeError, ValueError):
         return None, "NO_CALIBRATION_INVALID"
     if len(ks) != 4 or any((not math.isfinite(k)) or k < K_CLIP[0] or k > K_CLIP[1] for k in ks):
+        return None, "NO_CALIBRATION_INVALID"
+    if pub.get("calendar_version") != cal.version:
+        return None, "NO_CALIBRATION_CALENDAR_MISMATCH"
+    # field consistency and the four-scenario derivation are re-derived, not trusted (R6)
+    try:
+        derived, _clip = kset_from(float(pub["k_slow"]), float(pub["sd_slow"]), float(pub["k_fast"]), float(pub["sd_fast"]))
+    except (KeyError, TypeError, ValueError):
+        return None, "NO_CALIBRATION_INVALID"
+    if derived is None or any(abs(a - b) > 1e-9 for a, b in zip(derived, ks)):
+        return None, "NO_CALIBRATION_INVALID"
+    lp, le = pub.get("latest_processed_expiry"), pub.get("latest_eligible_expiry_used")
+    if lp is None or (le is not None and le > lp) or pub.get("content_sha256") != _content_sha(pub) \
+            or pub.get("calibration_version") != "%s:p%s:%s" % (pub.get("calibration_family"), lp,
+                                                                str(pub.get("content_sha256"))[:12]):
         return None, "NO_CALIBRATION_INVALID"
     try:
         avail = datetime.fromisoformat(pub["available_at"])

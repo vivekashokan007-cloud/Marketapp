@@ -3336,8 +3336,9 @@ class MarketWatchService : Service() {
                     else if (e.kind == EvTelemetryOutbox.KIND_DECISION) SupabaseClient.evSubmitDecision(key, e.text)
                     else SupabaseClient.evSubmitOutcome(key, e.id, e.text)
                 }
-                LogBuffer.add(if (r.retry == 0 && r.conflicts == 0) 'I' else 'W', TAG,
-                    "EV12_OUTBOX: attempted=${r.attempted} acked=${r.acked} retry=${r.retry} conflicts=${r.conflicts} dropped=${r.dropped}")
+                LogBuffer.add(if (r.retry == 0 && r.conflicts == 0 && r.rejected == 0 && r.dropped == 0) 'I' else 'W', TAG,
+                    "EV12_OUTBOX: attempted=${r.attempted} acked=${r.acked} retry=${r.retry} quota=${r.quota} " +
+                    "prerequisite=${r.prerequisite} conflicts=${r.conflicts} rejected=${r.rejected} dropped=${r.dropped} deferred=${r.deferred}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "EV12_OUTBOX_FAIL: ${e.message}")
             } finally {

@@ -12,6 +12,7 @@ import brain
 import ev_calibration_builder as BLD
 import ev_v12_calendar as CAL
 import ev_v12_calibration as CB
+import ev_v12_acceptance as A
 import ev_v12_integration as I
 import ev_v12_protocol as P
 
@@ -121,19 +122,24 @@ class EngineRun(unittest.TestCase):
         ac = slot["acceptance_context"]
         now = POLL_MS + 60000
         quotes = {l["instrument_key"]: {"bid": l["bid"], "ask": l["ask"], "ts_ms": now - 500} for l in ac["legs"]}
-        bad = I.revalidate_acceptance_json(self.d, DAY, json.dumps({}), now, "[]", 1e6)
-        self.assertEqual(json.loads(bad)["reason"], "ACCEPTANCE_QUOTE_INVALID")
-        r = json.loads(I.revalidate_acceptance_json(self.d, DAY, json.dumps(quotes), now, "[]", 1e6))
-        self.assertEqual(r["status"], "ACCEPTED", r)
+        kw = dict(execution_mode="paper", experiment_mode="active", open_rule_b_trades=[], capital_total=1e6)
+        bad = A.prepare(self.d, DAY, ac["decision_id"], {}, now, **kw)
+        self.assertEqual(bad["reason"], "ACCEPTANCE_QUOTE_INVALID")
+        prep = A.prepare(self.d, DAY, ac["decision_id"], quotes, now, **kw)
+        self.assertEqual(prep["status"], "RESERVED", prep)
+        r = A.confirm(self.d, ac["decision_id"], prep["reservation_id"], now + 3000,
+                      execution_mode="paper", experiment_mode="active")
+        self.assertEqual(r["status"], "COMMITTED", r)
         self.assertEqual(r["frozen_policy"]["decision_id"], out["recommendation"]["decision_id"])
-        replay = json.loads(I.revalidate_acceptance_json(self.d, DAY, json.dumps(quotes), now + 1000, "[]", 1e6))
+        replay = A.prepare(self.d, DAY, ac["decision_id"], quotes, now + 4000, **kw)
         self.assertTrue(replay.get("replay"))
+        self.assertEqual(replay["entry_fill"], r["entry_fill"])
         # envelope untouched by acceptance
         self.assertEqual(P.load_slot(self.d, "NF", DAY)["envelope"]["envelope_sha256"],
                          slot["envelope"]["envelope_sha256"])
         view = I.run(ctx_for(self.d, poll_ms=now + 2000), {}, "paper")["recommendation"]
         self.assertFalse(view["actionable"])
-        self.assertEqual(view["acceptance_status"], "ACCEPTED")
+        self.assertIn(view["acceptance_status"], ("PENDING_SYNC", "ACCEPTED"))
         self.assertEqual(r["entry_fill"]["fee_identity"]["fee_contract_version"],
                          "ev_v12_fee_teacher_v2_dated_20261013")
 
@@ -154,7 +160,7 @@ class EngineRun(unittest.TestCase):
         far = int(CAL.ist_dt(date(2026, 11, 9), 11, 0).timestamp() * 1000)
         I.run(ctx_for(self.d, poll_ms=far), {}, "paper")
         self.assertFalse([f for f in os.listdir(self.d) if f.startswith("tracker_NF_2026-10-08")])
-        self.assertEqual(body["accepted"], {"status": "NOT_ACCEPTED"})
+        self.assertEqual(body["accepted"], {"status": "NEVER_ACCEPTED"})
         self.assertEqual(body["components"][0]["rule_b"]["kind"], "PLANNED_EXIT")
 
 

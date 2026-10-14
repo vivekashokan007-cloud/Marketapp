@@ -20,6 +20,7 @@ on:
       - work/g8-g10-integrity-20260913
       - review/codex-corrective-20260914
       - work/db1-pc2-review-corrections-20260929
+      - work/paper-implied-ev-v12-20261013
     paths:
       - 'app/**'
       - 'tools/**'
@@ -107,6 +108,28 @@ jobs:
           PGPASSWORD: postgres
           PC2_SCRATCH_OK: '1'
         run: tools/pc2_db_suite/run.sh
+
+      - name: EV v1.2 scratch DB suite (migration, RLS, quotas, trade_uid index)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          EV_SCRATCH_OK: '1'
+        run: tools/ev_db_suite/run.sh
+
+      - name: EV v1.2 PostgREST HTTP contract suite (scratch only)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          EV_SCRATCH_OK: '1'
+          EV_REST_REQUIRED: '1'
+        run: |
+          curl -fsSL -o /tmp/pgrst.tar.xz https://github.com/PostgREST/postgrest/releases/download/v12.2.3/postgrest-v12.2.3-linux-static-x64.tar.xz
+          tar -xJf /tmp/pgrst.tar.xz -C /tmp
+          EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py
 
       - name: Confirm publication artifacts were not built
         run: |

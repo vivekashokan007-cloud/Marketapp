@@ -68,7 +68,11 @@ class EvV12RuleBAndOutboxTest {
         assertEquals("EXIT_FILLED", RuleBFillLedger.stateOf(dir, "t1"))
         assertEquals(1, RuleBFillLedger.pending(dir).length())
         assertEquals(1L, RuleBFillLedger.pending(dir).getJSONObject(0).getLong("late_since_ms"))
-        assertTrue(RuleBFillLedger.ack(dir, "t1", 5))
+        // R3: no ACK without a journaled patch and remote proof
+        assertFalse(RuleBFillLedger.ack(dir, "t1", RuleBFillLedger.REMOTE_CONFIRMED, 5))
+        assertEquals("JOURNALED", RuleBFillLedger.journal(dir, "t1", "{\"status\":\"CLOSED\"}", 5))
+        assertEquals(1, RuleBFillLedger.pending(dir).length())
+        assertTrue(RuleBFillLedger.ack(dir, "t1", RuleBFillLedger.REMOTE_CONFIRMED, 5))
         assertEquals(0, RuleBFillLedger.pending(dir).length())
         assertFalse(RuleBFillLedger.record(dir, "t1", null, RuleBExitPolicy.Step("NONE", "NONE", "z"), 6))
     }
@@ -93,17 +97,22 @@ class EvV12RuleBAndOutboxTest {
             EvTelemetryOutbox.sha256("x".repeat(4097)), 1))
         assertEquals("QUEUED", EvTelemetryOutbox.enqueue(dir, "decision", id, text, sha, 1))
         assertEquals("ALREADY_QUEUED", EvTelemetryOutbox.enqueue(dir, "decision", id, text, sha, 2))
-        var r = EvTelemetryOutbox.drain(dir, 10) { EvTelemetryOutbox.Ack("ACCEPTED", id, "f".repeat(64)) }
+        fun ok(status: String, sha: String?) = EvTelemetryOutbox.Response(200,
+            JSONObject().put("status", status).put("decision_id", id).put("envelope_sha256", sha).toString())
+        var r = EvTelemetryOutbox.drain(dir, 10) { ok("ACCEPTED", "f".repeat(64)) }
         assertEquals(1, r.retry); assertEquals(1, EvTelemetryOutbox.entries(dir).size)
         r = EvTelemetryOutbox.drain(dir, 11) { null }
+        assertEquals(1, r.deferred)                 // backoff: not yet due
+        r = EvTelemetryOutbox.drain(dir, 10L + 3_600_000) { null }
         assertEquals(1, r.retry); assertEquals(2, EvTelemetryOutbox.entries(dir)[0].attempts)
-        r = EvTelemetryOutbox.drain(dir, 12) { EvTelemetryOutbox.Ack("DUPLICATE", id, sha) }
+        r = EvTelemetryOutbox.drain(dir, 10L + 7 * 3_600_000) { ok("DUPLICATE", sha) }
         assertEquals(1, r.acked); assertEquals(0, EvTelemetryOutbox.entries(dir).size)
         assertEquals("ALREADY_ACKED", EvTelemetryOutbox.enqueue(dir, "decision", id, text, sha, 13))
-        // conflict is kept aside, never retried
+        // a server CONFLICT ACK is kept aside, never retried
         val t2 = "{\"o\":1}"; val s2 = EvTelemetryOutbox.sha256(t2)
         EvTelemetryOutbox.enqueue(dir, "outcome", id, t2, s2, 14)
-        r = EvTelemetryOutbox.drain(dir, 15) { EvTelemetryOutbox.Ack("CONFLICT", null, null) }
+        r = EvTelemetryOutbox.drain(dir, 15) { EvTelemetryOutbox.Response(200,
+            JSONObject().put("status", "CONFLICT").put("decision_id", id).toString()) }
         assertEquals(1, r.conflicts); assertEquals(0, EvTelemetryOutbox.entries(dir).size)
     }
 

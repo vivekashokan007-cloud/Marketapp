@@ -51,3 +51,14 @@ not modified; the only v7-adjacent change is that Rule B experiment trades are e
 3. `active`: accept flow (fresh quotes, refusal reasons), trade card label "Planned exit … (Rule B)".
 4. Rule B fill on the planned session 15:15–15:28 and PWA close + ack; LATE_EXIT on the next session if missed.
 5. Calibration fetch (`EV12_CALIBRATION_FETCH found=true`) after a builder publication exists.
+
+## Review R2 corrections (14 Oct 2026, still 2.6.73 / b504)
+
+- **Acceptance (R1):** `EvAcceptance` (Kotlin, one lock) owns `prepare(sessionDate, decisionId)` → `confirm` | `cancel` → `markPersisted(decisionId, rowId, tradeUid)`. Mode, capital, open trades come from native prefs, never from the PWA. Bounded: 20 requests / 24 h TTL. Startup `evAcceptanceRecovery` re-inserts COMMITTED-but-unpersisted acceptances idempotently.
+- **Trade identity:** `trades_v2.id` is a bigint sequence, so the stable key is `entry_snapshot.ev_trade_uid` (uuid5 of the decision id), enforced by the guarded partial unique index `trades_v2_ev_trade_uid_uq`. The PWA reads back by uid before and after insert (lost response → no duplicate).
+- **Rule B close (R3/R4):** native ledger v2 states PENDING_APPLY → REMOTE_PENDING → REMOTE_CONFIRMED | MANUAL_CLOSE_CONFLICT. ACK only after a conditional `status='OPEN'` update is read back. Net/fees come from `EvAcceptance.closeEconomics` (dated fee schedule) at fill time; unavailable economics → `net_pnl=null`, `net_status=UNKNOWN:<reason>`.
+- **Policy routing:** `RuleBExitPolicy.policyClass` LEGACY / RULE_B / UNKNOWN_EXPERIMENT (fail closed). Legacy shadow exits never fire on Rule B trades.
+- **Telemetry error contract (R7):** 429/PT429 → RETRY_QUOTA (next IST day 00:05); 409/23503 → RETRY_PREREQUISITE (10 min); PT413/23514/22P02/22023 → PERMANENT_REJECTED (marker, never re-enqueued); 200 CONFLICT → CONFLICT; everything else → RETRY_TRANSPORT (60 s·2^n, cap 6 h). Fixture: `app/src/test/resources/ev_v12/rest_bodies.json` from `tools/ev_db_suite/rest_suite.py`.
+- **Learning isolation:** experiment trades are excluded from ML export, online update, ml_train and brain learning (kelly / exit analysis / factor importance / fact pack). The evening teacher consumes poll snapshots only.
+- **Report:** `python3 tools/ev_v12_report.py envelopes.json outcomes.json` evaluates G1–G5 by cohort (RETROSPECTIVE / FORWARD / SYNTHETIC).
+- **CI:** review-validation runs `tools/ev_db_suite/run.sh` and the PostgREST suite (PostgREST v12.2.3 download, required).

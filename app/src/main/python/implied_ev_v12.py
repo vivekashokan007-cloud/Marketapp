@@ -140,6 +140,7 @@ def validate_chain_quotes(rows, *, index, expiry, decision_ms=None, max_age_ms=M
     """
     dl = _dl(deadline)
     q, meta, rej = {}, {}, []
+    quarantined = set()   # a contract seen twice stays rejected for the WHOLE input (R6 hardening)
     for i, r in enumerate(rows):
         if i % 64 == 0:
             dl.check("validate_quotes")
@@ -185,10 +186,14 @@ def validate_chain_quotes(rows, *, index, expiry, decision_ms=None, max_age_ms=M
                 rej.append((K, cp, "QUOTE_STALE"))
                 continue
         key = (K, cp)
+        if key in quarantined:
+            rej.append((K, cp, "DUPLICATE_CONTRACT"))
+            continue
         if key in q:
             rej.append((K, cp, "DUPLICATE_CONTRACT"))
             q.pop(key, None)
             meta.pop(key, None)
+            quarantined.add(key)
             continue
         q[key] = (b, a)
         meta[key] = {"instrument_key": (ik.strip() if isinstance(ik, str) else None),

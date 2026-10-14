@@ -17352,9 +17352,13 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         print(f"DEBUG: dte_urgency failed: {e}")
 
     # Risk — existing + daily PnL
+    # Implied-EV v1.2 (Codex R4 audit): learning-style consumers (Kelly sizing, exit analysis, factor importance)
+    # see v7-policy trades only; risk warnings (regime shift, loss streak, daily risk) still see every trade.
+    _v7_learning_closed = [t for t in closed_trades if not _is_ev_rule_b_trade(t)]
+    _learning_fns = (risk_kelly_headroom, risk_exit_analysis, risk_factor_importance)
     for fn in [risk_kelly_headroom, risk_regime_shift, risk_exit_analysis, risk_factor_importance, risk_streak_warning]:
         try:
-            r = fn(polls, baseline, open_trades, closed_trades)
+            r = fn(polls, baseline, open_trades, _v7_learning_closed if fn in _learning_fns else closed_trades)
             if r: result["risk"].append(r)
         except Exception as e:
             print(f"DEBUG: Risk insight {fn.__name__} failed: {e}")
@@ -18137,7 +18141,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             ctx=ctx,
             polls=polls,
             calibration=_calibration,
-            closed_trades=closed_trades,
+            closed_trades=[t for t in closed_trades if not _is_ev_rule_b_trade(t)],
         )
     except Exception as e:
         result['elephant_fact_pack_error'] = str(e)

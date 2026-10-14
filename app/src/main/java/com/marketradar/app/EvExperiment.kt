@@ -41,6 +41,28 @@ object EvExperiment {
         return true
     }
 
+    /** Paper trade governed by an experiment exit policy (entry_snapshot.position_policy_id non-blank). */
+    fun isExperimentTrade(t: JSONObject?): Boolean {
+        if (t == null || !t.optBoolean("paper", false)) return false
+        val es = t.opt("entry_snapshot") ?: t.opt("entrySnapshot")
+        val o = when (es) {
+            is JSONObject -> es
+            is String -> try { JSONObject(es) } catch (e: Exception) { null }
+            else -> null
+        } ?: return false
+        return o.optString("position_policy_id").isNotBlank()
+    }
+
+    /** Codex R4: experiment (Rule B) trades never enter v7 learning exports. Returns (kept rows, excluded). */
+    fun excludeExperimentTrades(rows: JSONArray): Pair<JSONArray, Int> {
+        val out = JSONArray(); var n = 0
+        for (i in 0 until rows.length()) {
+            val t = rows.optJSONObject(i)
+            if (isExperimentTrade(t)) n++ else out.put(rows.get(i))
+        }
+        return out to n
+    }
+
     data class Detached(val view: JSONObject?, val queued: List<String>)
 
     /**

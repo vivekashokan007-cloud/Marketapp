@@ -55,7 +55,11 @@ def planned_exit(cal, d0, expiry):
 
 
 def leg_quote_valid(q, now_ms):
+    """ts_ms must be the SOURCE book time of the quote (R2): the native adapter never substitutes the receipt
+    time. An adapter-declared inexact key / invalid source time is never valid."""
     if not isinstance(q, dict):
+        return False
+    if q.get("exact_key") is False or q.get("source_time_valid") is False:
         return False
     b, a = M._finite(q.get("bid")), M._finite(q.get("ask"))
     ts = M._finite(q.get("ts_ms"))
@@ -187,7 +191,20 @@ def revalidate_acceptance(decision, accept_quotes, now_ms, *, open_engine_positi
            "diag": {"screen_flags": [float(k) for k in model["screen_flags"]]}, "atoms": atoms,
            "lat": M.latent_bounds(atoms)}
     kset = [float(k) for k in decision["kset"]]
-    tau = float(decision["tau"])
+    # R1: the horizon is recomputed from the ACTUAL acceptance instant to the frozen planned exit (15:15 IST);
+    # the decision-time tau is kept only as evidence.
+    try:
+        tau = float(cal.tau(now_dt, CAL.ist_dt(decision["planned_exit_session"], 15, 15, 0), decision["expiry"]))
+    except CAL.CalendarUnavailable:
+        rec["status"] = "REJECTED"
+        rec["reason"] = "CALENDAR_UNAVAILABLE"
+        return rec
+    if not (0.0 < tau < 1.0):
+        rec["status"] = "REJECTED"
+        rec["reason"] = "NO_REMAINING_HORIZON"
+        return rec
+    rec["tau_at_acceptance"] = tau
+    rec["decision_tau"] = float(decision["tau"])
     pts = {k: M.ptilde(ref["lat"], k, tau) for k in kset}
     sl = [(int(l["qty"]), float(l["strike"]), int(l["cp"])) for l in legs]
     r = ENG.evaluate_candidate(ref, decision["structure"], decision["family"], sl, index=decision["index"],
@@ -215,6 +232,10 @@ def revalidate_acceptance(decision, accept_quotes, now_ms, *, open_engine_positi
                                      "bid": acc[l["instrument_key"]][0], "ask": acc[l["instrument_key"]][1],
                                      "quote_ts_ms": acc[l["instrument_key"]][2]} for l in legs],
                            "entry_cash_pts": r["entry_cash_pts"], "entry_fee": r["entry_fee"],
+                           "units": r["units"], "n_orders": len(legs),
+                           "structural_loss_pts": r["structural_loss_pts"],
+                           "structural_max_profit_pts": r.get("structural_max_profit_pts"),
+                           "tau_at_acceptance": tau, "accepted_at_ms": int(now_ms),
                            "fee_identity": FEES.fee_identity(now_dt.date().isoformat())},
                frozen_policy={"policy_id": POLICY_ID, "decision_id": decision["decision_id"],
                               "planned_exit_session": decision["planned_exit_session"], "expiry": decision["expiry"],
@@ -223,8 +244,35 @@ def revalidate_acceptance(decision, accept_quotes, now_ms, *, open_engine_positi
                               "fee_contract_version": FEES.FEE_CONTRACT_VERSION,
                               "lot_identity": decision["lot_identity"], "contract_lot": decision["contract_lot"],
                               "n_lots": decision["n_lots"], "source_quote_sha256": decision["source_quote_sha256"],
-                              "structure": decision["structure"], "margin": "NOT_MEASURED_PAPER"})
+                              "structure": decision["structure"], "family": decision.get("family"),
+                              "tau_at_acceptance": tau, "decision_tau": float(decision["tau"]),
+                              "margin": "NOT_MEASURED_PAPER"})
     return rec
+
+
+def rule_b_close_economics(entry_fill, fill):
+    """R4: accepted-trade economics from the FROZEN entry fill and the frozen Rule B exit fill, with the same dated
+    canonical fee contract (ev_v12_fees) used everywhere else. Returns gross/fees/net and fee identities (rupees).
+    Raises FEES.FeeUnavailable / KeyError / ValueError when inputs are incomplete (caller records UNKNOWN)."""
+    units = int(entry_fill["units"])
+    entry_cash = float(entry_fill["entry_cash_pts"])
+    entry_fee = float(entry_fill["entry_fee"])
+    by_key = {l["instrument_key"]: l for l in entry_fill["legs"]}
+    xl = fill["legs"]
+    if sorted(l["instrument_key"] for l in xl) != sorted(by_key) or any(
+            int(l["qty"]) != int(by_key[l["instrument_key"]]["qty"]) for l in xl):
+        raise ValueError("EXIT_LEGS_DO_NOT_MATCH_FROZEN_ENTRY")
+    close_value = sum(int(l["qty"]) * float(l["price"]) for l in xl)
+    exit_day = datetime.fromisoformat(fill["ts_iso"]).astimezone(CAL.IST).date().isoformat()
+    sell = sum(abs(int(l["qty"])) * float(l["price"]) for l in xl if int(l["qty"]) > 0)   # longs sold
+    buy = sum(abs(int(l["qty"])) * float(l["price"]) for l in xl if int(l["qty"]) < 0)    # shorts bought back
+    exit_fee = FEES.one_side_fee(sell, buy, len(xl), units, exit_day)
+    gross = units * (entry_cash + close_value)
+    return {"economics_version": "ev_v12_rule_b_close_economics_v1", "units": units,
+            "entry_cash_pts": entry_cash, "close_value_pts": close_value, "gross_pnl": gross,
+            "entry_fee": entry_fee, "exit_fee": exit_fee, "fees_total": entry_fee + exit_fee,
+            "net_pnl": gross - entry_fee - exit_fee,
+            "entry_fee_identity": entry_fill.get("fee_identity"), "exit_fee_identity": FEES.fee_identity(exit_day)}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -253,45 +301,59 @@ def net_close_pnl(entry_cash_pts, close_value_pts, units, entry_fee, n_orders, l
     return gross - entry_fee - xfee, gross, xfee
 
 
+MANAGED_V7_POLICY = "HYPOTHETICAL_POSITION_POLICY_V1_GROSS_FIXED_THRESHOLDS"
+ENGINE_TPSL_POLICY = "ENGINE_INFORMATIONAL_TP_SL_GROSS_FIXED_THRESHOLDS"
+THRESHOLD_BASIS = ("fixed PositionPolicyV1 constants TP_MULT=0.50 / SL_MULT=0.60 on GROSS P&L vs structural gross "
+                   "max profit/loss; published percentile thresholds of the live SHADOW path are NOT reproduced")
+INTRADAY_TYPES = ("IRON_CONDOR", "IRON_BUTTERFLY")
+
+
 def new_tracker(role, structure, legs, entry_cash_pts, units, entry_fee, max_profit_pts, max_loss_pts,
-                managed_policy):
+                managed_policy, managed_mode=None, entry_quotes=None, tpsl=True):
+    """managed_policy: None (Rule B only), ENGINE_TPSL_POLICY or MANAGED_V7_POLICY. managed_mode: 'intraday'
+    (EOD 15:15 on the decision session applies, as the live PWA stamps IC/IB) or 'UNVERIFIED_TRADE_MODE'
+    (no EOD is applied; the comparator's actual mode at decision time is unknown)."""
     return {"role": role, "structure": structure, "legs": legs, "entry_cash_pts": entry_cash_pts,
             "units": units, "entry_fee": entry_fee, "max_profit_pts": max_profit_pts,
-            "max_loss_pts": max_loss_pts, "managed_policy": managed_policy,
-            "rule_b": None, "tp_first": None, "sl_first": None, "managed_exit": None, "polls_seen": 0}
+            "max_loss_pts": max_loss_pts, "managed_policy": managed_policy, "managed_mode": managed_mode,
+            "entry_quotes": entry_quotes, "tpsl": bool(tpsl),
+            "rule_b": None, "tp_first": None, "sl_first": None, "managed_exit": None, "polls_seen": 0,
+            "polls_quoted": 0}
 
 
 def tracker_step(tr, chain_q, ts_dt, planned_exit_session, expiry, decision_session):
-    """One poll. First-hit evidence keeps the executable leg quotes and net fees so P&L is reproducible."""
+    """One poll. First-hit evidence keeps the executable leg quotes, gross, net and fees so P&L is reproducible.
+    TP/SL use GROSS P&L like the live PositionPolicyV1 SHADOW reference."""
     if tr.get("final"):
         return tr
     mark, quotes = structure_mark(tr["legs"], chain_q, tr["units"])
     tr["polls_seen"] += 1
     if mark is None:
         return tr
+    tr["polls_quoted"] = tr.get("polls_quoted", 0) + 1
     day = ts_dt.date().isoformat()
     lp = [(q, (ba[1] if q < 0 else ba[0])) for (q, K, cp), ba in zip(tr["legs"], quotes)]
     try:
         net, gross, xfee = net_close_pnl(tr["entry_cash_pts"], mark, tr["units"], tr["entry_fee"], len(tr["legs"]), lp, day)
     except FEES.FeeUnavailable:
         return tr
-    ev = {"ts": ts_dt.isoformat(), "mark_pts": round(mark, 2), "net": round(net, 2), "exit_fee": round(xfee, 2),
-          "quotes": quotes}
-    tp = TP_MULT * tr["max_profit_pts"] * tr["units"] if tr["max_profit_pts"] is not None else None
-    sl = -SL_MULT * tr["max_loss_pts"] * tr["units"] if tr["max_loss_pts"] is not None else None
-    if tr["tp_first"] is None and tp is not None and net >= tp:
-        tr["tp_first"] = ev
-    if tr["sl_first"] is None and sl is not None and net <= sl:
-        tr["sl_first"] = ev
+    ev = {"ts": ts_dt.isoformat(), "mark_pts": round(mark, 2), "net": round(net, 2), "gross": round(gross, 2),
+          "exit_fee": round(xfee, 2), "quotes": quotes}
+    if tr.get("tpsl", True):
+        tp = TP_MULT * tr["max_profit_pts"] * tr["units"] if tr["max_profit_pts"] is not None else None
+        sl = -SL_MULT * tr["max_loss_pts"] * tr["units"] if tr["max_loss_pts"] is not None else None
+        if tr["tp_first"] is None and tp is not None and gross >= tp:
+            tr["tp_first"] = ev
+        if tr["sl_first"] is None and sl is not None and gross <= sl:
+            tr["sl_first"] = ev
     hhmmss = _secs(ts_dt.astimezone(CAL.IST))
     w0, w1 = _win(EXIT_WINDOW)
-    # managed legacy policy (v7 comparator): intraday EOD at 15:15 on the decision session, TP/SL first
-    if tr["managed_policy"] == "POSITION_POLICY_V1_INTRADAY" and tr["managed_exit"] is None:
+    if tr["managed_policy"] == MANAGED_V7_POLICY and tr["managed_exit"] is None:
         if tr["tp_first"] is not None:
             tr["managed_exit"] = dict(tr["tp_first"], kind="TP")
         elif tr["sl_first"] is not None:
             tr["managed_exit"] = dict(tr["sl_first"], kind="SL")
-        elif day == decision_session and hhmmss >= w0:
+        elif tr.get("managed_mode") == "intraday" and day == decision_session and hhmmss >= w0:
             tr["managed_exit"] = dict(ev, kind="EOD")
     if tr["rule_b"] is None and day == planned_exit_session and w0 <= hhmmss < w1:
         tr["rule_b"] = dict(ev, kind="PLANNED_EXIT")
@@ -304,7 +366,8 @@ def finalize_trackers(trackers, now_dt, expiry):
         if tr.get("final"):
             continue
         if tr["rule_b"] is None:
-            tr["rule_b_status"] = "MISSING_EXIT_POLL"
+            tr["rule_b_status"] = "MISSING_EXIT_POLL" if tr.get("polls_quoted") or not tr.get("polls_seen") \
+                else "QUOTES_UNAVAILABLE"
         else:
             tr["rule_b_status"] = "COMPLETE"
         tr["final"] = True
