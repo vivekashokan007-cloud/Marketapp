@@ -21,7 +21,16 @@ import ev_v12_protocol as P  # noqa: E402
 DB = os.environ.get("EV_SUITE_DB") or "ev_suite_%d" % os.getpid()
 MIG = ["supabase/migrations/20260929100000_pc2_compact_dual_write.sql",
        "supabase/migrations/20261009120000_paper_decision_menu_evidence.sql",
-       "supabase/migrations/20261013150000_ev_v12_paper_experiment.sql"]
+       "supabase/migrations/20261013150000_ev_v12_paper_experiment.sql",
+       "supabase/migrations/20261014071354_ev_v12_builder_acl_public_rls.sql"]
+EV_MIG, FOLLOWUP = MIG[2], MIG[3]
+# Codex rollout hold: "baseline" = plain PostgreSQL defaults (PUBLIC EXECUTE only); "supabase" = additionally the
+# Supabase project default privileges for the migration-creating role (postgres) in schema public.
+PROFILE = os.environ.get("EV_SUITE_PROFILE", "baseline")
+assert PROFILE in ("baseline", "supabase"), PROFILE
+BUILDERS = ["public.ev_builder_state()", "public.ev_builder_publish(jsonb, jsonb, date)",
+            "public.ev_builder_seed(jsonb, jsonb, date, text, text, text)", "public.ev_builder_compact(date, jsonb)"]
+SUBMITS = ["public.ev_submit_decision(text, text)", "public.ev_submit_outcome(text, text, text)"]
 IST = timezone(timedelta(hours=5, minutes=30))
 results = []
 
@@ -86,7 +95,13 @@ def outcome_text(did, pad=0, x="1"):
     return P.canon(o)
 
 
-def setup(db):
+SUPABASE_DEFAULTS = """alter default privileges for role postgres in schema public
+  grant execute on functions to anon, authenticated, service_role;
+alter default privileges for role postgres in schema public
+  grant all on tables to anon, authenticated, service_role;"""
+
+
+def setup(db, migs=MIG):
     psql("create database %s" % db, db="postgres")
     psql("""do $$ begin
       if not exists (select 1 from pg_roles where rolname='anon') then create role anon nologin; end if;
@@ -97,11 +112,15 @@ def setup(db):
       decision_index integer not null, decision_json jsonb not null);
     create table public.trades_v2 (id bigserial primary key, status text default 'OPEN', paper boolean,
       entry_snapshot jsonb);""", db=db)
-    for m in MIG:
+    if PROFILE == "supabase":
+        psql(SUPABASE_DEFAULTS, db=db)
+    for m in migs:
         with open(os.path.join(ROOT, m)) as f:
             psql(f.read(), db=db)
-    with open(os.path.join(ROOT, MIG[2])) as f:
-        psql(f.read(), db=db)
+    if migs == MIG:
+        for m in (EV_MIG, FOLLOWUP):   # both re-apply idempotently (the follow-up twice in total)
+            with open(os.path.join(ROOT, m)) as f:
+                psql(f.read(), db=db)
 
 
 def register(db=None):
@@ -358,8 +377,12 @@ def builder_checks():
     ks, stv = CB.validate_publication(got, now_dt=datetime.fromisoformat(got["available_at"]) + timedelta(minutes=1),
                                       cal=cal)
     check("anon reads the latest publication; phone validator re-derives it (%s)" % stv, stv in ("OK", "NO_CALIBRATION_STALE"))
-    check("service_role cannot delete publications directly",
-          psql("delete from public.ev_calibration_published;", role="service_role", ok=False).returncode != 0)
+    # baseline: no table privilege (error); Supabase defaults: the row is invisible under RLS (0 rows) or the
+    # immutability trigger raises (BYPASSRLS) - either way no publication is removed
+    n0 = val("select count(*) from public.ev_calibration_published;")
+    dp = psql("delete from public.ev_calibration_published;", role="service_role", ok=False)
+    check("service_role cannot delete publications directly (%s)" % ("error" if dp.returncode else "no row removed"),
+          int(n0) > 0 and val("select count(*) from public.ev_calibration_published;") == n0)
     print("BUILDER sequence %s synthetic_ineligible=%s" % (list(seq), synthetic))
 
 
@@ -392,15 +415,120 @@ def growth_measurement(key):
     check("growth measured for %d sessions (physical %.0f B/session)" % (len(days), per), per > 0)
 
 
+def eff(fn, role, db=None):
+    return val_db("select has_function_privilege(%s, %s::regprocedure, 'EXECUTE');" % (q(role), q(fn)), db) == "t"
+
+
+def val_db(sql, db=None):
+    return psql(sql, db=db).stdout.strip()
+
+
+FP_SQL = """select md5(coalesce(string_agg(x, '|' order by x), '')) from (
+  select p.oid::regprocedure::text || '=' || coalesce(p.proacl::text, '<null>') x from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname in ('public','pc2_private','pdm_private') and p.proname not like 'ev\\_builder\\_%'
+  union all
+  select 'T:' || c.oid::regclass::text || '=' || coalesce(c.relacl::text, '<null>') from pg_class c
+    join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname in ('public','pc2_private','pdm_private','ev_private') and c.relkind in ('r','v','m','S')
+  union all
+  select 'P:' || schemaname || '.' || tablename || '.' || policyname || ':' || coalesce(qual,'') || ':' ||
+         coalesce(with_check,'') || ':' || array_to_string(roles, ',') from pg_policies
+   where tablename not in ('ev_decisions','ev_outcomes','ev_calibration_published')) s"""
+
+
+def acl_checks(key):
+    """Codex rollout-hold regressions 1, 4 (privileges) and 5 (RLS) on the main DB; the leak reproduction on an
+    old-migration-only DB."""
+    # 1. effective privileges after the corrected sequence (this profile)
+    for fn in BUILDERS:
+        check("[%s] %s: anon/authenticated denied, service_role + owner allowed" % (PROFILE, fn),
+              not eff(fn, "anon") and not eff(fn, "authenticated") and eff(fn, "service_role") and eff(fn, "postgres"))
+        check("[%s] %s: PUBLIC has no EXECUTE" % (PROFILE, fn), val(
+            "select count(*) from pg_proc p, aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a "
+            "where p.oid = %s::regprocedure and a.grantee = 0 and a.privilege_type = 'EXECUTE';" % q(fn)) == "0")
+        for role in ("anon", "authenticated"):
+            p = psql("select %s;" % fn.replace("jsonb", "null::jsonb").replace("date", "null::date")
+                     .replace("text", "null::text").replace("public.ev_builder_state()", "public.ev_builder_state()"),
+                     role=role, ok=False)
+            check("[%s] actual call %s as %s -> permission denied (42501), not a business error" % (PROFILE, fn, role),
+                  p.returncode != 0 and "permission denied for function" in p.stderr)
+    # 4. submit RPCs intact for the clients
+    set_today(date(2026, 10, 28))   # a fresh slot (not used by the other checks; growth starts 2 Nov)
+    for fn in SUBMITS:
+        check("[%s] %s still executable by anon + authenticated" % (PROFILE, fn),
+              eff(fn, "anon") and eff(fn, "authenticated"))
+    ack, err = submit(key, envelope("2026-10-27", salt="acl")["envelope_text"], role="authenticated")
+    check("[%s] authenticated designated collector submit still ACCEPTED" % PROFILE, (ack or {}).get("status") == "ACCEPTED")
+    ack, err = submit("0" * 64, envelope("2026-10-26", salt="acl")["envelope_text"], role="anon")
+    check("[%s] unregistered device still refused (collector authorization)" % PROFILE,
+          ack is None and "PDM_COLLECTOR_NOT_AUTHORIZED" in err)
+    ack, err = submit(key, envelope("2026-10-27", salt="acl")["envelope_text"], role="anon")
+    check("[%s] exact retry of the same envelope -> DUPLICATE" % PROFILE, (ack or {}).get("status") == "DUPLICATE")
+    # 5. RLS on the three public tables
+    for t in ("ev_decisions", "ev_outcomes", "ev_calibration_published"):
+        check("[%s] RLS enabled on public.%s with one SELECT-only policy for anon/authenticated" % (PROFILE, t), val(
+            "select c.relrowsecurity::text || '|' || (select string_agg(cmd || ':' || array_to_string(roles, ','), ';') "
+            "from pg_policies where schemaname = 'public' and tablename = %s) from pg_class c "
+            "where c.oid = 'public.%s'::regclass;" % (q(t), t)) == "true|SELECT:anon,authenticated")
+        for role in ("anon", "authenticated"):
+            p = psql("select count(*) from public.%s;" % t, role=role, ok=False)
+            check("[%s] %s SELECT public.%s allowed" % (PROFILE, role, t), p.returncode == 0)
+            p = psql("delete from public.%s;" % t, role=role, ok=False)
+            check("[%s] %s direct DELETE public.%s refused (permission denied)" % (PROFILE, role, t),
+                  p.returncode != 0 and "permission denied" in p.stderr)
+    p = psql("insert into public.ev_outcomes (decision_id, outcome_text, outcome_sha256) values ('x','y','z');",
+             role="anon", ok=False)
+    check("[%s] anon direct INSERT public.ev_outcomes refused (permission denied)" % PROFILE,
+          p.returncode != 0 and "permission denied" in p.stderr)
+    p = psql("insert into public.ev_calibration_published default values;", role="authenticated", ok=False)
+    check("[%s] authenticated direct INSERT public.ev_calibration_published refused (permission denied)" % PROFILE,
+          p.returncode != 0 and "permission denied" in p.stderr)
+    # with the client grant present, RLS alone still refuses a write (no write policy): scratch-only probe
+    psql("grant insert on public.ev_outcomes to anon;")
+    p = psql("insert into public.ev_outcomes (decision_id, outcome_text, outcome_sha256, outcome_bytes) "
+             "values ('x','y','z',1);", role="anon", ok=False)
+    psql("revoke insert on public.ev_outcomes from anon;")
+    check("[%s] even with an INSERT grant, RLS (no write policy) refuses the client write" % PROFILE,
+          p.returncode != 0 and "row-level security" in p.stderr)
+    p = psql("select count(*) from public.ev_decisions;", role="anon")
+    check("[%s] anon reads RPC-written decisions through the RLS policy (%s rows)" % (PROFILE, p.stdout.strip().splitlines()[-1]),
+          int(p.stdout.strip().splitlines()[-1]) >= 1)
+    # leak reproduction / correction / idempotence on a separate DB with ONLY the original migration
+    db2 = DB + "_old"
+    setup(db2, migs=MIG[:3])
+    try:
+        leaked = all(eff(fn, r, db2) for fn in BUILDERS for r in ("anon", "authenticated"))
+        if PROFILE == "supabase":
+            check("[supabase] original migration ALONE reproduces the leak (all 4 builders executable by clients)", leaked)
+        else:
+            check("[baseline] original migration alone: no client EXECUTE (PUBLIC revoked)", not any(
+                eff(fn, r, db2) for fn in BUILDERS for r in ("anon", "authenticated")))
+        fp0 = val_db(FP_SQL, db2)
+        for i in (1, 2):
+            with open(os.path.join(ROOT, FOLLOWUP)) as f:
+                psql(f.read(), db=db2)
+            check("[%s] follow-up applied (%d): all 4 builders refuse anon/authenticated, service_role kept" % (PROFILE, i),
+                  not any(eff(fn, r, db2) for fn in BUILDERS for r in ("anon", "authenticated"))
+                  and all(eff(fn, "service_role", db2) for fn in BUILDERS))
+        check("[%s] follow-up leaves every unrelated function/table ACL and policy unchanged (deterministic)" % PROFILE,
+              val_db(FP_SQL, db2) == fp0)
+        check("[%s] follow-up twice: exactly 3 ev public-read policies" % PROFILE, val_db(
+            "select count(*) from pg_policies where policyname like 'ev\\_%%public\\_read';", db2) == "3")
+    finally:
+        psql("drop database if exists %s" % db2, db="postgres", ok=False)
+
+
 def main():
     setup(DB)
     try:
-        check("migrations apply, ev migration re-applies idempotently", True)
+        check("[%s] migrations apply, ev migration + follow-up re-apply idempotently" % PROFILE, True)
         key, key2 = register()
         telemetry_checks(key, key2)
         trade_uid_checks()
         retention_checks(key)
         builder_checks()
+        acl_checks(key)
         growth_measurement(key)
         sizes = psql("select string_agg(c||'='||pg_total_relation_size(c::regclass),' ') from unnest(array["
                      "'public.ev_decisions','public.ev_outcomes','public.ev_calibration_published',"

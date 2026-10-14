@@ -125,6 +125,39 @@ def main():
         rec("outcome_before_decision", s, b, 409, "23503")
         s, b = call(base, "ev_builder_state", {}, role="anon")
         rec("builder_rpc_denied_anon", s, b, 401, "42501")
+        # Codex rollout hold (regression 2): all four builder RPCs deny both client roles with permission-denied
+        # semantics (42501), not a business error; service_role reaches the function (NOT_SEEDED = authorized).
+        bodies = {"ev_builder_state": {},
+                  "ev_builder_publish": {"p_observations": [], "p_publication": {}, "p_watermark_expiry": "2026-10-13"},
+                  "ev_builder_seed": {"p_observations": [], "p_publication": {}, "p_watermark_expiry": "2026-10-13",
+                                      "p_r_value": "1", "p_r_source": "x", "p_family": "x"},
+                  "ev_builder_compact": {"p_through": "2026-10-13", "p_checkpoint": {}}}
+        for fn, body in bodies.items():
+            for role, want in (("anon", 401), ("authenticated", 403)):
+                st, bd = call(base, fn, body, role=role)
+                S.check("[%s] REST %s as %s -> HTTP %s %s (want %s 42501)" % (S.PROFILE, fn, role, st, code_of(bd), want),
+                        st == want and code_of(bd) == "42501")
+        st, bd = call(base, "ev_builder_state", {}, role="service_role")
+        S.check("[%s] REST ev_builder_state as service_role reaches the function (HTTP %s %s: NOT_SEEDED)" % (
+            S.PROFILE, st, code_of(bd)), "EV_BUILDER_NOT_SEEDED" in bd and code_of(bd) != "42501")
+        # regression 5 over HTTP: public reads allowed, direct client writes refused
+        for role in ("anon", "authenticated"):
+            req = urllib.request.Request(base + "/ev_decisions?select=decision_id&limit=1",
+                                         headers={"apikey": jwt("anon"), "Authorization": "Bearer " + jwt(role)})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                S.check("[%s] REST %s SELECT ev_decisions allowed (HTTP %s)" % (S.PROFILE, role, r.status), r.status == 200)
+            req = urllib.request.Request(base + "/ev_outcomes", method="POST",
+                                         data=json.dumps({"decision_id": "x", "outcome_text": "y", "outcome_sha256": "z",
+                                                          "outcome_bytes": 1}).encode(),
+                                         headers={"apikey": jwt("anon"), "Authorization": "Bearer " + jwt(role),
+                                                  "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    st, bd = r.status, r.read().decode()
+            except urllib.error.HTTPError as e:
+                st, bd = e.code, e.read().decode()
+            S.check("[%s] REST %s direct INSERT ev_outcomes refused (HTTP %s %s)" % (S.PROFILE, role, st, code_of(bd)),
+                    st in (401, 403) and code_of(bd) == "42501")
         # fill today's receipt budget, then the next write is a quota refusal (HTTP 429, PT429)
         S.psql("update ev_private.receipt_quotas set bytes = 32700 where receipt_day = '2026-10-14';", db=S.DB)
         q = S.envelope("2026-10-12")
