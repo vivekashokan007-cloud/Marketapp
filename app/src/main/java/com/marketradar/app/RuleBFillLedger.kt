@@ -17,6 +17,11 @@ import java.io.File
  *                      SAME idempotent patch.
  *   REMOTE_CONFIRMED   the remote trades_v2 row was read back with the patch applied (ack()).
  *   MANUAL_CLOSE_CONFLICT  the conditional remote update found the row already closed by a manual close.
+ *   MANUAL_PENDING     (MANUAL_CLOSED entries, Codex C2) the user's manual close is journaled (manual_patch) but its
+ *                      conditional remote write is not yet proven; offered by pending() so it is retried.
+ * Manual and Rule B writers share ONE arbitration: both use the conditional status='OPEN' update and a close
+ * digest in close_trace_json; the readback decides the winner (manualResult / ack). A pending manual close is never
+ * remote-confirmed closure; an EXIT_FILLED entry with manual_pending=true has two competing writers.
  * Only REMOTE_CONFIRMED / MANUAL_CLOSE_CONFLICT stop the offer. A trade missing from the PWA's open-trade cache
  * is NOT proof of closure. Bounded: undelivered entries are never pruned (they are limited by the max-two
  * accepted positions); delivered entries are pruned after RETAIN_MS and beyond MAX_ENTRIES.
@@ -30,6 +35,9 @@ object RuleBFillLedger {
     const val REMOTE_PENDING = "REMOTE_PENDING"
     const val REMOTE_CONFIRMED = "REMOTE_CONFIRMED"
     const val MANUAL_CLOSE_CONFLICT = "MANUAL_CLOSE_CONFLICT"
+    const val MANUAL_PENDING = "MANUAL_PENDING"
+    const val MANUAL_WON = "MANUAL_WON"
+    const val RULE_B_WON = "RULE_B_WON"
     val TERMINAL = setOf("EXIT_FILLED", "UNRESOLVED", "MANUAL_CLOSED")
     val DELIVERED = setOf(REMOTE_CONFIRMED, MANUAL_CLOSE_CONFLICT)
     private val lock = Any()
@@ -101,7 +109,9 @@ object RuleBFillLedger {
         val trades = load(dir).optJSONObject("trades") ?: return out
         for (k in trades.keys()) {
             val e = trades.optJSONObject(k) ?: continue
-            if (e.optString("state") in setOf("EXIT_FILLED", "UNRESOLVED") && e.optString("delivery") !in DELIVERED) out.put(e)
+            val st = e.optString("state")
+            if (st in setOf("EXIT_FILLED", "UNRESOLVED") && e.optString("delivery") !in DELIVERED) out.put(e)
+            else if (st == "MANUAL_CLOSED" && e.optString("delivery") == MANUAL_PENDING && e.has("manual_patch")) out.put(e)
         }
         return out
     }
@@ -151,28 +161,80 @@ object RuleBFillLedger {
     }
 
     /**
-     * The user closed a Rule B trade manually. Before any Rule B terminal state: MANUAL_CLOSED (Rule B stops).
-     * If a Rule B fill is already terminal but not yet delivered, the manual close competes with it: the entry is
-     * kept and the conditional remote update decides (the PWA reports MANUAL_CLOSE_CONFLICT or REMOTE_CONFIRMED).
+     * The user closed a Rule B trade manually (Codex C2). Before any Rule B terminal state: MANUAL_CLOSED with
+     * delivery MANUAL_PENDING (Rule B stops; the remote write is NOT yet proven). If a Rule B fill is terminal but
+     * undelivered, both writers compete (manual_pending=true) and the conditional remote update decides. If the
+     * Rule B close is already remote-confirmed, the manual writer must not write at all.
      */
     fun noteManualClose(dir: File, tradeId: String, decisionId: String?, nowMs: Long): String = synchronized(lock) {
         val doc = load(dir)
         val trades = trades(doc)
         val cur = trades.optJSONObject(tradeId)
         val st = cur?.optString("state")
-        if (st == "MANUAL_CLOSED") return "ALREADY_MANUAL"
+        if (st == "MANUAL_CLOSED") return if (cur!!.optString("delivery") == MANUAL_PENDING) MANUAL_PENDING else "ALREADY_MANUAL"
         if (st == "EXIT_FILLED" || st == "UNRESOLVED") {
-            cur!!.put("manual_close_seen_ms", nowMs)
+            when (cur!!.optString("delivery")) {
+                REMOTE_CONFIRMED -> return if (st == "EXIT_FILLED") "RULE_B_ALREADY_CONFIRMED" else {
+                    // UNRESOLVED stays OPEN remotely (manual review): the manual close is the resolution
+                    cur.put("manual_pending", true).put("manual_close_seen_ms", nowMs); save(dir, doc); "RULE_B_TERMINAL_PENDING_DELIVERY"
+                }
+                MANUAL_CLOSE_CONFLICT -> return "ALREADY_MANUAL"
+            }
+            cur.put("manual_pending", true).put("manual_close_seen_ms", nowMs)
             save(dir, doc)
             return "RULE_B_TERMINAL_PENDING_DELIVERY"
         }
         trades.put(tradeId, JSONObject().put("trade_id", tradeId).put("decision_id", decisionId ?: JSONObject.NULL)
             .put("policy_id", RuleBExitPolicy.POLICY_ID).put("state", "MANUAL_CLOSED").put("reason", "USER_MANUAL_CLOSE")
-            .put("recorded_at_ms", nowMs).put("delivery", REMOTE_CONFIRMED).put("delivery_updated_ms", nowMs)
-            .put("acked_at_ms", nowMs))
+            .put("recorded_at_ms", nowMs).put("delivery", MANUAL_PENDING).put("delivery_updated_ms", nowMs))
         prune(trades, nowMs)
         save(dir, doc)
-        return "MANUAL_CLOSED"
+        return MANUAL_PENDING
+    }
+
+    /** Journal the exact manual close patch (retried verbatim after a restart/ambiguous failure). */
+    fun manualJournal(dir: File, tradeId: String, patchJson: String, nowMs: Long): String = synchronized(lock) {
+        if (patchJson.length > MAX_PATCH_CHARS) return "REFUSED_OVERSIZE"
+        val patch = try { JSONObject(patchJson) } catch (e: Exception) { return "REFUSED_INVALID_JSON" }
+        val doc = load(dir)
+        val e = trades(doc).optJSONObject(tradeId) ?: return "UNKNOWN_TRADE"
+        val manualOpen = (e.optString("state") == "MANUAL_CLOSED" && e.optString("delivery") == MANUAL_PENDING) ||
+            e.optBoolean("manual_pending")
+        if (!manualOpen) return "NO_PENDING_MANUAL_CLOSE"
+        e.optJSONObject("manual_patch")?.let { return if (it.toString() == patch.toString()) "ALREADY_JOURNALED" else "JOURNALED_PATCH_DIFFERS" }
+        e.put("manual_patch", patch).put("manual_journaled_ms", nowMs)
+        save(dir, doc)
+        return "JOURNALED"
+    }
+
+    /**
+     * Shared-arbitration result proven by the remote readback: MANUAL_WON (the row carries the manual close digest)
+     * or RULE_B_WON (the row carries this entry's Rule B digest; the manual writer stops and never overwrites).
+     * Returns the resulting delivery state, or null when refused.
+     */
+    fun manualResult(dir: File, tradeId: String, result: String, nowMs: Long): String? = synchronized(lock) {
+        val doc = load(dir)
+        val e = trades(doc).optJSONObject(tradeId) ?: return null
+        val st = e.optString("state")
+        when (result) {
+            MANUAL_WON -> {
+                if (st == "MANUAL_CLOSED") e.put("delivery", REMOTE_CONFIRMED)
+                else if (st == "EXIT_FILLED" || st == "UNRESOLVED") {
+                    if (e.optString("delivery") == REMOTE_CONFIRMED && st == "EXIT_FILLED") return null   // Rule B already proven
+                    e.put("delivery", MANUAL_CLOSE_CONFLICT)   // the frozen fill is kept as superseded evidence
+                } else return null
+                e.remove("manual_pending")
+                e.put("manual_won_ms", nowMs).put("delivery_updated_ms", nowMs).put("acked_at_ms", nowMs)
+            }
+            RULE_B_WON -> {
+                if (st != "EXIT_FILLED") return null
+                e.remove("manual_pending")
+                e.put("manual_superseded_ms", nowMs)
+            }
+            else -> return null
+        }
+        save(dir, doc)
+        return e.optString("delivery")
     }
 
     fun prune(trades: JSONObject, nowMs: Long) {

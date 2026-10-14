@@ -34,6 +34,7 @@ object EvExperiment {
         ctx.put("evStateDir", stateDir(filesDir).absolutePath)
         ctx.put("evPollMs", pollMs)
         if (chainFetchedMs != null && chainFetchedMs > 0) ctx.put("evQuoteFetchedAtMs", chainFetchedMs)
+        ctx.put("evCaptureSource", "LIVE_PHONE_POLL")   // Codex C4 provenance: the live native poll path
         if (!calibration.isNullOrBlank()) {
             try { ctx.put("evCalibration", JSONObject(calibration)) } catch (e: Exception) { /* Python reports NO_CALIBRATION */ }
         }

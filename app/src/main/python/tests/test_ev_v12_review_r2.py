@@ -137,7 +137,9 @@ class AcceptanceTransaction(unittest.TestCase):
         self.assertEqual(A.mark_persisted(self.d, self.did, "4711", now, trade_uid=A.trade_uid(self.did))["state"], "PERSISTED")
         self.assertEqual(A.mark_persisted(self.d, self.did, "4712", now, trade_uid=A.trade_uid(self.did))["reason"],
                          "TRADE_ID_CONFLICT")
-        self.assertEqual(A.recovery(self.d), [])
+        # Codex C3: PERSISTED stays in recovery (open-position reconciliation) until it is CLOSED
+        self.assertEqual([(r["decision_id"], r["state"], r["trade_id"]) for r in A.recovery(self.d)],
+                         [(self.did, "PERSISTED", "4711")])
         doc = A.load(self.d)
         for i in range(A.MAX_ENTRIES + 10):
             doc["entries"]["x%d" % i] = {"decision_id": "x%d" % i, "state": "CLOSED", "closed_ms": i,
@@ -146,6 +148,8 @@ class AcceptanceTransaction(unittest.TestCase):
         doc = A.load(self.d)
         self.assertLessEqual(len(doc["entries"]), A.MAX_ENTRIES)
         self.assertEqual(doc["entries"][self.did]["state"], "PERSISTED")   # live entries never pruned
+        A.mark_closed(self.d, self.did, "RULE_B", now)
+        self.assertEqual(A.recovery(self.d), [])
 
 
 class AcceptedOutcomeJoin(unittest.TestCase):
@@ -189,6 +193,11 @@ class AcceptedOutcomeJoin(unittest.TestCase):
         A.mark_persisted(self.d, self.did, self.row, 1, trade_uid=self.uid)
         self.ledger({"trade_id": self.uid, "state": "EXIT_FILLED", "fill": self.fill(), "delivery": "REMOTE_PENDING"})
         o, auth = I._accepted_outcome(self.d, self.did, [], [])
+        self.assertEqual((o["status"], auth), ("PENDING_ARBITRATION", False))   # Codex C1
+        econ0 = L.rule_b_close_economics(self.com["entry_fill"], self.fill())
+        self.assertAlmostEqual(float(o["local_fill"]["net_pnl"]), econ0["net_pnl"], places=2)
+        self.ledger({"trade_id": self.uid, "state": "EXIT_FILLED", "fill": self.fill(), "delivery": "REMOTE_CONFIRMED"})
+        o, auth = I._accepted_outcome(self.d, self.did, [], [])
         self.assertTrue(auth)
         self.assertEqual(o["status"], "PLANNED_CLOSE")
         self.assertIsNotNone(o["net_pnl"])
@@ -212,8 +221,15 @@ class AcceptedOutcomeJoin(unittest.TestCase):
         self.assertEqual((o["status"], auth), ("OPEN", False))
         self.ledger({"trade_id": self.uid, "state": "UNRESOLVED", "reason": "NO_VALID_QUOTE_BY_EXPIRY_DEADLINE"})
         o, auth = I._accepted_outcome(self.d, self.did, [], [])
+        self.assertEqual((o["status"], auth), ("PENDING_ARBITRATION", False))   # not delivered yet (C1)
+        self.ledger({"trade_id": self.uid, "state": "UNRESOLVED", "reason": "NO_VALID_QUOTE_BY_EXPIRY_DEADLINE",
+                     "delivery": "REMOTE_CONFIRMED"})
+        o, auth = I._accepted_outcome(self.d, self.did, [], [])
         self.assertEqual((o["status"], auth), ("UNRESOLVED", True))
-        self.ledger({"trade_id": self.uid, "state": "MANUAL_CLOSED"})
+        self.ledger({"trade_id": self.uid, "state": "MANUAL_CLOSED", "delivery": "MANUAL_PENDING"})
+        o, auth = I._accepted_outcome(self.d, self.did, [], [])
+        self.assertEqual((o["status"], o["manual_pending"], auth), ("PENDING_ARBITRATION", True, False))
+        self.ledger({"trade_id": self.uid, "state": "MANUAL_CLOSED", "delivery": "REMOTE_CONFIRMED"})
         o, auth = I._accepted_outcome(self.d, self.did, [], [])
         self.assertEqual((o["status"], auth), ("MANUAL_EARLY_CLOSE", False))   # waits for the closed row
         closed = [{"id": self.row, "status": "CLOSED", "actual_pnl": 50.0, "net_pnl": 12.5, "exit_reason": "MANUAL"}]
@@ -222,7 +238,7 @@ class AcceptedOutcomeJoin(unittest.TestCase):
 
     def test_row_id_recovered_from_uid_stamped_row_after_crash(self):
         # COMMITTED, the PWA crashed before evMarkTradePersisted: the open row carries ev_trade_uid
-        self.ledger({"trade_id": self.row, "state": "EXIT_FILLED", "fill": self.fill(), "delivery": "PENDING_APPLY"})
+        self.ledger({"trade_id": self.row, "state": "EXIT_FILLED", "fill": self.fill(), "delivery": "REMOTE_CONFIRMED"})
         open_rows = [{"id": 4711, "paper": True, "entry_snapshot": {"ev_trade_uid": self.uid}}]
         o, auth = I._accepted_outcome(self.d, self.did, open_rows, [])
         self.assertEqual((o["status"], auth), ("PLANNED_CLOSE", True))
@@ -300,7 +316,7 @@ class G1G5Report(unittest.TestCase):
             self.assertEqual(c["G3"]["members"], c["G3"]["invalid_or_missing"] + c["G3"]["ev_robust_positive"]["n"]
                              + c["G3"]["ev_robust_nonpositive"]["n"])
             self.assertEqual(c["G5b"]["forward_bias_points"]["n"], 1)
-            self.assertIn("ev_robust", c["G5b"]["structure_value_error_per_lot_rupees"])
+            self.assertIn("ev_robust", c["G5b"]["ev_forecast_residual_per_lot_rupees"])
             # labels identical for both forecasts: hand-computed Brier
             body = json.loads(outcome_text)
             g4 = json.loads(env_text)["business"]["g4"]

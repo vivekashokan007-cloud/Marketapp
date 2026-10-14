@@ -265,3 +265,6 @@ Do not change v7 ranking/gates/sizing/exits/teacher fee from this code path.
 
 ### Implied-EV v1.2 review R2 (14 Oct 2026)
 See docs/ev_v12/README.md "Review R2 corrections": native-owned acceptance (EvAcceptance), `entry_snapshot.ev_trade_uid` + unique index (trades_v2.id is bigint), Rule B ledger v2 ACK-after-readback, telemetry error contract, experiment trades excluded from all learning.
+
+### Implied-EV v1.2 re-review C1–C5 (14 Oct 2026)
+See docs/ev_v12/README.md "Re-review C1–C5 corrections": accepted outcome stays PENDING_ARBITRATION until remote proof (UNKNOWN_PENDING_ARBITRATION at the bounded timeout); manual and Rule B closes share one digest-proven conditional arbitration; PERSISTED acceptances are reconciled into native open_trades; durable acceptance-ledger quarantine; G5b forecast residual vs conditional pricing residual; checked FORWARD provenance; deterministic parity test.

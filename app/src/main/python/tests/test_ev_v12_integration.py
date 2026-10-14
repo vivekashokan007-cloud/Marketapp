@@ -185,17 +185,23 @@ class BrainAnalyze(unittest.TestCase):
         with open(os.path.join(HERE, "fixtures", name + ".json")) as f:
             return json.load(f)["inputs"]
 
-    def test_real_and_off_unchanged_paper_adds_only_key(self):
-        d = tempfile.mkdtemp()
-        try:
-            inp = self._fx("fixture_a_bull_credit_range")
-            args = (inp["poll_json"], inp["closed_trades_json"], inp["baseline_json"], inp["open_trades_json"], "[]", "{}")
-            base = json.loads(inp["ctx_json"])
-            ev = ctx_for(d)
-            ev_keys = {k: ev[k] for k in ev if k.startswith("ev")}
+    def _parity_pass(self, d, budget_ms):
+        """One full parity pass with the EXISTING PC2 directional-shadow diagnostic budget fixed (Codex C5): that
+        diagnostic times itself with time.perf_counter, so two identical analyze() calls could otherwise take
+        different branches under load (point_only vs retained membership). Ranking/gates/sizing are still compared."""
+        from unittest import mock
+        inp = self._fx("fixture_a_bull_credit_range")
+        args = (inp["poll_json"], inp["closed_trades_json"], inp["baseline_json"], inp["open_trades_json"], "[]", "{}")
+        base = json.loads(inp["ctx_json"])
+        ev = ctx_for(d)
+        ev_keys = {k: ev[k] for k in ev if k.startswith("ev")}
+        seen_abort = []
+        with mock.patch.object(brain, "PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS", budget_ms):
             for mode in ("live", "sandbox", "paper"):
                 c0 = dict(base, executionMode=mode, nfChain=ev["nfChain"], nfExpiry=ev["nfExpiry"])
-                a = json.loads(brain.analyze(*args, json.dumps(c0)))
+                raw_a = brain.analyze(*args, json.dumps(c0))
+                seen_abort.append('"latency_budget_exceeded": true' in raw_a)
+                a = json.loads(raw_a)
                 for em in (("off", "observe", "active") if mode == "paper" else ("active",)):
                     c1 = dict(c0, **dict(ev_keys, evExperimentMode=em))
                     b = json.loads(brain.analyze(*args, json.dumps(c1)))
@@ -208,8 +214,24 @@ class BrainAnalyze(unittest.TestCase):
                     for k in ("verdict", "watchlist", "generated_candidates", "ranked_candidates_full",
                               "decisionSource", "brainVersion"):
                         self.assertEqual(_norm(a.get(k)), _norm(b.get(k)), (mode, em, k))
+        return seen_abort
+
+    def test_real_and_off_unchanged_paper_adds_only_key(self):
+        d = tempfile.mkdtemp()
+        try:
+            # never-aborting diagnostic (full shadow membership) - deterministic regardless of machine load
+            self.assertFalse(any(self._parity_pass(d, float("inf"))))
         finally:
             shutil.rmtree(d)
+
+    def test_parity_also_holds_when_the_shadow_budget_aborts(self):
+        # the production fail-open timeout branch (budget exhausted immediately) is equally neutral and is observable
+        d = tempfile.mkdtemp()
+        try:
+            self.assertTrue(any(self._parity_pass(d, 0.0)))
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual(brain.PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS, 150.0)   # production budget unchanged
 
 
 class LearningExclusion(unittest.TestCase):

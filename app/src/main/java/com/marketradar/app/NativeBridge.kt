@@ -2635,7 +2635,10 @@ class NativeBridge(private val context: Context) {
         EvAcceptance.markPersisted(EvExperiment.stateDir(context.filesDir), decisionId.trim(), tradeId.trim(),
             tradeUid.trim(), System.currentTimeMillis())
 
-    /** R1: COMMITTED-but-not-PERSISTED acceptances (complete frozen records) for idempotent re-insert at startup. */
+    /**
+     * R1/C3: nonterminal acceptances (complete frozen records): COMMITTED for idempotent re-insert, PERSISTED for
+     * open-position reconciliation (reinstall into open_trades, or reconcile a CLOSED remote row).
+     */
     @JavascriptInterface
     fun evAcceptanceRecovery(): String = EvAcceptance.recovery(EvExperiment.stateDir(context.filesDir))
 
@@ -2677,15 +2680,43 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun evRuleBAck(tradeId: String): Boolean = false
 
-    /** R3: the user closed a Rule B trade manually (Rule B stops; a racing fill is decided remotely). */
+    /**
+     * Codex C2: the user closed a Rule B trade manually. Rule B stops natively, but the close is only MANUAL_PENDING
+     * until the PWA proves its conditional remote write (evManualCloseResult). Returns RULE_B_ALREADY_CONFIRMED when
+     * the Rule B close already won (the manual writer must not write).
+     */
     @JavascriptInterface
-    fun evNoteManualClose(tradeId: String, decisionId: String): String {
+    fun evNoteManualClose(tradeId: String, decisionId: String): String =
+        RuleBFillLedger.noteManualClose(EvExperiment.stateDir(context.filesDir), tradeId.trim(),
+            decisionId.trim().ifBlank { null }, System.currentTimeMillis())
+
+    /** Codex C2: journal the exact manual close patch before the conditional remote write. */
+    @JavascriptInterface
+    fun evManualCloseJournal(tradeId: String, patchJson: String): String =
+        RuleBFillLedger.manualJournal(EvExperiment.stateDir(context.filesDir), tradeId.trim(), patchJson, System.currentTimeMillis())
+
+    /** Codex C2: remote readback decided the shared arbitration (MANUAL_WON | RULE_B_WON). */
+    @JavascriptInterface
+    fun evManualCloseResult(tradeId: String, result: String): String {
         val dir = EvExperiment.stateDir(context.filesDir)
         val now = System.currentTimeMillis()
-        val r = RuleBFillLedger.noteManualClose(dir, tradeId.trim(), decisionId.trim().ifBlank { null }, now)
-        if (r == "MANUAL_CLOSED" && decisionId.isNotBlank()) EvAcceptance.markClosed(dir, decisionId.trim(), "MANUAL_CLOSE", now)
+        val e = RuleBFillLedger.entry(dir, tradeId.trim())
+        val r = RuleBFillLedger.manualResult(dir, tradeId.trim(), result.trim(), now) ?: return "REFUSED"
+        val did = e?.optString("decision_id").orEmpty()
+        if (result.trim() == RuleBFillLedger.MANUAL_WON && did.isNotBlank() && did != "null")
+            EvAcceptance.markClosed(dir, did, "MANUAL_CLOSE", now)
         return r
     }
+
+    /** Codex C3: a PERSISTED acceptance whose remote row is already CLOSED (reconciled, not reinstalled). */
+    @JavascriptInterface
+    fun evAcceptanceReconciledClosed(decisionId: String): String =
+        EvAcceptance.markClosed(EvExperiment.stateDir(context.filesDir), decisionId.trim(), "RECONCILED_REMOTE_CLOSED",
+            System.currentTimeMillis())
+
+    /** Codex C3: durable acceptance-ledger quarantine status (null when healthy). */
+    @JavascriptInterface
+    fun evAcceptanceQuarantine(): String = EvAcceptance.quarantineStatus(EvExperiment.stateDir(context.filesDir))
 
     /** Start a request-scoped fresh Paper-close quote capture. */
     @JavascriptInterface

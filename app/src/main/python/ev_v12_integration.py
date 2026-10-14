@@ -285,6 +285,11 @@ def compute_decision(ctx, result, *, now_ms, session_date, expiry, ste, planned,
                 "decision_poll_ms": int(now_ms),
                 "calibration_version": (cal_pub or {}).get("calibration_version"),
                 "calibration_sha256": (cal_pub or {}).get("payload_sha256"),
+                # Codex C4: research provenance (a FORWARD claim needs a live capture AND a publication available
+                # before this decision; the calibration family name alone is not proof of forward causality)
+                "calibration_available_at": (cal_pub or {}).get("available_at"),
+                "calibration_retrospective_seed": (cal_pub or {}).get("retrospective_seed"),
+                "capture_source": str(ctx.get("evCaptureSource") or "UNDECLARED")[:32],
                 "kset": [P.fx(k, 6) for k in kset] if kset else None}
     local = {}
     if fetched is None:
@@ -515,28 +520,42 @@ def _accepted_outcome(state_dir, decision_id, open_trades, closed_trades):
     base = {"trade_id": row_id, "trade_uid": uid, "accepted_at_ms": rec.get("accepted_at_ms"),
             "entry_fee": P.fx(((rec.get("entry_fill") or {}).get("entry_fee")), 2)}
     rb = rule_b_ledger_entry(state_dir, row_id) if row_id else None
-    if rb and (rb.get("state") == "MANUAL_CLOSED" or rb.get("delivery") == "MANUAL_CLOSE_CONFLICT"):
-        # the user closed it before (or racing) Rule B: the manual close is the accepted component
+    delivery = (rb or {}).get("delivery") or "PENDING_APPLY"
+    manual_won = rb is not None and (delivery == "MANUAL_CLOSE_CONFLICT"
+                                     or (rb.get("state") == "MANUAL_CLOSED" and delivery == "REMOTE_CONFIRMED"))
+    if manual_won:
+        # Codex C1/C2: the manual writer won the shared conditional arbitration (remote proof recorded natively)
         if closed is None:
             return dict(base, status="MANUAL_EARLY_CLOSE", net_pnl=None,
-                        net_status="MANUAL_CLOSE_PENDING_PROJECTION"), False
+                        net_status="MANUAL_CLOSE_PENDING_PROJECTION", local_fill=_local_fill(rec, rb)), False
         net = closed.get("net_pnl")
-        return dict(base, status="MANUAL_EARLY_CLOSE", gross_pnl=P.fx(closed.get("actual_pnl"), 2),
-                    net_pnl=P.fx(net, 2) if isinstance(net, (int, float)) else None,
-                    net_status="RECORDED" if isinstance(net, (int, float)) else "MANUAL_CLOSE_NET_NOT_RECORDED"), True
+        out = dict(base, status="MANUAL_EARLY_CLOSE", gross_pnl=P.fx(closed.get("actual_pnl"), 2),
+                   net_pnl=P.fx(net, 2) if isinstance(net, (int, float)) else None,
+                   net_status="RECORDED" if isinstance(net, (int, float)) else "MANUAL_CLOSE_NET_NOT_RECORDED")
+        lf = _local_fill(rec, rb)
+        if lf:
+            out["superseded_rule_b_fill"] = lf   # the competing frozen fill is kept as evidence, never the result
+        return out, True
+    if rb and rb.get("state") in ("EXIT_FILLED", "UNRESOLVED", "MANUAL_CLOSED"):
+        if delivery != "REMOTE_CONFIRMED" or rb.get("manual_pending"):
+            # Codex C1: a locally frozen fill (or a pending manual close) is evidence, not the final accepted result,
+            # until the remote arbitration is proven. Never authoritative here.
+            return dict(base, status="PENDING_ARBITRATION", delivery=delivery,
+                        manual_pending=bool(rb.get("manual_pending")) or rb.get("state") == "MANUAL_CLOSED",
+                        local_fill=_local_fill(rec, rb)), False
     if rb and rb.get("state") == "EXIT_FILLED" and rb.get("fill"):
         kind = "PLANNED_CLOSE" if (rb["fill"].get("kind") == "PLANNED_EXIT") else "LATE_CLOSE"
         try:
             econ = L.rule_b_close_economics(rec["entry_fill"], rb["fill"])
         except (KeyError, ValueError, TypeError, FEES.FeeUnavailable) as x:
             return dict(base, status=kind, net_pnl=None, economics_error=str(x)[:60],
-                        delivery=rb.get("delivery")), True
+                        delivery=delivery), True
         return dict(base, status=kind, gross_pnl=P.fx(econ["gross_pnl"], 2), exit_fee=P.fx(econ["exit_fee"], 2),
                     net_pnl=P.fx(econ["net_pnl"], 2), exit_ts=str(rb["fill"].get("ts_iso"))[:25],
-                    delivery=rb.get("delivery") or "PENDING_APPLY",
+                    delivery=delivery,
                     fee_identity=(econ["exit_fee_identity"] or {}).get("fee_contract_version")), True
     if rb and rb.get("state") == "UNRESOLVED":
-        return dict(base, status="UNRESOLVED", reason=rb.get("reason"), delivery=rb.get("delivery")), True
+        return dict(base, status="UNRESOLVED", reason=rb.get("reason"), delivery=delivery), True
     if closed is not None:
         reason = str(closed.get("exit_reason") or "")
         if "RULE_B_" not in reason:
@@ -547,6 +566,68 @@ def _accepted_outcome(state_dir, decision_id, open_trades, closed_trades):
     if e.get("state") == "COMMITTED":
         return dict(base, status="PENDING_COMMIT_SYNC"), False
     return dict(base, status="OPEN"), False
+
+
+PRICING_DIAG_VERSION = "ev_v12_conditional_pricing_diag_v1"
+
+
+def pricing_diagnostic(atoms, tau, legs, F_exit, quotes, exec_value_pts, contract_lot, exit_fee_rupees=None):
+    """Codex C4: conditional horizon option-price diagnostic at the REALIZED exit state, separate from the EV
+    forecast residual. Shared v1.2 pricing: latent state w inverted from the realized exit forward (invert_forward),
+    model value = E[expiry payoff | w] (state_values, zero-rate). Observed: mid and executable structure values.
+      model_price_residual = observed mid value - conditional model value   (gross pricing error)
+      execution_residual   = executable value - mid value                   (spread / execution)
+      exit_fee             reported separately (fees are never mixed into the pricing residual)
+    Values are position values sum(qty * price) in points; per-lot rupees = points * contract_lot."""
+    if not atoms or tau is None or F_exit is None or not quotes or len(quotes) != len(legs):
+        return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": "MODEL_OR_EXIT_STATE_MISSING"}
+    try:
+        lat = M.latent_bounds([(float(a), float(b)) for a, b in atoms])
+        w, st = M.invert_forward(lat, float(tau), float(F_exit))
+        if w is None:
+            return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": st}
+        model_v, _sh = M.state_values(lat, float(tau), w, [(float(q), float(K), int(cp)) for q, K, cp in legs])
+        mid_v = sum(float(q) * 0.5 * (float(ba[0]) + float(ba[1])) for (q, K, cp), ba in zip(legs, quotes))
+    except (TypeError, ValueError, ZeroDivisionError, M.EngineTimeout) as e:
+        return {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE", "reason": "PRICING_ERROR:" + type(e).__name__}
+    lot = float(contract_lot)
+    out = {"v": PRICING_DIAG_VERSION, "status": "OK", "F_exit": P.fx(F_exit, 2), "tau": P.fx(tau, 6),
+           "model_value_pts": P.fx(model_v, 4), "mid_value_pts": P.fx(mid_v, 4),
+           "model_price_residual_per_lot_rupees": P.fx((mid_v - model_v) * lot, 2)}
+    if exec_value_pts is not None:
+        out["exec_value_pts"] = P.fx(exec_value_pts, 4)
+        out["execution_residual_per_lot_rupees"] = P.fx((float(exec_value_pts) - mid_v) * lot, 2)
+    if exit_fee_rupees is not None:
+        out["exit_fee_rupees"] = P.fx(exit_fee_rupees, 2)
+    return out
+
+
+def _pick_pricing_diag(state_dir, doc, tr, q):
+    slot = P.load_slot(state_dir, "NF", doc["session_date"]) or {}
+    ac = slot.get("acceptance_context") or {}
+    model = ac.get("model") or {}
+    Fx = None
+    try:
+        Fx, _f, _s = M.parity_forward(q)
+    except Exception:   # noqa: BLE001 - diagnostic only, coverage is reported instead
+        Fx = None
+    rb = tr.get("rule_b") or {}
+    return pricing_diagnostic(model.get("atoms"), ac.get("tau"), tr["legs"], Fx, rb.get("quotes"), rb.get("mark_pts"),
+                              ac.get("contract_lot"), rb.get("exit_fee"))
+
+
+def _local_fill(rec, rb):
+    """Small evidence record of a locally frozen Rule B fill (never the final result by itself)."""
+    if not rb or rb.get("state") != "EXIT_FILLED" or not rb.get("fill"):
+        return None
+    out = {"kind": rb["fill"].get("kind"), "ts": str(rb["fill"].get("ts_iso"))[:25],
+           "close_value_pts": P.fx(rb["fill"].get("close_value_pts"), 4)}
+    try:
+        econ = L.rule_b_close_economics(rec["entry_fill"], rb["fill"])
+        out.update(gross_pnl=P.fx(econ["gross_pnl"], 2), net_pnl=P.fx(econ["net_pnl"], 2))
+    except (KeyError, ValueError, TypeError, FEES.FeeUnavailable):
+        out["net_pnl"] = None
+    return out
 
 
 def _ev(e, keep_q=True):
@@ -569,6 +650,10 @@ def _tracker_summary(tr):
            "path_resolution": "brain_poll_5min", "tpsl_policy": tr.get("managed_policy"),
            "entry": {"cash": P.fx(tr["entry_cash_pts"], 2), "fee": P.fx(tr["entry_fee"], 2), "units": tr["units"],
                      "legs": [_fmt_leg(l) for l in tr["legs"]]}}
+    if tr["role"] == "ENGINE_PICK":
+        out["pricing_diag"] = tr.get("pricing_diag") or {"v": PRICING_DIAG_VERSION, "status": "UNAVAILABLE",
+                                                         "reason": "NO_RULE_B_EXIT_POLL" if tr.get("rule_b") is None
+                                                         else "NOT_RECORDED"}
     if tr.get("managed_policy") == L.MANAGED_V7_POLICY:
         out["managed_exit"] = _ev(tr["managed_exit"])
         out["managed_mode"] = tr.get("managed_mode")
@@ -623,7 +708,10 @@ def step_trackers(state_dir, ctx, now_ms, cal, open_trades, closed_trades):
                 q, _m, _r = M.validate_chain_quotes(chain_rows(chain, expiry, fetched), index="NF", expiry=expiry,
                                                     decision_ms=now_ms, require_identity=False)
             for tr in doc["trackers"]:
+                had = tr.get("rule_b") is not None
                 L.tracker_step(tr, q, now_dt, doc["planned_exit_session"], doc["expiry"], doc["session_date"])
+                if tr["role"] == "ENGINE_PICK" and not had and tr.get("rule_b") is not None:
+                    tr["pricing_diag"] = _pick_pricing_diag(state_dir, doc, tr, q)   # same poll as the fill
             secs = now_dt.hour * 3600 + now_dt.minute * 60 + now_dt.second
             if now_dt.date().isoformat() == doc["planned_exit_session"] and 15 * 3600 + 15 * 60 <= secs < 15 * 3600 + 28 * 60 \
                     and doc.get("F_exit") is None:
@@ -636,7 +724,15 @@ def step_trackers(state_dir, ctx, now_ms, cal, open_trades, closed_trades):
             waited = now_ms - deadline.timestamp() * 1000.0
             if authoritative or waited >= ACCEPTED_MAX_WAIT_MS:
                 if not authoritative:
-                    accepted = dict(accepted, finalized_without_authoritative_accepted=True)
+                    # Codex C1: at the declared bounded timeout the accepted component is labelled UNKNOWN with
+                    # coverage; a provisional local fill is never certified as final actual performance.
+                    prior = accepted.get("status")
+                    accepted = {k: v for k, v in accepted.items()
+                                if k not in ("gross_pnl", "net_pnl", "exit_fee", "net_status")}
+                    accepted.update(status="UNKNOWN_PENDING_ARBITRATION" if prior == "PENDING_ARBITRATION"
+                                    else "UNKNOWN", unresolved_status=prior,
+                                    finalized_without_authoritative_accepted=True,
+                                    coverage={"waited_ms": int(waited), "max_wait_ms": ACCEPTED_MAX_WAIT_MS})
                 doc["outcome"] = build_outcome(doc, accepted, now_ms)
                 out.append(doc["outcome"])
             else:

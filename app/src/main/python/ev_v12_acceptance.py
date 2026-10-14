@@ -14,7 +14,13 @@ serialized against each other and against concurrent taps.
   cancel   -> (removed)  only a RESERVED entry; COMMITTED is never undone.
   persisted-> PERSISTED  the trades_v2 row with id == trade_uid exists (insert ACK or readback after a lost response).
   closed   -> CLOSED     Rule B close confirmed remotely, or a manual close was recorded (kind kept).
-  recovery               COMMITTED-but-not-PERSISTED records for an idempotent re-insert after a crash/timeout.
+  recovery               every nonterminal accepted record: COMMITTED (idempotent re-insert) and PERSISTED (Codex R3
+                         C3: reconcile against the remote row and reinstall into the native open-position list if
+                         the WebView died between markPersisted and the open-trade install; CLOSED remote rows are
+                         reconciled with mark_closed instead).
+  quarantine             an unreadable ledger is moved aside AND a durable marker (acceptances.quarantine.json) is
+                         written; new acceptances stay refused on every later call until reconcile_quarantine() is
+                         called explicitly (C3), never silently forgotten on the next tap.
 
 trade_uid is a deterministic UUID (uuid5 of the decision id) stored as trades_v2.entry_snapshot.ev_trade_uid (the row
 id itself is a bigint sequence): the PWA reads back by uid before and after an insert, so a retried or lost insert
@@ -46,25 +52,77 @@ def _path(state_dir):
     return os.path.join(state_dir, "acceptances.json")
 
 
+def _qpath(state_dir):
+    return os.path.join(state_dir, "acceptances.quarantine.json")
+
+
+def quarantine_status(state_dir):
+    try:
+        with open(_qpath(state_dir), encoding="utf-8") as f:
+            q = json.load(f)
+        return q if isinstance(q, dict) else {"state": "QUARANTINED", "marker": "unreadable"}
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {"state": "QUARANTINED", "marker": "unreadable"}
+
+
+def _quarantine(state_dir, reason):
+    corrupt = _path(state_dir) + ".corrupt"
+    try:
+        if os.path.exists(corrupt):   # keep every unreadable copy (never overwrite evidence)
+            n = 1
+            while os.path.exists("%s.%d" % (corrupt, n)):
+                n += 1
+            corrupt = "%s.%d" % (corrupt, n)
+        os.replace(_path(state_dir), corrupt)
+    except OSError:
+        pass
+    if quarantine_status(state_dir) is None:
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            P.atomic_write(_qpath(state_dir), json.dumps({"state": "QUARANTINED", "reason": str(reason)[:60],
+                                                          "corrupt_copy": os.path.basename(corrupt)}, sort_keys=True))
+        except OSError:
+            pass
+
+
+def reconcile_quarantine(state_dir, now_ms, note=""):
+    """Explicit operator/app reconciliation after the native open positions (prefs open_trades, remote rows stamped
+    with ev_trade_uid) were checked. Only then are new acceptances allowed again; the corrupt copy is kept."""
+    q = quarantine_status(state_dir)
+    if q is None:
+        return {"status": "NOOP"}
+    q = dict(q, state="RECONCILED", reconciled_ms=int(now_ms), note=str(note)[:120])
+    P.atomic_write(_qpath(state_dir) + ".reconciled.%d" % int(now_ms), json.dumps(q, sort_keys=True))
+    os.remove(_qpath(state_dir))
+    return {"status": "RECONCILED"}
+
+
 def load(state_dir):
+    doc = None
     try:
         with open(_path(state_dir), encoding="utf-8") as f:
-            doc = json.load(f)
-        if isinstance(doc, dict) and doc.get("schema") == SCHEMA and isinstance(doc.get("entries"), dict):
-            return doc
+            raw = json.load(f)
+        if isinstance(raw, dict) and raw.get("schema") == SCHEMA and isinstance(raw.get("entries"), dict):
+            doc = raw
+        else:
+            _quarantine(state_dir, "SCHEMA_INVALID")
     except FileNotFoundError:
         pass
     except (OSError, ValueError):
-        # never silently overwrite an unreadable ledger: keep it aside, fail closed for new acceptances
-        try:
-            os.replace(_path(state_dir), _path(state_dir) + ".corrupt")
-        except OSError:
-            pass
-        return {"schema": SCHEMA, "entries": {}, "recovered_from_corrupt": True}
-    return {"schema": SCHEMA, "entries": {}}
+        # never silently overwrite an unreadable ledger: keep it aside, fail closed DURABLY for new acceptances
+        _quarantine(state_dir, "UNREADABLE")
+    doc = doc or {"schema": SCHEMA, "entries": {}}
+    doc.pop("recovered_from_corrupt", None)
+    if quarantine_status(state_dir) is not None:
+        doc["recovered_from_corrupt"] = True   # every call, until reconcile_quarantine()
+    return doc
 
 
 def _save(state_dir, doc, now_ms):
+    doc = dict(doc)
+    doc.pop("recovered_from_corrupt", None)   # quarantine lives in its own durable marker
     ents = doc["entries"]
     # bounded: CLOSED entries older than RETAIN_CLOSED_MS go first; live entries are never dropped
     for k in [k for k, e in ents.items() if e.get("state") == "CLOSED"
@@ -253,8 +311,9 @@ def mark_closed(state_dir, decision_id, kind, now_ms):
 
 
 def recovery(state_dir):
+    """C3: COMMITTED (insert pending) and PERSISTED (open-position install / remote reconciliation pending)."""
     doc = load(state_dir)
-    return [_public(e) for e in doc["entries"].values() if e.get("state") == "COMMITTED"]
+    return [_public(e) for e in doc["entries"].values() if e.get("state") in ("COMMITTED", "PERSISTED")]
 
 
 def entry(state_dir, decision_id):
@@ -289,3 +348,11 @@ def mark_closed_json(state_dir, decision_id, kind, now_ms):
 
 def recovery_json(state_dir):
     return json.dumps(recovery(state_dir), default=float)
+
+
+def quarantine_status_json(state_dir):
+    return json.dumps(quarantine_status(state_dir), default=float)
+
+
+def reconcile_quarantine_json(state_dir, now_ms, note):
+    return json.dumps(reconcile_quarantine(state_dir, now_ms, note), default=float)

@@ -55,6 +55,12 @@ object EvAcceptance {
 
     fun recovery(dir: File): String = call("recovery_json", dir.absolutePath)
 
+    fun quarantineStatus(dir: File): String = call("quarantine_status_json", dir.absolutePath)
+
+    /** Explicit reconciliation after the native open positions were checked (never automatic). */
+    fun reconcileQuarantine(dir: File, nowMs: Long, note: String): String =
+        call("reconcile_quarantine_json", dir.absolutePath, nowMs, note)
+
     fun closeEconomics(dir: File, decisionId: String, fillJson: String, entryFillJson: String?): String =
         call2("ev_v12_integration", "rule_b_close_economics_json", dir.absolutePath, decisionId, fillJson, entryFillJson)
 

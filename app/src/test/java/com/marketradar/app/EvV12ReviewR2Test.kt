@@ -149,10 +149,10 @@ class EvV12ReviewR2Test {
     @Test
     fun manualCloseStopsRuleBOrConflicts() {
         val dir = Files.createTempDirectory("rbm").toFile()
-        assertEquals("MANUAL_CLOSED", RuleBFillLedger.noteManualClose(dir, "t3", "d3", 1))
+        assertEquals(RuleBFillLedger.MANUAL_PENDING, RuleBFillLedger.noteManualClose(dir, "t3", "d3", 1))
         assertFalse(RuleBFillLedger.record(dir, "t3", "d3", fillStep(), 2))     // Rule B never fills after a manual close
         assertEquals("MANUAL_CLOSED", RuleBFillLedger.stateOf(dir, "t3"))
-        assertEquals(0, RuleBFillLedger.pending(dir).length())
+        assertEquals(0, RuleBFillLedger.pending(dir).length())                  // nothing journaled yet
         // racing fill: the conditional remote update decides
         RuleBFillLedger.record(dir, "t4", "d4", fillStep(), 3)
         assertEquals("RULE_B_TERMINAL_PENDING_DELIVERY", RuleBFillLedger.noteManualClose(dir, "t4", "d4", 4))
