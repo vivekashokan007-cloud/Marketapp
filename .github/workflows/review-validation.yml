@@ -158,6 +158,8 @@ jobs:
           EV_SUITE_PROFILE=baseline EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py
           EV_SUITE_PROFILE=supabase EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/rest_suite.py | tee /tmp/rest_supabase.log
           grep -q 'PASS  \[supabase\] REST ev_builder_seed as authenticated -> HTTP 403 42501' /tmp/rest_supabase.log
+          EV_SUITE_PROFILE=baseline EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/seed_runner_suite.py
+          EV_SUITE_PROFILE=supabase EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/seed_runner_suite.py
 
       - name: Confirm publication artifacts were not built
         run: |

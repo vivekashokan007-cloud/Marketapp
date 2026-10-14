@@ -162,3 +162,49 @@ not modified; the only v7-adjacent change is that Rule B experiment trades are e
 * Tests: `EV_SUITE_PROFILE=baseline|supabase` for `tools/ev_db_suite/suite.py` and `rest_suite.py`; the supabase
   profile emulates the default privileges before the migrations, reproduces the leak with the original migration
   alone, and proves the follow-up (applied twice) refuses it with unrelated ACLs/policies unchanged.
+
+## Operations: one-time seed and later publications (manual only)
+
+**Prerequisites (owner action):** repository secrets `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`, and the
+repository variable `EV_BUILDER_ENABLED=true`. The phone's EV mode stays OFF; nothing here flips it.
+
+**Seed (once):** Actions → `ev-calibration-seed` → Run workflow on `main` with `confirm_seed = true`.
+* The `prepare` job (no secrets) runs the fixture + runner tests and a prepare-only pass (exit 2, no network).
+* The `seed` job runs only when `confirm_seed` is true, `EV_BUILDER_ENABLED == 'true'`, and the ref is `refs/heads/main`.
+  `tools/ev_seed_runner.py --confirm-seed` reads the existing state first. If the state is already consistent it
+  reports `ALREADY_SEEDED_CONSISTENT` and writes nothing. If the state is incompatible it exits 4 and writes nothing.
+  Otherwise it builds ONE `seed_plan()` body (full 47-observation history, R / R_source / family, watermark, hashes,
+  `retrospective_seed=true`, `available_at` = now) and POSTs `/rest/v1/rpc/ev_builder_seed`. It retries at most 4 times,
+  always with the same bytes; a `DUPLICATE` reply counts as success. It then reads the state and publication back and
+  runs the phone validator.
+* Exit codes:
+  * 0: SEEDED, DUPLICATE or ALREADY_SEEDED_CONSISTENT. Every one of these is fully verified.
+  * 2: prepared, not confirmed.
+  * 3: missing config.
+  * 4: the existing state is incompatible (`EXISTING_STATE_INCOMPATIBLE`, with the failed checks), or it has advanced
+    past the seed through a later publication or compaction (`STATE_ADVANCED_INVESTIGATE`). Nothing is written.
+  * 5: rejected, or a pre-write read failed. This run wrote nothing.
+  * 6: the write **may exist**. Causes: a stale body, a lost, malformed or wrong-shaped response, or a failed
+    post-write readback. Re-run the workflow: it reconciles first and never clears or reseeds.
+  * 7: readback mismatch. Stop and investigate.
+  * 8: the receipt could not be written.
+  * 9: unexpected internal error.
+  * Each receipt carries `write_may_exist` and `attempts`.
+* Reconciliation runs the same complete verification as a fresh write:
+  * the seed watermark, R/source/family and a null checkpoint;
+  * every observation's recomputed `observation_identity`, against both the stored digest and the exact reviewed set,
+    with no duplicates and none missing;
+  * the publication's recomputed payload digest, content identity and observation-set digest;
+  * row and payload agreement on version, latest_processed_expiry and available_at;
+  * the phone validator on the real clock.
+  The receipt keeps the persisted original `available_at` and digests.
+* The `ev-seed-receipt` artifact records run SHA, version, content/payload hashes, count, statuses, watermark and timestamps.
+  It contains no keys.
+
+**Later publications:** Actions → `ev-calibration-builder` with `publish = false` (the default incremental dry run).
+Review the result artifact, then re-dispatch with `publish = true`. There is no cron. The commented schedule is
+the intended 19:00 IST weekday run, and enabling it needs separate owner approval.
+
+**Local tests:** `python3 -m unittest app/src/main/python/tests/test_ev_seed_runner.py` (fake transport);
+`EV_SUITE_PROFILE=baseline|supabase EV_POSTGREST_BIN=… python3 tools/ev_db_suite/seed_runner_suite.py` (scratch DB +
+PostgREST; emulates production service_role attributes BYPASSRLS + publication SELECT).
