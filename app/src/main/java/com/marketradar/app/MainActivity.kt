@@ -644,6 +644,32 @@ class MainActivity : AppCompatActivity() {
                     getLogBuffer: function(f) { return AndroidBridge.getLogBuffer(f); },
                     clearLogBuffer: function() { return AndroidBridge.clearLogBuffer(); },
                     getLogCaptureMode: function() { return AndroidBridge.getLogCaptureMode(); },
+
+                    // Implied-EV v1.2 (b506, Codex option A): explicit forwarders for EVERY @JavascriptInterface ev*
+                    // method on AndroidBridge. Arguments pass through unchanged and in order; return values unchanged.
+                    // Native keeps all authority (Paper-only, Off/Observe, Active blocking, evRuleBAck fail-closed).
+                    evGetMode: function() { return AndroidBridge.evGetMode(); },
+                    evSetMode: function(mode) { return AndroidBridge.evSetMode(mode); },
+                    evSetModeChecked: function(mode) { return AndroidBridge.evSetModeChecked(mode); },
+                    evGetStatus: function() { return AndroidBridge.evGetStatus(); },
+                    evPrepareAcceptance: function(sessionDate, decisionId) { return AndroidBridge.evPrepareAcceptance(sessionDate, decisionId); },
+                    evGetAcceptance: function(requestId) { return AndroidBridge.evGetAcceptance(requestId); },
+                    evConfirmAcceptance: function(decisionId, reservationId) { return AndroidBridge.evConfirmAcceptance(decisionId, reservationId); },
+                    evCancelAcceptance: function(decisionId, reservationId) { return AndroidBridge.evCancelAcceptance(decisionId, reservationId); },
+                    evMarkTradePersisted: function(decisionId, tradeId, tradeUid) { return AndroidBridge.evMarkTradePersisted(decisionId, tradeId, tradeUid); },
+                    evAcceptanceRecovery: function() { return AndroidBridge.evAcceptanceRecovery(); },
+                    evRuleBPending: function() { return AndroidBridge.evRuleBPending(); },
+                    evRuleBJournal: function(tradeId, patchJson) { return AndroidBridge.evRuleBJournal(tradeId, patchJson); },
+                    evRuleBRemoteFailed: function(tradeId, detail) { return AndroidBridge.evRuleBRemoteFailed(tradeId, detail); },
+                    evRuleBAckState: function(tradeId, state) { return AndroidBridge.evRuleBAckState(tradeId, state); },
+                    evRuleBAck: function(tradeId) { return AndroidBridge.evRuleBAck(tradeId); },
+                    evNoteManualClose: function(tradeId, decisionId) { return AndroidBridge.evNoteManualClose(tradeId, decisionId); },
+                    evManualCloseRequest: function(tradeId, decisionId, patchJson) { return AndroidBridge.evManualCloseRequest(tradeId, decisionId, patchJson); },
+                    evManualIntentAbandon: function(tradeId) { return AndroidBridge.evManualIntentAbandon(tradeId); },
+                    evManualCloseJournal: function(tradeId, patchJson) { return AndroidBridge.evManualCloseJournal(tradeId, patchJson); },
+                    evManualCloseResult: function(tradeId, result) { return AndroidBridge.evManualCloseResult(tradeId, result); },
+                    evAcceptanceReconciledClosed: function(decisionId) { return AndroidBridge.evAcceptanceReconciledClosed(decisionId); },
+                    evAcceptanceQuarantine: function() { return AndroidBridge.evAcceptanceQuarantine(); },
                     
                     init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML+LV1) active'); }
                 };
