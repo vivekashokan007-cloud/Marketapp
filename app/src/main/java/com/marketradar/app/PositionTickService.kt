@@ -89,6 +89,22 @@ class PositionTickService : Service() {
                 Log.w(TAG, "PAPER_CLOSE_QUOTE_REJECTED: REQUEST_MISMATCH")
             }
         }
+        if (intent?.action == ACTION_EV_ACCEPT) {
+            val requestId = intent.getStringExtra(EXTRA_EV_REQUEST_ID)?.trim().orEmpty()
+            val sessionDate = intent.getStringExtra(EXTRA_EV_SESSION_DATE)?.trim().orEmpty()
+            val decisionId = intent.getStringExtra(EXTRA_EV_DECISION_ID)?.trim().orEmpty()
+            if (requestId.isNotEmpty() && sessionDate.isNotEmpty() && !paperCloseJobs.containsKey(requestId)) {
+                paperCloseJobs[requestId] = serviceScope.launch {
+                    try {
+                        captureEvAcceptance(requestId, sessionDate, decisionId)
+                    } finally {
+                        paperCloseJobs.remove(requestId)
+                        if (loopJob?.isActive != true) stopSelf()
+                    }
+                }
+            }
+            return START_STICKY
+        }
         if (intent?.action != ACTION_CAPTURE_PAPER_CLOSE_QUOTE && loopJob?.isActive != true) {
             loopJob = serviceScope.launch { runLoop() }
         }
@@ -205,7 +221,25 @@ class PositionTickService : Service() {
             if (refreshed) {
                 row.optJSONObject("policy_trace_json")?.put("quote_refresh", refresh!!.traceFor(tradeIdForRefresh))
             }
-            maybeNotifyShadowExit(row, trade)
+            // Implied-EV v1.2 (Codex R2, Paper only): an experiment trade is governed by its frozen policy, never by
+            // the legacy TP/SL/EOD path. Rule B is the published action; legacy actions become informational
+            // diagnostics and raise no notification. An unknown experiment policy fails closed.
+            val policyClass = if (isPaperTrade) RuleBExitPolicy.policyClass(trade) else RuleBExitPolicy.PolicyClass.LEGACY
+            when (policyClass) {
+                RuleBExitPolicy.PolicyClass.LEGACY -> maybeNotifyShadowExit(row, trade)
+                RuleBExitPolicy.PolicyClass.RULE_B -> {
+                    val step = try {
+                        stepRuleB(trade, if (refreshed) refresh!!.fetchForTrade(extractLegs(trade).mapNotNull {
+                            it.instrumentKey?.takeIf { k -> k.isNotBlank() } }) else quoteFetch, row)
+                    } catch (e: Exception) {
+                        LogBuffer.add('W', TAG, "RULE_B_STEP_FAIL: trade=$tradeIdForRefresh ${e.message}"); null
+                    }
+                    publishExperimentPolicy(row, RuleBExitPolicy.publishedAction(step), step?.reason ?: "RULE_B_STEP_UNAVAILABLE")
+                }
+                RuleBExitPolicy.PolicyClass.UNKNOWN_EXPERIMENT ->
+                    publishExperimentPolicy(row, "POLICY_UNKNOWN_FAIL_CLOSED",
+                        "unknown_policy:" + (RuleBExitPolicy.policyOf(trade)?.optString("position_policy_id") ?: "").take(60))
+            }
             if (isPaperTrade) maybeEscalatePersistentMarkFailure(row, trade, sessionDate)
             rows.put(row)
         }
@@ -1230,6 +1264,101 @@ class PositionTickService : Service() {
      * 24 alerts across four open positions — five of six per trade being
      * SHADOW_DEGRADED with a null P&L.
      */
+    /**
+     * Implied-EV v1.2 acceptance (user tap, Paper only): fetch FRESH executable quotes for the decided legs
+     * and let Python revalidate validity window, price tolerance, duplicates, max-2, EV, fees, risk and
+     * capital. The result (never a fill at the old decision prices) is stored for the PWA to poll.
+     */
+    private fun captureEvAcceptance(requestId: String, sessionDate: String, decisionId: String) {
+        val store = getSharedPreferences(EV_ACCEPT_PREFS, MODE_PRIVATE)
+        fun done(o: JSONObject) {
+            store.edit().putString(requestId, o.put("request_id", requestId)
+                .put("created_ms", System.currentTimeMillis()).toString()).commit()
+        }
+        try {
+            EvAcceptance.pruneRequests(store, System.currentTimeMillis())
+            val dir = EvExperiment.stateDir(filesDir)
+            val slotFile = java.io.File(dir, "slot_NF_$sessionDate.json")
+            val ctx = (if (slotFile.exists()) JSONObject(slotFile.readText()) else JSONObject()).optJSONObject("acceptance_context")
+                ?: return done(JSONObject().put("status", "REJECTED").put("reason", "NO_DECIDED_SLOT"))
+            val legs = ctx.optJSONArray("legs") ?: JSONArray()
+            val keys = (0 until legs.length()).mapNotNull { legs.optJSONObject(it)?.optString("instrument_key")?.ifBlank { null } }
+            val fetch = fetchQuotesWithFallback(keys)
+            val receiptMs = System.currentTimeMillis()
+            // Codex R2: SOURCE-timed, exact-key quotes; receipt time is kept separately and never substituted.
+            val adapted = RuleBQuoteAdapter.adapt(keys, keySourceQuotes(keys, fetch), receiptMs, fetch.fetchStatus)
+            val raw = EvAcceptance.prepare(dir, sessionDate, decisionId, adapted.acceptanceQuotesJson(), receiptMs, prefs)
+            val res = JSONObject(raw)
+            done(res.put("quote_fetch_status", fetch.fetchStatus).put("quote_adapter", adapted.toJson())
+                .put("receipt_ms", receiptMs))
+            LogBuffer.add('I', TAG, "EV12_PREPARE: request=$requestId session=$sessionDate status=${res.optString("status")} " +
+                "reason=${res.optString("reason")}")
+        } catch (e: Exception) {
+            done(JSONObject().put("status", "FAILED").put("reason", "ACCEPT_INTERNAL_ERROR:${e.javaClass.simpleName}"))
+        }
+    }
+
+    /** Experiment trades: the row's policy is the experiment's; the legacy result survives as diagnostics only. */
+    private fun publishExperimentPolicy(row: JSONObject, action: String, reason: String) {
+        val trace = row.optJSONObject("policy_trace_json") ?: JSONObject().also { row.put("policy_trace_json", it) }
+        trace.put("legacy_policy_informational", JSONObject()
+            .put("action", row.optString("policy_action")).put("reason", row.optString("policy_reason"))
+            .put("actionable", false).put("note", "experiment trade: TP/SL/EOD are diagnostics, never alerts"))
+        trace.put("authoritative_policy", action)
+        row.put("policy_action", action)
+        row.put("policy_reason", reason)
+    }
+
+    /**
+     * Rule B step for one Paper trade (Codex R2). Legs are the FROZEN entry legs; quotes pass the shared adapter
+     * (exact key, source time, freshness, inter-leg skew). Receipt time is kept separately and never used as a
+     * quote time.
+     */
+    private fun stepRuleB(trade: JSONObject, fetch: QuoteFetch, row: JSONObject): RuleBExitPolicy.Step? {
+        val tradeId = trade.optStringAny("id").trim()
+        val es = RuleBExitPolicy.policyOf(trade) ?: return null
+        val dir = EvExperiment.stateDir(filesDir)
+        val tradeLegs = extractLegs(trade).mapNotNull { l -> l.instrumentKey?.takeIf { it.isNotBlank() }?.let {
+            RuleBExitPolicy.Leg(if (l.closeSide == CloseSide.BUY_TO_CLOSE) -1 else 1, it) } }
+        val frozen = RuleBQuoteAdapter.frozenLegs(es)
+        fun fail(status: String): RuleBExitPolicy.Step? {
+            row.optJSONObject("policy_trace_json")?.put("rule_b", JSONObject().put("status", status))
+            return RuleBExitPolicy.Step(RuleBFillLedger.stateOf(dir, tradeId) ?: "OPEN", "NONE", status)
+        }
+        if (frozen == null) return fail("POLICY_FROZEN_LEGS_MISSING")
+        if (!RuleBQuoteAdapter.legsMatch(frozen, tradeLegs)) return fail("POLICY_LEG_MISMATCH")
+        val pos = RuleBExitPolicy.Position(
+            es.optString("position_policy_id"), RuleBFillLedger.stateOf(dir, tradeId) ?: "OPEN",
+            es.optString("planned_exit_session"), es.optString("expiry"), frozen)
+        if (pos.plannedExitSession.isBlank() || pos.expiry.isBlank()) return fail("POLICY_FIELDS_MISSING")
+        val receiptMs = System.currentTimeMillis()
+        val tsIso = java.time.Instant.ofEpochMilli(receiptMs).atOffset(java.time.ZoneOffset.ofHoursMinutes(5, 30)).toString()
+        val keys = frozen.map { it.instrumentKey }
+        val adapted = RuleBQuoteAdapter.adapt(keys, keySourceQuotes(keys, fetch), receiptMs, fetch.fetchStatus)
+        val step = RuleBExitPolicy.step(pos, RuleBExitPolicy.Tick(tsIso, adapted.policyQuotes()))
+        val changed = RuleBFillLedger.record(dir, tradeId, es.optString("ev_decision_id").ifBlank { null }, step, receiptMs)
+        if (changed && step.fill != null) {
+            // R4: net economics with the dated canonical fee model, computed once at fill time and journaled
+            val fillJson = RuleBExitPolicy.stepToJson(step).getJSONObject("fill").toString()
+            val econ = try { JSONObject(EvAcceptance.closeEconomics(dir, es.optString("ev_decision_id"), fillJson,
+                es.optJSONObject("entry_fill")?.toString())) } catch (e: Exception) {
+                JSONObject().put("status", "UNKNOWN").put("reason", "ECONOMICS_PARSE") }
+            RuleBFillLedger.putEconomics(dir, tradeId, econ)
+        }
+        row.optJSONObject("policy_trace_json")?.put("rule_b", JSONObject().put("policy_id", RuleBExitPolicy.POLICY_ID)
+            .put("state", step.state ?: JSONObject.NULL).put("action", step.action).put("reason", step.reason)
+            .put("ledger_changed", changed).put("quote_adapter", adapted.toJson()))
+        if (changed) LogBuffer.add('I', TAG, "RULE_B: trade=$tradeId action=${step.action} state=${step.state} reason=${step.reason}")
+        return step
+    }
+
+    private fun keySourceQuotes(keys: List<String>, quoteFetch: QuoteFetch): Map<String, LegSourceQuote> =
+        keys.associateWith { key ->
+            val q = quoteFetch.quotes[key]
+            LegSourceQuote(key, q != null, quoteFetch.exactKeys.contains(key), q?.responseKey, q?.bid, q?.ask,
+                q?.sourceTs, q?.lastTradeTs)
+        }
+
     private fun maybeNotifyShadowExit(row: JSONObject, trade: JSONObject) {
         val tradeId = row.optString("trade_id", "").ifBlank { trade.optStringAny("id") }
         if (tradeId.isBlank()) return
@@ -1549,6 +1678,11 @@ class PositionTickService : Service() {
         private const val TAG = "PositionTickService"
         const val ACTION_POSITION_MARK_TICK = "com.marketradar.POSITION_MARK_TICK"
         const val ACTION_CAPTURE_PAPER_CLOSE_QUOTE = "com.marketradar.CAPTURE_PAPER_CLOSE_QUOTE"
+        const val ACTION_EV_ACCEPT = "com.marketradar.EV12_ACCEPT"
+        const val EXTRA_EV_REQUEST_ID = "ev_request_id"
+        const val EXTRA_EV_SESSION_DATE = "ev_session_date"
+        const val EXTRA_EV_DECISION_ID = "ev_decision_id"
+        const val EV_ACCEPT_PREFS = "ev_v12_acceptance"
         const val ACTION_PAPER_CLOSE_QUOTE_READY = "com.marketradar.PAPER_CLOSE_QUOTE_READY"
         const val EXTRA_PAPER_CLOSE_REQUEST_ID = "paper_close_request_id"
         const val EXTRA_PAPER_CLOSE_TRADE_ID = "paper_close_trade_id"

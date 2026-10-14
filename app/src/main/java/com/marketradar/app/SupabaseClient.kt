@@ -1863,6 +1863,33 @@ object SupabaseClient {
         RpcResponse(null, null, e.message)
     }
 
+    // ---------------- Implied-EV v1.2 Paper experiment (20261013150000_ev_v12_paper_experiment.sql) ----------------
+    /**
+     * Submit one exact decision envelope. Returns the RAW response; EvTelemetryOutbox.classify decides
+     * (PT429/23503 are retries, not conflicts). Never logs the device key.
+     */
+    fun evSubmitDecision(deviceKey: String, envelopeText: String): EvTelemetryOutbox.Response {
+        val r = postRpc("ev_submit_decision", JSONObject().put("p_device_key", deviceKey).put("p_envelope_text", envelopeText))
+        return EvTelemetryOutbox.Response(r.code, r.body)
+    }
+
+    fun evSubmitOutcome(deviceKey: String, decisionId: String, outcomeText: String): EvTelemetryOutbox.Response {
+        val r = postRpc("ev_submit_outcome", JSONObject().put("p_device_key", deviceKey).put("p_decision_id", decisionId)
+            .put("p_outcome_text", outcomeText))
+        return EvTelemetryOutbox.Response(r.code, r.body)
+    }
+
+    /** Latest published calibration payload (SELECT-only table); Python validates digest/version/staleness. */
+    fun fetchEvCalibration(): String? = try {
+        val req = getBaseRequest("ev_calibration_published?select=payload&order=available_at.desc&limit=1").get().build()
+        client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) null else {
+                val arr = org.json.JSONArray(r.body?.string() ?: "[]")
+                if (arr.length() == 0) null else arr.getJSONObject(0).optJSONObject("payload")?.toString()
+            }
+        }
+    } catch (e: Exception) { null }
+
     /** R2-review Blocker A: the paper-menu uploader talks to PostgREST through this transport (same client/headers). */
     private val paperMenuTransport by lazy {
         PaperMenuUploader.OkHttpTransport(client, "$URL/rest/v1") {

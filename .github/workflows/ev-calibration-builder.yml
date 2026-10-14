@@ -1,0 +1,48 @@
+# Implied-EV v1.2 calibration builder (Paper experiment). INERT until the owner enables it:
+#  * manual dispatch only (no schedule is active; the commented cron is the intended 19:00 IST weekday run);
+#  * refuses to run unless repository variable EV_BUILDER_ENABLED == 'true';
+#  * defaults to --dry-run; publishing requires the dispatch input publish=true;
+#  * needs secrets SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (service role; the builder RPCs are service_role only)
+#    and the 20261013150000_ev_v12_paper_experiment.sql migration applied + builder_state seeded.
+name: ev-calibration-builder
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish (false = dry run)"
+        required: true
+        default: "false"
+  # schedule:
+  #   - cron: "30 13 * * 1-5"   # 19:00 IST
+permissions:
+  contents: read
+concurrency:
+  group: ev-calibration-builder
+  cancel-in-progress: false
+jobs:
+  build:
+    if: ${{ vars.EV_BUILDER_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Fixture self-check (reproduces the reviewed seed)
+        run: PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_ev_v12_calibration.py'
+      - name: Build
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.publish }}" = "true" ]; then
+            python3 tools/ev_calibration_builder.py --source supabase --out ev_builder_result.json
+          else
+            python3 tools/ev_calibration_builder.py --source supabase --dry-run --out ev_builder_result.json
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ev-builder-result
+          path: ev_builder_result.json
+          retention-days: 14

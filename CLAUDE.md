@@ -252,3 +252,22 @@ GitHub Actions/CI status for this repo still cannot be verified from a working s
 - **New notification type** → add a channel to `NotificationHelper.createChannels()` and a branch in `send()`.
 - **Tweak ML features / model** → `ml_engine.py` (inference path) and `ml_train.py` (training path) must stay in sync on feature order; regenerate `app/src/main/assets/ml_model.json` and bump `versionCode` so the asset-copy block in `MainActivity` re-copies it.
 - **Change PWA URL** → `MainActivity.kt` (search for `github.io/MarketVivi`).
+
+
+## Implied-EV v1.2 Paper experiment (b504 / 2.6.73)
+Paper-only, default off (`ev_experiment_mode`). Engine modules `app/src/main/python/implied_ev_v12.py` and
+`ev_v12_*.py`; called from `brain.analyze` only for explicit Paper + observe/active (result key `implied_ev_v12`,
+detached by `EvExperiment.detach` before anything else reads the result). Rule B exit = `RuleBExitPolicy.kt`
+(parity vectors `app/src/test/resources/ev_v12/rule_b_vectors.json`, regenerate with `tools/ev_rule_b_vectors.py`).
+Server contract: `supabase/migrations/20261013150000_ev_v12_paper_experiment.sql` (scratch suite
+`tools/ev_db_suite/run.sh`). Design, storage bounds and phone checklist: `docs/ev_v12/README.md`.
+Do not change v7 ranking/gates/sizing/exits/teacher fee from this code path.
+
+### Implied-EV v1.2 review R2 (14 Oct 2026)
+See docs/ev_v12/README.md "Review R2 corrections": native-owned acceptance (EvAcceptance), `entry_snapshot.ev_trade_uid` + unique index (trades_v2.id is bigint), Rule B ledger v2 ACK-after-readback, telemetry error contract, experiment trades excluded from all learning.
+
+### Implied-EV v1.2 re-review C1–C5 (14 Oct 2026)
+See docs/ev_v12/README.md "Re-review C1–C5 corrections": accepted outcome stays PENDING_ARBITRATION until remote proof (UNKNOWN_PENDING_ARBITRATION at the bounded timeout); manual and Rule B closes share one digest-proven conditional arbitration; PERSISTED acceptances are reconciled into native open_trades; durable acceptance-ledger quarantine; G5b forecast residual vs conditional pricing residual; checked FORWARD provenance; deterministic parity test.
+
+### Implied-EV v1.2 re-review D1–D4 (14 Oct 2026)
+See docs/ev_v12/README.md "Re-review D1–D4 corrections": atomic native manual close request (intent + patch in one save, refusal changes nothing, patchless legacy intent offered and withdrawn), RuleBExitPolicy.step never throws on MANUAL_CLOSED; canonical close-evidence digest; outcome ≤ 4096 B via staged compaction metadata; pricing diagnostic tau at the actual exit time.

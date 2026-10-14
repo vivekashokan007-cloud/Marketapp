@@ -1,0 +1,65 @@
+{
+ "cases": {
+  "builder_rpc_denied_anon": {
+   "body": "{\"code\":\"42501\",\"details\":null,\"hint\":null,\"message\":\"permission denied for function ev_builder_state\"}",
+   "http": 401,
+   "pg_code": "42501"
+  },
+  "decision_accepted": {
+   "body": "{\"status\": \"ACCEPTED\", \"decision_id\": \"ev12:NF:2026-10-13:37110176d2f05d15\", \"envelope_sha256\": \"146e8e5c1ca6583225cc6fe3b53eedb63f1907a19568bd1695a3406c01e5f08b\"}",
+   "http": 200,
+   "pg_code": null
+  },
+  "decision_conflict": {
+   "body": "{\"status\": \"CONFLICT\", \"conflict\": \"SLOT_ALREADY_DECIDED\", \"decision_id\": \"ev12:NF:2026-10-13:5e534b3b0714a5a0\", \"accepted_sha256\": \"146e8e5c1ca6583225cc6fe3b53eedb63f1907a19568bd1695a3406c01e5f08b\"}",
+   "http": 200,
+   "pg_code": null
+  },
+  "decision_duplicate": {
+   "body": "{\"status\": \"DUPLICATE\", \"decision_id\": \"ev12:NF:2026-10-13:37110176d2f05d15\", \"envelope_sha256\": \"146e8e5c1ca6583225cc6fe3b53eedb63f1907a19568bd1695a3406c01e5f08b\"}",
+   "http": 200,
+   "pg_code": null
+  },
+  "decision_malformed": {
+   "body": "{\"code\":\"23514\",\"details\":null,\"hint\":null,\"message\":\"EV_MALFORMED_REQUEST\"}",
+   "http": 400,
+   "pg_code": "23514"
+  },
+  "decision_oversize": {
+   "body": "{\"code\":\"PT413\",\"details\":null,\"hint\":null,\"message\":\"EV_ENVELOPE_TOO_LARGE\"}",
+   "http": 413,
+   "pg_code": "PT413"
+  },
+  "decision_quota": {
+   "body": "{\"code\":\"PT429\",\"details\":null,\"hint\":null,\"message\":\"EV_DAILY_QUOTA_EXCEEDED\"}",
+   "http": 429,
+   "pg_code": "PT429"
+  },
+  "decision_quota_retry_next_day": {
+   "body": "{\"status\": \"ACCEPTED\", \"decision_id\": \"ev12:NF:2026-10-12:a25f8e061254e748\", \"envelope_sha256\": \"06a5a2675c9bb87af71d1a0bdb8c1a6e9b9e0fa92011ec6c4f23fab11b834699\"}",
+   "http": 200,
+   "pg_code": null
+  },
+  "decision_too_old": {
+   "body": "{\"code\":\"23514\",\"details\":null,\"hint\":null,\"message\":\"EV_SESSION_DATE_TOO_OLD\"}",
+   "http": 400,
+   "pg_code": "23514"
+  },
+  "decision_unregistered_device": {
+   "body": "{\"code\":\"PT403\",\"details\":null,\"hint\":null,\"message\":\"PDM_COLLECTOR_NOT_AUTHORIZED\"}",
+   "http": 403,
+   "pg_code": "PT403"
+  },
+  "outcome_accepted": {
+   "body": "{\"status\": \"ACCEPTED\", \"decision_id\": \"ev12:NF:2026-10-12:a25f8e061254e748\", \"outcome_sha256\": \"a1a2fd42f612e32662e63280aa7306bb54db5cb1f61b870898de9854febbd17b\"}",
+   "http": 200,
+   "pg_code": null
+  },
+  "outcome_before_decision": {
+   "body": "{\"code\":\"23503\",\"details\":null,\"hint\":null,\"message\":\"EV_DECISION_UNKNOWN\"}",
+   "http": 409,
+   "pg_code": "23503"
+  }
+ },
+ "source": "tools/ev_db_suite/rest_suite.py against PostgREST postgrest"
+}

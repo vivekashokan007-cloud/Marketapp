@@ -2574,6 +2574,161 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getPositionMarkStates(): String = PositionMarkStore.presentationJson(prefs)
 
+    // ---------------- Implied-EV v1.2 Paper experiment ----------------
+    @JavascriptInterface
+    fun evGetMode(): String = EvExperiment.mode(prefs)
+
+    /** off | observe | active. Only affects Paper polls (MarketWatchService adds ctx keys only in Paper). */
+    @JavascriptInterface
+    fun evSetMode(mode: String): String {
+        val m = when (mode.trim().lowercase()) { "observe" -> "observe"; "active" -> "active"; else -> "off" }
+        prefs.edit().putString(EvExperiment.PREF_MODE, m).apply()
+        return m
+    }
+
+    /**
+     * Codex R1 step 1: PREPARE. Native fetches fresh source-timed exact-key quotes and Python revalidates at the
+     * actual instant (tau, EV, fees, risk, capital, duplicate/max-two from the authoritative acceptance ledger and
+     * native open trades). Mode and capital come from native prefs, never from the PWA. Nothing is consumed: the
+     * reservation lapses unless confirmed within 45 s. Poll evGetAcceptance(request_id).
+     */
+    @JavascriptInterface
+    fun evPrepareAcceptance(sessionDate: String, decisionId: String): String {
+        val requestId = java.util.UUID.randomUUID().toString()
+        context.getSharedPreferences(PositionTickService.EV_ACCEPT_PREFS, Context.MODE_PRIVATE).edit()
+            .putString(requestId, JSONObject().put("status", "PENDING").put("request_id", requestId)
+                .put("created_ms", System.currentTimeMillis()).toString()).commit()
+        return try {
+            val intent = Intent(context, PositionTickService::class.java).apply {
+                action = PositionTickService.ACTION_EV_ACCEPT
+                putExtra(PositionTickService.EXTRA_EV_REQUEST_ID, requestId)
+                putExtra(PositionTickService.EXTRA_EV_SESSION_DATE, sessionDate.trim())
+                putExtra(PositionTickService.EXTRA_EV_DECISION_ID, decisionId.trim())
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
+            JSONObject().put("ok", true).put("request_id", requestId).put("status", "PENDING").toString()
+        } catch (t: Throwable) {
+            JSONObject().put("ok", false).put("status", "FAILED").put("reason", t.javaClass.simpleName).toString()
+        }
+    }
+
+    @JavascriptInterface
+    fun evGetAcceptance(requestId: String): String =
+        context.getSharedPreferences(PositionTickService.EV_ACCEPT_PREFS, Context.MODE_PRIVATE)
+            .getString(requestId.trim(), null) ?: JSONObject().put("status", "UNKNOWN").toString()
+
+    /** R1 step 2: CONFIRM after the user's explicit confirmation. Consumes the decision; persists the full record. */
+    @JavascriptInterface
+    fun evConfirmAcceptance(decisionId: String, reservationId: String): String =
+        EvAcceptance.confirm(EvExperiment.stateDir(context.filesDir), decisionId.trim(), reservationId.trim(),
+            System.currentTimeMillis(), prefs)
+
+    /** R1: user declined the confirmation; only a RESERVED entry is removed (COMMITTED is never undone). */
+    @JavascriptInterface
+    fun evCancelAcceptance(decisionId: String, reservationId: String): String =
+        EvAcceptance.cancel(EvExperiment.stateDir(context.filesDir), decisionId.trim(), reservationId.trim(),
+            System.currentTimeMillis())
+
+    /** R1 step 3: the trades_v2 row stamped entry_snapshot.ev_trade_uid exists (insert ACK or readback). */
+    @JavascriptInterface
+    fun evMarkTradePersisted(decisionId: String, tradeId: String, tradeUid: String): String =
+        EvAcceptance.markPersisted(EvExperiment.stateDir(context.filesDir), decisionId.trim(), tradeId.trim(),
+            tradeUid.trim(), System.currentTimeMillis())
+
+    /**
+     * R1/C3: nonterminal acceptances (complete frozen records): COMMITTED for idempotent re-insert, PERSISTED for
+     * open-position reconciliation (reinstall into open_trades, or reconcile a CLOSED remote row).
+     */
+    @JavascriptInterface
+    fun evAcceptanceRecovery(): String = EvAcceptance.recovery(EvExperiment.stateDir(context.filesDir))
+
+    /** R3: terminal Rule B entries not yet delivered (PENDING_APPLY, or REMOTE_PENDING with the journaled patch). */
+    @JavascriptInterface
+    fun evRuleBPending(): String = RuleBFillLedger.pending(EvExperiment.stateDir(context.filesDir)).toString()
+
+    /** R3: journal the exact close patch BEFORE the remote write (retried verbatim after a restart). */
+    @JavascriptInterface
+    fun evRuleBJournal(tradeId: String, patchJson: String): String =
+        RuleBFillLedger.journal(EvExperiment.stateDir(context.filesDir), tradeId.trim(), patchJson, System.currentTimeMillis())
+
+    /** R3: a remote attempt failed; the entry stays REMOTE_PENDING. */
+    @JavascriptInterface
+    fun evRuleBRemoteFailed(tradeId: String, detail: String): Boolean =
+        RuleBFillLedger.noteRemoteAttempt(EvExperiment.stateDir(context.filesDir), tradeId.trim(), System.currentTimeMillis(), detail)
+
+    /**
+     * R3: ACK only with remote proof. state = REMOTE_CONFIRMED (row read back with the patch) or
+     * MANUAL_CLOSE_CONFLICT (the conditional update found a manual close). Confirmed closes mark the
+     * acceptance CLOSED.
+     */
+    @JavascriptInterface
+    fun evRuleBAckState(tradeId: String, state: String): Boolean {
+        val dir = EvExperiment.stateDir(context.filesDir)
+        val now = System.currentTimeMillis()
+        val e = RuleBFillLedger.entry(dir, tradeId.trim())
+        val ok = RuleBFillLedger.ack(dir, tradeId.trim(), state.trim(), now)
+        if (ok && e != null) {
+            val did = e.optString("decision_id")
+            val kind = if (state.trim() == RuleBFillLedger.MANUAL_CLOSE_CONFLICT) "MANUAL_CLOSE"
+                else e.optJSONObject("fill")?.optString("kind") ?: e.optString("state")
+            if (did.isNotBlank() && e.optString("state") == "EXIT_FILLED") EvAcceptance.markClosed(dir, did, kind, now)
+        }
+        return ok
+    }
+
+    /** Older PWA builds acknowledged without remote proof; that is refused now (fail closed). */
+    @JavascriptInterface
+    fun evRuleBAck(tradeId: String): Boolean = false
+
+    /**
+     * Codex C2: the user closed a Rule B trade manually. Rule B stops natively, but the close is only MANUAL_PENDING
+     * until the PWA proves its conditional remote write (evManualCloseResult). Returns RULE_B_ALREADY_CONFIRMED when
+     * the Rule B close already won (the manual writer must not write).
+     */
+    @JavascriptInterface
+    fun evNoteManualClose(tradeId: String, decisionId: String): String =
+        RuleBFillLedger.noteManualClose(EvExperiment.stateDir(context.filesDir), tradeId.trim(),
+            decisionId.trim().ifBlank { null }, System.currentTimeMillis())
+
+    /** Codex D1: manual intent + its complete frozen retry patch in ONE durable transaction. */
+    @JavascriptInterface
+    fun evManualCloseRequest(tradeId: String, decisionId: String, patchJson: String): String =
+        RuleBFillLedger.manualCloseRequest(EvExperiment.stateDir(context.filesDir), tradeId.trim(),
+            decisionId.trim().ifBlank { null }, patchJson, System.currentTimeMillis())
+
+    /** Codex D1: withdraw a patchless (pre-D1, interrupted) manual intent after the remote row was read back OPEN. */
+    @JavascriptInterface
+    fun evManualIntentAbandon(tradeId: String): String =
+        RuleBFillLedger.abandonUnjournaledManual(EvExperiment.stateDir(context.filesDir), tradeId.trim(), System.currentTimeMillis())
+
+    /** Codex C2: journal the exact manual close patch before the conditional remote write. */
+    @JavascriptInterface
+    fun evManualCloseJournal(tradeId: String, patchJson: String): String =
+        RuleBFillLedger.manualJournal(EvExperiment.stateDir(context.filesDir), tradeId.trim(), patchJson, System.currentTimeMillis())
+
+    /** Codex C2: remote readback decided the shared arbitration (MANUAL_WON | RULE_B_WON). */
+    @JavascriptInterface
+    fun evManualCloseResult(tradeId: String, result: String): String {
+        val dir = EvExperiment.stateDir(context.filesDir)
+        val now = System.currentTimeMillis()
+        val e = RuleBFillLedger.entry(dir, tradeId.trim())
+        val r = RuleBFillLedger.manualResult(dir, tradeId.trim(), result.trim(), now) ?: return "REFUSED"
+        val did = e?.optString("decision_id").orEmpty()
+        if (result.trim() == RuleBFillLedger.MANUAL_WON && did.isNotBlank() && did != "null")
+            EvAcceptance.markClosed(dir, did, "MANUAL_CLOSE", now)
+        return r
+    }
+
+    /** Codex C3: a PERSISTED acceptance whose remote row is already CLOSED (reconciled, not reinstalled). */
+    @JavascriptInterface
+    fun evAcceptanceReconciledClosed(decisionId: String): String =
+        EvAcceptance.markClosed(EvExperiment.stateDir(context.filesDir), decisionId.trim(), "RECONCILED_REMOTE_CLOSED",
+            System.currentTimeMillis())
+
+    /** Codex C3: durable acceptance-ledger quarantine status (null when healthy). */
+    @JavascriptInterface
+    fun evAcceptanceQuarantine(): String = EvAcceptance.quarantineStatus(EvExperiment.stateDir(context.filesDir))
+
     /** Start a request-scoped fresh Paper-close quote capture. */
     @JavascriptInterface
     fun requestPaperCloseQuote(tradeId: String): String {

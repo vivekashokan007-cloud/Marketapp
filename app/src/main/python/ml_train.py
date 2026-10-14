@@ -392,6 +392,19 @@ def _app_trade_to_row(t):
     }
 
 
+def _is_experiment_trade(t):
+    """Paper trade governed by an experiment exit policy (entry_snapshot.position_policy_id non-blank)."""
+    if not isinstance(t, dict) or not t.get('paper'):
+        return False
+    es = t.get('entry_snapshot') if 'entry_snapshot' in t else t.get('entrySnapshot')
+    if isinstance(es, str):
+        try:
+            es = json.loads(es)
+        except ValueError:
+            es = None
+    return isinstance(es, dict) and bool(str(es.get('position_policy_id') or '').strip())
+
+
 def _load_app_trades(path):
     """Load app trades JSON → list of training rows."""
     if not path or not os.path.exists(path):
@@ -402,6 +415,8 @@ def _load_app_trades(path):
         trades = raw if isinstance(raw, list) else raw.get('trades', [])
         rows = []
         for t in trades[:MAX_APP_ROWS]:
+            if _is_experiment_trade(t):
+                continue  # Codex R4: implied-EV v1.2 Rule B trades are not v7 training rows
             r = _app_trade_to_row(t)
             if r:
                 rows.append(r)
