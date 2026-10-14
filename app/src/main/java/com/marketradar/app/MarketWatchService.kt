@@ -2729,7 +2729,7 @@ class MarketWatchService : Service() {
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "EV12_CTX_FAIL: ${e.message}"); false
             }
-            if (evApplied) evRefreshCalibrationIfDue(System.currentTimeMillis())
+            evRefreshCalibrationIfDue(evApplied, System.currentTimeMillis())
             brainAnalyzeStartedAtMs = System.currentTimeMillis()
             val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",
@@ -3305,15 +3305,16 @@ class MarketWatchService : Service() {
     private val evUploadInFlight = AtomicBoolean(false)
     private val evCalibrationInFlight = AtomicBoolean(false)
 
-    private fun evRefreshCalibrationIfDue(nowMs: Long) {
+    private fun evRefreshCalibrationIfDue(applied: Boolean, nowMs: Long) {
         val last = prefs.getLong(EvExperiment.PREF_CALIBRATION_FETCHED_MS, 0L)
-        if (nowMs - last < EvExperiment.CALIBRATION_REFRESH_MS) return
+        if (!EvExperiment.shouldRefreshCalibration(applied, nowMs, last)) return
         if (!evCalibrationInFlight.compareAndSet(false, true)) return
         serviceScope.launch(Dispatchers.IO) {
             try {
                 val pub = SupabaseClient.fetchEvCalibration()
                 val ed = prefs.edit().putLong(EvExperiment.PREF_CALIBRATION_FETCHED_MS, System.currentTimeMillis())
                 if (pub != null) ed.putString(EvExperiment.PREF_CALIBRATION, pub)
+                    .putLong(EvExperiment.PREF_CALIBRATION_STORED_MS, System.currentTimeMillis())
                 ed.apply()
                 LogBuffer.add(if (pub != null) 'I' else 'W', TAG, "EV12_CALIBRATION_FETCH: found=${pub != null}")
             } catch (e: Exception) {

@@ -2578,12 +2578,22 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun evGetMode(): String = EvExperiment.mode(prefs)
 
-    /** off | observe | active. Only affects Paper polls (MarketWatchService adds ctx keys only in Paper). */
+    /**
+     * Explicit user change only (never called on load). 2.6.74: native authority - Paper execution only, Off and
+     * Observe only (Active entry awaits its separate acceptance stage). Returns the mode READ BACK after the write;
+     * callers compare it with the request (evGetStatus gives the full bounded status).
+     */
     @JavascriptInterface
-    fun evSetMode(mode: String): String {
-        val m = when (mode.trim().lowercase()) { "observe" -> "observe"; "active" -> "active"; else -> "off" }
-        prefs.edit().putString(EvExperiment.PREF_MODE, m).apply()
-        return m
+    fun evSetMode(mode: String): String = try {
+        EvExperiment.setMode(prefs, mode, EvAcceptance.executionMode(prefs)).mode
+    } catch (e: Exception) { EvExperiment.mode(prefs) }
+
+    /** 2.6.74 read-only bounded EV status (schema ev_native_status_v1); no publication body, quotes or keys. */
+    @JavascriptInterface
+    fun evGetStatus(): String = try {
+        EvExperiment.status(prefs, EvAcceptance.executionMode(prefs), BuildConfig.VERSION_NAME).toString()
+    } catch (e: Exception) {
+        JSONObject().put("schema", EvExperiment.STATUS_SCHEMA).put("error", "STATUS_UNAVAILABLE").toString()
     }
 
     /**

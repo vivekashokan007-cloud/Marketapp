@@ -887,6 +887,17 @@ def pending_envelopes(state_dir, session_dates):
     return envs
 
 
+def calibration_check(pub, now_dt, poll_ms, cal):
+    """2.6.74 view-only: this poll's phone-validator result for the publication it received (bounded; display only,
+    never used for the decision path, which validates again at COMPUTE)."""
+    ver = pub.get("calibration_version") if isinstance(pub, dict) else None
+    try:
+        _k, st = CB.validate_publication(pub, now_dt=now_dt, cal=cal)
+    except Exception:  # noqa: BLE001 - a malformed cache is a validation failure, never a poll failure
+        st = "NO_CALIBRATION_INVALID"
+    return {"calibration_version": ver[:96] if isinstance(ver, str) else None, "status": st, "poll_ms": poll_ms}
+
+
 def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal=None, now_ms=None,
         deadline_factory=None):
     mode = experiment_mode(ctx, explicit_mode)
@@ -907,6 +918,7 @@ def run(ctx, result, explicit_mode, *, open_trades=None, closed_trades=None, cal
         return out
     now_dt = datetime.fromtimestamp(poll_ms / 1000.0, CAL.IST)
     session_date = now_dt.date().isoformat()
+    out["calibration_check"] = calibration_check(ctx.get("evCalibration"), now_dt, poll_ms, cal)
     try:
         is_session = cal.is_session(now_dt.date())
     except CAL.CalendarUnavailable:
