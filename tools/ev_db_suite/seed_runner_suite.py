@@ -90,13 +90,19 @@ def main():
                 "%s" % (P, counts()), c == 0 and r["status"] == "SEEDED" and all(r["checks"].values())
                 and counts() == "1/%d/1" % n)
         rec = open(rp).read()
+        if os.environ.get("EV_SEED_RECEIPT_DIR") and P == "supabase":
+            with open(os.path.join(os.environ["EV_SEED_RECEIPT_DIR"], "success_seeded.json"), "w") as f:
+                f.write(rec)
         S.check("[%s] seed: receipt + stdout contain no key / Authorization header" % P,
                 svc not in rec and svc not in txt and "Bearer" not in rec and "apikey" not in rec.lower())
         S.check("[%s] seed: receipt records run SHA, version, content identity, count, watermark, timestamps" % P,
                 all(k in r for k in ("run_sha", "started_at", "finished_at", "server_available_at"))
                 and r["run_sha"] == "a" * 40 and r["plan"]["content_sha256"] and r["plan"]["watermark_expiry"])
         # 5. a later run finds this seed: reconciles, does not write again
-        c2, r2, _ = go(["--confirm-seed"])
+        c2, r2, t2 = go(["--confirm-seed"])
+        if os.environ.get("EV_SEED_RECEIPT_DIR") and P == "supabase":
+            with open(os.path.join(os.environ["EV_SEED_RECEIPT_DIR"], "reconciled_rerun.json"), "w") as f:
+                f.write(t2)
         S.check("[%s] seed: rerun -> ALREADY_SEEDED_CONSISTENT, no second write (%s)" % (P, counts()),
                 c2 == 0 and r2["status"] == "ALREADY_SEEDED_CONSISTENT" and counts() == "1/%d/1" % n
                 and S.val("select count(*) from ev_private.builder_runs") == "1")
@@ -141,6 +147,112 @@ def main():
         S.check("[%s] seed: backdated available_at rejected by the server (exit 5, %s), no write" % (
             P, ((r.get("detail") or {}).get("message") or "")[:45]), c == 5 and counts() == "0/0/0"
                 and "EV_AVAILABLE_AT_NOT_ACTUAL_PUBLISH_TIME" in json.dumps(r))
+        keep = os.environ.get("EV_SEED_RECEIPT_DIR")    # optional: keep representative sanitized receipts
+
+        def save(name, txt):
+            if keep and P == "supabase":
+                assert svc not in txt and anon not in txt and "Bearer" not in txt
+                with open(os.path.join(keep, name), "w") as f:
+                    f.write(txt)
+
+        def fresh_seed():
+            S.psql(RESET)
+            c, r, txt = go(["--confirm-seed"])
+            assert c == 0 and r["status"] == "SEEDED", r
+            return r, txt
+
+        # 10. ambiguous run (commit lands, every response lost) -> exit 6 write_may_exist; rerun reconciles with no
+        #     write and reports the ORIGINAL persisted availability and digest
+        S.psql(RESET)
+
+        class AllLost(SR.Transport):
+            def rpc(self, fn, body):
+                res = super().rpc(fn, body)
+                if fn == "ev_builder_seed":
+                    raise TimeoutError("lost")
+                return res
+        c, r1, t1 = go(["--confirm-seed"], transport=AllLost(base, svc, prefix=""))
+        persisted_at = S.val("select payload->>'available_at' from public.ev_calibration_published")
+        S.check("[%s] seed: all responses lost after commit -> exit 6 AMBIGUOUS, write_may_exist (%s)" % (P, counts()),
+                c == 6 and r1["reason"] == "AMBIGUOUS_DELIVERY_RECONCILE_REQUIRED" and r1["write_may_exist"] is True
+                and counts() == "1/%d/1" % n)
+        save("failure_ambiguous_delivery.json", t1)
+        c, r2, t2 = go(["--confirm-seed"])
+        S.check("[%s] seed: rerun after ambiguity -> ALREADY_SEEDED_CONSISTENT, no write, original availability/digest"
+                % P, c == 0 and r2["status"] == "ALREADY_SEEDED_CONSISTENT" and all(r2["checks"].values())
+                and S.val("select count(*) from ev_private.builder_runs") == "1"
+                and r2["persisted"]["available_at"] == persisted_at == r1["plan"]["available_at"]
+                and r2["persisted"]["payload_sha256"] == r1["plan"]["payload_sha256"]
+                and r2["plan"]["available_at"] != persisted_at)
+        save("reconciled_after_ambiguous.json", t2)
+
+        # 11. reconciliation probes: scratch-only fault injection (postgres superuser on the disposable DB) -> exit 4,
+        #     nothing rewritten by the runner
+        probes = [
+            ("watermark regressed", "update ev_private.builder_state set watermark_expiry = '2026-10-06'", "watermark"),
+            ("observations emptied", "delete from ev_private.observations", "observation_set_exact"),
+            ("observation r altered (digest kept)", "update ev_private.observations set record = jsonb_set(record, "
+             "'{r}', to_jsonb((record->>'r')::numeric * 1.01)) where session_date = (select min(session_date) from "
+             "ev_private.observations where record->>'status' = 'OK') and record->>'status' = 'OK'",
+             "observation_digests_recomputed"),
+            ("publication payload digest invalid", "alter table public.ev_calibration_published disable trigger user; "
+             "update public.ev_calibration_published set payload = jsonb_set(payload, '{n_completed}', '0')",
+             "payload_digest_recomputed"),
+            ("row/payload available_at disagree", "alter table public.ev_calibration_published disable trigger user; "
+             "update public.ev_calibration_published set available_at = available_at - interval '3 minutes'",
+             "row_payload_available_at_agree"),
+            ("row latest_processed_expiry disagrees", "alter table public.ev_calibration_published disable trigger "
+             "user; update public.ev_calibration_published set latest_processed_expiry = '2026-10-06'",
+             "row_latest_processed_expiry"),
+        ]
+        for label, sql, failed in probes:
+            fresh_seed()
+            S.psql("set ev.pruning = 'on'; " + sql + ";")
+            S.psql("alter table public.ev_calibration_published enable trigger user;")
+            snap = S.val("select md5(coalesce((select string_agg(record::text, ',' order by session_date, record::text)"
+                         " from ev_private.observations), '') || (select row_to_json(s)::text from "
+                         "ev_private.builder_state s) || (select string_agg(row_to_json(p)::text, ',') from "
+                         "public.ev_calibration_published p))")
+            runs = S.val("select count(*) from ev_private.builder_runs")
+            c, r, t = go(["--confirm-seed"])
+            after = S.val("select md5(coalesce((select string_agg(record::text, ',' order by session_date, record::text)"
+                          " from ev_private.observations), '') || (select row_to_json(s)::text from "
+                          "ev_private.builder_state s) || (select string_agg(row_to_json(p)::text, ',') from "
+                          "public.ev_calibration_published p))")
+            S.check("[%s] seed: reconcile probe '%s' -> exit 4 (%s), nothing rewritten" % (P, label, failed),
+                    c == 4 and r["reason"] == "EXISTING_STATE_INCOMPATIBLE" and failed in r["detail"]["failed"]
+                    and after == snap and S.val("select count(*) from ev_private.builder_runs") == runs)
+            if failed == "observation_digests_recomputed":
+                save("failure_reconcile_incompatible.json", t)
+        # advanced watermark is a named non-success, distinct from incompatibility
+        fresh_seed()
+        S.psql("update ev_private.builder_state set watermark_expiry = '2026-10-20';")
+        c, r, _ = go(["--confirm-seed"])
+        S.check("[%s] seed: advanced watermark -> exit 4 STATE_ADVANCED_INVESTIGATE (not consistent)" % P,
+                c == 4 and r["reason"] == "STATE_ADVANCED_INVESTIGATE")
+
+        # 12. post-ACK readback disconnect: write exists, receipt says so; rerun reconciles
+        S.psql(RESET)
+
+        class ReadbackDown(SR.Transport):
+            def get(self, path, params):
+                raise ConnectionResetError("down")
+        c, r, t = go(["--confirm-seed"], transport=ReadbackDown(base, svc, prefix=""))
+        S.check("[%s] seed: post-ACK publication readback disconnect -> exit 6 READBACK_FAILED_WRITE_MAY_EXIST (%s)" % (
+            P, counts()), c == 6 and r["reason"] == "READBACK_FAILED_WRITE_MAY_EXIST" and r["write_may_exist"] is True
+                and r["detail"]["transport_error"] == "ConnectionResetError" and counts() == "1/%d/1" % n)
+        save("failure_post_ack_readback.json", t)
+        c, r, _ = go(["--confirm-seed"])
+        S.check("[%s] seed: rerun after readback failure -> ALREADY_SEEDED_CONSISTENT" % P,
+                c == 0 and r["status"] == "ALREADY_SEEDED_CONSISTENT")
+
+        # 13. initial state read cannot connect -> exit 5 pre-write, receipt, no write
+        S.psql(RESET)
+        c, r, t = go(["--confirm-seed"], env=dict(cfg, SUPABASE_URL="http://127.0.0.1:%d" % RS.free_port()))
+        S.check("[%s] seed: initial state read connection refused -> exit 5 STATE_READ_FAILED, no write" % P,
+                c == 5 and r["reason"] == "STATE_READ_FAILED" and r["write_may_exist"] is False and counts() == "0/0/0")
+        save("failure_pre_write_state_read.json", t)
+
         # 9. no client-role builder EXECUTE reintroduced
         S.check("[%s] seed: builder RPCs still deny anon/authenticated" % P, not any(
             S.eff(fn, r_) for fn in S.BUILDERS for r_ in ("anon", "authenticated")))

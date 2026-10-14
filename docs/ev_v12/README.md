@@ -177,9 +177,27 @@ repository variable `EV_BUILDER_ENABLED=true`. The phone's EV mode stays OFF; no
   `retrospective_seed=true`, `available_at` = now) and POSTs `/rest/v1/rpc/ev_builder_seed`. It retries at most 4 times,
   always with the same bytes; a `DUPLICATE` reply counts as success. It then reads the state and publication back and
   runs the phone validator.
-* Exit codes: 0 SEEDED / DUPLICATE / ALREADY_SEEDED_CONSISTENT; 2 prepared, not confirmed; 3 missing config;
-  4 incompatible existing state; 5 rejected by the server; 6 stale body or ambiguous delivery. For exit 6, re-run the
-  workflow: it reconciles first and never clears or reseeds. 7 readback mismatch: stop and investigate.
+* Exit codes:
+  * 0: SEEDED, DUPLICATE or ALREADY_SEEDED_CONSISTENT. Every one of these is fully verified.
+  * 2: prepared, not confirmed.
+  * 3: missing config.
+  * 4: the existing state is incompatible (`EXISTING_STATE_INCOMPATIBLE`, with the failed checks), or it has advanced
+    past the seed through a later publication or compaction (`STATE_ADVANCED_INVESTIGATE`). Nothing is written.
+  * 5: rejected, or a pre-write read failed. This run wrote nothing.
+  * 6: the write **may exist**. Causes: a stale body, a lost, malformed or wrong-shaped response, or a failed
+    post-write readback. Re-run the workflow: it reconciles first and never clears or reseeds.
+  * 7: readback mismatch. Stop and investigate.
+  * 8: the receipt could not be written.
+  * 9: unexpected internal error.
+  * Each receipt carries `write_may_exist` and `attempts`.
+* Reconciliation runs the same complete verification as a fresh write:
+  * the seed watermark, R/source/family and a null checkpoint;
+  * every observation's recomputed `observation_identity`, against both the stored digest and the exact reviewed set,
+    with no duplicates and none missing;
+  * the publication's recomputed payload digest, content identity and observation-set digest;
+  * row and payload agreement on version, latest_processed_expiry and available_at;
+  * the phone validator on the real clock.
+  The receipt keeps the persisted original `available_at` and digests.
 * The `ev-seed-receipt` artifact records run SHA, version, content/payload hashes, count, statuses, watermark and timestamps.
   It contains no keys.
 
