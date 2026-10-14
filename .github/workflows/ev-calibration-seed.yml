@@ -1,0 +1,67 @@
+# Implied-EV v1.2 ONE-TIME retrospective seed (Paper experiment). Manual and trusted only:
+#  * workflow_dispatch only - no push / pull_request / schedule trigger;
+#  * runs only reviewed main code (no ref / fork input; the seed job refuses any ref other than refs/heads/main);
+#  * the write needs BOTH the dispatch input confirm_seed=true (default false) AND repository variable
+#    EV_BUILDER_ENABLED == 'true'; otherwise only the secret-free prepare/self-check job runs;
+#  * secrets SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are injected into the single seed step only and are never printed;
+#  * shares the builder's concurrency group so a seed and a build can never overlap.
+# Safe to re-run: an existing consistent seed is reconciled (ALREADY_SEEDED_CONSISTENT), never rewritten or cleared.
+name: ev-calibration-seed
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_seed:
+        description: "Write the one-time retrospective seed to production (false = prepare/self-check only)"
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ev-calibration-builder
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Self-check (fixture + seed runner unit tests, no secrets)
+        run: |
+          PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_ev_v12_calibration.py'
+          PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_ev_seed_runner.py'
+      - name: Prepare only (no network, no secrets)
+        run: |
+          set +e
+          python3 tools/ev_seed_runner.py --receipt prepare_receipt.json
+          rc=$?
+          [ "$rc" = "2" ] || { echo "prepare-only expected exit 2, got $rc"; exit 1; }
+  seed:
+    needs: prepare
+    if: ${{ inputs.confirm_seed == true && vars.EV_BUILDER_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Seed (one complete body, bounded identical-byte retries, readback + phone validator)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python3 tools/ev_seed_runner.py --confirm-seed --receipt ev_seed_receipt.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ev-seed-receipt
+          path: ev_seed_receipt.json
+          if-no-files-found: ignore
+          retention-days: 90
