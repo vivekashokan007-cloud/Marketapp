@@ -18,7 +18,8 @@ import kotlinx.coroutines.sync.withLock
  */
 class AnalysisAuthority {
     enum class Outcome {
-        PUBLISHED, SUPERSEDED_INPUT, STALE_MARKET, PERSIST_FAILED, FAILED, TIMED_OUT, WAITING_FOR_POLL, MARKET_TOO_OLD
+        PUBLISHED, SUPERSEDED_INPUT, STALE_MARKET, PERSIST_FAILED, FAILED, TIMED_OUT, WAITING_FOR_POLL, MARKET_TOO_OLD,
+        MARKET_IDENTITY_UNAVAILABLE
     }
 
     data class Identity(val session: String, val inputRevision: String, val marketCollectedAtMs: Long, val mode: String)
@@ -43,6 +44,7 @@ class AnalysisAuthority {
     fun <T> commitInputs(write: () -> T): T = synchronized(lock) { write() }
 
     private fun currentLocked(id: Identity): Outcome? {
+        if (id.marketCollectedAtMs <= 0L) return Outcome.MARKET_IDENTITY_UNAVAILABLE
         if (id.inputRevision != revisionSource()) return Outcome.SUPERSEDED_INPUT
         val last = lastPublished
         if (last != null && last.session == id.session && id.marketCollectedAtMs < last.marketCollectedAtMs) return Outcome.STALE_MARKET

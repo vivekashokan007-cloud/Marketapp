@@ -1120,7 +1120,7 @@ class MarketWatchService : Service() {
             // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
             var quotesFetchStartedAtMs = 0L
             var quotesFetchCompletedAtMs = 0L
-            val parallel = coroutineScope {
+            val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
                     async(Dispatchers.IO) {
@@ -1131,7 +1131,8 @@ class MarketWatchService : Service() {
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
                     async(Dispatchers.IO) { fetchSync(nfUrl, token).also { evNfChainFetchedAtMs = System.currentTimeMillis() } }
                 ).map { it.await() }
-            }
+            } }
+            val parallel = acquisition.value
             val nf50Breadth = parallel[0] ?: JSONObject()
             val hasNf50Breadth = parallel[0] != null
             if (!hasNf50Breadth) {
@@ -1265,7 +1266,8 @@ class MarketWatchService : Service() {
                 nfExpiry,
                 spotProvenance,
                 chainEvidenceRef,
-                chainEvidenceCoverage
+                chainEvidenceCoverage,
+                marketSnapshot = acquisition.identity
             ) }
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
@@ -2232,7 +2234,7 @@ class MarketWatchService : Service() {
         return result
     }
 
-    private data class AnalysisInputs(val session: String, val collectedAtMs: Long, val poll: JSONObject, val bnfChain: JSONObject,
+    private data class AnalysisInputs(val marketSnapshot: MarketSnapshotIdentity, val poll: JSONObject, val bnfChain: JSONObject,
         val nfChain: JSONObject, val bnfSpot: Double, val nfSpot: Double, val vix: Double, val stocks: JSONObject,
         val nf50Breadth: JSONObject, val bnfExpiry: String, val nfExpiry: String, val spotProvenance: JSONObject?,
         val chainEvidenceRef: JSONObject?, val chainEvidenceCoverage: JSONObject?)
@@ -2270,9 +2272,14 @@ class MarketWatchService : Service() {
     /** Runs only while holding the analysis lane (called by AnalysisAuthority.drain). */
     private suspend fun runAnalysisRefresh(rev: String): AnalysisAuthority.Outcome {
         val cached = lastAnalysisInputs
-        AnalysisAuthority.refreshPrecondition(cached?.session, cached?.collectedAtMs ?: 0L, todayIstDate(), System.currentTimeMillis())?.let { blocked ->
+        val nowMs = System.currentTimeMillis()
+        if (cached != null && !cached.marketSnapshot.usableFor(todayIstDate(), nowMs)) {
+            writeRefreshState("MARKET_IDENTITY_UNAVAILABLE", rev)
+            return AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE
+        }
+        AnalysisAuthority.refreshPrecondition(cached?.marketSnapshot?.session, cached?.marketSnapshot?.collectedAtMs ?: 0L, todayIstDate(), nowMs)?.let { blocked ->
             writeRefreshState(blocked.name, rev)
-            LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_$blocked: rev=$rev collectedAtMs=${cached?.collectedAtMs ?: 0L}")
+            LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_$blocked: rev=$rev collectedAtMs=${cached?.marketSnapshot?.collectedAtMs ?: 0L}")
             return blocked
         }
         cached!!
@@ -2281,7 +2288,7 @@ class MarketWatchService : Service() {
         val outcome = runBrainAnalysis(cached.poll, cached.bnfChain, cached.nfChain, cached.bnfSpot, cached.nfSpot,
             cached.vix, cached.stocks, cached.nf50Breadth, cached.bnfExpiry, cached.nfExpiry,
             cached.spotProvenance, cached.chainEvidenceRef, cached.chainEvidenceCoverage,
-            mode = ANALYSIS_MODE_REFRESH, refreshCollectedAtMs = cached.collectedAtMs)
+            marketSnapshot = cached.marketSnapshot, mode = ANALYSIS_MODE_REFRESH)
         writeRefreshState(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) "DONE" else outcome.name, rev)
         LogBuffer.add(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) 'I' else 'W', TAG, "ANALYSIS_REFRESH_OUTCOME: rev=$rev outcome=$outcome")
         return outcome
@@ -2295,8 +2302,8 @@ class MarketWatchService : Service() {
                                          spotProvenance: JSONObject? = null,
                                          chainEvidenceRef: JSONObject? = null,
                                          chainEvidenceCoverage: JSONObject? = null,
-                                         mode: String = ANALYSIS_MODE_POLL,
-                                         refreshCollectedAtMs: Long = 0L): AnalysisAuthority.Outcome {
+                                         marketSnapshot: MarketSnapshotIdentity,
+                                         mode: String = ANALYSIS_MODE_POLL): AnalysisAuthority.Outcome {
         var outcome = AnalysisAuthority.Outcome.FAILED
         // b507 (condition 7): REFRESH recomputes the analysis for the latest acknowledged inputs from the
         // last poll's cached market inputs, with NO poll-owned side effects (no poll history, strike-OI
@@ -2304,11 +2311,11 @@ class MarketWatchService : Service() {
         // thresholds/live P&L, routine-alert stamp or candle upserts). Only the result + broadcast.
         val isRefresh = mode == ANALYSIS_MODE_REFRESH
         if (!isRefresh) {
-            lastAnalysisInputs = AnalysisInputs(todayIstDate(), System.currentTimeMillis(), poll, bnfChain, nfChain, bnfSpot, nfSpot, vix,
+            lastAnalysisInputs = AnalysisInputs(marketSnapshot, poll, bnfChain, nfChain, bnfSpot, nfSpot, vix,
                 stocksJson, nf50Breadth, liveBnfExpiry, liveNfExpiry, spotProvenance, chainEvidenceRef, chainEvidenceCoverage)
         }
         // b507 R1 (F4): market-data identity is the collection time of the analysed poll, preserved by a refresh.
-        val marketCollectedAtMs = if (isRefresh) refreshCollectedAtMs else (lastAnalysisInputs?.collectedAtMs ?: System.currentTimeMillis())
+        val marketCollectedAtMs = if (marketSnapshot.usableFor(todayIstDate(), System.currentTimeMillis())) marketSnapshot.collectedAtMs else 0L
         var brainSuccess = false
         var brainAnalyzeStartedAtMs = 0L
         // Evidence batch 1 (Item B): slot key of an in-flight Paper decision-menu capture attempt.
@@ -2883,7 +2890,8 @@ class MarketWatchService : Service() {
                     .put("computed_at_ms", brainAnalyzeCompletedAtMs)
                     .put("poll_t", poll.optString("t", poll.optString("time", "")))
                     .put("poll_slot", poll.optString("slot_key", ""))
-                    .put("market_collected_at_ms", marketCollectedAtMs))
+                    .put("market_collected_at_ms", marketCollectedAtMs)
+                    .put("market_acquisition_completed_at_ms", marketSnapshot.completedAtMs))
                 if (superseded) {
                     LogBuffer.add('W', TAG, "ANALYSIS_SUPERSEDED: mode=$mode start=$startInputRevision; result not published")
                     if (!isRefresh) analysisAuthority.requestRefresh()   // drained when this lane is released
@@ -3209,7 +3217,8 @@ class MarketWatchService : Service() {
                 }
                 val publishNow = outcome == AnalysisAuthority.Outcome.PUBLISHED
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()
-                if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT || outcome == AnalysisAuthority.Outcome.STALE_MARKET) {
+                if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT || outcome == AnalysisAuthority.Outcome.STALE_MARKET
+                    || outcome == AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE) {
                     LogBuffer.add('I', TAG, "BRAIN_RESULT_NOT_PUBLISHED: outcome=$outcome rev=$startInputRevision mode=$mode")
                 } else if (publishNow) {
                     prefs.edit()
