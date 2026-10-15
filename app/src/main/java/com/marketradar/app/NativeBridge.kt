@@ -899,6 +899,8 @@ class NativeBridge(private val context: Context) {
             val built = SessionInputs.withMorning(prior, nowMs, obj)
             if (!built.ok) return bridgeFail("Morning lock rejected: ${built.error}")
             val rec = built.record!!
+            obj.put("_morning_revision", rec.optString("revision"))
+                .put("_snapshot_revision", rec.optString("snapshot_revision"))
             val globalDirection = JSONObject()
                 .put("dowClose", rec.optString("dowClose").toDouble())
                 .put("crudeSettle", rec.optString("crudeSettle").toDouble())
@@ -906,7 +908,7 @@ class NativeBridge(private val context: Context) {
 
             // b507 (condition 4): one commit() for the lock, the acknowledged pair state and the result
             // invalidation; success is reported only after the write is confirmed and read back.
-            val committed = prefs.edit()
+            val committed = AnalysisAuthority.shared.commitInputs { prefs.edit()
                 .putString("morning_input", obj.toString())
                 .putString("morning_baseline", obj.toString())
                 .putString("global_direction", globalDirection.toString())
@@ -915,7 +917,7 @@ class NativeBridge(private val context: Context) {
                 .putString("expiry_nf", nfExpiry)
                 .putString("last_poll_date", today)
                 .also { BrainResultStore.clear(context, it) }
-                .commit()
+                .commit() }
             sessionInputSaveResult(committed, "morning", rec, today, nowMs)
         } catch (e: Exception) {
             bridgeFail("Invalid morning input: ${e.message}")
@@ -941,11 +943,11 @@ class NativeBridge(private val context: Context) {
             if (!built.ok) return bridgeFail("Evening reference rejected: ${built.error}")
             val rec = built.record!!
             obj.put("_intended_session", rec.optString("intended_session")).put("_captured_at_ms", nowMs)
-            val committed = prefs.edit()
+            val committed = AnalysisAuthority.shared.commitInputs { prefs.edit()
                 .putString("evening_close_baseline", obj.toString())
                 .putString(SessionInputs.PREF_KEY, built.state!!.toString())
                 .also { BrainResultStore.clear(context, it) }
-                .commit()
+                .commit() }
             sessionInputSaveResult(committed, "evening", rec, todayIstDate(), nowMs)
         } catch (e: Exception) {
             bridgeFail("Invalid evening close: ${e.message}")
@@ -1316,7 +1318,10 @@ class NativeBridge(private val context: Context) {
     fun getBrainResult(): String {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "null"
-        return BrainResultStore.readBrainResult(context, prefs)
+        // b507 R1 (F3 defence in depth): never hand out a result computed for other acknowledged inputs.
+        return SessionInputs.currentResultOrNull(BrainResultStore.readBrainResult(context, prefs),
+            SessionInputs.inputRevision(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)), todayIstDate()))
+            ?: "null"
     }
 
     @JavascriptInterface

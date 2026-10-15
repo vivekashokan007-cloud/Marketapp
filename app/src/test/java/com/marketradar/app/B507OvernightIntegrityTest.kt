@@ -39,7 +39,8 @@ class B507OvernightIntegrityTest {
             .put("morningBias", JSONObject().put("bias", "BEAR"))
             .put("fiiCash", -9999)
         fun repoFile(rel: String): File = listOf(File("../$rel"), File(rel)).first { it.parentFile?.isDirectory == true }
-        fun lockObj(session: String) = JSONObject(mor().toString()).put("_session", session)
+        fun lockObj(session: String, state: JSONObject = goldenState()) = JSONObject(mor().toString()).put("_session", session)
+            .put("_morning_revision", state.optJSONObject("morning")?.optString("revision") ?: "")
     }
 
     @Test fun canonicalNumbersAreCrossLanguageStable() {
@@ -139,48 +140,39 @@ class B507OvernightIntegrityTest {
         assertEquals("MORNING_NOT_LOCKED", ok.getJSONObject("state").getString("status"))
     }
 
-    @Test fun saveDuringAnalysisCannotPublishOldRevision() {
+    @Test fun saveChangesTheInputRevision() {
         val st = goldenState()
         val start = SessionInputs.inputRevision(st, S)
         val resaved = SessionInputs.withEvening(st, ist(2026, 10, 15, 9, 20), eve(dow = "46050")).state!!
-        val current = SessionInputs.inputRevision(resaved, S)
-        assertNotEquals(start, current)
-        assertFalse(AnalysisRefreshCoordinator.mayPublish(start, current))
-        assertTrue(AnalysisRefreshCoordinator.mayPublish(current, current))
+        assertNotEquals(start, SessionInputs.inputRevision(resaved, S))
     }
 
-    @Test fun rapidSavesSettleOnTheNewestRevision() {
-        val c = AnalysisRefreshCoordinator()
-        assertTrue(c.request("r1"))
-        assertEquals("r1", c.take())
-        assertFalse(c.request("r2")); assertFalse(c.request("r3"))      // coalesced while running
-        assertTrue(c.finish())
-        assertEquals("r3", c.take())                                      // r2 never computed
-        assertFalse(c.finish()); assertFalse(c.isRunning())
-        assertTrue(c.request("r4"))
+    @Test fun morningSnapshotIsCompleteAndLooseInputMustCarryTheSameRevision() {
+        val st = goldenState()
+        val m = st.getJSONObject("morning")
+        val snap = m.getJSONObject("snapshot")
+        assertEquals("-1200", snap.getString("fiiCash")); assertEquals("71", snap.getString("fiiShortPct"))
+        assertEquals("46300", snap.getString("dowClose")); assertTrue(m.getString("snapshot_revision").length == 16)
+        // date-only binding is rejected: the loose pref must carry the pair's morning revision
+        val dateOnly = JSONObject(mor().toString()).put("_session", S)
+        assertFalse(SessionInputs.assemble(JSONObject(), st, S, NOW, dateOnly).has("morning_input"))
+        val wrongRev = JSONObject(dateOnly.toString()).put("_morning_revision", "0000000000000000")
+        assertFalse(SessionInputs.assemble(JSONObject(), st, S, NOW, wrongRev).has("morning_input"))
+        assertTrue(SessionInputs.assemble(JSONObject(), st, S, NOW, lockObj(S)).has("morning_input"))
     }
 
-    @Test fun serviceWiringGatesSideEffectsAndChecksRevisionBeforePublish() {
-        val svc = repoFile("app/src/main/java/com/marketradar/app/MarketWatchService.kt").readText()
-        for (needle in listOf(
-            "SessionInputs.assemble(ctxObj", "val startInputRevision", "AnalysisRefreshCoordinator.mayPublish(startInputRevision",
-            "val publishNow = publish &&", "publishNow && BrainResultStore.save(", "if (sideEffects && publish) processUnifiedBrainNotifications",
-            "if (build3Ab != null && sideEffects && publish)", "if (isRefresh) (lastAnalysisStrikeOiJson", "paperMenuAttemptSlot = if (isRefresh) null",
-            "val evApplied = if (isRefresh) false", "recordPaperMenuAttemptFailure(slot, \"superseded_input_revision\")",
-            "intent?.action == ACTION_ANALYSIS_REFRESH",
-            "ANALYSIS_REFRESH_WAITING_FOR_POLL")) assertTrue(needle, svc.contains(needle))
-        assertFalse(svc.contains("prefs.getString(\"evening_close_baseline\""))
-        assertFalse(svc.contains("prefs.getString(\"global_direction\""))
-        val nb = repoFile("app/src/main/java/com/marketradar/app/NativeBridge.kt").readText()
-        assertFalse(nb.contains("BASELINE_HEALED_WITH_DATE")); assertFalse(nb.contains("put(\"date\", today).toString()"))
-        assertTrue(nb.contains("SessionInputs.acknowledge(committed"))
+    @Test fun readbackRejectsAResultForOtherInputs() {
+        val raw = JSONObject().put("input_identity", JSONObject().put("input_revision", "A")).toString()
+        assertEquals(raw, SessionInputs.currentResultOrNull(raw, "A"))
+        assertNull(SessionInputs.currentResultOrNull(raw, "B"))
+        assertEquals("{\"legacy\":1}", SessionInputs.currentResultOrNull("{\"legacy\":1}", "B"))
     }
 
     /** Real chain, stage 1: native context assembly -> committed golden consumed by Python and the PWA tests. */
     @Test fun realChainContextGolden() {
         val ctx = SessionInputs.assemble(pollutedContext(), goldenState(), S, NOW, lockObj(S))
-        val unavailable = SessionInputs.assemble(pollutedContext(), SessionInputs.withMorning(JSONObject(),
-            ist(2026, 10, 15, 9, 5), mor()).state!!, S, NOW, lockObj(S))
+        val noEveningState = SessionInputs.withMorning(JSONObject(), ist(2026, 10, 15, 9, 5), mor()).state!!
+        val unavailable = SessionInputs.assemble(pollutedContext(), noEveningState, S, NOW, lockObj(S, noEveningState))
         val rollover = run {
             var st = SessionInputs.withEvening(JSONObject(), ist(2026, 10, 13, 20, 0), eve()).state!!
             st = SessionInputs.withMorning(st, ist(2026, 10, 14, 9, 5), mor()).state!!

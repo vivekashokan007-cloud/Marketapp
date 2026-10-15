@@ -21,7 +21,19 @@
       "crudeSettle": "61",
       "giftSpot": "25300",
       "seq": 2,
-      "revision": "1d8bdb9e23ddace9"
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "1d8bdb9e23ddace9",
+      "snapshot_revision": "9bf0ca368234b69b"
     }
   },
   "no_evening": {
@@ -47,7 +59,19 @@
         "crudeSettle": "61",
         "giftSpot": "25300",
         "seq": 1,
-        "revision": "663f0d63db540821"
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "663f0d63db540821",
+        "snapshot_revision": "7fd23317c7cc321f"
       }
     },
     "now_ms": 1792036800000,
@@ -57,6 +81,7 @@
     "morning_input": {
       "dowClose": "46300",
       "diiCash": "900",
+      "_morning_revision": "663f0d63db540821",
       "_session": "2026-10-15",
       "fiiCash": "-1200",
       "fiiShortPct": "71",
@@ -86,7 +111,19 @@
       "crudeSettle": "61",
       "giftSpot": "25300",
       "seq": 2,
-      "revision": "691d2e3b2ef341e2"
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "691d2e3b2ef341e2",
+      "snapshot_revision": "ecd286a40b3bf24e"
     }
   },
   "rollover": {
@@ -111,7 +148,19 @@
         "crudeSettle": "61",
         "giftSpot": "25300",
         "seq": 2,
-        "revision": "1d8bdb9e23ddace9"
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "1d8bdb9e23ddace9",
+        "snapshot_revision": "9bf0ca368234b69b"
       }
     },
     "now_ms": 1792036800000,
@@ -139,7 +188,19 @@
       "crudeSettle": "61",
       "giftSpot": "25300",
       "seq": 2,
-      "revision": "691d2e3b2ef341e2"
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "691d2e3b2ef341e2",
+      "snapshot_revision": "ecd286a40b3bf24e"
     }
   },
   "native_state_no_evening": {
@@ -156,7 +217,19 @@
       "crudeSettle": "61",
       "giftSpot": "25300",
       "seq": 1,
-      "revision": "663f0d63db540821"
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "663f0d63db540821",
+      "snapshot_revision": "7fd23317c7cc321f"
     }
   },
   "ok": {
@@ -192,7 +265,19 @@
         "crudeSettle": "61",
         "giftSpot": "25300",
         "seq": 2,
-        "revision": "691d2e3b2ef341e2"
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "691d2e3b2ef341e2",
+        "snapshot_revision": "ecd286a40b3bf24e"
       }
     },
     "now_ms": 1792036800000,
@@ -202,6 +287,7 @@
     "morning_input": {
       "dowClose": "46300",
       "diiCash": "900",
+      "_morning_revision": "691d2e3b2ef341e2",
       "_session": "2026-10-15",
       "fiiCash": "-1200",
       "fiiShortPct": "71",

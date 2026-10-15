@@ -51,6 +51,31 @@ object SessionInputs {
         } catch (_: Exception) { null }
     }
 
+    /** b507 R1 (F5): every field of the locked morning snapshot, in display order. */
+    val SNAPSHOT_FIELDS = listOf("fiiCash", "fiiShortPct", "diiCash", "fiiIdxFut", "fiiStkFut", "dowClose", "crudeSettle", "giftSpot", "upstoxBias")
+
+    /** Canonical decimal string for any finite number (negatives allowed), else null. */
+    fun canonicalSigned(raw: Any?): String? {
+        val s = when (raw) { null, JSONObject.NULL -> return null; is Number -> raw.toString(); else -> raw.toString().trim() }
+        if (s.isEmpty()) return null
+        return try {
+            if (!s.toDouble().isFinite()) null else BigDecimal(s).stripTrailingZeros().toPlainString().let { if (it == "-0") "0" else it }
+        } catch (_: Exception) { null }
+    }
+
+    /** Full acknowledged snapshot (canonical strings; upstoxBias is free text) and its revision. */
+    fun snapshotOf(input: JSONObject): JSONObject {
+        val snap = JSONObject()
+        for (k in SNAPSHOT_FIELDS) {
+            val v = if (k == "upstoxBias") input.optString(k, "").trim() else canonicalSigned(input.opt(k))
+            snap.put(k, v ?: JSONObject.NULL)
+        }
+        return snap
+    }
+
+    fun snapshotRevision(session: String, morningRevision: String, snap: JSONObject): String =
+        sha16("snapshot|$session|$morningRevision|" + SNAPSHOT_FIELDS.joinToString("|") { "$it=${snap.opt(it)}" })
+
     fun morningRevision(session: String, capturedMs: Long, seq: Long, dow: String, crude: String, gift: String) =
         sha16("morning|$session|$capturedMs|$seq|$dow|$crude|$gift")
 
@@ -100,6 +125,8 @@ object SessionInputs {
             .put("session", session.toString()).put("captured_at_ms", nowMs).put("seq", seq)
             .put("dowClose", dow).put("crudeSettle", crude).put("giftSpot", gift)
             .put("revision", morningRevision(session.toString(), nowMs, seq, dow, crude, gift))
+        val snap = snapshotOf(input)
+        rec.put("snapshot", snap).put("snapshot_revision", snapshotRevision(session.toString(), rec.getString("revision"), snap))
         val next = JSONObject(state.toString()).put("schema", SCHEMA).put("seq", seq).put("morning", rec)
         return SaveResult(true, null, next, rec)
     }
@@ -164,7 +191,13 @@ object SessionInputs {
     fun assemble(ctx: JSONObject, state: JSONObject, session: String, nowMs: Long, morningInput: JSONObject?,
                  live: JSONObject? = null): JSONObject {
         for (k in SCRUB_KEYS) ctx.remove(k)
-        val mi = morningInput?.takeIf { it.optString("_session") == session }
+        // b507 R1 (F5): the loose morning_input pref is accepted only when it is bound to the SAME acknowledged
+        // morning revision as the pair (date alone is insufficient).
+        val mrec = state.optJSONObject("morning")
+        val mi = morningInput?.takeIf {
+            it.optString("_session") == session && mrec != null && mrec.optString("session") == session &&
+                it.optString("_morning_revision") == mrec.optString("revision")
+        }
         if (mi != null) {
             ctx.put("morning_input", JSONObject(mi.toString()))
             // morning-derived institutional fields re-injected only from the current lock
@@ -214,6 +247,16 @@ object SessionInputs {
         }
         return JSONObject().put("ok", true).put("kind", kind).put("record", back)
             .put("revision", back.optString("revision")).put("state", publicState(stored, session, nowMs))
+    }
+
+    /**
+     * Readback guard: a stored result carrying a b507 identity is returned only when it was computed for
+     * [currentRevision]. Results without identity (pre-b507) are returned unchanged and labelled historical by the PWA.
+     */
+    fun currentResultOrNull(raw: String?, currentRevision: String): String? {
+        if (raw.isNullOrBlank() || raw == "null") return raw
+        val id = try { JSONObject(raw).optJSONObject("input_identity") } catch (_: Exception) { return raw } ?: return raw
+        return if (id.optString("input_revision") == currentRevision) raw else null
     }
 
     /** Public, display-safe view for the PWA (getOvernightInputState). */
