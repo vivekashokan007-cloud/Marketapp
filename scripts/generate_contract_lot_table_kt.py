@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Kotlin ContractRule list from assets/contract_lot_table_v2.json (SSOT).
+"""Generate Kotlin rules and packaged Python data from assets/contract_lot_table_v2.json (SSOT).
 
 Usage:
   python3 scripts/generate_contract_lot_table_kt.py
@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -15,6 +16,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 JSON_PATH = ROOT / "app/src/main/assets/contract_lot_table_v2.json"
 KT_PATH = ROOT / "app/src/main/java/com/marketradar/app/ContractLotTable.kt"
+PY_PATH = ROOT / "app/src/main/python/_contract_lot_table_data.py"
+
+
+def render_python(data):
+    """A Python module is packaged with Chaquopy code, independent of Android asset filesystem paths."""
+    payload = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return ("# Generated from app/src/main/assets/contract_lot_table_v2.json. Do not edit.\n"
+            "# Regenerate/check with scripts/generate_contract_lot_table_kt.py.\n"
+            f"TABLE_JSON = {payload!r}\nTABLE_SHA256 = {digest!r}\n")
 
 
 def ld(v):
@@ -121,6 +132,7 @@ def main():
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
     data = json.loads(JSON_PATH.read_text())
+    expected_python = render_python(data)
     rules = data["authoritative_contract_rules"]
     cycle_availability = data.get("contract_cycle_availability") or []
     version = str(data.get("version_id") or "")
@@ -136,6 +148,8 @@ def main():
 
     if args.check:
         errors = []
+        if not PY_PATH.is_file() or PY_PATH.read_text() != expected_python:
+            errors.append("packaged Python lot-table module missing or differs from the source JSON")
         if version and kt_version and version != kt_version:
             errors.append(f"version drift json={version} kt={kt_version}")
         if actual_block.replace(" ", "").replace("\n", "") != expected_block.replace(" ", "").replace("\n", ""):
@@ -179,7 +193,8 @@ def main():
     new = replace_block(kt_text, "    private val rules = listOf(", expected_block_inner)
     new = replace_block(new, "    private val cycleAvailability = listOf(", expected_cycle_inner)
     KT_PATH.write_text(new)
-    print(f"wrote {len(rules)} rules and {len(cycle_availability)} cycle constraints into ContractLotTable.kt")
+    PY_PATH.write_text(expected_python)
+    print(f"wrote {len(rules)} rules and {len(cycle_availability)} cycle constraints into Kotlin and packaged Python data")
 
 
 if __name__ == "__main__":

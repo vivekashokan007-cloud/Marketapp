@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 import json
+import hashlib
 import os
 from datetime import date, datetime, timedelta
 from typing import Any, Mapping, Optional
@@ -111,7 +112,10 @@ DTE_MEASUREMENT_BUCKETS = ("DTE_0", "DTE_1_2", "DTE_3_7", "DTE_8_PLUS", "UNKNOWN
 DTE_CALENDAR_VERSION_PREFIX = "nse_holiday_years"
 
 _EMBEDDED_TABLE: dict[str, Any] = {
-    "version_id": LOT_TABLE_VERSION_ID,
+    "version_id": "contract_lot_table_unavailable_v1",
+    "_lot_table_available": False,
+    "_lot_table_source": "unavailable",
+    "_lot_table_sha256": None,
     "schema": "contract_lot_rules_contract_specific_v2",
     "unit": "units_per_lot",
     "indices": ["BNF", "NF"],
@@ -240,7 +244,10 @@ def normalize_expiry_cycle(raw: Any) -> str | None:
 
 
 def load_lot_table() -> dict[str, Any]:
-    """Load lot table from assets if present, else embedded mirror."""
+    """Load the source asset in a checkout, or the generated Python module on Android.
+
+    The unavailable metadata fallback is never contract authority and has a distinct version.
+    """
     global _TABLE_CACHE
     if _TABLE_CACHE is not None:
         return _TABLE_CACHE
@@ -266,16 +273,41 @@ def load_lot_table() -> dict[str, Any]:
             if os.path.isfile(abs_path):
                 with open(abs_path, "r", encoding="utf-8") as fh:
                     payload = json.load(fh)
-                if isinstance(payload, dict) and (
-                    payload.get("authoritative_contract_rules") is not None
-                    or payload.get("periods")
-                ):
-                    _TABLE_CACHE = payload
+                if _valid_lot_payload(payload):
+                    _TABLE_CACHE = _with_lot_provenance(payload, "asset_json")
                     return _TABLE_CACHE
         except Exception:
             continue
-    _TABLE_CACHE = dict(_EMBEDDED_TABLE)
+    try:
+        from _contract_lot_table_data import TABLE_JSON, TABLE_SHA256
+        if hashlib.sha256(TABLE_JSON.encode("utf-8")).hexdigest() != TABLE_SHA256:
+            raise ValueError("packaged lot table digest mismatch")
+        payload = json.loads(TABLE_JSON)
+        if not _valid_lot_payload(payload):
+            raise ValueError("invalid packaged lot table")
+        _TABLE_CACHE = _with_lot_provenance(payload, "packaged_python_generated")
+    except Exception:
+        _TABLE_CACHE = dict(_EMBEDDED_TABLE)
     return _TABLE_CACHE
+
+
+def _valid_lot_payload(payload):
+    return (isinstance(payload, dict) and payload.get("version_id") == LOT_TABLE_VERSION_ID
+            and isinstance(payload.get("authoritative_contract_rules"), list)
+            and bool(payload["authoritative_contract_rules"]))
+
+
+def _with_lot_provenance(payload, source):
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return dict(payload, _lot_table_available=True, _lot_table_source=source,
+                _lot_table_sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest())
+
+
+def lot_table_provenance():
+    table = load_lot_table()
+    return {"lot_table_available": table.get("_lot_table_available", False),
+            "lot_table_source": table.get("_lot_table_source", "unavailable"),
+            "lot_table_sha256": table.get("_lot_table_sha256")}
 
 
 def clear_lot_table_cache() -> None:
@@ -496,7 +528,7 @@ def _unavailable(
     return out
 
 
-def resolve_contract_lot(
+def _resolve_contract_lot(
     index_key: Any,
     as_of: Any = None,
     *,
@@ -856,6 +888,23 @@ def resolve_contract_lot(
             "research_only_excluded_consulted": False,
         },
     )
+
+
+def resolve_contract_lot(index_key: Any, as_of: Any = None, *, number_of_lots: Any = None,
+                         expiry: Any = None, expiry_cycle: Any = None, captured_contract_lot: Any = None,
+                         instrument_key: Any = None, allow_operational_current: bool = False) -> dict[str, Any]:
+    """Resolve with explicit table provenance; a missing package never claims the authoritative version."""
+    provenance = lot_table_provenance()
+    if not provenance["lot_table_available"]:
+        idx = normalize_index_key(index_key)
+        result = _unavailable(index_key=idx, index_known=idx is not None, n_lots=None,
+                              as_of_text=str(as_of) if as_of is not None else None,
+                              reason="lot_table_unavailable", version=lot_table_version_id())
+    else:
+        result = _resolve_contract_lot(index_key, as_of, number_of_lots=number_of_lots,
+            expiry=expiry, expiry_cycle=expiry_cycle, captured_contract_lot=captured_contract_lot,
+            instrument_key=instrument_key, allow_operational_current=allow_operational_current)
+    return dict(result, **provenance)
 
 
 def holiday_years_covered(holidays: Any) -> set[str]:
@@ -1495,6 +1544,7 @@ __all__ = [
     "load_lot_table",
     "clear_lot_table_cache",
     "lot_table_version_id",
+    "lot_table_provenance",
     "supported_project_data_window",
     "research_only_excluded_periods",
     "current_declared_lots",
