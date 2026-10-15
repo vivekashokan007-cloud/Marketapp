@@ -2862,7 +2862,11 @@ def compute_morning_bias(ctx, polls):
     chain_validation = 'NONE'
     overnight = ctx.get('overnightDelta')
     gap = ctx.get('gap')
-    if overnight and overnight.get('signals'):
+    if isinstance(overnight, dict) and overnight.get('status') == 'UNAVAILABLE':
+        # b507: explicit abstention row; no vote, no chain validation, no stale neutralisation.
+        signals.append({'name': '🌙 Overnight', 'value': f"unavailable ({overnight.get('reason') or 'UNKNOWN'})",
+                        'dir': 'NEUTRAL', 'abstained': True})
+    if _overnight_available(overnight):
         o_bulls = len([s for s in overnight['signals'] if s['dir'] == 'BULL'])
         o_bears = len([s for s in overnight['signals'] if s['dir'] == 'BEAR'])
         o_dir = 'BEAR' if o_bears >= 2 else 'BULL' if o_bulls >= 2 else 'MIXED'
@@ -2930,6 +2934,42 @@ def compute_morning_bias(ctx, polls):
         out['fiiShortPolicy'] = fii_short_policy
     return out
 
+def _overnight_available(delta):
+    """b507: only a validated (status OK) comparison may influence anything."""
+    return isinstance(delta, dict) and delta.get('status') == 'OK' and bool(delta.get('signals'))
+
+
+def _session_global_direction(ctx):
+    """b507: global direction is morning-snapshot data; only the copy dated for today's session counts."""
+    gd = ctx.get('globalDirection') if isinstance(ctx, dict) else None
+    if not isinstance(gd, dict) or not gd.get('session') or gd.get('session') != ctx.get('today_ist'):
+        return {}
+    return gd
+
+
+def overnight_phase(ctx):
+    """b507: the single overnight-input stage analyze() runs (also driven directly by the real-chain test).
+
+    Condition 1: morning-derived inputs (FII/DII/short%/global direction) are used only for the session they were
+    locked for; native scrubs at assembly and this is the independent use-time check. Mutates ctx accordingly.
+    """
+    out = {}
+    _mi = ctx.get('morning_input')
+    if isinstance(_mi, dict) and _mi.get('_session') != ctx.get('today_ist') and (
+            _mi.get('_session') or isinstance(ctx.get('overnightInputs'), dict)):
+        # dated for another session, or undated while native runs b507 identity -> not today's lock
+        ctx.pop('morning_input', None)
+        ctx.pop('globalDirection', None)
+        out["morningInputRejected"] = 'WRONG_SESSION' if _mi.get('_session') else 'MISSING_IDENTITY'
+    delta = compute_overnight_delta(ctx)
+    out["overnightDelta"] = delta
+    out["overnightInputStatus"] = {
+        'status': delta.get('status'), 'reason': delta.get('reason'),
+        'identity': delta.get('identity'), 'session': ctx.get('today_ist'),
+    }
+    return out
+
+
 def compute_overnight_delta(ctx):
     """Phase B: compute Dow/Crude/GIFT deltas since evening close.
     Replaces JS computeOvernightDelta(currentNfSpot).
@@ -2938,18 +2978,19 @@ def compute_overnight_delta(ctx):
     crude_threshold = _CONST.get('CRUDE_THRESHOLD', 1.5)
     gift_threshold = _CONST.get('GIFT_THRESHOLD', 0.3)
 
-    eve = ctx.get('eveningClose')
-    if not eve:
-        return None
+    # b507: the comparison uses ONLY the acknowledged, independently validated morning/evening pair.
+    # Anything else (missing, legacy/undated, wrong session, stale, future, mismatched revision) is a
+    # structured UNAVAILABLE state that contributes nothing downstream. No gap-sigma GIFT substitute.
+    import overnight_inputs as _ON
+    check = _ON.validate_from_ctx(ctx)
+    if check['status'] != _ON.OK:
+        return {'status': _ON.UNAVAILABLE, 'reason': check['reason'], 'signals': [], 'summary': '',
+                'identity': check.get('identity')}
+    vals = check['values']
+    delta = {'status': _ON.OK, 'reason': None, 'signals': [], 'summary': '', 'identity': check['identity']}
 
-    morning_global = ctx.get('globalDirection') or {}
-    m_dow = morning_global.get('dowClose')
-    m_crude = morning_global.get('crudeSettle')
-
-    delta = {'signals': [], 'summary': ''}
-
-    if eve.get('dow') and m_dow:
-        e_dow = float(eve['dow'])
+    e_dow, m_dow = vals['dow_from'], vals['dow_to']
+    if True:
         pct = round((m_dow - e_dow) / e_dow * 100, 2)
         dow_context = _pc2_cross_market_move_context(ctx, 'DOW_THRESHOLD', pct, dow_threshold, ('dow_pct', 'dowPct'))
         dir = 'NEUTRAL' if not dow_context.get('active') else ('BULL' if pct > 0 else 'BEAR')
@@ -2963,8 +3004,8 @@ def compute_overnight_delta(ctx):
             'pc2CrossMarketContext': dow_context,
         })
 
-    if eve.get('crude') and m_crude:
-        e_crude = float(eve['crude'])
+    e_crude, m_crude = vals['crude_from'], vals['crude_to']
+    if True:
         pct = round((m_crude - e_crude) / e_crude * 100, 2)
         # Crude up = bearish
         crude_context = _pc2_cross_market_move_context(ctx, 'CRUDE_THRESHOLD', pct, crude_threshold, ('crude_pct', 'crudePct'))
@@ -2979,10 +3020,8 @@ def compute_overnight_delta(ctx):
             'pc2CrossMarketContext': crude_context,
         })
 
-    gift_spot = ctx.get('morning_input', {}).get('giftSpot')
-    if eve.get('gift') and gift_spot:
-        e_gift = float(eve['gift'])
-        m_gift = float(gift_spot)
+    e_gift, m_gift = vals['gift_from'], vals['gift_to']
+    if True:
         pct = round((m_gift - e_gift) / e_gift * 100, 2)
         gift_context = _pc2_cross_market_move_context(ctx, 'GIFT_THRESHOLD', pct, gift_threshold, ('gift_pct', 'giftPct'))
         g_dir = 'NEUTRAL' if not gift_context.get('active') else ('BULL' if pct > 0 else 'BEAR')
@@ -2995,11 +3034,6 @@ def compute_overnight_delta(ctx):
             'threshold': gift_context.get('threshold_value'),
             'pc2CrossMarketContext': gift_context,
         })
-    elif eve.get('gift') and ctx.get('gap'):
-        # Fallback to sigma if giftSpot missing (preserving existing resilience)
-        gap_sigma = ctx['gap'].get('sigma', 0)
-        g_dir = 'BULL' if gap_sigma > 0.3 else 'BEAR' if gap_sigma < -0.3 else 'NEUTRAL'
-        delta['signals'].append({'name': 'GIFT', 'from': eve['gift'], 'to': '?', 'pct': gap_sigma, 'dir': g_dir, 'isSigma': True})
 
     bulls = len([s for s in delta['signals'] if s['dir'] == 'BULL'])
     bears = len([s for s in delta['signals'] if s['dir'] == 'BEAR'])
@@ -5912,7 +5946,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     # Overnight delta conflict — brain says BULL but overnight is BEAR
     od = ctx.get('overnightDelta')
-    if od and od.get('summary'):
+    if _overnight_available(od) and od.get('summary'):
         if 'BEARISH' in od['summary'] and direction == 'BULL':
             conflicts.append("Overnight BEARISH vs brain BULL")
             confidence -= 10
@@ -5974,7 +6008,7 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             })
 
     # Global direction conflict — Dow/Crude/GIFT contradict brain direction
-    gd = ctx.get('globalDirection') or {}
+    gd = _session_global_direction(ctx)
     gd_conflicts = 0
     if gd.get('dowPct') is not None and abs(gd['dowPct']) >= 0.5:
         dow_bull = gd['dowPct'] > 0
@@ -7075,7 +7109,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.75"
+BRAIN_VERSION = "2.6.76"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -11490,8 +11524,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
     snapshot_latest_poll = _dict_value(ctx.get('snapshot_latest_poll'))
     morning_input = _dict_value(ctx.get('morning_input') or ctx.get('morningInput'))
-    global_direction = _dict_value(ctx.get('globalDirection') or ctx.get('global_direction'))
-    evening_close = _dict_value(ctx.get('eveningClose') or ctx.get('evening_close'))
+    global_direction = _dict_value(_session_global_direction(ctx))
     bnf_chain = _dict_value(ctx.get('bnfChain') or ctx.get('bnf_chain'))
     nf_chain = _dict_value(ctx.get('nfChain') or ctx.get('nf_chain'))
     snapshot_profiles = _dict_value(ctx.get('snapshot_market_profiles') or ctx.get('market_profiles'))
@@ -11675,15 +11708,19 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
             return None
         return ((now_num - ref_num) / abs(ref_num)) * 100.0
 
+    # b507: cross-market percentiles read only the session-dated global direction and the validated pair.
+    import overnight_inputs as _ON
+    _pair_check = _ON.validate_from_ctx(ctx)
+    _pv = _pair_check['values'] if _pair_check.get('status') == _ON.OK else {}
     dow_pct_current = _cross_market_pct(global_direction.get('dowNow'), global_direction.get('dowClose'))
     if dow_pct_current is None:
-        dow_pct_current = _cross_market_pct(global_direction.get('dowClose'), evening_close.get('dow'))
+        dow_pct_current = _cross_market_pct(_pv.get('dow_to'), _pv.get('dow_from'))
     crude_pct_current = _cross_market_pct(global_direction.get('crudeNow'), global_direction.get('crudeSettle'))
     if crude_pct_current is None:
-        crude_pct_current = _cross_market_pct(global_direction.get('crudeSettle'), evening_close.get('crude'))
-    gift_pct_current = _cross_market_pct(global_direction.get('giftNow'), evening_close.get('gift'))
+        crude_pct_current = _cross_market_pct(_pv.get('crude_to'), _pv.get('crude_from'))
+    gift_pct_current = _cross_market_pct(global_direction.get('giftNow'), _pv.get('gift_from'))
     if gift_pct_current is None:
-        gift_pct_current = _cross_market_pct(morning_input.get('giftSpot'), evening_close.get('gift'))
+        gift_pct_current = _cross_market_pct(_pv.get('gift_to'), _pv.get('gift_from'))
 
     current_values = {
         'vix': _first_row_value(
@@ -17369,7 +17406,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         print(f"DEBUG: daily_pnl_check failed: {e}")
 
     # Phase B: morning bias + regime + trends
-    result["overnightDelta"] = compute_overnight_delta(ctx)
+    result.update(overnight_phase(ctx))
     ctx["overnightDelta"] = result["overnightDelta"]
 
     result["morningBias"] = compute_morning_bias(ctx, polls)
@@ -18462,7 +18499,7 @@ def _compute_signal_independence(result, ctx):
     if result.get('pcrContext') or result.get('bnfProfile') or result.get('nfProfile'):
         groups.add('oi')
         details.append('oi-derived')
-    if result.get('gapInfo') or result.get('nfGapInfo') or result.get('overnightDelta') or result.get('sessionTrajectory'):
+    if result.get('gapInfo') or result.get('nfGapInfo') or _overnight_available(result.get('overnightDelta')) or result.get('sessionTrajectory'):
         groups.add('price')
         details.append('price-derived')
     if result.get('institutionalRegime') or ctx.get('fiiCash') is not None or ctx.get('diiCash') is not None:

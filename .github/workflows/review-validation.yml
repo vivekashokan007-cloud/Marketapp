@@ -21,6 +21,7 @@ on:
       - review/codex-corrective-20260914
       - work/db1-pc2-review-corrections-20260929
       - work/paper-implied-ev-v12-20261013
+      - work/overnight-integrity-b507-20261015
     paths:
       - 'app/**'
       - 'tools/**'
@@ -119,6 +120,7 @@ jobs:
           grep -q '22/22 ev methods exported by the real facade' /tmp/facade.log
           grep -q '22/22 ev methods correctly forwarded through the real facade' /tmp/facade.log
           grep -q '^# fail 0' /tmp/facade.log
+          grep -q '^ok 6 - 6. b507 new bridge methods' /tmp/facade.log
 
       - name: Resolve paired MarketVivi ref
         id: pair
@@ -145,6 +147,19 @@ jobs:
           MARKETAPP_DIR="$PWD" node --test _marketvivi/tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
           grep -q '^# pass 5' /tmp/chain.log
           grep -q '^# fail 0' /tmp/chain.log
+
+      # b507 real overnight chain: native SessionInputs golden (JVM) -> Python brain stage -> PWA renderer
+      - name: b507 overnight chain (Kotlin golden -> Python -> paired MarketVivi renderer)
+        run: |
+          set -o pipefail
+          ./gradlew -q :app:testDebugUnitTest --tests 'com.marketradar.app.B507OvernightIntegrityTest'
+          git diff --exit-code tools/b507_chain
+          PYTHONPATH=app/src/main/python:app/src/main/python/tests python3 -m unittest \
+            test_b507_real_chain test_overnight_integrity_b507
+          git diff --exit-code tools/b507_chain
+          MARKETAPP_DIR="$PWD" node --test _marketvivi/tests/test_b507_overnight_chain.mjs | tee /tmp/b507chain.log
+          grep -q '^# pass 7' /tmp/b507chain.log
+          grep -q '^# fail 0' /tmp/b507chain.log
 
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace

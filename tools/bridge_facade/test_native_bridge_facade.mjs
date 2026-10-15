@@ -1,7 +1,7 @@
 // b506 (Codex option A) regression tests 1, 2, 4 and 5: they execute the REAL injected facade from MainActivity.kt.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractFacadeJs, kotlinEvMethods, runFacade } from './facade.mjs';
+import { extractFacadeJs, kotlinEvMethods, nativeBridgeSource, runFacade } from './facade.mjs';
 
 const EXPECTED_EV_COUNT = 22;   // reviewed API count; a change must be reported and reviewed, not silently adjusted
 
@@ -120,4 +120,22 @@ test('5. facade adds forwarders only: no raw AndroidBridge exposure, existing me
   runFacade(ctx);                                                // guarded by window._nativeBridgeInjected
   assert.strictEqual(ctx.NativeBridge, nb);
   assert.deepEqual(calls.filter(c => c.name.startsWith('ev')), []);
+});
+
+// b507: new NON-ev @JavascriptInterface methods are pinned by name; a change must be reviewed deliberately.
+const B507_NEW_METHODS = ['getOvernightInputState'];
+const EXPECTED_B507_NEW_COUNT = 1;
+
+test('6. b507 new bridge methods are declared in Kotlin and forwarded by the real facade', () => {
+  assert.equal(B507_NEW_METHODS.length, EXPECTED_B507_NEW_COUNT);
+  const kt = nativeBridgeSource();
+  for (const name of B507_NEW_METHODS) {
+    assert.match(kt, new RegExp(`@JavascriptInterface\\s+fun ${name}\\(\\)`), `${name} declared`);
+    const { ab, calls } = spy({ [name]: () => '{"status":"OK"}' });
+    const nb = runFacade({ AndroidBridge: ab });
+    assert.equal(typeof nb[name], 'function', `${name} forwarded`);
+    assert.equal(nb[name](), '{"status":"OK"}');
+    assert.deepEqual(calls.map(c => c.name), [name]);
+  }
+  assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by b507');
 });

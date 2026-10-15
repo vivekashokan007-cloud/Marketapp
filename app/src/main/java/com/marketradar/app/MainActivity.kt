@@ -599,6 +599,7 @@ class MainActivity : AppCompatActivity() {
                     getTradeMode: function() { return AndroidBridge.getTradeMode(); },
                     getTradeModeExplicit: function() { return AndroidBridge.getTradeModeExplicit(); },
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
+                    getOvernightInputState: function() { return AndroidBridge.getOvernightInputState(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
                     getMLEvaluationOutcomes: function(limit) { return AndroidBridge.getMLEvaluationOutcomes(limit || 1000); },
