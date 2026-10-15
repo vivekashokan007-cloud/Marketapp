@@ -17,7 +17,8 @@ def make_ctx(morning=None, chain=None, yday=None, overnight=None, gap=None, accu
         'morning_input': morning or {'dummy': True}, # Ensure not early-exit
         'chain_data': chain or {},
         'yesterdayHistory': yday or [],
-        'overnightDelta': overnight,
+        # b507: a supplied overnight block represents a validated (status OK) comparison
+        'overnightDelta': ({**overnight, 'status': 'OK'} if overnight else None),
         'gap': gap or {'type': 'FLAT', 'gap': 0, 'sigma': 0},
         'signalAccuracy': accuracy or {'total': 30, 'correct': 20, 'pct': 67},
         'yesterdaySignal': y_signal
@@ -275,51 +276,47 @@ def test_fii_trend_uses_fresh_dated_history():
 
 # --- 5. compute_overnight_delta (7 tests) ---
 
+from overnight_fixture import ctx_with_pair  # b507: acknowledged pair, validated by overnight_inputs
+
 def test_delta_dow_bull():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'dow': 30000}
-    ctx['globalDirection'] = {'dowClose': 30300}
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(30300, 80, 20000))
     res = compute_overnight_delta(ctx)
     assert any(s['name'] == 'Dow' and s['dir'] == 'BULL' for s in res['signals'])
 
 def test_delta_dow_bear():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'dow': 30000}
-    ctx['globalDirection'] = {'dowClose': 29700}
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(29700, 80, 20000))
     res = compute_overnight_delta(ctx)
     assert any(s['name'] == 'Dow' and s['dir'] == 'BEAR' for s in res['signals'])
 
 def test_delta_crude_bull():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'crude': 80}
-    ctx['globalDirection'] = {'crudeSettle': 78} # crude down = bull
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(30000, 78, 20000))  # crude down = bull
     res = compute_overnight_delta(ctx)
     assert any(s['name'] == 'Crude' and s['dir'] == 'BULL' for s in res['signals'])
 
 def test_delta_crude_bear():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'crude': 80}
-    ctx['globalDirection'] = {'crudeSettle': 82} # crude up = bear
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(30000, 82, 20000))  # crude up = bear
     res = compute_overnight_delta(ctx)
     assert any(s['name'] == 'Crude' and s['dir'] == 'BEAR' for s in res['signals'])
 
 def test_delta_gift_bull():
-    ctx = make_ctx(gap={'sigma': 0.5})
-    ctx['eveningClose'] = {'gift': 20000}
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(30000, 80, 20100))
     res = compute_overnight_delta(ctx)
     assert any(s['name'] == 'GIFT' and s['dir'] == 'BULL' for s in res['signals'])
 
+def test_delta_gift_no_gap_sigma_substitute():
+    # b507: without an acknowledged pair the comparison is UNAVAILABLE; the gap-sigma GIFT fallback is gone.
+    ctx = make_ctx(gap={'sigma': 0.5})
+    ctx['eveningClose'] = {'gift': 20000}
+    res = compute_overnight_delta(ctx)
+    assert res['status'] == 'UNAVAILABLE' and res['signals'] == [] and res['summary'] == ''
+
 def test_delta_summary_bearish():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'dow': 30000, 'crude': 80}
-    ctx['globalDirection'] = {'dowClose': 29700, 'crudeSettle': 82}
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(29700, 82, 20000))
     res = compute_overnight_delta(ctx)
     assert res['summary'] == '🔴 OVERNIGHT BEARISH'
 
 def test_delta_summary_neutral():
-    ctx = make_ctx()
-    ctx['eveningClose'] = {'dow': 30000, 'crude': 80}
-    ctx['globalDirection'] = {'dowClose': 30000, 'crudeSettle': 80}
+    ctx = ctx_with_pair(make_ctx(), eve=(30000, 80, 20000), mor=(30000, 80, 20000))
     res = compute_overnight_delta(ctx)
     assert res['summary'] == '⚪ OVERNIGHT NEUTRAL'
 
@@ -372,6 +369,7 @@ if __name__ == "__main__":
         ("test_delta_crude_bull", test_delta_crude_bull),
         ("test_delta_crude_bear", test_delta_crude_bear),
         ("test_delta_gift_bull", test_delta_gift_bull),
+        ("test_delta_gift_no_gap_sigma_substitute", test_delta_gift_no_gap_sigma_substitute),
         ("test_delta_summary_bearish", test_delta_summary_bearish),
         ("test_delta_summary_neutral", test_delta_summary_neutral),
     ]

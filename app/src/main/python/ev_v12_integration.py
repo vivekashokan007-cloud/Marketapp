@@ -221,10 +221,12 @@ def _lot(session_date, expiry, chain):
     captured = (chain or {}).get("lotSize") or (chain or {}).get("lot_size")
     res = resolve_contract_lot("NF", as_of=session_date, expiry=expiry,
                                captured_contract_lot=captured if captured not in (0, None, "") else None)
+    provenance = {key: res.get(key) for key in ("lot_table_version", "lot_table_source", "lot_table_sha256")}
     if not res.get("resolved") or not res.get("contract_lot_size") or res.get("lot_conflict"):
-        return None, {"status": "LOT_AUTHORITY_UNRESOLVED", "reason": res.get("unavailable_reason")}
+        status = "LOT_TABLE_UNAVAILABLE" if res.get("unavailable_reason") == "lot_table_unavailable" else "LOT_AUTHORITY_UNRESOLVED"
+        return None, dict(provenance, status=status, reason=res.get("unavailable_reason"))
     return int(res["contract_lot_size"]), {"status": "OK", "contract_lot_size": int(res["contract_lot_size"]),
-                                            "lot_table_version": res.get("lot_table_version"),
+                                            **provenance,
                                             "matched_rule_id": res.get("matched_rule_id"),
                                             "lot_source": res.get("lot_source")}
 

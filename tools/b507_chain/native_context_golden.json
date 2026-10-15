@@ -1,0 +1,298 @@
+{
+  "native_state_rollover": {
+    "schema": "overnight_inputs_v1",
+    "input_revision": "7081c6c72fc9c18a",
+    "session": "2026-10-15",
+    "evening": {
+      "gift": "25200",
+      "captured_at_ms": 1791901800000,
+      "dow": "46000",
+      "intended_session": "2026-10-14",
+      "seq": 1,
+      "crude": "62.5",
+      "revision": "336b4e490a69b01a"
+    },
+    "pair_revision": "c9eceaf3c6988736",
+    "status": "MORNING_WRONG_SESSION",
+    "morning": {
+      "dowClose": "46300",
+      "session": "2026-10-14",
+      "captured_at_ms": 1791948900000,
+      "crudeSettle": "61",
+      "giftSpot": "25300",
+      "seq": 2,
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "1d8bdb9e23ddace9",
+      "snapshot_revision": "9bf0ca368234b69b"
+    }
+  },
+  "no_evening": {
+    "fiiShort": "71",
+    "globalDirection": {
+      "dowClose": 46300,
+      "morning_revision": "663f0d63db540821",
+      "_date": "2026-10-15",
+      "session": "2026-10-15",
+      "source": "morning_lock",
+      "morning_captured_at_ms": 1792035300000,
+      "crudeSettle": 61
+    },
+    "today_ist": "2026-10-15",
+    "diiCash": "900",
+    "overnightInputs": {
+      "schema": "overnight_inputs_v1",
+      "session": "2026-10-15",
+      "morning": {
+        "dowClose": "46300",
+        "session": "2026-10-15",
+        "captured_at_ms": 1792035300000,
+        "crudeSettle": "61",
+        "giftSpot": "25300",
+        "seq": 1,
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "663f0d63db540821",
+        "snapshot_revision": "7fd23317c7cc321f"
+      }
+    },
+    "now_ms": 1792036800000,
+    "fiiCash": "-1200",
+    "tradeMode": "positional",
+    "fiiShortPct": "71",
+    "morning_input": {
+      "dowClose": "46300",
+      "diiCash": "900",
+      "_morning_revision": "663f0d63db540821",
+      "_session": "2026-10-15",
+      "fiiCash": "-1200",
+      "fiiShortPct": "71",
+      "crudeSettle": "61.0",
+      "giftSpot": "25300"
+    }
+  },
+  "native_state_resaved": {
+    "schema": "overnight_inputs_v1",
+    "input_revision": "f82bb5f196f2401f",
+    "session": "2026-10-15",
+    "evening": {
+      "gift": "25200",
+      "captured_at_ms": 1792036200000,
+      "dow": "46050",
+      "intended_session": "2026-10-15",
+      "seq": 3,
+      "crude": "62.5",
+      "revision": "d6239cfbcd58d8aa"
+    },
+    "pair_revision": "2a1f31e22d1773db",
+    "status": "OK",
+    "morning": {
+      "dowClose": "46300",
+      "session": "2026-10-15",
+      "captured_at_ms": 1792035300000,
+      "crudeSettle": "61",
+      "giftSpot": "25300",
+      "seq": 2,
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "691d2e3b2ef341e2",
+      "snapshot_revision": "ecd286a40b3bf24e"
+    }
+  },
+  "rollover": {
+    "today_ist": "2026-10-15",
+    "overnightInputs": {
+      "schema": "overnight_inputs_v1",
+      "session": "2026-10-15",
+      "evening": {
+        "gift": "25200",
+        "captured_at_ms": 1791901800000,
+        "dow": "46000",
+        "intended_session": "2026-10-14",
+        "seq": 1,
+        "crude": "62.5",
+        "revision": "336b4e490a69b01a"
+      },
+      "pair_revision": "c9eceaf3c6988736",
+      "morning": {
+        "dowClose": "46300",
+        "session": "2026-10-14",
+        "captured_at_ms": 1791948900000,
+        "crudeSettle": "61",
+        "giftSpot": "25300",
+        "seq": 2,
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "1d8bdb9e23ddace9",
+        "snapshot_revision": "9bf0ca368234b69b"
+      }
+    },
+    "now_ms": 1792036800000,
+    "tradeMode": "positional"
+  },
+  "native_state_ok": {
+    "schema": "overnight_inputs_v1",
+    "input_revision": "7ea71dab49f65cd3",
+    "session": "2026-10-15",
+    "evening": {
+      "gift": "25200",
+      "captured_at_ms": 1791988200000,
+      "dow": "46000",
+      "intended_session": "2026-10-15",
+      "seq": 1,
+      "crude": "62.5",
+      "revision": "6b47e025802da273"
+    },
+    "pair_revision": "1422fb6d45584a90",
+    "status": "OK",
+    "morning": {
+      "dowClose": "46300",
+      "session": "2026-10-15",
+      "captured_at_ms": 1792035300000,
+      "crudeSettle": "61",
+      "giftSpot": "25300",
+      "seq": 2,
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "691d2e3b2ef341e2",
+      "snapshot_revision": "ecd286a40b3bf24e"
+    }
+  },
+  "native_state_no_evening": {
+    "schema": "overnight_inputs_v1",
+    "input_revision": "ad358413ff159779",
+    "session": "2026-10-15",
+    "evening": null,
+    "pair_revision": null,
+    "status": "NO_EVENING_REFERENCE",
+    "morning": {
+      "dowClose": "46300",
+      "session": "2026-10-15",
+      "captured_at_ms": 1792035300000,
+      "crudeSettle": "61",
+      "giftSpot": "25300",
+      "seq": 1,
+      "snapshot": {
+        "dowClose": "46300",
+        "upstoxBias": "",
+        "diiCash": "900",
+        "fiiStkFut": null,
+        "fiiIdxFut": null,
+        "fiiCash": "-1200",
+        "fiiShortPct": "71",
+        "crudeSettle": "61",
+        "giftSpot": "25300"
+      },
+      "revision": "663f0d63db540821",
+      "snapshot_revision": "7fd23317c7cc321f"
+    }
+  },
+  "ok": {
+    "fiiShort": "71",
+    "globalDirection": {
+      "dowClose": 46300,
+      "morning_revision": "691d2e3b2ef341e2",
+      "_date": "2026-10-15",
+      "session": "2026-10-15",
+      "source": "morning_lock",
+      "morning_captured_at_ms": 1792035300000,
+      "crudeSettle": 61
+    },
+    "today_ist": "2026-10-15",
+    "diiCash": "900",
+    "overnightInputs": {
+      "schema": "overnight_inputs_v1",
+      "session": "2026-10-15",
+      "evening": {
+        "gift": "25200",
+        "captured_at_ms": 1791988200000,
+        "dow": "46000",
+        "intended_session": "2026-10-15",
+        "seq": 1,
+        "crude": "62.5",
+        "revision": "6b47e025802da273"
+      },
+      "pair_revision": "1422fb6d45584a90",
+      "morning": {
+        "dowClose": "46300",
+        "session": "2026-10-15",
+        "captured_at_ms": 1792035300000,
+        "crudeSettle": "61",
+        "giftSpot": "25300",
+        "seq": 2,
+        "snapshot": {
+          "dowClose": "46300",
+          "upstoxBias": "",
+          "diiCash": "900",
+          "fiiStkFut": null,
+          "fiiIdxFut": null,
+          "fiiCash": "-1200",
+          "fiiShortPct": "71",
+          "crudeSettle": "61",
+          "giftSpot": "25300"
+        },
+        "revision": "691d2e3b2ef341e2",
+        "snapshot_revision": "ecd286a40b3bf24e"
+      }
+    },
+    "now_ms": 1792036800000,
+    "fiiCash": "-1200",
+    "tradeMode": "positional",
+    "fiiShortPct": "71",
+    "morning_input": {
+      "dowClose": "46300",
+      "diiCash": "900",
+      "_morning_revision": "691d2e3b2ef341e2",
+      "_session": "2026-10-15",
+      "fiiCash": "-1200",
+      "fiiShortPct": "71",
+      "crudeSettle": "61.0",
+      "giftSpot": "25300"
+    }
+  }
+}

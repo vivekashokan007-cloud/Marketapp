@@ -20,9 +20,17 @@ object BrainResultStore {
         prefs: SharedPreferences,
         brainResult: String,
         candidates: String?
+    ): Boolean = saveIn(directory(context), prefs, brainResult, candidates)
+
+    /** b507 R1: directory-explicit form (JVM-testable); the Context form delegates here. */
+    fun saveIn(
+        dir: File,
+        prefs: SharedPreferences,
+        brainResult: String,
+        candidates: String?
     ): Boolean {
         return try {
-            val dir = directory(context)
+            dir.mkdirs()
             val stamp = System.currentTimeMillis().toString()
             val token = UUID.randomUUID().toString().replace("-", "")
             val brainName = "brain_${stamp}_$token.json"
@@ -61,8 +69,10 @@ object BrainResultStore {
         }
     }
 
-    fun readBrainResult(context: Context, prefs: SharedPreferences): String {
-        return readByRef(context, prefs.getString(PREF_BRAIN_RESULT_REF, null))
+    fun readBrainResult(context: Context, prefs: SharedPreferences): String = readBrainResultIn(directory(context), prefs)
+
+    fun readBrainResultIn(dir: File, prefs: SharedPreferences): String {
+        return readByRefIn(dir, prefs.getString(PREF_BRAIN_RESULT_REF, null))
             ?: prefs.getString("brain_result", "null")
             ?: "null"
     }
@@ -81,8 +91,9 @@ object BrainResultStore {
     fun savedAtMs(prefs: SharedPreferences): Long =
         prefs.getLong(PREF_BRAIN_RESULT_SAVED_MS, 0L)
 
-    fun clear(context: Context, prefs: SharedPreferences.Editor): SharedPreferences.Editor {
-        val dir = directory(context)
+    fun clear(context: Context, prefs: SharedPreferences.Editor): SharedPreferences.Editor = clearIn(directory(context), prefs)
+
+    fun clearIn(dir: File, prefs: SharedPreferences.Editor): SharedPreferences.Editor {
         dir.listFiles()?.forEach { file ->
             if (file.isFile && file.extension == "json") {
                 runCatching { file.delete() }
@@ -98,10 +109,12 @@ object BrainResultStore {
             .remove("candidates")
     }
 
-    private fun readByRef(context: Context, ref: String?): String? {
+    private fun readByRef(context: Context, ref: String?): String? = readByRefIn(directory(context), ref)
+
+    private fun readByRefIn(dir: File, ref: String?): String? {
         if (ref.isNullOrBlank()) return null
         return try {
-            val file = File(directory(context), ref)
+            val file = File(dir, ref)
             if (!file.isFile || file.length() <= 0L) null else file.readText(Charsets.UTF_8)
         } catch (e: Exception) {
             LogBuffer.add('W', TAG, "BRAIN_RESULT_FILE_READ_FAIL: ref=$ref error=${e.message}")

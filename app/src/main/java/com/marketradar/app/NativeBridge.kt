@@ -888,27 +888,37 @@ class NativeBridge(private val context: Context) {
             obj.put("vix", live.vix)
             obj.put("bnfExpiry", bnfExpiry)
             obj.put("nfExpiry", nfExpiry)
-            obj.put("date", todayIstDate())
+            val today = todayIstDate()
+            val nowMs = System.currentTimeMillis()
+            obj.put("date", today)
+            // b507: the lock carries its own session identity; consumers reject any other session.
+            obj.put("_session", today)
+            obj.put("_captured_at_ms", nowMs)
 
-            val globalDirection = try {
-                JSONObject(prefs.getString("global_direction", "{}") ?: "{}")
-            } catch (_: Exception) {
-                JSONObject()
-            }
-            globalDirection.put("dowClose", obj.optDouble("dowClose"))
-            globalDirection.put("crudeSettle", obj.optDouble("crudeSettle"))
-            globalDirection.put("_date", todayIstDate())
+            val prior = SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null))
+            val built = SessionInputs.withMorning(prior, nowMs, obj)
+            if (!built.ok) return bridgeFail("Morning lock rejected: ${built.error}")
+            val rec = built.record!!
+            obj.put("_morning_revision", rec.optString("revision"))
+                .put("_snapshot_revision", rec.optString("snapshot_revision"))
+            val globalDirection = JSONObject()
+                .put("dowClose", rec.optString("dowClose").toDouble())
+                .put("crudeSettle", rec.optString("crudeSettle").toDouble())
+                .put("_date", today).put("session", today).put("morning_revision", rec.optString("revision"))
 
-            prefs.edit()
+            // b507 (condition 4): one commit() for the lock, the acknowledged pair state and the result
+            // invalidation; success is reported only after the write is confirmed and read back.
+            val committed = AnalysisAuthority.shared.commitInputs { prefs.edit()
                 .putString("morning_input", obj.toString())
                 .putString("morning_baseline", obj.toString())
                 .putString("global_direction", globalDirection.toString())
+                .putString(SessionInputs.PREF_KEY, built.state!!.toString())
                 .putString("expiry_bnf", bnfExpiry)
                 .putString("expiry_nf", nfExpiry)
-                .putString("last_poll_date", todayIstDate())
+                .putString("last_poll_date", today)
                 .also { BrainResultStore.clear(context, it) }
-                .commit()
-            bridgeOk()
+                .commit() }
+            sessionInputSaveResult(committed, "morning", rec, today, nowMs)
         } catch (e: Exception) {
             bridgeFail("Invalid morning input: ${e.message}")
         }
@@ -927,10 +937,65 @@ class NativeBridge(private val context: Context) {
                 )
             )
             if (missing.isNotEmpty()) return bridgeFail("Missing required evening close: ${missing.joinToString(", ")}")
-            prefs.edit().putString("evening_close_baseline", obj.toString()).commit()
-            bridgeOk()
+            val nowMs = System.currentTimeMillis()
+            val prior = SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null))
+            val built = SessionInputs.withEvening(prior, nowMs, obj)
+            if (!built.ok) return bridgeFail("Evening reference rejected: ${built.error}")
+            val rec = built.record!!
+            obj.put("_intended_session", rec.optString("intended_session")).put("_captured_at_ms", nowMs)
+            val committed = AnalysisAuthority.shared.commitInputs { prefs.edit()
+                .putString("evening_close_baseline", obj.toString())
+                .putString(SessionInputs.PREF_KEY, built.state!!.toString())
+                .also { BrainResultStore.clear(context, it) }
+                .commit() }
+            sessionInputSaveResult(committed, "evening", rec, todayIstDate(), nowMs)
         } catch (e: Exception) {
             bridgeFail("Invalid evening close: ${e.message}")
+        }
+    }
+
+    /**
+     * b507 (condition 4): authoritative save acknowledgement. Reads the pair back from prefs and returns the
+     * stored values and revisions; any mismatch or failed commit is a failure the UI must show as NOT saved.
+     */
+    private fun sessionInputSaveResult(committed: Boolean, kind: String, rec: JSONObject, session: String, nowMs: Long): String {
+        val ack = SessionInputs.acknowledge(committed, kind, rec, prefs.getString(SessionInputs.PREF_KEY, null), session, nowMs)
+        if (!ack.optBoolean("ok")) {
+            LogBuffer.add('E', TAG, "SESSION_INPUT_SAVE_FAILED: kind=$kind committed=$committed")
+            return ack.toString()
+        }
+        LogBuffer.add('I', TAG, "SESSION_INPUT_SAVED: kind=$kind rev=${ack.optString("revision")} " +
+            "input_rev=${ack.optJSONObject("state")?.optString("input_revision")} status=${ack.optJSONObject("state")?.optString("status")}")
+        requestAnalysisRefreshAfterSave()
+        return ack.toString()
+    }
+
+    private fun requestAnalysisRefreshAfterSave() {
+        if (!prefs.getBoolean("service_running", false)) {
+            LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_PENDING: service not running; next poll computes")
+            return
+        }
+        try {
+            val intent = Intent(context, MarketWatchService::class.java).apply {
+                action = MarketWatchService.ACTION_ANALYSIS_REFRESH
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
+            else context.startService(intent)
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "ANALYSIS_REFRESH_REQUEST_FAILED: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** b507: acknowledged overnight input pair, its status for today and the refresh state (read-only). */
+    @JavascriptInterface
+    fun getOvernightInputState(): String {
+        return try {
+            val state = SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null))
+            SessionInputs.publicState(state, todayIstDate(), System.currentTimeMillis())
+                .put("refresh", SessionInputs.read(prefs.getString(MarketWatchService.PREF_ANALYSIS_REFRESH_STATE, null)))
+                .toString()
+        } catch (e: Exception) {
+            JSONObject().put("status", "UNAVAILABLE").put("error", e.javaClass.simpleName).toString()
         }
     }
 
@@ -1029,13 +1094,14 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun setGlobalDirection(json: String) {
         try {
-            val globalDirection = JSONObject(json)
-            val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
-            ctxObj.put("globalDirection", globalDirection)
-            prefs.edit()
-                .putString("context", ctxObj.toString())
-                .putString("global_direction", globalDirection.toString())
-                .commit()
+            // b507: display-only copy. Analysis reads global direction solely from the acknowledged morning
+            // record (SessionInputs.assemble); this no longer writes the analysis context.
+            // b507: only the user-entered intraday quotes (dowNow/crudeNow/giftNow) are accepted here, dated by
+            // native at receipt. dowClose/crudeSettle come solely from the acknowledged morning record, and this
+            // no longer writes the analysis context.
+            val incoming = JSONObject(json)
+            val live = SessionInputs.liveQuotes(incoming, todayIstDate(), System.currentTimeMillis())
+            prefs.edit().putString(SessionInputs.PREF_LIVE_KEY, live.toString()).commit()
         } catch (e: Exception) {
             Log.w(TAG, "setGlobalDirection failed: ${e.message}")
         }
@@ -1252,7 +1318,10 @@ class NativeBridge(private val context: Context) {
     fun getBrainResult(): String {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "null"
-        return BrainResultStore.readBrainResult(context, prefs)
+        // b507 R1 (F3 defence in depth): never hand out a result computed for other acknowledged inputs.
+        return SessionInputs.currentResultOrNull(BrainResultStore.readBrainResult(context, prefs),
+            SessionInputs.inputRevision(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)), todayIstDate()))
+            ?: "null"
     }
 
     @JavascriptInterface
@@ -2283,13 +2352,10 @@ class NativeBridge(private val context: Context) {
         val baselineIsToday = baselineDate(rawBaseline) == today
         val baselineHasCoreFields = baselineHasCoreFields(rawBaseline)
         val hasActiveTodaySession = lastPollDate == today && prefs.getInt("poll_count", 0) > 0
+        // b507 (condition 2): no healing of an undated/stale baseline by stamping today's date; a legacy
+        // baseline is simply not today's and requires re-entry.
         if (!baselineIsToday && baselineHasCoreFields && hasActiveTodaySession) {
-            try {
-                val healed = JSONObject(rawBaseline).put("date", today).toString()
-                prefs.edit().putString("morning_baseline", healed).commit()
-                Log.i(TAG, "BASELINE_HEALED_DURING_CLEAR: date=$today")
-            } catch (_: Exception) {
-            }
+            LogBuffer.add('W', TAG, "BASELINE_NOT_TODAY_REENTRY_REQUIRED: date=${baselineDate(rawBaseline).ifEmpty { "none" }}")
         }
         val effectiveBaselineIsToday = hasTodayBaseline()
         if (hasActiveTodaySession) return
@@ -2851,20 +2917,7 @@ class NativeBridge(private val context: Context) {
             val today = todayIstDate()
             if (baselineDate(baselineRaw) == today) return baselineRaw
 
-            // Auto-heal legacy sessions where morning_baseline exists but "date" is missing.
-            // If today's session is active and baseline has core spot fields, stamp today's date.
-            val baselineObj = try { JSONObject(baselineRaw) } catch (_: Exception) { JSONObject() }
-            val hasCoreFields =
-                baselineObj.has("bnfSpot") &&
-                baselineObj.has("nfSpot") &&
-                baselineObj.has("vix")
-            if (hasCoreFields && hasTodaySession()) {
-                baselineObj.put("date", today)
-                val healed = baselineObj.toString()
-                prefs.edit().putString("morning_baseline", healed).commit()
-                LogBuffer.add('I', TAG, "BASELINE_HEALED_WITH_DATE: $today")
-                return healed
-            }
+            // b507 (condition 2): legacy undated baselines are NOT healed by date replacement; re-entry required.
             "{}"
         } catch (e: Exception) {
             "{}"
@@ -2951,10 +3004,10 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getGlobalDirection(): String {
         return try {
-            val ctx = JSONObject(prefs.getString("context", "{}") ?: "{}")
-            ctx.optJSONObject("globalDirection")?.toString()
-                ?: prefs.getString("global_direction", "{}")
-                ?: "{}"
+            // b507: same authority as analysis — today's morning record + today's dated live quotes.
+            val today = todayIstDate()
+            SessionInputs.globalDirection(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)), today,
+                SessionInputs.read(prefs.getString(SessionInputs.PREF_LIVE_KEY, null)))?.toString() ?: "{}"
         } catch (e: Exception) {
             "{}"
         }

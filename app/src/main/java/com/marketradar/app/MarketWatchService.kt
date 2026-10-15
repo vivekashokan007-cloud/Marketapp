@@ -159,6 +159,11 @@ class MarketWatchService : Service() {
         const val TAG = "MarketWatchService"
         private const val ACTION_POLL_TICK = "com.marketradar.app.ACTION_POLL_TICK"
         const val ACTION_FORCE_POLL = "com.marketradar.app.ACTION_FORCE_POLL"
+        /** b507: explicit analysis refresh after an acknowledged input save (no poll, no slot). */
+        const val ACTION_ANALYSIS_REFRESH = "com.marketradar.app.ACTION_ANALYSIS_REFRESH"
+        const val ANALYSIS_MODE_POLL = "POLL"
+        const val ANALYSIS_MODE_REFRESH = "REFRESH"
+        const val PREF_ANALYSIS_REFRESH_STATE = "analysis_refresh_state_v1"
         private const val POLL_ALARM_REQ_CODE = 74051
         private const val LAST_POLL_DISPATCH_SLOT_KEY = "last_poll_dispatch_slot"
         private const val LAST_SUCCESSFUL_POLL_SLOT_KEY = "last_successful_poll_slot"
@@ -471,6 +476,8 @@ class MarketWatchService : Service() {
             serviceScope.launch { maybeRunPollFromAlarm() }
         } else if (intent?.action == ACTION_FORCE_POLL) {
             serviceScope.launch { maybeRunForcedPoll() }
+        } else if (intent?.action == ACTION_ANALYSIS_REFRESH) {
+            requestAnalysisRefresh("input_saved")
         }
 
         if (pollingJob?.isActive == true || !serviceStartInProgress.compareAndSet(false, true)) {
@@ -1113,7 +1120,7 @@ class MarketWatchService : Service() {
             // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
             var quotesFetchStartedAtMs = 0L
             var quotesFetchCompletedAtMs = 0L
-            val parallel = coroutineScope {
+            val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
                     async(Dispatchers.IO) {
@@ -1124,7 +1131,8 @@ class MarketWatchService : Service() {
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
                     async(Dispatchers.IO) { fetchSync(nfUrl, token).also { evNfChainFetchedAtMs = System.currentTimeMillis() } }
                 ).map { it.await() }
-            }
+            } }
+            val parallel = acquisition.value
             val nf50Breadth = parallel[0] ?: JSONObject()
             val hasNf50Breadth = parallel[0] != null
             if (!hasNf50Breadth) {
@@ -1243,7 +1251,9 @@ class MarketWatchService : Service() {
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
-            runBrainAnalysis(
+            // b507 R1 (F2/F4): the poll's analysis owns the single analysis lane; on release the authority drains
+            // any deferred recalculation for the newest acknowledged inputs.
+            analysisAuthority.withPollLane { runBrainAnalysis(
                 pollObj,
                 bnfChainJson,
                 nfChainJson,
@@ -1256,8 +1266,9 @@ class MarketWatchService : Service() {
                 nfExpiry,
                 spotProvenance,
                 chainEvidenceRef,
-                chainEvidenceCoverage
-            )
+                chainEvidenceCoverage,
+                marketSnapshot = acquisition.identity
+            ) }
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
             LogBuffer.add('D', TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
@@ -2223,6 +2234,66 @@ class MarketWatchService : Service() {
         return result
     }
 
+    private data class AnalysisInputs(val marketSnapshot: MarketSnapshotIdentity, val poll: JSONObject, val bnfChain: JSONObject,
+        val nfChain: JSONObject, val bnfSpot: Double, val nfSpot: Double, val vix: Double, val stocks: JSONObject,
+        val nf50Breadth: JSONObject, val bnfExpiry: String, val nfExpiry: String, val spotProvenance: JSONObject?,
+        val chainEvidenceRef: JSONObject?, val chainEvidenceCoverage: JSONObject?)
+
+    @Volatile private var lastAnalysisInputs: AnalysisInputs? = null
+    @Volatile private var lastAnalysisStrikeOiJson: String? = null
+    private val analysisAuthority = AnalysisAuthority.shared.also { auth ->
+        auth.attachRevisionSource {
+            SessionInputs.inputRevision(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)), todayIstDate())
+        }
+        auth.refresher = { rev -> runAnalysisRefresh(rev) }
+    }
+
+    private fun writeRefreshState(state: String, detail: String) {
+        prefs.edit().putString(PREF_ANALYSIS_REFRESH_STATE, JSONObject()
+            .put("state", state).put("detail", detail).put("at_ms", System.currentTimeMillis()).toString()).apply()
+    }
+
+    /**
+     * b507 R1 (F2): record the newest acknowledged revision as pending and drain it if the analysis lane is
+     * free. A busy lane never consumes the request: its owner drains on release. Without a usable same-session
+     * cached market snapshot the request stays pending (WAITING_FOR_POLL / MARKET_TOO_OLD) and the next poll
+     * computes it; no forced poll is scheduled and no completed slot is re-run.
+     */
+    private fun requestAnalysisRefresh(reason: String) {
+        val rev = analysisAuthority.requestRefresh()
+        writeRefreshState("PENDING", rev)
+        LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_REQUESTED: reason=$reason rev=$rev")
+        serviceScope.launch {
+            val outcome = analysisAuthority.drain()
+            if (outcome == null) LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_DEFERRED_LANE_BUSY: rev=$rev")
+        }
+    }
+
+    /** Runs only while holding the analysis lane (called by AnalysisAuthority.drain). */
+    private suspend fun runAnalysisRefresh(rev: String): AnalysisAuthority.Outcome {
+        val cached = lastAnalysisInputs
+        val nowMs = System.currentTimeMillis()
+        if (cached != null && !cached.marketSnapshot.usableFor(todayIstDate(), nowMs)) {
+            writeRefreshState("MARKET_IDENTITY_UNAVAILABLE", rev)
+            return AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE
+        }
+        AnalysisAuthority.refreshPrecondition(cached?.marketSnapshot?.session, cached?.marketSnapshot?.collectedAtMs ?: 0L, todayIstDate(), nowMs)?.let { blocked ->
+            writeRefreshState(blocked.name, rev)
+            LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_$blocked: rev=$rev collectedAtMs=${cached?.marketSnapshot?.collectedAtMs ?: 0L}")
+            return blocked
+        }
+        cached!!
+        writeRefreshState("RUNNING", rev)
+        LogBuffer.add('I', TAG, "ANALYSIS_REFRESH_START: rev=$rev")
+        val outcome = runBrainAnalysis(cached.poll, cached.bnfChain, cached.nfChain, cached.bnfSpot, cached.nfSpot,
+            cached.vix, cached.stocks, cached.nf50Breadth, cached.bnfExpiry, cached.nfExpiry,
+            cached.spotProvenance, cached.chainEvidenceRef, cached.chainEvidenceCoverage,
+            marketSnapshot = cached.marketSnapshot, mode = ANALYSIS_MODE_REFRESH)
+        writeRefreshState(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) "DONE" else outcome.name, rev)
+        LogBuffer.add(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) 'I' else 'W', TAG, "ANALYSIS_REFRESH_OUTCOME: rev=$rev outcome=$outcome")
+        return outcome
+    }
+
     private suspend fun runBrainAnalysis(poll: JSONObject, bnfChain: JSONObject, nfChain: JSONObject,
                                          bnfSpot: Double, nfSpot: Double, vix: Double, stocksJson: JSONObject,
                                          nf50Breadth: JSONObject,
@@ -2230,7 +2301,21 @@ class MarketWatchService : Service() {
                                          liveNfExpiry: String,
                                          spotProvenance: JSONObject? = null,
                                          chainEvidenceRef: JSONObject? = null,
-                                         chainEvidenceCoverage: JSONObject? = null) {
+                                         chainEvidenceCoverage: JSONObject? = null,
+                                         marketSnapshot: MarketSnapshotIdentity,
+                                         mode: String = ANALYSIS_MODE_POLL): AnalysisAuthority.Outcome {
+        var outcome = AnalysisAuthority.Outcome.FAILED
+        // b507 (condition 7): REFRESH recomputes the analysis for the latest acknowledged inputs from the
+        // last poll's cached market inputs, with NO poll-owned side effects (no poll history, strike-OI
+        // history, Paper menu capture, EV envelopes, notifications, BUILD3 rows, ML snapshots, position
+        // thresholds/live P&L, routine-alert stamp or candle upserts). Only the result + broadcast.
+        val isRefresh = mode == ANALYSIS_MODE_REFRESH
+        if (!isRefresh) {
+            lastAnalysisInputs = AnalysisInputs(marketSnapshot, poll, bnfChain, nfChain, bnfSpot, nfSpot, vix,
+                stocksJson, nf50Breadth, liveBnfExpiry, liveNfExpiry, spotProvenance, chainEvidenceRef, chainEvidenceCoverage)
+        }
+        // b507 R1 (F4): market-data identity is the collection time of the analysed poll, preserved by a refresh.
+        val marketCollectedAtMs = if (marketSnapshot.usableFor(todayIstDate(), System.currentTimeMillis())) marketSnapshot.collectedAtMs else 0L
         var brainSuccess = false
         var brainAnalyzeStartedAtMs = 0L
         // Evidence batch 1 (Item B): slot key of an in-flight Paper decision-menu capture attempt.
@@ -2272,7 +2357,7 @@ class MarketWatchService : Service() {
                     TAG,
                     "BRAIN_SKIP_INVALID_EXPIRY: bnf='$resolvedBnfExpiry' nf='$resolvedNfExpiry' session=$sessionDate"
                 )
-                return
+                return AnalysisAuthority.Outcome.FAILED
             }
             val bnfExpDate = parseExpiryDate(resolvedBnfExpiry)
             val nfExpDate = parseExpiryDate(resolvedNfExpiry)
@@ -2390,10 +2475,16 @@ class MarketWatchService : Service() {
             ctxObj.put("nf50Breadth", nf50Breadth)
             
             // Phase B: populate morning input + yesterday history for brain.py
+            // b507 (conditions 1-3): scrub every inherited session input from the persisted context and inject
+            // only the current session's acknowledged records; capture the input revision at analysis start.
+            val inputSession = todayIstDate()
+            val inputState = SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null))
+            val startInputRevision = SessionInputs.inputRevision(inputState, inputSession)
             val morningInputStr = prefs.getString("morning_input", null)
-            if (morningInputStr != null) {
-                ctxObj.put("morning_input", JSONObject(morningInputStr))
-            }
+            val morningInputObj = morningInputStr?.let { try { JSONObject(it) } catch (_: Exception) { null } }
+            SessionInputs.assemble(ctxObj, inputState, inputSession, System.currentTimeMillis(), morningInputObj,
+                SessionInputs.read(prefs.getString(SessionInputs.PREF_LIVE_KEY, null)))
+            val inputStatusAtStart = SessionInputs.status(inputState, inputSession, System.currentTimeMillis())
             val ydayHistStr = prefs.getString("premium_history", "[]") ?: "[]"
             ctxObj.put("yesterdayHistory", JSONArray(ydayHistStr))
             
@@ -2402,17 +2493,8 @@ class MarketWatchService : Service() {
             ctxObj.put("signalReliability", signalReliabilityRows)
             ctxObj.put("elephantObserveOnly", true)
             
-            // Phase B: evening close data for overnight delta
-            val eveningCloseStr = prefs.getString("evening_close_baseline", null)
-            if (eveningCloseStr != null) {
-                ctxObj.put("eveningClose", JSONObject(eveningCloseStr))
-            }
-            
-            // Phase B: global direction for overnight delta
-            val globalDirStr = prefs.getString("global_direction", null)
-            if (globalDirStr != null) {
-                ctxObj.put("globalDirection", JSONObject(globalDirStr))
-            }
+            // b507: eveningClose / globalDirection are no longer read from loose prefs; the overnight
+            // comparison uses ctx.overnightInputs (one acknowledged pair) injected above.
             
             val gapObj = JSONObject()
             if (ohlcStr != null) {
@@ -2546,7 +2628,8 @@ class MarketWatchService : Service() {
                 Math.abs(nfSpotSigmaValue) > sigmaThreshold ||
                 Math.abs(vixSigma) > sigmaThreshold
 
-            val hasMorningInput = !morningInputStr.isNullOrBlank()
+            // b507: only a lock made for THIS session counts (legacy undated locks require re-entry).
+            val hasMorningInput = ctxObj.optJSONObject("morning_input") != null
             val wallClockMinutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
             // Entry window matches cash-market hours (09:15–15:15 IST). Trading-window
             // telemetry keeps the historical 11:00 floor so ops charts stay comparable.
@@ -2703,7 +2786,8 @@ class MarketWatchService : Service() {
                 prefs.edit().putString("strike_oi_history", existing.toString()).apply()
                 return output.toString()
             }
-            val strikeOiJson = buildStrikeOiJson(bnfChain, nfChain, openTradesJson, poll.optString("t", ""))
+            val strikeOiJson = if (isRefresh) (lastAnalysisStrikeOiJson ?: "{}")
+                else buildStrikeOiJson(bnfChain, nfChain, openTradesJson, poll.optString("t", "")).also { lastAnalysisStrikeOiJson = it }
             ctxObj.put("snapshot_strike_oi_json", strikeOiJson)
 
             // Call brain.analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json)
@@ -2714,7 +2798,7 @@ class MarketWatchService : Service() {
             // Evidence batch 1 (Item B): ask Brain for the frozen decision menu only on the capture slot.
             // Without the request, analyze() output is unchanged (tested in test_paper_menu_evidence.py).
             ctxObj.remove("paper_menu_capture_request")
-            paperMenuAttemptSlot = try {
+            paperMenuAttemptSlot = if (isRefresh) null else try {
                 preparePaperMenuCaptureRequest(poll.optString("slot_key", "").ifBlank { null }, ctxObj)
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "PAPER_MENU_REQUEST_FAIL: ${e.message}")
@@ -2722,14 +2806,14 @@ class MarketWatchService : Service() {
             }
             // Implied-EV v1.2: keys only for an explicit Paper poll with the experiment enabled (default off).
             val evMode = EvExperiment.mode(prefs)
-            val evApplied = try {
+            val evApplied = if (isRefresh) false else try {
                 EvExperiment.applyContext(ctxObj, evMode, ctxObj.optString("executionMode", ""), filesDir,
                     System.currentTimeMillis(), evNfChainFetchedAtMs.takeIf { it > 0L },
                     prefs.getString(EvExperiment.PREF_CALIBRATION, null), BuildConfig.VERSION_NAME)
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "EV12_CTX_FAIL: ${e.message}"); false
             }
-            evRefreshCalibrationIfDue(evApplied, System.currentTimeMillis())
+            if (!isRefresh) evRefreshCalibrationIfDue(evApplied, System.currentTimeMillis())
             brainAnalyzeStartedAtMs = System.currentTimeMillis()
             val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",
@@ -2756,7 +2840,9 @@ class MarketWatchService : Service() {
                 resultObj.remove("paper_decision_menu")
                 // Implied-EV v1.2: envelopes/outcomes leave the result here (exact bytes -> outbox); only the
                 // small recommendation view stays for the PWA.
-                if (resultObj.has(EvExperiment.RESULT_KEY)) {
+                if (isRefresh) {
+                    resultObj.remove(EvExperiment.RESULT_KEY)
+                } else if (resultObj.has(EvExperiment.RESULT_KEY)) {
                     try {
                         val det = EvExperiment.detach(resultObj, EvExperiment.outboxDir(filesDir), System.currentTimeMillis())
                         val view = det.view
@@ -2789,21 +2875,49 @@ class MarketWatchService : Service() {
                 } catch (e: Exception) {
                     Log.w(TAG, "CTX_PERCENTILE_RESULT_LOG_FAIL: ${e.message}")
                 }
-                val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
-                enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
+                // b507 (condition 6): publish only if the acknowledged inputs are still at the start revision.
+                // b507 R1 (F3): one frozen identity, re-validated by the shared authority at EVERY boundary
+                // (margin enrichment, Paper menu, notification dispatch, BUILD3 row, publication).
+                val identity = AnalysisAuthority.Identity(inputSession, startInputRevision, marketCollectedAtMs, mode)
+                val sideEffects = !isRefresh
+                val superseded = !analysisAuthority.isCurrent(identity)
+                resultObj.put("input_identity", JSONObject()
+                    .put("session", inputSession)
+                    .put("input_revision", startInputRevision)
+                    .put("status_at_start", inputStatusAtStart)
+                    .put("pair_revision", ctxObj.optJSONObject("overnightInputs")?.optString("pair_revision", "")?.ifBlank { null } ?: JSONObject.NULL)
+                    .put("mode", mode)
+                    .put("computed_at_ms", brainAnalyzeCompletedAtMs)
+                    .put("poll_t", poll.optString("t", poll.optString("time", "")))
+                    .put("poll_slot", poll.optString("slot_key", ""))
+                    .put("market_collected_at_ms", marketCollectedAtMs)
+                    .put("market_acquisition_completed_at_ms", marketSnapshot.completedAtMs))
+                if (superseded) {
+                    LogBuffer.add('W', TAG, "ANALYSIS_SUPERSEDED: mode=$mode start=$startInputRevision; result not published")
+                    if (!isRefresh) analysisAuthority.requestRefresh()   // drained when this lane is released
+                }
+                if (sideEffects && analysisAuthority.isCurrent(identity)) {
+                    val marginPollKey = "${ctxObj.optString("today_ist", todayIstDate())}|${poll.optString("t", poll.optString("time", ""))}"
+                    enrichTopCandidateMargin(resultObj, ctxObj, authToken, marginPollKey)
+                }
                 paperMenuAttemptSlot?.let { slot ->
                     paperMenuAttemptSlot = null
-                    try {
+                    if (!analysisAuthority.isCurrent(identity)) {
+                        recordPaperMenuAttemptFailure(slot, "superseded_input_revision")
+                    } else try {
                         capturePaperDecisionMenu(slot, paperDecisionMenu, ctxObj, authToken, brainAnalyzeCompletedAtMs)
                     } catch (e: Exception) {
                         recordPaperMenuAttemptFailure(slot, "capture_exception:${e.javaClass.simpleName}:${e.message?.take(120)}")
                     }
                 }
-                processUnifiedBrainNotifications(brain, resultObj, ctxObj)
+                if (sideEffects) {
+                    val dispatched = analysisAuthority.dispatchIfCurrent(identity) { processUnifiedBrainNotifications(brain, resultObj, ctxObj) }
+                    if (!dispatched) LogBuffer.add('I', TAG, "NOTIFICATIONS_SUPPRESSED_SUPERSEDED: rev=$startInputRevision")
+                }
 
                 try {
                     val build3Ab = resultObj.optJSONObject("build3_ab")
-                    if (build3Ab != null) {
+                    if (build3Ab != null && sideEffects && analysisAuthority.isCurrent(identity)) {
                         val sessionDate = build3Ab.optString(
                             "session_date",
                             ctxObj.optString("today_ist", todayIstDate())
@@ -2834,6 +2948,7 @@ class MarketWatchService : Service() {
                 // thread, before submission and before the A1 ctx merge below mutates ctxObj.
                 // A result that outlives PY_SNAPSHOT_TIMEOUT_MS is delivered LATE from the same
                 // original Future (never recomputed); failures become explicit capture events.
+                if (sideEffects) {
                 val snapshotStageStarted = SystemClock.elapsedRealtime()
                 var snapshotIdentity = poll.optString("slot_key", "").ifBlank { "unscheduled" }
                 try {
@@ -2897,6 +3012,8 @@ class MarketWatchService : Service() {
                     LogBuffer.add('E', TAG, "ML_SNAPSHOT_STAGE_ABORTED: reason=${e.javaClass.simpleName}")
                 }
                 
+                } // b507: ML snapshot only on real polls (kept for superseded polls: observation, not publication)
+
                 // A1: Persist brain results back into ctxObj for next poll cycle
                 try {
                     val eb = resultObj.optJSONObject("effective_bias")
@@ -2946,6 +3063,8 @@ class MarketWatchService : Service() {
                 // result. Keeping an older non-empty map when the current result
                 // intentionally has no thresholds leaves P1 evaluating days-old
                 // levels. An empty map is the explicit, safe fallback signal.
+                // b507: position management stays on the real poll path (also when superseded); never in REFRESH.
+                if (sideEffects) {
                 val thresholds = resultObj.optJSONObject("position_exit_thresholds") ?: JSONObject()
                 prefs.edit()
                     .putString(PREF_POSITION_EXIT_THRESHOLDS, thresholds.toString())
@@ -2988,6 +3107,8 @@ class MarketWatchService : Service() {
                         prefs.edit().putString("open_trades", trades.toString()).commit()
                     }
                 }
+
+                } // b507 sideEffects (position thresholds + position_live)
 
                 // --- NEW Diagnostic Result Parsing ---
                 try {
@@ -3090,8 +3211,16 @@ class MarketWatchService : Service() {
                 
                 val candidates = resultObj.optJSONArray("generated_candidates")
                     ?: resultObj.optJSONArray("candidates")
-                val brainStored = BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
-                if (brainStored) {
+                // b507 R1 (F3/F4): validation and the result-reference commit are ONE guarded operation.
+                outcome = analysisAuthority.publish(identity) {
+                    BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
+                }
+                val publishNow = outcome == AnalysisAuthority.Outcome.PUBLISHED
+                if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()
+                if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT || outcome == AnalysisAuthority.Outcome.STALE_MARKET
+                    || outcome == AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE) {
+                    LogBuffer.add('I', TAG, "BRAIN_RESULT_NOT_PUBLISHED: outcome=$outcome rev=$startInputRevision mode=$mode")
+                } else if (publishNow) {
                     prefs.edit()
                         .putLong(PREF_LAST_BRAIN_ANALYSIS_SUCCESS_MS, brainAnalyzeCompletedAtMs)
                         .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, brainAnalyzeDurationMs)
@@ -3112,7 +3241,7 @@ class MarketWatchService : Service() {
                 
                 // Phase E: Persist routine alert timestamp if routine alert was fired
                 val alerts = resultObj.optJSONArray("alerts")
-                if (alerts != null) {
+                if (alerts != null && sideEffects && publishNow) {
                     for (i in 0 until alerts.length()) {
                         if (alerts.getJSONObject(i).optString("category") == "ROUTINE") {
                             prefs.edit().putLong("last_routine_dispatch_ms", System.currentTimeMillis()).apply()
@@ -3125,7 +3254,7 @@ class MarketWatchService : Service() {
                 try {
                     val candleBnf = resultObj.optJSONObject("candle_bnf")
                     val candleNf = resultObj.optJSONObject("candle_nf")
-                    if (candleBnf != null || candleNf != null) {
+                    if (sideEffects && (candleBnf != null || candleNf != null)) {
                         SupabaseClient.upsertCandleData(
                             todayIstDate(),
                             candleBnf ?: JSONObject(),
@@ -3145,6 +3274,7 @@ class MarketWatchService : Service() {
                     .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "TIMEOUT")
                     .apply()
                 Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after ${PY_POLL_ANALYZE_TIMEOUT_MS}ms")
+                outcome = AnalysisAuthority.Outcome.TIMED_OUT
                 paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_analyze_timeout") }
                 paperMenuAttemptSlot = null
             }
@@ -3169,6 +3299,7 @@ class MarketWatchService : Service() {
             val pollCount = prefs.getInt("poll_count", 0)
             Log.d(TAG, "BROADCAST_SENT: Poll #$pollCount (brain success=$brainSuccess)")
         }
+        return outcome
     }
 
     @Volatile
