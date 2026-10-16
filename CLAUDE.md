@@ -271,3 +271,10 @@ See docs/ev_v12/README.md "Re-review C1–C5 corrections": accepted outcome stay
 
 ### Implied-EV v1.2 re-review D1–D4 (14 Oct 2026)
 See docs/ev_v12/README.md "Re-review D1–D4 corrections": atomic native manual close request (intent + patch in one save, refusal changes nothing, patchless legacy intent offered and withdrawn), RuleBExitPolicy.step never throws on MANUAL_CLOSED; canonical close-evidence digest; outcome ≤ 4096 B via staged compaction metadata; pricing diagnostic tau at the actual exit time.
+
+
+## 2.6.77 / b508 — evening evaluation recovery (2026-10-16)
+
+The 16 October phone logs showed 45-minute continuations followed by an OOM in `readJsonArrayFile` after local outcome computation. Evaluation now preflights the complete outcome file using per-identity content hashes, keeps the original evidence, persists bounded batches, and assesses compact produced identities against exact server readback (including the rejected-outcome table when required). Returned batches commit their local cursor before the cooperative budget check. Java reporting/aggregation and the G6 bridge consume files rather than loading the complete raw outcomes array. G6 retains its full-input canonical fingerprint while projecting metric fields. Python batches reuse a streaming snapshot cursor and batch-local chain indexes; the NF/BNF quote and path semantics are parity-tested. Fatal evaluation errors are recorded as actionable failure states; they do not mark labels saved or start C3.
+
+Validation includes a >256 MiB outcome file replayed in a 64 MiB Java process. Historical outcome files remain recoverable; the update does not clear app data or change live trade ranking.

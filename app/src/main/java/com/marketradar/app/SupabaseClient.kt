@@ -2639,6 +2639,33 @@ object SupabaseClient {
         return if (fallback.success) fallback.table else null
     }
 
+    /** End-of-computation persistence, replayable from disk after partial HTTP failure. */
+    internal fun saveEvaluationOutcomes(
+        sessionDate: String, input: EvaluationOutcomeFile.Validated,
+        saveBatch: (String, JSONArray) -> EvaluationSaveResult = { date, rows -> saveEvaluationOutcomes(date, rows) }
+    ): EvaluationSaveResult {
+        var evaluation = 0
+        var recommendation = 0
+        var rejected = 0
+        var batches = 0
+        val modes = linkedSetOf<String>()
+        EvaluationOutcomeFile.batches(input.file) { rows ->
+            val result = saveBatch(sessionDate, rows)
+            check(result.success) { "EVAL_BATCH_SAVE_FAILED: batch=$batches ${result.message}; local results retained" }
+            evaluation = maxOf(evaluation, result.evaluationPersistedCount)
+            recommendation = maxOf(recommendation, result.primaryPersistedCount)
+            rejected = maxOf(rejected, result.rejectedPersistedCount)
+            modes.add(result.rejectedSaveMode)
+            batches++
+        }
+        return EvaluationSaveResult(success = true, producedCount = input.count,
+            persistedCount = evaluation + rejected, primaryPersistedCount = recommendation,
+            evaluationPersistedCount = evaluation, rejectedPersistedCount = rejected,
+            rejectedExpectedCount = input.rejectedCount, rejectedSaveMode = modes.joinToString(","),
+            evaluationSaved = true, recommendationSaved = true, rejectedSaved = true,
+            message = "Persisted outcome batches=$batches; exact session identity readback remains required.")
+    }
+
     fun saveEvaluationOutcomes(sessionDate: String, body: JSONArray): EvaluationSaveResult {
         // Validate the complete batch before *any* table write. Identical retry
         // copies are collapsed, while conflicting identities retain the local file.
@@ -2855,7 +2882,7 @@ object SupabaseClient {
      * Aggregate session counts are intentionally not used here.
      * Injectable via [pageFetchSeam] for unit tests — never writes.
      */
-    fun readEvaluationOutcomeIdentityKeys(sessionDate: String): OutcomeIdentityReadback {
+    fun readEvaluationOutcomeIdentityKeys(sessionDate: String, includeRejected: Boolean = false): OutcomeIdentityReadback {
         val date = sessionDate.trim()
         if (date.isEmpty()) {
             return OutcomeIdentityReadback(ok = false, status = "invalid_session", error = "empty_session_date")
@@ -2938,11 +2965,32 @@ object SupabaseClient {
             val row = recoRows.optJSONObject(i) ?: continue
             EvaluationIdentityCoverage.fromRowOrNull(row)?.let { recoKeys.add(it.encoded()) }
         }
+        var rejectedPages = 0
+        if (includeRejected) {
+            val rejectedPaged = selectAllPages(
+                table = "ml_rejected_candidate_outcomes", filter = evalFilter,
+                order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc", pageSize = 500, maxPages = 40
+            )
+            rejectedPages = rejectedPaged.optInt("pages_fetched", 0)
+            val rejectedStatus = rejectedPaged.optString("status", "")
+            if (rejectedStatus !in setOf("complete", "empty")) {
+                return OutcomeIdentityReadback(ok = false, compositeKeys = evalKeys,
+                    recommendationCompositeKeys = recoKeys, status = rejectedStatus,
+                    error = "rejected_readback:$rejectedStatus",
+                    pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0) + rejectedPages)
+            }
+            val rows = rejectedPaged.optJSONArray("rows") ?: JSONArray()
+            for (i in 0 until rows.length()) {
+                rows.optJSONObject(i)?.let { row ->
+                    EvaluationIdentityCoverage.fromRowOrNull(row)?.let { evalKeys.add(it.encoded()) }
+                }
+            }
+        }
         return OutcomeIdentityReadback(
             ok = true,
             compositeKeys = evalKeys,
             recommendationCompositeKeys = recoKeys,
-            pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
+            pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0) + rejectedPages,
             status = evalStatus
         )
     }

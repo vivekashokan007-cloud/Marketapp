@@ -134,6 +134,20 @@ internal object EvaluationIdentity {
         else -> value.toString()
     }
 
+    fun validatedOutcomeKey(sessionDate: String, source: JSONObject): String {
+        val id = positiveId(source.opt("snapshot_id"))
+        val candidate = text(source, "candidate_id")
+        val role = text(source, "role").lowercase(java.util.Locale.US)
+        require(id != null && candidate.isNotEmpty() && '|' !in candidate &&
+            text(source, "session_date") == sessionDate && role in setOf("primary", "secondary", "rejected")) {
+            "EVAL_OUTCOME_IDENTITY_INVALID: local results retained"
+        }
+        return "$id|$candidate|$role"
+    }
+
+    fun contentDigest(source: JSONObject): String = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(canonical(source).toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+
     fun validatedDistinctOutcomes(sessionDate: String, body: JSONArray): JSONArray {
         val unique = linkedMapOf<List<String>, JSONObject>()
         for (i in 0 until body.length()) {

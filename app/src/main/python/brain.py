@@ -7109,7 +7109,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.76"
+BRAIN_VERSION = "2.6.77"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -22178,7 +22178,9 @@ def get_price(chain_rows, cand, side, suffix=''):
     preferred_ts = None
     fallback_row = None
     fallback_ts = None
-    for row_data in chain_rows:
+    candidate_rows = (chain_rows.leg_rows(index_key, expiry, strike, opt_type)
+                      if isinstance(chain_rows, _EvaluationChainRows) else chain_rows)
+    for row_data in candidate_rows:
         if row_data.get('index_key') != index_key:
             continue
         if row_data.get('strike') != strike:
@@ -23432,24 +23434,7 @@ def compute_live_friction_bridge(trade_json):
         })
 
 
-def _build_candidate_path(chain_rows, snap, cand):
-    index_key = cand.get('index') or cand.get('index_key') or 'UNKNOWN'
-    if str(index_key).upper() not in ('NF', 'BNF'):
-        return []
-    expiry = str(cand.get('expiry') or '').strip()
-    if not expiry:
-        return []
-    entry_ts = _parse_iso_ts(snap.get('poll_ts', ''))
-    leg_specs = [
-        ('sell', cand.get('sellStrike'), cand.get('sellType')),
-        ('buy', cand.get('buyStrike'), cand.get('buyType')),
-    ]
-    if cand.get('sellStrike2') is not None:
-        leg_specs.extend([
-            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
-            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
-        ])
-
+def _group_evaluation_contract_rows(chain_rows, index_key, expiry):
     grouped = {}
     for row_data in chain_rows:
         if row_data.get('index_key') != index_key:
@@ -23460,8 +23445,6 @@ def _build_candidate_path(chain_rows, snap, cand):
         row_ts_raw = row_data.get('poll_ts', '')
         row_ts = _parse_iso_ts(row_ts_raw)
         if row_ts is None:
-            continue
-        if entry_ts is not None and row_ts <= entry_ts:
             continue
         strike = row_data.get('strike')
         opt_type = _normalize_option_type(row_data.get('option_type'))
@@ -23482,8 +23465,34 @@ def _build_candidate_path(chain_rows, snap, cand):
             'ltp': ltp,
         }
 
+    return grouped
+
+
+def _build_candidate_path(chain_rows, snap, cand):
+    index_key = cand.get('index') or cand.get('index_key') or 'UNKNOWN'
+    if str(index_key).upper() not in ('NF', 'BNF'):
+        return []
+    expiry = str(cand.get('expiry') or '').strip()
+    if not expiry:
+        return []
+    entry_ts = _parse_iso_ts(snap.get('poll_ts', ''))
+    leg_specs = [
+        ('sell', cand.get('sellStrike'), cand.get('sellType')),
+        ('buy', cand.get('buyStrike'), cand.get('buyType')),
+    ]
+    if cand.get('sellStrike2') is not None:
+        leg_specs.extend([
+            ('sell2', cand.get('sellStrike2'), cand.get('sellType2')),
+            ('buy2', cand.get('buyStrike2'), cand.get('buyType2')),
+        ])
+
+    grouped = (chain_rows.path_groups(index_key, expiry) if isinstance(chain_rows, _EvaluationChainRows)
+               else _group_evaluation_contract_rows(chain_rows, index_key, expiry))
+
     points = []
     for ts_raw, bucket in grouped.items():
+        if entry_ts is not None and bucket['ts'] <= entry_ts:
+            continue
         prices = bucket['prices']
         quotes = bucket['quotes']
         point = {'poll_ts': ts_raw, 'ts': bucket['ts'], 'underlying_spot': bucket.get('underlying_spot')}
@@ -23898,6 +23907,34 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     except Exception as _lineage_exc:
         outcome['evaluation_lineage_error'] = str(_lineage_exc)
     return outcome
+
+
+class _EvaluationChainRows(list):
+    """Batch-local indexes preserve source order, duplicate precedence and quote semantics."""
+    def __init__(self, rows):
+        super().__init__(rows)
+        self._contracts = {}
+        self._legs = {}
+        self._groups = {}
+        for row in self:
+            contract = (row.get('index_key'), str(row.get('expiry') or '').strip())
+            self._contracts.setdefault(contract, []).append(row)
+            try:
+                self._legs.setdefault(contract + (row.get('strike'), row.get('option_type')), []).append(row)
+            except TypeError:
+                pass
+
+    def leg_rows(self, index_key, expiry, strike, option_type):
+        try:
+            return self._legs.get((index_key, expiry, strike, option_type), [])
+        except TypeError:
+            return self
+
+    def path_groups(self, index_key, expiry):
+        key = (index_key, expiry)
+        if key not in self._groups:
+            self._groups[key] = _group_evaluation_contract_rows(self._contracts.get(key, []), index_key, expiry)
+        return self._groups[key]
 
 
 _EVAL_JOB_CACHE = {}
@@ -24447,8 +24484,25 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
         snapshots = legacy_snapshots[start:end]
         chain_rows = job.get('chain_rows') or []
     else:
-        snapshots = _json_array_slice(job.get('snapshots_path'), start, end)
-        chain_rows = _evaluation_batch_chain_rows(job.get('chain_slices_path'), snapshots)
+        # Continue a single source scan across successful batches. Rewind only for an
+        # actual replay, keeping neither the whole session nor earlier snapshots.
+        cursor = job.get('_snapshot_cursor')
+        position = job.get('_snapshot_position', 0)
+        if cursor is None or start < position:
+            if cursor is not None:
+                cursor.close()
+            cursor = _iter_json_array_file(job.get('snapshots_path'))
+            position = 0
+            job['_snapshot_cursor'] = cursor
+        while position < start:
+            next(cursor)
+            position += 1
+        snapshots = []
+        while position < end:
+            snapshots.append(next(cursor))
+            position += 1
+        job['_snapshot_position'] = position
+        chain_rows = _EvaluationChainRows(_evaluation_batch_chain_rows(job.get('chain_slices_path'), snapshots))
 
     outcomes = []
     errors = []
@@ -24502,7 +24556,9 @@ def evaluation_job_run_batch(run_id, start_idx, batch_size=10):
 
 
 def evaluation_job_finalize(run_id):
-    _EVAL_JOB_CACHE.pop(str(run_id), None)
+    job = _EVAL_JOB_CACHE.pop(str(run_id), None)
+    if job and job.get('_snapshot_cursor') is not None:
+        job['_snapshot_cursor'].close()
     return json.dumps({'ok': True})
 
 

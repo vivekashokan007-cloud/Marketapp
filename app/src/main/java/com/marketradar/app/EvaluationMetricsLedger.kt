@@ -29,7 +29,8 @@ object EvaluationMetricsLedger {
         cohortExecutionMode: String = "paper_intraday",
         activeRecommendationId: String? = null,
         menu: JSONArray? = null,
-        shadowFlags: JSONObject? = null
+        shadowFlags: JSONObject? = null,
+        rowsFile: File? = null
     ): JSONObject {
         val payload = JSONObject()
             .put("run_id", runId)
@@ -40,6 +41,7 @@ object EvaluationMetricsLedger {
             .put("policy_selector_version", policySelectorVersion)
             .put("net_target_version", netTargetVersion)
             .put("cohort_execution_mode", cohortExecutionMode)
+        if (rowsFile != null) payload.put("rows_path", rowsFile.absolutePath)
         if (activeRecommendationId != null) payload.put("active_recommendation_id", activeRecommendationId)
         if (menu != null) payload.put("menu", menu)
         if (shadowFlags != null) payload.put("shadow_flags", shadowFlags)

@@ -142,6 +142,16 @@ object EvaluationIdentityCoverage {
         readbackOk: Boolean,
         readbackError: String? = null,
         expectedPrimaryCompositeKeys: Collection<String> = emptyList()
+    ): Assessment = assessComposites(expectedSnapshotIds, compositesFromOutcomes(producedOutcomes),
+        serverCompositeKeys, readbackOk, readbackError, expectedPrimaryCompositeKeys)
+
+    fun assessComposites(
+        expectedSnapshotIds: Collection<String>,
+        producedCompositeKeys: Collection<String>,
+        serverCompositeKeys: Collection<String>,
+        readbackOk: Boolean,
+        readbackError: String? = null,
+        expectedPrimaryCompositeKeys: Collection<String> = emptyList()
     ): Assessment {
         val expected = expectedSnapshotIds.map { it.trim() }.filter { it.isNotEmpty() && it != "null" }.distinct().sorted()
         val expectedPrimary = expectedPrimaryCompositeKeys
@@ -149,7 +159,7 @@ object EvaluationIdentityCoverage {
             .filter { CompositeKey.parse(it)?.role == "primary" }
             .distinct()
             .sorted()
-        val produced = compositesFromOutcomes(producedOutcomes)
+        val produced = producedCompositeKeys.toCollection(linkedSetOf())
         val server = serverCompositeKeys.map { it.trim() }.filter { it.isNotEmpty() }.toCollection(linkedSetOf())
 
         if (!readbackOk) {

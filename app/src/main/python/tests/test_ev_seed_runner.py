@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "..", "tools"))
 import ev_seed_runner as SR  # noqa: E402
@@ -93,7 +93,13 @@ class Fake:
         return self.calls.count("ev_builder_seed")
 
 
-def go(argv, fake=None, env=CFG, clock=SR._now):
+# This fixture's last processed expiry is 13 October. Exercise the real freshness
+# guard against a deterministic observation clock instead of expiring the suite.
+def _test_now():
+    return datetime.fromisoformat("2026-10-14T17:30:00+05:30")
+
+
+def go(argv, fake=None, env=CFG, clock=_test_now):
     out = io.StringIO()
     code = SR.run(argv, env=env, transport=fake, clock=clock, sleep=lambda s: None, out=out)
     txt = out.getvalue()
@@ -134,6 +140,11 @@ class SeedRunner(unittest.TestCase):
         self.assertEqual((c, r["status"]), (2, "PREPARED_NOT_CONFIRMED"))
         self.assertEqual(f.calls, [])
         self.assertEqual(r["plan"]["n_observations"], 47)
+
+    def test_clock_beyond_seed_freshness_still_rejects_stale_publication(self):
+        c, r, _ = go(["--confirm-seed"], Fake(), clock=lambda: _test_now() + timedelta(days=3))
+        self.assertEqual((c, r["reason"]), (7, "READBACK_MISMATCH"))
+        self.assertIn("phone_validator", r["detail"]["failed"])
 
     def test_valid_seed_ack_and_readback(self):
         f, r = seeded()
@@ -183,7 +194,7 @@ class SeedRunner(unittest.TestCase):
         self.assertEqual((c, r1["write_may_exist"]), (6, True))
         orig = copy.deepcopy(f.row)
         n = f.writes()
-        c, r, txt = go(["--confirm-seed"], f)
+        c, r, txt = go(["--confirm-seed"], f, clock=lambda: _test_now() + timedelta(minutes=1))
         self.assertEqual((c, r["status"]), (0, "ALREADY_SEEDED_CONSISTENT"))
         self.assertEqual(f.writes(), n)                                 # reconciliation makes no write
         self.assertEqual(r["server_available_at"], orig["payload"]["available_at"])
@@ -260,11 +271,11 @@ class SeedRunner(unittest.TestCase):
 
     def test_probe_row_payload_availability_disagree(self):
         def m(f):
-            f.row["available_at"] = _utc((SR._now() - timedelta(minutes=3)).isoformat())
+            f.row["available_at"] = _utc((_test_now() - timedelta(minutes=3)).isoformat())
         self._reconcile_probe(m, failed="row_payload_available_at_agree")
 
     def test_probe_future_publication_availability(self):
-        self._reconcile_probe(lambda f: repub(f.row, available_at=(SR._now() + timedelta(hours=2)).isoformat()),
+        self._reconcile_probe(lambda f: repub(f.row, available_at=(_test_now() + timedelta(hours=2)).isoformat()),
                               failed="phone_validator")
 
     def test_probe_row_latest_processed_expiry_disagree(self):
@@ -304,11 +315,11 @@ class SeedRunner(unittest.TestCase):
         self._fresh_probe(m, "observation_digests_recomputed")
 
     def test_fresh_future_availability_uses_real_clock(self):
-        self._fresh_probe(lambda f: repub(f.row, available_at=(SR._now() + timedelta(hours=2)).isoformat()),
+        self._fresh_probe(lambda f: repub(f.row, available_at=(_test_now() + timedelta(hours=2)).isoformat()),
                           "phone_validator")
 
     def test_fresh_available_at_not_this_run(self):
-        self._fresh_probe(lambda f: repub(f.row, available_at=(SR._now() - timedelta(minutes=5)).isoformat()),
+        self._fresh_probe(lambda f: repub(f.row, available_at=(_test_now() - timedelta(minutes=5)).isoformat()),
                           "available_at_is_this_run")
 
     # ---- Finding 2 / R1 evidence 3: transport, parse and shape faults ----
@@ -372,7 +383,7 @@ class SeedRunner(unittest.TestCase):
         self.assertSanitized(txt)
 
     def test_stale_body_not_sent(self):
-        t0 = SR._now()
+        t0 = _test_now()
         ticks = iter([t0] * 3 + [t0 + timedelta(minutes=13)] * 20)
         f = Fake()
         c, r, _ = go(["--confirm-seed"], f, clock=lambda: next(ticks))
@@ -383,7 +394,7 @@ class SeedRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "r.json")
             out = io.StringIO()
-            SR.run(["--confirm-seed", "--receipt", p], env=CFG, transport=Fake(), sleep=lambda s: None, out=out)
+            SR.run(["--confirm-seed", "--receipt", p], env=CFG, transport=Fake(), clock=_test_now, sleep=lambda s: None, out=out)
             rec = open(p).read()
         self.assertSanitized(rec)
         self.assertLess(len(rec), 8192)
@@ -391,7 +402,7 @@ class SeedRunner(unittest.TestCase):
 
     def test_receipt_write_failure_is_explicit(self):
         out = io.StringIO()
-        c = SR.run(["--confirm-seed", "--receipt", "/nonexistent-dir/x/r.json"], env=CFG, transport=Fake(),
+        c = SR.run(["--confirm-seed", "--receipt", "/nonexistent-dir/x/r.json"], env=CFG, transport=Fake(), clock=_test_now,
                    sleep=lambda s: None, out=out)
         r = json.loads(out.getvalue())
         self.assertEqual((c, r["status"], r["reason"]), (8, "FAILED", "RECEIPT_WRITE_FAILED"))

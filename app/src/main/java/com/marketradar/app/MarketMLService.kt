@@ -673,6 +673,8 @@ class MarketMLService : Service() {
                             .commit()
                         runDayEvaluation(sessionDate, forceAnyway)
                     } catch (t: Throwable) {
+                        updateEvaluationJobState(sessionDate, "FAILED", "Evaluation stopped; saved progress is retained. Retry resumes this session.",
+                            running = false, lastError = "${t.javaClass.simpleName}: ${t.message}")
                         Log.e(TAG, "DAY_EVAL_ACTION_FAIL: ${t.message}", t)
                         LogBuffer.recordCrash(
                             TAG,
@@ -2729,27 +2731,19 @@ class MarketMLService : Service() {
             }
             updateRunStage("performance_metrics", "running")
             val rows = org.json.JSONArray()
-            // Prefer local evaluation outcomes as immutable inputs when present
-            try {
-                val outFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
-                if (outFile.exists()) {
-                    val parsed = org.json.JSONArray(outFile.readText())
-                    for (i in 0 until parsed.length()) {
-                        parsed.optJSONObject(i)?.let { rows.put(it) }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "G6_METRICS_ROWS_LOAD: ${e.message}")
-            }
+            val metricsSource = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
+            val metricsInput = if (metricsSource.exists()) EvaluationOutcomeFile.validate(sessionDate, metricsSource,
+                File(metricsSource.parentFile, metricsSource.name + ".metrics.validated.json")).file else null
             val brain = Python.getInstance().getModule("brain")
-            val result = EvaluationMetricsLedger.runStage(
+            val result = try { EvaluationMetricsLedger.runStage(
                 context = this@MarketMLService,
                 brain = brain,
                 runId = run.optString("run_id"),
                 sessionDate = sessionDate,
                 rows = rows,
+                rowsFile = metricsInput,
                 activeRecommendationId = null
-            )
+            ) } finally { metricsInput?.delete() }
             // Re-load run after updateRunStage(running) mutated activeEvaluationRun
             val latest = activeEvaluationRun ?: run
             val updated = EvaluationRunLedger.applyPerformanceMetricsResult(latest, result)
@@ -2774,14 +2768,7 @@ class MarketMLService : Service() {
     // ── ML Arch V2: Run Day Evaluation (evening evaluator) ────────────────────
     private suspend fun runDayEvaluation(sessionDateOverride: String? = null, forceAnyway: Boolean = false) = withContext(Dispatchers.IO) {
         val sessionDate = sessionDateOverride?.takeIf { it.isNotBlank() } ?: todayIstDate()
-        val evaluationDeadlineMs = System.currentTimeMillis() + EVENING_EVAL_TIMEOUT_MS
-        fun enforceEvaluationBudget(stage: String) {
-            if (System.currentTimeMillis() >= evaluationDeadlineMs) {
-                throw IllegalStateException(
-                    "EVALUATION_TIME_BUDGET_EXCEEDED: cooperative 45-minute budget reached during $stage; retry resumes from the last atomic checkpoint."
-                )
-            }
-        }
+        val evaluationBudget = EvaluationBudget(EVENING_EVAL_TIMEOUT_MS)
         val outputsFile = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
         var evalPhase = "PREPARING"
         var runId = "eval-$sessionDate-${System.currentTimeMillis()}"
@@ -2822,7 +2809,7 @@ class MarketMLService : Service() {
                 .joinToString(", ") { "${it.key}:${it.value}" }
         Log.i(TAG, "EVAL_START: sessionDate=$sessionDate runId=$runId")
         try {
-            enforceEvaluationBudget("preparing")
+            evaluationBudget.check("preparing")
             if (!forceAnyway && prefs.getString("evaluation_done_date", null) == sessionDate) {
                 val priorPhase = prefs.getString("evaluation_phase", "") ?: ""
                 updateEvaluationJobState(
@@ -2970,7 +2957,7 @@ class MarketMLService : Service() {
                     TeacherTruthConfig.toJson().toString()
                 ).toString()
             } ?: throw IllegalStateException("Evaluation preparation timed out.")
-            enforceEvaluationBudget("preparation")
+            evaluationBudget.check("preparation")
 
             val prepareJson = org.json.JSONObject(prepareStr)
             if (!prepareJson.optBoolean("ok", false)) {
@@ -3168,6 +3155,7 @@ class MarketMLService : Service() {
                 completedSnapshots = 0
                 producedCount = 0
             }
+            LogBuffer.add('I', TAG, "EVAL_RESUME_CURSOR: date=$sessionDate completed=$completedSnapshots/$totalSnapshots produced=$producedCount")
             Log.i(
                 TAG,
                 "EVAL_RESUME_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
@@ -3190,7 +3178,7 @@ class MarketMLService : Service() {
             )
 
             while (completedSnapshots < totalSnapshots) {
-                enforceEvaluationBudget("batch_checkpoint_$completedSnapshots")
+                evaluationBudget.check("batch_checkpoint_$completedSnapshots")
                 evalPhase = "RUNNING"
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
@@ -3211,61 +3199,63 @@ class MarketMLService : Service() {
                         EVAL_BATCH_SIZE
                     ).toString()
                 } ?: throw IllegalStateException("Evaluation batch timed out at snapshot $completedSnapshots of $totalSnapshots.")
-                enforceEvaluationBudget("batch_result_$completedSnapshots")
 
                 val batchJson = org.json.JSONObject(batchStr)
                 if (!batchJson.optBoolean("ok", false)) {
                     throw IllegalStateException(batchJson.optString("error", "Evaluation batch failed."))
                 }
 
-                val batchOutcomes = batchJson.optJSONArray("outcomes") ?: org.json.JSONArray()
-                mergeTeacherDropReasons(batchJson.optJSONObject("teacher_drop_reasons"))
-                appendTeacherDropSamples(batchJson.optJSONArray("teacher_drop_samples"))
-                val beforeBytes = outputsFile.length()
-                producedCount = appendJsonArrayFile(outputsFile, batchOutcomes, producedCount)
-                completedSnapshots = batchJson.optInt("end", completedSnapshots).coerceIn(completedSnapshots, totalSnapshots)
-                Log.i(
-                    TAG,
-                    "EVAL_BATCH_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
-                        "batchRows=${batchOutcomes.length()} produced=$producedCount " +
-                        "teacherDrops=${batchJson.optInt("teacher_drop_count", 0)} topTeacherDrops=${teacherDropSummary()} " +
-                        "bytes=$beforeBytes->${outputsFile.length()} ${evalHeapLine()}"
-                )
-
-                val batchErrorCount = batchJson.optInt("error_count", 0)
-                val fatalSnapshotErrorCount = batchJson.optInt("fatal_snapshot_error_count", 0)
-                val batchErrors = batchJson.optJSONArray("errors") ?: org.json.JSONArray()
-                val batchErrorHint = if (batchErrorCount > 0 && batchErrors.length() > 0) {
-                    batchErrors.optJSONObject(0)?.optString("error", "") ?: ""
-                } else {
-                    ""
-                }
-                updateEvaluationJobState(
-                    sessionDate = sessionDate,
-                    phase = evalPhase,
-                    message = buildString {
-                        append("Evaluated $sessionDate snapshots $completedSnapshots/$totalSnapshots. Produced $producedCount outcomes.")
-                        if (batchOutcomes.length() == 0 && teacherDropReasons.isNotEmpty()) {
-                            append(" Teacher drops: ${teacherDropSummary().take(240)}.")
-                        }
-                        if (batchErrorCount > 0) {
-                            append(" Skipped $batchErrorCount malformed rows in the last batch")
-                            if (batchErrorHint.isNotBlank()) append(" ($batchErrorHint)")
-                            append(".")
-                        }
-                    },
-                    totalSnapshots = totalSnapshots,
-                    completedSnapshots = completedSnapshots,
-                    producedCount = producedCount,
-                    persistedCount = 0,
-                    running = true,
-                    lastError = if (batchErrorCount > 0) batchErrorHint else null
-                )
-                if (fatalSnapshotErrorCount > 0) {
-                    throw IllegalStateException(
-                        "Evaluation batch stopped after $fatalSnapshotErrorCount snapshot failure(s) at checkpoint $completedSnapshots/$totalSnapshots" +
-                            if (batchErrorHint.isBlank()) "." else ": $batchErrorHint"
+                evaluationBudget.commitBatch {
+                    val batchOutcomes = batchJson.optJSONArray("outcomes") ?: org.json.JSONArray()
+                    mergeTeacherDropReasons(batchJson.optJSONObject("teacher_drop_reasons"))
+                    appendTeacherDropSamples(batchJson.optJSONArray("teacher_drop_samples"))
+                    val beforeBytes = outputsFile.length()
+                    producedCount = appendJsonArrayFile(outputsFile, batchOutcomes, producedCount)
+                    completedSnapshots = batchJson.optInt("end", completedSnapshots).coerceIn(completedSnapshots, totalSnapshots)
+                    Log.i(
+                        TAG,
+                        "EVAL_BATCH_CHECKPOINT: date=$sessionDate completed=$completedSnapshots/$totalSnapshots " +
+                            "batchRows=${batchOutcomes.length()} produced=$producedCount " +
+                            "teacherDrops=${batchJson.optInt("teacher_drop_count", 0)} topTeacherDrops=${teacherDropSummary()} " +
+                            "bytes=$beforeBytes->${outputsFile.length()} ${evalHeapLine()}"
                     )
+
+                    val batchErrorCount = batchJson.optInt("error_count", 0)
+                    val fatalSnapshotErrorCount = batchJson.optInt("fatal_snapshot_error_count", 0)
+                    val batchErrors = batchJson.optJSONArray("errors") ?: org.json.JSONArray()
+                    val batchErrorHint = if (batchErrorCount > 0 && batchErrors.length() > 0) {
+                        batchErrors.optJSONObject(0)?.optString("error", "") ?: ""
+                    } else {
+                        ""
+                    }
+                    updateEvaluationJobState(
+                        sessionDate = sessionDate,
+                        phase = evalPhase,
+                        message = buildString {
+                            append("Evaluated $sessionDate snapshots $completedSnapshots/$totalSnapshots. Produced $producedCount outcomes.")
+                            if (batchOutcomes.length() == 0 && teacherDropReasons.isNotEmpty()) {
+                                append(" Teacher drops: ${teacherDropSummary().take(240)}.")
+                            }
+                            if (batchErrorCount > 0) {
+                                append(" Skipped $batchErrorCount malformed rows in the last batch")
+                                if (batchErrorHint.isNotBlank()) append(" ($batchErrorHint)")
+                                append(".")
+                            }
+                        },
+                        totalSnapshots = totalSnapshots,
+                        completedSnapshots = completedSnapshots,
+                        producedCount = producedCount,
+                        persistedCount = 0,
+                        running = true,
+                        lastError = if (batchErrorCount > 0) batchErrorHint else null
+                    )
+                    if (fatalSnapshotErrorCount > 0) {
+                        throw IllegalStateException(
+                            "Evaluation batch stopped after $fatalSnapshotErrorCount snapshot failure(s) at checkpoint $completedSnapshots/$totalSnapshots" +
+                                if (batchErrorHint.isBlank()) "." else ": $batchErrorHint"
+                        )
+                    }
+                    LogBuffer.add('I', TAG, "EVAL_BATCH_SAVED: date=$sessionDate completed=$completedSnapshots/$totalSnapshots produced=$producedCount")
                 }
             }
 
@@ -3282,63 +3272,26 @@ class MarketMLService : Service() {
                 verifiedCount = producedCount
             )
             updateRunStage("outcome_persistence", "running", expectedCount = producedCount)
-            var evaluatedOutcomes = readJsonArrayFile(outputsFile)
-            if (evaluatedOutcomes.length() != producedCount) {
-                throw IllegalStateException(
-                    "Evaluation output count mismatch: checkpoint=$producedCount parsed=${evaluatedOutcomes.length()} file=${outputsFile.name}"
-                )
+            // The original outcome file can exceed the entire Android heap. Validate every
+            // row before any upload, retaining only compact identity hashes between rows.
+            evalPhase = "SAVING"
+            val validatedOutcomes = EvaluationOutcomeFile.validate(sessionDate, outputsFile,
+                File(outputsFile.parentFile, outputsFile.name + ".validated.json"))
+            check(validatedOutcomes.count + validatedOutcomes.duplicateCount == producedCount) {
+                "Evaluation output count mismatch: checkpoint=$producedCount parsed=${validatedOutcomes.count} duplicates=${validatedOutcomes.duplicateCount}"
             }
+            producedCount = validatedOutcomes.count
+            LogBuffer.add('I', TAG, "EVAL_OUTCOMES_STREAM_VALIDATED: date=$sessionDate rows=$producedCount duplicates=${validatedOutcomes.duplicateCount} bytes=${outputsFile.length()}")
             val teacherDropReasonsJson = org.json.JSONObject()
             teacherDropReasons.forEach { (key, value) -> teacherDropReasonsJson.put(key, value) }
-            prefs.edit().also { edit ->
-                if (teacherDropReasons.isNotEmpty()) {
-                    edit.putString("last_evaluation_teacher_drop_reasons", teacherDropReasonsJson.toString())
-                    edit.putString("last_evaluation_teacher_drop_samples", teacherDropSamples.toString())
-                } else {
-                    edit.remove("last_evaluation_teacher_drop_reasons")
-                    edit.remove("last_evaluation_teacher_drop_samples")
-                }
-            }.commit()
-            if (evaluatedOutcomes.length() > 0) {
-                val exitCounts = linkedMapOf<String, Int>()
-                var pathMin = Int.MAX_VALUE
-                var pathMax = 0
-                var pathSum = 0
-                var pathSeen = 0
-                val samples = mutableListOf<String>()
-                for (i in 0 until evaluatedOutcomes.length()) {
-                    val row = evaluatedOutcomes.optJSONObject(i) ?: continue
-                    val exitReason = row.optString("exit_reason", "UNKNOWN")
-                    exitCounts[exitReason] = (exitCounts[exitReason] ?: 0) + 1
-                    val pathPoints = row.optInt("path_points_count", 0)
-                    if (pathPoints > 0) {
-                        pathSeen += 1
-                        pathSum += pathPoints
-                        pathMin = minOf(pathMin, pathPoints)
-                        pathMax = maxOf(pathMax, pathPoints)
-                    }
-                    if (samples.size < 6) {
-                        samples += "${row.optString("candidate_id", "unknown")}:$pathPoints:$exitReason"
-                    }
-                }
-                val avgPath = if (pathSeen > 0) pathSum.toDouble() / pathSeen.toDouble() else 0.0
-                val minPath = if (pathSeen > 0) pathMin else 0
-                Log.i(
-                    TAG,
-                    "EVAL_PATH_STATS: rows=${evaluatedOutcomes.length()} pathSeen=$pathSeen min=$minPath max=$pathMax avg=${"%.2f".format(avgPath)} exitReasons=$exitCounts samples=$samples"
-                )
+            if (teacherDropReasons.isNotEmpty()) {
+                prefs.edit().putString("last_evaluation_teacher_drop_reasons", teacherDropReasonsJson.toString())
+                    .putString("last_evaluation_teacher_drop_samples", teacherDropSamples.toString()).commit()
+            } else {
+                prefs.edit().remove("last_evaluation_teacher_drop_reasons")
+                    .remove("last_evaluation_teacher_drop_samples").commit()
             }
-
-            evalPhase = "SAVING"
-            enforceEvaluationBudget("saving")
-            val uniqueOutcomes = EvaluationIdentity.validatedDistinctOutcomes(sessionDate, evaluatedOutcomes)
-            if (uniqueOutcomes.length() != evaluatedOutcomes.length()) {
-                LogBuffer.add('W', TAG, "EVAL_IDENTICAL_DUPLICATES_COLLAPSED: before=${evaluatedOutcomes.length()} after=${uniqueOutcomes.length()}")
-                archiveEvaluationOutput(outputsFile, "identical_duplicates")
-                writeJsonArrayFile(outputsFile, uniqueOutcomes)
-                evaluatedOutcomes = uniqueOutcomes
-                producedCount = uniqueOutcomes.length()
-            }
+            evaluationBudget.check("saving")
             updateEvaluationJobState(
                 sessionDate = sessionDate,
                 phase = evalPhase,
@@ -3355,21 +3308,7 @@ class MarketMLService : Service() {
             // wired here because partial remote success mid-evaluation risks false-
             // complete learning flags. e3_persistence_contract.py encodes the cursor
             // for a future mid-run path; runtime write path is still this call.
-            val saveResult = if (evaluatedOutcomes.length() > 0) {
-                SupabaseClient.saveEvaluationOutcomes(sessionDate, evaluatedOutcomes)
-            } else {
-                SupabaseClient.EvaluationSaveResult(
-                    success = true,
-                    producedCount = 0,
-                    persistedCount = 0,
-                    primaryPersistedCount = 0,
-                    evaluationPersistedCount = 0,
-                    evaluationSaved = true,
-                    recommendationSaved = true,
-                    rejectedSaved = true,
-                    message = "No evaluable shadow teacher labels were produced from today's saved recommendations."
-                )
-            }
+            val saveResult = SupabaseClient.saveEvaluationOutcomes(sessionDate, validatedOutcomes)
             if (!saveResult.success) {
                 updateRunStage(
                     "outcome_persistence",
@@ -3418,7 +3357,7 @@ class MarketMLService : Service() {
                 out
             } ?: emptyList()
             val identityReadback = try {
-                SupabaseClient.readEvaluationOutcomeIdentityKeys(sessionDate)
+                SupabaseClient.readEvaluationOutcomeIdentityKeys(sessionDate, includeRejected = validatedOutcomes.rejectedCount > 0)
             } catch (e: Exception) {
                 Log.e(TAG, "EVAL_IDENTITY_READBACK_EXCEPTION: ${e.message}", e)
                 SupabaseClient.OutcomeIdentityReadback(
@@ -3427,9 +3366,9 @@ class MarketMLService : Service() {
                     error = e.message ?: "identity_readback_exception"
                 )
             }
-            val assessment = EvaluationIdentityCoverage.assess(
+            val assessment = EvaluationIdentityCoverage.assessComposites(
                 expectedSnapshotIds = expectedSnapshotIds,
-                producedOutcomes = evaluatedOutcomes,
+                producedCompositeKeys = validatedOutcomes.compositeKeys,
                 serverCompositeKeys = if (identityReadback.ok) identityReadback.compositeKeys else emptySet(),
                 readbackOk = identityReadback.ok,
                 readbackError = identityReadback.error,
@@ -3548,13 +3487,13 @@ class MarketMLService : Service() {
                     .put("recommendation_readback_keys", identityReadback.recommendationCompositeKeys.size)
             )
 
-            val reportableOutcomes = sanitizedTeacherOutcomesForReporting(evaluatedOutcomes)
+            val reportableOutcomes = sanitizedTeacherOutcomesForReporting(validatedOutcomes.file)
             val gradeableTeacherRows = countGradeableTeacherRows(reportableOutcomes)
-            var teacherResearchResult = TeacherResearchBuildResult(success = evaluatedOutcomes.length() <= 0)
-            if (evaluatedOutcomes.length() > 0) {
+            var teacherResearchResult = TeacherResearchBuildResult(success = producedCount <= 0)
+            if (producedCount > 0) {
                 evalPhase = "AGGREGATING"
                 updateRunStage("research_aggregation", "running")
-                enforceEvaluationBudget("aggregation")
+                evaluationBudget.check("aggregation")
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
                     phase = evalPhase,
@@ -3571,13 +3510,13 @@ class MarketMLService : Service() {
 
             val researchOnly = identityTransition.phase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY
             val saveDetails = saveResult.message.take(700)
-            val evaluationMessage = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+            val evaluationMessage = if (producedCount > 0 && !teacherResearchResult.success) {
                 "Evaluation persisted for $sessionDate, but teacher research generation failed. Retry is recommended to restore teacher evidence. $saveDetails"
             } else if (researchOnly) {
                 "Research evaluation done for $sessionDate: ${saveResult.producedCount} research outcomes produced and verified. No trade decisions were labelable; no training labels were saved. $saveDetails"
-            } else if (evaluatedOutcomes.length() > 0 && gradeableTeacherRows == 0) {
+            } else if (producedCount > 0 && gradeableTeacherRows == 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase, but 0 gradeable teacher outcomes passed integrity checks. $saveDetails"
-            } else if (evaluatedOutcomes.length() > 0) {
+            } else if (producedCount > 0) {
                 "Evaluation done for $sessionDate: ${saveResult.producedCount} outcomes produced, ${saveResult.persistedCount} persisted to Supabase. $saveDetails"
             } else {
                 buildString {
@@ -3586,7 +3525,7 @@ class MarketMLService : Service() {
                     if (dropSummary.isNotBlank()) append(" Teacher drops: $dropSummary.")
                 }
             }
-            if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+            if (producedCount > 0 && !teacherResearchResult.success) {
                 updateRunStage(
                     "research_aggregation",
                     "failed",
@@ -3617,7 +3556,7 @@ class MarketMLService : Service() {
             }
             updateEvaluationJobState(
                 sessionDate = sessionDate,
-                phase = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) "FAILED_RESEARCH"
+                phase = if (producedCount > 0 && !teacherResearchResult.success) "FAILED_RESEARCH"
                     else if (researchOnly) EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY else "LABELS_SAVED",
                 message = truthfulMessage,
                 totalSnapshots = totalSnapshots,
@@ -3625,7 +3564,7 @@ class MarketMLService : Service() {
                 producedCount = saveResult.producedCount,
                 persistedCount = saveResult.persistedCount,
                 running = false,
-                lastError = if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+                lastError = if (producedCount > 0 && !teacherResearchResult.success) {
                     teacherResearchResult.error ?: "teacher_research_report_missing"
                 } else {
                     null
@@ -3636,7 +3575,7 @@ class MarketMLService : Service() {
             updateRunStage("percentile_finalization", "pending")
             startC3PercentileFinalization(sessionDate)
             cancelDayEvaluationReminder(this@MarketMLService)
-            if (evaluatedOutcomes.length() > 0 && !teacherResearchResult.success) {
+            if (producedCount > 0 && !teacherResearchResult.success) {
                 publishEvaluationStatus(
                     this@MarketMLService,
                     "Day Evaluation Completed with Warning",
@@ -3654,7 +3593,8 @@ class MarketMLService : Service() {
                     "EVAL_COMPLETE: produced=${saveResult.producedCount} persisted=${saveResult.persistedCount} primaryPersisted=${saveResult.primaryPersistedCount} evalPersisted=${saveResult.evaluationPersistedCount} rejectedPersisted=${saveResult.rejectedPersistedCount}/${saveResult.rejectedExpectedCount} rejectedMode=${saveResult.rejectedSaveMode} for $sessionDate — reminder cancelled"
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            preserveRecoveryState = true
             val crashExtra = org.json.JSONObject()
                 .put("session_date", sessionDate)
                 .put("eval_phase", evalPhase)
@@ -3687,6 +3627,8 @@ class MarketMLService : Service() {
                 scheduleNextEvaluationReminder(this@MarketMLService)
             }
         } finally {
+            File(outputsFile.parentFile, outputsFile.name + ".validated.json").delete()
+            File(outputsFile.parentFile, outputsFile.name + ".validated.json.report.json").delete()
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)
             } catch (_: Exception) {
@@ -3734,6 +3676,33 @@ class MarketMLService : Service() {
             TAG,
             "DAY_EVAL_HANDOFF_STATE_CLEARED: reason=$reason hadLatch=$hadLatch hadTs=$hadTs hadRunning=$hadRunning commit=$result"
         )
+    }
+
+    private fun sanitizedTeacherOutcomesForReporting(source: File): File {
+        val target = File(source.parentFile, source.name + ".report.json")
+        val temp = File(target.parentFile, target.name + ".tmp")
+        var rejectedKept = 0
+        try {
+            temp.bufferedWriter().use { writer ->
+                writer.write("[")
+                var first = true
+                EvaluationOutcomeFile.forEach(source) { row ->
+                    val rejected = row.optString("role", "secondary").trim().equals("rejected", ignoreCase = true)
+                    if (!rejected || rejectedKept < TEACHER_RESEARCH_REJECTED_OUTCOME_CAP) {
+                        val compact = sanitizedTeacherOutcomesForReporting(org.json.JSONArray().put(row))
+                        if (compact.length() > 0) {
+                            if (!first) writer.write(",")
+                            writer.write(compact.getJSONObject(0).toString())
+                            first = false
+                        }
+                        if (rejected) rejectedKept++
+                    }
+                }
+                writer.write("]")
+            }
+            check(temp.renameTo(target)) { "Could not commit reporting projection" }
+            return target
+        } finally { temp.delete() }
     }
 
     private fun sanitizedTeacherOutcomesForReporting(source: org.json.JSONArray): org.json.JSONArray {
@@ -3844,20 +3813,15 @@ class MarketMLService : Service() {
             }
             out.put(row)
         }
-        Log.i(
-            TAG,
-            "TEACHER_RESEARCH_OUTCOME_COMPACTED: input=${source.length()} output=${out.length()} rejectedKept=$rejectedKept rejectedCap=$TEACHER_RESEARCH_REJECTED_OUTCOME_CAP"
-        )
+
         return out
     }
 
-    private fun countGradeableTeacherRows(source: org.json.JSONArray): Int {
+    private fun countGradeableTeacherRows(source: File): Int {
         var count = 0
-        for (i in 0 until source.length()) {
-            val row = source.optJSONObject(i) ?: continue
-            val role = row.optString("role", "secondary").trim().lowercase(java.util.Locale.US)
-            if (role != "primary" && role != "secondary") continue
-            if (!row.isNull("r_multiple")) count += 1
+        EvaluationOutcomeFile.forEach(source) { row ->
+            val role = row.optString("role", "secondary").trim().lowercase(Locale.US)
+            if (role in setOf("primary", "secondary") && !row.isNull("r_multiple")) count++
         }
         return count
     }
@@ -3866,26 +3830,25 @@ class MarketMLService : Service() {
     private suspend fun runAggregationPipeline(
         sessionDate: String,
         snapshotsFile: File,
-        evaluatedOutcomes: org.json.JSONArray
+        evaluatedOutcomes: File
     ) = withContext(Dispatchers.IO) {
         try {
             val snapshotIdToLabelable = buildSnapshotLabelableMap(snapshotsFile)
 
             var labeledRows = 0
             var wins = 0
-            for (i in 0 until evaluatedOutcomes.length()) {
-                val row = evaluatedOutcomes.optJSONObject(i) ?: continue
-                if (!row.optString("role", "secondary").equals("primary", ignoreCase = true)) continue
+            EvaluationOutcomeFile.forEach(evaluatedOutcomes) { row ->
+                if (!row.optString("role", "secondary").equals("primary", ignoreCase = true)) return@forEach
                 val sid = row.optInt("snapshot_id", -1)
                 val labelable = snapshotIdToLabelable[sid] == true
-                if (!labelable) continue
+                if (!labelable) return@forEach
                 val won = when {
                     row.has("canonical_won") -> row.optInt("canonical_won", -1)
                     row.has("outcome_h2") -> row.optInt("outcome_h2", -1)
                     row.has("won") -> if (row.optBoolean("won", false)) 1 else 0
                     else -> -1
                 }
-                if (won !in listOf(0, 1)) continue
+                if (won !in listOf(0, 1)) return@forEach
                 labeledRows += 1
                 if (won == 1) wins += 1
             }
@@ -3922,7 +3885,7 @@ class MarketMLService : Service() {
         brain: PyObject?,
         sessionDate: String,
         snapshotsFile: File,
-        evaluatedOutcomes: org.json.JSONArray
+        evaluatedOutcomes: File
     ): TeacherResearchBuildResult {
         if (brain == null) {
             val error = "python_brain_module_unavailable"
@@ -3936,12 +3899,11 @@ class MarketMLService : Service() {
             val compactSnapshots = buildTeacherResearchSnapshotPayload(snapshotsFile)
             val inputDir = File(cacheDir, "teacher_research_inputs").apply { mkdirs() }
             val snapshotsInput = File.createTempFile("${sessionDate}_snapshots_", ".json", inputDir)
-            val outcomesInput = File.createTempFile("${sessionDate}_outcomes_", ".json", inputDir)
+            val outcomesInput = evaluatedOutcomes
             writeTeacherResearchBridgeInput(snapshotsInput, compactSnapshots)
-            writeTeacherResearchBridgeInput(outcomesInput, evaluatedOutcomes)
             Log.i(
                 TAG,
-                "TEACHER_RESEARCH_PAYLOAD_READY: session=$sessionDate snapshots=${compactSnapshots.length()} outcomes=${evaluatedOutcomes.length()} snapshotBytes=${snapshotsInput.length()} outcomeBytes=${outcomesInput.length()}"
+                "TEACHER_RESEARCH_PAYLOAD_READY: session=$sessionDate snapshots=${compactSnapshots.length()} outcomes=${countJsonArrayFile(evaluatedOutcomes)} snapshotBytes=${snapshotsInput.length()} outcomeBytes=${outcomesInput.length()}"
             )
             val reportRaw = try {
                 brain.callAttr(

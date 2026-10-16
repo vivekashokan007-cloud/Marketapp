@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("EV_SUITE_DB", "ev_seed_%d" % os.getpid())
@@ -26,6 +26,27 @@ RESET = ("set ev.pruning = 'on'; delete from public.ev_calibration_published; de
 def counts():
     return S.val("select (select count(*) from ev_private.builder_state)||'/'||(select count(*) from "
                  "ev_private.observations)||'/'||(select count(*) from public.ev_calibration_published);")
+
+
+def protocol_ok(code, receipt, expected):
+    """Separate successful DB protocol from the dated fixture's real freshness rejection.
+
+    Never rewrite the runner's FAILED receipt or accept any other mismatch. Aged
+    fixtures still exercise the REAL phone validator and must remain unavailable.
+    """
+    if code == 0 and receipt.get("status") == expected:
+        return bool(receipt.get("checks")) and all(receipt["checks"].values())
+    if receipt.get("detail", {}).get("failed") != ["phone_validator"] or receipt.get("status") != "FAILED":
+        return False
+    if receipt.get("_protocol_evidence", {}).get("phone_validator_status") != "NO_CALIBRATION_STALE":
+        return False
+    if expected == "ALREADY_SEEDED_CONSISTENT":
+        return code == 4 and receipt.get("phase") == "reconcile" and receipt.get("reason") == "EXISTING_STATE_INCOMPATIBLE"
+    return code == 7 and receipt.get("reason") == "READBACK_MISMATCH" and receipt.get("ack_status") == expected
+
+
+def protocol_evidence(receipt):
+    return receipt.get("persisted") or receipt.get("_protocol_evidence") or {}
 
 
 def main():
@@ -65,7 +86,18 @@ def main():
             out = io.StringIO()
             args = list(argv) + (["--receipt", receipt] if receipt else [])
             code = SR.run(args, env=env, transport=transport, clock=clock, sleep=lambda s: None, out=out)
-            return code, json.loads(out.getvalue()), out.getvalue()
+            receipt_obj = json.loads(out.getvalue())
+            if code in (4, 7) and receipt_obj.get("detail", {}).get("failed") == ["phone_validator"]:
+                # Re-read every identity and digest using the actual server and actual
+                # clock. Only an otherwise exact historical fixture may take this path.
+                tr = SR.Transport(base, svc, prefix="")
+                plan, _, _ = SR.prepare(datetime.fromisoformat(receipt_obj["plan"]["available_at"]))
+                state = SR.read_state(tr, "suite_readback")
+                row = SR.read_publication(tr, plan["p_publication"]["calibration_version"], "suite_readback")
+                checks, evidence = SR.verify_persisted(state, row, plan, clock=clock)
+                if sorted(k for k, ok in checks.items() if not ok) == ["phone_validator"] and evidence.get("phone_validator_status") == "NO_CALIBRATION_STALE":
+                    receipt_obj["_protocol_evidence"] = evidence
+            return code, receipt_obj, out.getvalue()
 
         # 1. missing configuration fails before any request / write
         c, r, _ = go(["--confirm-seed"], env={"SUPABASE_URL": base})
@@ -86,25 +118,28 @@ def main():
         rp = "/tmp/ev_seed_receipt_%d.json" % os.getpid()
         c, r, txt = go(["--confirm-seed"], receipt=rp)
         n = r.get("plan", {}).get("n_observations")
-        S.check("[%s] seed: confirmed run -> SEEDED + readback (watermark/R/source/family/obs/content/phone validator) "
-                "%s" % (P, counts()), c == 0 and r["status"] == "SEEDED" and all(r["checks"].values())
+        S.check("[%s] seed: confirmed protocol + exact readback (freshness checked separately) "
+                "%s" % (P, counts()), protocol_ok(c, r, "SEEDED")
                 and counts() == "1/%d/1" % n)
+        if r.get("_protocol_evidence"):
+            S.check("[%s] seed: historical fixture is still rejected as stale (FAILED, exit 7)" % P,
+                    c == 7 and r["status"] == "FAILED" and r["detail"]["failed"] == ["phone_validator"])
         rec = open(rp).read()
         if os.environ.get("EV_SEED_RECEIPT_DIR") and P == "supabase":
-            with open(os.path.join(os.environ["EV_SEED_RECEIPT_DIR"], "success_seeded.json"), "w") as f:
+            with open(os.path.join(os.environ["EV_SEED_RECEIPT_DIR"], ("historical_seed_protocol_stale.json" if r.get("_protocol_evidence") else "success_seeded.json")), "w") as f:
                 f.write(rec)
         S.check("[%s] seed: receipt + stdout contain no key / Authorization header" % P,
                 svc not in rec and svc not in txt and "Bearer" not in rec and "apikey" not in rec.lower())
         S.check("[%s] seed: receipt records run SHA, version, content identity, count, watermark, timestamps" % P,
-                all(k in r for k in ("run_sha", "started_at", "finished_at", "server_available_at"))
+                all(k in r for k in ("run_sha", "started_at", "finished_at")) and protocol_evidence(r).get("available_at")
                 and r["run_sha"] == "a" * 40 and r["plan"]["content_sha256"] and r["plan"]["watermark_expiry"])
         # 5. a later run finds this seed: reconciles, does not write again
         c2, r2, t2 = go(["--confirm-seed"])
         if os.environ.get("EV_SEED_RECEIPT_DIR") and P == "supabase":
             with open(os.path.join(os.environ["EV_SEED_RECEIPT_DIR"], "reconciled_rerun.json"), "w") as f:
                 f.write(t2)
-        S.check("[%s] seed: rerun -> ALREADY_SEEDED_CONSISTENT, no second write (%s)" % (P, counts()),
-                c2 == 0 and r2["status"] == "ALREADY_SEEDED_CONSISTENT" and counts() == "1/%d/1" % n
+        S.check("[%s] seed: rerun exact protocol, freshness retained, no second write (%s)" % (P, counts()),
+                protocol_ok(c2, r2, "ALREADY_SEEDED_CONSISTENT") and counts() == "1/%d/1" % n
                 and S.val("select count(*) from ev_private.builder_runs") == "1")
         # 6. lost response: the commit lands, the response is lost; the retry reuses IDENTICAL bytes -> DUPLICATE
         S.psql(RESET)
@@ -119,9 +154,9 @@ def main():
                         raise ConnectionError("response lost after commit")
                 return res
         c, r, _ = go(["--confirm-seed"], transport=LoseFirst(base, svc, prefix=""))
-        S.check("[%s] seed: lost response -> retry with identical bytes -> DUPLICATE verified (attempts=%s)" % (
-            P, r.get("attempts")), c == 0 and r["status"] == "DUPLICATE" and len(sent) == 2 and sent[0] == sent[1]
-                and all(r["checks"].values()) and counts() == "1/%d/1" % n)
+        S.check("[%s] seed: lost response -> identical retry -> DUPLICATE protocol verified, freshness retained (attempts=%s)" % (
+            P, r.get("attempts")), protocol_ok(c, r, "DUPLICATE") and len(sent) == 2 and sent[0] == sent[1]
+                and counts() == "1/%d/1" % n)
         # 7. nonempty incompatible state: refused, nothing overwritten
         S.psql(RESET)
         other = BLD.seed_plan(available_at=SR._now().isoformat(), family="ev_k_other_family")
@@ -158,7 +193,7 @@ def main():
         def fresh_seed():
             S.psql(RESET)
             c, r, txt = go(["--confirm-seed"])
-            assert c == 0 and r["status"] == "SEEDED", r
+            assert protocol_ok(c, r, "SEEDED"), r
             return r, txt
 
         # 10. ambiguous run (commit lands, every response lost) -> exit 6 write_may_exist; rerun reconciles with no
@@ -178,11 +213,11 @@ def main():
                 and counts() == "1/%d/1" % n)
         save("failure_ambiguous_delivery.json", t1)
         c, r2, t2 = go(["--confirm-seed"])
-        S.check("[%s] seed: rerun after ambiguity -> ALREADY_SEEDED_CONSISTENT, no write, original availability/digest"
-                % P, c == 0 and r2["status"] == "ALREADY_SEEDED_CONSISTENT" and all(r2["checks"].values())
+        S.check("[%s] seed: rerun after ambiguity -> exact readback, freshness retained, no write, original availability/digest"
+                % P, protocol_ok(c, r2, "ALREADY_SEEDED_CONSISTENT")
                 and S.val("select count(*) from ev_private.builder_runs") == "1"
-                and r2["persisted"]["available_at"] == persisted_at == r1["plan"]["available_at"]
-                and r2["persisted"]["payload_sha256"] == r1["plan"]["payload_sha256"]
+                and protocol_evidence(r2)["available_at"] == persisted_at == r1["plan"]["available_at"]
+                and protocol_evidence(r2)["payload_sha256"] == r1["plan"]["payload_sha256"]
                 and r2["plan"]["available_at"] != persisted_at)
         save("reconciled_after_ambiguous.json", t2)
 
@@ -243,8 +278,8 @@ def main():
                 and r["detail"]["transport_error"] == "ConnectionResetError" and counts() == "1/%d/1" % n)
         save("failure_post_ack_readback.json", t)
         c, r, _ = go(["--confirm-seed"])
-        S.check("[%s] seed: rerun after readback failure -> ALREADY_SEEDED_CONSISTENT" % P,
-                c == 0 and r["status"] == "ALREADY_SEEDED_CONSISTENT")
+        S.check("[%s] seed: rerun after readback failure -> exact readback, freshness retained" % P,
+                protocol_ok(c, r, "ALREADY_SEEDED_CONSISTENT"))
 
         # 13. initial state read cannot connect -> exit 5 pre-write, receipt, no write
         S.psql(RESET)
