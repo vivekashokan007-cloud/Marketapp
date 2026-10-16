@@ -96,6 +96,54 @@ class EngBatchCR1IdentityCoverageTest {
     }
 
     @Test
+    fun rejectedOutcomesRequireTheirOwnExactTableReadback() {
+        var failRejected = false
+        SupabaseClient.pageFetchSeam = { table, _, _, _, _ ->
+            if (table == "ml_rejected_candidate_outcomes" && failRejected) {
+                SupabaseClient.PageResult(status = "http_error", httpCode = 503, error = "rejected unavailable")
+            } else {
+                val rows = if (table == "ml_rejected_candidate_outcomes") outcome(2, "rejected_2", "rejected")
+                    else outcome(2, "candidate_2", "primary")
+                SupabaseClient.PageResult(status = "success", rows = rows)
+            }
+        }
+        val verified = SupabaseClient.readEvaluationOutcomeIdentityKeys("2026-09-17", includeRejected = true)
+        assertTrue(verified.ok)
+        assertTrue(verified.compositeKeys.contains("2|rejected_2|rejected"))
+        failRejected = true
+        assertFalse(SupabaseClient.readEvaluationOutcomeIdentityKeys("2026-09-17", includeRejected = true).ok)
+    }
+
+    @Test
+    fun streamedSaveAccumulatesSessionCountsAndStopsOnFailedBatch() {
+        val dir = java.nio.file.Files.createTempDirectory("streamed-save").toFile()
+        try {
+            val source = java.io.File(dir, "source.json")
+            source.writeText(outcomes(1..66).toString())
+            val validated = EvaluationOutcomeFile.validate("2026-09-17", source, java.io.File(dir, "validated.json"))
+            var calls = 0
+            var persisted = 0
+            val saved = SupabaseClient.saveEvaluationOutcomes("2026-09-17", validated) { _, batch ->
+                calls++; persisted += batch.length()
+                SupabaseClient.EvaluationSaveResult(true, batch.length(), persisted, persisted, persisted,
+                    "fake verified upload", evaluationSaved = true, recommendationSaved = true, rejectedSaved = true)
+            }
+            assertEquals(3, calls)
+            assertEquals(66, saved.producedCount)
+            assertEquals(66, saved.evaluationPersistedCount)
+            calls = 0
+            org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+                SupabaseClient.saveEvaluationOutcomes("2026-09-17", validated) { _, batch ->
+                    calls++
+                    SupabaseClient.EvaluationSaveResult(calls != 2, batch.length(), 0, 0, 0, "HTTP failed")
+                }
+            }
+            assertEquals(2, calls)
+            assertTrue(source.exists())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test
     fun sameFrozenManifestCompletesOnlyAfterExactReadback() {
         val manifestExpected = (2..76).map(Int::toString)
         val produced = outcomes(2..76)

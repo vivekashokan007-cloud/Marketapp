@@ -749,7 +749,7 @@ def compute_metrics_record(
             "source_counts": source_counts or {},
             "exclusions": exclusions or {},
             "computed_at": _utc_now_iso(),
-            "input_fingerprint": hashlib.sha256(_stable_json(rows).encode()).hexdigest(),
+            "input_fingerprint": _input_fingerprint(rows),
         }
 
     eligible_preds = [
@@ -816,7 +816,7 @@ def compute_metrics_record(
         "exclusions": exclusions or {},
         "shadow_comparison": shadow_comparison,
         "computed_at": _utc_now_iso(),
-        "input_fingerprint": hashlib.sha256(_stable_json(rows).encode()).hexdigest(),
+        "input_fingerprint": _input_fingerprint(rows),
         "recomputable_from_immutable_inputs": True,
     }
 
@@ -983,12 +983,52 @@ def run_performance_metrics_stage(
 
 
 # JSON entry points for Kotlin / Chaquopy
+# The file bridge retains metric inputs only. Immutable full-row fingerprints are
+# computed a row at a time, preserving the old array contract byte-for-byte.
+_METRICS_ROW_KEYS = set("""
+id candidate_id snapshot_id session_date role population_role variant execution_mode trade_mode
+index_key index indexKey strategy_type type p_ml final_entry_score strategyMarketFitConfidence
+market_fit_confidence marketConfidence market_confidence strategy_direction entryEligible entryEligibility
+domainValid model_hash feature_schema_version net_target_version policy_selector_version
+learning_won_net learning_result_net managed_pnl net_pnl friction_cost total_cost regime regime_type
+expiry expiry_date dte tDTE dte_bucket calendar_dte trading_dte dte_source dte_basis
+lotSize lot_size contract_lot_size number_of_lots contract_identity lot_source lot_table_version lot_as_of
+identity_complete lot_size_source lot_size_assumed contract_identity_quarantine evaluation_ineligible
+calibration_ineligible position_exit_policy_version
+
+availability idempotent_hit input_fingerprint is_primary n_eligible_predictions
+""".split())
+
+
+class _MetricFileRows(list):
+    def __init__(self, path):
+        from brain import _iter_json_array_file
+        super().__init__()
+        digest = hashlib.sha256()
+        digest.update(b'[')
+        first = True
+        for row in _iter_json_array_file(path):
+            if not isinstance(row, dict):
+                raise ValueError('metrics outcome row must be an object')
+            if not first:
+                digest.update(b',')
+            digest.update(_stable_json(row).encode())
+            first = False
+            self.append({key: value for key, value in row.items() if key in _METRICS_ROW_KEYS})
+        digest.update(b']')
+        self.input_fingerprint = digest.hexdigest()
+
+
+def _input_fingerprint(rows):
+    return getattr(rows, 'input_fingerprint', None) or hashlib.sha256(_stable_json(rows).encode()).hexdigest()
+
+
 def g6_compute_metrics_json(payload_json: str) -> str:
     payload = json.loads(payload_json or "{}")
     result = run_performance_metrics_stage(
         run_id=str(payload.get("run_id") or ""),
         session_date=str(payload.get("session_date") or ""),
-        rows=list(payload.get("rows") or []),
+        rows=_MetricFileRows(payload["rows_path"]) if payload.get("rows_path") else list(payload.get("rows") or []),
         model_hash=str(payload.get("model_hash") or DEFAULT_MODEL_HASH),
         feature_schema_version=str(
             payload.get("feature_schema_version") or FEATURE_SCHEMA_VERSION
