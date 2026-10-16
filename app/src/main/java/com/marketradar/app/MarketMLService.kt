@@ -2733,9 +2733,9 @@ class MarketMLService : Service() {
             val rows = org.json.JSONArray()
             val metricsSource = File(evaluationOutcomesPath(this@MarketMLService, sessionDate))
             val metricsInput = if (metricsSource.exists()) EvaluationOutcomeFile.validate(sessionDate, metricsSource,
-                File(metricsSource.parentFile, metricsSource.name + ".validated.json")).file else null
+                File(metricsSource.parentFile, metricsSource.name + ".metrics.validated.json")).file else null
             val brain = Python.getInstance().getModule("brain")
-            val result = EvaluationMetricsLedger.runStage(
+            val result = try { EvaluationMetricsLedger.runStage(
                 context = this@MarketMLService,
                 brain = brain,
                 runId = run.optString("run_id"),
@@ -2743,7 +2743,7 @@ class MarketMLService : Service() {
                 rows = rows,
                 rowsFile = metricsInput,
                 activeRecommendationId = null
-            )
+            ) } finally { metricsInput?.delete() }
             // Re-load run after updateRunStage(running) mutated activeEvaluationRun
             val latest = activeEvaluationRun ?: run
             val updated = EvaluationRunLedger.applyPerformanceMetricsResult(latest, result)
@@ -3287,6 +3287,9 @@ class MarketMLService : Service() {
             if (teacherDropReasons.isNotEmpty()) {
                 prefs.edit().putString("last_evaluation_teacher_drop_reasons", teacherDropReasonsJson.toString())
                     .putString("last_evaluation_teacher_drop_samples", teacherDropSamples.toString()).commit()
+            } else {
+                prefs.edit().remove("last_evaluation_teacher_drop_reasons")
+                    .remove("last_evaluation_teacher_drop_samples").commit()
             }
             evaluationBudget.check("saving")
             updateEvaluationJobState(
@@ -3624,6 +3627,8 @@ class MarketMLService : Service() {
                 scheduleNextEvaluationReminder(this@MarketMLService)
             }
         } finally {
+            File(outputsFile.parentFile, outputsFile.name + ".validated.json").delete()
+            File(outputsFile.parentFile, outputsFile.name + ".validated.json.report.json").delete()
             try {
                 brain?.callAttr("evaluation_job_finalize", runId)
             } catch (_: Exception) {
