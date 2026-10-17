@@ -80,6 +80,17 @@ MARKET_VIEW_FIELDS = (
     'market_direction', 'market_bull_score', 'market_bear_score',
     'market_view_status', 'market_view_source',
 )
+# b510 Batch B: candles are rebuilt from 5-minute spot POLL SAMPLES, not true index
+# OHLC. In explicit Paper mode they are telemetry only: no verdict score, no Paper
+# ranking contribution (15-minute AND daily patterns). Real/sandbox and unresolved
+# modes keep their previous behaviour.
+CANDLE_PAPER_POLICY_VERSION = 'sampled_candles_telemetry_only_v1'
+CANDLE_INSIGHTS_IN_VERDICT = False
+CANDLE_INSIGHTS_IN_PAPER_RANKING = False
+CANDLE_STRICT_SESSION_START_MIN = 9 * 60 + 16   # excludes the 09:15 opening sample
+CANDLE_STRICT_SESSION_END_MIN = 15 * 60 + 30    # exclusive: 15:30 and later are post-close
+CANDLE_STRICT_MAX_GAP_MIN = 6
+CANDLE_STRICT_SAMPLES = 3
 NET_ECONOMICS_VERSION = 'net_economics_v2_executable_quote_contract'
 TEACHER_FRICTION_VERSION = 'teacher_friction_v2_executable_bid_ask_charges'
 
@@ -2004,7 +2015,51 @@ def _total_range(c):
 def _body_pct(c):
     return _real_body(c) / _total_range(c)
 
-def aggregate_15m_candles(polls, key='bnf'):
+def _sample_poll_minute(poll):
+    """Minute of day from a poll's HH:MM (or HH:MM:SS) 't'; None when malformed."""
+    text = str((poll or {}).get('t') or '').strip() if isinstance(poll, dict) else ''
+    parts = text.split(':')
+    if len(parts) not in (2, 3) or not all(p.isdigit() and len(p) == 2 for p in parts):
+        return None
+    h, m = int(parts[0]), int(parts[1])
+    if not (0 <= h < 24 and 0 <= m < 60) or (len(parts) == 3 and int(parts[2]) >= 60):
+        return None
+    return h * 60 + m + (int(parts[2]) / 60.0 if len(parts) == 3 else 0.0)
+
+
+def _strict_sampled_candles(polls, key):
+    """Paper telemetry: groups of exactly 3 valid in-session samples, strictly increasing,
+    adjacent gap <= 6 min. Malformed/non-finite/duplicate/backward/out-of-session samples
+    are rejected; a gap > 6 min breaks the run; trailing partial groups are dropped."""
+    groups, run, last_t = [], [], None
+    for poll in polls or []:
+        t = _sample_poll_minute(poll)
+        v = poll.get(key) if isinstance(poll, dict) else None
+        if (t is None or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                or v <= 0 or not CANDLE_STRICT_SESSION_START_MIN <= t < CANDLE_STRICT_SESSION_END_MIN):
+            continue
+        if last_t is not None and t <= last_t:
+            continue                                   # duplicate / backward: never re-ordered
+        if last_t is not None and t - last_t > CANDLE_STRICT_MAX_GAP_MIN:
+            run = []                                   # gap breaks the run
+        last_t = t
+        run.append((t, float(v), poll))
+        if len(run) == CANDLE_STRICT_SAMPLES:
+            vals = [x[1] for x in run]
+            groups.append({
+                'open': vals[0], 'high': max(vals), 'low': min(vals), 'close': vals[-1],
+                'ts': run[-1][2].get('t', ''), 'count': len(vals),
+                'sampled_spot_polls': True, 'true_ohlc': False,
+                'span_minutes': round(run[-1][0] - run[0][0], 4),
+                'policy': CANDLE_PAPER_POLICY_VERSION,
+            })
+            run = []
+    return groups
+
+
+def aggregate_15m_candles(polls, key='bnf', strict=False):
+    if strict:
+        return _strict_sampled_candles(polls, key)
     groups = []
     for i in range(0, len(polls), 3):
         block = polls[i:i+3]
@@ -2313,19 +2368,36 @@ def _detect_daily_patterns(today, yesterday, index_key):
             "bearish", 3, index_key, "daily", today))
     return insights
 
+def _paper_candle_policy_active(ctx):
+    return _explicit_execution_mode(ctx) == 'paper'
+
+
 def compute_candle_signals(polls, ctx):
     result = {}
+    paper = _paper_candle_policy_active(ctx)
     for index_key, poll_key in [('BNF', 'bnf'), ('NF', 'nf')]:
-        candles_15m = aggregate_15m_candles(polls, poll_key)
+        candles_15m = aggregate_15m_candles(polls, poll_key, strict=paper)
         daily = build_daily_candle(polls, poll_key)
         patterns_15m = _detect_15m_patterns(candles_15m, index_key)
         ctx_ohlc = ctx.get(f'{poll_key}OHLC')
         patterns_daily = _detect_daily_patterns(daily, ctx_ohlc, index_key) if daily and ctx_ohlc else []
-        result[f'candle_{poll_key}'] = {
+        row = {
             'current': daily,
             'last_15m': candles_15m[-1] if candles_15m else None,
             'patterns': patterns_15m + patterns_daily,
         }
+        if paper:
+            for ins in row['patterns']:
+                ins['telemetry_only'] = True
+                ins['evidence_basis'] = 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC'
+            row.update({
+                'policy': CANDLE_PAPER_POLICY_VERSION,
+                'evidence_basis': 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC',
+                'in_verdict': CANDLE_INSIGHTS_IN_VERDICT,
+                'in_paper_ranking': CANDLE_INSIGHTS_IN_PAPER_RANKING,
+                'strict_15m_groups': len(candles_15m),
+            })
+        result[f'candle_{poll_key}'] = row
     return result
 
 def dte_urgency(polls, ctx):
@@ -5523,7 +5595,11 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             'pw_fresh': (ctx.get('bnfProfile') or {}).get('pwFresh', 0),
             'fii_history_len': len(ctx.get('fiiHistory', [])),
         }
+    # b510 Batch B: defend synthesis itself; any caller/replay input is covered.
+    paper_candle_telemetry_only = _paper_candle_policy_active(ctx) and not CANDLE_INSIGHTS_IN_VERDICT
     for ins in all_insights:
+        if paper_candle_telemetry_only and isinstance(ins, dict) and ins.get('type') == 'candle':
+            continue
         w = (ins.get('strength', 1)) / 5.0
         imp = ins.get('impact', 'neutral')
         # TASK 5.3 — log every insight contribution (taken or neutral)
@@ -7646,14 +7722,20 @@ def _pc2_batch_f_width_ladder(index_key, base_widths, strike_step, execution_mod
     }
 
 
-def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
-    """Add bounded 15-minute candle context to paper PC2 ranking evidence.
+def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode, explicit_paper=None):
+    """Bounded 15-minute candle context for PC2 ranking evidence.
 
-    Patterns remain soft evidence. They never create a candidate, reject one,
-    bypass a safety gate, or replace the existing PC2 percentile score.
+    b510 Batch B: in EXPLICIT Paper mode, sampled candles are telemetry only
+    (CANDLE_INSIGHTS_IN_PAPER_RANKING False): no score, no context change, no
+    ordering change; detected patterns are retained as evidence. A missing or
+    unresolved mode keeps its pre-existing path (this function historically
+    defaulted it to scoring); sandbox/live were and remain inactive.
     """
     mode = str(execution_mode or 'paper').strip().lower()
-    active = mode == 'paper'
+    if explicit_paper is None:
+        explicit_paper = mode == 'paper'
+    telemetry_only = bool(explicit_paper) and not CANDLE_INSIGHTS_IN_PAPER_RANKING
+    active = mode == 'paper' and not telemetry_only
     candle_data = candle_data if isinstance(candle_data, dict) else {}
     affected = 0
     # Historical and live Batch-F candles are reconstructed from spot samples.
@@ -7709,7 +7791,13 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         candidate['pc2BatchFCandleComponents'] = components
         candidate['pc2BatchFCandleCautions'] = cautions
         candidate['pc2BatchFCandleExcludedPatterns'] = excluded_patterns
-        candidate['pc2BatchFCandleScoringMethod'] = 'body_pattern_proxy_only_v1'
+        if telemetry_only:
+            candidate['pc2BatchFCandleTelemetryPatterns'] = [
+                str(p.get('pattern') or 'UNKNOWN') for p in pattern_rows
+                if isinstance(p, dict) and p.get('timeframe') == '15m'
+            ]
+        candidate['pc2BatchFCandleScoringMethod'] = (
+            CANDLE_PAPER_POLICY_VERSION if telemetry_only else 'body_pattern_proxy_only_v1')
         candidate['pc2BatchFActive'] = active
         candidate['pc2BatchFVersion'] = PC2_BATCH_F_SUPPLY_PATTERN_VERSION
         if active:
@@ -7738,11 +7826,18 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         'active': active,
         'execution_mode_observed': mode,
         'candle_score_cap': PC2_BATCH_F_CANDLE_SCORE_CAP,
-        'candle_scoring_method': 'body_pattern_proxy_only_v1',
-        'excluded_pattern_contract': 'wick-dependent patterns are recorded but excluded from score until true index OHLC validation',
+        'candle_scoring_method': CANDLE_PAPER_POLICY_VERSION if telemetry_only else 'body_pattern_proxy_only_v1',
+        'candle_paper_policy': CANDLE_PAPER_POLICY_VERSION if telemetry_only else None,
+        'excluded_pattern_contract': (
+            'all sampled candle patterns are telemetry only in Paper; no ranking contribution'
+            if telemetry_only else
+            'wick-dependent patterns are recorded but excluded from score until true index OHLC validation'),
         'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
         'candidates_with_candle_influence': affected,
-        'contract': '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation',
+        'contract': (
+            'sampled candle telemetry has no Paper ranking, verdict or entry authority'
+            if telemetry_only else
+            '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation'),
     }
 
 
@@ -8014,10 +8109,10 @@ def _pc2_batch_f_supply_pattern_inventory():
         pattern_rows.append({
             'constant': key,
             'value': _CONST.get(key),
-            'authority': 'paper_bounded_context_score',
-            'status': 'PAPER_ACTIVE_BOUNDED_CONTEXT',
+            'authority': 'paper_telemetry_only' if not CANDLE_INSIGHTS_IN_PAPER_RANKING else 'paper_bounded_context_score',
+            'status': 'PAPER_TELEMETRY_ONLY' if not CANDLE_INSIGHTS_IN_PAPER_RANKING else 'PAPER_ACTIVE_BOUNDED_CONTEXT',
             'rationale': C3_KIND_B_CONSTS.get(key, 'pattern threshold; needs replay calibration'),
-            'behavior_change': True,
+            'behavior_change': bool(CANDLE_INSIGHTS_IN_PAPER_RANKING),
         })
 
     return {
@@ -8027,9 +8122,13 @@ def _pc2_batch_f_supply_pattern_inventory():
         'supply_ladder_shadow_count': 0,
         'advisory_pattern_shadow_count': 0,
         'paper_active_supply_ladder_count': len(supply_rows),
-        'paper_active_pattern_count': len(pattern_rows),
+        'paper_active_pattern_count': len(pattern_rows) if CANDLE_INSIGHTS_IN_PAPER_RANKING else 0,
+        'paper_telemetry_only_pattern_count': 0 if CANDLE_INSIGHTS_IN_PAPER_RANKING else len(pattern_rows),
+        'candle_paper_policy': CANDLE_PAPER_POLICY_VERSION,
         'behavior_change': True,
-        'live_scope': 'paper-only width expansion and bounded 15m candle context score',
+        'live_scope': ('paper-only width expansion; sampled candle patterns are telemetry only'
+                       if not CANDLE_INSIGHTS_IN_PAPER_RANKING else
+                       'paper-only width expansion and bounded 15m candle context score'),
         'shadow_scope': 'sandbox/live remain unchanged; candle evidence has no hard-veto authority',
         'supply_ladder_rows': supply_rows,
         'advisory_pattern_rows': pattern_rows,
@@ -17230,10 +17329,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     try:
         candle_data = compute_candle_signals(polls, ctx)
         ctx['pc2_candle_signals'] = candle_data
+        paper_candles = _paper_candle_policy_active(ctx)
         for ckey in ('candle_bnf', 'candle_nf'):
             result[ckey] = candle_data[ckey]
+            if paper_candles and not CANDLE_INSIGHTS_IN_VERDICT:
+                continue      # b510 Batch B: Paper telemetry only (no insight card / verdict score)
             for ins in candle_data[ckey].get('patterns', []):
                 result["market"].append(ins)
+        if paper_candles:
+            result['candle_paper_policy'] = {
+                'version': CANDLE_PAPER_POLICY_VERSION,
+                'in_verdict': CANDLE_INSIGHTS_IN_VERDICT,
+                'in_paper_ranking': CANDLE_INSIGHTS_IN_PAPER_RANKING,
+                'evidence_basis': 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC',
+                'alerts': 'SUPPRESSED_IN_PAPER',
+            }
     except Exception as e:
         print(f"DEBUG: candlestick detection failed: {e}")
     # b92: chain_profile_insights returns LIST
@@ -17653,6 +17763,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             all_cands,
             ctx.get('pc2_candle_signals'),
             ctx.get('executionMode') or ctx.get('execution_mode') or 'paper',
+            explicit_paper=_paper_candle_policy_active(ctx),
         )
         batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
         result['pc2_batch_f_paper_context'] = batch_f_paper_context
@@ -21773,6 +21884,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     market_forces = {
         'app_version': BRAIN_VERSION,
         'brain_version': BRAIN_VERSION,
+        'candle_paper_policy': result.get('candle_paper_policy'),
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
         'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
