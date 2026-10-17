@@ -986,6 +986,31 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    /** b510 X1: bounded Paper buying research status (read-only; research only, no trade authority). */
+    @JavascriptInterface
+    fun getPaperBuyingResearchStatus(): String = PaperBuyingResearch.status(context.filesDir)
+
+    /**
+     * b510 X1: writes a bounded JSON export of the research journal to Downloads (native bytes; the
+     * journal never transits the JS bridge). Returns {ok, status, file, sha256, bytes}; no local path.
+     */
+    @JavascriptInterface
+    fun exportPaperBuyingResearchJournal(): String {
+        return try {
+            val now = System.currentTimeMillis()
+            val env = PaperBuyingResearch.exportEnvelope(context.filesDir, now)
+            if (env.optString("status") != "OK") return JSONObject().put("ok", false)
+                .put("status", env.optString("status")).toString()
+            val bytes = env.toString().toByteArray(Charsets.UTF_8)
+            val name = "MarketRadar_X1_research_${todayIstDate()}_$now.json"
+            saveExportBytes(name, "application/json", bytes)
+            JSONObject().put("ok", true).put("status", "OK").put("file", name)
+                .put("journal_sha256", env.optString("journal_sha256")).put("bytes", bytes.size).toString()
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("status", "EXPORT_FAILED").toString()
+        }
+    }
+
     /** b507: acknowledged overnight input pair, its status for today and the refresh state (read-only). */
     @JavascriptInterface
     fun getOvernightInputState(): String {

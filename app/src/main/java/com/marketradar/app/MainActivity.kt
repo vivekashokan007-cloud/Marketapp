@@ -600,6 +600,8 @@ class MainActivity : AppCompatActivity() {
                     getTradeModeExplicit: function() { return AndroidBridge.getTradeModeExplicit(); },
                     getGlobalDirection: function() { return AndroidBridge.getGlobalDirection(); },
                     getOvernightInputState: function() { return AndroidBridge.getOvernightInputState(); },
+                    getPaperBuyingResearchStatus: function() { return AndroidBridge.getPaperBuyingResearchStatus(); },
+                    exportPaperBuyingResearchJournal: function() { return AndroidBridge.exportPaperBuyingResearchJournal(); },
                     getRecentSignals: function(limit) { return AndroidBridge.getRecentSignals(limit || 50); },
                     getMLDecisions: function(limit) { return AndroidBridge.getMLDecisions(limit || 50); },
                     getMLEvaluationOutcomes: function(limit) { return AndroidBridge.getMLEvaluationOutcomes(limit || 1000); },

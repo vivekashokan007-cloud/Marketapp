@@ -64,6 +64,33 @@ DECISION_GATE_ACTIONABLE = 'ACTIONABLE'
 DECISION_GATE_PRELIMINARY_WAIT = 'PRELIMINARY_WAIT'
 DECISION_GATE_HARD_WAIT = 'HARD_WAIT'
 DECISION_GATE_STOP = 'STOP'
+# b510 Batch A: the legacy verdict `direction` is MIXED: the synthesis score-rule
+# view before execution alignment, the selected strategy lane after it. It keeps
+# that legacy behaviour for every consumer in this release. The two meanings are
+# now also emitted separately and explicitly:
+#   market_direction          frozen synthesis score-rule view (combined NF/BNF
+#                             context; unvalidated; None when unavailable)
+#   execution_lane_direction  direction of the selected strategy lane (None when
+#                             no strategy lane exists)
+VERDICT_DIRECTION_SEMANTICS_VERSION = 1
+VERDICT_DIRECTION_SEMANTICS = 'legacy_mixed_market_or_lane_v1'
+MARKET_VIEW_SCOPE = 'COMBINED_NF_BNF_CONTEXT'
+MARKET_VIEW_SOURCE = 'synthesize_verdict_score_rule_v1'
+MARKET_VIEW_FIELDS = (
+    'market_direction', 'market_bull_score', 'market_bear_score',
+    'market_view_status', 'market_view_source',
+)
+# b510 Batch B: candles are rebuilt from 5-minute spot POLL SAMPLES, not true index
+# OHLC. In explicit Paper mode they are telemetry only: no verdict score, no Paper
+# ranking contribution (15-minute AND daily patterns). Real/sandbox and unresolved
+# modes keep their previous behaviour.
+CANDLE_PAPER_POLICY_VERSION = 'sampled_candles_telemetry_only_v1'
+CANDLE_INSIGHTS_IN_VERDICT = False
+CANDLE_INSIGHTS_IN_PAPER_RANKING = False
+CANDLE_STRICT_SESSION_START_MIN = 9 * 60 + 16   # excludes the 09:15 opening sample
+CANDLE_STRICT_SESSION_END_MIN = 15 * 60 + 30    # exclusive: 15:30 and later are post-close
+CANDLE_STRICT_MAX_GAP_MIN = 6
+CANDLE_STRICT_SAMPLES = 3
 NET_ECONOMICS_VERSION = 'net_economics_v2_executable_quote_contract'
 TEACHER_FRICTION_VERSION = 'teacher_friction_v2_executable_bid_ask_charges'
 
@@ -1988,7 +2015,51 @@ def _total_range(c):
 def _body_pct(c):
     return _real_body(c) / _total_range(c)
 
-def aggregate_15m_candles(polls, key='bnf'):
+def _sample_poll_minute(poll):
+    """Minute of day from a poll's HH:MM (or HH:MM:SS) 't'; None when malformed."""
+    text = str((poll or {}).get('t') or '').strip() if isinstance(poll, dict) else ''
+    parts = text.split(':')
+    if len(parts) not in (2, 3) or not all(p.isdigit() and len(p) == 2 for p in parts):
+        return None
+    h, m = int(parts[0]), int(parts[1])
+    if not (0 <= h < 24 and 0 <= m < 60) or (len(parts) == 3 and int(parts[2]) >= 60):
+        return None
+    return h * 60 + m + (int(parts[2]) / 60.0 if len(parts) == 3 else 0.0)
+
+
+def _strict_sampled_candles(polls, key):
+    """Paper telemetry: groups of exactly 3 valid in-session samples, strictly increasing,
+    adjacent gap <= 6 min. Malformed/non-finite/duplicate/backward/out-of-session samples
+    are rejected; a gap > 6 min breaks the run; trailing partial groups are dropped."""
+    groups, run, last_t = [], [], None
+    for poll in polls or []:
+        t = _sample_poll_minute(poll)
+        v = poll.get(key) if isinstance(poll, dict) else None
+        if (t is None or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                or v <= 0 or not CANDLE_STRICT_SESSION_START_MIN <= t < CANDLE_STRICT_SESSION_END_MIN):
+            continue
+        if last_t is not None and t <= last_t:
+            continue                                   # duplicate / backward: never re-ordered
+        if last_t is not None and t - last_t > CANDLE_STRICT_MAX_GAP_MIN:
+            run = []                                   # gap breaks the run
+        last_t = t
+        run.append((t, float(v), poll))
+        if len(run) == CANDLE_STRICT_SAMPLES:
+            vals = [x[1] for x in run]
+            groups.append({
+                'open': vals[0], 'high': max(vals), 'low': min(vals), 'close': vals[-1],
+                'ts': run[-1][2].get('t', ''), 'count': len(vals),
+                'sampled_spot_polls': True, 'true_ohlc': False,
+                'span_minutes': round(run[-1][0] - run[0][0], 4),
+                'policy': CANDLE_PAPER_POLICY_VERSION,
+            })
+            run = []
+    return groups
+
+
+def aggregate_15m_candles(polls, key='bnf', strict=False):
+    if strict:
+        return _strict_sampled_candles(polls, key)
     groups = []
     for i in range(0, len(polls), 3):
         block = polls[i:i+3]
@@ -2297,19 +2368,36 @@ def _detect_daily_patterns(today, yesterday, index_key):
             "bearish", 3, index_key, "daily", today))
     return insights
 
+def _paper_candle_policy_active(ctx):
+    return _explicit_execution_mode(ctx) == 'paper'
+
+
 def compute_candle_signals(polls, ctx):
     result = {}
+    paper = _paper_candle_policy_active(ctx)
     for index_key, poll_key in [('BNF', 'bnf'), ('NF', 'nf')]:
-        candles_15m = aggregate_15m_candles(polls, poll_key)
+        candles_15m = aggregate_15m_candles(polls, poll_key, strict=paper)
         daily = build_daily_candle(polls, poll_key)
         patterns_15m = _detect_15m_patterns(candles_15m, index_key)
         ctx_ohlc = ctx.get(f'{poll_key}OHLC')
         patterns_daily = _detect_daily_patterns(daily, ctx_ohlc, index_key) if daily and ctx_ohlc else []
-        result[f'candle_{poll_key}'] = {
+        row = {
             'current': daily,
             'last_15m': candles_15m[-1] if candles_15m else None,
             'patterns': patterns_15m + patterns_daily,
         }
+        if paper:
+            for ins in row['patterns']:
+                ins['telemetry_only'] = True
+                ins['evidence_basis'] = 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC'
+            row.update({
+                'policy': CANDLE_PAPER_POLICY_VERSION,
+                'evidence_basis': 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC',
+                'in_verdict': CANDLE_INSIGHTS_IN_VERDICT,
+                'in_paper_ranking': CANDLE_INSIGHTS_IN_PAPER_RANKING,
+                'strict_15m_groups': len(candles_15m),
+            })
+        result[f'candle_{poll_key}'] = row
     return result
 
 def dte_urgency(polls, ctx):
@@ -3438,7 +3526,8 @@ def build_session_explanation(result, ctx):
 
     state = final.get("action") or verdict.get("action") or "WAIT"
     confidence = int(_safe_num(final.get("confidence", verdict.get("confidence", 0)), 0))
-    bias = eb.get("bias") or verdict.get("direction") or "NEUTRAL"
+    # b510 Batch A: never present the strategy lane as the market bias.
+    bias = eb.get("bias") or verdict.get("market_direction") or "UNAVAILABLE"
     net = _safe_num(eb.get("net", verdict.get("net", 0)), 0)
     range_sigma = _safe_num(result.get("rangeSigma", regime.get("sigma", 0)), 0)
     regime_type = (regime.get("type") or market_phase.get("type") or "UNKNOWN").upper()
@@ -5506,7 +5595,11 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
             'pw_fresh': (ctx.get('bnfProfile') or {}).get('pwFresh', 0),
             'fii_history_len': len(ctx.get('fiiHistory', [])),
         }
+    # b510 Batch B: defend synthesis itself; any caller/replay input is covered.
+    paper_candle_telemetry_only = _paper_candle_policy_active(ctx) and not CANDLE_INSIGHTS_IN_VERDICT
     for ins in all_insights:
+        if paper_candle_telemetry_only and isinstance(ins, dict) and ins.get('type') == 'candle':
+            continue
         w = (ins.get('strength', 1)) / 5.0
         imp = ins.get('impact', 'neutral')
         # TASK 5.3 — log every insight contribution (taken or neutral)
@@ -6151,6 +6244,12 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     return {
         "action": action, "strategy": strategy, "direction": direction,
+        # b510 Batch A: frozen BEFORE any execution alignment; full precision so
+        # the 0.4 score rule is reproducible from the stored fields.
+        "market_direction": direction,
+        "market_bull_score": round(bull, 6), "market_bear_score": round(bear, 6),
+        "market_view_status": 'AVAILABLE', "market_view_source": MARKET_VIEW_SOURCE,
+        "market_view_validated": False, "market_direction_scope": MARKET_VIEW_SCOPE,
         "confidence": confidence, "market_confidence": market_confidence,
         "decision_gate": decision_gate,
         "urgency": urgency,
@@ -7109,7 +7208,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.78"
+BRAIN_VERSION = "2.6.79"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -7623,14 +7722,20 @@ def _pc2_batch_f_width_ladder(index_key, base_widths, strike_step, execution_mod
     }
 
 
-def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
-    """Add bounded 15-minute candle context to paper PC2 ranking evidence.
+def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode, explicit_paper=None):
+    """Bounded 15-minute candle context for PC2 ranking evidence.
 
-    Patterns remain soft evidence. They never create a candidate, reject one,
-    bypass a safety gate, or replace the existing PC2 percentile score.
+    b510 Batch B: in EXPLICIT Paper mode, sampled candles are telemetry only
+    (CANDLE_INSIGHTS_IN_PAPER_RANKING False): no score, no context change, no
+    ordering change; detected patterns are retained as evidence. A missing or
+    unresolved mode keeps its pre-existing path (this function historically
+    defaulted it to scoring); sandbox/live were and remain inactive.
     """
     mode = str(execution_mode or 'paper').strip().lower()
-    active = mode == 'paper'
+    if explicit_paper is None:
+        explicit_paper = mode == 'paper'
+    telemetry_only = bool(explicit_paper) and not CANDLE_INSIGHTS_IN_PAPER_RANKING
+    active = mode == 'paper' and not telemetry_only
     candle_data = candle_data if isinstance(candle_data, dict) else {}
     affected = 0
     # Historical and live Batch-F candles are reconstructed from spot samples.
@@ -7686,7 +7791,13 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         candidate['pc2BatchFCandleComponents'] = components
         candidate['pc2BatchFCandleCautions'] = cautions
         candidate['pc2BatchFCandleExcludedPatterns'] = excluded_patterns
-        candidate['pc2BatchFCandleScoringMethod'] = 'body_pattern_proxy_only_v1'
+        if telemetry_only:
+            candidate['pc2BatchFCandleTelemetryPatterns'] = [
+                str(p.get('pattern') or 'UNKNOWN') for p in pattern_rows
+                if isinstance(p, dict) and p.get('timeframe') == '15m'
+            ]
+        candidate['pc2BatchFCandleScoringMethod'] = (
+            CANDLE_PAPER_POLICY_VERSION if telemetry_only else 'body_pattern_proxy_only_v1')
         candidate['pc2BatchFActive'] = active
         candidate['pc2BatchFVersion'] = PC2_BATCH_F_SUPPLY_PATTERN_VERSION
         if active:
@@ -7715,11 +7826,18 @@ def _apply_pc2_batch_f_candle_context(candidates, candle_data, execution_mode):
         'active': active,
         'execution_mode_observed': mode,
         'candle_score_cap': PC2_BATCH_F_CANDLE_SCORE_CAP,
-        'candle_scoring_method': 'body_pattern_proxy_only_v1',
-        'excluded_pattern_contract': 'wick-dependent patterns are recorded but excluded from score until true index OHLC validation',
+        'candle_scoring_method': CANDLE_PAPER_POLICY_VERSION if telemetry_only else 'body_pattern_proxy_only_v1',
+        'candle_paper_policy': CANDLE_PAPER_POLICY_VERSION if telemetry_only else None,
+        'excluded_pattern_contract': (
+            'all sampled candle patterns are telemetry only in Paper; no ranking contribution'
+            if telemetry_only else
+            'wick-dependent patterns are recorded but excluded from score until true index OHLC validation'),
         'candidate_count': len([c for c in candidates or [] if isinstance(c, dict)]),
         'candidates_with_candle_influence': affected,
-        'contract': '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation',
+        'contract': (
+            'sampled candle telemetry has no Paper ranking, verdict or entry authority'
+            if telemetry_only else
+            '15m candle patterns are bounded ranking evidence only; no hard veto or candidate creation'),
     }
 
 
@@ -7991,10 +8109,10 @@ def _pc2_batch_f_supply_pattern_inventory():
         pattern_rows.append({
             'constant': key,
             'value': _CONST.get(key),
-            'authority': 'paper_bounded_context_score',
-            'status': 'PAPER_ACTIVE_BOUNDED_CONTEXT',
+            'authority': 'paper_telemetry_only' if not CANDLE_INSIGHTS_IN_PAPER_RANKING else 'paper_bounded_context_score',
+            'status': 'PAPER_TELEMETRY_ONLY' if not CANDLE_INSIGHTS_IN_PAPER_RANKING else 'PAPER_ACTIVE_BOUNDED_CONTEXT',
             'rationale': C3_KIND_B_CONSTS.get(key, 'pattern threshold; needs replay calibration'),
-            'behavior_change': True,
+            'behavior_change': bool(CANDLE_INSIGHTS_IN_PAPER_RANKING),
         })
 
     return {
@@ -8004,9 +8122,13 @@ def _pc2_batch_f_supply_pattern_inventory():
         'supply_ladder_shadow_count': 0,
         'advisory_pattern_shadow_count': 0,
         'paper_active_supply_ladder_count': len(supply_rows),
-        'paper_active_pattern_count': len(pattern_rows),
+        'paper_active_pattern_count': len(pattern_rows) if CANDLE_INSIGHTS_IN_PAPER_RANKING else 0,
+        'paper_telemetry_only_pattern_count': 0 if CANDLE_INSIGHTS_IN_PAPER_RANKING else len(pattern_rows),
+        'candle_paper_policy': CANDLE_PAPER_POLICY_VERSION,
         'behavior_change': True,
-        'live_scope': 'paper-only width expansion and bounded 15m candle context score',
+        'live_scope': ('paper-only width expansion; sampled candle patterns are telemetry only'
+                       if not CANDLE_INSIGHTS_IN_PAPER_RANKING else
+                       'paper-only width expansion and bounded 15m candle context score'),
         'shadow_scope': 'sandbox/live remain unchanged; candle evidence has no hard-veto authority',
         'supply_ladder_rows': supply_rows,
         'advisory_pattern_rows': pattern_rows,
@@ -13940,6 +14062,10 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
             'action': verdict.get('action'),
             'strategy': verdict.get('strategy'),
             'direction': verdict.get('direction'),
+            'direction_semantics': VERDICT_DIRECTION_SEMANTICS,
+            'market_direction': verdict.get('market_direction'),
+            'market_view_validated': False,
+            'execution_lane_direction': _execution_lane_direction(verdict),
             'confidence': verdict.get('confidence'),
             'reasoning': verdict.get('reasoning'),
             'conflicts': verdict.get('conflicts'),
@@ -16609,6 +16735,68 @@ def _finalize_pc2_paper_verdict(result, ranked, pc2_summary, ctx=None):
     result['decision_reason'] = result['decisionReason']
     return result
 
+def _freeze_market_view(verdict):
+    """b510 Batch A: copy the synthesis market view, or None when unavailable.
+
+    Only a verdict emitted by synthesize_verdict carries an AVAILABLE view. An
+    already-aligned or legacy verdict is never reverse-engineered into one.
+    """
+    if not isinstance(verdict, dict) or verdict.get('market_view_status') != 'AVAILABLE':
+        return None
+    if verdict.get('market_view_source') != MARKET_VIEW_SOURCE:
+        return None
+    if verdict.get('market_direction') not in ('BULL', 'BEAR', 'NEUTRAL'):
+        return None
+    return {key: verdict.get(key) for key in MARKET_VIEW_FIELDS}
+
+
+def _execution_lane_direction(verdict):
+    if not isinstance(verdict, dict) or verdict.get('action') in ('WAIT', 'STOP', None):
+        return None
+    return _strategy_direction(verdict.get('strategy'))
+
+
+def _apply_market_view(verdict, frozen_view):
+    """Re-stamp the frozen view on the FINAL verdict (every analyze path).
+
+    Never derives market fields from legacy `direction`. Leaves legacy
+    `direction`, action, strategy, gates and confidence untouched.
+    """
+    if not isinstance(verdict, dict):
+        return verdict
+    final = dict(verdict)
+    if frozen_view:
+        final.update(frozen_view)
+    else:
+        final.update({
+            'market_direction': None, 'market_bull_score': None, 'market_bear_score': None,
+            'market_view_status': 'UNAVAILABLE', 'market_view_source': None,
+        })
+    final['market_view_validated'] = False
+    final['market_direction_scope'] = MARKET_VIEW_SCOPE
+    final['execution_lane_direction'] = _execution_lane_direction(final)
+    final['direction_semantics'] = VERDICT_DIRECTION_SEMANTICS
+    final['direction_semantics_version'] = VERDICT_DIRECTION_SEMANTICS_VERSION
+    return final
+
+
+def _market_thesis_once(verdict, market_confidence):
+    """Capture market_thesis exactly once, from a not-yet-aligned verdict."""
+    existing = verdict.get('market_thesis')
+    if isinstance(existing, dict) and existing:
+        return existing
+    if verdict.get('execution_aligned'):
+        # Already aligned: action/strategy/direction are the lane, not the thesis.
+        return None
+    return {
+        'action': verdict.get('action'),
+        'strategy': verdict.get('strategy'),
+        'direction': verdict.get('direction'),
+        'market_direction': verdict.get('market_direction'),
+        'confidence': market_confidence,
+    }
+
+
 def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_eligible=False):
     """Make final brain verdict match the executable candidate lane shown to user.
 
@@ -16638,12 +16826,9 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_elig
         market_confidence = _safe_num(final.get('market_confidence'), None)
         if market_confidence is None:
             market_confidence = _safe_num(final.get('confidence'), 0.0)
-        final['market_thesis'] = {
-            'action': final.get('action'),
-            'strategy': final.get('strategy'),
-            'direction': final.get('direction'),
-            'confidence': market_confidence,
-        }
+        thesis = _market_thesis_once(final, market_confidence)
+        if thesis is not None:
+            final['market_thesis'] = thesis
         final['market_confidence'] = market_confidence
         final['pre_alignment_action'] = final.get('action')
         final['pre_alignment_strategy'] = final.get('strategy')
@@ -16695,6 +16880,9 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_elig
     if not changed and final.get('execution_aligned'):
         return verdict
 
+    thesis = _market_thesis_once(final, market_confidence)
+    if thesis is not None:
+        final['market_thesis'] = thesis
     final['pre_alignment_action'] = old_action
     final['pre_alignment_strategy'] = old_strategy
     final['action'] = new_action
@@ -16989,6 +17177,32 @@ def _is_ev_rule_b_trade(t):
     return isinstance(es, dict) and es.get('position_policy_id') == 'paper_rule_b_v1'
 
 
+X1_CONTEXT_KEYS = ('x1CaptureSource', 'x1StateDir', 'x1PollMs', 'x1QuoteFetchedMs')
+
+
+def _attach_paper_buying_research(result, ctx):
+    """b510 Batch C: independent prospective X1 quote simulation (Paper research only).
+
+    Runs before the three-poll entry warm-up so 09:20 can be observed; it reads
+    only ctx quotes/timestamps, never brain signals, and writes only its own
+    journal. Native-owned keys are removed from ctx afterwards so they cannot
+    reach snapshots, replays or later calls.
+    """
+    try:
+        import paper_buying_research as buying
+        payload = buying.run(ctx, brain_version=BRAIN_VERSION)
+        if payload is not None:
+            result['paper_buying_research'] = payload
+    except Exception:
+        if isinstance(ctx, dict) and ctx.get('x1CaptureSource') == 'LIVE_PHONE_POLL':
+            result['paper_buying_research'] = {'status': 'ENGINE_ERROR', 'paper_research_only': True,
+                                               'quote_simulation_only': True, 'recommendation_authority': False}
+    finally:
+        if isinstance(ctx, dict):
+            for key in X1_CONTEXT_KEYS:
+                ctx.pop(key, None)
+
+
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -17018,6 +17232,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         "risk": [],
         "learnedBranches": {},
     }
+    # b510 Batch C: runs during the entry warm-up too; no trading output depends on it.
+    _attach_paper_buying_research(result, ctx)
     daily_risk_state = _apply_daily_risk_state(ctx, closed_trades, open_trades)
     result['dailyRiskState'] = daily_risk_state
     if len(polls) < 3:
@@ -17034,6 +17250,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "bull": 0.0,
             "bear": 0.0,
         }
+        # b510 Batch A: no market evidence during warm-up -> unavailable, not NEUTRAL.
+        result["verdict"] = _apply_market_view(result["verdict"], None)
         result["generated_candidates"] = []
         result["ranked_candidates_full"] = []
         result["watchlist"] = []
@@ -17139,10 +17357,21 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     try:
         candle_data = compute_candle_signals(polls, ctx)
         ctx['pc2_candle_signals'] = candle_data
+        paper_candles = _paper_candle_policy_active(ctx)
         for ckey in ('candle_bnf', 'candle_nf'):
             result[ckey] = candle_data[ckey]
+            if paper_candles and not CANDLE_INSIGHTS_IN_VERDICT:
+                continue      # b510 Batch B: Paper telemetry only (no insight card / verdict score)
             for ins in candle_data[ckey].get('patterns', []):
                 result["market"].append(ins)
+        if paper_candles:
+            result['candle_paper_policy'] = {
+                'version': CANDLE_PAPER_POLICY_VERSION,
+                'in_verdict': CANDLE_INSIGHTS_IN_VERDICT,
+                'in_paper_ranking': CANDLE_INSIGHTS_IN_PAPER_RANKING,
+                'evidence_basis': 'SAMPLED_SPOT_POLLS_NOT_TRUE_OHLC',
+                'alerts': 'SUPPRESSED_IN_PAPER',
+            }
     except Exception as e:
         print(f"DEBUG: candlestick detection failed: {e}")
     # b92: chain_profile_insights returns LIST
@@ -17421,6 +17650,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
     except Exception as e:
         print(f"DEBUG: synthesize_verdict failed: {e}")
+    # b510 Batch A: freeze the synthesis view once; every later path re-stamps it.
+    frozen_market_view = _freeze_market_view(result.get("verdict"))
 
     # b97: Effective bias — Bayesian decay of morning prior with intraday evidence
     try:
@@ -17560,6 +17791,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             all_cands,
             ctx.get('pc2_candle_signals'),
             ctx.get('executionMode') or ctx.get('execution_mode') or 'paper',
+            explicit_paper=_paper_candle_policy_active(ctx),
         )
         batch_f_paper_context['width_plans'] = ctx.get('_pc2_batch_f_width_plans') or {}
         result['pc2_batch_f_paper_context'] = batch_f_paper_context
@@ -17873,12 +18105,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     if menu_abstention
                     else 'PC2 forced WAIT: no entry-eligible paper candidate survived.'
                 )
-                verdict['market_thesis'] = {
-                    'action': verdict.get('action'),
-                    'strategy': verdict.get('strategy'),
-                    'direction': verdict.get('direction'),
-                    'confidence': market_confidence,
-                }
+                thesis = _market_thesis_once(verdict, market_confidence)
+                if thesis is not None:
+                    verdict['market_thesis'] = thesis
                 verdict.update({
                     'market_confidence': market_confidence,
                     'action': 'WAIT',
@@ -18239,6 +18468,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         result['vixRegime'] = {'error': str(e)}
 
+    result['verdict'] = _apply_market_view(result.get('verdict'), frozen_market_view)
     out_str, _ = _safe_json(result)
     return out_str
 
@@ -18342,6 +18572,9 @@ def replay(inputs, calibration_override=None, expected_baseline=None,
         ctx_dict = json.loads(context_json) if context_json else {}
     except (ValueError, TypeError):
         raise ValueError("replay: context_json is not valid JSON")
+    # b510: replay may never advance the prospective X1 journal.
+    for key in X1_CONTEXT_KEYS:
+        ctx_dict.pop(key, None)
     ctx_dict['_debug'] = True
     ctx_dict['_trace_source_override'] = source_tag
     context_json = json.dumps(ctx_dict)
@@ -21396,6 +21629,19 @@ def _compact_android_snapshot_context(snapshot_context):
     return compact
 
 
+def _bounded_x1_snapshot(payload):
+    if not isinstance(payload, dict):
+        return None
+    keep = ('schema', 'protocol_id', 'protocol_digest', 'status', 'session_date', 'block_id', 'counts',
+            'record_count', 'event_seq', 'last_event_digest', 'transitions', 'reference_capture',
+            'paper_research_only',
+            'quote_simulation_only', 'recommendation_authority', 'time_basis')
+    out = {k: payload.get(k) for k in keep if k in payload}
+    if isinstance(out.get('transitions'), list):
+        out['transitions'] = out['transitions'][:8]
+    return out
+
+
 def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -21682,6 +21928,9 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     market_forces = {
         'app_version': BRAIN_VERSION,
         'brain_version': BRAIN_VERSION,
+        'candle_paper_policy': result.get('candle_paper_policy'),
+        # b510: bounded X1 status (counts, status, event digest, this poll's transitions only).
+        'paper_buying_research': _bounded_x1_snapshot(result.get('paper_buying_research')),
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
         'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
@@ -21826,6 +22075,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
+    for key in X1_CONTEXT_KEYS:      # b510: native-only keys (local path) never persisted
+        snapshot_context.pop(key, None)
     snapshot_context['snapshot_app_version'] = BRAIN_VERSION
     snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
     snapshot_context['bias_net'] = bias_net
