@@ -2924,7 +2924,11 @@ object SupabaseClient {
 
         // Companion recommendation identities — fail closed on page errors, but an
         // empty companion table is allowed when no recommendation rows were expected.
-        val recoFilter = "session_date=eq.$date&select=snapshot_id,candidate_id,role"
+        // Only chosen (primary) rows are required from the companion table.
+        // Secondary identities are already proven above against ml_evaluation_outcomes.
+        // Reading the full companion menu can time out while sorting historical
+        // rows (57014); the session_date+role index serves this bounded proof.
+        val recoFilter = "session_date=eq.$date&role=eq.primary&select=snapshot_id,candidate_id,role"
         val recoPaged = selectAllPages(
             table = "ml_recommendation_outcomes",
             filter = recoFilter,
@@ -2939,7 +2943,8 @@ object SupabaseClient {
                 compositeKeys = evalKeys,
                 pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
                 status = recoStatus,
-                error = "recommendation_readback:" + (recoPaged.opt("page_error")?.toString() ?: recoStatus),
+                error = "recommendation_readback:$recoStatus code=${recoPaged.optString("postgrest_code", "unknown")} " +
+                    (recoPaged.opt("page_error")?.toString() ?: recoStatus),
                 httpStatus = if (recoPaged.isNull("http_status")) null else recoPaged.optInt("http_status"),
                 failedPage = if (recoPaged.isNull("failed_page")) null else recoPaged.optInt("failed_page")
             )

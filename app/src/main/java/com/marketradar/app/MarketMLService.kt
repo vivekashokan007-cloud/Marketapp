@@ -3442,13 +3442,19 @@ class MarketMLService : Service() {
                 updateEvaluationJobState(
                     sessionDate = sessionDate,
                     phase = phase,
-                    message = "Evaluation for $sessionDate is incomplete: identity coverage missing ${assessment.missingCount} required identities (preview=$preview). Labels are NOT saved; learning is incomplete. Retry will reuse the same session date and frozen input manifest.",
+                    message = if (!identityReadback.ok) {
+                        "Evaluation for $sessionDate could not verify the saved outcomes: server identity readback failed (${identityReadback.error ?: identityReadback.status}). ${assessment.missingCount} identities remain unverified; this does not prove rows are missing. Labels are NOT saved. Retry will reuse the same session date and frozen input manifest."
+                    } else {
+                        "Evaluation for $sessionDate is incomplete: identity coverage missing ${assessment.missingCount} required identities (preview=$preview). Labels are NOT saved; learning is incomplete. Retry will reuse the same session date and frozen input manifest."
+                    },
                     totalSnapshots = totalSnapshots,
                     completedSnapshots = completedSnapshots,
                     producedCount = saveResult.producedCount,
                     persistedCount = saveResult.persistedCount,
                     running = false,
-                    lastError = "missing_identities=${assessment.missingCount}"
+                    lastError = if (!identityReadback.ok) {
+                        "IDENTITY_READBACK_FAILED: ${identityReadback.error ?: identityReadback.status}"
+                    } else "missing_identities=${assessment.missingCount}"
                 )
                 // Explicitly do NOT write evaluation_done_date, do NOT LABELS_SAVED,
                 // do NOT start C3, do NOT cancel reminder, do NOT EVAL_COMPLETE.
@@ -3459,10 +3465,14 @@ class MarketMLService : Service() {
                         "missingPreview=$preview readbackOk=${identityReadback.ok} " +
                         "sessionPreserved=$sessionDate manifestPreserved=true"
                 )
+                LogBuffer.add('W', TAG, "EVAL_IDENTITY_INCOMPLETE: date=$sessionDate phase=$phase " +
+                    "unverified=${assessment.missingCount} readbackOk=${identityReadback.ok} " +
+                    "status=${identityReadback.status} error=${identityReadback.error.orEmpty()}")
                 publishEvaluationStatus(
                     this@MarketMLService,
                     "Day Evaluation Incomplete Identity",
-                    "Missing ${assessment.missingCount} required identities. Labels not saved. Tap to retry the same session.",
+                    if (!identityReadback.ok) "Server identity verification failed. Saved results retained; tap to retry the same session."
+                    else "Missing ${assessment.missingCount} required identities. Labels not saved. Tap to retry the same session.",
                     sessionDate = sessionDate,
                     allowRetry = true
                 )
