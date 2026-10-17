@@ -1120,6 +1120,9 @@ class MarketWatchService : Service() {
             // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
             var quotesFetchStartedAtMs = 0L
             var quotesFetchCompletedAtMs = 0L
+            // b510 X1: per-index chain receipt times for THIS poll only (0 = fetch failed).
+            x1NfChainFetchedAtMs = 0L
+            x1BnfChainFetchedAtMs = 0L
             val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
@@ -1127,9 +1130,12 @@ class MarketWatchService : Service() {
                         quotesFetchStartedAtMs = System.currentTimeMillis()
                         fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
                     },
-                    async(Dispatchers.IO) { fetchSync(bnfUrl, token) },
+                    async(Dispatchers.IO) { fetchSync(bnfUrl, token).also { if (it != null) x1BnfChainFetchedAtMs = System.currentTimeMillis() } },
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
-                    async(Dispatchers.IO) { fetchSync(nfUrl, token).also { evNfChainFetchedAtMs = System.currentTimeMillis() } }
+                    async(Dispatchers.IO) { fetchSync(nfUrl, token).also {
+                        evNfChainFetchedAtMs = System.currentTimeMillis()
+                        if (it != null) x1NfChainFetchedAtMs = evNfChainFetchedAtMs
+                    } }
                 ).map { it.await() }
             } }
             val parallel = acquisition.value
@@ -2804,6 +2810,15 @@ class MarketWatchService : Service() {
                 LogBuffer.add('W', TAG, "PAPER_MENU_REQUEST_FAIL: ${e.message}")
                 null
             }
+            // b510 X1: native-owned research keys; stripped before every call (refresh / persisted ctx
+            // can never replay an entry), attached only for a live explicit-Paper poll.
+            try {
+                PaperBuyingResearch.applyContext(ctxObj, isRefresh, filesDir, System.currentTimeMillis(),
+                    x1NfChainFetchedAtMs, x1BnfChainFetchedAtMs)
+            } catch (e: Exception) {
+                for (key in PaperBuyingResearch.CONTEXT_KEYS) ctxObj.remove(key)
+                LogBuffer.add('W', TAG, "X1_CTX_FAIL: ${e.javaClass.simpleName}")
+            }
             // Implied-EV v1.2: keys only for an explicit Paper poll with the experiment enabled (default off).
             val evMode = EvExperiment.mode(prefs)
             val evApplied = if (isRefresh) false else try {
@@ -3433,6 +3448,8 @@ class MarketWatchService : Service() {
     // ---------------- Implied-EV v1.2 Paper experiment (off by default; Paper only) ----------------
     /** Completion time of the NF chain fetch: the quote timestamp (Upstox gives no per-contract time). */
     @Volatile private var evNfChainFetchedAtMs: Long = 0L
+    @Volatile private var x1NfChainFetchedAtMs: Long = 0L
+    @Volatile private var x1BnfChainFetchedAtMs: Long = 0L
     private val evUploadInFlight = AtomicBoolean(false)
     private val evCalibrationInFlight = AtomicBoolean(false)
 

@@ -17177,6 +17177,32 @@ def _is_ev_rule_b_trade(t):
     return isinstance(es, dict) and es.get('position_policy_id') == 'paper_rule_b_v1'
 
 
+X1_CONTEXT_KEYS = ('x1CaptureSource', 'x1StateDir', 'x1PollMs', 'x1QuoteFetchedMs')
+
+
+def _attach_paper_buying_research(result, ctx):
+    """b510 Batch C: independent prospective X1 quote simulation (Paper research only).
+
+    Runs before the three-poll entry warm-up so 09:20 can be observed; it reads
+    only ctx quotes/timestamps, never brain signals, and writes only its own
+    journal. Native-owned keys are removed from ctx afterwards so they cannot
+    reach snapshots, replays or later calls.
+    """
+    try:
+        import paper_buying_research as buying
+        payload = buying.run(ctx, brain_version=BRAIN_VERSION)
+        if payload is not None:
+            result['paper_buying_research'] = payload
+    except Exception:
+        if isinstance(ctx, dict) and ctx.get('x1CaptureSource') == 'LIVE_PHONE_POLL':
+            result['paper_buying_research'] = {'status': 'ENGINE_ERROR', 'paper_research_only': True,
+                                               'quote_simulation_only': True, 'recommendation_authority': False}
+    finally:
+        if isinstance(ctx, dict):
+            for key in X1_CONTEXT_KEYS:
+                ctx.pop(key, None)
+
+
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
     polls = json.loads(poll_json)
     closed_trades = json.loads(trades_json) if trades_json else []
@@ -17206,6 +17232,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         "risk": [],
         "learnedBranches": {},
     }
+    # b510 Batch C: runs during the entry warm-up too; no trading output depends on it.
+    _attach_paper_buying_research(result, ctx)
     daily_risk_state = _apply_daily_risk_state(ctx, closed_trades, open_trades)
     result['dailyRiskState'] = daily_risk_state
     if len(polls) < 3:
@@ -18544,6 +18572,9 @@ def replay(inputs, calibration_override=None, expected_baseline=None,
         ctx_dict = json.loads(context_json) if context_json else {}
     except (ValueError, TypeError):
         raise ValueError("replay: context_json is not valid JSON")
+    # b510: replay may never advance the prospective X1 journal.
+    for key in X1_CONTEXT_KEYS:
+        ctx_dict.pop(key, None)
     ctx_dict['_debug'] = True
     ctx_dict['_trace_source_override'] = source_tag
     context_json = json.dumps(ctx_dict)
@@ -21598,6 +21629,18 @@ def _compact_android_snapshot_context(snapshot_context):
     return compact
 
 
+def _bounded_x1_snapshot(payload):
+    if not isinstance(payload, dict):
+        return None
+    keep = ('schema', 'protocol_id', 'protocol_digest', 'status', 'session_date', 'block_id', 'counts',
+            'record_count', 'event_seq', 'last_event_digest', 'transitions', 'paper_research_only',
+            'quote_simulation_only', 'recommendation_authority', 'time_basis')
+    out = {k: payload.get(k) for k in keep if k in payload}
+    if isinstance(out.get('transitions'), list):
+        out['transitions'] = out['transitions'][:8]
+    return out
+
+
 def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -21885,6 +21928,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
         'app_version': BRAIN_VERSION,
         'brain_version': BRAIN_VERSION,
         'candle_paper_policy': result.get('candle_paper_policy'),
+        # b510: bounded X1 status (counts, status, event digest, this poll's transitions only).
+        'paper_buying_research': _bounded_x1_snapshot(result.get('paper_buying_research')),
         'poll_count': len(polls) if isinstance(polls, list) else 0,
         'bnf_spot': latest_poll.get('bnfSpot') or latest_poll.get('bnf') or latest_poll.get('BNF'),
         'nf_spot': latest_poll.get('nfSpot') or latest_poll.get('nf') or latest_poll.get('NF'),
@@ -22029,6 +22074,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     # Enrich context payload with full market/candidate capture for post-mortem ML analysis.
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
+    for key in X1_CONTEXT_KEYS:      # b510: native-only keys (local path) never persisted
+        snapshot_context.pop(key, None)
     snapshot_context['snapshot_app_version'] = BRAIN_VERSION
     snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
     snapshot_context['bias_net'] = bias_net
