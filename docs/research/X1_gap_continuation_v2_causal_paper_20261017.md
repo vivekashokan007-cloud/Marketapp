@@ -114,3 +114,50 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
   "time_basis": "PHONE_FETCH_COMPLETION_MS"
 }
 ```
+
+## Operational appendix (not part of the digest input)
+
+### Storage estimate (measured with the real collector on synthetic chains)
+
+| Item | Bytes (compact JSON) |
+|---|---|
+| Block metadata | ~810 |
+| Latest reference per index (kept only for the most recent session) | ~540 total |
+| Resolved primary row | ~1,280 |
+| Resolved delayed-control row | ~1,130 |
+| SKIP row | ~200-300 |
+| Journal after one reference + one fully entered session (4 rows) | 6,561 |
+| status.json (bounded, <= 16 KB) | ~3,300 |
+
+- A fully entered session adds about 4.8 KB; a no-trigger session adds about 1 KB (SKIP rows).
+- Each index needs at least 60 trigger sessions. At an assumed ~50% trigger rate (not a forecast),
+  the block runs roughly 120 sessions and uses ~350 KB. The 1 MB cap allows about 200 fully entered
+  sessions, which matches the 800-record cap (4 rows per session).
+- When capacity is reached, collection stops truthfully: open rows still finalize, no new rows are added, and a sticky
+  `JOURNAL_SIZE_LIMIT` / `JOURNAL_FULL_REVIEW_REQUIRED` is persisted. Nothing is pruned.
+
+### Export and recovery
+
+- The journal lives on the phone at `files/paper_buying_x1_v2/journal.json` and is written atomically under a file lock.
+  It survives app restarts and APK updates; uninstalling the app deletes it.
+- ML tab, "Paper X1 buying research" card, **Export research journal**: `NativeBridge.exportPaperBuyingResearchJournal()`
+  writes `Downloads/MarketRadar_X1_research_<date>_<ms>.json`. That is an `x1_export_v1` envelope with the raw journal text,
+  its sha256 and the bounded status. It contains no local path. A corrupt journal is still exported for review.
+- There is intentionally **no import path**. Records cannot be fabricated or replayed into the journal. A lost or
+  corrupt journal is never reset in place. Recovery means: export it, review it, and start a new block (a new
+  protocol id or state dir) only by an explicit reviewed change.
+
+### Offline report
+
+`python3 tools/x1_report.py <export-or-journal.json> [--json out.json]` verifies the journal sha and that the
+protocol digest matches the code. It reports per index: resolved, unresolved, open and skip counts by reason;
+sessions and weeks; mean, median and range of net; the week-cluster bootstrap CI; delayed-control pairing coverage
+and mean; and side and expiry concentration. Verdicts: `INSUFFICIENT_EVIDENCE`, `CRITERIA_MET_REVIEW_REQUIRED` or
+`CRITERIA_NOT_MET`, always with `trading_authority: false`. The output is deterministic for a given journal (fixed seed).
+
+### Known limitation: poll alignment
+
+Windows are 90 s wide, and the decision time is the poll's pre-analyze timestamp. A 5-minute poll that lands
+outside [09:20:00, 09:21:30] (or [09:25:00, 09:26:30] / [15:20:00, 15:21:30]) misses that arm and is recorded as a
+SKIP with its reason. Field timing coverage must be reviewed after the first week. The protocol is
+not widened retroactively.
