@@ -18,7 +18,7 @@ object OptionChainBrainFormatter {
             val strikesObj = JSONObject()
             val allStrikesArr = JSONArray()
             val oiRows = mutableListOf<DoubleArray>()
-            
+
             var atmStrike = 0.0
             var atmMinDist = Double.MAX_VALUE
             var atmCEIv = 0.0
@@ -34,7 +34,7 @@ object OptionChainBrainFormatter {
                 val item = data.getJSONObject(i)
                 val strike = item.getDouble("strike_price")
                 allStrikesArr.put(strike)
-                
+
                 val call = item.optJSONObject("call_options")
                 val put = item.optJSONObject("put_options")
                 val callMd = call?.optJSONObject("market_data")
@@ -60,7 +60,7 @@ object OptionChainBrainFormatter {
                     maxPutOI = putOI
                     putWallStrike = strike
                 }
-                
+
                 val dist = Math.abs(strike - spot)
                 if (dist < atmMinDist) {
                     atmMinDist = dist
@@ -68,7 +68,7 @@ object OptionChainBrainFormatter {
                     atmCEIv = optionIv(call, callMd)
                     atmPEIv = optionIv(put, putMd)
                 }
-                
+
                 val strikeObj = JSONObject()
                 strikeObj.put("CE", JSONObject().apply {
                     val md = callMd
@@ -88,7 +88,7 @@ object OptionChainBrainFormatter {
                     put("symbol", callSymbol)
                     put("underlying_key", rowUnderlyingKey)
                     put("contract_expiry", rowExpiry)
-                    
+
                     val gr = call?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
                     put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
@@ -114,7 +114,7 @@ object OptionChainBrainFormatter {
                     put("symbol", putSymbol)
                     put("underlying_key", rowUnderlyingKey)
                     put("contract_expiry", rowExpiry)
-                    
+
                     val gr = put?.optJSONObject("option_greeks")
                     put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
                     put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
@@ -148,7 +148,7 @@ object OptionChainBrainFormatter {
                     maxPain = candidate[0]
                 }
             }
-            
+
             result.put("strikes", strikesObj)
             result.put("allStrikes", allStrikesArr)
             result.put("atm", atmStrike)
@@ -164,7 +164,7 @@ object OptionChainBrainFormatter {
             result.put("callWallOI", maxCallOI)
             result.put("putWallStrike", putWallStrike)
             result.put("putWallOI", maxPutOI)
-            
+
         } catch (e: Exception) {
             onError("Error formatting chain for brain: ${e.message}")
         }
