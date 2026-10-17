@@ -729,6 +729,11 @@ class T16Report(Base):
         self.assertEqual(nf['verdict'], 'CRITERIA_MET_REVIEW_REQUIRED')
         self.assertFalse(nf['trading_authority'])
         self.assertEqual(nf['delayed_control']['paired_coverage_of_resolved_primary'], 1.0)
+        # R3: the same positive NF block with half its controls missing is NOT reviewable as met.
+        from x1_report_fixtures import journal
+        half = x1_report.report(journal({'NF': {'resolved': 60, 'controls': 30, 'unresolved': 1,
+                                                'net': lambda i: 70.0 + (i % 7) * 10}}))
+        self.assertEqual(half['indices']['NF']['verdict'], 'INSUFFICIENT_COVERAGE')
         self.assertEqual(bnf['verdict'], 'INSUFFICIENT_EVIDENCE')          # separate cohort
         self.assertEqual(bnf['delayed_control']['paired_resolved'], 0)
 

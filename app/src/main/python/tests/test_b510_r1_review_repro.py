@@ -68,7 +68,6 @@ class ReviewRepro(unittest.TestCase):
         self.assertNotEqual(rep['indices']['NF']['verdict'], 'CRITERIA_MET_REVIEW_REQUIRED')
         self.assertTrue(rep.get('blocked'))
 
-    @unittest.expectedFailure     # red until the R3 fix commit
     def test_R3_one_control_of_sixty_cannot_pass(self):
         rep = x1_report.report(journal_with(1))
         self.assertNotEqual(rep['indices']['NF']['verdict'], 'CRITERIA_MET_REVIEW_REQUIRED')

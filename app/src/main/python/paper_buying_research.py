@@ -65,6 +65,21 @@ INDICES = ('NF', 'BNF')
 EXPECTED_UNDERLYING_KEY = {'NF': 'NSE_INDEX|Nifty 50', 'BNF': 'NSE_INDEX|Nifty Bank'}
 INSTRUMENT_KEY_PREFIX = 'NSE_FO|'
 BOOTSTRAP = {'cluster': 'iso_week', 'resamples': 10_000, 'seed': 20261017, 'ci': 0.95}
+# b510 R3: frozen 17 Oct 2026, BEFORE any prospective block existed (no data seen). Integer-exact,
+# inclusive comparisons; per index (NF, BNF separately). Codex may veto before collection starts.
+COVERAGE_POLICY = {
+    'version': 'x1_coverage_policy_v1_20261017',
+    'paired_control_min_pct': 80,         # resolved delayed controls paired to resolved primaries
+    'unresolved_primary_max_pct': 20,     # unresolved primaries / attempted primary entries
+    'open_rows_at_review': 'not allowed (review only after every OPEN row is finalized)',
+    'on_fail': 'INSUFFICIENT_COVERAGE',
+    'comparison': '100 x paired >= 80 x resolved_primary; 100 x unresolved <= 20 x attempted_primary',
+    'attempted_primary': 'primary rows with status OPEN, RESOLVED or UNRESOLVED',
+    'rationale': ('the control re-quotes the same contract 5 minutes later, so its quote availability '
+                  'should match the primary; >20% missing controls or >20% missing primary exits would '
+                  'let non-random capture loss dominate the latency comparison and the mean net'),
+    'frozen_before_any_data': True,
+}
 
 PROTOCOL = {
     'protocol_id': PROTOCOL_ID,
@@ -105,8 +120,11 @@ PROTOCOL = {
     'max_quote_age_ms': MAX_QUOTE_AGE_MS, 'time_basis': TIME_BASIS,
     'endpoint': 'exactly 60 resolved PRIMARY observations per index; delayed controls finish',
     'target_resolved_per_index': TARGET_RESOLVED,
-    'success_review': ('primary mean net > 0 AND 95% lower bound > 0 AND paired resolved delayed-control '
-                       'mean net > 0; no automatic trading authority'),
+    'success_review': ('only with 60 resolved primaries, no OPEN rows and the coverage policy met: primary '
+                       'mean net > 0 AND 95% lower bound > 0 AND paired resolved delayed-control mean net > 0; '
+                       'otherwise INSUFFICIENT_EVIDENCE / INSUFFICIENT_COVERAGE; any integrity failure blocks; '
+                       'no automatic trading authority'),
+    'coverage_policy': COVERAGE_POLICY,
     'inference': BOOTSTRAP, 'cohorts': 'NF and BNF reported separately',
     'storage': {'max_records': MAX_RECORDS, 'max_state_bytes': MAX_STATE_BYTES,
                 'on_capacity': 'stop collection; review required; no pruning'},

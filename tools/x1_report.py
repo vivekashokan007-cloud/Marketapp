@@ -252,13 +252,33 @@ def index_report(rows, ix):
         },
     }
     p, d = out['primary'], out['delayed_control']
+    pol = x1.COVERAGE_POLICY
+    attempted = p['entered']
+    open_rows = p['open'] + d['status_counts'].get('OPEN', 0)
+    paired_ok = 100 * d['paired_resolved'] >= pol['paired_control_min_pct'] * p['resolved'] and p['resolved'] > 0
+    unres_ok = 100 * p['unresolved'] <= pol['unresolved_primary_max_pct'] * attempted
+    out['coverage'] = {
+        'policy_version': pol['version'],
+        'paired_control': {'numerator': d['paired_resolved'], 'denominator': p['resolved'],
+                           'threshold': '>= %d%%' % pol['paired_control_min_pct'], 'pass': paired_ok},
+        'unresolved_primary': {'numerator': p['unresolved'], 'denominator': attempted,
+                               'threshold': '<= %d%%' % pol['unresolved_primary_max_pct'], 'pass': unres_ok},
+        'open_rows': open_rows, 'open_rows_pass': open_rows == 0,
+    }
     if p['resolved'] < x1.TARGET_RESOLVED:
-        verdict = 'INSUFFICIENT_EVIDENCE'
+        verdict, why = 'INSUFFICIENT_EVIDENCE', 'ENDPOINT_NOT_REACHED'
+    elif open_rows:
+        verdict, why = 'INSUFFICIENT_EVIDENCE', 'OPEN_ROWS_PENDING'
+    elif not (paired_ok and unres_ok):
+        verdict = pol['on_fail']
+        why = ','.join(n for n, ok in (('PAIRED_CONTROL_COVERAGE', paired_ok),
+                                       ('UNRESOLVED_PRIMARY_SHARE', unres_ok)) if not ok)
     else:
         ci = p['bootstrap_95ci_mean_net']
         met = (p['mean_net'] is not None and p['mean_net'] > 0 and ci is not None and ci['lower'] > 0
                and d['mean_delayed_net'] is not None and d['mean_delayed_net'] > 0)
-        verdict = 'CRITERIA_MET_REVIEW_REQUIRED' if met else 'CRITERIA_NOT_MET'
+        verdict, why = ('CRITERIA_MET_REVIEW_REQUIRED', 'ALL_CRITERIA') if met else ('CRITERIA_NOT_MET', 'CRITERIA')
+    out['verdict_reason'] = why
     out['endpoint_reached'] = p['resolved'] >= x1.TARGET_RESOLVED
     out['verdict'] = verdict
     out['trading_authority'] = False
@@ -333,8 +353,8 @@ def markdown(rep):
                       d['status_counts'])]
         if 'coverage' in r:
             c = r['coverage']
-            lines.append('- coverage policy `%s`: paired control %s/%s (>= %s: %s); unresolved primary %s/%s '
-                         '(<= %s: %s)' % (c['policy_version'], c['paired_control']['numerator'],
+            lines.append('- coverage policy `%s`: paired control %s/%s (%s: %s); unresolved primary %s/%s '
+                         '(%s: %s)' % (c['policy_version'], c['paired_control']['numerator'],
                                          c['paired_control']['denominator'], c['paired_control']['threshold'],
                                          c['paired_control']['pass'], c['unresolved_primary']['numerator'],
                                          c['unresolved_primary']['denominator'],

@@ -2,7 +2,7 @@
 
 Protocol id: `X1_gap_continuation_v2_causal_paper_20261017`
 Collector contract: `x1_collector_contract_v2_20261017`
-Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`279a97ee67cab19b5365e48fe17ee7f0162cde6714175a9b12f79cd36d319a8b`**
+Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`10a6b086f1ceefbccd6d6f8a87dacda5eca29818b1c2a999c649bbdb6dad0daa`**
 Frozen: 17 October 2026 (IST), before any observation. Status: research only; no trading authority.
 
 ## What this is (and is not)
@@ -61,6 +61,17 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
     "09:25:00",
     "09:26:30"
   ],
+  "coverage_policy": {
+    "attempted_primary": "primary rows with status OPEN, RESOLVED or UNRESOLVED",
+    "comparison": "100 x paired >= 80 x resolved_primary; 100 x unresolved <= 20 x attempted_primary",
+    "frozen_before_any_data": true,
+    "on_fail": "INSUFFICIENT_COVERAGE",
+    "open_rows_at_review": "not allowed (review only after every OPEN row is finalized)",
+    "paired_control_min_pct": 80,
+    "rationale": "the control re-quotes the same contract 5 minutes later, so its quote availability should match the primary; >20% missing controls or >20% missing primary exits would let non-random capture loss dominate the latency comparison and the mean net",
+    "unresolved_primary_max_pct": 20,
+    "version": "x1_coverage_policy_v1_20261017"
+  },
   "endpoint": "exactly 60 resolved PRIMARY observations per index; delayed controls finish",
   "entry_price": "observed ask",
   "entry_rule": "entry simulated at the entry decision at the latest valid quote (age <= 90 s, kept as entry_quote_ts_ms)",
@@ -117,7 +128,7 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
     "max_state_bytes": 1000000,
     "on_capacity": "stop collection; review required; no pruning"
   },
-  "success_review": "primary mean net > 0 AND 95% lower bound > 0 AND paired resolved delayed-control mean net > 0; no automatic trading authority",
+  "success_review": "only with 60 resolved primaries, no OPEN rows and the coverage policy met: primary mean net > 0 AND 95% lower bound > 0 AND paired resolved delayed-control mean net > 0; otherwise INSUFFICIENT_EVIDENCE / INSUFFICIENT_COVERAGE; any integrity failure blocks; no automatic trading authority",
   "target_resolved_per_index": 60,
   "time_basis": "PHONE_FETCH_COMPLETION_MS"
 }
