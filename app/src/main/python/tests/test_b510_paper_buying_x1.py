@@ -35,7 +35,14 @@ def ms(day, hms):
                      + (sec - int(sec)) * 1000))
 
 
-def chain(ix, F, expiry=EXP, n=6, tv=100.0, spread=1.0, sym_ix=None, lot=None, drop=None, mutate=None):
+UNDERLYING = {'NF': 'NSE_INDEX|Nifty 50', 'BNF': 'NSE_INDEX|Nifty Bank'}
+
+
+def chain(ix, F, expiry=EXP, n=6, tv=100.0, spread=1.0, sym_ix=None, lot=None, drop=None, mutate=None,
+          with_symbol=False):
+    """Formatter-output shape for a documented /v2/option/chain response (b510 R1): per-leg
+    underlying_key/contract_expiry from the chain row, requested_* from the native request, and
+    NO trading_symbol unless with_symbol (or sym_ix) asks for one."""
     step = 50 if ix == 'NF' else 100
     base = round(F / step) * step
     pref = 'NIFTY' if (sym_ix or ix) == 'NF' else 'BANKNIFTY'
@@ -46,9 +53,12 @@ def chain(ix, F, expiry=EXP, n=6, tv=100.0, spread=1.0, sym_ix=None, lot=None, d
         for side, mid in (('CE', max(F - K, 0) + tv), ('PE', max(K - F, 0) + tv)):
             row[side] = {'bid': mid - spread / 2, 'ask': mid + spread / 2, 'ltp': mid,
                          'instrument_key': 'NSE_FO|%s%d%s%s' % (ix, K, side, expiry),
-                         'trading_symbol': '%s %d %s 27 OCT 26' % (pref, K, side)}
+                         'underlying_key': UNDERLYING[ix], 'contract_expiry': expiry}
+            if with_symbol or sym_ix:
+                row[side]['trading_symbol'] = '%s %d %s 27 OCT 26' % (pref, K, side)
         strikes[str(int(K))] = row
-    c = {'expiry': expiry, 'strikes': strikes}
+    c = {'expiry': expiry, 'requested_expiry': expiry, 'requested_underlying_key': UNDERLYING[ix],
+         'strikes': strikes}
     if lot is not None:
         c['lotSize'] = lot
     if mutate:
@@ -344,14 +354,20 @@ class T08QuoteValidity(Base):
                          'EXPIRY_UNAVAILABLE')
 
     def test_invalid_legs_never_priced(self):
-        ok = {'bid': 10.0, 'ask': 11.0, 'instrument_key': 'NSE_FO|1', 'trading_symbol': 'NIFTY 1 CE'}
-        self.assertIsNotNone(pbr._valid_leg('NF', ok))
+        frame = {'index': 'NF', 'expiry': EXP, 'duplicate_keys': frozenset({'NSE_FO|dup'})}
+        ok = {'bid': 10.0, 'ask': 11.0, 'instrument_key': 'NSE_FO|1', 'underlying_key': 'NSE_INDEX|Nifty 50',
+              'contract_expiry': EXP}
+        self.assertIsNotNone(pbr._valid_leg(frame, ok))                       # documented feed: no symbol
+        self.assertIsNotNone(pbr._valid_leg(frame, dict(ok, trading_symbol='NIFTY 1 CE')))
         for bad in ({'bid': 12.0}, {'bid': 0.0}, {'bid': float('nan')}, {'ask': None}, {'bid': True},
-                    {'instrument_key': ''}, {'instrument_key': None}, {'trading_symbol': 'BANKNIFTY 1 CE'},
-                    {'trading_symbol': ''}):
-            self.assertIsNone(pbr._valid_leg('NF', dict(ok, **bad)), bad)
+                    {'instrument_key': ''}, {'instrument_key': None}, {'instrument_key': '12345'},
+                    {'instrument_key': 'NSE_FO|dup'}, {'trading_symbol': 'BANKNIFTY 1 CE'},
+                    {'underlying_key': 'NSE_INDEX|Nifty Bank'}, {'underlying_key': None},
+                    {'contract_expiry': '2026-11-03'}, {'contract_expiry': None}):
+            self.assertIsNone(pbr._valid_leg(frame, dict(ok, **bad)), bad)
         # LTP alone is never used.
-        self.assertIsNone(pbr._valid_leg('NF', {'ltp': 10.0, 'instrument_key': 'k', 'trading_symbol': 'NIFTY'}))
+        self.assertIsNone(pbr._valid_leg(frame, {'ltp': 10.0, 'instrument_key': 'NSE_FO|k',
+                                                 'underlying_key': 'NSE_INDEX|Nifty 50', 'contract_expiry': EXP}))
 
     def test_missing_instrument_key_on_atm_leg_falls_to_next_valid_pair(self):
         def kill(c):

@@ -1293,38 +1293,13 @@ class MarketWatchService : Service() {
         } catch (e: Exception) { return 99 }
     }
 
-    private fun optionLtp(md: JSONObject?): Double {
-        if (md == null) return 0.0
-        val ltp = md.optDouble("ltp", 0.0)
-        return if (ltp > 0.0) ltp else md.optDouble("last_price", 0.0)
-    }
+    private fun optionLtp(md: JSONObject?): Double = OptionChainBrainFormatter.optionLtp(md)
 
-    private fun optionQuote(md: JSONObject?, key: String): Double? {
-        if (md == null || !md.has(key) || md.isNull(key)) return null
-        val value = when (val raw = md.opt(key)) {
-            is Number -> raw.toDouble()
-            is String -> raw.trim().toDoubleOrNull()
-            else -> null
-        }
-        return value?.takeIf { it.isFinite() && it > 0.0 }
-    }
+    private fun optionQuote(md: JSONObject?, key: String): Double? = OptionChainBrainFormatter.optionQuote(md, key)
 
-    private fun optionMid(md: JSONObject?): Double {
-        if (md == null) return 0.0
-        val bid = optionQuote(md, "bid_price")
-        val ask = optionQuote(md, "ask_price")
-        return if (bid != null && ask != null) {
-            (bid + ask) / 2.0
-        } else {
-            val ltp = optionLtp(md)
-            if (ltp > 0.0) ltp else Math.max(bid ?: 0.0, ask ?: 0.0)
-        }
-    }
+    private fun optionMid(md: JSONObject?): Double = OptionChainBrainFormatter.optionMid(md)
 
-    private fun optionIv(option: JSONObject?, md: JSONObject?): Double {
-        val greekIv = option?.optJSONObject("option_greeks")?.optDouble("iv", 0.0) ?: 0.0
-        return if (greekIv > 0.0) greekIv else (md?.optDouble("iv", 0.0) ?: 0.0)
-    }
+    private fun optionIv(option: JSONObject?, md: JSONObject?): Double = OptionChainBrainFormatter.optionIv(option, md)
 
     private fun findQuoteByInstrument(data: JSONObject, requestKey: String, responseKey: String? = null): JSONObject? {
         if (!responseKey.isNullOrBlank()) data.optJSONObject(responseKey)?.let { return it }
@@ -2088,157 +2063,8 @@ class MarketWatchService : Service() {
         return gap
     }
 
-    private fun formatChainForBrain(chain: JSONObject, spot: Double): JSONObject {
-        val result = JSONObject()
-        try {
-            val data = chain.optJSONArray("data") ?: return result
-            val strikesObj = JSONObject()
-            val allStrikesArr = JSONArray()
-            val oiRows = mutableListOf<DoubleArray>()
-            
-            var atmStrike = 0.0
-            var atmMinDist = Double.MAX_VALUE
-            var atmCEIv = 0.0
-            var atmPEIv = 0.0
-            var totalCallOI = 0.0
-            var totalPutOI = 0.0
-            var maxCallOI = 0.0
-            var maxPutOI = 0.0
-            var callWallStrike = 0.0
-            var putWallStrike = 0.0
-
-            for (i in 0 until data.length()) {
-                val item = data.getJSONObject(i)
-                val strike = item.getDouble("strike_price")
-                allStrikesArr.put(strike)
-                
-                val call = item.optJSONObject("call_options")
-                val put = item.optJSONObject("put_options")
-                val callMd = call?.optJSONObject("market_data")
-                val putMd = put?.optJSONObject("market_data")
-                val callInstrumentKey = call?.optString("instrument_key", "")?.trim().orEmpty()
-                val putInstrumentKey = put?.optString("instrument_key", "")?.trim().orEmpty()
-                val callSymbol = call?.optString("trading_symbol", "")?.trim().orEmpty()
-                val putSymbol = put?.optString("trading_symbol", "")?.trim().orEmpty()
-                val callOI = callMd?.optDouble("oi", 0.0) ?: 0.0
-                val putOI = putMd?.optDouble("oi", 0.0) ?: 0.0
-                totalCallOI += callOI
-                totalPutOI += putOI
-                oiRows.add(doubleArrayOf(strike, callOI, putOI))
-                if (callOI > maxCallOI) {
-                    maxCallOI = callOI
-                    callWallStrike = strike
-                }
-                if (putOI > maxPutOI) {
-                    maxPutOI = putOI
-                    putWallStrike = strike
-                }
-                
-                val dist = Math.abs(strike - spot)
-                if (dist < atmMinDist) {
-                    atmMinDist = dist
-                    atmStrike = strike
-                    atmCEIv = optionIv(call, callMd)
-                    atmPEIv = optionIv(put, putMd)
-                }
-                
-                val strikeObj = JSONObject()
-                strikeObj.put("CE", JSONObject().apply {
-                    val md = callMd
-                    val bid = optionQuote(md, "bid_price")
-                    val ask = optionQuote(md, "ask_price")
-                    put("ltp", optionLtp(md))
-                    putNullableFiniteNumber("bid", bid)
-                    putNullableFiniteNumber("ask", ask)
-                    put("mid", optionMid(md))
-                    put("oi", callOI)
-                    put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
-                    put("iv", optionIv(call, md))
-                    put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
-                    put("instrument_key", callInstrumentKey)
-                    put("instrumentKey", callInstrumentKey)
-                    put("trading_symbol", callSymbol)
-                    put("symbol", callSymbol)
-                    
-                    val gr = call?.optJSONObject("option_greeks")
-                    put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
-                    put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
-                    put("theta", gr?.optDouble("theta", 0.0) ?: 0.0)
-                    put("vega", gr?.optDouble("vega", 0.0) ?: 0.0)        // PHASE C STEP 7.0
-                    put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
-                })
-                strikeObj.put("PE", JSONObject().apply {
-                    val md = putMd
-                    val bid = optionQuote(md, "bid_price")
-                    val ask = optionQuote(md, "ask_price")
-                    put("ltp", optionLtp(md))
-                    putNullableFiniteNumber("bid", bid)
-                    putNullableFiniteNumber("ask", ask)
-                    put("mid", optionMid(md))
-                    put("oi", putOI)
-                    put("volume", md?.optDouble("volume", 0.0) ?: 0.0)
-                    put("iv", optionIv(put, md))
-                    put("prev_oi", md?.optDouble("prev_oi", 0.0) ?: 0.0)  // PHASE C STEP 7.0
-                    put("instrument_key", putInstrumentKey)
-                    put("instrumentKey", putInstrumentKey)
-                    put("trading_symbol", putSymbol)
-                    put("symbol", putSymbol)
-                    
-                    val gr = put?.optJSONObject("option_greeks")
-                    put("delta", gr?.optDouble("delta", 0.0) ?: 0.0)
-                    put("gamma", gr?.optDouble("gamma", 0.0) ?: 0.0)
-                    put("theta", gr?.optDouble("theta", 0.0) ?: 0.0)
-                    put("vega", gr?.optDouble("vega", 0.0) ?: 0.0)        // PHASE C STEP 7.0
-                    put("pop", gr?.optDouble("pop", 0.0) ?: 0.0)          // PHASE C STEP 7.0
-                })
-                strikesObj.put(strike.toInt().toString(), strikeObj)
-            }
-
-            var nearTotalCallOI = 0.0
-            var nearTotalPutOI = 0.0
-            val nearWindow = Math.max(spot * 0.015, 1.0)
-            for (row in oiRows) {
-                if (Math.abs(row[0] - atmStrike) <= nearWindow) {
-                    nearTotalCallOI += row[1]
-                    nearTotalPutOI += row[2]
-                }
-            }
-
-            var maxPain = 0.0
-            var minPain = Double.MAX_VALUE
-            for (candidate in oiRows) {
-                var pain = 0.0
-                for (row in oiRows) {
-                    pain += row[1] * Math.max(candidate[0] - row[0], 0.0)
-                    pain += row[2] * Math.max(row[0] - candidate[0], 0.0)
-                }
-                if (pain < minPain) {
-                    minPain = pain
-                    maxPain = candidate[0]
-                }
-            }
-            
-            result.put("strikes", strikesObj)
-            result.put("allStrikes", allStrikesArr)
-            result.put("atm", atmStrike)
-            result.put("atmIv", if (atmCEIv > 0 && atmPEIv > 0) (atmCEIv + atmPEIv) / 2.0 else Math.max(atmCEIv, atmPEIv))
-            result.put("totalCallOI", totalCallOI)
-            result.put("totalPutOI", totalPutOI)
-            result.put("nearTotalCallOI", nearTotalCallOI)
-            result.put("nearTotalPutOI", nearTotalPutOI)
-            result.put("pcr", if (totalCallOI > 0.0) totalPutOI / totalCallOI else 0.0)
-            result.put("nearAtmPCR", if (nearTotalCallOI > 0.0) nearTotalPutOI / nearTotalCallOI else 0.0)
-            result.put("maxPain", maxPain)
-            result.put("callWallStrike", callWallStrike)
-            result.put("callWallOI", maxCallOI)
-            result.put("putWallStrike", putWallStrike)
-            result.put("putWallOI", maxPutOI)
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error formatting chain for brain: ${e.message}")
-        }
-        return result
-    }
+    private fun formatChainForBrain(chain: JSONObject, spot: Double): JSONObject =
+        OptionChainBrainFormatter.format(chain, spot) { Log.e(TAG, it) }
 
     private data class AnalysisInputs(val marketSnapshot: MarketSnapshotIdentity, val poll: JSONObject, val bnfChain: JSONObject,
         val nfChain: JSONObject, val bnfSpot: Double, val nfSpot: Double, val vix: Double, val stocks: JSONObject,
@@ -2411,9 +2237,11 @@ class MarketWatchService : Service() {
             
             // CHAIN MERGING (Phase C: Format raw chains for Python)
             fun mergeChain(key: String, liveChainRaw: JSONObject, spot: Double,
-                           cwPoll: Double, pwPoll: Double, pcrPoll: Double, expiry: String) {
-                val formattedLive = formatChainForBrain(liveChainRaw, spot)
-                formattedLive.put("expiry", expiry)
+                           cwPoll: Double, pwPoll: Double, pcrPoll: Double, expiry: String,
+                           requestedUnderlyingKey: String) {
+                // b510 R1: stamp the request this chain answered (same values as the option/chain URL).
+                val formattedLive = OptionChainBrainFormatter.stampRequest(
+                    formatChainForBrain(liveChainRaw, spot), expiry, requestedUnderlyingKey)
                 val liveCw = if (cwPoll > 0.0) cwPoll else formattedLive.optDouble("callWallStrike", 0.0)
                 val livePw = if (pwPoll > 0.0) pwPoll else formattedLive.optDouble("putWallStrike", 0.0)
                 val livePcr = if (pcrPoll > 0.0) pcrPoll else formattedLive.optDouble("pcr", 0.0)
@@ -2427,6 +2255,8 @@ class MarketWatchService : Service() {
                     existingChain.put("putWallStrike",   livePw)
                     existingChain.put("atmIv",           formattedLive.optDouble("atmIv", 0.0))
                     existingChain.put("expiry",          expiry)
+                    existingChain.put("requested_underlying_key", requestedUnderlyingKey)
+                    existingChain.put("requested_expiry", expiry)
                     val summaryKeys = listOf(
                         "allStrikes", "totalCallOI", "totalPutOI", "nearTotalCallOI", "nearTotalPutOI",
                         "nearAtmPCR", "maxPain", "callWallOI", "putWallOI"
@@ -2458,9 +2288,10 @@ class MarketWatchService : Service() {
                 }
             }
 
-            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), resolvedBnfExpiry)
+            mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), resolvedBnfExpiry,
+                "NSE_INDEX|Nifty Bank")
             ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
-            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, resolvedNfExpiry)
+            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, resolvedNfExpiry, "NSE_INDEX|Nifty 50")
             ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
 
             // Phase C: Inject OHLC for profile calculations

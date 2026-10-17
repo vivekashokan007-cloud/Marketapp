@@ -21633,7 +21633,8 @@ def _bounded_x1_snapshot(payload):
     if not isinstance(payload, dict):
         return None
     keep = ('schema', 'protocol_id', 'protocol_digest', 'status', 'session_date', 'block_id', 'counts',
-            'record_count', 'event_seq', 'last_event_digest', 'transitions', 'paper_research_only',
+            'record_count', 'event_seq', 'last_event_digest', 'transitions', 'reference_capture',
+            'paper_research_only',
             'quote_simulation_only', 'recommendation_authority', 'time_basis')
     out = {k: payload.get(k) for k in keep if k in payload}
     if isinstance(out.get('transitions'), list):

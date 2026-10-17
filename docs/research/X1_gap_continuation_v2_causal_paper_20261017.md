@@ -1,8 +1,8 @@
 # X1 v2 — prospective Paper option-buying quote simulation (FROZEN protocol)
 
 Protocol id: `X1_gap_continuation_v2_causal_paper_20261017`
-Collector contract: `x1_collector_contract_v1_20261017`
-Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`cbbebdfddadfecdad29eb4c5a9150c72a1aff94ccd1d66e5125ff2860f355519`**
+Collector contract: `x1_collector_contract_v2_20261017`
+Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`e6e9a51f543c19914ad408430050bfdbefa8bf4c071da5ab5af24c55728355b7`**
 Frozen: 17 October 2026 (IST), before any observation. Status: research only; no trading authority.
 
 ## What this is (and is not)
@@ -54,7 +54,8 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
   "authority": "Paper research only; quote simulation; no candidate, ranking, notification, order or label",
   "calendar_rule_version": "ev_v12_nse_cal_nf_weekly_tue_prev_session_v1",
   "cohorts": "NF and BNF reported separately",
-  "collector_contract_version": "x1_collector_contract_v1_20261017",
+  "collector_contract_version": "x1_collector_contract_v2_20261017",
+  "contract_identity": "per leg: chain-row underlying_key == index underlying (NF NSE_INDEX|Nifty 50, BNF NSE_INDEX|Nifty Bank) == native requested_underlying_key; chain-row expiry == native requested_expiry; non-empty NSE_FO| instrument_key unique in the chain, CE != PE; trading_symbol optional (absent from the documented feed) but must match the index if present; the index is never inferred from an opaque instrument key; same instrument key required for delayed entry and exits",
   "control": "same primary contract and side; fresh ask in control window; own 30-40 min exit",
   "control_window_ist": [
     "09:25:00",
@@ -71,6 +72,10 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
     30,
     40
   ],
+  "expected_underlying_key": {
+    "BNF": "NSE_INDEX|Nifty Bank",
+    "NF": "NSE_INDEX|Nifty 50"
+  },
   "expiry_roll": "SKIP",
   "fee_contract_version": "ev_v12_fee_teacher_v2_dated_20261013",
   "fees": "ev_v12_fees one_side_fee per side, one order per side, dated by session",
@@ -100,7 +105,7 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
     "09:16:00",
     "15:30:00 exclusive"
   ],
-  "quote_validity": "finite 0 < bid <= ask, instrument key, index-consistent symbol, expiry >= session; no LTP/zero fallback",
+  "quote_validity": "finite 0 < bid <= ask; no LTP/zero fallback; expiry >= session",
   "reference_session": "previous actual session (versioned NSE calendar)",
   "same_expiry_required": true,
   "side": "CE if gap > 0 else PE; independent of any brain verdict",

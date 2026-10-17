@@ -32,7 +32,7 @@ from ev_v12_calendar import CALENDAR_RULE_VERSION, DEFAULT_CALENDAR, IST, Calend
 from ev_v12_fees import FEE_CONTRACT_VERSION, FeeUnavailable, fee_identity, one_side_fee
 
 PROTOCOL_ID = 'X1_gap_continuation_v2_causal_paper_20261017'
-COLLECTOR_CONTRACT_VERSION = 'x1_collector_contract_v1_20261017'
+COLLECTOR_CONTRACT_VERSION = 'x1_collector_contract_v2_20261017'
 JOURNAL_SCHEMA = 'x1_journal_v1'
 STATUS_SCHEMA = 'x1_status_v1'
 STATE_DIR_NAME = 'paper_buying_x1_v2'
@@ -58,6 +58,12 @@ ENTRY_WINDOW_S = (9 * 3600 + 20 * 60, 9 * 3600 + 21 * 60 + 30)
 CONTROL_WINDOW_S = (9 * 3600 + 25 * 60, 9 * 3600 + 26 * 60 + 30)
 REFERENCE_WINDOW_S = (15 * 3600 + 20 * 60, 15 * 3600 + 21 * 60 + 30)
 INDICES = ('NF', 'BNF')
+# Contract identity authority (b510 R1): documented /v2/option/chain row fields, copied per leg by the
+# native formatter (underlying_key, expiry -> contract_expiry), plus the request the native fetch made
+# (requested_underlying_key, requested_expiry). trading_symbol is NOT in the documented response:
+# optional, but if present it must agree with the index.
+EXPECTED_UNDERLYING_KEY = {'NF': 'NSE_INDEX|Nifty 50', 'BNF': 'NSE_INDEX|Nifty Bank'}
+INSTRUMENT_KEY_PREFIX = 'NSE_FO|'
 BOOTSTRAP = {'cluster': 'iso_week', 'resamples': 10_000, 'seed': 20261017, 'ci': 0.95}
 
 PROTOCOL = {
@@ -82,7 +88,14 @@ PROTOCOL = {
     'fee_contract_version': FEE_CONTRACT_VERSION,
     'lot': 'contract_lot_table.resolve_contract_lot(index, session, expiry, instrument); unresolved -> SKIP',
     'calendar_rule_version': CALENDAR_RULE_VERSION,
-    'quote_validity': 'finite 0 < bid <= ask, instrument key, index-consistent symbol, expiry >= session; no LTP/zero fallback',
+    'quote_validity': 'finite 0 < bid <= ask; no LTP/zero fallback; expiry >= session',
+    'contract_identity': ('per leg: chain-row underlying_key == index underlying (NF NSE_INDEX|Nifty 50, '
+                          'BNF NSE_INDEX|Nifty Bank) == native requested_underlying_key; chain-row expiry == '
+                          'native requested_expiry; non-empty NSE_FO| instrument_key unique in the chain, CE != PE; '
+                          'trading_symbol optional (absent from the documented feed) but must match the index '
+                          'if present; the index is never inferred from an opaque instrument key; same instrument '
+                          'key required for delayed entry and exits'),
+    'expected_underlying_key': EXPECTED_UNDERLYING_KEY,
     'quote_session_ist': ['09:16:00', '15:30:00 exclusive'],
     'max_quote_age_ms': MAX_QUOTE_AGE_MS, 'time_basis': TIME_BASIS,
     'endpoint': 'exactly 60 resolved PRIMARY observations per index; delayed controls finish',
@@ -102,6 +115,7 @@ POLL_STATUSES = frozenset({
     'CALENDAR_UNSUPPORTED', 'JOURNAL_CORRUPT', 'JOURNAL_UNKNOWN_VERSION', 'PROTOCOL_DIGEST_MISMATCH',
     'BLOCK_CONTRACT_MISMATCH', 'JOURNAL_FULL_REVIEW_REQUIRED', 'JOURNAL_SIZE_LIMIT', 'WRITE_FAILED',
     'LOCK_UNAVAILABLE', 'BLOCK_COMPLETE_REVIEW_REQUIRED', 'COLLECTOR_DISABLED', 'ENGINE_ERROR',
+    'REFERENCE_NOT_CAPTURED',
 })
 STOP_STATUSES = frozenset({'JOURNAL_CORRUPT', 'JOURNAL_UNKNOWN_VERSION', 'PROTOCOL_DIGEST_MISMATCH',
                            'BLOCK_CONTRACT_MISMATCH', 'JOURNAL_FULL_REVIEW_REQUIRED', 'JOURNAL_SIZE_LIMIT'})
@@ -114,8 +128,9 @@ FRAME_REASONS = frozenset({
     'QUOTE_TIME_UNAVAILABLE', 'QUOTE_FROM_FUTURE', 'QUOTE_STALE', 'QUOTE_OUTSIDE_SESSION',
     'QUOTE_OUTSIDE_WINDOW', 'CHAIN_UNAVAILABLE', 'CHAIN_INDEX_MISMATCH', 'EXPIRY_UNAVAILABLE',
     'EXPIRY_PASSED', 'EXPIRY_MISMATCH', 'ATM_UNAVAILABLE', 'CONTRACT_QUOTE_INVALID',
-    'CONTRACT_IDENTITY_MISMATCH',
+    'CONTRACT_IDENTITY_MISMATCH', 'CHAIN_IDENTITY_UNAVAILABLE', 'CHAIN_INSTRUMENT_DUPLICATE',
 })
+REFERENCE_CAPTURE_STATES = FRAME_REASONS | {'CAPTURED', 'ALREADY_CAPTURED'}
 
 
 class _Stop(Exception):
@@ -179,31 +194,39 @@ def _strike_rows(chain):
     return rows
 
 
-def _valid_leg(ix, leg):
+def _valid_leg(frame, leg):
+    """Valid priced leg with documented contract identity, or None."""
     if not isinstance(leg, dict):
         return None
+    ix = frame['index']
     bid, ask = leg.get('bid'), leg.get('ask')
-    key = leg.get('instrument_key') or leg.get('instrumentKey')
-    sym = leg.get('trading_symbol') or leg.get('symbol')
     if not (_num(bid) and _num(ask) and 0 < bid <= ask):
         return None
-    if not isinstance(key, str) or not 0 < len(key.strip()) <= 100 or not _symbol_matches(ix, sym):
+    key = leg.get('instrument_key') or leg.get('instrumentKey')
+    if (not isinstance(key, str) or not 0 < len(key.strip()) <= 100
+            or not key.strip().startswith(INSTRUMENT_KEY_PREFIX) or key.strip() in frame['duplicate_keys']):
         return None
-    return {'bid': float(bid), 'ask': float(ask), 'instrument_key': key.strip(), 'trading_symbol': str(sym)[:64]}
+    if leg.get('underlying_key') != EXPECTED_UNDERLYING_KEY[ix] or leg.get('contract_expiry') != frame['expiry']:
+        return None
+    sym = leg.get('trading_symbol') or leg.get('symbol') or ''
+    if sym and not _symbol_matches(ix, sym):
+        return None
+    return {'bid': float(bid), 'ask': float(ask), 'instrument_key': key.strip(),
+            'underlying_key': EXPECTED_UNDERLYING_KEY[ix], 'trading_symbol': str(sym)[:64]}
 
 
 def _leg(frame, strike, side):
     for k, pair in _strike_rows(frame['chain']):
         if abs(k - strike) < 1e-9:
-            return _valid_leg(frame['index'], pair.get(side))
+            return _valid_leg(frame, pair.get(side))
     return None
 
 
 def _atm(frame):
     best = None
     for k, pair in sorted(_strike_rows(frame['chain']), key=lambda r: r[0]):
-        c, p = _valid_leg(frame['index'], pair.get('CE')), _valid_leg(frame['index'], pair.get('PE'))
-        if not (c and p):
+        c, p = _valid_leg(frame, pair.get('CE')), _valid_leg(frame, pair.get('PE'))
+        if not (c and p) or c['instrument_key'] == p['instrument_key']:
             continue
         cm, pm = (c['bid'] + c['ask']) / 2.0, (p['bid'] + p['ask']) / 2.0
         diff = round(abs(cm - pm), 9)
@@ -231,20 +254,44 @@ def _frame(event, ix, now):
         return None, 'QUOTE_OUTSIDE_SESSION'
     if not isinstance(chain, dict) or not _strike_rows(chain):
         return None, 'CHAIN_UNAVAILABLE'
+    requested = chain.get('requested_underlying_key')
+    if not isinstance(requested, str) or not requested:
+        return None, 'CHAIN_IDENTITY_UNAVAILABLE'
+    if requested != EXPECTED_UNDERLYING_KEY[ix]:
+        return None, 'CHAIN_INDEX_MISMATCH'
+    try:
+        expiry = date.fromisoformat(str(chain.get('expiry') or '')[:10])
+        requested_expiry = date.fromisoformat(str(chain.get('requested_expiry') or '')[:10])
+    except ValueError:
+        return None, 'EXPIRY_UNAVAILABLE'
+    if requested_expiry != expiry:
+        return None, 'EXPIRY_MISMATCH'
+    seen, dup, identity_present = set(), set(), False
     for _, pair in _strike_rows(chain):
         for side in ('CE', 'PE'):
             leg = pair.get(side)
-            sym = leg.get('trading_symbol') or leg.get('symbol') if isinstance(leg, dict) else None
+            if not isinstance(leg, dict):
+                continue
+            under = leg.get('underlying_key')
+            if under:
+                identity_present = True
+                if under != EXPECTED_UNDERLYING_KEY[ix]:
+                    return None, 'CHAIN_INDEX_MISMATCH'
+            sym = leg.get('trading_symbol') or leg.get('symbol')
             if sym and not _symbol_matches(ix, sym):
                 return None, 'CHAIN_INDEX_MISMATCH'
-    try:
-        expiry = date.fromisoformat(str(chain.get('expiry') or '')[:10])
-    except ValueError:
-        return None, 'EXPIRY_UNAVAILABLE'
+            cexp = leg.get('contract_expiry')
+            if cexp and cexp != expiry.isoformat():
+                return None, 'EXPIRY_MISMATCH'
+            key = leg.get('instrument_key') or leg.get('instrumentKey')
+            if isinstance(key, str) and key.strip():
+                (dup if key.strip() in seen else seen).add(key.strip())
+    if not identity_present:
+        return None, 'CHAIN_IDENTITY_UNAVAILABLE'
     if expiry < now.date():
         return None, 'EXPIRY_PASSED'
     return {'index': ix, 'chain': chain, 'expiry': expiry.isoformat(), 'quote_ts_ms': int(ts),
-            'quote_sec': _sec(qt)}, None
+            'quote_sec': _sec(qt), 'duplicate_keys': frozenset(dup)}, None
 
 
 def new_state(started_ms, brain_version):
@@ -313,7 +360,7 @@ def _compact_row(r):
     return {k: r[k] for k in keep if k in r}
 
 
-def view(state, status, session=None, transitions=()):
+def view(state, status, session=None, transitions=(), reference_capture=None):
     st = state if isinstance(state, dict) else {}
     stopped = (st.get('stopped') or {}).get('reason')
     c = counts(st) if st else {}
@@ -334,6 +381,9 @@ def view(state, status, session=None, transitions=()):
         'paper_research_only': True, 'quote_simulation_only': True, 'recommendation_authority': False,
         'time_basis': TIME_BASIS,
     }
+    if reference_capture:
+        out['reference_capture'] = {ix: v for ix, v in reference_capture.items()
+                                    if ix in INDICES and v in REFERENCE_CAPTURE_STATES}
     return out
 
 
@@ -430,6 +480,7 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
 
     by_id = {r['id']: r for r in rows}
     resolved = counts(out)
+    ref_capture = {}
     for ix in INDICES:
         f, freason = frames[ix]
         # 2) Primary arm.
@@ -485,6 +536,7 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
                                     else:
                                         row = dict(base, status='OPEN', side=side, strike=atm['strike'],
                                                    expiry=f['expiry'], instrument_key=leg['instrument_key'],
+                                                   underlying_key=leg['underlying_key'],
                                                    trading_symbol=leg['trading_symbol'],
                                                    entry_ask=leg['ask'], entry_bid_observed=leg['bid'],
                                                    entry_decision_ts_ms=ms, entry_quote_ts_ms=f['quote_ts_ms'],
@@ -538,7 +590,8 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
                         append(dict(base, reason='FEE_AUTHORITY_UNAVAILABLE'))
                     else:
                         inherit = {k: copy.deepcopy(primary[k]) for k in (
-                            'side', 'strike', 'expiry', 'instrument_key', 'trading_symbol', 'contract_lot_size',
+                            'side', 'strike', 'expiry', 'instrument_key', 'underlying_key', 'trading_symbol',
+                            'contract_lot_size',
                             'lot_table_version', 'lot_rule_id', 'fee_identity', 'time_basis',
                             'gap', 'gap_straddle_ratio')}
                         append(dict(base, status='OPEN', entry_ask=leg['ask'], entry_bid_observed=leg['bid'],
@@ -547,21 +600,34 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
                 else:
                     out['attempts'][dkey] = {'session': session, 'reason': reason}
         # 4) Reference for the NEXT session: first valid 15:20:00-15:21:30 ATM forward.
-        if REFERENCE_WINDOW_S[0] <= sec <= REFERENCE_WINDOW_S[1] and f \
-                and REFERENCE_WINDOW_S[0] <= f['quote_sec'] <= REFERENCE_WINDOW_S[1]:
+        if REFERENCE_WINDOW_S[0] <= sec <= REFERENCE_WINDOW_S[1]:
             old = out['references'].get(ix)
-            if not old or old.get('session_date') != session:
-                atm = _atm(f)
-                if atm:
-                    out['references'][ix] = {
-                        'session_date': session, 'expiry': f['expiry'], 'strike': atm['strike'],
-                        'forward': round(atm['forward'], 6), 'straddle': round(atm['straddle'], 6),
-                        'ce_instrument_key': atm['CE']['instrument_key'],
-                        'pe_instrument_key': atm['PE']['instrument_key'],
-                        'quote_ts_ms': f['quote_ts_ms'], 'decision_ts_ms': ms}
+            if old and old.get('session_date') == session:
+                ref_capture[ix] = 'ALREADY_CAPTURED'
+            else:
+                rreason = freason
+                if f and not REFERENCE_WINDOW_S[0] <= f['quote_sec'] <= REFERENCE_WINDOW_S[1]:
+                    rreason = 'QUOTE_OUTSIDE_WINDOW'
+                elif f:
+                    atm = _atm(f)
+                    if atm:
+                        out['references'][ix] = {
+                            'session_date': session, 'expiry': f['expiry'], 'strike': atm['strike'],
+                            'forward': round(atm['forward'], 6), 'straddle': round(atm['straddle'], 6),
+                            'ce_instrument_key': atm['CE']['instrument_key'],
+                            'pe_instrument_key': atm['PE']['instrument_key'],
+                            'quote_ts_ms': f['quote_ts_ms'], 'decision_ts_ms': ms}
+                        rreason = 'CAPTURED'
+                    else:
+                        rreason = 'ATM_UNAVAILABLE'
+                ref_capture[ix] = rreason if rreason in REFERENCE_CAPTURE_STATES else 'ATM_UNAVAILABLE'
+                if rreason != 'CAPTURED':
+                    out['attempts']['%s:reference' % ix] = {'session': session, 'reason': ref_capture[ix]}
     out['last_ms'] = ms
     status = 'COLLECTING'
-    return out, view(out, status, session, changed)
+    if any(v not in ('CAPTURED', 'ALREADY_CAPTURED') for v in ref_capture.values()):
+        status = 'REFERENCE_NOT_CAPTURED'
+    return out, view(out, status, session, changed, reference_capture=ref_capture)
 
 
 # ---------------------------------------------------------------- persistence
