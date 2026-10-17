@@ -88,7 +88,6 @@ class ReviewRepro(unittest.TestCase):
         rep = x1_report.report(journal_with(1))
         self.assertNotEqual(rep['indices']['NF']['verdict'], 'CRITERIA_MET_REVIEW_REQUIRED')
 
-    @unittest.expectedFailure     # red until the R4 fix commit
     def test_R4_hold_is_measured_from_entry_decision(self):
         self.h.run(self.h.ctx(FRI, '15:20:30', 24500, 55000))
         # quote received 09:20:00, entry decision 09:21:00, exit quote/decision 09:50:00 = 29 min hold

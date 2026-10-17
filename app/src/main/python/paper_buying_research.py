@@ -81,7 +81,12 @@ PROTOCOL = {
     'gap_straddle_threshold': GAP_STRADDLE_THRESHOLD,
     'side': 'CE if gap > 0 else PE; independent of any brain verdict',
     'entry_price': 'observed ask', 'exit_price': 'observed bid, same instrument',
-    'exit_window_after_entry_quote_minutes': [30, 40],
+    'exit_window_after_entry_decision_minutes': [30, 40],
+    'hold_anchor': 'entry decision timestamp (the poll that simulates the entry), not the earlier quote receipt',
+    'exit_rule': ('exit quote receipt >= entry decision + 30 min AND exit decision <= entry decision + 40 min; '
+                  'exit quote age <= 90 s at its decision; first such quote wins; same for the delayed arm; '
+                  'otherwise UNRESOLVED EXIT_QUOTE_DEADLINE once a decision is past entry decision + 40 min'),
+    'entry_rule': 'entry simulated at the entry decision at the latest valid quote (age <= 90 s, kept as entry_quote_ts_ms)',
     'missing_exit': 'UNRESOLVED (never zero P&L)',
     'control': 'same primary contract and side; fresh ask in control window; own 30-40 min exit',
     'fees': 'ev_v12_fees one_side_fee per side, one order per side, dated by session',
@@ -444,9 +449,9 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
             r.update(status='UNRESOLVED', reason='SESSION_ENDED', finalized_ts_ms=ms)
             _event(out, r, 'finalize', ms, changed)
             continue
-        e = r['entry_quote_ts_ms']
+        d = r['entry_decision_ts_ms']          # b510 R4: hold anchored at the causal entry decision
         f, _ = frames[r['index']]
-        if f and f['expiry'] == r['expiry'] and e + HOLD_MS <= f['quote_ts_ms'] <= e + EXIT_DEADLINE_MS:
+        if f and f['expiry'] == r['expiry'] and d + HOLD_MS <= f['quote_ts_ms'] and ms <= d + EXIT_DEADLINE_MS:
             leg = _leg(f, r['strike'], r['side'])
             if leg and leg['instrument_key'] == r['instrument_key']:
                 units = r['contract_lot_size']
@@ -459,12 +464,13 @@ def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
                 gross = (leg['bid'] - r['entry_ask']) * units
                 fees = r['entry_fee'] + exit_fee
                 r.update(status='RESOLVED', exit_bid=leg['bid'], exit_decision_ts_ms=ms,
-                         exit_quote_ts_ms=f['quote_ts_ms'], exit_fee=round(exit_fee, 6),
+                         exit_quote_ts_ms=f['quote_ts_ms'], hold_ms_from_entry_decision=f['quote_ts_ms'] - d,
+                         exit_fee=round(exit_fee, 6),
                          gross=round(gross, 6), fees=round(fees, 6), net=round(gross - fees, 6),
                          finalized_ts_ms=ms)
                 _event(out, r, 'finalize', ms, changed)
                 continue
-        if ms - e > EXIT_DEADLINE_MS:
+        if ms - d > EXIT_DEADLINE_MS:
             r.update(status='UNRESOLVED', reason='EXIT_QUOTE_DEADLINE', finalized_ts_ms=ms)
             _event(out, r, 'finalize', ms, changed)
 

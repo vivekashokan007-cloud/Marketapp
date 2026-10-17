@@ -118,8 +118,8 @@ class Harness:
         self.reference()
         self.run(self.ctx(MON, '09:20:40', 24560, 54880))
         self.run(self.ctx(MON, '09:25:40', 24600, 54850))
-        self.run(self.ctx(MON, '09:50:40', 24650, 54800, q_lag_s=10))
-        return self.run(self.ctx(MON, '09:55:40', 24700, 54750, q_lag_s=10))
+        self.run(self.ctx(MON, '09:51:00', 24650, 54800, q_lag_s=10))    # quote 09:50:50 >= 09:20:40 + 30m
+        return self.run(self.ctx(MON, '09:56:00', 24700, 54750, q_lag_s=10))  # quote 09:55:50 >= 09:25:40 + 30m
 
 
 class Base(unittest.TestCase):
@@ -431,6 +431,61 @@ class T10ExitWindow(Base):
         self.assertEqual(self.h.row(index='NF', arm='primary')['reason'], 'SESSION_ENDED')
 
 
+class T10bHoldAnchoredAtEntryDecision(Base):
+    """b510 R4: hold measured from the entry DECISION; exit quote >= decision+30m, exit decision <= +40m."""
+
+    def enter(self, decision='09:21:00', lag=60):
+        self.h.reference()
+        self.h.run(self.h.ctx(MON, decision, 24560, 54880, q_lag_s=lag))     # quote 09:20:00, decision 09:21:00
+        r = self.h.row(index='NF', arm='primary')
+        self.assertEqual((r['entry_quote_ts_ms'], r['entry_decision_ts_ms']), (ms(MON, '09:20:00'), ms(MON, decision)))
+        return r
+
+    def test_codex_example_0921_to_0950_stays_open(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '09:50:00', 24650, 54800, q_lag_s=0))       # 29 min after the decision
+        self.assertEqual(self.h.row(index='NF', arm='primary')['status'], 'OPEN')
+
+    def test_plus_30_boundary_resolves(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '09:51:20', 24650, 54800, q_lag_s=20))      # quote exactly 09:51:00
+        r = self.h.row(index='NF', arm='primary')
+        self.assertEqual((r['status'], r['hold_ms_from_entry_decision']), ('RESOLVED', 30 * 60_000))
+
+    def test_quote_one_ms_before_plus_30_is_rejected(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '09:51:20', 24650, 54800, qnf=ms(MON, '09:51:00') - 1))
+        self.assertEqual(self.h.row(index='NF', arm='primary')['status'], 'OPEN')
+
+    def test_plus_40_boundary_resolves_with_realistic_lag(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '10:01:00', 24650, 54800, q_lag_s=75))      # decision exactly +40m, quote 75 s old
+        r = self.h.row(index='NF', arm='primary')
+        self.assertEqual((r['status'], r['exit_quote_ts_ms']), ('RESOLVED', ms(MON, '09:59:45')))
+
+    def test_past_deadline_is_unresolved_even_with_an_in_window_quote(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '10:01:00.001', 24650, 54800, qnf=ms(MON, '10:00:00'), qbnf=ms(MON, '10:00:00')))
+        r = self.h.row(index='NF', arm='primary')
+        self.assertEqual((r['status'], r['reason']), ('UNRESOLVED', 'EXIT_QUOTE_DEADLINE'))
+        self.assertNotIn('net', r)
+
+    def test_delayed_arm_uses_its_own_decision(self):
+        self.enter()
+        self.h.run(self.h.ctx(MON, '09:26:00', 24600, 54850, q_lag_s=50))      # control quote 09:25:10, decision 09:26
+        d = self.h.row(index='NF', arm='delayed')
+        self.assertEqual(d['status'], 'OPEN')
+        self.h.run(self.h.ctx(MON, '09:55:30', 24700, 54750, q_lag_s=0))       # +29m30s from 09:26 decision
+        self.assertEqual(self.h.row(index='NF', arm='delayed')['status'], 'OPEN')
+        self.h.run(self.h.ctx(MON, '09:56:20', 24700, 54750, q_lag_s=20))      # quote 09:56:00 = +30m
+        self.assertEqual(self.h.row(index='NF', arm='delayed')['status'], 'RESOLVED')
+        self.h.close(); self.h = Harness()
+        self.enter()
+        self.h.run(self.h.ctx(MON, '09:26:00', 24600, 54850, q_lag_s=50))
+        self.h.run(self.h.ctx(MON, '10:06:00.001', 24700, 54750, qnf=ms(MON, '10:05:00'), qbnf=ms(MON, '10:05:00')))
+        self.assertEqual(self.h.row(index='NF', arm='delayed')['reason'], 'EXIT_QUOTE_DEADLINE')
+
+
 # 11 -----------------------------------------------------------------------------------------------
 class T11Economics(Base):
     def test_exact_lot_fees_and_net(self):
@@ -564,7 +619,7 @@ class T14Storage(Base):
         out = self.h.run(self.h.ctx(MON, '09:25:40', 24600, 54850))
         self.assertEqual(out['status'], 'JOURNAL_FULL_REVIEW_REQUIRED')
         self.assertEqual(len(self.h.state()['records']), pbr.MAX_RECORDS)          # nothing pruned
-        out = self.h.run(self.h.ctx(MON, '09:50:40', 24650, 54800, q_lag_s=10))
+        out = self.h.run(self.h.ctx(MON, '09:51:00', 24650, 54800, q_lag_s=10))
         self.assertEqual(out['status'], 'JOURNAL_FULL_REVIEW_REQUIRED')            # sticky
         self.assertEqual(self.h.row(index='NF', arm='primary')['status'], 'RESOLVED')
 

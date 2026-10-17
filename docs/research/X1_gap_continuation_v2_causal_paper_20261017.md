@@ -2,7 +2,7 @@
 
 Protocol id: `X1_gap_continuation_v2_causal_paper_20261017`
 Collector contract: `x1_collector_contract_v2_20261017`
-Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`e6e9a51f543c19914ad408430050bfdbefa8bf4c071da5ab5af24c55728355b7`**
+Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`279a97ee67cab19b5365e48fe17ee7f0162cde6714175a9b12f79cd36d319a8b`**
 Frozen: 17 October 2026 (IST), before any observation. Status: research only; no trading authority.
 
 ## What this is (and is not)
@@ -63,12 +63,14 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
   ],
   "endpoint": "exactly 60 resolved PRIMARY observations per index; delayed controls finish",
   "entry_price": "observed ask",
+  "entry_rule": "entry simulated at the entry decision at the latest valid quote (age <= 90 s, kept as entry_quote_ts_ms)",
   "entry_window_ist": [
     "09:20:00",
     "09:21:30"
   ],
   "exit_price": "observed bid, same instrument",
-  "exit_window_after_entry_quote_minutes": [
+  "exit_rule": "exit quote receipt >= entry decision + 30 min AND exit decision <= entry decision + 40 min; exit quote age <= 90 s at its decision; first such quote wins; same for the delayed arm; otherwise UNRESOLVED EXIT_QUOTE_DEADLINE once a decision is past entry decision + 40 min",
+  "exit_window_after_entry_decision_minutes": [
     30,
     40
   ],
@@ -82,6 +84,7 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
   "forward": "K + CE mid - PE mid",
   "gap_straddle_threshold": 0.15,
   "gap_trigger": "|F_now - F_prev| > 0.15 x current ATM straddle mid (equality skips)",
+  "hold_anchor": "entry decision timestamp (the poll that simulates the entry), not the earlier quote receipt",
   "indices": [
     "NF",
     "BNF"
