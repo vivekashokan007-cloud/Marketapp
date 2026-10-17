@@ -1,0 +1,8 @@
+{
+ "_generated_by": "brain.take_poll_snapshot(analyze(fixture_a_bull_credit_range + synthetic chains, paper), android_compact_v1); verdict_json reduced to direction fields",
+ "session_date": "2026-10-09",
+ "poll_ts": "2026-10-09T10:05:00+0530",
+ "action": "WAIT",
+ "direction": "NEUTRAL",
+ "verdict_json": "{\"action\":\"WAIT\",\"strategy\":null,\"direction\":\"NEUTRAL\",\"market_direction\":\"BULL\",\"market_bull_score\":1.9,\"market_bear_score\":1.2,\"market_view_status\":\"AVAILABLE\",\"market_view_source\":\"synthesize_verdict_score_rule_v1\",\"market_view_validated\":false,\"market_direction_scope\":\"COMBINED_NF_BNF_CONTEXT\",\"execution_lane_direction\":null,\"direction_semantics\":\"legacy_mixed_market_or_lane_v1\",\"direction_semantics_version\":1,\"market_thesis\":{\"action\":\"SELL PREMIUM\",\"strategy\":\"IRON_CONDOR\",\"direction\":\"BULL\",\"market_direction\":\"BULL\",\"confidence\":19.0}}"
+}

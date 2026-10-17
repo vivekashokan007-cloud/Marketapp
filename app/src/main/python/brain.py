@@ -64,6 +64,22 @@ DECISION_GATE_ACTIONABLE = 'ACTIONABLE'
 DECISION_GATE_PRELIMINARY_WAIT = 'PRELIMINARY_WAIT'
 DECISION_GATE_HARD_WAIT = 'HARD_WAIT'
 DECISION_GATE_STOP = 'STOP'
+# b510 Batch A: the legacy verdict `direction` is MIXED: the synthesis score-rule
+# view before execution alignment, the selected strategy lane after it. It keeps
+# that legacy behaviour for every consumer in this release. The two meanings are
+# now also emitted separately and explicitly:
+#   market_direction          frozen synthesis score-rule view (combined NF/BNF
+#                             context; unvalidated; None when unavailable)
+#   execution_lane_direction  direction of the selected strategy lane (None when
+#                             no strategy lane exists)
+VERDICT_DIRECTION_SEMANTICS_VERSION = 1
+VERDICT_DIRECTION_SEMANTICS = 'legacy_mixed_market_or_lane_v1'
+MARKET_VIEW_SCOPE = 'COMBINED_NF_BNF_CONTEXT'
+MARKET_VIEW_SOURCE = 'synthesize_verdict_score_rule_v1'
+MARKET_VIEW_FIELDS = (
+    'market_direction', 'market_bull_score', 'market_bear_score',
+    'market_view_status', 'market_view_source',
+)
 NET_ECONOMICS_VERSION = 'net_economics_v2_executable_quote_contract'
 TEACHER_FRICTION_VERSION = 'teacher_friction_v2_executable_bid_ask_charges'
 
@@ -3438,7 +3454,8 @@ def build_session_explanation(result, ctx):
 
     state = final.get("action") or verdict.get("action") or "WAIT"
     confidence = int(_safe_num(final.get("confidence", verdict.get("confidence", 0)), 0))
-    bias = eb.get("bias") or verdict.get("direction") or "NEUTRAL"
+    # b510 Batch A: never present the strategy lane as the market bias.
+    bias = eb.get("bias") or verdict.get("market_direction") or "UNAVAILABLE"
     net = _safe_num(eb.get("net", verdict.get("net", 0)), 0)
     range_sigma = _safe_num(result.get("rangeSigma", regime.get("sigma", 0)), 0)
     regime_type = (regime.get("type") or market_phase.get("type") or "UNKNOWN").upper()
@@ -6151,6 +6168,12 @@ def synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates=No
 
     return {
         "action": action, "strategy": strategy, "direction": direction,
+        # b510 Batch A: frozen BEFORE any execution alignment; full precision so
+        # the 0.4 score rule is reproducible from the stored fields.
+        "market_direction": direction,
+        "market_bull_score": round(bull, 6), "market_bear_score": round(bear, 6),
+        "market_view_status": 'AVAILABLE', "market_view_source": MARKET_VIEW_SOURCE,
+        "market_view_validated": False, "market_direction_scope": MARKET_VIEW_SCOPE,
         "confidence": confidence, "market_confidence": market_confidence,
         "decision_gate": decision_gate,
         "urgency": urgency,
@@ -7109,7 +7132,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.78"
+BRAIN_VERSION = "2.6.79"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -13940,6 +13963,10 @@ def build_elephant_fact_pack(result, ctx, polls, calibration, closed_trades):
             'action': verdict.get('action'),
             'strategy': verdict.get('strategy'),
             'direction': verdict.get('direction'),
+            'direction_semantics': VERDICT_DIRECTION_SEMANTICS,
+            'market_direction': verdict.get('market_direction'),
+            'market_view_validated': False,
+            'execution_lane_direction': _execution_lane_direction(verdict),
             'confidence': verdict.get('confidence'),
             'reasoning': verdict.get('reasoning'),
             'conflicts': verdict.get('conflicts'),
@@ -16609,6 +16636,68 @@ def _finalize_pc2_paper_verdict(result, ranked, pc2_summary, ctx=None):
     result['decision_reason'] = result['decisionReason']
     return result
 
+def _freeze_market_view(verdict):
+    """b510 Batch A: copy the synthesis market view, or None when unavailable.
+
+    Only a verdict emitted by synthesize_verdict carries an AVAILABLE view. An
+    already-aligned or legacy verdict is never reverse-engineered into one.
+    """
+    if not isinstance(verdict, dict) or verdict.get('market_view_status') != 'AVAILABLE':
+        return None
+    if verdict.get('market_view_source') != MARKET_VIEW_SOURCE:
+        return None
+    if verdict.get('market_direction') not in ('BULL', 'BEAR', 'NEUTRAL'):
+        return None
+    return {key: verdict.get(key) for key in MARKET_VIEW_FIELDS}
+
+
+def _execution_lane_direction(verdict):
+    if not isinstance(verdict, dict) or verdict.get('action') in ('WAIT', 'STOP', None):
+        return None
+    return _strategy_direction(verdict.get('strategy'))
+
+
+def _apply_market_view(verdict, frozen_view):
+    """Re-stamp the frozen view on the FINAL verdict (every analyze path).
+
+    Never derives market fields from legacy `direction`. Leaves legacy
+    `direction`, action, strategy, gates and confidence untouched.
+    """
+    if not isinstance(verdict, dict):
+        return verdict
+    final = dict(verdict)
+    if frozen_view:
+        final.update(frozen_view)
+    else:
+        final.update({
+            'market_direction': None, 'market_bull_score': None, 'market_bear_score': None,
+            'market_view_status': 'UNAVAILABLE', 'market_view_source': None,
+        })
+    final['market_view_validated'] = False
+    final['market_direction_scope'] = MARKET_VIEW_SCOPE
+    final['execution_lane_direction'] = _execution_lane_direction(final)
+    final['direction_semantics'] = VERDICT_DIRECTION_SEMANTICS
+    final['direction_semantics_version'] = VERDICT_DIRECTION_SEMANTICS_VERSION
+    return final
+
+
+def _market_thesis_once(verdict, market_confidence):
+    """Capture market_thesis exactly once, from a not-yet-aligned verdict."""
+    existing = verdict.get('market_thesis')
+    if isinstance(existing, dict) and existing:
+        return existing
+    if verdict.get('execution_aligned'):
+        # Already aligned: action/strategy/direction are the lane, not the thesis.
+        return None
+    return {
+        'action': verdict.get('action'),
+        'strategy': verdict.get('strategy'),
+        'direction': verdict.get('direction'),
+        'market_direction': verdict.get('market_direction'),
+        'confidence': market_confidence,
+    }
+
+
 def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_eligible=False):
     """Make final brain verdict match the executable candidate lane shown to user.
 
@@ -16638,12 +16727,9 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_elig
         market_confidence = _safe_num(final.get('market_confidence'), None)
         if market_confidence is None:
             market_confidence = _safe_num(final.get('confidence'), 0.0)
-        final['market_thesis'] = {
-            'action': final.get('action'),
-            'strategy': final.get('strategy'),
-            'direction': final.get('direction'),
-            'confidence': market_confidence,
-        }
+        thesis = _market_thesis_once(final, market_confidence)
+        if thesis is not None:
+            final['market_thesis'] = thesis
         final['market_confidence'] = market_confidence
         final['pre_alignment_action'] = final.get('action')
         final['pre_alignment_strategy'] = final.get('strategy')
@@ -16695,6 +16781,9 @@ def _align_verdict_to_watchlist(verdict, watchlist, ctx=None, require_entry_elig
     if not changed and final.get('execution_aligned'):
         return verdict
 
+    thesis = _market_thesis_once(final, market_confidence)
+    if thesis is not None:
+        final['market_thesis'] = thesis
     final['pre_alignment_action'] = old_action
     final['pre_alignment_strategy'] = old_strategy
     final['action'] = new_action
@@ -17034,6 +17123,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             "bull": 0.0,
             "bear": 0.0,
         }
+        # b510 Batch A: no market evidence during warm-up -> unavailable, not NEUTRAL.
+        result["verdict"] = _apply_market_view(result["verdict"], None)
         result["generated_candidates"] = []
         result["ranked_candidates_full"] = []
         result["watchlist"] = []
@@ -17421,6 +17512,8 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
     except Exception as e:
         print(f"DEBUG: synthesize_verdict failed: {e}")
+    # b510 Batch A: freeze the synthesis view once; every later path re-stamps it.
+    frozen_market_view = _freeze_market_view(result.get("verdict"))
 
     # b97: Effective bias — Bayesian decay of morning prior with intraday evidence
     try:
@@ -17873,12 +17966,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                     if menu_abstention
                     else 'PC2 forced WAIT: no entry-eligible paper candidate survived.'
                 )
-                verdict['market_thesis'] = {
-                    'action': verdict.get('action'),
-                    'strategy': verdict.get('strategy'),
-                    'direction': verdict.get('direction'),
-                    'confidence': market_confidence,
-                }
+                thesis = _market_thesis_once(verdict, market_confidence)
+                if thesis is not None:
+                    verdict['market_thesis'] = thesis
                 verdict.update({
                     'market_confidence': market_confidence,
                     'action': 'WAIT',
@@ -18239,6 +18329,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     except Exception as e:
         result['vixRegime'] = {'error': str(e)}
 
+    result['verdict'] = _apply_market_view(result.get('verdict'), frozen_market_view)
     out_str, _ = _safe_json(result)
     return out_str
 
