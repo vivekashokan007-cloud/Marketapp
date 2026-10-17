@@ -139,3 +139,22 @@ test('6. b507 new bridge methods are declared in Kotlin and forwarded by the rea
   }
   assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by b507');
 });
+
+// b510: X1 Paper buying research status/export are NON-ev, read-only/export-only forwarders.
+const B510_NEW_METHODS = ['getPaperBuyingResearchStatus', 'exportPaperBuyingResearchJournal'];
+const EXPECTED_B510_NEW_COUNT = 2;
+
+test('7. b510 X1 research methods are declared in Kotlin, forwarded once, ev count unchanged', () => {
+  assert.equal(B510_NEW_METHODS.length, EXPECTED_B510_NEW_COUNT);
+  const kt = nativeBridgeSource();
+  for (const name of B510_NEW_METHODS) {
+    assert.match(kt, new RegExp(`@JavascriptInterface\\s+fun ${name}\\(\\)`), `${name} declared`);
+    const { ab, calls } = spy({ [name]: () => '{"status":"OK"}' });
+    const nb = runFacade({ AndroidBridge: ab });
+    assert.equal(typeof nb[name], 'function', `${name} forwarded`);
+    assert.equal(nb[name](), '{"status":"OK"}');
+    assert.deepEqual(calls.map(c => c.name), [name]);
+  }
+  assert.ok(!/fun (placeOrder|buy|openTrade)\w*PaperBuying/i.test(kt), 'no trade hook for X1');
+  assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by b510');
+});
