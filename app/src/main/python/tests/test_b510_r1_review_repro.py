@@ -8,7 +8,6 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..'))
@@ -41,22 +40,9 @@ def documented_chain(ix, F, expiry=EXP, n=6, tv=100.0, spread=1.0):
 
 
 def journal_with(nf_controls, corrupt=False):
-    st = pbr.new_state(ms(FRI, '15:20:30'), '2.6.79')
-    recs = []
-    d = datetime(2026, 6, 1)
-    i = 0
-    while i < 60:
-        if d.weekday() < 5:
-            s = d.date().isoformat()
-            pid = '%s:NF:primary' % s
-            recs.append({'id': pid, 'session_date': s, 'index': 'NF', 'arm': 'primary', 'status': 'RESOLVED',
-                         'net': 500.0 + (i % 5) * 10, 'side': 'CE', 'expiry': EXP})
-            if i < nf_controls:
-                recs.append({'id': '%s:NF:delayed' % s, 'primary_id': pid, 'session_date': s, 'index': 'NF',
-                             'arm': 'delayed', 'status': 'RESOLVED', 'net': 300.0, 'side': 'CE', 'expiry': EXP})
-            i += 1
-        d += timedelta(days=1)
-    st['records'] = recs
+    """60 positive, internally consistent NF primaries with nf_controls positive paired controls."""
+    from x1_report_fixtures import journal
+    st = journal({'NF': {'resolved': 60, 'controls': nf_controls, 'net': lambda i: 500.0 + (i % 5) * 10}})
     if corrupt:
         st['protocol_digest'] = '0' * 64
         st['schema'] = 'x1_journal_v0'
@@ -76,7 +62,6 @@ class ReviewRepro(unittest.TestCase):
         refs = self.h.state()['references']
         self.assertEqual(sorted(refs), ['BNF', 'NF'], 'no reference captured from the documented feed')
 
-    @unittest.expectedFailure     # red until the R2 fix commit
     def test_R2_integrity_failure_never_reports_criteria_met(self):
         st = journal_with(60, corrupt=True)
         rep = x1_report.report(st, {'journal_sha256_ok': False})

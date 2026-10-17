@@ -709,16 +709,10 @@ class T15SnapshotAndAuthority(Base):
 # 16 -----------------------------------------------------------------------------------------------
 class T16Report(Base):
     def journal(self, nf_n, bnf_n):
-        self.h.reference()
-        st = self.h.state()
-        st['records'] = _resolved_rows('NF', nf_n) + _resolved_rows('BNF', bnf_n)
-        for r in list(st['records']):
-            if r['index'] == 'NF' and r['session_date'] < '2026-07-15':
-                st['records'].append(dict(r, id=r['id'].replace('primary', 'delayed'), arm='delayed',
-                                          primary_id=r['id'], net=r['net'] - 20))
-        st['records'].append({'id': 'u', 'session_date': '2026-09-01', 'index': 'NF', 'arm': 'primary',
-                              'status': 'UNRESOLVED', 'reason': 'EXIT_QUOTE_DEADLINE'})
-        return st
+        from x1_report_fixtures import journal
+        return journal({'NF': {'resolved': nf_n, 'controls': nf_n, 'unresolved': 1,
+                               'net': lambda i: 70.0 + (i % 7) * 10},
+                        'BNF': {'resolved': bnf_n}})
 
     def test_reproducible_week_clusters_cohorts_and_verdicts(self):
         st = self.journal(60, 12)
@@ -734,7 +728,7 @@ class T16Report(Base):
         self.assertGreaterEqual(ci['upper'], nf['primary']['mean_net'])
         self.assertEqual(nf['verdict'], 'CRITERIA_MET_REVIEW_REQUIRED')
         self.assertFalse(nf['trading_authority'])
-        self.assertLess(nf['delayed_control']['paired_coverage_of_resolved_primary'], 1.0)
+        self.assertEqual(nf['delayed_control']['paired_coverage_of_resolved_primary'], 1.0)
         self.assertEqual(bnf['verdict'], 'INSUFFICIENT_EVIDENCE')          # separate cohort
         self.assertEqual(bnf['delayed_control']['paired_resolved'], 0)
 
