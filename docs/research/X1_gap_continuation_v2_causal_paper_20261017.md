@@ -4,6 +4,11 @@ Protocol id: `X1_gap_continuation_v2_causal_paper_20261017`
 Collector contract: `x1_collector_contract_v2_20261017`
 Protocol digest (sha256 of canonical JSON: sorted keys, separators `,` `:`): **`10a6b086f1ceefbccd6d6f8a87dacda5eca29818b1c2a999c649bbdb6dad0daa`**
 Frozen: 17 October 2026 (IST), before any observation. Status: research only; no trading authority.
+Revision: Codex b510 R1 corrections (R1 identity, R2 report integrity, R3 coverage policy, R4 hold anchor),
+17 October 2026 (IST). **No prospective block exists or was reused:** the collector has never run on a phone
+(b510 is unreleased), no journal was created, and no historical records were imported. The digest changed with
+these corrections, so any journal written under an earlier digest would be refused (`PROTOCOL_DIGEST_MISMATCH`),
+never continued.
 
 ## What this is (and is not)
 
@@ -24,15 +29,65 @@ Frozen: 17 October 2026 (IST), before any observation. Status: research only; no
 4. Delayed control = the SAME 09:20 contract and side re-entered at a fresh 09:25 ask (latency isolation),
    with its own 30-40 minute exit. It never re-selects a signal.
 5. One fixed endpoint: exactly 60 resolved primary observations per index, evaluated once.
+6. The hold is anchored at the **entry decision** (R4): an exit needs an exit-quote receipt at or after entry
+   decision + 30 min and an exit decision no later than entry decision + 40 min (quote age <= 90 s). The entry quote
+   age stays explicit (`entry_quote_ts_ms`). The delayed arm uses its own decision the same way. With 5-minute polls,
+   the first eligible exit is usually the poll about 30–35 minutes after entry, depending on fetch lag.
+
+## Contract identity (R1)
+
+Upstox's documented `/v2/option/chain` response has `underlying_key`, `strike_price` and `expiry` on each row, and
+`instrument_key`, `market_data` and `option_greeks` on each leg. It has **no** leg `trading_symbol`. Identity
+therefore comes from documented fields and from the request the phone made:
+
+- The native formatter copies each row's `underlying_key` and `expiry` onto both legs (`contract_expiry`). `mergeChain`
+  stamps `requested_underlying_key` (`NSE_INDEX|Nifty 50` / `NSE_INDEX|Nifty Bank`) and `requested_expiry`
+  (the same values as the option/chain URL).
+- The collector requires, per leg: underlying == the index's underlying == the requested key; row expiry == requested
+  expiry; a non-empty `NSE_FO|` instrument key that is unique in the chain, with CE != PE. A `trading_symbol` is
+  optional, but if present it must agree with the index. The index is never inferred from an opaque instrument key.
+  The delayed entry and every exit require the same instrument key, strike, side and expiry as the primary.
+- Failures are bounded reasons: `CHAIN_INDEX_MISMATCH` (wrong or swapped underlying, other-index request, wrong
+  symbol), `EXPIRY_MISMATCH`, `CHAIN_IDENTITY_UNAVAILABLE` (identity fields missing, e.g. an older formatter),
+  `CONTRACT_IDENTITY_MISMATCH`. A reference-window poll that cannot capture a reference returns status
+  `REFERENCE_NOT_CAPTURED`, with `reference_capture` per index. The reason is persisted in `attempts`.
+- Evidence: a documented raw fixture goes through the real `OptionChainBrainFormatter` (JVM golden test) into the
+  collector, covering reference, entry, control and both exits.
 
 ## Success review (never automatic authority)
 
-Per index separately: primary mean net > 0 AND week-cluster bootstrap 95% lower bound > 0 AND paired
-resolved delayed-control mean net > 0. Bootstrap: ISO-week clusters, 10,000 resamples, seed 20261017.
-Fewer than 60 resolved => INSUFFICIENT_EVIDENCE. Unique sessions/weeks, unresolved and missing-control
-coverage, side and expiry concentration are always reported. 60 observations are not 60 independent
-samples. A positive mean with badly incomplete controls is not an accepted experiment; the control
-coverage threshold is NOT pre-set numerically here and must be decided at review (open item).
+Per index separately, evaluated in this order by `tools/x1_report.py`:
+
+1. **Integrity gate (R2).** Any failure gives `BLOCKED_INTEGRITY_FAILURE`, with no statistics and CLI exit 2:
+   - an export hash that is missing, false or malformed;
+   - a wrong schema, protocol id, digest or block contract;
+   - a corruption or contract stop;
+   - duplicate or invalid rows;
+   - non-finite or inconsistent economics;
+   - an exit-timing violation, invalid pairing, or more than 60 resolved.
+
+   A raw journal has no export hash and is checked as a journal. A capacity stop stays descriptive, flagged
+   `capacity_stop_endpoint_reviewable`.
+2. Fewer than 60 resolved primaries, or any OPEN row: `INSUFFICIENT_EVIDENCE`.
+3. **Coverage policy (R3)** `x1_coverage_policy_v1_20261017`. If either rule below fails, the verdict is
+   `INSUFFICIENT_COVERAGE`:
+   - paired resolved delayed controls >= 80% of resolved primaries;
+   - unresolved primaries <= 20% of attempted primaries (OPEN + RESOLVED + UNRESOLVED).
+
+   Comparisons are inclusive and integer-exact. For example, 48/60 passes and 47/60 fails; 15/75 passes and
+   16/76 fails.
+4. `CRITERIA_MET_REVIEW_REQUIRED` only if all of the following hold; otherwise `CRITERIA_NOT_MET`:
+   - primary mean net > 0;
+   - week-cluster bootstrap 95% lower bound > 0 (ISO-week clusters, 10,000 resamples, seed 20261017);
+   - paired resolved delayed-control mean net > 0.
+
+The coverage thresholds were **chosen on 17 October 2026, before any prospective block or data existed**, and are
+part of the digest. Reason: the control re-quotes the same contract only five minutes later, so its quote availability
+should match the primary's. If more than one in five controls or primary exits is missing, non-random capture loss
+(app killed, network) could dominate both the latency comparison and the mean net. The thresholds may be vetoed
+before collection starts; any change needs a new digest and must never follow observed returns. Unique
+sessions and weeks, side and expiry concentration, and the exact coverage numerators and denominators are always reported.
+60 observations are not 60 independent samples.
 
 ## Block, versioning and storage
 
@@ -136,19 +191,20 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
 
 ## Operational appendix (not part of the digest input)
 
-### Storage estimate (measured with the real collector on synthetic chains)
+### Storage estimate (measured with the real collector on the documented-feed fixture)
 
 | Item | Bytes (compact JSON) |
 |---|---|
 | Block metadata | ~810 |
-| Latest reference per index (kept only for the most recent session) | ~540 total |
-| Resolved primary row | ~1,280 |
-| Resolved delayed-control row | ~1,130 |
+| Latest reference per index (kept only for the most recent session) | ~480 total |
+| Resolved primary row | ~1,310–1,320 |
+| Resolved delayed-control row | ~1,160–1,170 |
 | SKIP row | ~200-300 |
-| Journal after one reference + one fully entered session (4 rows) | 6,561 |
+| Journal after one reference + one fully entered session (4 rows) | 6,649 |
 | status.json (bounded, <= 16 KB) | ~3,300 |
+| Per-poll bounded snapshot view (`market_forces_json.paper_buying_research`), excluding transitions | ~1,500 |
 
-- A fully entered session adds about 4.8 KB; a no-trigger session adds about 1 KB (SKIP rows).
+- A fully entered session adds about 5 KB; a no-trigger session adds about 1 KB (SKIP rows).
 - Each index needs at least 60 trigger sessions. At an assumed ~50% trigger rate (not a forecast),
   the block runs roughly 120 sessions and uses ~350 KB. The 1 MB cap allows about 200 fully entered
   sessions, which matches the 800-record cap (4 rows per session).
@@ -168,11 +224,12 @@ coverage threshold is NOT pre-set numerically here and must be decided at review
 
 ### Offline report
 
-`python3 tools/x1_report.py <export-or-journal.json> [--json out.json]` verifies the journal sha and that the
-protocol digest matches the code. It reports per index: resolved, unresolved, open and skip counts by reason;
-sessions and weeks; mean, median and range of net; the week-cluster bootstrap CI; delayed-control pairing coverage
-and mean; and side and expiry concentration. Verdicts: `INSUFFICIENT_EVIDENCE`, `CRITERIA_MET_REVIEW_REQUIRED` or
-`CRITERIA_NOT_MET`, always with `trading_authority: false`. The output is deterministic for a given journal (fixed seed).
+`python3 tools/x1_report.py <export-or-journal.json> [--json out.json]` runs the integrity gate first (see Success
+review). If the gate passes, it reports per index: resolved, unresolved, open and skip counts by reason;
+sessions and weeks; mean, median and range of net; the week-cluster bootstrap CI; delayed-control pairing; the
+coverage policy version with exact numerators and denominators; side and expiry concentration; the verdict; and
+`verdict_reason`. A blocked input prints `BLOCKED_INTEGRITY_FAILURE` with every failure code and exits 2.
+`trading_authority` is always false, and the output is deterministic for a given journal.
 
 ### Known limitation: poll alignment
 
