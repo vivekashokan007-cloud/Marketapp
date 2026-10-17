@@ -355,10 +355,15 @@ def _lot(ix, session, frame, leg):
             or not _num(lot.get('contract_lot_size')) or lot['contract_lot_size'] <= 0):
         return None
     return {'contract_lot_size': int(lot['contract_lot_size']), 'lot_table_version': lot.get('lot_table_version'),
-            'lot_rule_id': lot.get('matched_rule_id'), 'lot_table_sha256': lot.get('lot_table_sha256')}
+            'lot_rule_id': lot.get('matched_rule_id')}
 
 
-def step(state, event, cal=DEFAULT_CALENDAR):
+def _window_open_ms(session, start_s):
+    d = date.fromisoformat(session)
+    return int(datetime(d.year, d.month, d.day, tzinfo=IST).timestamp() * 1000) + int(start_s * 1000)
+
+
+def step(state, event, cal=DEFAULT_CALENDAR, allow_new=True):
     """Pure chronological reducer -> (new_state_or_same, view). Never mutates its inputs."""
     _check_state(state)
     ms = event.get('decision_ts_ms')
@@ -414,7 +419,7 @@ def step(state, event, cal=DEFAULT_CALENDAR):
             _event(out, r, 'finalize', ms, changed)
 
     def append(row, kind='create'):
-        if out.get('stopped'):
+        if out.get('stopped') or not allow_new:
             return False
         if len(rows) >= MAX_RECORDS:
             out['stopped'] = {'reason': 'JOURNAL_FULL_REVIEW_REQUIRED', 'at_ms': ms}
@@ -430,7 +435,8 @@ def step(state, event, cal=DEFAULT_CALENDAR):
         # 2) Primary arm.
         pid = '%s:%s:primary' % (session, ix)
         akey = '%s:primary' % ix
-        if (pid not in by_id and sec >= ENTRY_WINDOW_S[0] and not resolved[ix]['endpoint_reached']
+        eligible = out['block']['started_at_ms'] <= _window_open_ms(session, ENTRY_WINDOW_S[0])
+        if (eligible and pid not in by_id and sec >= ENTRY_WINDOW_S[0] and not resolved[ix]['endpoint_reached']
                 and not any(r.get('index') == ix and r.get('status') == 'OPEN' and r.get('arm') == 'primary'
                             for r in rows)):
             base = {'id': pid, 'session_date': session, 'index': ix, 'arm': 'primary', 'status': 'SKIP',
@@ -486,7 +492,10 @@ def step(state, event, cal=DEFAULT_CALENDAR):
                                                    gap=round(gap, 6), gap_straddle_ratio=round(ratio, 9),
                                                    atm_forward=round(atm['forward'], 6),
                                                    atm_straddle=round(atm['straddle'], 6),
-                                                   reference=copy.deepcopy(ref), time_basis=TIME_BASIS, **lot)
+                                                   reference={k: ref.get(k) for k in (
+                                                       'session_date', 'expiry', 'strike', 'forward',
+                                                       'straddle', 'quote_ts_ms')},
+                                                   time_basis=TIME_BASIS, **lot)
                 if row is not None:
                     append(row)
                 else:
@@ -530,7 +539,7 @@ def step(state, event, cal=DEFAULT_CALENDAR):
                     else:
                         inherit = {k: copy.deepcopy(primary[k]) for k in (
                             'side', 'strike', 'expiry', 'instrument_key', 'trading_symbol', 'contract_lot_size',
-                            'lot_table_version', 'lot_rule_id', 'lot_table_sha256', 'fee_identity', 'time_basis',
+                            'lot_table_version', 'lot_rule_id', 'fee_identity', 'time_basis',
                             'gap', 'gap_straddle_ratio')}
                         append(dict(base, status='OPEN', entry_ask=leg['ask'], entry_bid_observed=leg['bid'],
                                     entry_decision_ts_ms=ms, entry_quote_ts_ms=g['quote_ts_ms'],
@@ -675,7 +684,13 @@ def run(ctx, brain_version=None, cal=DEFAULT_CALENDAR):
             if updated is not state or state_is_new:
                 raw = _canon(updated).encode()
                 if len(raw) > MAX_STATE_BYTES:
-                    raise _Stop('JOURNAL_SIZE_LIMIT')
+                    # Capacity: keep finalizing existing rows, add none, persist a sticky stop.
+                    updated, _ = step(state, event, cal=cal, allow_new=False)
+                    updated['stopped'] = {'reason': 'JOURNAL_SIZE_LIMIT', 'at_ms': event['decision_ts_ms']}
+                    result = view(updated, 'JOURNAL_SIZE_LIMIT', session)
+                    raw = _canon(updated).encode()
+                    if len(raw) > MAX_STATE_BYTES:
+                        raise _Stop('JOURNAL_SIZE_LIMIT')
                 try:
                     _atomic_write(path, raw)
                 except OSError:
