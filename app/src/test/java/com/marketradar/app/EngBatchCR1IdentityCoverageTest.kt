@@ -96,6 +96,44 @@ class EngBatchCR1IdentityCoverageTest {
     }
 
     @Test
+    fun companionProofReadsOnlyChosenRowsAndStillFailsClosedOnTimeout() {
+        var failChosen = false
+        var companionReads = 0
+        SupabaseClient.pageFetchSeam = { table, filter, _, _, _ ->
+            when {
+                table == "ml_recommendation_outcomes" -> {
+                    companionReads++
+                    if (failChosen || filter?.contains("role=eq.primary") != true) {
+                        SupabaseClient.PageResult(status = "http_error", httpCode = 500,
+                            error = "statement timeout", body = """{"code":"57014","message":"canceling statement due to statement timeout"}""")
+                    } else SupabaseClient.PageResult(status = "success", rows = outcome(2, "candidate_2", "primary"))
+                }
+                else -> SupabaseClient.PageResult(status = "success", rows = JSONArray()
+                    .put(outcome(2, "candidate_2", "primary").getJSONObject(0))
+                    .put(outcome(2, "alternative", "secondary").getJSONObject(0)))
+            }
+        }
+        val readback = SupabaseClient.readEvaluationOutcomeIdentityKeys("2026-09-17")
+        assertTrue(readback.ok)
+        assertEquals(1, companionReads)
+        assertTrue(readback.compositeKeys.contains("2|alternative|secondary"))
+        assertEquals(setOf("2|candidate_2|primary"), readback.recommendationCompositeKeys)
+        val produced = JSONArray().put(outcome(2, "candidate_2", "primary").getJSONObject(0))
+            .put(outcome(2, "alternative", "secondary").getJSONObject(0))
+        assertTrue(EvaluationIdentityCoverage.assess(listOf("2"), produced, readback.compositeKeys, true).complete)
+        // Losing a secondary still blocks completion; narrowing the companion
+        // read must never narrow the authoritative evaluation proof.
+        assertFalse(EvaluationIdentityCoverage.assess(listOf("2"), produced, setOf(key(2)), true).complete)
+        failChosen = true
+        val failed = SupabaseClient.readEvaluationOutcomeIdentityKeys("2026-09-17")
+        assertFalse(failed.ok)
+        assertEquals(500, failed.httpStatus)
+        assertTrue(failed.error.orEmpty().contains("57014"))
+        val failedAssessment = EvaluationIdentityCoverage.assess(listOf("2"), produced, failed.compositeKeys, failed.ok)
+        assertFalse(EvaluationIdentityCoverage.transitionFor(failedAssessment).labelsSaved)
+    }
+
+    @Test
     fun rejectedOutcomesRequireTheirOwnExactTableReadback() {
         var failRejected = false
         SupabaseClient.pageFetchSeam = { table, _, _, _, _ ->

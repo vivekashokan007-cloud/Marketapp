@@ -1501,6 +1501,20 @@ class NativeBridge(private val context: Context) {
                 status.put("missingIdentityPreview", "")
             }
             status.put("evaluationRunId", g5Run?.optString("run_id") ?: (prefs.getString("g5_evaluation_run_id", "") ?: ""))
+            // The ledger's top-level missing count covers snapshots only. The
+            // current persistence assessment includes every candidate composite.
+            // Use its count/preview together, and distinguish unreadable proof
+            // from identities proven absent by a successful readback.
+            if (status.optString("evaluationPhase") in setOf("INCOMPLETE_IDENTITY", "FAILED_IDENTITY_COVERAGE")) {
+                val persistence = g5Run?.optJSONObject("stages")?.optJSONObject("outcome_persistence")
+                val detail = persistence?.optJSONObject("detail")
+                if (persistence?.optString("state") == "failed" && detail?.has("missing_identity_count") == true) {
+                    status.put("missingIdentityCount", detail.optInt("missing_identity_count"))
+                    status.put("missingIdentityPreview", detail.optString("missing_identity_preview", ""))
+                    status.put("identityReadbackFailed", persistence.optString("reason_code") == EvaluationIdentityCoverage.REASON_READBACK_FAILED)
+                    status.put("identityReadbackError", if (detail.isNull("readback_error")) "" else detail.optString("readback_error"))
+                }
+            }
             status.put(
                 "evaluationStages",
                 if (g5Run != null) EvaluationRunLedger.stagesSummaryJson(g5Run) else JSONObject()
