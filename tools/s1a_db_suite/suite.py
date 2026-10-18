@@ -69,6 +69,10 @@ do $$ begin
   if not exists (select 1 from pg_roles where rolname='authenticator') then create role authenticator login noinherit; end if;
 end $$;
 alter role anon inherit; alter role authenticated inherit; alter role service_role inherit;
+-- Pin attributes to production (read-only pg_roles, 2026-10-18 09:38 IST) on EVERY run: other scratch suites on a
+-- shared server (e.g. ev_db_suite) create or leave service_role without BYPASSRLS, which would change its effective DELETE.
+alter role service_role bypassrls; alter role anon nobypassrls; alter role authenticated nobypassrls;
+alter role authenticator noinherit nobypassrls;
 grant anon, authenticated, service_role to authenticator;
 grant anon, authenticated, service_role to postgres with admin option;
 """
@@ -309,6 +313,10 @@ def main():
     try:
         check('scratch baseline fingerprint == production fingerprint (policies, relations+grants+RLS, default ACL)',
               fingerprint(BASE_DB) == prod_fp, '%s vs %s' % (fingerprint(BASE_DB), prod_fp))
+        check('scratch role attributes match production (service_role BYPASSRLS; anon/authenticated/authenticator not)',
+              val("select string_agg(rolname || '=' || rolbypassrls, ',' order by rolname) from pg_roles where rolname in "
+                  "('anon','authenticated','authenticator','service_role')", BASE_DB)
+              == 'anon=false,authenticated=false,authenticator=false,service_role=true')
         if ADMIN != 'postgres':
             check('scratch owner role postgres is not a superuser (migration exercised without superuser)',
                   val("select rolsuper from pg_roles where rolname='postgres'", BASE_DB) == 'f')
