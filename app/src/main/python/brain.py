@@ -23209,7 +23209,7 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
 
     entry_premium = _candidate_entry_premium(cand)
     lot_size = _candidate_lot_size(cand)
-    if entry_premium is None or entry_premium <= 0 or lot_size <= 0:
+    if entry_premium is None or entry_premium <= 0 or lot_size is None or lot_size <= 0:
         return {
             'sim_pnl_h2': None,
             'price_integrity': 'FAIL',

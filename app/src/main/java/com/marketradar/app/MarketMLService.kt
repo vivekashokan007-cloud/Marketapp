@@ -1573,6 +1573,16 @@ class MarketMLService : Service() {
         } finally {
             if (temp.exists()) temp.delete()
         }
+        // b511 E1: a bounded local-fallback cache is trimmed newest-first. Resolving
+        // each retained row is not proof that the session is complete; the frozen
+        // manifest must cover every remote snapshot identity or the run stops here.
+        try {
+            reconciler.requireCoversRemote(ids)
+        } catch (e: EvaluationIdentity.InputIncompleteException) {
+            File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate)).delete()
+            LogBuffer.add('E', TAG, "EVAL_INPUT_INCOMPLETE: date=$sessionDate input=${ids.size} missing=${e.missing.size} first=${e.missing.take(5)}")
+            throw e
+        }
         LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_IDENTITIES_READY: date=$sessionDate rows=${ids.size} repaired=$repaired replayed=${reconciler.replayed}")
         return ids
     }

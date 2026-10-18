@@ -63,12 +63,26 @@ internal object EvaluationIdentity {
             return ids.single()
         }
 
+        /** Every remote snapshot identity of the session (b511 input-coverage proof). */
+        fun ids(): Set<Long> = byTime.values.asSequence().flatten()
+            .mapNotNull { positiveId(it.opt("id")) }.toSortedSet()
+
         fun resolve(snapshot: JSONObject): Long {
             find(snapshot)?.let { return it }
             val pollTs = text(snapshot, "poll_ts")
             throw IllegalArgumentException("EVAL_IDENTITY_UNRESOLVED: poll=$pollTs; local data retained")
         }
     }
+
+    /**
+     * b511 E1: the evaluation input does not cover every remote snapshot of the session
+     * (for example a bounded local-fallback cache trimmed newest-first). Retryable:
+     * inputs and results are retained and the prepared-input cache must be refetched.
+     */
+    class InputIncompleteException(val missing: List<Long>) : IllegalStateException(
+        "EVAL_INPUT_INCOMPLETE: missing=${missing.size} first=${missing.take(5)}; " +
+            "inputs retained, prepared input invalidated for a remote refetch"
+    )
 
     /** Replay only absent, ID-less local captures. A successful POST alone is not proof of identity. */
     class SnapshotReconciler(
@@ -116,6 +130,15 @@ internal object EvaluationIdentity {
             throw IllegalStateException(
                 "EVAL_SNAPSHOT_REPLAY_READBACK_PENDING: poll=$pollTs; local data retained"
             )
+        }
+
+        /** Remote identities absent from the resolved input, ascending. */
+        fun missingRemoteIds(resolved: Set<Long>): List<Long> = index.ids().filter { it !in resolved }
+
+        /** Fail closed before evaluation when the input is a strict subset of the session. */
+        fun requireCoversRemote(resolved: Set<Long>) {
+            val missing = missingRemoteIds(resolved)
+            if (missing.isNotEmpty()) throw InputIncompleteException(missing)
         }
     }
 
