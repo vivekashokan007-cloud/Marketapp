@@ -218,6 +218,20 @@ jobs:
           EV_SUITE_PROFILE=baseline EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/seed_runner_suite.py
           EV_SUITE_PROFILE=supabase EV_POSTGREST_BIN=/tmp/postgrest python3 tools/ev_db_suite/seed_runner_suite.py
 
+      - name: b511 S1a client DELETE containment suite (scratch PostgreSQL 17 + PostgREST; never production)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          S1A_SCRATCH_OK: '1'
+          S1A_POSTGREST_BIN: /tmp/postgrest
+        run: |
+          set -o pipefail
+          tools/s1a_db_suite/run.sh | tee /tmp/s1a.log
+          grep -q '^PASS  REST contained: authenticated DELETE /trades_v2?id=eq.fx1 -> 403 42501 and row remains' /tmp/s1a.log
+          grep -q ' checks, 0 failed$' /tmp/s1a.log
+
       - name: Confirm publication artifacts were not built
         run: |
           test ! -d app/build/outputs/apk

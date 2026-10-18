@@ -1,0 +1,425 @@
+{
+ "pgrst": [
+  {
+   "role": "anon",
+   "cfg": [
+    "statement_timeout=3s"
+   ]
+  },
+  {
+   "role": "authenticated",
+   "cfg": [
+    "statement_timeout=8s"
+   ]
+  },
+  {
+   "role": "authenticator",
+   "cfg": [
+    "session_preload_libraries=safeupdate",
+    "statement_timeout=8s",
+    "lock_timeout=8s"
+   ]
+  }
+ ],
+ "funcs": [
+  {
+   "s": "ev_private",
+   "f": "charge",
+   "args": "p_index text, p_date date, p_payload_bytes integer, p_overhead_bytes integer, p_rows integer",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "ev_private",
+   "f": "check_publication",
+   "args": "p_publication jsonb, p_watermark_expiry date",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "ev_private",
+   "f": "conflict",
+   "args": "p_rpc text, p_kind text, p_id text, p_hash text, p_sup text, p_acc text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "ev_private",
+   "f": "guard_immutable",
+   "args": "",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "DELETE"
+  },
+  {
+   "s": "ev_private",
+   "f": "insert_observations",
+   "args": "p_observations jsonb, p_lo date, p_hi date, p_max integer",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "INSERT"
+  },
+  {
+   "s": "ev_private",
+   "f": "is_nse_session",
+   "args": "p_day date",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "ev_private",
+   "f": "ist_today",
+   "args": "",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "ev_private",
+   "f": "prune",
+   "args": "",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "DELETE"
+  },
+  {
+   "s": "ev_private",
+   "f": "sessions_after",
+   "args": "p_from date, p_to date",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "pdm_private",
+   "f": "authorize",
+   "args": "p_device_key text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "pdm_private",
+   "f": "record_conflict",
+   "args": "p_menu_id text, p_rpc text, p_kind text, p_hash text, p_supplied text, p_accepted text, p_candidate text, p_detail text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ab_week1_decisions_set_updated_at",
+   "args": "",
+   "secdef": false,
+   "cfg": null,
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "capture_event_record",
+   "args": "p_device_key text, p_event jsonb",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ev_builder_compact",
+   "args": "p_through date, p_checkpoint jsonb",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "DELETE,UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ev_builder_publish",
+   "args": "p_observations jsonb, p_publication jsonb, p_watermark_expiry date",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ev_builder_seed",
+   "args": "p_observations jsonb, p_publication jsonb, p_watermark_expiry date, p_r_value text, p_r_source text, p_family text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": "INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ev_builder_state",
+   "args": "",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": false,
+   "auth": false,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "ev_submit_decision",
+   "args": "p_device_key text, p_envelope_text text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "INSERT"
+  },
+  {
+   "s": "public",
+   "f": "ev_submit_outcome",
+   "args": "p_device_key text, p_decision_id text, p_outcome_text text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "paper_decision_menu_collector_status",
+   "args": "p_device_key text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "paper_decision_menu_finalize",
+   "args": "p_device_key text, p_menu_id text, p_payload_sha256 text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE"
+  },
+  {
+   "s": "public",
+   "f": "paper_decision_menu_ingest_candidates",
+   "args": "p_device_key text, p_menu_id text, p_payload_sha256 text, p_rows jsonb",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "paper_decision_menu_ingest_manifest",
+   "args": "p_device_key text, p_manifest jsonb",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "pc2_derive_policy_version",
+   "args": "p jsonb",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "pc2_grouped_payload_valid",
+   "args": "g jsonb",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "pc2_ingest_compact_batch",
+   "args": "p_device_key text, p_policy jsonb, p_batch jsonb",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "UPDATE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "pc2_ingest_device_status",
+   "args": "p_device_key text",
+   "secdef": true,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "pc2_poll_ts_valid",
+   "args": "p_poll text, p_session text",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "pc2_poll_utc",
+   "args": "p text",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  },
+  {
+   "s": "public",
+   "f": "pdm_guard_frozen",
+   "args": "",
+   "secdef": false,
+   "cfg": [
+    "search_path=\"\""
+   ],
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": "DELETE,INSERT"
+  },
+  {
+   "s": "public",
+   "f": "touch_updated_at",
+   "args": "",
+   "secdef": false,
+   "cfg": null,
+   "owner": "postgres",
+   "anon": true,
+   "auth": true,
+   "writes": null
+  }
+ ]
+}

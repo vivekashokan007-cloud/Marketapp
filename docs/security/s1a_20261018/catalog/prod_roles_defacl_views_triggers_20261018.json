@@ -1,0 +1,205 @@
+{
+ "roles": [
+  {
+   "r": "anon",
+   "super": false,
+   "bypassrls": false,
+   "inherit": true,
+   "login": false
+  },
+  {
+   "r": "authenticated",
+   "super": false,
+   "bypassrls": false,
+   "inherit": true,
+   "login": false
+  },
+  {
+   "r": "authenticator",
+   "super": false,
+   "bypassrls": false,
+   "inherit": false,
+   "login": true
+  },
+  {
+   "r": "postgres",
+   "super": false,
+   "bypassrls": true,
+   "inherit": true,
+   "login": true
+  },
+  {
+   "r": "service_role",
+   "super": false,
+   "bypassrls": true,
+   "inherit": true,
+   "login": false
+  },
+  {
+   "r": "supabase_admin",
+   "super": true,
+   "bypassrls": true,
+   "inherit": true,
+   "login": true
+  }
+ ],
+ "members": [
+  {
+   "role": "anon",
+   "member": "authenticator",
+   "admin": false
+  },
+  {
+   "role": "anon",
+   "member": "postgres",
+   "admin": true
+  },
+  {
+   "role": "authenticated",
+   "member": "authenticator",
+   "admin": false
+  },
+  {
+   "role": "authenticated",
+   "member": "postgres",
+   "admin": true
+  },
+  {
+   "role": "service_role",
+   "member": "authenticator",
+   "admin": false
+  },
+  {
+   "role": "service_role",
+   "member": "postgres",
+   "admin": true
+  },
+  {
+   "role": "postgres",
+   "member": "cli_login_postgres",
+   "admin": false
+  }
+ ],
+ "default_acl": [
+  {
+   "owner": "postgres",
+   "schema": "public",
+   "objtype": "r",
+   "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}"
+  },
+  {
+   "owner": "postgres",
+   "schema": "public",
+   "objtype": "S",
+   "acl": "{postgres=rwU/postgres,anon=rwU/postgres,authenticated=rwU/postgres,service_role=rwU/postgres}"
+  },
+  {
+   "owner": "supabase_admin",
+   "schema": "public",
+   "objtype": "S",
+   "acl": "{postgres=rwU/supabase_admin,anon=rwU/supabase_admin,authenticated=rwU/supabase_admin,service_role=rwU/supabase_admin}"
+  },
+  {
+   "owner": "postgres",
+   "schema": "public",
+   "objtype": "f",
+   "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}"
+  },
+  {
+   "owner": "supabase_admin",
+   "schema": "public",
+   "objtype": "f",
+   "acl": "{postgres=X/supabase_admin,anon=X/supabase_admin,authenticated=X/supabase_admin,service_role=X/supabase_admin}"
+  },
+  {
+   "owner": "supabase_admin",
+   "schema": "public",
+   "objtype": "r",
+   "acl": "{postgres=arwdDxtm/supabase_admin,anon=arwdDxtm/supabase_admin,authenticated=arwdDxtm/supabase_admin,service_role=arwdDxtm/supabase_admin}"
+  }
+ ],
+ "view_deps": [
+  {
+   "base": "evaluator_proposals",
+   "view": "evaluator_proposals_app_view"
+  },
+  {
+   "base": "ml_decisions",
+   "view": "ml_calibration_report"
+  },
+  {
+   "base": "ml_paper_decision_menu_candidates",
+   "view": "ml_paper_decision_menu_candidates_v"
+  },
+  {
+   "base": "teaching_snapshots",
+   "view": "mat_view_daily_leg_counts"
+  }
+ ],
+ "evaluator_proposals_policies": 0,
+ "view_owner": "postgres",
+ "view_acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+ "base_rows": 0,
+ "triggers": [
+  {
+   "t": "ab_week1_decisions",
+   "trg": "ab_week1_decisions_updated_at",
+   "def": "CREATE TRIGGER ab_week1_decisions_updated_at BEFORE UPDATE ON public.ab_week1_decisions FOR EACH ROW EXECUTE FUNCTION ab_week1_decisions_set_updated_at()"
+  },
+  {
+   "t": "ev_calibration_published",
+   "trg": "evc_immutable",
+   "def": "CREATE TRIGGER evc_immutable BEFORE DELETE OR UPDATE ON public.ev_calibration_published FOR EACH ROW EXECUTE FUNCTION ev_private.guard_immutable()"
+  },
+  {
+   "t": "ev_decisions",
+   "trg": "evd_immutable",
+   "def": "CREATE TRIGGER evd_immutable BEFORE DELETE OR UPDATE ON public.ev_decisions FOR EACH ROW EXECUTE FUNCTION ev_private.guard_immutable()"
+  },
+  {
+   "t": "ev_outcomes",
+   "trg": "evo_immutable",
+   "def": "CREATE TRIGGER evo_immutable BEFORE DELETE OR UPDATE ON public.ev_outcomes FOR EACH ROW EXECUTE FUNCTION ev_private.guard_immutable()"
+  },
+  {
+   "t": "evaluator_jobs",
+   "trg": "trg_evaluator_jobs_updated_at",
+   "def": "CREATE TRIGGER trg_evaluator_jobs_updated_at BEFORE UPDATE ON public.evaluator_jobs FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "evaluator_jobs",
+   "trg": "evaluator_jobs_touch_updated_at",
+   "def": "CREATE TRIGGER evaluator_jobs_touch_updated_at BEFORE UPDATE ON public.evaluator_jobs FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "evaluator_proposals",
+   "trg": "evaluator_proposals_touch_updated_at",
+   "def": "CREATE TRIGGER evaluator_proposals_touch_updated_at BEFORE UPDATE ON public.evaluator_proposals FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "evaluator_proposals",
+   "trg": "trg_evaluator_proposals_updated_at",
+   "def": "CREATE TRIGGER trg_evaluator_proposals_updated_at BEFORE UPDATE ON public.evaluator_proposals FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "ml_evaluation_metrics",
+   "trg": "ml_evaluation_metrics_touch_updated_at",
+   "def": "CREATE TRIGGER ml_evaluation_metrics_touch_updated_at BEFORE UPDATE ON public.ml_evaluation_metrics FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "ml_evaluation_runs",
+   "trg": "ml_evaluation_runs_touch_updated_at",
+   "def": "CREATE TRIGGER ml_evaluation_runs_touch_updated_at BEFORE UPDATE ON public.ml_evaluation_runs FOR EACH ROW EXECUTE FUNCTION touch_updated_at()"
+  },
+  {
+   "t": "ml_paper_decision_menu_candidates",
+   "trg": "pdm_guard_frozen_candidates",
+   "def": "CREATE TRIGGER pdm_guard_frozen_candidates BEFORE DELETE OR UPDATE ON public.ml_paper_decision_menu_candidates FOR EACH ROW EXECUTE FUNCTION pdm_guard_frozen()"
+  },
+  {
+   "t": "ml_paper_decision_menus",
+   "trg": "pdm_guard_frozen_menus",
+   "def": "CREATE TRIGGER pdm_guard_frozen_menus BEFORE DELETE OR UPDATE ON public.ml_paper_decision_menus FOR EACH ROW EXECUTE FUNCTION pdm_guard_frozen()"
+  }
+ ]
+}
