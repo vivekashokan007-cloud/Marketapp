@@ -81,12 +81,38 @@ so the retry refetches Supabase, and leaves the run in the existing retryable fa
 Residual: `maxPages = 80` with page size 1 is unchanged (no session has exceeded 78 polls); a
 longer session now fails closed as `EVAL_INPUT_INCOMPLETE` instead of truncating silently.
 
+### 3a. R1 (Codex review): empty prepared input
+
+The first b511 gate ran only when `snapshotCount > 0`. If the full-payload fetch fails and the bounded
+local fallback is empty, Python accepts `[]` and the zero-snapshot branch recorded DONE ("no brain
+snapshots found") whenever `last_poll_date` was another date. That is a false DONE for a session
+Supabase still holds.
+
+Fix: the coverage window is extracted as `EvaluationInputCoverageGate`, and the service calls it
+unconditionally right after preparation:
+* `verify` always runs the remote identity lookup.
+  - Remote identities the input lacks → `EVAL_INPUT_INCOMPLETE`.
+  - Lookup failed or capped → `EVAL_INPUT_UNVERIFIED`.
+  - Both invalidate the prepared marker, keep the inputs and the selected date, and land in the
+    existing retryable failure.
+* `decideZeroSnapshots` refuses DONE unless the lookup proved remote empty.
+
+Red → green: `EvaluationEmptyInputCoverageR1Test`.
+* Red: 6 of 9 failed against the faithful extraction of the old semantics. Empty input reached
+  DONE with no lookup, including after a failed or capped lookup.
+* Green: 9 of 9.
+
+Limit: the Android Service itself is not instantiable in JVM tests (no Robolectric). The tests drive
+the service's real gate and reconciler through a host with real files and prefs, in the service's
+order. A source-contract test pins the service wiring and ordering.
+
 ## 4. Identity coverage and statuses (current main + b511)
 
 | Status | Meaning | Where |
 |---|---|---|
 | complete | every expected primary/secondary/rejected identity proven by server readback | `EvaluationIdentityCoverage` (b509 bounded readback, unchanged) |
-| missing | produced identities absent server-side (`PARTIAL_IDENTITY_COVERAGE`), or input subset (`EVAL_INPUT_INCOMPLETE`, new) | coverage assessment / reconciler |
+| missing | produced identities absent server-side (`PARTIAL_IDENTITY_COVERAGE`), or input subset incl. empty input (`EVAL_INPUT_INCOMPLETE`, new) | coverage assessment / `EvaluationInputCoverageGate` |
+| input-unverified | remote identity lookup failed/capped before evaluation (`EVAL_INPUT_UNVERIFIED`, new); retryable, never DONE | `EvaluationInputCoverageGate` |
 | verification-unavailable | readback error or timeout (`IDENTITY_READBACK_FAILED`) — never treated as complete | `readEvaluationOutcomeIdentityKeys` |
 | deferred | cooperative time budget (`EVALUATION_TIME_BUDGET_EXCEEDED`) → continuation alarm | `MarketMLService` |
 

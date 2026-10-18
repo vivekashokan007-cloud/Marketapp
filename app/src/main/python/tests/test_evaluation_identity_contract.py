@@ -14,7 +14,10 @@ class EvaluationIdentityContractTests(unittest.TestCase):
         source = (JAVA / 'MarketMLService.kt').read_text()
         start = source.index('val preparedInputs = ensureEvaluationInputFiles(sessionDate)')
         end = source.index('"evaluation_job_prepare"', start)
-        self.assertIn('reconcileEvaluationSnapshotIds(sessionDate, snapshotsFile)', source[start:end])
+        window = source[start:end]
+        self.assertIn('EvaluationInputCoverageGate.verify(', window)
+        self.assertIn('evaluationInputGateHost(sessionDate, snapshotsFile)', window)
+        self.assertNotIn('if (preparedInputs.snapshotCount > 0) {\n                reconcile', window)
         self.assertIn('EVAL_IDENTITY_REPLACE_FAILED: original inputs retained', source)
 
     def test_bad_identity_checkpoint_is_archived_before_reset(self):
@@ -45,7 +48,7 @@ class EvaluationIdentityContractTests(unittest.TestCase):
 
     def test_missing_snapshot_replay_uses_existing_writer_before_input_replacement(self):
         source = (JAVA / 'MarketMLService.kt').read_text()
-        fragment = source.split('private fun reconcileEvaluationSnapshotIds(')[1].split('private fun archiveEvaluationOutput')[0]
+        fragment = source.split('private fun evaluationInputGateHost(')[1].split('private fun archiveEvaluationOutput')[0]
         self.assertIn('EvaluationIdentity.SnapshotReconciler', fragment)
         self.assertIn('SupabaseClient.saveBrainSnapshot(snapshot)', fragment)
         self.assertLess(fragment.index('reconciler.resolve(row)'), fragment.index('temp.renameTo(file)'))
