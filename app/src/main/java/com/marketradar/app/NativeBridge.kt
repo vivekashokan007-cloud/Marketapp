@@ -1813,24 +1813,17 @@ class NativeBridge(private val context: Context) {
             val tokenReady = !(prefs.getString("auth_token", "") ?: "").isBlank()
             val sandboxTokenReady = !(prefs.getString(PREF_SANDBOX_TOKEN, "") ?: "").isBlank()
             val sandboxEnabled = prefs.getBoolean(PREF_SANDBOX_ENABLED, false)
-            val proxyUrl = (prefs.getString(PREF_ORDER_PROXY_URL, "") ?: "").trim()
-            val proxyConfigured = proxyUrl.startsWith("https://")
-
-            val out = JSONObject()
-            out.put("instrumentKeyRows", keyStats.first)
-            out.put("instrumentKeyPresentRows", keyStats.second)
-            out.put("instrumentKeyFlowOk", keyStats.first > 0 && keyStats.second > 0)
-            out.put("sandboxEnabled", sandboxEnabled)
-            out.put("proxyConfigured", proxyConfigured)
-            out.put("proxyUrl", proxyUrl)
-            out.put("tokenReady", tokenReady)
-            out.put("sandboxTokenReady", sandboxTokenReady)
-            out.put("paperReady", true)
-            out.put("sandboxReady", sandboxTokenReady && sandboxEnabled)
-            out.put("liveReady", tokenReady && proxyConfigured)
-            out.toString()
+            // G4: token + HTTPS proxy = configured, not verified-capable (see ExecutionInfraStatus).
+            ExecutionInfraStatus.build(
+                instrumentKeyRows = keyStats.first,
+                instrumentKeyPresentRows = keyStats.second,
+                tokenReady = tokenReady,
+                sandboxTokenReady = sandboxTokenReady,
+                sandboxEnabled = sandboxEnabled,
+                proxyUrlRaw = prefs.getString(PREF_ORDER_PROXY_URL, "")
+            ).toString()
         } catch (e: Exception) {
-            "{\"instrumentKeyFlowOk\":false,\"sandboxEnabled\":false,\"proxyConfigured\":false,\"tokenReady\":false,\"paperReady\":true,\"sandboxReady\":false,\"liveReady\":false,\"error\":\"${e.message}\"}"
+            ExecutionInfraStatus.failure(e.message).toString()
         }
     }
 

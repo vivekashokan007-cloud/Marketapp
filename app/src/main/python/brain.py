@@ -14602,8 +14602,15 @@ def check_execution_readiness(candidate, current_result, ctx):
             'tokenReady': token_ready,
             'sandboxEnabled': sandbox_enabled,
             'proxyReady': proxy_ready,
+            # G4: proxyReady is the compatible name; it means an HTTPS proxy URL is CONFIGURED, nothing more.
+            'proxyConfigured': proxy_ready,
             'marketHoursOk': market_hours_ok,
         },
+        # G4 (additive): configuration is not verified capability. No live dispatcher/reconciliation verification
+        # path exists, so live dispatch is never reported verified. ready/gate above are deliberately unchanged:
+        # Real entry authority reads them, and Real behaviour must not change in this patch.
+        'liveDispatchVerified': False,
+        'liveDispatchCapability': 'UNVERIFIED' if (token_ready and proxy_ready) else 'NOT_CONFIGURED',
         # Additive G4 schedule identity. Does not change ready/gate.
         'position_exit_policy_version': POSITION_EXIT_POLICY_CONTRACT_VERSION,
         'net_target_version': NET_TARGET_VERSION,

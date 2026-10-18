@@ -161,6 +161,14 @@ jobs:
           grep -q '^# pass 7' /tmp/b507chain.log
           grep -q '^# fail 0' /tmp/b507chain.log
 
+      # G4 (sandbox corrections): exact Android infra-status outputs (golden) rendered by the paired MarketVivi app.js.
+      - name: G4 PWA infra-status render (Android golden -> paired MarketVivi renderer)
+        run: |
+          set -o pipefail
+          MARKETVIVI_DIR="$PWD/_marketvivi" node --test tools/sandbox_exec/test_g4_pwa_infra_render.mjs | tee /tmp/g4render.log
+          grep -q '^# pass 4' /tmp/g4render.log
+          grep -q '^# fail 0' /tmp/g4render.log
+
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
