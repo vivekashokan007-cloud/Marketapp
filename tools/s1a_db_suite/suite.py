@@ -34,9 +34,15 @@ ADMIN = os.environ.get('PGUSER', 'supabase_admin')
 results = []
 
 
+# Scratch-only login secret for the authenticator role, random per run and never printed. Needed when the
+# scratch server uses password auth over TCP (CI service container); with socket trust auth it is unused.
+AUTH_PW = secrets.token_hex(16)
+
+
 def psql(sql, db, user=None, ok=True):
+    env = dict(os.environ, PGPASSWORD=AUTH_PW) if user == 'authenticator' else None
     p = subprocess.run(['psql', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1', '-U', user or ADMIN, '-d', db],
-                       input=sql, text=True, capture_output=True)
+                       input=sql, text=True, capture_output=True, env=env)
     if ok and p.returncode != 0:
         raise RuntimeError(p.stderr)
     return p
@@ -257,8 +263,8 @@ class Rest:
         self.secret = secrets.token_hex(32)
         s = socket.socket(); s.bind(('127.0.0.1', 0)); self.port = s.getsockname()[1]; s.close()
         host = os.environ.get('PGHOST', '/tmp')
-        env = dict(os.environ, PGRST_DB_URI='postgres://authenticator@/%s?host=%s&port=%s' % (
-            db, host, os.environ.get('PGPORT', '5432')), PGRST_DB_SCHEMAS='public', PGRST_DB_ANON_ROLE='anon',
+        env = dict(os.environ, PGRST_DB_URI='postgres://authenticator:%s@/%s?host=%s&port=%s' % (
+            AUTH_PW, db, host, os.environ.get('PGPORT', '5432')), PGRST_DB_SCHEMAS='public', PGRST_DB_ANON_ROLE='anon',
             PGRST_JWT_SECRET=self.secret, PGRST_SERVER_PORT=str(self.port), PGRST_SERVER_HOST='127.0.0.1',
             PGRST_DB_POOL='2', PGRST_LOG_LEVEL='error')
         self.proc = subprocess.Popen([binary], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -267,6 +273,9 @@ class Rest:
                 urllib.request.urlopen('http://127.0.0.1:%d/' % self.port, timeout=1); break
             except Exception:
                 time.sleep(0.1)
+        else:
+            self.proc.terminate()
+            raise RuntimeError('PostgREST did not become ready: %s' % self.proc.stdout.read().decode(errors='replace')[-2000:])
 
     def call(self, method, path, role, body=None, prefer=None):
         hdr = {'apikey': jwt('anon', self.secret), 'Content-Type': 'application/json'}
@@ -298,6 +307,7 @@ def main():
     check('committed migration/rollback are regenerated from the capture',
           C.main(['--check']) == 0)
     psql(ROLES_SQL, 'postgres')
+    psql("alter role authenticator login password '%s';" % AUTH_PW, 'postgres')
     if ADMIN != 'postgres':
         # Mirror Supabase: the migration-running owner is NOT a superuser (it has BYPASSRLS).
         psql('alter role postgres nosuperuser bypassrls;', 'postgres')
@@ -378,7 +388,7 @@ def main():
                      unnest(array['DELETE','TRUNCATE']) p where n.nspname='public' and c.relkind in ('r','p','v','m')
                      and has_table_privilege(r, c.oid, p)""", db) == '0')
         check('AFTER: role inheritance - authenticator (NOINHERIT) gains no DELETE until SET ROLE; after SET ROLE authenticated still denied',
-              psql("set role authenticated; delete from public.trades_v2 where id='fx1';", db, user='authenticator', ok=False).returncode != 0
+              'permission denied' in psql("set role authenticated; delete from public.trades_v2 where id='fx1';", db, user='authenticator', ok=False).stderr
               and val("select has_table_privilege('authenticator','public.trades_v2','DELETE')", db) == 'f')
         r1 = psql("set role service_role; select public.s1a_test_server_retention('fx2');", db, ok=False)
         check('AFTER: server retention RPC (SECURITY DEFINER, service_role-only EXECUTE) deletes an existing row',
