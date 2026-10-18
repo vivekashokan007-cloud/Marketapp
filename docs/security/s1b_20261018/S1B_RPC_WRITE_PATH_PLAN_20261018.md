@@ -1,6 +1,6 @@
 # S1b — client write-path replacement (plan only, b511, 2026-10-18)
 
-**Status:** plan. Nothing is migrated. This builds on the S1a catalog and the call-site matrix
+**Status:** plan. Nothing is migrated. S1a (DELETE containment) leaves every INSERT/UPDATE and storage exposure below open; S1b is what closes them. This builds on the S1a catalog and the call-site matrix
 (`docs/security/s1a_20261018/S1A_CLIENT_DELETE_CONTAINMENT_20261018.md` §1–§2, §6).
 
 ## 1. Writer inventory (direct table writes still open to anon/authenticated after S1a)

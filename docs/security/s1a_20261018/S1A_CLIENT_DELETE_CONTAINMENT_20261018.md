@@ -1,6 +1,11 @@
 # S1a — client DELETE containment (b511): catalog, call-site matrix, migration, rollback, tests
 
 Status: **implemented for review; production application PENDING** (no production change was made).
+
+**Scope limit:** S1a contains client **DELETE** authority only. It does **not** close the broad anon/authenticated
+INSERT/UPDATE exposure (including app_config, ml_models, trades_v2 and the owner-rights view F-S1-1), the unscoped storage
+"Allow all exports" policy (F-S1-2), or the `supabase_admin` default ACL. Those remain open until S1b (§6;
+`docs/security/s1b_20261018/`).
 Production evidence: read-only (`BEGIN READ ONLY`, `statement_timeout 20s`), project `fdynxkfxohbnlvayouje`, 18 Oct 2026,
 08:46–08:53 IST (03:16–03:23 UTC). No `app_config` values were read. Captured catalog: `catalog/*.json`.
 
