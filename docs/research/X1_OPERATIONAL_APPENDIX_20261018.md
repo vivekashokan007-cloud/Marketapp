@@ -19,24 +19,34 @@ Claude's historical P&L estimates for gap continuation are **unverified** until 
 exists: input data with byte hashes, the exact script, the environment, and outputs that reproduce to the stated tolerance.
 They must not appear in any report as verified, or as a prior for the endpoint.
 
-## C. Week-one report (counts only, no P&L)
+## C. Week-one report (counts only)
 
 Per date × index (NF, BNF separately):
 - primary arm: status (OPEN/RESOLVED/UNRESOLVED/SKIP) and reason;
 - delayed control arm: status and reason;
-- reference capture: previous-session reference present, capture timestamp, source;
-- `entry_decision_ts_ms`, `exit_quote_ts_ms`, `exit_decision_ts_ms`;
+- reference capture: previous-session reference present and its session/quote timestamp (never prices);
+- `entry_decision_ts_ms`, `entry_quote_ts_ms`, `exit_quote_ts_ms`, `exit_decision_ts_ms`;
 - `hold_ms_from_entry_decision`;
-- failure counts by class: engine, staleness, window, identity.
+- failure counts by class: engine, staleness, window, identity (plus data/authority).
 
-No premium, P&L, return, bootstrap or endpoint verdict appears in week one.
+Week-one outputs include no premium, prices, gross, net, fees, P&L, means, confidence intervals, bootstrap,
+endpoint flag or statistical verdict.
 
-**Sources:** a bounded read of `market_forces_json.paper_buying_research` (BEGIN READ ONLY, statement timeout,
-date-bounded, no secret-bearing `app_config` keys), plus the on-device journal export
-(`NativeBridge.exportPaperBuyingResearchJournal`, schema `x1_export_v1`). Ask Vivek for the export after the Friday
-close, and record the sha256 of the received bytes before parsing. Run the report with
-`python3 tools/x1_report.py EXPORT.json --json OUT.json`. **Never reset the journal**; journal contents stay
-out of review ZIPs unless explicitly requested.
+**Procedure:**
+1. Ask Vivek for the on-device journal export (`NativeBridge.exportPaperBuyingResearchJournal`, schema
+   `x1_export_v1`) after the Friday close. Record the sha256 of the received bytes before parsing.
+2. Run the counts-only path: `python3 tools/x1_week1_counts.py EXPORT.json --json WEEK1_COUNTS.json`.
+   - It applies the same blocking integrity checks as the endpoint reporter: export hash, schema,
+     protocol digest, block contract, record validity and pairing.
+   - It emits only an explicit field allowlist and refuses to emit any prohibited field.
+   - Exit code 2 means an integrity failure; only integrity codes and the source hash are then emitted.
+3. Optionally cross-check per-poll status with a bounded read of `market_forces_json.paper_buying_research`
+   (BEGIN READ ONLY, statement timeout, date-bounded, no secret-bearing `app_config` keys).
+
+**Do not run `tools/x1_report.py` in week one.** It is the pre-registered endpoint reporter, and before the
+60-result endpoint it still prints running means and confidence intervals. It is reserved for the endpoint.
+**Never reset the journal.** Journal contents stay out of review ZIPs unless explicitly requested.
+Verified by `tests/test_b511_x1_week1_counts.py` on a synthetic pre-endpoint export (stdout, JSON and saved file).
 
 ## D. Telemetry key compatibility
 
