@@ -158,11 +158,17 @@ object OrderExecutionService {
                 if (!built.ok) return buildFailure(built)
                 val raw = dispatch("multi", "v2", "POST", "/v2/order/multi/place", built.orders, sandboxToken, tradeRef)
                 val placement = parseMultiPlacement(raw.optInt("http_status", 0), raw.opt("response_json"), built.orders)
+                if (raw.isNull("error_code") && placement.getString("placement_status") != PLACEMENT_ALL_ACCEPTED) {
+                    raw.put("error_code", "PLACEMENT_" + placement.getString("placement_status"))
+                        .put("error_message", "Multi-order placement not fully accepted; see placement.lines and placement.anomalies.")
+                }
                 raw.put("placement", placement)
                     .put("placement_status", placement.getString("placement_status"))
                     // G2: order_ids = broker IDs of accepted lines only; ok = every line accepted (placement only).
                     .put("order_ids", placement.getJSONArray("accepted_order_ids"))
-                    .put("ok", placement.getString("placement_status") == PLACEMENT_ALL_ACCEPTED)
+                    // R1: dispatch's verdict (2xx and no error) AND the per-line classification; neither can override the other.
+                    .put("ok", raw.optBoolean("ok", false) && placement.getString("placement_status") == PLACEMENT_ALL_ACCEPTED)
+                    .put("placement_anomalies", placement.getJSONArray("anomalies"))
                     .put("pricing", built.pricing)
                     .put("fill_status", FILL_STATUS_UNRECONCILED)
                     .put("fill_implied", false)
@@ -461,15 +467,34 @@ object OrderExecutionService {
         if (quote.has("valid") && !quote.optBoolean("valid", false)) {
             return fail("QUOTE_INVALID", "Leg $index quote is marked invalid.")
         }
-        val usedKey = listOf(sideKey, "${sideKey}_price").firstOrNull { quote.has(it) && !quote.isNull(it) }
-            ?: return fail("QUOTE_SIDE_REQUIRED", "Leg $index quote has no $sideKey (LTP is never substituted).")
-        val side = quote.optDouble(usedKey, Double.NaN)
-        if (!(side.isFinite() && side > 0.0)) {
-            return fail("QUOTE_SIDE_INVALID", "Leg $index $sideKey is missing, zero or invalid (LTP is never substituted).")
+        // R3 (Codex PR #20): the default quote contract needs BOTH sides finite and positive with ask >= bid. A negative
+        // side is always invalid. One-sided books are not executable quotes; no single-side exception is adopted here.
+        val oppositeKey = if (sideKey == "ask") "bid" else "ask"
+        fun readSide(key: String): Pair<String, Double> {
+            val k = listOf(key, "${key}_price").firstOrNull { quote.has(it) && !quote.isNull(it) } ?: return "ABSENT" to Double.NaN
+            val v = quote.optDouble(k, Double.NaN)
+            return when {
+                !v.isFinite() -> "INVALID" to v
+                v < 0.0 -> "NEGATIVE" to v
+                v == 0.0 -> "INVALID" to v
+                else -> "OK" to v
+            }
         }
-        val bid = quote.optDouble("bid", quote.optDouble("bid_price", Double.NaN))
-        val ask = quote.optDouble("ask", quote.optDouble("ask_price", Double.NaN))
-        if (bid.isFinite() && ask.isFinite() && bid > 0.0 && ask > 0.0 && bid > ask) {
+        val (reqState, side) = readSide(sideKey)
+        when (reqState) {
+            "ABSENT" -> return fail("QUOTE_SIDE_REQUIRED", "Leg $index quote has no $sideKey (LTP is never substituted).")
+            "NEGATIVE" -> return fail("QUOTE_SIDE_NEGATIVE", "Leg $index $sideKey is negative.")
+            "INVALID" -> return fail("QUOTE_SIDE_INVALID", "Leg $index $sideKey is zero or invalid (LTP is never substituted).")
+        }
+        val (oppState, opposite) = readSide(oppositeKey)
+        when (oppState) {
+            "ABSENT" -> return fail("QUOTE_OPPOSITE_SIDE_REQUIRED", "Leg $index quote has no $oppositeKey; a one-sided book is not an executable quote.")
+            "NEGATIVE" -> return fail("QUOTE_SIDE_NEGATIVE", "Leg $index $oppositeKey is negative.")
+            "INVALID" -> return fail("QUOTE_OPPOSITE_SIDE_INVALID", "Leg $index $oppositeKey is zero or invalid; a one-sided book is not an executable quote.")
+        }
+        val bid = if (sideKey == "bid") side else opposite
+        val ask = if (sideKey == "ask") side else opposite
+        if (ask < bid) {
             return fail("QUOTE_CROSSED", "Leg $index quote is crossed (bid $bid > ask $ask).")
         }
         val tsMs = listOf("ts_ms", "quote_ts_ms", "timestamp_ms").firstNotNullOfOrNull { k ->
@@ -485,6 +510,8 @@ object OrderExecutionService {
             .put("price_source", PRICE_SOURCE_QUOTE)
             .put("quote_side", sideKey)
             .put("quote_side_value", side)
+            .put("quote_bid", bid)
+            .put("quote_ask", ask)
             .put("quote_ts_ms", tsMs)
             .put("quote_age_ms", ageMs)
             .put("max_quote_age_ms", maxAge)
@@ -584,6 +611,12 @@ object OrderExecutionService {
 
     private val SLICE_SUFFIX = Regex("^(.+)_(\\d+)$")
 
+    /** Anomalies that make the whole outcome UNKNOWN even when some IDs were observed (never PARTIAL or ALL_*). */
+    private val CONTRADICTION_ANOMALIES = setOf(
+        "NO_HTTP_RESPONSE", "UNCERTAIN_TRANSPORT_STATUS", "REJECTION_STATUS_WITH_ORDER_IDS",
+        "DUPLICATE_BROKER_ORDER_ID", "MULTIPLE_IDS_FOR_UNSLICED_LINE"
+    )
+
     /**
      * Parse the multi-order response body and every order line, not merely the HTTP class.
      * - Accepted broker IDs are always preserved, including IDs whose correlation_id cannot be matched.
@@ -602,6 +635,9 @@ object OrderExecutionService {
         val anomalies = linkedSetOf<String>()
         val unmatchedIds = JSONArray()
         val batchErrors = JSONArray()
+        // R2: raw response records are retained verbatim as reconciliation evidence.
+        val rawData = JSONArray()
+        val rawErrors = JSONArray()
 
         fun resolveLine(cid: String): String? {
             if (cid in ids) return cid
@@ -626,6 +662,7 @@ object OrderExecutionService {
                 }
                 dataPresent = data != null
                 if (data != null) for (i in 0 until data.length()) {
+                    rawData.put(data.opt(i))
                     val e = data.opt(i) as? JSONObject
                     if (e == null) { anomalies += "MALFORMED_DATA_ENTRY"; continue }
                     val oid = e.optString("order_id").trim()
@@ -633,10 +670,12 @@ object OrderExecutionService {
                     if (oid.isEmpty()) { anomalies += "DATA_ENTRY_WITHOUT_ORDER_ID"; continue }
                     val line = resolveLine(cid)
                     if (line == null) { unmatchedIds.put(oid); anomalies += "UNMATCHED_ACCEPTED_ORDER_ID"; continue }
+                    if (oid in ids.getValue(line)) { anomalies += "DUPLICATE_RESPONSE_RECORD"; continue }  // never a 2nd placement
                     ids.getValue(line) += oid
                 }
                 val errors = obj.optJSONArray("errors")
                 if (errors != null) for (i in 0 until errors.length()) {
+                    rawErrors.put(errors.opt(i))
                     val e = errors.opt(i) as? JSONObject
                     if (e == null) { anomalies += "MALFORMED_ERROR_ENTRY"; continue }
                     val err = JSONObject()
@@ -654,11 +693,33 @@ object OrderExecutionService {
         val payloadErrors = summary?.optInt("payload_error", 0) ?: 0
         val requestRejectedWhole = (httpStatus in 400..499 && httpStatus != 408) || (payloadErrors > 0 && ids.values.all { it.isEmpty() })
 
+        // R2: coherent identity. A broker ID belongs to exactly one requested line, and an unsliced accepted line has
+        // exactly one broker ID. Every unmatched/batch error affects the aggregate.
+        val linesById = linkedMapOf<String, MutableSet<String>>()
+        ids.forEach { (line, list) -> list.forEach { linesById.getOrPut(it) { linkedSetOf() } += line } }
+        for (i in 0 until unmatchedIds.length()) linesById.getOrPut(unmatchedIds.getString(i)) { linkedSetOf() } += "?unmatched"
+        val reusedIdLines = linesById.filterValues { it.size > 1 }.values.flatten().toSet()
+        if (linesById.values.any { it.size > 1 }) anomalies += "DUPLICATE_BROKER_ORDER_ID"
+        val multiIdLines = ids.filter { (line, list) -> sliceRequested[line] != true && list.size > 1 }.keys
+        if (multiIdLines.isNotEmpty()) anomalies += "MULTIPLE_IDS_FOR_UNSLICED_LINE"
+        if (batchErrors.length() > 0) anomalies += "UNMATCHED_OR_BATCH_ERROR"
+
+        // R1: one conservative classification. Only a 2xx transport status can support acceptance. 408/5xx/other
+        // non-2xx statuses are uncertain; a rejection status (4xx) that carries order IDs is contradictory.
+        val anyIds = ids.values.any { it.isNotEmpty() } || unmatchedIds.length() > 0
+        val rejectionStatus = httpStatus in 400..499 && httpStatus != 408
+        if (httpStatus != 0 && !is2xx) {
+            if (rejectionStatus && anyIds) anomalies += "REJECTION_STATUS_WITH_ORDER_IDS"
+            else if (!rejectionStatus) anomalies += "UNCERTAIN_TRANSPORT_STATUS"
+        }
+        val transportBlocksAcceptance = !is2xx
+
         val lines = JSONArray()
         var accepted = 0; var rejected = 0; var partial = 0; var unknown = 0
         for (cid in requestedIds) {
             val lineIds = ids.getValue(cid); val lineErrs = errs.getValue(cid)
             val outcome = when {
+                lineIds.isNotEmpty() && (cid in reusedIdLines || cid in multiIdLines || transportBlocksAcceptance) -> LINE_UNKNOWN
                 lineIds.isNotEmpty() && lineErrs.isEmpty() -> LINE_ACCEPTED
                 lineIds.isNotEmpty() -> LINE_PARTIAL
                 lineErrs.isNotEmpty() -> LINE_REJECTED
@@ -677,11 +738,12 @@ object OrderExecutionService {
         }
 
         if (summary != null && "NO_HTTP_RESPONSE" !in anomalies) {
-            val acceptedEntries = ids.values.sumOf { it.size } + unmatchedIds.length()
+            val acceptedEntries = linesById.size  // distinct broker IDs, never duplicate records
             val lineErrorEntries = errs.values.sumOf { it.size }
             val noSlices = sliceRequested.values.none { it }
             if ((noSlices && summary.has("total") && summary.optInt("total", -1) != requestedIds.size) ||
                 (summary.has("success") && summary.optInt("success", -1) != acceptedEntries) ||
+                (noSlices && summary.optInt("success", 0) > requestedIds.size) ||
                 (summary.has("error") && payloadErrors == 0 && summary.optInt("error", -1) != lineErrorEntries)) {
                 anomalies += "SUMMARY_MISMATCH"
             }
@@ -699,12 +761,12 @@ object OrderExecutionService {
         if (httpStatus == 207 && accepted == n) anomalies += "HTTP_STATUS_MISMATCH"
         if (httpStatus == 200 && accepted != n && accepted + partial > 0) anomalies += "HTTP_STATUS_MISMATCH"
 
-        val allAcceptedIds = JSONArray().apply {
-            ids.values.flatten().forEach { put(it) }
-            for (i in 0 until unmatchedIds.length()) put(unmatchedIds.getString(i))
-        }
+        // Distinct observed broker IDs (a reused ID is one observed order, not two). Raw records keep the full detail.
+        val allAcceptedIds = JSONArray().apply { linesById.keys.forEach { put(it) } }
+        val contradictory = anomalies.any { it in CONTRADICTION_ANOMALIES }
         val placementStatus = when {
-            anomalies.isEmpty() && n > 0 && accepted == n -> PLACEMENT_ALL_ACCEPTED
+            contradictory -> PLACEMENT_UNKNOWN
+            anomalies.isEmpty() && is2xx && n > 0 && accepted == n -> PLACEMENT_ALL_ACCEPTED
             anomalies.isEmpty() && n > 0 && rejected == n && allAcceptedIds.length() == 0 -> PLACEMENT_ALL_REJECTED
             allAcceptedIds.length() > 0 && accepted < n -> PLACEMENT_PARTIAL
             else -> PLACEMENT_UNKNOWN
@@ -717,6 +779,8 @@ object OrderExecutionService {
             .put("accepted_order_ids", allAcceptedIds)
             .put("unmatched_accepted_order_ids", unmatchedIds)
             .put("batch_errors", batchErrors)
+            .put("raw_data_records", rawData)
+            .put("raw_error_records", rawErrors)
             .put("anomalies", JSONArray(anomalies.toList()))
             .put("summary_reported", summary ?: JSONObject.NULL)
             .put("counts", JSONObject().put("requested", n).put("accepted", accepted).put("rejected", rejected)

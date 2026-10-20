@@ -20,9 +20,13 @@ Quote checks:
 - identity matches the token (the map key, or the quote's own `instrument_key`);
 - not marked invalid;
 - required side present and positive (BUY `ask`, SELL `bid`);
-- book not crossed;
-- timestamp present (`ts_ms` / `quote_ts_ms` / `timestamp_ms`) and age within 0..10 s (the caller may tighten this with
-  `max_quote_age_ms`, never widen it).
+- **both** sides present, finite and positive, with ask ≥ bid (R3). A one-sided book is refused with
+  `QUOTE_OPPOSITE_SIDE_REQUIRED` / `QUOTE_OPPOSITE_SIDE_INVALID`, any negative side with `QUOTE_SIDE_NEGATIVE`, and a
+  crossed book with `QUOTE_CROSSED`;
+- timestamp present (`ts_ms` / `quote_ts_ms` / `timestamp_ms`). The quote age (now − ts) must lie in **−2 s .. +10 s**:
+  - it allows up to 2 s of future clock skew, so the window is not strictly 0..10 s;
+  - the 10 s ceiling is a conservative sandbox engineering choice, not a research claim about fill reliability;
+  - a caller may tighten it with `max_quote_age_ms`, never widen it.
 
 Refusal codes:
 | Code | Cause |
@@ -82,3 +86,26 @@ dispatch.
 - PWA: the unchanged MarketVivi template now renders "Proxy: CONFIGURED · Live WAIT · Paper READY" for token + proxy only.
   It previously rendered "Live READY". Verified by `tools/sandbox_exec/test_g4_pwa_infra_render.mjs` on the Android golden.
   No MarketVivi change.
+
+## Codex PR #20 review follow-up (R1–R3, 20 Oct 2026)
+- **R1** — one conservative classification combines transport status, body status, line evidence and dispatch uncertainty.
+  - A non-2xx response can never be `ALL_ACCEPTED`.
+  - 408, 5xx, other non-2xx statuses and no response (`UNCERTAIN_TRANSPORT_STATUS` / `NO_HTTP_RESPONSE`) make the result
+    UNKNOWN.
+  - A 4xx carrying order IDs is contradictory (`REJECTION_STATUS_WITH_ORDER_IDS`) and also UNKNOWN.
+  - Lines with IDs under such a status are UNKNOWN. All IDs, errors and raw records are kept.
+  - Public `place_multi` returns `ok` only when dispatch's ok (2xx, no error) **and** `ALL_ACCEPTED` both hold. Otherwise
+    it keeps the dispatch error code (e.g. `HTTP_503`) or sets `PLACEMENT_<status>`.
+  - A normal complete placement still succeeds.
+- **R2** — coherent identity.
+  - An unsliced accepted line needs exactly one broker ID (`MULTIPLE_IDS_FOR_UNSLICED_LINE`).
+  - A broker ID can't belong to two lines (`DUPLICATE_BROKER_ORDER_ID`). These contradictions make the result UNKNOWN.
+  - An exact repeated record is `DUPLICATE_RESPONSE_RECORD` and never counts as a second placement.
+  - `accepted_order_ids` holds distinct observed IDs. The summary is checked against distinct IDs and against
+    success > requested.
+  - Any unmatched or batch error (`UNMATCHED_OR_BATCH_ERROR`) blocks `ALL_ACCEPTED`.
+  - Raw evidence is in `raw_data_records` / `raw_error_records`. Sliced lines stay conservative (`SLICE_COUNT_UNVERIFIED`).
+- **R3** — the two-sided book requirement above applies to BUY and SELL alike. An explicit `REQUESTED_LIMIT` is unchanged
+  and needs no quote.
+- Tests: `Pr20CounterexampleTest` holds Codex's nine named counterexamples (BUY and SELL symmetric) plus three
+  preservation cases.

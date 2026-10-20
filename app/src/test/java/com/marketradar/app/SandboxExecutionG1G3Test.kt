@@ -74,7 +74,8 @@ class SandboxExecutionG1G3Test {
             val out = build(JSONObject().put("legs", JSONArray().put(leg(tokA, side)))
                 .put("quotes", JSONObject().put(tokA, quote(tokA, "ltp" to 100.0, key to bad))))
             assertFalse("$side $key=$bad with LTP must be refused: $out", out.getBoolean("ok"))
-            assertEquals("QUOTE_SIDE_INVALID", out.getString("error_code"))
+            // R3: a negative side has its own explicit refusal reason
+            assertEquals(if (bad == -1.0) "QUOTE_SIDE_NEGATIVE" else "QUOTE_SIDE_INVALID", out.getString("error_code"))
         }
     }
 
@@ -134,9 +135,9 @@ class SandboxExecutionG1G3Test {
     @Test fun g1_quoteValidity_identityStaleCrossedAndMissingTimestamp_refused() {
         fun one(q: JSONObject) = build(JSONObject().put("legs", JSONArray().put(leg(tokA, "BUY"))).put("quotes", JSONObject().put(tokA, q)))
         assertEquals("QUOTE_IDENTITY_MISMATCH", one(quote(tokB, "ask" to 100.0)).getString("error_code"))
-        assertEquals("QUOTE_STALE", one(quote(tokA, "ask" to 100.0).put("ts_ms", now - 60_000)).getString("error_code"))
+        assertEquals("QUOTE_STALE", one(quote(tokA, "ask" to 100.0, "bid" to 99.0).put("ts_ms", now - 60_000)).getString("error_code"))
         assertEquals("QUOTE_CROSSED", one(quote(tokA, "ask" to 100.0, "bid" to 101.0)).getString("error_code"))
-        assertEquals("QUOTE_TIMESTAMP_REQUIRED", one(JSONObject().put("ask", 100.0)).getString("error_code"))
+        assertEquals("QUOTE_TIMESTAMP_REQUIRED", one(JSONObject().put("ask", 100.0).put("bid", 99.0)).getString("error_code"))
         assertEquals("QUOTE_INVALID", one(quote(tokA, "ask" to 100.0, "valid" to false)).getString("error_code"))
     }
 
