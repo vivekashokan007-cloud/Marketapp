@@ -109,3 +109,12 @@ dispatch.
   and needs no quote.
 - Tests: `Pr20CounterexampleTest` holds Codex's nine named counterexamples (BUY and SELL symmetric) plus three
   preservation cases.
+
+## Codex follow-up at 6e7abb3 (20 Oct 2026)
+- Upstox processes a batch only if it has no payload_error, so `summary.payload_error > 0` together with any observed broker
+  ID (matched or unmatched) is the batch contradiction `PAYLOAD_ERROR_WITH_ORDER_IDS`.
+- It forces aggregate UNKNOWN. IDs, raw records, the summary and error evidence are all kept.
+- Public `place_multi` returns `ok=false` with `error_code=PLACEMENT_UNKNOWN` and the anomaly.
+- Unchanged: a normal complete placement still passes, and a coherent payload rejection with no IDs stays `ALL_REJECTED`.
+- Tests: `SummaryContradictionTest` (parser plus public action on Codex's exact HTTP 200 body, plus the no-ID preservation
+  case).

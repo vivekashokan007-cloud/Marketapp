@@ -614,7 +614,7 @@ object OrderExecutionService {
     /** Anomalies that make the whole outcome UNKNOWN even when some IDs were observed (never PARTIAL or ALL_*). */
     private val CONTRADICTION_ANOMALIES = setOf(
         "NO_HTTP_RESPONSE", "UNCERTAIN_TRANSPORT_STATUS", "REJECTION_STATUS_WITH_ORDER_IDS",
-        "DUPLICATE_BROKER_ORDER_ID", "MULTIPLE_IDS_FOR_UNSLICED_LINE"
+        "DUPLICATE_BROKER_ORDER_ID", "MULTIPLE_IDS_FOR_UNSLICED_LINE", "PAYLOAD_ERROR_WITH_ORDER_IDS"
     )
 
     /**
@@ -707,6 +707,9 @@ object OrderExecutionService {
         // R1: one conservative classification. Only a 2xx transport status can support acceptance. 408/5xx/other
         // non-2xx statuses are uncertain; a rejection status (4xx) that carries order IDs is contradictory.
         val anyIds = ids.values.any { it.isNotEmpty() } || unmatchedIds.length() > 0
+        // Codex PR #20 follow-up: Upstox processes a batch only if it has no payload_error, so payload_error > 0 together
+        // with any observed broker ID (matched or unmatched) is a batch contradiction -> UNKNOWN; all evidence is kept.
+        if (payloadErrors > 0 && anyIds) anomalies += "PAYLOAD_ERROR_WITH_ORDER_IDS"
         val rejectionStatus = httpStatus in 400..499 && httpStatus != 408
         if (httpStatus != 0 && !is2xx) {
             if (rejectionStatus && anyIds) anomalies += "REJECTION_STATUS_WITH_ORDER_IDS"
