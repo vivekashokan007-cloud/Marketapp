@@ -24,7 +24,21 @@ They must not appear in any report as verified, or as a prior for the endpoint.
 Per date × index (NF, BNF separately):
 - primary arm: status (OPEN/RESOLVED/UNRESOLVED/SKIP) and reason;
 - delayed control arm: status and reason;
-- reference capture: previous-session reference present and its session/quote timestamp (never prices);
+- per arm, `previous_session_reference_used`: the PREVIOUS session's reference consumed by that row:
+  - `RETAINED`, with its session and quote timestamp;
+  - `USED_NOT_RETAINED` (GAP_BELOW_THRESHOLD / EXPIRY_ROLL rows do not store it);
+  - `NONE_RECORDED`.
+
+  This is not today's capture.
+- per date × index, `reference_capture`: the 15:20 capture result from retained evidence only, giving status,
+  session and timestamps (never prices, strikes or keys). Evidence comes from `journal.references`
+  (`JOURNAL_REFERENCE`), a next-session row that consumed it (`CONSUMED_BY_NEXT_SESSION_ROW`), or a
+  reason-coded attempt (`JOURNAL_ATTEMPT`).
+  - The journal keeps only the latest reference and attempt per index, so overwritten history is
+    `UNKNOWN` / `NOT_RETAINED` with `cross_check_required=true`.
+  - For those dates the bounded snapshot `reference_capture` cross-check is **required**.
+  - A reference from another session is never assigned to a date.
+  - Dates with reference evidence but no arm row are still listed.
 - `entry_decision_ts_ms`, `entry_quote_ts_ms`, `exit_quote_ts_ms`, `exit_decision_ts_ms`;
 - `hold_ms_from_entry_decision`;
 - failure counts by class: engine, staleness, window, identity (plus data/authority).

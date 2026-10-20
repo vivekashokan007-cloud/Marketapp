@@ -24,10 +24,12 @@ sys.path.insert(0, os.path.join(HERE, '..', 'app', 'src', 'main', 'python'))
 import paper_buying_research as x1  # noqa: E402
 import x1_report  # noqa: E402  (integrity only: load/validate)
 
-SCHEMA = 'x1_week1_counts_v1'
+SCHEMA = 'x1_week1_counts_v2'   # b511 R3: previous_session_reference_used + per-day reference_capture
 ROW_FIELDS = ('session_date', 'index', 'arm', 'status', 'reason', 'window_reason',
               'entry_decision_ts_ms', 'entry_quote_ts_ms', 'exit_quote_ts_ms', 'exit_decision_ts_ms')
 REFERENCE_FIELDS = ('session_date', 'quote_ts_ms')            # presence/timing only, never prices
+REFERENCE_USED_REASONS = frozenset({'GAP_BELOW_THRESHOLD', 'EXPIRY_ROLL'})
+CAPTURE_TS_FIELDS = ('quote_ts_ms', 'decision_ts_ms')        # timestamps only, never prices/strikes/keys
 PROHIBITED_KEYS = frozenset({
     'premium', 'entry_ask', 'exit_bid', 'entry_bid_observed', 'gross', 'net', 'fees', 'entry_fee', 'exit_fee',
     'pnl', 'mean', 'mean_net', 'median', 'sd', 'ci', 'ci_low', 'ci_high', 'ci_lower', 'ci_upper', 'bootstrap',
@@ -59,6 +61,15 @@ def _int_or_none(v):
     return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
+def _prev_session(day):
+    """Previous session per the collector's own calendar (date only), or None if unavailable."""
+    try:
+        from datetime import date as _date
+        return x1.DEFAULT_CALENDAR.prev_session(_date.fromisoformat(str(day))).isoformat()
+    except Exception:          # CalendarUnavailable / malformed date: no inference
+        return None
+
+
 def build(journal, integrity, failures, capacity):
     out = {'schema': SCHEMA, 'counts_only': True,
            'integrity': {k: integrity.get(k) for k in ('source_sha256', 'input_kind', 'hash_check',
@@ -73,32 +84,67 @@ def build(journal, integrity, failures, capacity):
                       'block_id': block.get('block_id'), 'started_at_ist': block.get('started_at_ist'),
                       'stopped_reason': (journal.get('stopped') or {}).get('reason'),
                       'record_count': len(journal.get('records') or [])}
-    days = {}
+    days, consumed, used_unretained = {}, {}, set()
+
+    def new_day(key):
+        return days.setdefault(key, {'session_date': key[0], 'index': key[1], 'arms': {},
+                                     'failure_counts': {c: 0 for c in FAILURE_CLASSES}})
     for r in journal.get('records') or []:
-        key = (r.get('session_date'), r.get('index'))
-        day = days.setdefault(key, {'session_date': key[0], 'index': key[1], 'arms': {},
-                                    'failure_counts': {c: 0 for c in FAILURE_CLASSES}})
+        day = new_day((r.get('session_date'), r.get('index')))
         arm = {f: r.get(f) for f in ROW_FIELDS if f in r and f not in ('session_date', 'index', 'arm')}
         for f in ('entry_decision_ts_ms', 'entry_quote_ts_ms', 'exit_quote_ts_ms', 'exit_decision_ts_ms'):
             if f in arm:
                 arm[f] = _int_or_none(arm[f])
         d, q = _int_or_none(r.get('entry_decision_ts_ms')), _int_or_none(r.get('exit_quote_ts_ms'))
         arm['hold_ms_from_entry_decision'] = (q - d) if d is not None and q is not None else None
+        # The PREVIOUS session's reference consumed by this row (not today's 15:20 capture; Codex R3).
+        # RETAINED: the row stores it. USED_NOT_RETAINED: the collector only reaches GAP_BELOW_THRESHOLD /
+        # EXPIRY_ROLL after matching a previous-session reference but does not store it on the row.
+        # NONE_RECORDED: anything else (e.g. PREVIOUS_SESSION_REFERENCE_UNAVAILABLE, delayed arms).
         ref = r.get('reference')
-        arm['reference_capture'] = ({'present': True, **{f: ref.get(f) for f in REFERENCE_FIELDS}}
-                                    if isinstance(ref, dict) else {'present': False})
+        if isinstance(ref, dict):
+            arm['previous_session_reference_used'] = {'state': 'RETAINED', 'session_date': ref.get('session_date'),
+                                                      'quote_ts_ms': _int_or_none(ref.get('quote_ts_ms'))}
+            if ref.get('session_date'):
+                consumed.setdefault((ref.get('session_date'), r.get('index')), _int_or_none(ref.get('quote_ts_ms')))
+        elif r.get('reason') in REFERENCE_USED_REASONS:
+            arm['previous_session_reference_used'] = {'state': 'USED_NOT_RETAINED'}
+            prev = _prev_session(r.get('session_date'))
+            if prev:                       # keep that date visible; its capture stays unproven unless retained
+                used_unretained.add((prev, r.get('index')))
+        else:
+            arm['previous_session_reference_used'] = {'state': 'NONE_RECORDED'}
         day['arms'][r.get('arm')] = arm
         for reason in {r.get('reason'), r.get('window_reason')} - {None}:
             cls = classify(reason)
             if cls in day['failure_counts']:
                 day['failure_counts'][cls] += 1
+    # Per-date/index 15:20 capture result from RETAINED evidence only. The journal keeps the latest
+    # reference and latest reference attempt per index, so history can be overwritten: never fabricate,
+    # never assign another session's reference; unproven dates are UNKNOWN / NOT_RETAINED and need the
+    # bounded snapshot reference_capture cross-check.
+    refs, ref_attempts = {}, {}
+    for ix, ref in (journal.get('references') or {}).items():
+        if isinstance(ref, dict) and ref.get('session_date'):
+            refs[(ref.get('session_date'), ix)] = ref
     for akey, attempt in (journal.get('attempts') or {}).items():
-        if not isinstance(attempt, dict):
-            continue
-        ix = str(akey).split(':')[0]
-        key = (attempt.get('session'), ix)
-        if key in days and akey.endswith(':reference'):
-            days[key].setdefault('reference_attempt_reason', attempt.get('reason'))
+        if isinstance(attempt, dict) and str(akey).endswith(':reference') and attempt.get('session'):
+            ref_attempts[(attempt.get('session'), str(akey).split(':')[0])] = attempt
+    for key in set(refs) | set(ref_attempts) | set(consumed) | used_unretained:
+        new_day(key)
+    for key, day in days.items():
+        if key in refs:
+            cap = {'status': 'CAPTURED', 'session': key[0], 'evidence': 'JOURNAL_REFERENCE',
+                   **{f: _int_or_none(refs[key].get(f)) for f in CAPTURE_TS_FIELDS}}
+        elif key in consumed:
+            cap = {'status': 'CAPTURED', 'session': key[0], 'evidence': 'CONSUMED_BY_NEXT_SESSION_ROW',
+                   'quote_ts_ms': consumed[key]}
+        elif key in ref_attempts:
+            cap = {'status': str(ref_attempts[key].get('reason')), 'session': key[0], 'evidence': 'JOURNAL_ATTEMPT'}
+        else:
+            cap = {'status': 'UNKNOWN', 'session': None, 'evidence': 'NOT_RETAINED'}
+        cap['cross_check_required'] = cap['evidence'] == 'NOT_RETAINED'
+        day['reference_capture'] = cap
     out['days'] = [days[k] for k in sorted(days, key=lambda k: (str(k[0]), str(k[1])))]
     totals = {}
     for ix in x1.INDICES:
