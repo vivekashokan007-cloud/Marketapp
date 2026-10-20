@@ -1,0 +1,947 @@
+[
+ {
+  "t": "ab_week1_decisions",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ai_branch_proposals",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ai_evaluation_examples",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ai_evaluation_jobs",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "app_config",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "approved_branch_proposals",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "bhav_options",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "chain_slices",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=ar/postgres,authenticated=ar/postgres}",
+  "priv": {
+   "anon": "SI",
+   "authenticated": "SI",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "chain_snapshots",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "config_nf50_constituents",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "daily_data",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "elephant_assessments",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ev_calibration_published",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ev_decisions",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ev_outcomes",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "evaluator_brief_artifacts",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "evaluator_jobs",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "evaluator_proposals",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "evaluator_proposals_app_view",
+  "kind": "v",
+  "rls": false,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "evaluator_verdict_artifacts",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "historical_option_candles",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "mat_view_daily_leg_counts",
+  "kind": "m",
+  "rls": false,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_brain_snapshots",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=ar/postgres,authenticated=ar/postgres}",
+  "priv": {
+   "anon": "SI",
+   "authenticated": "SI",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_calibration_report",
+  "kind": "v",
+  "rls": false,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_capture_events",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_context_percentile_history",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=arw/postgres,authenticated=arw/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIU",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_daily_accuracy",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_daily_accuracy_lane",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_decisions",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_evaluation_metrics",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": null,
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_evaluation_outcomes",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_evaluation_outcomes_s1",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_evaluation_runs",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": null,
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_generated_candidates",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_models",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_monthly_accuracy_lane",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_monthly_summary",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_option_chain_snapshots",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_paper_decision_menu_candidates",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_paper_decision_menu_candidates_v",
+  "kind": "v",
+  "rls": false,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_paper_decision_menus",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_pc2_authority_decisions",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_pc2_decision_batches",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_pc2_policy_registry",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_performance",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_poll_sequences",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_recommendation_outcomes",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_recommendation_outcomes_archive",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": null,
+   "authenticated": null,
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_recommendation_outcomes_s1",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_rejected_candidate_outcomes",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=arw/postgres,authenticated=arw/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIU",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_weekly_accuracy",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "ml_weekly_accuracy_lane",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "position_ticks",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "premium_history",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "radar_inputs",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "sandbox_orders",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "signal_reliability",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "straddle_ratios",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "teaching_sessions",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "teaching_snapshots",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "trade_log",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "trades",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,service_role=arwdDxtm/postgres,anon=r/postgres,authenticated=r/postgres}",
+  "priv": {
+   "anon": "S",
+   "authenticated": "S",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ },
+ {
+  "t": "trades_v2",
+  "kind": "r",
+  "rls": true,
+  "force": false,
+  "owner": "postgres",
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "priv": {
+   "anon": "SIU",
+   "authenticated": "SIUD",
+   "service_role": "SIUDT",
+   "authenticator": null,
+   "postgres": "SIUDT"
+  }
+ }
+]

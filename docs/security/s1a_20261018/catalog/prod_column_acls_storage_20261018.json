@@ -1,0 +1,1 @@
+{"column_acls":null,"storage_policies":[{"t":"objects","p":"Allow all exports","roles":["anon"],"cmd":"ALL","qual":"true","chk":"true"}],"buckets":[{"id":"EXPORTS","public":true}],"captured_at_utc":"2026-10-18T03:2x","mode":"BEGIN READ ONLY"}

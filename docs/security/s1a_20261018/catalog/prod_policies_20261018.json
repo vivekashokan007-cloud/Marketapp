@@ -1,0 +1,776 @@
+[
+ {
+  "t": "ab_week1_decisions",
+  "p": "ab_week1_decisions_insert_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ab_week1_decisions",
+  "p": "ab_week1_decisions_select_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ab_week1_decisions",
+  "p": "ab_week1_decisions_update_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "UPDATE",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ai_branch_proposals",
+  "p": "Enable insert for authenticated users only",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "t": "ai_branch_proposals",
+  "p": "Enable read access for all users",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ai_branch_proposals",
+  "p": "Enable update for authenticated users only",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "UPDATE",
+  "qual": "(auth.role() = 'authenticated'::text)",
+  "chk": null
+ },
+ {
+  "t": "ai_evaluation_examples",
+  "p": "Enable insert for authenticated users only",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "t": "ai_evaluation_examples",
+  "p": "Enable read access for all users",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ai_evaluation_jobs",
+  "p": "Enable insert for authenticated users only",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "t": "ai_evaluation_jobs",
+  "p": "Enable read access for all users",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ai_evaluation_jobs",
+  "p": "Enable update for authenticated users only",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "UPDATE",
+  "qual": "(auth.role() = 'authenticated'::text)",
+  "chk": null
+ },
+ {
+  "t": "app_config",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "approved_branch_proposals",
+  "p": "approved_branch_proposals_read_all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "approved_branch_proposals",
+  "p": "approved_branch_proposals_read_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "bhav_options",
+  "p": "bhav_options_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "chain_slices",
+  "p": "chain_slices_app_insert",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "chain_slices",
+  "p": "chain_slices_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "chain_snapshots",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "daily_data",
+  "p": "daily_data_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "elephant_assessments",
+  "p": "elephant_assessments_anon_all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ev_calibration_published",
+  "p": "ev_calibration_published_public_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ev_decisions",
+  "p": "ev_decisions_public_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ev_outcomes",
+  "p": "ev_outcomes_public_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_brain_snapshots",
+  "p": "ml_brain_snapshots_app_insert",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_brain_snapshots",
+  "p": "ml_brain_snapshots_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_capture_events",
+  "p": "ml_capture_events_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_context_percentile_history",
+  "p": "ml_context_percentile_history_app_insert",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_context_percentile_history",
+  "p": "ml_context_percentile_history_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_context_percentile_history",
+  "p": "ml_context_percentile_history_app_update",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "UPDATE",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_daily_accuracy",
+  "p": "allow_anon_ml_daily_accuracy",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_decisions",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_evaluation_metrics",
+  "p": "ml_evaluation_metrics_authenticated_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_evaluation_outcomes",
+  "p": "anon_rw_ml_eval",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_evaluation_outcomes_s1",
+  "p": "anon_insert_ml_eval_s1",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_evaluation_outcomes_s1",
+  "p": "anon_select_ml_eval_s1",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_evaluation_runs",
+  "p": "ml_evaluation_runs_authenticated_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_generated_candidates",
+  "p": "allow anon insert ml_generated_candidates",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_generated_candidates",
+  "p": "allow anon select ml_generated_candidates",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_models",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_monthly_summary",
+  "p": "allow_anon_ml_monthly_summary",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_option_chain_snapshots",
+  "p": "allow_anon_ml_option_chain_snapshots",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_paper_decision_menu_candidates",
+  "p": "pdmc_select",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_paper_decision_menus",
+  "p": "pdm_select",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_pc2_authority_decisions",
+  "p": "ml_pc2_authority_decisions_anon_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_pc2_authority_decisions",
+  "p": "ml_pc2_authority_decisions_anon_update",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "UPDATE",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_pc2_authority_decisions",
+  "p": "ml_pc2_authority_decisions_anon_write",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_pc2_decision_batches",
+  "p": "ml_pc2_decision_batches_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_pc2_policy_registry",
+  "p": "ml_pc2_policy_registry_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_performance",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_poll_sequences",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_recommendation_outcomes",
+  "p": "allow_anon_ml_recommendation_outcomes",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_recommendation_outcomes_s1",
+  "p": "anon_insert_ml_reco_s1",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_recommendation_outcomes_s1",
+  "p": "anon_select_ml_reco_s1",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_rejected_candidate_outcomes",
+  "p": "ml_rejected_candidate_outcomes_app_insert",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "ml_rejected_candidate_outcomes",
+  "p": "ml_rejected_candidate_outcomes_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "ml_rejected_candidate_outcomes",
+  "p": "ml_rejected_candidate_outcomes_app_update",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "UPDATE",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "ml_weekly_accuracy",
+  "p": "allow_anon_ml_weekly_accuracy",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "position_ticks",
+  "p": "position_ticks_insert_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "premium_history",
+  "p": "Allow all premium_history",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "radar_inputs",
+  "p": "radar_inputs_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "sandbox_orders",
+  "p": "sandbox_orders_insert_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "INSERT",
+  "qual": null,
+  "chk": "true"
+ },
+ {
+  "t": "sandbox_orders",
+  "p": "sandbox_orders_select_anon",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "straddle_ratios",
+  "p": "straddle_ratios_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "trade_log",
+  "p": "Allow all",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "trade_log",
+  "p": "Allow all operations",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ },
+ {
+  "t": "trades",
+  "p": "trades_legacy_app_read",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "anon",
+   "authenticated"
+  ],
+  "cmd": "SELECT",
+  "qual": "true",
+  "chk": null
+ },
+ {
+  "t": "trades_v2",
+  "p": "Allow all trades_v2",
+  "perm": "PERMISSIVE",
+  "roles": [
+   "public"
+  ],
+  "cmd": "ALL",
+  "qual": "true",
+  "chk": "true"
+ }
+]

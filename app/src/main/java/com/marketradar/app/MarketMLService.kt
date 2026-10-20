@@ -1542,15 +1542,25 @@ class MarketMLService : Service() {
         val h2MissingPreview: String = ""
     )
 
-    private fun reconcileEvaluationSnapshotIds(sessionDate: String, file: File): Set<Long> {
-        val reconciler = EvaluationIdentity.SnapshotReconciler(
-            sessionDate,
-            fetch = { SupabaseClient.fetchEvaluationSnapshotIdentities(sessionDate) },
-            persist = { snapshot ->
-                LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_REPLAY: date=$sessionDate poll=${snapshot.optString("poll_ts")}")
-                SupabaseClient.saveBrainSnapshot(snapshot)
-            }
-        )
+    private fun evaluationInputGateHost(sessionDate: String, file: File) = object : EvaluationInputCoverageGate.Host {
+        override fun fetchRemoteIdentities() = SupabaseClient.fetchEvaluationSnapshotIdentities(sessionDate)
+        override fun persistReplay(snapshot: org.json.JSONObject): Boolean {
+            LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_REPLAY: date=$sessionDate poll=${snapshot.optString("poll_ts")}")
+            return SupabaseClient.saveBrainSnapshot(snapshot)
+        }
+        override fun resolvePreparedInput(reconciler: EvaluationIdentity.SnapshotReconciler) =
+            resolveEvaluationSnapshotIds(sessionDate, file, reconciler)
+        override fun invalidatePreparedMarker() {
+            File(evaluationPrepareCompletePath(this@MarketMLService, sessionDate)).delete()
+        }
+        override fun log(level: Char, message: String) = LogBuffer.add(level, TAG, message)
+    }
+
+    private fun resolveEvaluationSnapshotIds(
+        sessionDate: String,
+        file: File,
+        reconciler: EvaluationIdentity.SnapshotReconciler
+    ): Set<Long> {
         val ids = linkedSetOf<Long>()
         val temp = File(file.parentFile, "${file.name}.identity.tmp")
         var repaired = 0
@@ -1573,6 +1583,7 @@ class MarketMLService : Service() {
         } finally {
             if (temp.exists()) temp.delete()
         }
+        // Coverage of every remote identity is proven by EvaluationInputCoverageGate.verify.
         LogBuffer.add('I', TAG, "EVAL_SNAPSHOT_IDENTITIES_READY: date=$sessionDate rows=${ids.size} repaired=$repaired replayed=${reconciler.replayed}")
         return ids
     }
@@ -2880,9 +2891,12 @@ class MarketMLService : Service() {
             }
             // This also checks cached/local-fallback inputs before Python consumes
             // them. Missing or ambiguous remote identity stops without an upload.
-            val evaluationSnapshotIds = if (preparedInputs.snapshotCount > 0) {
-                reconcileEvaluationSnapshotIds(sessionDate, snapshotsFile)
-            } else emptySet<Long>()
+            val inputCoverage = EvaluationInputCoverageGate.verify(
+                sessionDate,
+                preparedInputs.snapshotCount,
+                evaluationInputGateHost(sessionDate, snapshotsFile)
+            )
+            val evaluationSnapshotIds = inputCoverage.ids
             Log.i(
                 TAG,
                 "EVAL_INPUT_FILES_READY: date=$sessionDate snapshots=${preparedInputs.snapshotCount} " +
@@ -3073,17 +3087,20 @@ class MarketMLService : Service() {
             if (totalSnapshots == 0) {
                 val pollCount = prefs.getInt("poll_count", 0)
                 val lastPollDate = prefs.getString("last_poll_date", "") ?: ""
-                if (coverageIntegrity == "INTEGRITY_BROKEN" && !forceAnyway) {
-                    writeJsonArrayFile(outputsFile, org.json.JSONArray())
-                    markIncompleteSession(sessionDate, coverageIntegrityIssue, 0)
-                    cancelDayEvaluationReminder(this@MarketMLService)
-                    Log.w(TAG, "EVAL_BLOCKED_NO_SNAPSHOTS_INCOMPLETE_SESSION: date=$sessionDate issue=$coverageIntegrityIssue")
-                    return@withContext
-                }
-                if (lastPollDate == sessionDate && pollCount > 0) {
-                    throw IllegalStateException(
+                when (EvaluationInputCoverageGate.decideZeroSnapshots(
+                    sessionDate, inputCoverage, coverageIntegrity, forceAnyway, lastPollDate, pollCount
+                )) {
+                    EvaluationInputCoverageGate.ZeroSnapshotDecision.BLOCKED_INCOMPLETE_SESSION -> {
+                        writeJsonArrayFile(outputsFile, org.json.JSONArray())
+                        markIncompleteSession(sessionDate, coverageIntegrityIssue, 0)
+                        cancelDayEvaluationReminder(this@MarketMLService)
+                        Log.w(TAG, "EVAL_BLOCKED_NO_SNAPSHOTS_INCOMPLETE_SESSION: date=$sessionDate issue=$coverageIntegrityIssue")
+                        return@withContext
+                    }
+                    EvaluationInputCoverageGate.ZeroSnapshotDecision.FAIL_POLLED_WITHOUT_SNAPSHOTS -> throw IllegalStateException(
                         "EVAL_NO_SNAPSHOTS_AFTER_POLLING: $sessionDate has $pollCount polls but no evaluation snapshots were prepared."
                     )
+                    EvaluationInputCoverageGate.ZeroSnapshotDecision.DONE_EMPTY -> Unit
                 }
                 writeJsonArrayFile(outputsFile, org.json.JSONArray())
                 prefs.edit().putString("evaluation_done_date", sessionDate).commit()

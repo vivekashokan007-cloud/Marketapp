@@ -1,0 +1,1 @@
+{"policies_md5":"49918dc367b611dba8b0563a35db5f10","relations_md5":"12e631de0182a098608384183ec0eb0a","default_acl_md5":"4347dd872c0352999e51fde52ccadda1","at_utc":"2026-10-18 03:23:44.789+00","query":"tools/s1a_db_suite/fingerprint.sql","mode":"BEGIN READ ONLY; statement_timeout 20s"}

@@ -1,0 +1,48 @@
+[
+ {
+  "v": "evaluator_proposals_app_view",
+  "kind": "v",
+  "opts": null,
+  "is_updatable": "YES",
+  "insertable": "YES",
+  "trig_upd": "NO",
+  "trig_del": "NO",
+  "del_rel_flag": 28,
+  "def": " SELECT id,\n    job_id,\n    status,\n    COALESCE(proposal_payload ->> 'category'::text, title, 'proposal'::text) AS category,\n    COALESCE((proposal_payload ->> 'priority'::text)::integer, priority) AS priority,\n    COALESCE(proposal_payload ->> 'validation_notes'::text, proposal_payload ->> 'validationNotes'::text, ''::text) AS validation_notes,\n        CASE\n            WHEN status = 'approved'::text THEN updated_at\n            ELSE NULL::timestamp with time zone\n        END AS approved_at,\n    COALESCE(proposal_payload ->> 'index_key'::text, proposal_payload ->> 'index'::text, 'ALL'::text) AS index_key,\n    jsonb_build_object('proposal_id', COALESCE(proposal_payload ->> 'proposal_id'::text, id::text), 'status', status, 'index', COALESCE(proposal_payload ->> 'index'::text, proposal_payload ->> 'index_key'::text, 'ALL'::text), 'index_key', COALESCE(proposal_payload ->> 'index_key'::text, proposal_payload ->> 'index'::text, 'ALL'::text), 'category', COALESCE(proposal_payload ->> 'category'::text, title, 'proposal'::text), 'priority', COALESCE((proposal_payload ->> 'priority'::text)::integer, priority), 'hypothesis', COALESCE(proposal_payload ->> 'hypothesis'::text, ''::text), 'explanation', COALESCE(proposal_payload ->> 'explanation'::text, rationale, ''::text), 'conditions', COALESCE(proposal_payload -> 'conditions'::text, '{}'::jsonb), 'action', COALESCE(proposal_payload -> 'action'::text, '{}'::jsonb), 'evidence', COALESCE(proposal_payload -> 'evidence'::text, '{}'::jsonb))"
+ },
+ {
+  "v": "mat_view_daily_leg_counts",
+  "kind": "m",
+  "opts": null,
+  "is_updatable": null,
+  "insertable": null,
+  "trig_upd": null,
+  "trig_del": null,
+  "del_rel_flag": 0,
+  "def": " SELECT date(poll_timestamp) AS capture_date,\n    lane,\n    count(*) AS total_snapshots,\n    sum(jsonb_array_length(candidates)) AS total_candidates_captured\n   FROM teaching_snapshots\n  GROUP BY (date(poll_timestamp)), lane;"
+ },
+ {
+  "v": "ml_calibration_report",
+  "kind": "v",
+  "opts": null,
+  "is_updatable": "NO",
+  "insertable": "NO",
+  "trig_upd": "NO",
+  "trig_del": "NO",
+  "del_rel_flag": 0,
+  "def": " SELECT ml_action,\n    count(*) AS n,\n    round(avg(\n        CASE\n            WHEN won THEN 1.0\n            ELSE 0.0\n        END), 3) AS actual_wr,\n    round(avg(p_final::numeric), 3) AS avg_p_predicted,\n    round(avg(p_gbt::numeric), 3) AS avg_p_gbt,\n    round(avg(p_nn::numeric), 3) AS avg_p_nn,\n    round(avg(abs(p_final -\n        CASE\n            WHEN won THEN 1.0\n            ELSE 0.0\n        END::double precision)::numeric), 3) AS avg_error,\n    round(avg(ml_edge::numeric), 3) AS avg_edge,\n    count(\n        CASE\n            WHEN ood THEN 1\n            ELSE NULL::integer\n        END) AS n_ood,\n    count(\n        CASE\n            WHEN ood_blocked THEN 1\n            ELSE NULL::integer\n        END) AS n_blocked\n   FROM ml_decisions\n  WHERE won IS NOT NULL\n  GROUP BY ml_action\n  ORDER BY ml_action;"
+ },
+ {
+  "v": "ml_paper_decision_menu_candidates_v",
+  "kind": "v",
+  "opts": [
+   "security_invoker=true"
+  ],
+  "is_updatable": "YES",
+  "insertable": "YES",
+  "trig_upd": "NO",
+  "trig_del": "NO",
+  "del_rel_flag": 28,
+  "def": " SELECT menu_id,\n    candidate_id,\n    generated_rank,\n    watchlist_rank,\n    surfaced,\n    selected_primary,\n    control_role,\n    index_key,\n    expiry,\n    strategy_family,\n    lane,\n    lot_size,\n    control_eligible,\n    content_canonical::jsonb -> 'legs'::text AS legs,\n    content_canonical::jsonb -> 'margin_evidence'::text AS margin_evidence,\n    content_canonical::jsonb AS content,\n    content_sha256,\n    created_at\n   FROM ml_paper_decision_menu_candidates c;"
+ }
+]
