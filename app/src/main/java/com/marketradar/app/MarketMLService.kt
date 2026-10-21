@@ -3325,7 +3325,52 @@ class MarketMLService : Service() {
             // wired here because partial remote success mid-evaluation risks false-
             // complete learning flags. e3_persistence_contract.py encodes the cursor
             // for a future mid-run path; runtime write path is still this call.
-            val saveResult = SupabaseClient.saveEvaluationOutcomes(sessionDate, validatedOutcomes)
+            // Batch C corrective (R1): persisted identities come ONLY from Supabase
+            // readback of snapshot_id+candidate_id+role. Local evaluatedOutcomes are
+            // the produced set, never the persisted proof. Aggregate counts are not proof.
+            val expectedSnapshotIds = activeEvaluationRun?.let { run ->
+                val arr = run.optJSONArray("expected_identity_ids")
+                val out = mutableListOf<String>()
+                if (arr != null) {
+                    for (i in 0 until arr.length()) {
+                        val v = arr.opt(i)?.toString()?.trim().orEmpty()
+                        if (v.isNotEmpty() && v != "null") out.add(v)
+                    }
+                }
+                out
+            } ?: emptyList()
+            // b513: verification-first recovery. A prior upload ack for this exact same-date validated stream is only a
+            // hint: read back first (same frozen boundary, bounded transient retry) and skip re-uploading the retained
+            // stream only if the exact composite set + primary companions are already verified.
+            val currentAck = EvaluationCertification.UploadAck(sessionDate, validatedOutcomes.count, outputsFile.length(),
+                EvaluationCertification.keysDigest(validatedOutcomes.compositeKeys))
+            val priorAck = EvaluationCertification.UploadAck.fromJson(prefs.getString("evaluation_upload_ack", null))
+            val readbackCutoff = SupabaseClient.exportFreezeCutoffIso()
+            fun boundedReadback(label: String): SupabaseClient.OutcomeIdentityReadback = try {
+                SupabaseClient.readEvaluationOutcomeIdentityKeysBounded(sessionDate,
+                    includeRejected = validatedOutcomes.rejectedCount > 0, cutoffIso = readbackCutoff) { attempt, f ->
+                    LogBuffer.add('W', TAG, "EVAL_IDENTITY_READBACK_ATTEMPT_FAILED: mode=$label attempt=$attempt " +
+                        (f?.line() ?: "class=unclassified"))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "EVAL_IDENTITY_READBACK_EXCEPTION: ${e.message}", e)
+                SupabaseClient.OutcomeIdentityReadback(ok = false, status = "exception",
+                    error = "stage=unknown class=transport_${e.javaClass.simpleName} " +
+                        EvaluationReadbackDiagnostics.describeException(e), cutoffIso = readbackCutoff)
+            }
+            var verifiedFirst: SupabaseClient.OutcomeIdentityReadback? = null
+            if (EvaluationCertification.shouldVerifyFirst(priorAck, currentAck)) {
+                val rb = boundedReadback("verify_first")
+                val vf = EvaluationCertification.certify(expectedSnapshotIds, validatedOutcomes.compositeKeys,
+                    expectedPrimaryCompositeKeys, rb)
+                LogBuffer.add('I', TAG, "EVAL_VERIFY_FIRST: " +
+                    EvaluationCertification.honestStatusLine(sessionDate, priorAck?.persistedCount, rb, vf) +
+                    " reupload=${!vf.complete}")
+                if (vf.complete) verifiedFirst = rb
+            }
+            val saveResult = if (verifiedFirst != null && priorAck != null) {
+                EvaluationCertification.saveResultFromAck(priorAck, validatedOutcomes.count)
+            } else SupabaseClient.saveEvaluationOutcomes(sessionDate, validatedOutcomes)
             if (!saveResult.success) {
                 updateRunStage(
                     "outcome_persistence",
@@ -3359,38 +3404,16 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
-            // Batch C corrective (R1): persisted identities come ONLY from Supabase
-            // readback of snapshot_id+candidate_id+role. Local evaluatedOutcomes are
-            // the produced set, never the persisted proof. Aggregate counts are not proof.
-            val expectedSnapshotIds = activeEvaluationRun?.let { run ->
-                val arr = run.optJSONArray("expected_identity_ids")
-                val out = mutableListOf<String>()
-                if (arr != null) {
-                    for (i in 0 until arr.length()) {
-                        val v = arr.opt(i)?.toString()?.trim().orEmpty()
-                        if (v.isNotEmpty() && v != "null") out.add(v)
-                    }
-                }
-                out
-            } ?: emptyList()
-            val identityReadback = try {
-                SupabaseClient.readEvaluationOutcomeIdentityKeys(sessionDate, includeRejected = validatedOutcomes.rejectedCount > 0)
-            } catch (e: Exception) {
-                Log.e(TAG, "EVAL_IDENTITY_READBACK_EXCEPTION: ${e.message}", e)
-                SupabaseClient.OutcomeIdentityReadback(
-                    ok = false,
-                    status = "exception",
-                    error = e.message ?: "identity_readback_exception"
-                )
+            if (verifiedFirst == null) {
+                prefs.edit().putString("evaluation_upload_ack", currentAck.copy(
+                    persistedCount = saveResult.persistedCount, primaryPersistedCount = saveResult.primaryPersistedCount,
+                    evaluationPersistedCount = saveResult.evaluationPersistedCount,
+                    rejectedPersistedCount = saveResult.rejectedPersistedCount).toJson().toString()).commit()
             }
-            val assessment = EvaluationIdentityCoverage.assessComposites(
-                expectedSnapshotIds = expectedSnapshotIds,
-                producedCompositeKeys = validatedOutcomes.compositeKeys,
-                serverCompositeKeys = if (identityReadback.ok) identityReadback.compositeKeys else emptySet(),
-                readbackOk = identityReadback.ok,
-                readbackError = identityReadback.error,
-                expectedPrimaryCompositeKeys = expectedPrimaryCompositeKeys
-            )
+            val identityReadback = verifiedFirst ?: boundedReadback("post_save")
+            val finalAssessment = EvaluationCertification.certify(expectedSnapshotIds, validatedOutcomes.compositeKeys,
+                expectedPrimaryCompositeKeys, identityReadback)
+            val assessment = finalAssessment
             activeEvaluationRun?.let { run ->
                 // Record only identities proven present by server readback ∩ produced set.
                 val stamped = EvaluationRunLedger.recordPersistedIdentities(
@@ -3409,27 +3432,8 @@ class MarketMLService : Service() {
                         "labelsSaved=${stamped.optBoolean("labels_saved")}"
                 )
             }
-            var finalAssessment = assessment
-            if (assessment.complete) {
-                val producedPrimary = assessment.producedCompositeKeys.filter { it.endsWith("|primary") }
-                val requiredRecommendationKeys = (expectedPrimaryCompositeKeys + producedPrimary).distinct()
-                val missingReco = requiredRecommendationKeys.filter { it !in identityReadback.recommendationCompositeKeys }
-                if (missingReco.isNotEmpty()) {
-                    Log.w(
-                        TAG,
-                        "EVAL_RECO_IDENTITY_INCOMPLETE: date=$sessionDate missing=${missingReco.size} " +
-                            "preview=${missingReco.take(12).joinToString(",")}"
-                    )
-                    finalAssessment = assessment.copy(
-                        complete = false,
-                        missingCompositeKeys = (assessment.missingCompositeKeys + missingReco).distinct().sorted(),
-                        missingCount = assessment.missingCount + missingReco.size,
-                        missingPreview = (assessment.missingPreview + missingReco.map { "reco:$it" }).distinct().take(20),
-                        reasonCode = EvaluationIdentityCoverage.REASON_PARTIAL_IDENTITY,
-                        phase = EvaluationIdentityCoverage.PHASE_INCOMPLETE_IDENTITY
-                    )
-                }
-            }
+            LogBuffer.add(if (finalAssessment.complete) 'I' else 'W', TAG, "EVAL_IDENTITY_VERIFICATION: " +
+                EvaluationCertification.honestStatusLine(sessionDate, saveResult.persistedCount, identityReadback, finalAssessment))
             val identityTransition = EvaluationIdentityCoverage.transitionFor(finalAssessment)
             if (!identityTransition.writeEvaluationDoneDate) {
                 val assessment = finalAssessment
@@ -3439,6 +3443,10 @@ class MarketMLService : Service() {
                     .put("rejected_persisted", saveResult.rejectedPersistedCount)
                     .put("aggregate_count_not_identity_proof", true)
                     .put("recommendation_readback_keys", identityReadback.recommendationCompositeKeys.size)
+                    .put("readback_failure", identityReadback.failure?.toJson() ?: org.json.JSONObject.NULL)
+                    .put("readback_attempts", identityReadback.attempts)
+                    .put("rows_written_ack", saveResult.persistedCount)
+                    .put("verification", if (!identityReadback.ok) "FAILED" else "INCOMPLETE")
                 updateRunStage(
                     "outcome_persistence",
                     "failed",
@@ -3460,7 +3468,7 @@ class MarketMLService : Service() {
                     sessionDate = sessionDate,
                     phase = phase,
                     message = if (!identityReadback.ok) {
-                        "Evaluation for $sessionDate could not verify the saved outcomes: server identity readback failed (${identityReadback.error ?: identityReadback.status}). ${assessment.missingCount} identities remain unverified; this does not prove rows are missing. Labels are NOT saved. Retry will reuse the same session date and frozen input manifest."
+                        "Evaluation for $sessionDate: ${saveResult.persistedCount} result rows were written (upload acknowledged), but server identity verification FAILED after ${identityReadback.attempts} attempt(s) (${identityReadback.error ?: identityReadback.status}). ${assessment.missingCount} identities are unverified; this does not prove rows are missing. Labels are NOT saved. Retry reuses the same session date and frozen manifest and verifies first before any re-upload."
                     } else {
                         "Evaluation for $sessionDate is incomplete: identity coverage missing ${assessment.missingCount} required identities (preview=$preview). Labels are NOT saved; learning is incomplete. Retry will reuse the same session date and frozen input manifest."
                     },
