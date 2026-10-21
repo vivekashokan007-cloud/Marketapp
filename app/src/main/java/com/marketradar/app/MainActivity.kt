@@ -66,6 +66,16 @@ class MainActivity : AppCompatActivity() {
     private var instanceSeq = 0
     private var createKind = LifecycleDiagnostics.CreateKind.FRESH_PROCESS_LAUNCH
     private var droppedUiCallbacks = 0
+    /** b512 R2: retains a launch/onNewIntent tab until the PWA acknowledges it (Codex R1). */
+    private val launchNav = LaunchNavigation(object : LaunchNavigation.Host {
+        override fun evaluate(script: String, onResult: (String?) -> Unit) {
+            postToLiveWebView("open_tab") { view -> view.evaluateJavascript(script) { r -> onResult(r) } }
+        }
+        override fun postDelayed(delayMs: Long, block: () -> Unit) {
+            if (::webView.isInitialized) webView.postDelayed({ if (uiUsable()) block() }, delayMs)
+        }
+        override fun log(message: String) { LogBuffer.add('I', "MainActivity", "$message seq=$instanceSeq") }
+    })
 
     /**
      * b512: every native->WebView callback goes through here. The target view is captured now and the block only runs
@@ -219,6 +229,7 @@ class MainActivity : AppCompatActivity() {
                     lastLoadFailedMainFrame = false
                     persistCurrentWebUrl(url)
                     injectNativeBridge()
+                    launchNav.onPageFinished()
 
                     // Check if web app version changed since last load
                     view?.evaluateJavascript(
@@ -266,6 +277,7 @@ class MainActivity : AppCompatActivity() {
                     persistCurrentWebUrl(view?.url)
                     webViewRendererGone = true
                     uiAlive = false
+                    launchNav.onUiLost()
                     LifecycleDiagnostics.markRendererRecovery()
                     view?.let { deadView ->
                         (deadView.parent as? ViewGroup)?.removeView(deadView)
@@ -514,6 +526,7 @@ class MainActivity : AppCompatActivity() {
         // PositionTickService mark/close-quote) are same-app, so NOT_EXPORTED still
         // receives them. Other apps can no longer inject `data` into the WebView.
         uiAlive = true
+        launchNav.onUiReady()   // b512 R2: deliver a cold-launch openTab now that the view is live (retried until the PWA acks)
         ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -534,9 +547,7 @@ class MainActivity : AppCompatActivity() {
             // MA14: only allow alphanumeric + underscore in tab names
             val safeTab = rawTab.filter { it.isLetterOrDigit() || it == '_' }
             if (safeTab.isNotEmpty() && safeTab == rawTab) {
-                postToLiveWebView("open_tab") { view ->
-                    view.evaluateJavascript("if(typeof switchTab === 'function') switchTab('$safeTab')", null)
-                }
+                launchNav.request(safeTab, "intent")   // only the tab name is retained; never any trade/broker action
             } else {
                 android.util.Log.w("MainActivity", "Rejected unsafe openTab: $rawTab")
             }
@@ -873,6 +884,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         uiAlive = false
+        launchNav.destroy()
         val alwaysFinish = runCatching {
             android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.ALWAYS_FINISH_ACTIVITIES, 0)
         }.getOrDefault(-1)
