@@ -3257,14 +3257,25 @@ class MarketWatchService : Service() {
         return status
     }
 
+    @Volatile private var generatedRetainedLogged = false
+
     private fun drainGeneratedCandidateOutbox(): GeneratedCandidateOutbox.Status {
-        val status = GeneratedCandidateOutbox.drain(filesDir) { payload ->
-            SupabaseClient.uploadGeneratedCandidateRows(JSONObject(payload).getJSONArray("rows"))
+        if (!generatedRetainedLogged) {
+            generatedRetainedLogged = true
+            runCatching { GeneratedCandidateOutbox.describeRetained(filesDir) }.getOrDefault(emptyList())
+                .forEach { LogBuffer.add('W', TAG, "ML_GENERATED_RETAINED: $it") }
         }
+        // b512: plain INSERT + read-back reconciliation (no merge-duplicates upsert, which live RLS rejects 401/42501).
+        val status = GeneratedCandidateOutbox.drainDetailed(filesDir) { payload ->
+            SupabaseClient.replayGeneratedCandidateEnvelope(payload)
+        }
+        status.envelopes.forEach { LogBuffer.add('I', TAG, "ML_GENERATED_REPLAY: $it") }
+        status.stuck.forEach { LogBuffer.add('E', TAG, "ML_GENERATED_RETAINED_STUCK: $it (bytes retained; retried with backoff)") }
         LogBuffer.add(if (status.pending == 0 && status.quarantinedTotal == 0 && status.faults.isEmpty()) 'I' else 'W',
             TAG, "ML_GENERATED_OUTBOX_DRAIN: acknowledged=${status.acknowledged} pending=${status.pending} " +
                 "pendingBytes=${status.pendingBytes} quarantinedTotal=${status.quarantinedTotal} " +
-                "quarantinedBytes=${status.quarantinedBytes} stop=${status.stopReason} faults=${status.faults.size}")
+                "quarantinedBytes=${status.quarantinedBytes} stop=${status.stopReason} faults=${status.faults.size} " +
+                "retried=${status.retried} deferred=${status.deferred} conflicts=${status.conflicts} stuck=${status.stuck.size}")
         status.faults.forEach { LogBuffer.add('E', TAG, "ML_GENERATED_OUTBOX_FAULT: $it") }
         return status
     }

@@ -61,6 +61,42 @@ class MainActivity : AppCompatActivity() {
     private var lastLoadFailedMainFrame = false
     private var webViewRendererGone = false
     private val client = OkHttpClient()
+    /** b512: true only between onCreate's WebView setup and onDestroy; posted callbacks check it with instance identity. */
+    @Volatile private var uiAlive = false
+    private var instanceSeq = 0
+    private var createKind = LifecycleDiagnostics.CreateKind.FRESH_PROCESS_LAUNCH
+    private var droppedUiCallbacks = 0
+    /** b512 R2: retains a launch/onNewIntent tab until the PWA acknowledges it (Codex R1). */
+    private val launchNav = LaunchNavigation(object : LaunchNavigation.Host {
+        override fun evaluate(script: String, onResult: (String?) -> Unit) {
+            postToLiveWebView("open_tab") { view -> view.evaluateJavascript(script) { r -> onResult(r) } }
+        }
+        override fun postDelayed(delayMs: Long, block: () -> Unit) {
+            if (::webView.isInitialized) webView.postDelayed({ if (uiUsable()) block() }, delayMs)
+        }
+        override fun log(message: String) { LogBuffer.add('I', "MainActivity", "$message seq=$instanceSeq") }
+    })
+
+    /**
+     * b512: every native->WebView callback goes through here. The target view is captured now and the block only runs
+     * if this Activity is still alive AND that same view is still the current one, so a tick broadcast or update
+     * response that lands after onDestroy (seen 21 Oct 10:00:49 and 10:25:52 IST) cannot touch a destroyed WebView.
+     */
+    private fun postToLiveWebView(what: String, block: (WebView) -> Unit) {
+        if (!::webView.isInitialized || !uiAlive) { dropUiCallback(what); return }
+        val target = webView
+        target.post {
+            if (uiAlive && !isDestroyed && !webViewRendererGone && webView === target) block(target) else dropUiCallback(what)
+        }
+    }
+
+    private fun dropUiCallback(what: String) {
+        droppedUiCallbacks++
+        if (droppedUiCallbacks <= 5) LogBuffer.add('I', "MainActivity",
+            "UI_CALLBACK_DROPPED_DEAD_VIEW: what=$what seq=$instanceSeq count=$droppedUiCallbacks pid=${android.os.Process.myPid()}")
+    }
+
+    private fun uiUsable() = uiAlive && !isFinishing && !isDestroyed
 
     private val pollReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -74,7 +110,7 @@ class MainActivity : AppCompatActivity() {
 
             val data = intent?.getStringExtra("data")
 
-            webView.post {
+            postToLiveWebView("broadcast_$source") { webView ->
                 if (data != null) {
                     // Legacy data-bearing tick path; current service ticks usually trigger native pull sync.
                     val escaped = data
@@ -103,10 +139,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LifecycleDiagnostics.onActivityCreate(savedInstanceState != null, MarketRadarApp.PROCESS_START_UUID).let { (seq, kind) ->
+            instanceSeq = seq; createKind = kind
+        }
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_CREATE: restored=${savedInstanceState != null} taskId=$taskId pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
+            "ACTIVITY_CREATE: restored=${savedInstanceState != null} kind=$createKind seq=$instanceSeq taskId=$taskId pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
         // Request notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -190,6 +229,7 @@ class MainActivity : AppCompatActivity() {
                     lastLoadFailedMainFrame = false
                     persistCurrentWebUrl(url)
                     injectNativeBridge()
+                    launchNav.onPageFinished()
 
                     // Check if web app version changed since last load
                     view?.evaluateJavascript(
@@ -236,6 +276,9 @@ class MainActivity : AppCompatActivity() {
                     )
                     persistCurrentWebUrl(view?.url)
                     webViewRendererGone = true
+                    uiAlive = false
+                    launchNav.onUiLost()
+                    LifecycleDiagnostics.markRendererRecovery()
                     view?.let { deadView ->
                         (deadView.parent as? ViewGroup)?.removeView(deadView)
                         deadView.destroy()
@@ -467,7 +510,10 @@ class MainActivity : AppCompatActivity() {
         }
         LogBuffer.add('I', "MainActivity", "WEBVIEW_STATE: restored=$webStateRestored url=${webView.url.orEmpty()}")
 
-        handleIntent(intent)
+        // b512: on a re-creation from saved state the launch intent was already handled; re-applying its openTab
+        // would override the screen the user was on. New intents still arrive through onNewIntent.
+        if (savedInstanceState == null) handleIntent(intent)
+        else LogBuffer.add('I', "MainActivity", "ACTIVITY_INTENT_NOT_REAPPLIED: kind=$createKind seq=$instanceSeq")
 
         // Refresh on both the five-minute Brain cycle and each accepted 60-second
         // P1 position mark. P1 does not make execution decisions; this only lets
@@ -479,6 +525,8 @@ class MainActivity : AppCompatActivity() {
         // M1: in-app broadcasts only. All senders (MarketWatchService POLL_TICK,
         // PositionTickService mark/close-quote) are same-app, so NOT_EXPORTED still
         // receives them. Other apps can no longer inject `data` into the WebView.
+        uiAlive = true
+        launchNav.onUiReady()   // b512 R2: deliver a cold-launch openTab now that the view is live (retried until the PWA acks)
         ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -499,9 +547,7 @@ class MainActivity : AppCompatActivity() {
             // MA14: only allow alphanumeric + underscore in tab names
             val safeTab = rawTab.filter { it.isLetterOrDigit() || it == '_' }
             if (safeTab.isNotEmpty() && safeTab == rawTab) {
-                webView.post {
-                    webView.evaluateJavascript("if(typeof switchTab === 'function') switchTab('$safeTab')", null)
-                }
+                launchNav.request(safeTab, "intent")   // only the tab name is retained; never any trade/broker action
             } else {
                 android.util.Log.w("MainActivity", "Rejected unsafe openTab: $rawTab")
             }
@@ -702,16 +748,16 @@ class MainActivity : AppCompatActivity() {
         webView.resumeTimers()
         
         // Sync native data with WebView on resume
-        webView.post {
+        postToLiveWebView("resume_sync") { webView ->
             val neverLoaded = webView.url == null && webView.originalUrl == null
             if (lastLoadFailedMainFrame || neverLoaded) {
                 lastLoadFailedMainFrame = false
                 webView.loadUrl(restoredWebUrl())
-                return@post
+                return@postToLiveWebView
             }
             val nowElapsed = android.os.SystemClock.elapsedRealtime()
             if (nowElapsed - lastNativeSyncElapsedMs < 5_000L) {
-                return@post
+                return@postToLiveWebView
             }
             injectNativeBridge()
             val syncJs = """
@@ -770,6 +816,7 @@ class MainActivity : AppCompatActivity() {
             override fun onFailure(call: Call, e: IOException) {
                 if (isManual) {
                     runOnUiThread {
+                        if (!uiUsable()) return@runOnUiThread
                         Toast.makeText(this@MainActivity, "Update check failed: ${e.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -791,10 +838,12 @@ class MainActivity : AppCompatActivity() {
 
                     if (isNewer(localVer, cloudVer)) {
                         runOnUiThread {
+                            if (!uiUsable()) return@runOnUiThread
                             showUpdateDialog(cloudTag, downloadUrl, releaseNotes)
                         }
                     } else if (isManual) {
                         runOnUiThread {
+                            if (!uiUsable()) return@runOnUiThread
                             Toast.makeText(this@MainActivity, "You are on the latest version", Toast.LENGTH_SHORT).show()
                         }
                     }
@@ -834,16 +883,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        uiAlive = false
+        launchNav.destroy()
+        val alwaysFinish = runCatching {
+            android.provider.Settings.Global.getInt(contentResolver, android.provider.Settings.Global.ALWAYS_FINISH_ACTIVITIES, 0)
+        }.getOrDefault(-1)
+        val trimAgoS = if (LifecycleDiagnostics.lastTrimElapsedMs > 0)
+            (android.os.SystemClock.elapsedRealtime() - LifecycleDiagnostics.lastTrimElapsedMs) / 1000 else -1
+        val lowMem = runCatching {
+            android.app.ActivityManager.MemoryInfo().also { (getSystemService(ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it) }.lowMemory
+        }.getOrNull()
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_DESTROY: changingConfig=$isChangingConfigurations finishing=$isFinishing"
+            "ACTIVITY_DESTROY: changingConfig=$isChangingConfigurations finishing=$isFinishing seq=$instanceSeq kind=$createKind " +
+                "rendererGone=$webViewRendererGone alwaysFinish=$alwaysFinish lastTrim=${LifecycleDiagnostics.lastTrimLevel} " +
+                "lastTrimAgoS=$trimAgoS lowMemory=$lowMem droppedUiCallbacks=$droppedUiCallbacks " +
+                "pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
-        unregisterReceiver(pollReceiver)
+        runCatching { unregisterReceiver(pollReceiver) }
+        client.dispatcher.cancelAll() // pending update check must not call back into this instance
         if (::webView.isInitialized) {
             persistCurrentWebUrl(webView.url)
+            if (!webViewRendererGone) {
+                webView.stopLoading()
+                webView.removeJavascriptInterface("AndroidBridge")
+                (webView.parent as? ViewGroup)?.removeView(webView)
+                webView.destroy()
+            }
         }
-        if (!webViewRendererGone) webView.destroy()
         super.onDestroy()
     }
 }

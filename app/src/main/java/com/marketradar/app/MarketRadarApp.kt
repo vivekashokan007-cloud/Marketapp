@@ -110,6 +110,8 @@ class MarketRadarApp : Application() {
 
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
+        LifecycleDiagnostics.lastTrimLevel = level
+        LifecycleDiagnostics.lastTrimElapsedMs = android.os.SystemClock.elapsedRealtime()
         LogBuffer.add('W', "MarketRadarApp", "APP_TRIM_MEMORY: level=$level pid=${android.os.Process.myPid()} startUuid=$PROCESS_START_UUID heap=${heapLine()}")
         if (level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND) {
             EvaluationLocalCache.releaseMemory()
@@ -126,13 +128,14 @@ class MarketRadarApp : Application() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
         try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-            am.getHistoricalProcessExitReasons(packageName, 0, 5).forEachIndexed { idx, info ->
-                LogBuffer.add(
-                    'I',
-                    "MarketRadarApp",
-                    "APP_EXIT_REASON[$idx]: reason=${info.reason} status=${info.status} importance=${info.importance} pss=${info.pss} rss=${info.rss} time=${info.timestamp}"
-                )
+            // b512: names, IST time and new-since-last-start flags; bounded to 5 entries, no traces.
+            val exits = am.getHistoricalProcessExitReasons(packageName, 0, 5).map { info ->
+                LifecycleDiagnostics.Exit(info.reason, info.status, info.importance, info.pss, info.rss, info.timestamp, info.description)
             }
+            val prefs = getSharedPreferences("lifecycle_diagnostics", Context.MODE_PRIVATE)
+            val lastSeen = prefs.getLong("exit_info_last_seen_ms", 0L)
+            LifecycleDiagnostics.formatExits(exits, lastSeen).forEach { LogBuffer.add('I', "MarketRadarApp", it) }
+            prefs.edit().putLong("exit_info_last_seen_ms", LifecycleDiagnostics.newestTimestamp(exits, lastSeen)).apply()
         } catch (e: Exception) {
             LogBuffer.add('W', "MarketRadarApp", "APP_EXIT_REASON_READ_FAIL: ${e.message}")
         }

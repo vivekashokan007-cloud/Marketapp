@@ -2100,44 +2100,52 @@ object SupabaseClient {
      * affecting the live poll path.
      */
     fun saveGeneratedCandidates(rows: JSONArray): Boolean {
-        return uploadGeneratedCandidateRows(rows) == GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
+        if (rows.length() == 0) return true
+        val pollTs = rows.optJSONObject(0)?.optString("snapshot_poll_ts").orEmpty()
+        val envelope = JSONObject().put("poll_ts", pollTs).put("rows", rows).toString()
+        return replayGeneratedCandidateEnvelope(envelope).outcome == GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
     }
 
-    fun uploadGeneratedCandidateRows(rows: JSONArray): GeneratedCandidateOutbox.Outcome {
-        if (rows.length() == 0) return GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
-        val body = rows.toString()
-        val result = postToFirstWorkingTableDetailed(
-            listOf("ml_generated_candidates?on_conflict=snapshot_poll_ts,candidate_id"),
-            body,
-            preferHeader = "resolution=merge-duplicates,return=minimal"
-        )
-        if (!result.success) {
-            val details = buildString {
-                append("ML_GENERATED_CANDIDATES_HTTP: table=")
-                append(result.table ?: "ml_generated_candidates")
-                append(" code=")
-                append(result.code ?: -1)
-                append(" message=")
-                append(result.message ?: "")
-                if (!result.errorBody.isNullOrBlank()) {
-                    append(" body=")
-                    append(result.errorBody.take(800))
-                }
-                if (!result.exceptionMessage.isNullOrBlank()) {
-                    append(" exception=")
-                    append(result.exceptionMessage)
-                }
-                append(" payloadBytes=")
-                append(body.toByteArray().size)
-                append(" rows=")
-                append(rows.length())
-            }
-            LogBuffer.add('E', TAG, details)
-            Log.e(TAG, details)
+    /**
+     * b512: plain INSERT + SELECT read-back reconciliation (GeneratedCandidateReplay). No on_conflict / merge-duplicates:
+     * live RLS has no UPDATE policy, so an upsert of an already-committed row fails 401/42501 for ever.
+     */
+    private val generatedCandidateTransport = object : GeneratedCandidateReplay.Transport {
+        private fun exec(request: Request): GeneratedCandidateReplay.Http = try {
+            client.newCall(request).execute().use { r -> GeneratedCandidateReplay.Http(r.code, r.body?.string()) }
+        } catch (e: Exception) {
+            GeneratedCandidateReplay.Http(null, null, e.javaClass.simpleName)
         }
-        return if (result.success) GeneratedCandidateOutbox.Outcome.ACKNOWLEDGED
-            else GeneratedCandidateOutbox.classifyHttpFailure(result.code)
+
+        override fun insert(rows: JSONArray): GeneratedCandidateReplay.Http {
+            val body = rows.toString()
+            val h = exec(getBaseRequest(GeneratedCandidateReplay.TABLE)
+                .header("Prefer", GeneratedCandidateReplay.INSERT_PREFER)
+                .post(body.toRequestBody("application/json".toMediaTypeOrNull())).build())
+            if (!h.ok) logGeneratedHttp("insert", h, "payloadBytes=${body.toByteArray().size} rows=${rows.length()}")
+            return h
+        }
+
+        override fun readBack(path: String): GeneratedCandidateReplay.Http {
+            val h = exec(getBaseRequest(path).get().build())
+            if (!h.ok) logGeneratedHttp("readback", h, "")
+            return h
+        }
     }
+
+    /** Status, SQLSTATE and a short PostgREST error message only; never headers, tokens or row values. */
+    private fun logGeneratedHttp(op: String, h: GeneratedCandidateReplay.Http, extra: String) {
+        val msg = runCatching { JSONObject(h.body ?: "").optString("message") }.getOrDefault("").take(160)
+        val line = "ML_GENERATED_CANDIDATES_HTTP: op=$op table=${GeneratedCandidateReplay.TABLE} code=${h.code ?: -1} " +
+            "pg=${h.pgCode ?: "none"} message=$msg" + (h.exception?.let { " exception=$it" } ?: "") +
+            (if (extra.isBlank()) "" else " $extra")
+        // 409/23505 on insert is the expected start of reconciliation, not an error.
+        LogBuffer.add(if (h.code == 409 && op == "insert") 'I' else 'E', TAG, line)
+        Log.w(TAG, line)
+    }
+
+    fun replayGeneratedCandidateEnvelope(payload: String): GeneratedCandidateReplay.Attempt =
+        GeneratedCandidateReplay.replay(payload, generatedCandidateTransport)
 
     fun saveBuild3AbDecision(row: JSONObject): Boolean {
         val result = postToFirstWorkingTableDetailed(

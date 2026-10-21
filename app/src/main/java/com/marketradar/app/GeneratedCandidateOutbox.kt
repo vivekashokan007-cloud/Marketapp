@@ -1,5 +1,6 @@
 package com.marketradar.app
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -10,6 +11,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 object GeneratedCandidateOutbox {
     private const val DIRECTORY = "generated_candidate_outbox_v1"
     private const val QUARANTINE = "quarantine"
+    /** b512: bounded copies of envelopes acknowledged by reconciliation (not by a fresh insert). Never "unacknowledged". */
+    private const val RECONCILED = "reconciled"
+    private const val MAX_RECONCILED = 20
+    /** b512: after this many failed attempts an envelope is reported STUCK and retried with backoff (never dropped). */
+    const val STUCK_ATTEMPTS = 6
+    private const val BACKOFF_BASE_MS = 2L * 60_000
+    private const val BACKOFF_MAX_MS = 30L * 60_000
     private const val MAX_PENDING = 150
     private const val MAX_PENDING_BYTES = 200L * 1024 * 1024
     private const val MAX_RETRYABLE_IN_A_ROW = 2
@@ -17,7 +25,8 @@ object GeneratedCandidateOutbox {
     private val draining = AtomicBoolean(false)
     private var inFlightName: String? = null // guarded by this monitor
 
-    enum class Outcome { ACKNOWLEDGED, RETRY, QUARANTINE }
+    /** CONFLICT (b512): same poll key holds different stored content; bytes are kept, nothing is overwritten. */
+    enum class Outcome { ACKNOWLEDGED, RETRY, QUARANTINE, CONFLICT }
     /** Invalid snapshot payloads are set aside; auth, throttle and outages may recover. */
     fun classifyHttpFailure(code: Int?): Outcome =
         if (code != null && code in 400..499 && code !in listOf(401, 403, 408, 429)) {
@@ -29,8 +38,42 @@ object GeneratedCandidateOutbox {
         val quarantined: Int = 0, val quarantinedTotal: Int = 0,
         val quarantinedBytes: Long = 0,
         val retried: Int = 0, val stopReason: String = "queue_empty",
-        val acknowledgedPolls: Set<String> = emptySet()
+        val acknowledgedPolls: Set<String> = emptySet(),
+        /** b512: one safe line per attempted/deferred envelope (identity, digest, counts, codes; no row values). */
+        val envelopes: List<String> = emptyList(),
+        val stuck: List<String> = emptyList(),
+        val deferred: Int = 0,
+        val conflicts: Int = 0
     )
+
+    /** b512 identity of a frozen envelope: stable across restarts because it is derived only from the frozen bytes. */
+    data class Identity(val pollTs: String, val sessionDate: String, val sha256: String, val rows: Int, val bytes: Int) {
+        fun describe() = "poll=$pollTs session=$sessionDate sha256=${sha256.take(16)} rows=$rows bytes=$bytes"
+    }
+
+    fun identityOf(payload: String): Identity {
+        val o = JSONObject(payload)
+        val rows = o.optJSONArray("rows")
+        val session = rows?.optJSONObject(0)?.optString("session_date", "")?.takeIf { it.isNotBlank() }
+            ?: o.optString("poll_ts", "").take(10)
+        val bytes = payload.toByteArray(Charsets.UTF_8)
+        return Identity(o.optString("poll_ts", ""), session, sha(bytes), rows?.length() ?: 0, bytes.size)
+    }
+
+    private fun metaFor(file: File) = File(file.parentFile, file.nameWithoutExtension + ".meta")
+
+    private fun readMeta(file: File): JSONObject =
+        runCatching { JSONObject(metaFor(file).readText(Charsets.UTF_8)) }.getOrDefault(JSONObject())
+
+    private fun writeMeta(file: File, meta: JSONObject) {
+        val target = metaFor(file)
+        val part = File(target.parentFile, target.name + "part") // not ".tmp": that suffix means an incomplete enqueue
+        runCatching { writeFully(part, meta.toString()); if (!part.renameTo(target)) part.delete() }
+    }
+
+    fun backoffMs(attempts: Int): Long =
+        if (attempts < STUCK_ATTEMPTS) 0L
+        else minOf(BACKOFF_MAX_MS, BACKOFF_BASE_MS shl minOf(8, attempts - STUCK_ATTEMPTS))
 
     private fun dir(filesDir: File) = File(filesDir, DIRECTORY)
     private fun sha(bytes: ByteArray) = MessageDigest.getInstance("SHA-256")
@@ -50,7 +93,23 @@ object GeneratedCandidateOutbox {
         var target = File(targetDir, "$base.json")
         var suffix = 1
         while (target.exists()) target = File(targetDir, "$base-${suffix++}.json")
-        return file.renameTo(target)
+        val meta = metaFor(file)
+        val moved = file.renameTo(target)
+        if (moved && meta.exists()) meta.renameTo(File(targetDir, target.nameWithoutExtension + ".meta"))
+        return moved
+    }
+
+    /** Ack after reconciliation: keep a bounded copy of the frozen bytes plus meta, then drop the oldest copies. */
+    private fun keepReconciled(folder: File, file: File, state: String): Boolean {
+        val targetDir = File(folder, RECONCILED)
+        if (!targetDir.isDirectory && !targetDir.mkdirs()) return false
+        val target = File(targetDir, "${System.currentTimeMillis()}-${file.nameWithoutExtension}--$state.json")
+        val meta = metaFor(file)
+        if (!file.renameTo(target)) return false
+        if (meta.exists()) meta.renameTo(File(targetDir, target.nameWithoutExtension + ".meta"))
+        targetDir.listFiles()?.filter { it.isFile && it.name.endsWith(".json") }?.sortedBy { it.name }
+            ?.dropLast(MAX_RECONCILED)?.forEach { old -> old.delete(); File(targetDir, old.nameWithoutExtension + ".meta").delete() }
+        return true
     }
 
     /** Keep the newest entry available for immediate upload; archive old excess without deleting bytes. */
@@ -120,6 +179,15 @@ object GeneratedCandidateOutbox {
         }
     }
 
+    /** b512: safe inventory of retained (pending) envelopes: identity + attempt meta; no row values. Bounded. */
+    @Synchronized
+    fun describeRetained(filesDir: File, limit: Int = 20): List<String> = active(dir(filesDir)).take(limit).map { f ->
+        val id = runCatching { identityOf(f.readText(Charsets.UTF_8)).describe() }.getOrDefault("unreadable=${f.name.take(16)}")
+        val m = readMeta(f)
+        "$id attempts=${m.optInt("attempts", 0)} last=${m.optString("last_state", "none")} " +
+            "http=${m.optInt("last_http", -1)} pg=${m.optString("last_pg", "")} ageMin=${(System.currentTimeMillis() - f.lastModified()) / 60_000}"
+    }
+
     @Synchronized
     fun isPending(filesDir: File, pollTs: String): Boolean = fileFor(filesDir, pollTs).exists()
 
@@ -141,8 +209,21 @@ object GeneratedCandidateOutbox {
             faults, quarantined, retained.size, retained.sumOf { it.length() }, retried, stop, polls)
     }
 
+    /** Legacy shape: outcome-only uploads. */
+    fun drain(filesDir: File, maxAttempts: Int = 3, upload: (String) -> Outcome): Status =
+        drainDetailed(filesDir, maxAttempts, nowMs = System.currentTimeMillis()) { p ->
+            val o = upload(p)
+            GeneratedCandidateReplay.Attempt(o, when (o) {
+                Outcome.ACKNOWLEDGED -> GeneratedCandidateReplay.State.INSERTED
+                Outcome.QUARANTINE -> GeneratedCandidateReplay.State.PERMANENT_REJECTION
+                Outcome.CONFLICT -> GeneratedCandidateReplay.State.CONFLICT
+                Outcome.RETRY -> GeneratedCandidateReplay.State.TRANSIENT
+            })
+        }
+
     /** Single-flight drain. Network I/O never holds the enqueue monitor. */
-    fun drain(filesDir: File, maxAttempts: Int = 3, upload: (String) -> Outcome): Status {
+    fun drainDetailed(filesDir: File, maxAttempts: Int = 3, nowMs: Long = System.currentTimeMillis(),
+                      upload: (String) -> GeneratedCandidateReplay.Attempt): Status {
         if (!draining.compareAndSet(false, true)) {
             return status(filesDir, 0, 0, 0, 0, emptyList(), "busy", emptySet())
         }
@@ -173,7 +254,11 @@ object GeneratedCandidateOutbox {
             var retried = 0
             var consecutiveRetry = 0
             var stop = "queue_empty"
+            var deferred = 0
+            var conflicts = 0
             val ackPolls = mutableSetOf<String>()
+            val lines = mutableListOf<String>()
+            val stuck = mutableListOf<String>()
             for (file in files) {
                 if (attempted >= maxAttempts) { stop = "budget"; break }
                 if (consecutiveRetry >= MAX_RETRYABLE_IN_A_ROW) { stop = "consecutive_retries"; break }
@@ -186,29 +271,66 @@ object GeneratedCandidateOutbox {
                     }
                     continue
                 }
+                val id = runCatching { identityOf(payload) }.getOrNull()
+                val meta = readMeta(file)
+                val priorAttempts = meta.optInt("attempts", 0)
+                if (nowMs - meta.optLong("last_attempt_ms", 0L) < backoffMs(priorAttempts)) {
+                    deferred++
+                    lines += "deferred ${id?.describe()} attempts=$priorAttempts last=${meta.optString("last_state")}"
+                    if (priorAttempts >= STUCK_ATTEMPTS) stuck += "${id?.describe()} attempts=$priorAttempts last=${meta.optString("last_state")} http=${meta.optString("last_http")} pg=${meta.optString("last_pg")}"
+                    continue
+                }
                 synchronized(this) { inFlightName = file.name }
                 try {
                     attempted++
-                    when (upload(payload)) {
+                    val result = runCatching { upload(payload) }.getOrElse {
+                        GeneratedCandidateReplay.Attempt(Outcome.RETRY, GeneratedCandidateReplay.State.TRANSIENT)
+                    }
+                    val attempts = priorAttempts + 1
+                    if (id != null) {
+                        if (!meta.has("first_seen_ms")) meta.put("first_seen_ms", nowMs)
+                        meta.put("schema", "generated_outbox_meta_v1").put("poll_ts", id.pollTs).put("session_date", id.sessionDate)
+                            .put("payload_sha256", id.sha256).put("rows", id.rows).put("bytes", id.bytes)
+                    }
+                    meta.put("attempts", attempts).put("last_attempt_ms", nowMs).put("last_state", result.state.name)
+                        .put("last_http", result.http ?: -1).put("last_pg", result.pg ?: "")
+                        .put("present", result.present).put("absent", result.absent).put("conflicting", result.conflicting)
+                        .put("extra", result.extra)
+                    lines += "attempt ${id?.describe()} attempts=$attempts ${result.describe()}"
+                    when (result.outcome) {
                         Outcome.ACKNOWLEDGED -> synchronized(this) {
                             consecutiveRetry = 0
-                            if (file.delete()) { acknowledged++; ackPolls += pollTs }
+                            val ok = if (result.state == GeneratedCandidateReplay.State.INSERTED) {
+                                file.delete().also { if (it) metaFor(file).delete() }
+                            } else { writeMeta(file, meta); keepReconciled(folder, file, result.state.name) || file.delete() }
+                            if (ok) { acknowledged++; ackPolls += pollTs }
                             else faults += "ack_delete_failed:${file.name.take(64)}"
+                        }
+                        Outcome.CONFLICT -> synchronized(this) {
+                            consecutiveRetry = 0
+                            conflicts++
+                            writeMeta(file, meta.put("conflict_columns", JSONArray(result.conflictColumns)))
+                            if (archive(folder, file, "content_conflict")) quarantined++
+                            else faults += "conflict_archive_failed:${file.name.take(64)}"
                         }
                         Outcome.QUARANTINE -> synchronized(this) {
                             consecutiveRetry = 0
+                            writeMeta(file, meta)
                             if (archive(folder, file, "permanent_rejection")) quarantined++
                             else faults += "permanent_archive_failed:${file.name.take(64)}"
                         }
                         Outcome.RETRY -> synchronized(this) {
                             retried++
                             consecutiveRetry++
+                            writeMeta(file, meta)
+                            if (attempts >= STUCK_ATTEMPTS) stuck += "${id?.describe()} attempts=$attempts ${result.describe()}"
                             if (!file.setLastModified(System.currentTimeMillis())) faults += "retry_order_write_failed:${file.name.take(64)}"
                         }
                     }
                 } finally { synchronized(this) { inFlightName = null } }
             }
             return status(filesDir, attempted, acknowledged, quarantined, retried, faults, stop, ackPolls)
+                .copy(envelopes = lines, stuck = stuck, deferred = deferred, conflicts = conflicts)
         } finally { draining.set(false) }
     }
 }
