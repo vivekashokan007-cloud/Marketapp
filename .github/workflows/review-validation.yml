@@ -240,6 +240,21 @@ jobs:
           grep -q '^PASS  REST contained: authenticated DELETE /trades_v2?id=eq.fx1 -> 403 42501 and row remains' /tmp/s1a.log
           grep -q ' checks, 0 failed$' /tmp/s1a.log
 
+      - name: b512 generated-candidate replay vs live RLS shape (scratch PostgreSQL 17 + PostgREST; never production)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          CANDIDATE_SCRATCH_OK: '1'
+          CANDIDATE_POSTGREST_BIN: /tmp/postgrest
+        run: |
+          set -o pipefail
+          tools/candidate_replay_db_suite/run.sh | tee /tmp/candidate_replay.log
+          grep -q '^PASS  live shape: repeating the SAME frozen cohort -> 401 42501' /tmp/candidate_replay.log
+          grep -q '^PASS  committed golden equals this run' /tmp/candidate_replay.log
+          grep -q ' checks, 0 failed$' /tmp/candidate_replay.log
+
       - name: Confirm publication artifacts were not built
         run: |
           test ! -d app/build/outputs/apk
