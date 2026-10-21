@@ -7,7 +7,9 @@ import java.io.File
 /** Replayable disk-backed outcomes. Only one row or one upload batch owns payloads in memory. */
 internal object EvaluationOutcomeFile {
     data class Validated(val file: File, val count: Int, val duplicateCount: Int,
-                         val compositeKeys: Set<String>, val rejectedCount: Int)
+                         val compositeKeys: Set<String>, val rejectedCount: Int,
+                         /** b513 R2: SHA-256 of the exact validated bytes written, computed incrementally while streaming. */
+                         val contentSha256: String = "")
 
     /** Strict top-level object array reader, also usable by JVM recovery tests. */
     fun forEach(file: File, consume: (JSONObject) -> Unit) {
@@ -56,8 +58,9 @@ internal object EvaluationOutcomeFile {
         val hashes = linkedMapOf<String, String>()
         var duplicates = 0
         var rejected = 0
+        val md = java.security.MessageDigest.getInstance("SHA-256")
         try {
-            temp.bufferedWriter().use { writer ->
+            java.io.OutputStreamWriter(java.security.DigestOutputStream(temp.outputStream(), md), Charsets.UTF_8).buffered().use { writer ->
                 writer.write("[")
                 forEach(source) { row ->
                     val key = EvaluationIdentity.validatedOutcomeKey(sessionDate, row)
@@ -76,7 +79,8 @@ internal object EvaluationOutcomeFile {
                 writer.write("]")
             }
             check(temp.renameTo(target)) { "Could not commit validated evaluation output" }
-            return Validated(target, hashes.size, duplicates, hashes.keys.toSet(), rejected)
+            return Validated(target, hashes.size, duplicates, hashes.keys.toSet(), rejected,
+                md.digest().joinToString("") { "%02x".format(it) })
         } finally { temp.delete() }
     }
 

@@ -3339,16 +3339,17 @@ class MarketMLService : Service() {
                 }
                 out
             } ?: emptyList()
-            // b513: verification-first recovery. A prior upload ack for this exact same-date validated stream is only a
-            // hint: read back first (same frozen boundary, bounded transient retry) and skip re-uploading the retained
-            // stream only if the exact composite set + primary companions are already verified.
-            val currentAck = EvaluationCertification.UploadAck(sessionDate, validatedOutcomes.count, outputsFile.length(),
-                EvaluationCertification.keysDigest(validatedOutcomes.compositeKeys))
+            // b513 R1–R3: verification-first recovery via EvaluationPersistenceOrchestrator. The ack is bound to the
+            // full validated stream bytes (incremental SHA-256) + frozen run contract and is only a hint. Each read
+            // phase freezes its own created_at boundary (post-write boundaries are taken AFTER the write), and a
+            // failed/untrusted verify-first read never triggers a full re-upload.
+            val ackContract = EvaluationCertification.contractDigest(sessionDate, expectedSnapshotIds,
+                expectedPrimaryCompositeKeys, EvaluationCertification.frozenContractOf(activeEvaluationRun))
+            val currentAck = EvaluationCertification.UploadAck.forStream(sessionDate, validatedOutcomes, ackContract)
             val priorAck = EvaluationCertification.UploadAck.fromJson(prefs.getString("evaluation_upload_ack", null))
-            val readbackCutoff = SupabaseClient.exportFreezeCutoffIso()
-            fun boundedReadback(label: String): SupabaseClient.OutcomeIdentityReadback = try {
+            fun boundedReadback(label: String, cutoff: String): SupabaseClient.OutcomeIdentityReadback = try {
                 SupabaseClient.readEvaluationOutcomeIdentityKeysBounded(sessionDate,
-                    includeRejected = validatedOutcomes.rejectedCount > 0, cutoffIso = readbackCutoff) { attempt, f ->
+                    includeRejected = validatedOutcomes.rejectedCount > 0, cutoffIso = cutoff) { attempt, f ->
                     LogBuffer.add('W', TAG, "EVAL_IDENTITY_READBACK_ATTEMPT_FAILED: mode=$label attempt=$attempt " +
                         (f?.line() ?: "class=unclassified"))
                 }
@@ -3356,21 +3357,19 @@ class MarketMLService : Service() {
                 Log.e(TAG, "EVAL_IDENTITY_READBACK_EXCEPTION: ${e.message}", e)
                 SupabaseClient.OutcomeIdentityReadback(ok = false, status = "exception",
                     error = "stage=unknown class=transport_${e.javaClass.simpleName} " +
-                        EvaluationReadbackDiagnostics.describeException(e), cutoffIso = readbackCutoff)
+                        EvaluationReadbackDiagnostics.describeException(e), cutoffIso = cutoff)
             }
-            var verifiedFirst: SupabaseClient.OutcomeIdentityReadback? = null
-            if (EvaluationCertification.shouldVerifyFirst(priorAck, currentAck)) {
-                val rb = boundedReadback("verify_first")
-                val vf = EvaluationCertification.certify(expectedSnapshotIds, validatedOutcomes.compositeKeys,
-                    expectedPrimaryCompositeKeys, rb)
-                LogBuffer.add('I', TAG, "EVAL_VERIFY_FIRST: " +
-                    EvaluationCertification.honestStatusLine(sessionDate, priorAck?.persistedCount, rb, vf) +
-                    " reupload=${!vf.complete}")
-                if (vf.complete) verifiedFirst = rb
-            }
-            val saveResult = if (verifiedFirst != null && priorAck != null) {
-                EvaluationCertification.saveResultFromAck(priorAck, validatedOutcomes.count)
-            } else SupabaseClient.saveEvaluationOutcomes(sessionDate, validatedOutcomes)
+            val persistence = EvaluationPersistenceOrchestrator.run(priorAck, currentAck, validatedOutcomes.count,
+                EvaluationPersistenceOrchestrator.Ports(
+                    readback = ::boundedReadback,
+                    save = { SupabaseClient.saveEvaluationOutcomes(sessionDate, validatedOutcomes) },
+                    certify = { rb -> EvaluationCertification.certify(expectedSnapshotIds, validatedOutcomes.compositeKeys,
+                        expectedPrimaryCompositeKeys, rb) },
+                    log = { msg -> LogBuffer.add('I', TAG, "EVAL_VERIFY_FIRST: date=$sessionDate $msg") }
+                ))
+            LogBuffer.add('I', TAG, "EVAL_PERSISTENCE_DECISION: date=$sessionDate outcome=${persistence.outcome} " +
+                "writes=${persistence.writes} cutoffs=${persistence.phaseCutoffs}")
+            val saveResult = persistence.saveResult
             if (!saveResult.success) {
                 updateRunStage(
                     "outcome_persistence",
@@ -3404,15 +3403,11 @@ class MarketMLService : Service() {
                 return@withContext
             }
 
-            if (verifiedFirst == null) {
-                prefs.edit().putString("evaluation_upload_ack", currentAck.copy(
-                    persistedCount = saveResult.persistedCount, primaryPersistedCount = saveResult.primaryPersistedCount,
-                    evaluationPersistedCount = saveResult.evaluationPersistedCount,
-                    rejectedPersistedCount = saveResult.rejectedPersistedCount).toJson().toString()).commit()
+            persistence.ackToStore?.let { ack ->
+                prefs.edit().putString("evaluation_upload_ack", ack.toJson().toString()).commit()
             }
-            val identityReadback = verifiedFirst ?: boundedReadback("post_save")
-            val finalAssessment = EvaluationCertification.certify(expectedSnapshotIds, validatedOutcomes.compositeKeys,
-                expectedPrimaryCompositeKeys, identityReadback)
+            val identityReadback = persistence.readback
+            val finalAssessment = persistence.assessment
             val assessment = finalAssessment
             activeEvaluationRun?.let { run ->
                 // Record only identities proven present by server readback ∩ produced set.

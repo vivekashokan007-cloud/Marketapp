@@ -13,34 +13,70 @@ import java.security.MessageDigest
  * - Nothing here computes outcomes, changes the session date, or sets labels_saved/learning_complete.
  */
 object EvaluationCertification {
-    /** What a successful save acknowledged, bound to the exact validated local stream. */
+    /** Ack schema version. v1 (b513 pre-R2, identity-keys only) is never accepted: it cannot prove content. */
+    const val ACK_SCHEMA_VERSION = 2
+
+    /**
+     * What a successful save acknowledged, bound to (R2) the SHA-256 of the full validated output stream bytes and a
+     * digest of the frozen run contract (session date, expected snapshot ids, expected primary keys, run input manifest hash,
+     * evaluator version, policy label contract). A matching ack is only a recovery hint; server identity + companion verification still runs.
+     */
     data class UploadAck(
         val sessionDate: String,
         val rows: Int,
         val bytes: Long,
         val keysDigest: String,
+        val contentSha256: String,
+        val contractDigest: String,
         val persistedCount: Int = 0,
         val primaryPersistedCount: Int = 0,
         val evaluationPersistedCount: Int = 0,
-        val rejectedPersistedCount: Int = 0
+        val rejectedPersistedCount: Int = 0,
+        val schemaVersion: Int = ACK_SCHEMA_VERSION
     ) {
-        fun toJson(): JSONObject = JSONObject().put("v", 1).put("session_date", sessionDate).put("rows", rows)
-            .put("bytes", bytes).put("keys_digest", keysDigest).put("persisted", persistedCount)
+        fun toJson(): JSONObject = JSONObject().put("v", schemaVersion).put("session_date", sessionDate).put("rows", rows)
+            .put("bytes", bytes).put("keys_digest", keysDigest).put("content_sha256", contentSha256)
+            .put("contract_digest", contractDigest).put("persisted", persistedCount)
             .put("primary_persisted", primaryPersistedCount).put("evaluation_persisted", evaluationPersistedCount)
             .put("rejected_persisted", rejectedPersistedCount)
 
-        fun sameStream(other: UploadAck): Boolean = sessionDate == other.sessionDate && rows == other.rows &&
-            bytes == other.bytes && keysDigest == other.keysDigest
+        fun sameStream(other: UploadAck): Boolean = schemaVersion == ACK_SCHEMA_VERSION &&
+            other.schemaVersion == ACK_SCHEMA_VERSION && contentSha256.length == 64 &&
+            sessionDate == other.sessionDate && rows == other.rows && bytes == other.bytes &&
+            keysDigest == other.keysDigest && contentSha256 == other.contentSha256 && contractDigest == other.contractDigest
 
         companion object {
             fun fromJson(raw: String?): UploadAck? = try {
-                if (raw.isNullOrBlank()) null else JSONObject(raw).takeIf { it.optInt("v") == 1 }?.let {
+                if (raw.isNullOrBlank()) null else JSONObject(raw).takeIf { it.optInt("v") == ACK_SCHEMA_VERSION }?.let {
                     UploadAck(it.getString("session_date"), it.getInt("rows"), it.getLong("bytes"), it.getString("keys_digest"),
+                        it.getString("content_sha256"), it.getString("contract_digest"),
                         it.optInt("persisted"), it.optInt("primary_persisted"), it.optInt("evaluation_persisted"),
                         it.optInt("rejected_persisted"))
                 }
             } catch (_: Exception) { null }
+
+            /** Ack for the current validated stream (before any save; counts filled in after a successful write). */
+            internal fun forStream(sessionDate: String, validated: EvaluationOutcomeFile.Validated, contractDigest: String): UploadAck =
+                UploadAck(sessionDate, validated.count, validated.file.length(), keysDigest(validated.compositeKeys),
+                    validated.contentSha256, contractDigest)
         }
+    }
+
+    /** Run ledger fields that freeze the evaluation input/policy; part of the ack contract. */
+    val FROZEN_RUN_FIELDS = listOf("input_manifest_hash", "evaluator_version", "policy_label_contract", "scope")
+
+    fun frozenContractOf(run: JSONObject?): Map<String, String> =
+        FROZEN_RUN_FIELDS.associateWith { run?.opt(it)?.toString().orEmpty() }
+
+    /** Frozen run contract digest: order-independent over ids/keys, prefixed with the ack schema version. */
+    fun contractDigest(sessionDate: String, expectedSnapshotIds: Collection<String>,
+                       expectedPrimaryCompositeKeys: Collection<String>, frozenContract: Map<String, String>): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        fun put(s: String) { md.update(s.toByteArray(Charsets.UTF_8)); md.update(10) }
+        put("ack_v$ACK_SCHEMA_VERSION"); put("date=$sessionDate"); frozenContract.toSortedMap().forEach { (k, v) -> put("$k=$v") }
+        put("ids"); expectedSnapshotIds.distinct().sorted().forEach(::put)
+        put("primary"); expectedPrimaryCompositeKeys.distinct().sorted().forEach(::put)
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     fun keysDigest(keys: Collection<String>): String {
@@ -49,7 +85,7 @@ object EvaluationCertification {
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    /** Verify first only when the prior ack is for this exact same-date validated stream. */
+    /** Verify first only when the prior ack is a current-schema ack for this exact content + contract. */
     fun shouldVerifyFirst(prior: UploadAck?, current: UploadAck): Boolean = prior != null && prior.sameStream(current)
 
     /**

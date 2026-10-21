@@ -20,6 +20,8 @@ import org.junit.Test
 class B513EvalIdentityReadbackTest {
     private val date = "2026-10-21"
     private val cutoff = "2026-10-21T12:26:00Z"
+    private val SHA = "a".repeat(64)
+    private val CONTRACT = "c".repeat(64)
 
     data class Call(val table: String, val filter: String, val offset: Int)
 
@@ -171,8 +173,8 @@ class B513EvalIdentityReadbackTest {
         val frozenProduced = producedKeys.toSet()
         val digestBefore = EvaluationCertification.keysDigest(frozenProduced)
         // two retries of the same session (17:56 and 18:15) against the same validated stream
-        val first = EvaluationCertification.UploadAck(date, 19638, 148205716L, digestBefore, persistedCount = 19638)
-        val resumed = EvaluationCertification.UploadAck(date, 19638, 148205716L, EvaluationCertification.keysDigest(producedKeys.shuffled()))
+        val first = EvaluationCertification.UploadAck(date, 19638, 148205716L, digestBefore, SHA, CONTRACT, persistedCount = 19638)
+        val resumed = EvaluationCertification.UploadAck(date, 19638, 148205716L, EvaluationCertification.keysDigest(producedKeys.shuffled()), SHA, CONTRACT)
         assertTrue(EvaluationCertification.shouldVerifyFirst(first, resumed))
         assertFalse(EvaluationCertification.shouldVerifyFirst(first, resumed.copy(sessionDate = "2026-10-22")))
         assertFalse(EvaluationCertification.shouldVerifyFirst(first, resumed.copy(keysDigest = EvaluationCertification.keysDigest(producedKeys - "1|p1|primary"))))
@@ -248,7 +250,7 @@ class B513EvalIdentityReadbackTest {
     @Test fun exactVerifyFirstSuccessResumesLaterStagesOnceWithoutReupload() {
         val srv = fullServer(); srv.install()
         val ack = EvaluationCertification.UploadAck(date, 19638, 148205716L, EvaluationCertification.keysDigest(producedKeys),
-            persistedCount = 19638, primaryPersistedCount = 75, evaluationPersistedCount = 18750, rejectedPersistedCount = 888)
+            SHA, CONTRACT, persistedCount = 19638, primaryPersistedCount = 75, evaluationPersistedCount = 18750, rejectedPersistedCount = 888)
         assertTrue(EvaluationCertification.shouldVerifyFirst(ack, ack.copy(persistedCount = 0)))
         val rb = SupabaseClient.readEvaluationOutcomeIdentityKeysBounded(date, true, cutoff)
         val a = certify(rb)
