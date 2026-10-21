@@ -115,6 +115,8 @@ def main(argv):
     S.psql('drop database if exists %s;' % DB, 'postgres')
     S.psql('create database %s owner postgres;' % DB, 'postgres')
     S.psql('alter schema public owner to postgres;', DB)
+    # Deterministic like live Supabase (UTC): timestamptz read-backs then carry +00:00 on every host.
+    S.psql("alter database %s set timezone to 'UTC';" % DB, 'postgres')
     S.psql(DDL, DB, user='postgres')
     rows = fixture_rows()
     first, rest = rows[:25], rows[25:]
