@@ -2881,7 +2881,12 @@ object SupabaseClient {
         val status: String = "",
         val error: String? = null,
         val httpStatus: Int? = null,
-        val failedPage: Int? = null
+        val failedPage: Int? = null,
+        /** b513: which reader failed, with privacy-safe classification; null on success. */
+        val failure: EvaluationReadbackDiagnostics.Failure? = null,
+        /** b513: created_at upper bound shared by every stage and every bounded retry attempt. */
+        val cutoffIso: String? = null,
+        val attempts: Int = 1
     )
 
     /**
@@ -2889,11 +2894,28 @@ object SupabaseClient {
      * Reads snapshot_id+candidate_id+role with fail-closed pagination.
      * Aggregate session counts are intentionally not used here.
      * Injectable via [pageFetchSeam] for unit tests — never writes.
+     * b513: all three readers share ONE frozen created_at cutoff, and every failure names its stage/table/page and a
+     * nonblank classification (see [EvaluationReadbackDiagnostics]).
      */
-    fun readEvaluationOutcomeIdentityKeys(sessionDate: String, includeRejected: Boolean = false): OutcomeIdentityReadback {
+    fun readEvaluationOutcomeIdentityKeys(
+        sessionDate: String,
+        includeRejected: Boolean = false,
+        cutoffIso: String? = null
+    ): OutcomeIdentityReadback {
         val date = sessionDate.trim()
         if (date.isEmpty()) {
             return OutcomeIdentityReadback(ok = false, status = "invalid_session", error = "empty_session_date")
+        }
+        val cutoff = cutoffIso ?: exportFreezeCutoffIso()
+        fun stageFailure(stage: String, table: String, paged: JSONObject, pagesBefore: Int,
+                         evalKeys: Set<String> = emptySet(), recoKeys: Set<String> = emptySet()): OutcomeIdentityReadback {
+            val f = EvaluationReadbackDiagnostics.fromPaged(stage, table, date, paged)
+            return OutcomeIdentityReadback(
+                ok = false, compositeKeys = evalKeys, recommendationCompositeKeys = recoKeys,
+                pagesFetched = pagesBefore + paged.optInt("pages_fetched", 0),
+                status = paged.optString("status", "").ifBlank { "unknown" },
+                error = f.line(), httpStatus = f.httpStatus, failedPage = f.failedPage, failure = f, cutoffIso = cutoff
+            )
         }
         // Column projection travels in the filter query string (PostgREST select=).
         val evalFilter = "session_date=eq.$date&select=snapshot_id,candidate_id,role"
@@ -2902,27 +2924,14 @@ object SupabaseClient {
             filter = evalFilter,
             order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc",
             pageSize = 500,
-            maxPages = 40
+            maxPages = 40,
+            freezeCutoffIso = cutoff
         )
         val evalStatus = evalPaged.optString("status", "")
-        if (evalStatus == "incomplete_error" || evalStatus == "incomplete_truncated") {
-            return OutcomeIdentityReadback(
-                ok = false,
-                pagesFetched = evalPaged.optInt("pages_fetched", 0),
-                status = evalStatus,
-                error = evalPaged.opt("page_error")?.toString() ?: evalStatus,
-                httpStatus = if (evalPaged.isNull("http_status")) null else evalPaged.optInt("http_status"),
-                failedPage = if (evalPaged.isNull("failed_page")) null else evalPaged.optInt("failed_page")
-            )
-        }
         if (evalStatus !in setOf("complete", "empty")) {
-            return OutcomeIdentityReadback(
-                ok = false,
-                pagesFetched = evalPaged.optInt("pages_fetched", 0),
-                status = evalStatus.ifBlank { "unknown" },
-                error = "unexpected_readback_status:$evalStatus"
-            )
+            return stageFailure(EvaluationReadbackDiagnostics.STAGE_EVALUATION, "ml_evaluation_outcomes", evalPaged, 0)
         }
+        val evalPages = evalPaged.optInt("pages_fetched", 0)
         val evalKeys = linkedSetOf<String>()
         val evalRows = evalPaged.optJSONArray("rows") ?: JSONArray()
         for (i in 0 until evalRows.length()) {
@@ -2942,36 +2951,21 @@ object SupabaseClient {
             filter = recoFilter,
             order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc",
             pageSize = 500,
-            maxPages = 40
+            maxPages = 40,
+            freezeCutoffIso = cutoff
         )
         val recoStatus = recoPaged.optString("status", "")
-        if (recoStatus == "incomplete_error" || recoStatus == "incomplete_truncated") {
-            return OutcomeIdentityReadback(
-                ok = false,
-                compositeKeys = evalKeys,
-                pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
-                status = recoStatus,
-                error = "recommendation_readback:$recoStatus code=${recoPaged.optString("postgrest_code", "unknown")} " +
-                    (recoPaged.opt("page_error")?.toString() ?: recoStatus),
-                httpStatus = if (recoPaged.isNull("http_status")) null else recoPaged.optInt("http_status"),
-                failedPage = if (recoPaged.isNull("failed_page")) null else recoPaged.optInt("failed_page")
-            )
-        }
-        // Missing recommendation table is not auto-OK — only exact missing-table
-        // codes may be treated as empty companion when evaluation rows exist.
         if (recoStatus !in setOf("complete", "empty")) {
+            // Missing recommendation table is not auto-OK — only exact missing-table
+            // codes may be treated as empty companion when evaluation rows exist.
             val code = recoPaged.opt("postgrest_code")?.toString()
             val missingTable = code.equals("PGRST205", true) || code.equals("42P01", true)
-            if (!missingTable) {
-                return OutcomeIdentityReadback(
-                    ok = false,
-                    compositeKeys = evalKeys,
-                    pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0),
-                    status = recoStatus.ifBlank { "unknown" },
-                    error = "recommendation_readback_status:$recoStatus"
-                )
+            if (recoStatus == "incomplete_error" || recoStatus == "incomplete_truncated" || !missingTable) {
+                return stageFailure(EvaluationReadbackDiagnostics.STAGE_PRIMARY_COMPANION, "ml_recommendation_outcomes",
+                    recoPaged, evalPages, evalKeys)
             }
         }
+        val recoPages = recoPaged.optInt("pages_fetched", 0)
         val recoKeys = linkedSetOf<String>()
         val recoRows = recoPaged.optJSONArray("rows") ?: JSONArray()
         for (i in 0 until recoRows.length()) {
@@ -2982,15 +2976,14 @@ object SupabaseClient {
         if (includeRejected) {
             val rejectedPaged = selectAllPages(
                 table = "ml_rejected_candidate_outcomes", filter = evalFilter,
-                order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc", pageSize = 500, maxPages = 40
+                order = "snapshot_id.asc,candidate_id.asc,role.asc,id.asc", pageSize = 500, maxPages = 40,
+                freezeCutoffIso = cutoff
             )
             rejectedPages = rejectedPaged.optInt("pages_fetched", 0)
             val rejectedStatus = rejectedPaged.optString("status", "")
             if (rejectedStatus !in setOf("complete", "empty")) {
-                return OutcomeIdentityReadback(ok = false, compositeKeys = evalKeys,
-                    recommendationCompositeKeys = recoKeys, status = rejectedStatus,
-                    error = "rejected_readback:$rejectedStatus",
-                    pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0) + rejectedPages)
+                return stageFailure(EvaluationReadbackDiagnostics.STAGE_REJECTED, "ml_rejected_candidate_outcomes",
+                    rejectedPaged, evalPages + recoPages, evalKeys, recoKeys)
             }
             val rows = rejectedPaged.optJSONArray("rows") ?: JSONArray()
             for (i in 0 until rows.length()) {
@@ -3003,9 +2996,41 @@ object SupabaseClient {
             ok = true,
             compositeKeys = evalKeys,
             recommendationCompositeKeys = recoKeys,
-            pagesFetched = evalPaged.optInt("pages_fetched", 0) + recoPaged.optInt("pages_fetched", 0) + rejectedPages,
-            status = evalStatus
+            pagesFetched = evalPages + recoPages + rejectedPages,
+            status = evalStatus,
+            cutoffIso = cutoff
         )
+    }
+
+    /** b513 test seam for the bounded-retry backoff; null = Thread.sleep. */
+    internal var readbackSleepSeam: ((Long) -> Unit)? = null
+
+    /**
+     * b513 bounded read-back: retries ONLY transient classifications (statement timeout, 429, 5xx, transport), at most
+     * [maxAttempts] times, re-reading the SAME frozen cutoff. Never recomputes or re-uploads anything; never writes.
+     */
+    fun readEvaluationOutcomeIdentityKeysBounded(
+        sessionDate: String,
+        includeRejected: Boolean = false,
+        cutoffIso: String? = null,
+        maxAttempts: Int = 3,
+        backoffMs: Long = 2_000L,
+        onAttemptFailed: ((attempt: Int, failure: EvaluationReadbackDiagnostics.Failure?) -> Unit)? = null
+    ): OutcomeIdentityReadback {
+        val cutoff = cutoffIso ?: exportFreezeCutoffIso()
+        val attemptsMax = maxAttempts.coerceIn(1, 5)
+        var last: OutcomeIdentityReadback? = null
+        for (attempt in 1..attemptsMax) {
+            val rb = readEvaluationOutcomeIdentityKeys(sessionDate, includeRejected, cutoff).copy(attempts = attempt)
+            if (rb.ok) return rb
+            last = rb
+            onAttemptFailed?.invoke(attempt, rb.failure)
+            val transient = rb.failure?.retryable == true
+            if (!transient || attempt == attemptsMax) break
+            val delay = backoffMs * attempt
+            (readbackSleepSeam ?: { ms -> Thread.sleep(ms) })(delay)
+        }
+        return last!!
     }
 
     fun fetchRecentEvaluationOutcomes(limit: Int = 1000): JSONArray {
@@ -3046,7 +3071,8 @@ object SupabaseClient {
             status = fetched.status,
             httpCode = fetched.httpCode,
             error = fetched.error,
-            body = fetched.body
+            body = fetched.body,
+            exceptionClass = fetched.exceptionClass
         )
     }
 
@@ -3888,7 +3914,9 @@ object SupabaseClient {
         val rows: JSONArray = JSONArray(),
         val httpCode: Int? = null,
         val error: String? = null,
-        val body: String? = null
+        val body: String? = null,
+        /** b513: exception simple class name for transport/parse failures (never the message alone). */
+        val exceptionClass: String? = null
     )
 
     private fun fetchSyncTyped(request: Request): PageResult {
@@ -3897,18 +3925,20 @@ object SupabaseClient {
                 val body = response.body?.string()
                 if (!response.isSuccessful) {
                     Log.e(TAG, "Request failed: ${response.code} ${response.message} | URL: ${request.url} | Body: ${body ?: ""}")
-                    return PageResult(status = "http_error", httpCode = response.code, error = response.message, body = body)
+                    // b513: HTTP/2 reason phrases are empty; keep a nonblank status+code classification.
+                    return PageResult(status = "http_error", httpCode = response.code,
+                        error = EvaluationReadbackDiagnostics.describeHttpFailure(response.code, response.message, body), body = body)
                 }
                 PageResult(status = "success", rows = JSONArray(), httpCode = response.code, body = body)
             }
         } catch (e: java.io.IOException) {
             if (e.message?.contains("Canceled", true) == true || e.message?.contains("Cancelled", true) == true) {
-                PageResult(status = "cancelled", error = e.message)
+                PageResult(status = "cancelled", error = EvaluationReadbackDiagnostics.describeException(e), exceptionClass = e.javaClass.simpleName)
             } else {
-                PageResult(status = "http_error", error = e.message)
+                PageResult(status = "http_error", error = EvaluationReadbackDiagnostics.describeException(e), exceptionClass = e.javaClass.simpleName)
             }
         } catch (e: Exception) {
-            PageResult(status = "http_error", error = e.message)
+            PageResult(status = "http_error", error = EvaluationReadbackDiagnostics.describeException(e), exceptionClass = e.javaClass.simpleName)
         }
     }
 
@@ -3941,7 +3971,8 @@ object SupabaseClient {
             PageResult(status = "success", rows = arr, httpCode = fetched.httpCode)
         } catch (e: Exception) {
             Log.e(TAG, "Select parse from $table failed: ${e.message}")
-            PageResult(status = "parse_error", httpCode = fetched.httpCode, error = e.message)
+            PageResult(status = "parse_error", httpCode = fetched.httpCode,
+                error = EvaluationReadbackDiagnostics.describeException(e), exceptionClass = e.javaClass.simpleName)
         }
     }
 
@@ -3978,6 +4009,8 @@ object SupabaseClient {
         var failedPage: Int? = null
         var lastHttp: Int? = null
         var lastCode: String? = null
+        var lastExceptionClass: String? = null
+        val startedNs = System.nanoTime()
         val safePage = if (pageSize > 0) pageSize else 500
         val safeMax = if (maxPages > 0) maxPages else 1
         // R3.4: freeze created_at<=cutoff before page 0; include on every page.
@@ -4002,6 +4035,7 @@ object SupabaseClient {
                 failedPage = pageIndex
                 lastHttp = page.httpCode
                 lastCode = extractPostgrestCode(page)
+                lastExceptionClass = page.exceptionClass
                 break
             }
             for (i in 0 until page.rows.length()) {
@@ -4037,6 +4071,8 @@ object SupabaseClient {
             .put("failed_page", failedPage ?: JSONObject.NULL)
             .put("http_status", lastHttp ?: JSONObject.NULL)
             .put("postgrest_code", lastCode ?: JSONObject.NULL)
+            .put("exception_class", lastExceptionClass ?: JSONObject.NULL)
+            .put("elapsed_ms", (System.nanoTime() - startedNs) / 1_000_000L)
             .put("status", status)
     }
 
