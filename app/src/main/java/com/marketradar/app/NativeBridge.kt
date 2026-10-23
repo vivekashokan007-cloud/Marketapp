@@ -668,6 +668,28 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun isNative(): Boolean = true
 
+    /** M0 full-day research collector status (collection only; reconciles the scheduled manifest first). */
+    @JavascriptInterface
+    fun getResearchCollectorStatus(): String = try {
+        val dir = File(context.filesDir, ResearchCollector.DIR)
+        val now = System.currentTimeMillis()
+        val rec = if (ResearchCollector.isEnabled(dir)) ResearchCollector.reconcile(dir, now) else null
+        ResearchCollector.status(dir, now).put("reconcile", rec ?: JSONObject.NULL).toString()
+    } catch (t: Throwable) {
+        JSONObject().put("label", "ERROR").put("label_text", "Full-day research — status unavailable")
+            .put("error", t.javaClass.simpleName).toString()
+    }
+
+    /** Explicit user opt-in/out for the M0 collector. Changes no trading, Paper, Real or EV behaviour. */
+    @JavascriptInterface
+    fun setResearchCollectorEnabled(enabled: Boolean): String = try {
+        val dir = File(context.filesDir, ResearchCollector.DIR)
+        ResearchCollector.setEnabled(dir, enabled, System.currentTimeMillis())
+        getResearchCollectorStatus()
+    } catch (t: Throwable) {
+        JSONObject().put("label", "ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
     @JavascriptInterface
     fun startMarketService() {
         clearStaleSessionStateIfNeeded()

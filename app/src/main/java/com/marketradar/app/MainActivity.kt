@@ -719,6 +719,17 @@ class MainActivity : AppCompatActivity() {
                     evManualCloseResult: function(tradeId, result) { return AndroidBridge.evManualCloseResult(tradeId, result); },
                     evAcceptanceReconciledClosed: function(decisionId) { return AndroidBridge.evAcceptanceReconciledClosed(decisionId); },
                     evAcceptanceQuarantine: function() { return AndroidBridge.evAcceptanceQuarantine(); },
+
+                    // M0 full-day research collector (collection only). An APK whose AndroidBridge lacks the method
+                    // returns an explicit unavailable state instead of throwing.
+                    getResearchCollectorStatus: function() {
+                        if (typeof AndroidBridge.getResearchCollectorStatus !== 'function') return JSON.stringify({ available: false, label: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getResearchCollectorStatus();
+                    },
+                    setResearchCollectorEnabled: function(on) {
+                        if (typeof AndroidBridge.setResearchCollectorEnabled !== 'function') return JSON.stringify({ available: false, label: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.setResearchCollectorEnabled(on === true);
+                    },
                     
                     init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML+LV1) active'); }
                 };
