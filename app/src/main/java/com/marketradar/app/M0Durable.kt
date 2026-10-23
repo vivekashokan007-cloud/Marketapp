@@ -32,6 +32,9 @@ object M0Durable {
     @Volatile var crashAt: String? = System.getProperty("m0.crashAt")
     @Volatile var crashFile: String? = System.getProperty("m0.crashFile")
     const val MAX_QUARANTINE = 20
+    /** Cumulative bytes / fsync'd writes issued by this process (cost measurement; never persisted). */
+    @Volatile var bytesWritten = 0L
+    @Volatile var writes = 0L
 
     sealed class Read {
         object Absent : Read()
@@ -57,6 +60,7 @@ object M0Durable {
         dir.mkdirs()
         val bytes = seal(kindOf(f.name), body).toByteArray(Charsets.UTF_8)
         val tmp = File(dir, f.name + ".tmp")
+        bytesWritten += bytes.size; writes++
         FileOutputStream(tmp).use { out ->
             if (crashAt == "mid_tmp_write" && (crashFile == null || crashFile == f.name)) {
                 out.write(bytes, 0, bytes.size / 2); out.fd.sync(); boundary("mid_tmp_write", f)

@@ -525,8 +525,8 @@ object ResearchCollector {
         }
         if (!reclaimEnvelopes(dir, MAX_ENVELOPE_FILES - 1)) return EnvResult.CAPACITY_BACKLOG
         if (ResearchProtection.admission(dir) != null) return EnvResult.CAPACITY_BACKLOG
-        writeAtomic(f, JSONObject().put("sha256", digest).put("stored_ms", nowMs).put("envelope", JSONObject(body))
-            .put("envelope_text", body).toString())
+        // The exact envelope text is stored once (the archive/protection digest is over these bytes).
+        writeAtomic(f, JSONObject().put("sha256", digest).put("stored_ms", nowMs).put("envelope_text", body).toString())
         ResearchProtection.request(dir, envelopeEntryId(key), PROTECTION_OWNER, "COMBINED", key, key.substringBefore("|"),
             listOf("FORECAST_ENVELOPE"), nowMs, contentSha = digest)
         EnvResult.STORED
@@ -538,7 +538,7 @@ object ResearchCollector {
         var excess = fs.size - keep
         for (f in fs) {
             if (excess <= 0) break
-            val key = (readOrNull(f)?.optJSONObject("envelope")?.optString("source_poll_slot_key")) ?: continue
+            val key = readOrNull(f)?.optString("envelope_text")?.let { try { JSONObject(it).optString("source_poll_slot_key") } catch (_: Exception) { null } } ?: continue
             val id = envelopeEntryId(key)
             if (ResearchProtection.entry(dir, id)?.optString("state") != "ARCHIVE_ACKED") continue
             f.delete(); M0Durable.fsyncDir(dir)
@@ -548,7 +548,8 @@ object ResearchCollector {
         return excess <= 0
     }
 
-    fun readEnvelope(dir: File, slotKey: String): JSONObject? = readJson(envFile(dir, slotKey))?.optJSONObject("envelope")
+    fun readEnvelope(dir: File, slotKey: String): JSONObject? = readJson(envFile(dir, slotKey))?.optString("envelope_text")
+        ?.takeIf { it.isNotBlank() }?.let { JSONObject(it) }
     /** Exact archived bytes of an envelope (the digest the protection entry is bound to). */
     fun envelopeArchiveBytes(dir: File, slotKey: String): ByteArray? = readOrNull(envFile(dir, slotKey))?.optString("envelope_text")?.toByteArray(Charsets.UTF_8)
 
@@ -616,7 +617,7 @@ object ResearchCollector {
         out.put("sessions", arr)
         val ev = JSONObject(); listOf("VALID", "NEUTRAL", "MISSING", "MALFORMED", "FORECAST_UNAVAILABLE").forEach { ev.put(it, 0) }
         dir.listFiles { f -> f.name.startsWith("env_${safe(today)}") && f.name.endsWith(".json") }?.forEach { f ->
-            val st = readOrNull(f)?.optJSONObject("envelope")?.optString("status") ?: return@forEach
+            val st = readOrNull(f)?.optString("envelope_text")?.let { try { JSONObject(it).optString("status") } catch (_: Exception) { null } } ?: return@forEach
             ev.put(st, ev.optInt(st) + 1)
         }
         out.put("envelopes_today", ev).put("envelopes_upload", "LOCAL_ONLY_UPLOAD_NOT_DEPLOYED")

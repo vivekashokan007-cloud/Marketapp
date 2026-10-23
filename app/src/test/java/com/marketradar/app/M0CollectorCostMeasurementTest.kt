@@ -46,6 +46,7 @@ class M0CollectorCostMeasurementTest {
         val warm = Files.createTempDirectory("m0warm").toFile(); ResearchCollector.setEnabled(warm, true, ms(9, 0))
         repeat(5) { ResearchCollector.captureFromChain(warm, "NF", nf, 1, 2, "ml_option_chain_snapshots", 3, "x", 4) }
         warm.deleteRecursively()
+        val b0 = M0Durable.bytesWritten; val w0 = M0Durable.writes
         for (s in ResearchCalendar.slotGrid(LocalDate.parse(day))) {
             val now = s.nominalMs + 5_000
             for ((ix, ch) in listOf("NF" to nf, "BNF" to bnf)) {
@@ -76,6 +77,7 @@ class M0CollectorCostMeasurementTest {
             .put("ms_per_slot_capture_avg", t["capture"]!! / 1_000_000.0 / slots)
             .put("heap_used_mb_after", (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1048576)
             .put("extra_network_requests_per_poll", 0)
+            .put("bytes_written_session_incl_rewrites", M0Durable.bytesWritten - b0).put("fsynced_writes_session", M0Durable.writes - w0)
         File("build").mkdirs(); File("build/m0_cost.json").writeText(out.toString(1))
         println("M0_COST " + out)
         assertTrue(total < 2_000_000)
