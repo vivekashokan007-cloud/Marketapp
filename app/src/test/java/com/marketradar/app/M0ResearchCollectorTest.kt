@@ -221,7 +221,7 @@ class M0ResearchCollectorTest {
         val same = ResearchCollector.putInstrumentMap(dir, "NF", ResearchCollector.instrumentMapLines("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L)
         assertEquals(ResearchCollector.MapRef.Ok(c1.imapVersion!!, false), same)
         // a tampered stored map is refused, not silently re-referenced
-        val f = File(dir, "imap_${c1.imapVersion}.json"); val o = JSONObject(f.readText()); o.put("lines", "NF|x"); f.writeText(o.toString())
+        val f = File(dir, "imap_${c1.imapVersion}.json"); val o = JSONObject(f.readText()); o.put("body", JSONObject(o.getString("body")).put("lines", "NF|x").toString()); f.writeText(o.toString())
         assertEquals(ResearchCollector.MapRef.Unavailable("IMAP_STORE_CORRUPT"),
             ResearchCollector.putInstrumentMap(dir, "NF", ResearchCollector.instrumentMapLines("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L))
     }
@@ -234,26 +234,34 @@ class M0ResearchCollectorTest {
         assertEquals("CAPACITY_REJECTED", ResearchProtection.request(dir, "c3", "offline_builder_m1", "NF", "t2", S1, roles, 1L, capacity = 2))
         assertTrue(ResearchProtection.isProtected(dir, "NF", "t1"))
         assertEquals(roles, (0 until 6).map { ResearchProtection.entry(dir, "c1")!!.getJSONArray("roles").getString(it) })
+        // Batch 1 W4: an arbitrary-bytes ack is rejected; only a verified manifest of the requested evidence is accepted
         val bytes = "archived chain rows".toByteArray()
         val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        assertEquals("STAGED", ResearchProtection.acknowledgeArchive(dir, "c1", "0".repeat(64), bytes, 2L))
-        assertEquals("ARCHIVE_ACKED", ResearchProtection.acknowledgeArchive(dir, "c1", sha, bytes, 3L))
-        assertFalse(ResearchProtection.isProtected(dir, "NF", "t1"))
+        val arbitrary = JSONObject().put("entry_id", "c1").put("index", "NF").put("poll_ts", "t1").put("roles", org.json.JSONArray(roles.sorted()))
+            .put("content_sha256", sha).put("content_bytes", bytes.size)
+        assertTrue(ResearchProtection.acknowledgeArchive(dir, "c1", arbitrary, bytes, 3L).startsWith("REJECTED:"))
+        assertTrue(ResearchProtection.isProtected(dir, "NF", "t1"))
         // c2 never archived: lag limit converts it to a visible final state (no indefinite pin)
         assertEquals(0, ResearchProtection.enforceLag(dir, S2, lagLimit = 2))
-        assertEquals(1, ResearchProtection.enforceLag(dir, "2026-10-29", lagLimit = 2))
+        assertEquals(2, ResearchProtection.enforceLag(dir, "2026-10-29", lagLimit = 2))
         assertEquals("LAG_EXCEEDED", ResearchProtection.entry(dir, "c2")!!.getString("state"))
         val sum = ResearchProtection.summary(dir, S1)
-        assertEquals(1, sum.getInt("CAPACITY_REJECTED")); assertEquals(1, sum.getInt("LAG_EXCEEDED"))
+        assertEquals(1, sum.getInt("CAPACITY_REJECTED")); assertEquals(2, sum.getInt("LAG_EXCEEDED"))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "t1"))   // LAG_EXCEEDED is still protected (no deletion)
         assertEquals("INCOMPLETE_REPLAY", sum.getString("integrity"))
         assertEquals("UNKNOWN_INDEX", ResearchProtection.request(dir, "c4", "o", "FINNIFTY", "t", S1, roles, 1L))
     }
 
     @Test fun b7_6_local_stores_are_bounded() {
+        // Batch 1 W4: count-only pruning is gone; at the cap, unacknowledged manifests are kept and admission refused
+        var refused = 0
         repeat(ResearchCollector.MAX_MANIFEST_SESSIONS + 5) { i ->
-            ResearchCollector.ensureManifest(dir, LocalDate.parse("2026-01-01").plusDays(i.toLong()).toString(), 1L)
+            try { ResearchCollector.ensureManifest(dir, LocalDate.parse("2026-01-01").plusDays(i.toLong()).toString(), 1L) }
+            catch (_: ResearchCollector.CapacityBacklog) { refused++ }
         }
-        assertEquals(ResearchCollector.MAX_MANIFEST_SESSIONS, dir.listFiles { f -> f.name.startsWith("manifest_") }!!.size)
+        assertEquals(ResearchCollector.MAX_MANIFEST_SESSIONS, dir.listFiles { f -> f.name.startsWith("manifest_") && f.name.endsWith(".json") }!!.size)
+        assertEquals(5, refused)
+        dir.listFiles { f -> f.name.startsWith("manifest_") }!!.forEach { it.delete() }
         repeat(ResearchCollector.MAX_ATTEMPTS_PER_SLOT) { begin("NF", S1, 40, ms(S1, 12, 30)) }
         assertEquals(ResearchCollector.Begin.Unavailable("ATTEMPT_CAP"), ResearchCollector.beginAttempt(dir, "NF", "$S1|40", ms(S1, 12, 31)))
     }

@@ -1325,7 +1325,7 @@ class MarketWatchService : Service() {
             for ((idx, att) in attempts) {
                 val (chain, start, end) = chains[idx] ?: continue
                 val cap = ResearchCollector.captureFromChain(dir, idx, chain, start.takeIf { it > 0 }, end.takeIf { it > 0 },
-                    table, now, pollTs, now)
+                    table, now, pollTs, now, leaseId = att.attemptId)
                 ResearchCollector.recordCapture(dir, att.slotId, att.attemptId, cap, now)
             }
         }
@@ -1338,6 +1338,8 @@ class MarketWatchService : Service() {
         m0Safely("close", Unit) {
             val now = System.currentTimeMillis()
             for ((_, att) in attempts) ResearchCollector.closeIfOpen(m0Dir(), att.slotId, att.attemptId, now)
+            // W4: bounded runtime point for reconcile + protection lag (at most once per 30 min, after the poll).
+            ResearchCollector.maybeReconcile(m0Dir(), now)
         }
     }
 
