@@ -889,11 +889,17 @@ object ResearchProtection {
     @Volatile var FINAL_RETAIN = 200
     @Volatile var MAX_BYTES = 2_500_000
     const val LAG_LIMIT_SESSIONS = 20
-    const val REJECT_RESERVE_BYTES = 512
-    /** B1-R5: bounded growth a still-protected entry may add later (ack fields / ack-failure / lag bookkeeping). */
+    /** B1-R5a: room for the bounded rejection + identity-conflict bookkeeping (both records, ids capped at 120 chars). */
+    const val REJECT_RESERVE_BYTES = 768
+    /** B1-R5a: maximum growth ANY non-final (STAGED / LAG_EXCEEDED / ARCHIVE_ACKED) entry may still add until it is
+     *  RELEASED: ack fields (2 digests, bytes, time), ack-failure fields, lag field, released_ms, longer state name.
+     *  Measured upper bound ~360 bytes; [ENTRY_GROWTH_RESERVE_BYTES] keeps margin. RELEASED entries never grow. */
     const val ENTRY_GROWTH_RESERVE_BYTES = 448
-    /** Exact on-disk (sealed, UTF-8) size of the ledger body. A replacement write transiently needs one more copy
-     *  (temp file) of at most MAX_BYTES - so the peak footprint is bounded by 2 * MAX_BYTES. */
+    /** B1-R5a: compaction summary growth bound (by_state counter + total digits; chain digest is fixed size). */
+    const val COMPACTION_RESERVE_BYTES = 128
+    /** Exact on-disk (sealed, UTF-8) size of the ledger body. EVERY commit is refused when it would exceed
+     *  MAX_BYTES ([save]), so the committed ledger is always <= MAX_BYTES and a replacement write transiently holds
+     *  at most the old file plus one temp copy: peak <= 2 * MAX_BYTES holds by construction. */
     fun sealedBytes(o: JSONObject): Long = M0Durable.sealedSize("protection.json", o.toString())
     val ACTIVE = setOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED")
     val PROTECTED = setOf("STAGED", "LAG_EXCEEDED")
@@ -940,11 +946,19 @@ object ResearchProtection {
 
     /** Ledger first, then the "established" marker: a crash before the first ledger commit leaves a genuine
      *  first-use state (reported NO_EVIDENCE, never OK); once established, a missing ledger is LEDGER_CORRUPT. */
-    private fun save(dir: File, o: JSONObject, fresh: Boolean) {
+    /** B1-R5a: commit only when the sealed ledger fits MAX_BYTES; false = nothing written (caller reports it). */
+    private fun save(dir: File, o: JSONObject, fresh: Boolean): Boolean {
+        if (sealedBytes(o) > MAX_BYTES) {
+            capRefusals++
+            return false
+        }
         M0Durable.write(file(dir), o.toString())
         if (fresh || M0Durable.read(marker(dir)) is M0Durable.Read.Absent)
             M0Durable.write(marker(dir), JSONObject().put("established_ms", System.currentTimeMillis()).toString())
+        return true
     }
+    /** Commits refused by the byte cap since process start (visible in summary; the refused change is not applied). */
+    @Volatile var capRefusals = 0
 
     private inline fun <T> withLedger(dir: File, onCorrupt: (String) -> T, block: (JSONObject, Boolean) -> T): T {
         return when (val l = load(dir)) {
@@ -983,9 +997,9 @@ object ResearchProtection {
         val had = e.opt(id)
         e.put(id, x)
         val size = sealedBytes(o)
-        val protectedN = e.keys().asSequence().count { e.getJSONObject(it).optString("state") in PROTECTED }
+        val growing = e.keys().asSequence().count { e.getJSONObject(it).optString("state") in ACTIVE }
         if (had == null) e.remove(id) else e.put(id, had)
-        return size + protectedN.toLong() * ENTRY_GROWTH_RESERVE_BYTES <= MAX_BYTES - REJECT_RESERVE_BYTES
+        return size + growing.toLong() * ENTRY_GROWTH_RESERVE_BYTES + COMPACTION_RESERVE_BYTES <= MAX_BYTES - REJECT_RESERVE_BYTES
     }
 
     private val IDENTITY_FIELDS = listOf("owner", "index", "poll_ts", "session", "roles", "expected_rows", "content_sha256", "source_rows_sha256")
@@ -1004,7 +1018,7 @@ object ResearchProtection {
                 o.put("identity_conflicts_total", o.optInt("identity_conflicts_total") + 1)
                 o.put("last_identity_conflict", JSONObject().put("id", id.take(120)).put("fields", JSONArray(diff)).put("at_ms", nowMs))
                 if (sealedBytes(o) > MAX_BYTES) o.remove("last_identity_conflict")
-                save(dir, o, fresh)
+                save(dir, o, fresh)   // refused only if even the counter cannot fit; the result is still a conflict
                 return@withLedger "IDENTITY_CONFLICT"
             }
             val reject = when {
@@ -1021,7 +1035,7 @@ object ResearchProtection {
                 return@withLedger "CAPACITY_REJECTED"
             }
             e.put(id, x)
-            save(dir, o, fresh)
+            if (!save(dir, o, fresh)) return@withLedger "CAPACITY_REJECTED"
             "STAGED"
         }
     }
@@ -1076,11 +1090,13 @@ object ResearchProtection {
             }
             if (err != null) {
                 x.put("last_ack_error", err).put("ack_failures", x.optInt("ack_failures") + 1)
-                save(dir, o, fresh); return@withLedger "REJECTED:$err"
+                if (!save(dir, o, fresh)) { /* failure detail not recordable within cap; entry unchanged (protected) */ }
+                return@withLedger "REJECTED:$err"
             }
             x.put("state", "ARCHIVE_ACKED").put("archive_sha256", actual).put("archive_bytes", content.size).put("acked_ms", nowMs)
                 .put("archive_manifest_sha256", M0Durable.sha256(manifest.toString()))
-            save(dir, o, fresh); "ARCHIVE_ACKED"
+            if (!save(dir, o, fresh)) return@withLedger "REJECTED:ledger_byte_cap"   // stays protected
+            "ARCHIVE_ACKED"
         }
     }
 
@@ -1090,7 +1106,9 @@ object ResearchProtection {
             val x = o.getJSONObject("entries").optJSONObject(id) ?: return@withLedger "UNKNOWN"
             if (x.optString("state") != "ARCHIVE_ACKED") return@withLedger "NOT_ACKED:" + x.optString("state")
             x.put("state", "RELEASED").put("released_ms", nowMs)
-            compact(o); save(dir, o, fresh); "RELEASED"
+            compact(o)
+            if (!save(dir, o, fresh)) return@withLedger "LEDGER_BYTE_CAP"   // stays ARCHIVE_ACKED; local copy kept by caller
+            "RELEASED"
         }
     }
 
@@ -1143,7 +1161,7 @@ object ResearchProtection {
                 val lag = ResearchCalendar.regularSessionsAfter(LocalDate.parse(x.getString("session")), LocalDate.parse(today)) ?: continue
                 if (lag > lagLimit) { x.put("state", "LAG_EXCEEDED").put("lag_sessions", lag); n++ }
             }
-            if (n > 0) save(dir, o, false)
+            if (n > 0 && !save(dir, o, false)) return@withLedger 0
             n
         }
     }
@@ -1168,7 +1186,7 @@ object ResearchProtection {
             for (k in e.keys()) { val s = e.getJSONObject(k).optString("state"); c.put(s, c.optInt(s) + 1) }
             base.put("counts", c).put("CAPACITY_REJECTED", o.optInt("rejected_total"))
                 .put("compacted", o.optJSONObject("compacted") ?: JSONObject()).put("ledger_bytes", sealedBytes(o))
-                .put("IDENTITY_CONFLICT", o.optInt("identity_conflicts_total"))
+                .put("IDENTITY_CONFLICT", o.optInt("identity_conflicts_total")).put("cap_refusals", capRefusals)
             val integrity = when {
                 fresh || (e.length() == 0 && (o.optJSONObject("compacted")?.optInt("total") ?: 0) == 0) -> "NO_EVIDENCE"
                 activeCount(e) >= CAPACITY -> "BACKLOG_AT_CAPACITY"

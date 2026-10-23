@@ -54,11 +54,22 @@ object ResearchCohorts {
         val check = evaluate(idx, entry)
         val indexBody = JSONObject().put("cohort_id", cohortId).put("frozen_ms", nowMs)
             .put("items", idx).put("entry_contract", entry?.json() ?: JSONObject.NULL).put("frozen_check", check).toString()
-        val sizes = (bodies + ("index.json" to indexBody)).map { (n, b) -> M0Durable.sealedSize(n, b) }
-        val add = sizes.sum()
-        // a previous interrupted freeze of this id is replaced, so its partial bytes do not count twice
-        val partial = if (cd.exists()) cd.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
-        if (totalBytes(dir) - partial + add + (sizes.maxOrNull() ?: 0L) > MAX_TOTAL_BYTES) return "REJECTED_CAPACITY"
+        // B1-R5b: an interrupted earlier freeze may have left files here. Only bytes that this freeze DEMONSTRABLY
+        // replaces (a same-named target file that the atomic rename overwrites) are subtracted; every other leftover
+        // (extra item files from a longer attempt, *.tmp / *.tmp.rejected temps, unknown files) keeps counting and is
+        // never deleted. The cap is checked at the PEAK of the write sequence (old target + new temp coexist).
+        val writes = bodies + ("index.json" to indexBody)
+        var cur = totalBytes(dir)
+        var peak = cur
+        for ((name, body) in writes) {
+            val newSize = M0Durable.sealedSize(name, body)
+            val old = File(cd, name).let { if (it.isFile) it.length() else 0L }
+            // a stale "<name>.tmp" is replaced by this write's temp; it is counted in cur already
+            val staleTmp = File(cd, "$name.tmp").let { if (it.isFile) it.length() else 0L }
+            peak = maxOf(peak, cur - staleTmp + newSize)          // temp fully written, old target still present
+            cur = cur - staleTmp - old + newSize                   // after rename: old target replaced
+        }
+        if (peak > MAX_TOTAL_BYTES || cur > MAX_TOTAL_BYTES) return "REJECTED_CAPACITY"
         for ((name, body) in bodies) M0Durable.write(File(cd, name), body)
         M0Durable.write(File(cd, "index.json"), indexBody)
         if (check.optBoolean("complete")) "FROZEN" else "INCOMPLETE"
