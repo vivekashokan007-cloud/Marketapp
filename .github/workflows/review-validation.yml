@@ -121,6 +121,9 @@ jobs:
           grep -q '22/22 ev methods correctly forwarded through the real facade' /tmp/facade.log
           grep -q '^# fail 0' /tmp/facade.log
           grep -q '^ok 6 - 6. b507 new bridge methods' /tmp/facade.log
+          node --test tools/bridge_facade/test_m0_research_facade.mjs | tee /tmp/m0facade.log
+          grep -q '^# pass 2' /tmp/m0facade.log
+          grep -q '^# fail 0' /tmp/m0facade.log
 
       - name: Resolve paired MarketVivi ref
         id: pair
@@ -254,6 +257,26 @@ jobs:
           grep -q '^PASS  live shape: repeating the SAME frozen cohort -> 401 42501' /tmp/candidate_replay.log
           grep -q '^PASS  committed golden equals this run' /tmp/candidate_replay.log
           grep -q ' checks, 0 failed$' /tmp/candidate_replay.log
+
+      - name: M0 research collector scratch DB suites (new migration + calendar-derived audit; never production)
+        env:
+          PGHOST: localhost
+          PGPORT: '5432'
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          RESEARCH_M0_SCRATCH_OK: '1'
+        run: |
+          set -o pipefail
+          sha256sum supabase/migrations/20261022120000_research_m0_collector.sql docs/research_m0/C1X_CONTINUITY_AUDIT_CALENDAR_20261022.sql
+          grep -q 'research_m0.ingest' supabase/migrations/20261022120000_research_m0_collector.sql
+          python3 tools/research_m0_db_suite/suite.py | tee /tmp/m0_db.log
+          grep -q '^ok rotating_device_keys_cannot_reset_global_caps' /tmp/m0_db.log
+          grep -q '^ok concurrent_conflicting_submissions' /tmp/m0_db.log
+          grep -q '^ok hostile_default_privilege_profile' /tmp/m0_db.log
+          grep -q '^research_m0_db_suite: 11 cases passed' /tmp/m0_db.log
+          python3 tools/research_m0_db_suite/audit_suite.py | tee /tmp/m0_audit.log
+          grep -q '^audit_suite: calendar-derived audit OK' /tmp/m0_audit.log
+          grep -q '^audit_suite: SPAN_SPECIAL_SESSION tagging OK' /tmp/m0_audit.log
 
       - name: Confirm publication artifacts were not built
         run: |
