@@ -65,7 +65,7 @@ class T(unittest.TestCase):
         self.assertIn("bytes differ", r.stdout)
 
     def test_verify_malformed_inputs_are_invalid_exit_3(self):
-        bad = os.path.join(self.d, "x.zip"); 
+        bad = os.path.join(self.d, "x.zip")
         with open(bad, "wb") as f: f.write(b"not a zip")
         self.assertEqual(self.cli("verify", bad).returncode, 3)
         nm = os.path.join(self.d, "nm.zip")
