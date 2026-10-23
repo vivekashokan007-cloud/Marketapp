@@ -93,6 +93,21 @@ try:
     total_nf_marks = sum(v for k, v in res.items() if k[0] == 'mark_1505' and k[1] == 'NF')
     assert total_nf_marks == 6 * 6 * 4, total_nf_marks  # 6 entries x 6 roles x 4 calendar mark sessions
     print('audit_suite: calendar-derived audit OK (expected=%d marks; old query would hide missing/pending)' % total_nf_marks)
+    assert not any(k[0] == 'entry_span' for k in res)   # Oct 22 -> Oct 27 does not contain 8 Nov
+    # Batch 1 W3: entries on 5/6 Nov (NF expiry Mon 9 Nov, Tue 10 Nov holiday) span the 8 Nov Muhurat session
+    out2 = psql(['-v', 'start=2026-11-05', '-v', 'end=2026-11-06', '-v', 'asof=2026-11-04 09:00+05:30',
+                 '-v', 'bnf_expiries=2026-11-23', '-f', AUDIT])
+    res2 = {}
+    for line in out2.splitlines():
+        parts = line.split(',')
+        if len(parts) == 6:
+            res2[(parts[0], parts[1], parts[4])] = res2.get((parts[0], parts[1], parts[4]), 0) + int(parts[5])
+    assert res2.get(('entry_span', 'NF', 'SPAN_SPECIAL_SESSION')) == 12, res2
+    assert res2.get(('entry_span', 'BNF', 'SPAN_SPECIAL_SESSION')) == 12, res2
+    assert res2.get(('entry', 'NF', 'PENDING')) == 12, res2
+    nov_marks = sum(v for k, v in res2.items() if k[0] == 'mark_1505' and k[1] == 'NF')
+    assert nov_marks == 6 * (3 * 6 + 2 * 6), nov_marks   # 5 Nov: 5,6,9 ; 6 Nov: 6,9 - no 8 Nov regular mark
+    print('audit_suite: SPAN_SPECIAL_SESSION tagging OK; 8 Nov never counted as a regular mark session')
     if len(sys.argv) > 1:
         old = open(sys.argv[1]).read().replace("date '2026-08-03' and date '2026-10-21'", "date '2026-10-22' and date '2026-10-27'")
         print('--- original observation-derived query on the same data ---')

@@ -10,7 +10,8 @@
 --   :'bnf_expiries'  comma list of AUTHORIZED BNF expiries for the window ('' = BNF expiry authority unknown ->
 --                    every BNF entry is EXPIRY_AUTHORITY_UNKNOWN; nothing is borrowed from NF or from the data)
 -- Definitions:
---   expected sessions = weekdays minus the 2026 NSE F&O holiday list (other years: the run aborts, fail closed);
+--   expected sessions = weekdays minus the 2026 NSE F&O holiday list (special sessions such as Muhurat
+--   8 Nov 2026 are not regular sessions; spanning entries are reported as SPAN_SPECIAL_SESSION) (other years: the run aborts, fail closed);
 --   entry clocks 09:30,10:30,11:30,12:30,13:30,14:30; O(T) = first poll with poll_ts in [T, T+90 s) for that
 --   index and the ONE authorized expiry (NF: Tuesday / previous session rule; BNF: supplied list);
 --   rows for any other expiry never participate. Conflicting duplicate quote rows (same key, different bid/ask/
@@ -213,6 +214,11 @@ union all
 select 'entry_recheck_AVAIL_PROXY_OT_RECEIPT', index_key, role, null::boolean, state, count(*) from entry_recheck group by 1,2,3,4,5
 union all
 select 'mark_1505', index_key, role, expiry_day, state, count(*) from mark_state group by 1,2,3,4,5
+union all
+-- Batch 1 W3: Sun 8 Nov 2026 Muhurat (NSE/FAOP/76940) is NOT a regular session and has no 15:05 regular mark;
+-- entries whose holding interval contains it are tagged so they can be excluded/handled by the frozen rule.
+select 'entry_span', index_key, null::text, null::boolean, 'SPAN_SPECIAL_SESSION', count(*) from entry_state
+  where expiry is not null and date '2026-11-08' between session_date and expiry group by 1,2,3,4,5
 order by 1,2,3,4,5;
 
 rollback;
