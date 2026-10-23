@@ -42,6 +42,63 @@ import java.io.IOException
 import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
+
+    // Stage 2 CI-2: SAF "create document" for the read-only research export.
+    @Volatile private var researchExportIdentity: String? = null
+    private val researchExportLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri -> onResearchExportUri(uri) }
+
+    fun launchResearchExport(pwaIdentityJson: String?) {
+        if (ResearchExport.running) return
+        researchExportIdentity = pwaIdentityJson
+        val name = "MarketRadar_research_m0_${ResearchCollector.sessionOf(System.currentTimeMillis())}_${System.currentTimeMillis()}.zip"
+        try { researchExportLauncher.launch(name) } catch (t: Throwable) {
+            deliverResearchExport(JSONObject().put("status", "FAILED_IO").put("stage", "picker").put("error", t.javaClass.simpleName))
+        }
+    }
+
+    private fun researchBuildIdentity(): JSONObject {
+        val id = JSONObject().put("app_id", BuildConfig.APPLICATION_ID).put("version_name", BuildConfig.VERSION_NAME)
+            .put("version_code", BuildConfig.VERSION_CODE).put("brain_version_expected", BuildConfig.VERSION_NAME)
+            .put("marketapp_source_head", BuildConfig.SOURCE_HEAD).put("build_type", BuildConfig.BUILD_TYPE)
+        try {
+            val pi = if (Build.VERSION.SDK_INT >= 28) packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+                     else @Suppress("DEPRECATION") packageManager.getPackageInfo(packageName, PackageManager.GET_SIGNATURES)
+            val sigs = if (Build.VERSION.SDK_INT >= 28) pi.signingInfo?.apkContentsSigners else @Suppress("DEPRECATION") pi.signatures
+            id.put("signer_sha256", org.json.JSONArray((sigs ?: emptyArray()).map { M0Durable.sha256(it.toByteArray()) }))
+        } catch (t: Throwable) { id.put("signer_sha256", "UNAVAILABLE:" + t.javaClass.simpleName) }
+        val pwa = try { JSONObject(researchExportIdentity ?: "") } catch (_: Exception) { JSONObject().put("status", "NOT_PROVIDED") }
+        return id.put("pwa", pwa)
+    }
+
+    private fun onResearchExportUri(uri: Uri?) {
+        if (uri == null) { deliverResearchExport(JSONObject().put("status", "CANCELLED").put("partial_output", "NONE_WRITTEN").put("stage", "picker")); return }
+        if (ResearchExport.running) return
+        ResearchExport.running = true; ResearchExport.cancelRequested = false
+        val identity = researchBuildIdentity()
+        Thread({
+            val r = try {
+                ResearchExport.export(File(filesDir, ResearchCollector.DIR), File(cacheDir, "research_export_tmp"), identity,
+                    System.currentTimeMillis(),
+                    openSink = { contentResolver.openOutputStream(uri, "wt") ?: throw IOException("SINK_NULL") },
+                    openReadback = { contentResolver.openInputStream(uri) ?: throw IOException("READBACK_NULL") })
+            } catch (t: Throwable) { JSONObject().put("status", "FAILED_IO").put("error", t.javaClass.simpleName) }
+            r.put("document", uri.toString())
+            ResearchExport.lastResult = r
+            ResearchExport.running = false
+            deliverResearchExport(r)
+        }, "m0-research-export").start()
+    }
+
+    private fun deliverResearchExport(r: JSONObject) {
+        ResearchExport.lastResult = r
+        runOnUiThread {
+            try { webView.evaluateJavascript("window.m0OnResearchExportResult && window.m0OnResearchExportResult(" + JSONObject.quote(r.toString()) + ")", null) }
+            catch (_: Throwable) {}
+        }
+    }
+
     companion object {
         private const val PREFS_NAME = "market_radar"
         private const val PREF_LAST_WEB_URL = "last_web_url"
@@ -729,6 +786,19 @@ class MainActivity : AppCompatActivity() {
                     setResearchCollectorEnabled: function(on) {
                         if (typeof AndroidBridge.setResearchCollectorEnabled !== 'function') return JSON.stringify({ available: false, label: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
                         return AndroidBridge.setResearchCollectorEnabled(on === true);
+                    },
+                    // Stage 2 CI-2: read-only research export (SAF picker) + result/cancel.
+                    exportResearchEvidence: function(pwaIdentityJson) {
+                        if (typeof AndroidBridge.exportResearchEvidence !== 'function') return JSON.stringify({ status: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.exportResearchEvidence(typeof pwaIdentityJson === 'string' ? pwaIdentityJson : '');
+                    },
+                    getResearchExportResult: function() {
+                        if (typeof AndroidBridge.getResearchExportResult !== 'function') return JSON.stringify({ status: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getResearchExportResult();
+                    },
+                    cancelResearchExport: function() {
+                        if (typeof AndroidBridge.cancelResearchExport !== 'function') return JSON.stringify({ status: 'UNAVAILABLE', reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.cancelResearchExport();
                     },
                     
                     init: function() { console.log('[BRIDGE] Native Android APK v2.1 (Chaquopy+ML+LV1) active'); }

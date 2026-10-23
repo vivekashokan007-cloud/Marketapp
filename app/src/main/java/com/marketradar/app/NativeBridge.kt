@@ -690,6 +690,35 @@ class NativeBridge(private val context: Context) {
         JSONObject().put("label", "ERROR").put("error", t.javaClass.simpleName).toString()
     }
 
+    /**
+     * Stage 2 CI-2: user-initiated, read-only research export via the Storage Access Framework (ACTION_CREATE_DOCUMENT).
+     * Opens the system picker; the result is delivered to window.m0OnResearchExportResult and via
+     * [getResearchExportResult]. [pwaIdentityJson] carries the PWA version/build/app.js identity for the manifest.
+     */
+    @JavascriptInterface
+    fun exportResearchEvidence(pwaIdentityJson: String?): String = try {
+        val act = context as? MainActivity
+        when {
+            act == null -> JSONObject().put("status", "UNAVAILABLE").put("reason", "NO_ACTIVITY").toString()
+            ResearchExport.running -> JSONObject().put("status", "BUSY").toString()
+            else -> { act.runOnUiThread { act.launchResearchExport(pwaIdentityJson) }
+                JSONObject().put("status", "PICKER_OPENING").toString() }
+        }
+    } catch (t: Throwable) {
+        JSONObject().put("status", "ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    @JavascriptInterface
+    fun getResearchExportResult(): String =
+        (ResearchExport.lastResult ?: JSONObject().put("status", if (ResearchExport.running) "RUNNING" else "NONE"))
+            .let { JSONObject(it.toString()).put("running", ResearchExport.running) }.toString()
+
+    @JavascriptInterface
+    fun cancelResearchExport(): String {
+        if (ResearchExport.running) ResearchExport.cancelRequested = true
+        return JSONObject().put("cancel_requested", ResearchExport.cancelRequested).put("running", ResearchExport.running).toString()
+    }
+
     @JavascriptInterface
     fun startMarketService() {
         clearStaleSessionStateIfNeeded()

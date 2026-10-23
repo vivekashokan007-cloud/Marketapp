@@ -54,7 +54,7 @@ class M0ResearchCollectorTest {
 
     private fun raw(status: String, wm: String?, dir0: String? = "BULL") = JSONObject().put("schema", "research_m0_raw_forecast_v1")
         .put("status", status).put("direction", dir0 ?: JSONObject.NULL).put("confidence", 62.0).put("horizon", "UNDECLARED")
-        .put("brain_version", "2.6.82").put("input_last_poll_slot_key", wm ?: JSONObject.NULL)
+        .put("brain_version", "2.6.83").put("input_last_poll_slot_key", wm ?: JSONObject.NULL)
 
     @Before fun setUp() { dir = Files.createTempDirectory("m0").toFile(); ResearchCollector.setEnabled(dir, true, ms(S1, 9, 0)) }
     @After fun tearDown() { dir.deleteRecursively() }
@@ -146,38 +146,38 @@ class M0ResearchCollectorTest {
         assertEquals(at.slotId, at2.slotId); assertEquals(2, at2.attemptNo); assertNotEquals(at.attemptId, at2.attemptId)
 
         // immutable envelope across "update" (different app version on retry -> conflict, original kept)
-        val e1 = ResearchCollector.buildEnvelope("$S1|5", raw("VALID", "$S1|5"), ms(S1, 9, 36), ms(S1, 9, 36, 20), "2.6.82", 513, JSONObject())
+        val e1 = ResearchCollector.buildEnvelope("$S1|5", raw("VALID", "$S1|5"), ms(S1, 9, 36), ms(S1, 9, 36, 20), "2.6.83", 513, JSONObject())
         assertEquals(ResearchCollector.EnvResult.STORED, ResearchCollector.putEnvelope(dir, e1, ms(S1, 9, 37)))
         assertEquals(ResearchCollector.EnvResult.IDEMPOTENT, ResearchCollector.putEnvelope(dir, JSONObject(e1.toString()), ms(S1, 9, 38)))
         val e2 = ResearchCollector.buildEnvelope("$S1|5", raw("NEUTRAL", "$S1|5", "NEUTRAL"), ms(S1, 9, 36), ms(S1, 9, 36, 20), "2.6.83", 514, JSONObject())
         assertEquals(ResearchCollector.EnvResult.CONFLICT, ResearchCollector.putEnvelope(dir, e2, ms(S1, 9, 39)))
         assertEquals("VALID", ResearchCollector.readEnvelope(dir, "$S1|5")!!.getString("status"))
-        assertEquals("2.6.82", ResearchCollector.readEnvelope(dir, "$S1|5")!!.getString("app_version"))
+        assertEquals("2.6.83", ResearchCollector.readEnvelope(dir, "$S1|5")!!.getString("app_version"))
         assertEquals(2, ResearchCollector.conflicts(dir).getInt("total"))
     }
 
     // ---------------------------------------------------------------- B7.3
     @Test fun b7_3_late_brain_and_later_poll_contamination_never_become_earlier_forecast() {
         // brain for slot 11 completes after slot 12's nominal time: kept for slot 11 with true availability
-        val late = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|11"), ms(S1, 10, 5, 6), ms(S1, 10, 10, 40), "2.6.82", 513, JSONObject())
+        val late = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|11"), ms(S1, 10, 5, 6), ms(S1, 10, 10, 40), "2.6.83", 513, JSONObject())
         assertEquals("VALID", late.getString("status"))
         assertTrue(late.getBoolean("available_after_next_slot_nominal"))
         assertEquals(ms(S1, 10, 10, 40), late.getLong("available_at_ms"))
         assertEquals("$S1|11", late.getString("source_poll_slot_key"))
         // a result computed from slot 12 inputs offered as slot 11 -> refused
-        val cont = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|12"), 1L, 2L, "2.6.82", 513, JSONObject())
+        val cont = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|12"), 1L, 2L, "2.6.83", 513, JSONObject())
         assertEquals("FORECAST_UNAVAILABLE", cont.getString("status"))
         assertTrue(cont.getString("reason").startsWith("input_watermark_mismatch"))
-        val unk = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", null), 1L, 2L, "2.6.82", 513, JSONObject())
+        val unk = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", null), 1L, 2L, "2.6.83", 513, JSONObject())
         assertEquals("input_watermark_unknown", unk.getString("reason"))
-        val noAvail = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|11"), 1L, null, "2.6.82", 513, JSONObject())
+        val noAvail = ResearchCollector.buildEnvelope("$S1|11", raw("VALID", "$S1|11"), 1L, null, "2.6.83", 513, JSONObject())
         assertEquals("availability_unknown", noAvail.getString("reason"))
         // the refused envelope occupies slot 11; a later "valid" retry cannot replace it
         ResearchCollector.putEnvelope(dir, cont, 3L)
         assertEquals(ResearchCollector.EnvResult.CONFLICT, ResearchCollector.putEnvelope(dir, late, 4L))
         assertEquals("FORECAST_UNAVAILABLE", ResearchCollector.readEnvelope(dir, "$S1|11")!!.getString("status"))
         // timeout -> MISSING (never neutral)
-        val to = ResearchCollector.buildEnvelope("$S1|13", null, 1L, null, "2.6.82", 513, JSONObject(), "brain_timeout")
+        val to = ResearchCollector.buildEnvelope("$S1|13", null, 1L, null, "2.6.83", 513, JSONObject(), "brain_timeout")
         assertEquals("MISSING", to.getString("status")); assertEquals("brain_timeout", to.getString("reason"))
     }
 
@@ -198,9 +198,9 @@ class M0ResearchCollectorTest {
         ResearchCollector.recordCapture(dir, at.slotId, at.attemptId, capture("NF", chain("NF", "2026-10-27", twoSided = false), ms(S1, 10, 50, 9)), ms(S1, 10, 51))
         assertEquals("PARTIAL", state(S1, "NF", 20).getString("state"))
         assertEquals("no_two_sided_quotes", state(S1, "NF", 20).getString("reason"))
-        val n = ResearchCollector.buildEnvelope("$S1|20", raw("NEUTRAL", "$S1|20", "NEUTRAL"), 1L, 2L, "2.6.82", 513, JSONObject())
+        val n = ResearchCollector.buildEnvelope("$S1|20", raw("NEUTRAL", "$S1|20", "NEUTRAL"), 1L, 2L, "2.6.83", 513, JSONObject())
         ResearchCollector.putEnvelope(dir, n, 3L)
-        ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$S1|21", null, 1L, null, "2.6.82", 513, JSONObject(), "brain_timeout"), 3L)
+        ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$S1|21", null, 1L, null, "2.6.83", 513, JSONObject(), "brain_timeout"), 3L)
         assertEquals("NEUTRAL", ResearchCollector.readEnvelope(dir, "$S1|20")!!.getString("status"))
         val ev = ResearchCollector.status(dir, ms(S1, 11, 0)).getJSONObject("envelopes_today")
         assertEquals(1, ev.getInt("NEUTRAL")); assertEquals(1, ev.getInt("MISSING"))

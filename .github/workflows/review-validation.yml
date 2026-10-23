@@ -91,6 +91,8 @@ jobs:
 
       - name: Verify generated lot-table source
         run: python3 scripts/generate_contract_lot_table_kt.py --check
+      - name: M0 Stage 2 offline export verifier + B9 reproduction regressions
+        run: python3 -W error::ResourceWarning -m unittest discover -s tools/research_m0_export -p 'test_*.py' -v
 
       - name: Run complete Python safety suite
         run: |
@@ -148,6 +150,10 @@ jobs:
           set -o pipefail
           (cd _marketvivi && git rev-parse HEAD)
           MARKETAPP_DIR="$PWD" node --test _marketvivi/tests/test_ev_v12_bridge_chain_b506.mjs | tee /tmp/chain.log
+          node --test tools/bridge_facade/test_m0_stage2_export_facade.mjs | tee /tmp/s2facade.log
+          grep -q '^# fail 0' /tmp/s2facade.log
+          MARKETAPP_DIR="$PWD" node --test _marketvivi/tests/test_m0_stage2_export_status.mjs | tee /tmp/s2card.log
+          grep -q '^# fail 0' /tmp/s2card.log
           grep -q '^# pass 5' /tmp/chain.log
           grep -q '^# fail 0' /tmp/chain.log
 

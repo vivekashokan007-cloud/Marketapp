@@ -707,6 +707,10 @@ object ResearchCollector {
         out.put("conflicts_total", conflicts(dir).optInt("total"))
         val prot = ResearchProtection.summary(dir, today)
         out.put("protection", prot)
+        // Stage 2 CI-4: read-only utilisation (accepted formula); unknown/corrupt is explicit, never zero.
+        out.put("capacity", ResearchCapacity.read(dir, nowMs))
+        out.put("toggle_semantics", "OFF stops NEW research attempts and envelopes; an attempt already begun for the current poll " +
+            "finishes its capture/close. Market polling, position monitoring and evening evaluation are not affected.")
         out.put("envelopes_unprotected", unprotectedEnvelopes(dir).length())
         val integ = integrity(dir)
         out.put("corrupt_files", integ)
