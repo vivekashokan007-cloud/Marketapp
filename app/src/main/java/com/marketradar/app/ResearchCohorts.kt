@@ -40,20 +40,27 @@ object ResearchCohorts {
         if (File(cd, "index.json").exists()) return "EXISTS"
         val n = root(dir).listFiles { f -> f.isDirectory }?.size ?: 0
         if (n >= MAX_COHORTS) return "REJECTED_CAPACITY"
-        val add = items.sumOf { it.content.length.toLong() + 512 }
-        if (totalBytes(dir) + add > MAX_TOTAL_BYTES) return "REJECTED_CAPACITY"
         val entry = items.firstOrNull { it.kind == "ENTRY_MARK" }?.contract
+        // B1-R5: serialize everything first and account the EXACT sealed UTF-8 bytes of every file to be written,
+        // plus one transient temp copy of the largest file (atomic replace), before anything is committed.
         val idx = JSONArray()
-        items.forEachIndexed { i, it ->
+        val bodies = items.mapIndexed { i, it ->
             val name = "item_$i.json"
-            M0Durable.write(File(cd, name), JSONObject().put("kind", it.kind).put("source_ref", it.sourceRef)
-                .put("contract", it.contract?.json() ?: JSONObject.NULL).put("content", it.content).toString())
             idx.put(JSONObject().put("file", name).put("kind", it.kind).put("sha256", M0Durable.sha256(it.content))
                 .put("contract", it.contract?.json() ?: JSONObject.NULL))
+            name to JSONObject().put("kind", it.kind).put("source_ref", it.sourceRef)
+                .put("contract", it.contract?.json() ?: JSONObject.NULL).put("content", it.content).toString()
         }
         val check = evaluate(idx, entry)
-        M0Durable.write(File(cd, "index.json"), JSONObject().put("cohort_id", cohortId).put("frozen_ms", nowMs)
-            .put("items", idx).put("entry_contract", entry?.json() ?: JSONObject.NULL).put("frozen_check", check).toString())
+        val indexBody = JSONObject().put("cohort_id", cohortId).put("frozen_ms", nowMs)
+            .put("items", idx).put("entry_contract", entry?.json() ?: JSONObject.NULL).put("frozen_check", check).toString()
+        val sizes = (bodies + ("index.json" to indexBody)).map { (n, b) -> M0Durable.sealedSize(n, b) }
+        val add = sizes.sum()
+        // a previous interrupted freeze of this id is replaced, so its partial bytes do not count twice
+        val partial = if (cd.exists()) cd.walkTopDown().filter { it.isFile }.sumOf { it.length() } else 0L
+        if (totalBytes(dir) - partial + add + (sizes.maxOrNull() ?: 0L) > MAX_TOTAL_BYTES) return "REJECTED_CAPACITY"
+        for ((name, body) in bodies) M0Durable.write(File(cd, name), body)
+        M0Durable.write(File(cd, "index.json"), indexBody)
         if (check.optBoolean("complete")) "FROZEN" else "INCOMPLETE"
     }
 

@@ -50,6 +50,12 @@ object M0Durable {
         if (c == name && (crashFile == null || crashFile == f.name)) Runtime.getRuntime().halt(77)
     }
 
+    /** Named cross-file boundary (TEST-ONLY fault injection; inert unless [crashAt] equals [name]). */
+    fun crashPoint(name: String) { if (crashAt == name) Runtime.getRuntime().halt(77) }
+
+    /** Exact UTF-8 size of the sealed record that [write] would commit for [fileName]/[body]. */
+    fun sealedSize(fileName: String, body: String): Long = seal(kindOf(fileName), body).toByteArray(Charsets.UTF_8).size.toLong()
+
     fun kindOf(name: String): String = name.removeSuffix(".tmp").removeSuffix(".json").substringBefore("_").substringBefore(".")
 
     fun seal(kind: String, body: String): String =

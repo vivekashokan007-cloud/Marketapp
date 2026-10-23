@@ -80,26 +80,32 @@ class M0Batch1DurabilityTest {
         // sustained map churn without references stays bounded
         repeat(50) { ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|X$it"), 10L + it, null) }
         assertTrue(imapCount() <= 2); assertNotNull(ResearchCollector.readInstrumentMap(dir, a.version))
-        // an orphan map file (crash between map write and admission) is never served and is cleaned
+        // B1-R4: an unverifiable unindexed map file is never served and NEVER deleted by absence from the index
+        // (it is kept, counted against the byte cap and reported as unverified).
         File(dir, "imap_${"f".repeat(64)}.json").writeText("x")
         ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|Y"), 99L, null)
-        assertFalse(File(dir, "imap_${"f".repeat(64)}.json").exists())
+        assertTrue(File(dir, "imap_${"f".repeat(64)}.json").exists())
+        assertNull(ResearchCollector.readInstrumentMap(dir, "f".repeat(64)))
     }
 
     // ---------------------------------------------------------------- W5b
     private fun chainArchive(id: String, idx: String, poll: String, rows: Int): Pair<JSONObject, ByteArray> {
-        val content = JSONObject().put("index", idx).put("poll_ts", poll).put("rows", JSONArray().apply { repeat(rows) { put(JSONObject().put("r", it)) } })
-            .toString().toByteArray()
+        val content = JSONObject().put("index", idx).put("poll_ts", poll).put("rows", canonRows(rows)).toString().toByteArray()
         return JSONObject().put("entry_id", id).put("index", idx).put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
             .put("content_sha256", M0Durable.sha256(content)).put("content_bytes", content.size).put("row_count", rows) to content
     }
+
+    // B1-R1: genuine canonical rows and the source digest the capture would have recorded for them
+    private fun canonRows(n: Int) = JSONArray().apply { repeat(n) { put(JSONObject().put("expiry", "2026-10-27").put("strike", 22000 + 50 * it)
+        .put("option_type", "CE").put("instrument_key", "NSE_FO|$it").put("bid", 1.5).put("ask", 1.6).put("ltp", JSONObject.NULL)) } }
+    private fun srcSha(idx: String, n: Int) = ResearchCollector.canonicalRowsDigest(idx, ResearchCollector.canonicalArchiveRows(canonRows(n))!!)
 
     @Test fun r4_final_entries_cannot_bypass_total_protection_capacity() {
         ResearchProtection.CAPACITY = 5; ResearchProtection.FINAL_RETAIN = 3
         var maxEntries = 0; var maxBytes = 0
         repeat(300) { i ->
             val id = "e$i"
-            assertEquals("STAGED", ResearchProtection.request(dir, id, "o", "NF", "p$i", S, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2))
+            assertEquals("STAGED", ResearchProtection.request(dir, id, "o", "NF", "p$i", S, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2, sourceSha = srcSha("NF", 2)))
             val (m, c) = chainArchive(id, "NF", "p$i", 2)
             assertEquals("ARCHIVE_ACKED", ResearchProtection.acknowledgeArchive(dir, id, m, c, i.toLong()))
             assertEquals("RELEASED", ResearchProtection.release(dir, id, i.toLong()))

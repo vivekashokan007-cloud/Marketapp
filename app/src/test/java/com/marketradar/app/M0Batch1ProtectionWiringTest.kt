@@ -34,11 +34,16 @@ class M0Batch1ProtectionWiringTest {
         val b = ResearchCollector.beginAttempt(dir, "NF", "$day|$ord", t) as ResearchCollector.Begin.Started
         val c = ResearchCollector.captureFromChain(dir, "NF", chain(), t, t, "ml_option_chain_snapshots", t, "poll-$day-$ord", t, b.attemptId)
         assertEquals(ResearchCollector.RecordResult.RECORDED, ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, c, t + 1000))
-        return b.slotId
+        return ResearchCollector.chainProtectionId(b.slotId, b.attemptId)   // B1-R2: per-attempt protection id
     }
 
+    /** B1-R1: the archive carries the captured rows in the canonical schema (here: the genuine rows of chain()). */
+    private fun genuineRows(): List<JSONObject> = listOf(100, 200).flatMap { k -> listOf("CE", "PE").map { t ->
+        JSONObject().put("expiry", "2026-10-27").put("strike", k).put("option_type", t).put("instrument_key", "NSE_FO|N$k$t")
+            .put("bid", 1.0).put("ask", 1.1).put("ltp", JSONObject.NULL) } }
+
     private fun chainAck(id: String, poll: String, rows: Int): Pair<JSONObject, ByteArray> {
-        val content = JSONObject().put("index", "NF").put("poll_ts", poll).put("rows", JSONArray().apply { repeat(rows) { put(it) } }).toString().toByteArray()
+        val content = JSONObject().put("index", "NF").put("poll_ts", poll).put("rows", JSONArray(genuineRows().take(rows))).toString().toByteArray()
         return JSONObject().put("entry_id", id).put("index", "NF").put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
             .put("content_sha256", M0Durable.sha256(content)).put("content_bytes", content.size).put("row_count", rows) to content
     }

@@ -25,6 +25,12 @@ object M0CrashChild {
                 M0Durable.crashAt = boundary; M0Durable.crashFile = target
                 ResearchCollector.beginAttempt(dir, "NF", "2026-10-21|40", 1_792_000_100_000L)
             }
+            "envelope" -> {   // B1-R3: kill at the envelope-commit / protection-request boundary (and durable boundaries)
+                ResearchCollector.setEnabled(dir, true, 1_792_000_000_000L)
+                val env = ResearchCollector.buildEnvelope("2026-10-23|40", null, 1L, 2L, "crash", 1, JSONObject())
+                M0Durable.crashAt = boundary; M0Durable.crashFile = target
+                ResearchCollector.putEnvelope(dir, env, 3L)
+            }
             "imap" -> {
                 val lines1 = listOf("NF|2026-10-27|100|CE|K1")
                 ResearchCollector.putInstrumentMap(dir, "NF", lines1, 1L, "L1")

@@ -235,7 +235,9 @@ object ResearchCollector {
         val persistStatus: String,          // DURABLE_ACKED | LOCAL_ONLY | FAILED | NOT_FETCHED
         val chainRows: Int, val twoSidedRows: Int, val defectRows: Int,
         val liveExpiry: String?, val imapVersion: String?, val feedTimeStatus: String, // KNOWN | UNKNOWN
-        val pollTs: String?, val imapUnavailable: String? = null
+        val pollTs: String?, val imapUnavailable: String? = null,
+        /** B1-R1: canonical digest of the captured chain rows, computed from the fetched response at capture time. */
+        val sourceRowsSha256: String? = null
     ) {
         fun toJson(): JSONObject = JSONObject().put("fetch_start_ms", fetchStartMs ?: JSONObject.NULL)
             .put("fetch_end_ms", fetchEndMs ?: JSONObject.NULL).put("receipt_ms", receiptMs ?: JSONObject.NULL)
@@ -245,6 +247,7 @@ object ResearchCollector {
             .put("imap_unavailable", imapUnavailable ?: JSONObject.NULL)
             .put("feed_time", feedTimeStatus).put("poll_ts", pollTs ?: JSONObject.NULL)
             .put("quote_evidence", "STRUCTURAL_ONLY_NOT_FILL")
+            .put("source_rows_sha256", sourceRowsSha256 ?: JSONObject.NULL)
     }
 
     enum class RecordResult { RECORDED, IDEMPOTENT, CONFLICT, UNKNOWN_ATTEMPT, CORRUPT }
@@ -303,10 +306,14 @@ object ResearchCollector {
                 .put("contract_phase", contractPhase)
         }
         // W4: protection request BEFORE the manifest commit is visible as protected-or-flagged.
-        if (c.persistStatus == "DURABLE_ACKED" && !c.pollTs.isNullOrBlank() && !slot.has("protection")) {
-            val pr = ResearchProtection.request(dir, slotIdValue, PROTECTION_OWNER, index, c.pollTs, session,
-                listOf("CHAIN_POLL"), nowMs, expectedRows = c.chainRows)
-            slot.put("protection", pr)
+        // B1-R2: EVERY distinct durable attempt is protected under its own durable id (no first-attempt gate).
+        if (c.persistStatus == "DURABLE_ACKED" && !c.pollTs.isNullOrBlank()) {
+            val pid = chainProtectionId(slotIdValue, attemptId)
+            val pr = ResearchProtection.request(dir, pid, PROTECTION_OWNER, index, c.pollTs, session,
+                listOf("CHAIN_POLL"), nowMs, expectedRows = c.chainRows, sourceSha = c.sourceRowsSha256)
+            att.put("protection_id", pid).put("protection", pr)
+            slot.put("protection", pr)   // latest attempt's protection state (summary only)
+            if (pr != "STAGED") slot.put("protection_flag", "attempt:$attemptId:$pr")
         }
         saveManifest(dir, m)
         c.imapVersion?.let { InstrumentMaps.releaseLease(dir, it, attemptId) }
@@ -322,6 +329,7 @@ object ResearchCollector {
     fun reconcile(dir: File, nowMs: Long): JSONObject = synchronized(lock) {
         val out = JSONObject().put("reconciled_ms", nowMs)
         if (dir.exists()) out.put("recovery", M0Durable.recover(dir))
+        if (dir.exists()) out.put("envelopes_protection_repaired", reconcileEnvelopes(dir, nowMs))
         val meta = meta(dir)
         val startSession = meta.optString("collector_start_session", "")
         if (startSession.isBlank()) return out.put("status", "NOT_STARTED")
@@ -392,13 +400,18 @@ object ResearchCollector {
         val data = chain.optJSONArray("data") ?: JSONArray()
         var rows = 0; var two = 0; var defects = 0
         val expiries = HashSet<String>()
+        val canon = ArrayList<String>()
         for (i in 0 until data.length()) {
             val item = data.optJSONObject(i) ?: continue
             if (!(item.optDouble("strike_price", 0.0) > 0)) continue
-            item.optString("expiry", chain.optString("expiry", "")).takeIf { it.isNotBlank() }?.let { expiries.add(it) }
-            for (k in listOf("call_options", "put_options")) {
-                val md = item.optJSONObject(k)?.optJSONObject("market_data") ?: continue
+            val itemExpiry = item.optString("expiry", chain.optString("expiry", ""))
+            itemExpiry.takeIf { it.isNotBlank() }?.let { expiries.add(it) }
+            for ((t, k) in listOf("CE" to "call_options", "PE" to "put_options")) {
+                val leg = item.optJSONObject(k) ?: continue
+                val md = leg.optJSONObject("market_data") ?: continue
                 rows++
+                canon.add(canonicalRow(itemExpiry, item.opt("strike_price"), t, leg.opt("instrument_key"),
+                    md.opt("bid_price"), md.opt("ask_price"), md.opt("ltp")))
                 val bid = md.optDouble("bid_price", Double.NaN); val ask = md.optDouble("ask_price", Double.NaN)
                 if (bid > 0 && ask > 0 && ask >= bid) two++ else defects++
             }
@@ -411,8 +424,31 @@ object ResearchCollector {
         }
         return Capture(fetchStartMs, fetchEndMs, fetchEndMs, persistedMs, persist, rows, two, defects,
             if (expiries.size == 1) expiries.first() else if (expiries.isEmpty()) null else "MULTIPLE:" + expiries.sorted().joinToString(","),
-            (map as? MapRef.Ok)?.version, "UNKNOWN", pollTs, (map as? MapRef.Unavailable)?.reason)
+            (map as? MapRef.Ok)?.version, "UNKNOWN", pollTs, (map as? MapRef.Unavailable)?.reason,
+            if (rows > 0) canonicalRowsDigest(index, canon) else null)
     }
+
+    // ------------------------------------------------------------------ B1-R1 canonical chain-row source proof
+    /** Canonical number: plain decimal without trailing zeros; absent/null -> "null"; non-numeric -> "invalid:<text>". */
+    internal fun canonNum(v: Any?): String = when {
+        v == null || v == JSONObject.NULL -> "null"
+        else -> try { java.math.BigDecimal(v.toString().trim()).stripTrailingZeros().toPlainString() } catch (_: Exception) { "invalid:" + v.toString() }
+    }
+    internal fun canonText(v: Any?): String = if (v == null || v == JSONObject.NULL) "null" else v.toString().trim()
+    internal fun canonType(v: Any?): String = when (canonText(v).uppercase()) { "CE", "CALL", "C" -> "CE"; "PE", "PUT", "P" -> "PE"; else -> "invalid:" + canonText(v) }
+    /** One captured leg: expiry|strike|type|instrument_key|bid|ask|ltp (every field is bound). */
+    internal fun canonicalRow(expiry: Any?, strike: Any?, type: Any?, instrumentKey: Any?, bid: Any?, ask: Any?, ltp: Any?): String =
+        listOf(canonText(expiry), canonNum(strike), canonType(type), canonText(instrumentKey), canonNum(bid), canonNum(ask), canonNum(ltp)).joinToString("|")
+    /** Digest over the index, row count and the sorted canonical rows (order-independent, field-exact). */
+    fun canonicalRowsDigest(index: String, rows: List<String>): String =
+        sha256("m0-chain-rows-v1\n$index\n${rows.size}\n" + rows.sorted().joinToString("\n"))
+    /** Archive rows schema: [{expiry, strike, option_type, instrument_key, bid, ask, ltp}]; null if any row is not an object. */
+    fun canonicalArchiveRows(rows: JSONArray): List<String>? = (0 until rows.length()).map { i ->
+        val r = rows.optJSONObject(i) ?: return null
+        canonicalRow(r.opt("expiry"), r.opt("strike"), r.opt("option_type"), r.opt("instrument_key"), r.opt("bid"), r.opt("ask"), r.opt("ltp"))
+    }
+    /** B1-R2: one protection entry per durable attempt; stable across retries and restarts (attempt ids are durable). */
+    fun chainProtectionId(slotIdValue: String, attemptId: String) = "$slotIdValue@$attemptId"
 
     /** Close an attempt that never recorded a capture (fetch failure / early return), against its own slot. */
     fun closeIfOpen(dir: File, slotIdValue: String, attemptId: String, nowMs: Long): RecordResult {
@@ -460,10 +496,11 @@ object ResearchCollector {
     fun readInstrumentMap(dir: File, version: String): List<String>? =
         readOrNull(File(dir, "imap_${safe(version)}.json"))?.optString("lines")?.split("\n")
 
-    internal fun referencedMaps(dir: File): Set<String> {
+    /** B1-R4: null when ANY manifest is unreadable - the reference set is then unknown and nothing may be pruned. */
+    internal fun referencedMaps(dir: File): Set<String>? {
         val out = HashSet<String>()
         for (mf in manifestFiles(dir)) {
-            val m = readOrNull(mf) ?: continue
+            val m = try { readJson(mf) } catch (_: CorruptEvidence) { return null } ?: continue
             val idx = m.optJSONObject("indices") ?: continue
             for (i in idx.keys()) { val sl = idx.getJSONObject(i).optJSONObject("slots") ?: continue
                 for (k in sl.keys()) { val a = sl.getJSONObject(k).optJSONArray("attempts") ?: continue
@@ -473,7 +510,8 @@ object ResearchCollector {
     }
 
     // ------------------------------------------------------------------ forecast envelopes (B4)
-    enum class EnvResult { STORED, IDEMPOTENT, CONFLICT, REJECTED, CAPACITY_BACKLOG, CORRUPT }
+    /** STORED_UNPROTECTED: bytes committed but protection was refused/unavailable - flagged, never reported as STORED. */
+    enum class EnvResult { STORED, STORED_UNPROTECTED, IDEMPOTENT, CONFLICT, REJECTED, CAPACITY_BACKLOG, CORRUPT }
 
     fun buildEnvelope(sourcePollSlotKey: String, raw: JSONObject?, generatedAtMs: Long?, availableAtMs: Long?,
                       appVersion: String, versionCode: Int, policy: JSONObject, failure: String? = null): JSONObject {
@@ -518,18 +556,63 @@ object ResearchCollector {
         val f = envFile(dir, key)
         val cur = try { readJson(f) } catch (_: CorruptEvidence) { return EnvResult.CORRUPT }
         if (cur != null) {
-            if (cur.optString("sha256") == digest) return EnvResult.IDEMPOTENT
+            if (cur.optString("sha256") == digest) {
+                // B1-R3: an idempotent retry repairs (or visibly flags) missing protection for the committed bytes.
+                return when (ensureEnvelopeProtected(dir, key, digest, nowMs)) {
+                    "STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED", "RELEASED" -> EnvResult.IDEMPOTENT
+                    else -> EnvResult.STORED_UNPROTECTED
+                }
+            }
             addConflict(dir, JSONObject().put("kind", "envelope").put("slot_key", key).put("kept_sha256", cur.optString("sha256"))
                 .put("rejected_sha256", digest).put("rejected_status", env.optString("status")).put("at_ms", nowMs))
             return EnvResult.CONFLICT
         }
         if (!reclaimEnvelopes(dir, MAX_ENVELOPE_FILES - 1)) return EnvResult.CAPACITY_BACKLOG
-        if (ResearchProtection.admission(dir) != null) return EnvResult.CAPACITY_BACKLOG
+        // B1-R3: admission is checked for entry count AND sealed ledger bytes before anything is committed.
+        if (ResearchProtection.admission(dir, envelopeEntryId(key), key, digest) != null) return EnvResult.CAPACITY_BACKLOG
         // The exact envelope text is stored once (the archive/protection digest is over these bytes).
         writeAtomic(f, JSONObject().put("sha256", digest).put("stored_ms", nowMs).put("envelope_text", body).toString())
+        M0Durable.crashPoint("env_committed_before_protection")
+        when (ensureEnvelopeProtected(dir, key, digest, nowMs)) {
+            "STAGED" -> EnvResult.STORED
+            else -> EnvResult.STORED_UNPROTECTED   // bytes preserved, refusal flagged and counted; retry/reconcile repairs
+        }
+    }
+
+    private fun envelopeRequest(dir: File, key: String, digest: String, nowMs: Long) =
         ResearchProtection.request(dir, envelopeEntryId(key), PROTECTION_OWNER, "COMBINED", key, key.substringBefore("|"),
             listOf("FORECAST_ENVELOPE"), nowMs, contentSha = digest)
-        EnvResult.STORED
+
+    /** Returns the entry state after ensuring one exists; on refusal the envelope is recorded as UNPROTECTED (flag file). */
+    internal fun ensureEnvelopeProtected(dir: File, key: String, digest: String, nowMs: Long): String {
+        val existing = ResearchProtection.entry(dir, envelopeEntryId(key))
+        val st = if (existing != null) {
+            if (existing.optString("content_sha256") == digest) existing.optString("state") else "IDENTITY_CONFLICT"
+        } else envelopeRequest(dir, key, digest, nowMs)
+        val flags = readOrNull(unprotectedFile(dir)) ?: JSONObject()
+        val ok = st in setOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED", "RELEASED")
+        if (ok && flags.has(key)) { flags.remove(key); writeAtomic(unprotectedFile(dir), flags.toString()) }
+        if (!ok && flags.optJSONObject(key)?.optString("reason") != st) {
+            flags.put(key, JSONObject().put("reason", st).put("sha256", digest).put("at_ms", nowMs))
+            writeAtomic(unprotectedFile(dir), flags.toString())
+        }
+        return st
+    }
+    private fun unprotectedFile(dir: File) = File(dir, "envunprotected.json")
+    fun unprotectedEnvelopes(dir: File): JSONObject = readOrNull(unprotectedFile(dir)) ?: JSONObject()
+
+    /** B1-R3 reconcile: every committed envelope must have a protection entry (repair) or a visible flag. */
+    internal fun reconcileEnvelopes(dir: File, nowMs: Long): Int {
+        var n = 0
+        val fs = dir.listFiles { x -> x.name.startsWith("env_") && x.name.endsWith(".json") } ?: return 0
+        for (f in fs.sortedBy { it.name }) {
+            val rec = readOrNull(f) ?: continue
+            val text = rec.optString("envelope_text").takeIf { it.isNotBlank() } ?: continue
+            val key = try { JSONObject(text).optString("source_poll_slot_key") } catch (_: Exception) { null } ?: continue
+            if (ResearchProtection.entry(dir, envelopeEntryId(key)) != null) continue
+            ensureEnvelopeProtected(dir, key, sha256(text), nowMs); n++
+        }
+        return n
     }
 
     internal fun reclaimEnvelopes(dir: File, keep: Int): Boolean {
@@ -624,6 +707,7 @@ object ResearchCollector {
         out.put("conflicts_total", conflicts(dir).optInt("total"))
         val prot = ResearchProtection.summary(dir, today)
         out.put("protection", prot)
+        out.put("envelopes_unprotected", unprotectedEnvelopes(dir).length())
         val integ = integrity(dir)
         out.put("corrupt_files", integ)
         val todayPlan = ResearchCalendar.plan(today, "NF")
@@ -656,11 +740,47 @@ object InstrumentMaps {
     private fun indexFile(dir: File) = File(dir, "imapindex.json")
     private fun mapFile(dir: File, v: String) = File(dir, "imap_$v.json")
 
+    private fun marker(dir: File) = File(dir, "imap.established")
+    private fun mapFiles(dir: File) = dir.listFiles { x -> x.name.startsWith("imap_") && x.name.endsWith(".json") }?.toList() ?: emptyList()
+
+    /**
+     * B1-R4: a CORRUPT index fails closed (null; nothing is deleted). An ABSENT index is first-use only when no
+     * marker and no map file exist; otherwise the index was lost and is rebuilt by VALIDATED recovery from the
+     * committed map files (each sealed record re-verified; nothing deleted; unverifiable files kept and counted).
+     */
     private fun loadIndex(dir: File): JSONObject? = when (val r = M0Durable.read(indexFile(dir))) {
-        is M0Durable.Read.Absent -> JSONObject().put("maps", JSONObject())
         is M0Durable.Read.Ok -> r.json
         is M0Durable.Read.Corrupt -> null
+        is M0Durable.Read.Absent -> {
+            val ix = JSONObject().put("maps", JSONObject())
+            if (M0Durable.read(marker(dir)) is M0Durable.Read.Absent && mapFiles(dir).isEmpty()) ix
+            else { adoptUnindexed(dir, ix); ix.put("rebuilt_ms", System.currentTimeMillis()).put("rebuild_reason", "index_lost"); saveIndex(dir, ix); ix }
+        }
     }
+
+    private fun saveIndex(dir: File, ix: JSONObject) {
+        M0Durable.write(indexFile(dir), ix.toString())
+        if (M0Durable.read(marker(dir)) is M0Durable.Read.Absent)
+            M0Durable.write(marker(dir), JSONObject().put("established_ms", System.currentTimeMillis()).toString())
+    }
+
+    /** Adopt committed-but-unindexed map files (crash before admission / index loss); never delete them. */
+    private fun adoptUnindexed(dir: File, ix: JSONObject) {
+        val maps = ix.getJSONObject("maps")
+        val unverified = JSONObject()
+        for (f in mapFiles(dir)) {
+            val v = f.name.removePrefix("imap_").removeSuffix(".json")
+            if (maps.has(v)) continue
+            val r = M0Durable.read(f)
+            if (r is M0Durable.Read.Ok && r.json.optString("sha256") == v && M0Durable.sha256(r.json.optString("lines")) == v)
+                maps.put(v, JSONObject().put("index", r.json.optString("index")).put("bytes", f.length())
+                    .put("created_ms", r.json.optLong("created_ms")).put("leases", JSONObject()).put("adopted", true))
+            else unverified.put(f.name, f.length())
+        }
+        ix.put("unverified", unverified)
+    }
+
+    private fun unverifiedBytes(ix: JSONObject): Long = ix.optJSONObject("unverified")?.let { u -> u.keys().asSequence().sumOf { u.optLong(it) } } ?: 0L
 
     fun admitted(dir: File): Set<String> = loadIndex(dir)?.getJSONObject("maps")?.keys()?.asSequence()?.toSet() ?: emptySet()
 
@@ -677,48 +797,60 @@ object InstrumentMaps {
             val r = M0Durable.read(f)
             if (r !is M0Durable.Read.Ok || r.json.optString("sha256") != v || M0Durable.sha256(r.json.optString("lines")) != v)
                 return ResearchCollector.MapRef.Unavailable("IMAP_STORE_CORRUPT")
-            if (leaseId != null) { e.getJSONObject("leases").put(leaseId, nowMs); M0Durable.write(indexFile(dir), ix.toString()) }
+            if (leaseId != null) { e.getJSONObject("leases").put(leaseId, nowMs); saveIndex(dir, ix) }
             return ResearchCollector.MapRef.Ok(v, false)
         }
-        val bytes = text.length.toLong() + 256
-        if (!reclaim(dir, ix, ResearchCollector.MAX_IMAP_FILES - 1, ResearchCollector.MAX_IMAP_BYTES - bytes))
-            return ResearchCollector.MapRef.Unavailable("IMAP_CAPACITY")
-        // Map bytes first (unreachable until admitted), then the admission record with its lease, atomically.
-        M0Durable.write(f, JSONObject().put("schema", ResearchCollector.SCHEMA).put("index", index).put("sha256", v).put("lines", text)
-            .put("entries", lines.size).put("created_ms", nowMs).toString())
+        // B1-R5: the cap is measured in the exact sealed UTF-8 bytes this map will occupy on disk.
+        val body = JSONObject().put("schema", ResearchCollector.SCHEMA).put("index", index).put("sha256", v).put("lines", text)
+            .put("entries", lines.size).put("created_ms", nowMs).toString()
+        val bytes = M0Durable.sealedSize(f.name, body)
+        if (bytes > ResearchCollector.MAX_IMAP_BYTES) return ResearchCollector.MapRef.Unavailable("IMAP_CAPACITY")
+        when (reclaim(dir, ix, ResearchCollector.MAX_IMAP_FILES - 1, ResearchCollector.MAX_IMAP_BYTES - bytes)) {
+            Reclaim.OK -> {}
+            Reclaim.FULL -> return ResearchCollector.MapRef.Unavailable("IMAP_CAPACITY")
+            Reclaim.REFERENCES_UNKNOWN -> return ResearchCollector.MapRef.Unavailable("IMAP_CAPACITY_REFERENCES_UNKNOWN")
+        }
+        // Map bytes first (adopted, never deleted, if a crash precedes admission), then the admission record.
+        M0Durable.write(f, body)
         val back = M0Durable.read(f)
         if (back !is M0Durable.Read.Ok || back.json.optString("sha256") != v) return ResearchCollector.MapRef.Unavailable("IMAP_WRITE_UNVERIFIED")
-        maps.put(v, JSONObject().put("index", index).put("bytes", bytes).put("created_ms", nowMs)
+        maps.put(v, JSONObject().put("index", index).put("bytes", f.length()).put("created_ms", nowMs)
             .put("leases", JSONObject().apply { if (leaseId != null) put(leaseId, nowMs) }))
-        M0Durable.write(indexFile(dir), ix.toString())
+        saveIndex(dir, ix)
         return ResearchCollector.MapRef.Ok(v, true)
     }
 
-    private fun reclaim(dir: File, ix: JSONObject, keepCount: Int, keepBytes: Long): Boolean {
+    enum class Reclaim { OK, FULL, REFERENCES_UNKNOWN }
+
+    private fun reclaim(dir: File, ix: JSONObject, keepCount: Int, keepBytes: Long): Reclaim {
         val maps = ix.getJSONObject("maps")
-        fun total() = maps.keys().asSequence().sumOf { maps.getJSONObject(it).optLong("bytes") }
-        // orphan files (written but never admitted - crash between map write and admission) are not evidence
-        dir.listFiles { x -> x.name.startsWith("imap_") && x.name.endsWith(".json") }?.forEach {
-            if (!maps.has(it.name.removePrefix("imap_").removeSuffix(".json"))) it.delete()
+        // B1-R4: unindexed files are adopted after validation (or kept as unverified), never deleted by absence.
+        if (mapFiles(dir).any { !maps.has(it.name.removePrefix("imap_").removeSuffix(".json")) && ix.optJSONObject("unverified")?.has(it.name) != true }) {
+            val keepUnverified = ix.optJSONObject("unverified")
+            adoptUnindexed(dir, ix)
+            keepUnverified?.let { k -> val u = ix.getJSONObject("unverified"); for (n in k.keys()) if (!u.has(n)) u.put(n, k.optLong(n)) }
+            saveIndex(dir, ix)
         }
-        if (maps.length() <= keepCount && total() <= keepBytes) return true
-        val referenced = ResearchCollector.referencedMaps(dir)
+        fun total() = maps.keys().asSequence().sumOf { maps.getJSONObject(it).optLong("bytes") } + unverifiedBytes(ix)
+        fun fits() = maps.length() <= keepCount && total() <= keepBytes
+        if (fits()) return Reclaim.OK
+        val referenced = ResearchCollector.referencedMaps(dir) ?: return Reclaim.REFERENCES_UNKNOWN
         val candidates = maps.keys().asSequence().toList()
             .filter { maps.getJSONObject(it).getJSONObject("leases").length() == 0 && it !in referenced }
             .sortedBy { maps.getJSONObject(it).optLong("created_ms") }
         for (v in candidates) {
             if (maps.length() <= keepCount && total() <= keepBytes) break
             maps.remove(v)
-            M0Durable.write(indexFile(dir), ix.toString())   // un-admit first, then delete bytes
+            saveIndex(dir, ix)   // un-admit first, then delete bytes
             mapFile(dir, v).delete()
         }
-        return maps.length() <= keepCount && total() <= keepBytes
+        return if (fits()) Reclaim.OK else Reclaim.FULL
     }
 
     fun releaseLease(dir: File, v: String, leaseId: String) {
         val ix = loadIndex(dir) ?: return
         val e = ix.getJSONObject("maps").optJSONObject(v) ?: return
-        if (e.getJSONObject("leases").remove(leaseId) != null) M0Durable.write(indexFile(dir), ix.toString())
+        if (e.getJSONObject("leases").remove(leaseId) != null) saveIndex(dir, ix)
     }
 
     fun expireLeases(dir: File, olderThanMs: Long) {
@@ -727,7 +859,7 @@ object InstrumentMaps {
         val maps = ix.getJSONObject("maps")
         for (k in maps.keys()) { val l = maps.getJSONObject(k).getJSONObject("leases")
             for (a in l.keys().asSequence().toList()) if (l.optLong(a) < olderThanMs) { l.remove(a); changed = true } }
-        if (changed) M0Durable.write(indexFile(dir), ix.toString())
+        if (changed) saveIndex(dir, ix)
     }
 
     fun releaseAllLeases(dir: File, leaseId: String) {
@@ -735,7 +867,7 @@ object InstrumentMaps {
         var changed = false
         val maps = ix.getJSONObject("maps")
         for (k in maps.keys()) if (maps.getJSONObject(k).getJSONObject("leases").remove(leaseId) != null) changed = true
-        if (changed) M0Durable.write(indexFile(dir), ix.toString())
+        if (changed) saveIndex(dir, ix)
     }
 }
 
@@ -758,6 +890,11 @@ object ResearchProtection {
     @Volatile var MAX_BYTES = 2_500_000
     const val LAG_LIMIT_SESSIONS = 20
     const val REJECT_RESERVE_BYTES = 512
+    /** B1-R5: bounded growth a still-protected entry may add later (ack fields / ack-failure / lag bookkeeping). */
+    const val ENTRY_GROWTH_RESERVE_BYTES = 448
+    /** Exact on-disk (sealed, UTF-8) size of the ledger body. A replacement write transiently needs one more copy
+     *  (temp file) of at most MAX_BYTES - so the peak footprint is bounded by 2 * MAX_BYTES. */
+    fun sealedBytes(o: JSONObject): Long = M0Durable.sealedSize("protection.json", o.toString())
     val ACTIVE = setOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED")
     val PROTECTED = setOf("STAGED", "LAG_EXCEEDED")
     val INDEX_OK = setOf("NF", "BNF", "COMBINED", "SESSION")
@@ -820,30 +957,66 @@ object ResearchProtection {
     private fun activeCount(e: JSONObject) = e.keys().asSequence().count { e.getJSONObject(it).optString("state") in ACTIVE }
 
     /** null when capture may proceed, else the visible refusal reason. */
-    fun admission(dir: File): String? = synchronized(lock) {
+    fun admission(dir: File, probeId: String? = null, probePoll: String = "", probeSha: String? = null): String? = synchronized(lock) {
         withLedger(dir, { "LEDGER_CORRUPT" }) { o, _ ->
-            if (activeCount(o.getJSONObject("entries")) >= CAPACITY) "PROTECTION_BACKLOG_AT_CAPACITY" else null
+            val e = o.getJSONObject("entries")
+            when {
+                probeId != null && e.has(probeId) -> null
+                activeCount(e) >= CAPACITY -> "PROTECTION_BACKLOG_AT_CAPACITY"
+                !fitsBytes(o, probeId ?: "probe", newEntry("research_m0", "COMBINED", probePoll, probePoll.substringBefore("|"),
+                    listOf("FORECAST_ENVELOPE"), 0L, null, probeSha ?: "0".repeat(64), null)) -> "PROTECTION_BACKLOG_BYTES"
+                else -> null
+            }
         }
     }
 
+    private fun newEntry(owner: String, index: String, pollTs: String, session: String, roles: List<String>, nowMs: Long,
+                         expectedRows: Int?, contentSha: String?, sourceSha: String?): JSONObject =
+        JSONObject().put("owner", owner).put("index", index).put("poll_ts", pollTs).put("session", session)
+            .put("roles", JSONArray(roles.sorted())).put("state", "STAGED").put("created_ms", nowMs)
+            .put("expected_rows", expectedRows ?: JSONObject.NULL).put("content_sha256", contentSha ?: JSONObject.NULL)
+            .put("source_rows_sha256", sourceSha ?: JSONObject.NULL)
+
+    /** B1-R5: would the sealed ledger (with [x] added) plus growth and rejection reserves stay within MAX_BYTES? */
+    private fun fitsBytes(o: JSONObject, id: String, x: JSONObject): Boolean {
+        val e = o.getJSONObject("entries")
+        val had = e.opt(id)
+        e.put(id, x)
+        val size = sealedBytes(o)
+        val protectedN = e.keys().asSequence().count { e.getJSONObject(it).optString("state") in PROTECTED }
+        if (had == null) e.remove(id) else e.put(id, had)
+        return size + protectedN.toLong() * ENTRY_GROWTH_RESERVE_BYTES <= MAX_BYTES - REJECT_RESERVE_BYTES
+    }
+
+    private val IDENTITY_FIELDS = listOf("owner", "index", "poll_ts", "session", "roles", "expected_rows", "content_sha256", "source_rows_sha256")
+
     fun request(dir: File, id: String, owner: String, index: String, pollTs: String, session: String,
-                roles: List<String>, nowMs: Long, capacity: Int = CAPACITY, expectedRows: Int? = null, contentSha: String? = null): String = synchronized(lock) {
+                roles: List<String>, nowMs: Long, capacity: Int = CAPACITY, expectedRows: Int? = null, contentSha: String? = null,
+                sourceSha: String? = null): String = synchronized(lock) {
         if (index !in INDEX_OK) return "UNKNOWN_INDEX"
         withLedger(dir, { "LEDGER_CORRUPT" }) { o, fresh ->
             val e = o.getJSONObject("entries")
-            e.optJSONObject(id)?.let { return@withLedger it.optString("state") }
-            val x = JSONObject().put("owner", owner).put("index", index).put("poll_ts", pollTs).put("session", session)
-                .put("roles", JSONArray(roles.sorted())).put("state", "STAGED").put("created_ms", nowMs)
-                .put("expected_rows", expectedRows ?: JSONObject.NULL).put("content_sha256", contentSha ?: JSONObject.NULL)
+            val x = newEntry(owner, index, pollTs, session, roles, nowMs, expectedRows, contentSha, sourceSha)
+            e.optJSONObject(id)?.let { cur ->
+                // B1-R2: an existing id is only reused for IDENTICAL evidence identity; anything else is a conflict.
+                val diff = IDENTITY_FIELDS.filter { f -> cur.opt(f)?.toString() != x.opt(f)?.toString() }
+                if (diff.isEmpty()) return@withLedger cur.optString("state")
+                o.put("identity_conflicts_total", o.optInt("identity_conflicts_total") + 1)
+                o.put("last_identity_conflict", JSONObject().put("id", id.take(120)).put("fields", JSONArray(diff)).put("at_ms", nowMs))
+                if (sealedBytes(o) > MAX_BYTES) o.remove("last_identity_conflict")
+                save(dir, o, fresh)
+                return@withLedger "IDENTITY_CONFLICT"
+            }
             val reject = when {
                 activeCount(e) >= capacity -> "capacity_entries"
-                // reserve room for the rejection bookkeeping itself so the ledger never exceeds MAX_BYTES
-                o.toString().length + x.toString().length + id.length + 8 > MAX_BYTES - REJECT_RESERVE_BYTES -> "capacity_bytes"
+                // B1-R5: sealed UTF-8 bytes + growth reserve + rejection-bookkeeping reserve
+                !fitsBytes(o, id, x) -> "capacity_bytes"
                 else -> null
             }
             if (reject != null) {
                 o.put("rejected_total", o.optInt("rejected_total") + 1)
                 o.put("last_rejected", JSONObject().put("id", id.take(120)).put("at_ms", nowMs).put("reason", reject))
+                if (sealedBytes(o) > MAX_BYTES) o.remove("last_rejected")   // the counter alone always fits the reserve
                 save(dir, o, fresh)
                 return@withLedger "CAPACITY_REJECTED"
             }
@@ -885,7 +1058,16 @@ object ResearchProtection {
                         j.optString("index") != x.optString("index") || j.optString("poll_ts") != x.optString("poll_ts") -> "chain_content_identity_mismatch"
                         x.isNull("expected_rows") -> "expected_rows_unknown"
                         rows.length() != x.optInt("expected_rows") || manifest.optInt("row_count", -1) != rows.length() -> "row_count_mismatch"
-                        else -> null
+                        // B1-R1: rows must reproduce the independently captured source digest field-for-field.
+                        x.isNull("source_rows_sha256") || x.optString("source_rows_sha256").isBlank() -> "source_proof_unavailable"
+                        else -> {
+                            val canon = ResearchCollector.canonicalArchiveRows(rows)
+                            when {
+                                canon == null -> "chain_rows_not_canonical"
+                                ResearchCollector.canonicalRowsDigest(x.optString("index"), canon) != x.optString("source_rows_sha256") -> "source_rows_mismatch"
+                                else -> null
+                            }
+                        }
                     }
                 }
                 "FORECAST_ENVELOPE" in roles -> if (x.isNull("content_sha256") || actual != x.optString("content_sha256")) "envelope_digest_mismatch" else null
@@ -985,7 +1167,8 @@ object ResearchProtection {
             val c = JSONObject().put("STAGED", 0).put("LAG_EXCEEDED", 0).put("ARCHIVE_ACKED", 0).put("RELEASED", 0)
             for (k in e.keys()) { val s = e.getJSONObject(k).optString("state"); c.put(s, c.optInt(s) + 1) }
             base.put("counts", c).put("CAPACITY_REJECTED", o.optInt("rejected_total"))
-                .put("compacted", o.optJSONObject("compacted") ?: JSONObject()).put("ledger_bytes", o.toString().length)
+                .put("compacted", o.optJSONObject("compacted") ?: JSONObject()).put("ledger_bytes", sealedBytes(o))
+                .put("IDENTITY_CONFLICT", o.optInt("identity_conflicts_total"))
             val integrity = when {
                 fresh || (e.length() == 0 && (o.optJSONObject("compacted")?.optInt("total") ?: 0) == 0) -> "NO_EVIDENCE"
                 activeCount(e) >= CAPACITY -> "BACKLOG_AT_CAPACITY"
