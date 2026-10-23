@@ -756,6 +756,7 @@ object ResearchProtection {
     @Volatile var FINAL_RETAIN = 200
     @Volatile var MAX_BYTES = 2_500_000
     const val LAG_LIMIT_SESSIONS = 20
+    const val REJECT_RESERVE_BYTES = 512
     val ACTIVE = setOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED")
     val PROTECTED = setOf("STAGED", "LAG_EXCEEDED")
     val INDEX_OK = setOf("NF", "BNF", "COMBINED", "SESSION")
@@ -835,12 +836,13 @@ object ResearchProtection {
                 .put("expected_rows", expectedRows ?: JSONObject.NULL).put("content_sha256", contentSha ?: JSONObject.NULL)
             val reject = when {
                 activeCount(e) >= capacity -> "capacity_entries"
-                o.toString().length + x.toString().length + id.length + 8 > MAX_BYTES -> "capacity_bytes"
+                // reserve room for the rejection bookkeeping itself so the ledger never exceeds MAX_BYTES
+                o.toString().length + x.toString().length + id.length + 8 > MAX_BYTES - REJECT_RESERVE_BYTES -> "capacity_bytes"
                 else -> null
             }
             if (reject != null) {
                 o.put("rejected_total", o.optInt("rejected_total") + 1)
-                o.put("last_rejected", JSONObject().put("id", id).put("at_ms", nowMs).put("reason", reject))
+                o.put("last_rejected", JSONObject().put("id", id.take(120)).put("at_ms", nowMs).put("reason", reject))
                 save(dir, o, fresh)
                 return@withLedger "CAPACITY_REJECTED"
             }
