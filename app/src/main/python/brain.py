@@ -1,4 +1,5 @@
 import json, math, os as _os, statistics, hashlib, time
+import research_forecast_capture as _m0_forecast
 from datetime import datetime, timezone, timedelta
 
 from calibration_input import (
@@ -7208,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.82"
+BRAIN_VERSION = "2.6.83"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -17653,10 +17654,20 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
 
     # ═══ THE VERDICT ═══
     all_insights = result["market"] + result["timing"] + result["risk"]
+    _m0_synth_error = None
     try:
         result["verdict"] = synthesize_verdict(all_insights, regime, ctx, polls, baseline, candidates, result.get("candidates", {}))
     except Exception as e:
+        _m0_synth_error = e
         print(f"DEBUG: synthesize_verdict failed: {e}")
+    # M0 research collector: copy the raw synthesis thesis BEFORE any candidate/lane alignment. Collection
+    # only - nothing below reads this key; the app detaches it before snapshots/broadcast.
+    try:
+        result[_m0_forecast.RESULT_KEY] = _m0_forecast.capture(
+            result.get("verdict") if _m0_synth_error is None else None, polls, BRAIN_VERSION, _m0_synth_error)
+    except Exception as e:
+        result[_m0_forecast.RESULT_KEY] = {'schema': _m0_forecast.SCHEMA, 'status': 'MALFORMED',
+                                           'reason': 'capture_exception:' + type(e).__name__}
     # b510 Batch A: freeze the synthesis view once; every later path re-stamps it.
     frozen_market_view = _freeze_market_view(result.get("verdict"))
 

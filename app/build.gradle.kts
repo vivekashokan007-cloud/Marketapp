@@ -44,14 +44,19 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 513
-        versionName = "2.6.82"
+        versionCode = 514
+        versionName = "2.6.83"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
         }
         
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${System.getenv("SUPABASE_ANON_KEY") ?: project.findProperty("SUPABASE_ANON_KEY") ?: ""}\"")
+        // Stage 2 CI-2: full source head recorded in the research export manifest (git HEAD / GITHUB_SHA at build time).
+        val mrSourceHead = System.getenv("MR_SOURCE_HEAD") ?: System.getenv("GITHUB_SHA") ?: try {
+            ProcessBuilder("git", "rev-parse", "HEAD").directory(rootDir).start().inputStream.bufferedReader().readText().trim()
+        } catch (e: Exception) { "unknown" }
+        buildConfigField("String", "SOURCE_HEAD", "\"${mrSourceHead.ifBlank { "unknown" }}\"")
         buildConfigField("String", "SUPABASE_URL", "\"https://fdynxkfxohbnlvayouje.supabase.co\"")
     }
 
