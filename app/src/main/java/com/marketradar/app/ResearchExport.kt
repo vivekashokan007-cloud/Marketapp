@@ -29,6 +29,8 @@ import java.util.zip.ZipOutputStream
 object ResearchCapacity {
     const val SCHEMA = "research_m0_capacity_v1"
     val ACTIVE_STATES = listOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED")
+    /** The complete ledger state vocabulary written by [ResearchProtection]; anything else is MALFORMED. */
+    val KNOWN_STATES = setOf("STAGED", "LAG_EXCEEDED", "ARCHIVE_ACKED", "RELEASED")
 
     fun read(dir: File, nowMs: Long): JSONObject {
         val cap = ResearchProtection.CAPACITY; val maxBytes = ResearchProtection.MAX_BYTES.toLong()
@@ -61,23 +63,37 @@ object ResearchCapacity {
             } else return unknown("LEDGER_CORRUPT", "established_ledger_lost")
             is M0Durable.Read.Ok -> r.json
         }
-        val e = o.optJSONObject("entries") ?: return unknown("MALFORMED", "entries_not_object")
+        // R2 (CDX-S2-BUILD-R1): validate vocabulary and shapes BEFORE publishing a known reading. Any unsupported
+        // (e.g. future) state, non-object entry or mis-typed counter makes the reading MALFORMED: known=false, no U.
+        val e = o.opt("entries") as? JSONObject ?: return unknown("MALFORMED", "entries_not_object")
         val c = JSONObject().put("STAGED", 0).put("LAG_EXCEEDED", 0).put("ARCHIVE_ACKED", 0).put("RELEASED", 0)
         for (k in e.keys()) {
-            val st = e.optJSONObject(k)?.opt("state") as? String ?: return unknown("MALFORMED", "entry_state_not_string:" + k.take(80))
-            c.put(st, c.optInt(st) + 1)
+            val x = e.opt(k) as? JSONObject ?: return unknown("MALFORMED", "entry_not_object:" + k.take(80))
+            val st = x.opt("state") as? String ?: return unknown("MALFORMED", "entry_state_not_string:" + k.take(80))
+            if (st !in KNOWN_STATES) return unknown("MALFORMED", "entry_state_unsupported:" + st.take(40))
+            c.put(st, c.getInt(st) + 1)
         }
-        val active = ACTIVE_STATES.sumOf { c.optInt(it) }
-        val rej = o.opt("rejected_total"); val idc = o.opt("identity_conflicts_total")
-        if (rej != null && rej !is Number) return unknown("MALFORMED", "rejected_total_not_number")
-        if (idc != null && idc !is Number) return unknown("MALFORMED", "identity_conflicts_total_not_number")
+        val active = ACTIVE_STATES.sumOf { c.getInt(it) }
+        fun counter(name: String): Long? {
+            val v = o.opt(name) ?: return 0L
+            return if ((v is Int || v is Long) && (v as Number).toLong() >= 0) v.toLong() else null
+        }
+        val rej = counter("rejected_total") ?: return unknown("MALFORMED", "rejected_total_not_nonnegative_integer")
+        val idc = counter("identity_conflicts_total") ?: return unknown("MALFORMED", "identity_conflicts_total_not_nonnegative_integer")
+        val comp = o.opt("compacted")
+        val compTotal: Long = when {
+            comp == null -> 0L
+            comp !is JSONObject -> return unknown("MALFORMED", "compacted_not_object")
+            else -> comp.opt("total").let { t -> if (t == null) 0L else if ((t is Int || t is Long) && (t as Number).toLong() >= 0) t.toLong() else return unknown("MALFORMED", "compacted_total_not_nonnegative_integer") }
+        }
+        val rejV = rej.toInt(); val idcV = idc.toInt()
         out.put("known", true).put("counts", c).put("active", active).put("ledger_bytes", ledger.length())
             .put("sealed_bytes_recomputed", ResearchProtection.sealedBytes(o))
-            .put("rejected_total", (rej as? Number)?.toInt() ?: 0).put("identity_conflicts_total", (idc as? Number)?.toInt() ?: 0)
-            .put("compacted_total", o.optJSONObject("compacted")?.optInt("total") ?: 0)
+            .put("rejected_total", rejV).put("identity_conflicts_total", idcV)
+            .put("compacted_total", compTotal)
         out.put("integrity", when {
             active >= cap -> "BACKLOG_AT_CAPACITY"
-            c.optInt("LAG_EXCEEDED") + out.optInt("rejected_total") > 0 -> "INCOMPLETE_REPLAY"
+            c.getInt("LAG_EXCEEDED") + rejV > 0 -> "INCOMPLETE_REPLAY"
             c.optInt("STAGED") > 0 -> "BACKLOG"
             e.length() == 0 -> "NO_EVIDENCE"
             else -> "OK"
@@ -113,10 +129,31 @@ object ResearchExport {
     const val MANIFEST = "export_manifest.json"
     const val SUMS = "SHA256SUMS.txt"
     const val PROTOCOL_NAME = "special_session_protocol_v1"
+    /** Full-file SHA-256 of the immutable protocol text (tools/research_m0_freeze/freeze_inputs/
+     *  SPECIAL_SESSION_PROTOCOL_V1_20261023.md); a JVM test binds this constant to those bytes. */
+    const val PROTOCOL_SHA256 = "cf65c2ada8f91da1f077836935eb6fbb15e78e39b8689bedbbae2679a4b74aa5"
+    const val PROTOCOL_FILE = "SPECIAL_SESSION_PROTOCOL_V1_20261023.md"
 
+    /**
+     * R3 (CDX-S2-BUILD-R1) resource budget. Per-file seal validation buffers at most
+     * min([validateMaxBytes], maxHeap / [validateHeapDivisor]) bytes (transient, released before the next file); larger
+     * sealed files are exported byte-exact and labelled SEALED_NOT_CHECKED_SIZE. Only reference STRINGS (imap versions
+     * from session manifests, env/manifest ids from the protection ledger) are retained across files. Before any work
+     * the estimated peak ([estimateHeap]) must fit maxHeap / [heapBudgetDivisor], else REFUSED_INSUFFICIENT_MEMORY.
+     */
     data class Limits(val maxTotalBytes: Long = 256L * 1024 * 1024, val maxFiles: Int = 20_000, val maxAttempts: Int = 3,
                       val freeMarginBytes: Long = 16L * 1024 * 1024, val bufferBytes: Int = 64 * 1024,
-                      val validateMaxBytes: Long = 8L * 1024 * 1024, val retryBackoffMs: Long = 150)
+                      val validateMaxBytes: Long = 8L * 1024 * 1024, val retryBackoffMs: Long = 150,
+                      val validateHeapDivisor: Long = 32, val heapBudgetDivisor: Long = 2,
+                      val perFileMetadataBytes: Long = 1024, val fixedOverheadBytes: Long = 4L * 1024 * 1024,
+                      val maxHeapBytes: Long = Runtime.getRuntime().maxMemory())
+
+    /** Effective per-file validation cap under [l]. */
+    fun validateCap(l: Limits): Long = minOf(l.validateMaxBytes, l.maxHeapBytes / l.validateHeapDivisor)
+    /** Conservative peak-heap estimate: buffer + transient validation (~8x file: bytes, string, parsed copies) +
+     *  per-file metadata (inventory JSON, SHA256SUMS line, listing) + fixed overhead. */
+    fun estimateHeap(files: Int, l: Limits): Long =
+        l.bufferBytes + 8 * validateCap(l) + files.toLong() * l.perFileMetadataBytes * 3 + l.fixedOverheadBytes
 
     class Cancelled : Exception("CANCELLED")
     private class Unstable(val changed: List<String>) : Exception("UNSTABLE")
@@ -173,6 +210,10 @@ object ResearchExport {
                 res.put("source_files", srcs.size).put("source_bytes", total)
                 if (srcs.size > limits.maxFiles) return finish(res.put("status", "REFUSED_TOO_MANY_FILES"), t0, clock, peakTemp)
                 if (total > limits.maxTotalBytes) return finish(res.put("status", "REFUSED_TOO_LARGE"), t0, clock, peakTemp)
+                val est = estimateHeap(srcs.size, limits); val budget = limits.maxHeapBytes / limits.heapBudgetDivisor
+                res.put("memory", JSONObject().put("max_heap_bytes", limits.maxHeapBytes).put("budget_bytes", budget)
+                    .put("estimated_peak_bytes", est).put("validate_cap_bytes", validateCap(limits)))
+                if (est > budget) return finish(res.put("status", "REFUSED_INSUFFICIENT_MEMORY"), t0, clock, peakTemp)
                 tmpDir.mkdirs()
                 val need = total + total / 10 + limits.freeMarginBytes
                 val free = freeSpace(tmpDir)
@@ -218,6 +259,11 @@ object ResearchExport {
         } catch (c: Cancelled) {
             return finish(res.put("status", "CANCELLED").put("partial_output",
                 if (res.optBoolean("sink_written")) "DOCUMENT_INCOMPLETE_NOT_VALID" else "NONE_WRITTEN"), t0, clock, peakTemp)
+        } catch (oom: OutOfMemoryError) {
+            // Backstop only (the budget above is the design bound): visible failure, evidence untouched, temp removed.
+            tmp?.delete(); tmp = null
+            return finish(res.put("status", "FAILED_RESOURCE_MEMORY").put("partial_output",
+                if (res.optBoolean("sink_written")) "DOCUMENT_INCOMPLETE_NOT_VALID" else "NONE_WRITTEN"), t0, clock, peakTemp)
         } catch (e: Exception) {
             return finish(res.put("status", "FAILED_IO").put("stage", "snapshot").put("error", e.javaClass.simpleName + ":" + (e.message ?: "").take(120)), t0, clock, peakTemp)
         } finally {
@@ -237,7 +283,8 @@ object ResearchExport {
     private fun copySnapshot(dir: File, srcs: List<Src>, t: File, identity: JSONObject, nowMs: Long, attempt: Int,
                              failures: JSONArray, limits: Limits, buf: ByteArray, cancel: () -> Boolean): Snapshot {
         val files = JSONArray(); val corrupt = JSONArray(); val errors = JSONArray()
-        val sealedBodies = HashMap<String, JSONObject>()
+        val refs = Refs()
+        val vcap = validateCap(limits)
         val shaByRel = LinkedHashMap<String, String>()
         val zipMd = MessageDigest.getInstance("SHA-256")
         val sums = StringBuilder()
@@ -249,7 +296,7 @@ object ResearchExport {
                     val md = MessageDigest.getInstance("SHA-256")
                     zip.putNextEntry(ZipEntry(ROOT + s.rel).also { it.time = 0L })
                     var n = 0L
-                    val small = s.size <= limits.validateMaxBytes
+                    val small = s.size <= vcap
                     val keep = if (small) java.io.ByteArrayOutputStream(s.size.toInt().coerceAtLeast(0)) else null
                     try {
                         FileInputStream(s.file).use { i -> while (true) { val k = i.read(buf); if (k < 0) break
@@ -265,9 +312,10 @@ object ResearchExport {
                     when {
                         name.endsWith(".tmp") || name.endsWith(".rejected") -> fo.put("record", "TEMP_OR_QUARANTINE_AS_IS")
                         !sealedCandidate -> fo.put("record", "UNSEALED_AS_IS")
-                        keep == null -> fo.put("record", "SEALED_NOT_CHECKED_SIZE")
+                        keep == null -> { fo.put("record", "SEALED_NOT_CHECKED_SIZE").put("validate_cap_bytes", vcap)
+                            if (Refs.isSource(s.rel)) refs.unchecked.add(s.rel) }
                         else -> when (val v = M0Durable.validate(keep.toString(Charsets.UTF_8.name()), M0Durable.kindOf(name))) {
-                            is M0Durable.Read.Ok -> { fo.put("record", "SEALED_OK"); sealedBodies[s.rel] = v.json }
+                            is M0Durable.Read.Ok -> { fo.put("record", "SEALED_OK"); refs.collect(s.rel, v.json) }
                             is M0Durable.Read.Corrupt -> { fo.put("record", "CORRUPT").put("reason", v.reason)
                                 corrupt.put(JSONObject().put("path", ROOT + s.rel).put("reason", v.reason)) }
                             else -> fo.put("record", "UNKNOWN")
@@ -290,7 +338,7 @@ object ResearchExport {
                     if (hashFile(a.file, buf) != shaByRel[b.rel]) changed.add(b.rel + ":bytes")
                 }
                 if (changed.isNotEmpty()) throw Unstable(changed)
-                val missing = missingReferences(srcs.map { it.rel }.toSet(), sealedBodies, errors)
+                val missing = refs.missing(srcs.map { it.rel }.toSet(), errors)
                 val evidence = when {
                     corrupt.length() > 0 || missing.length() > 0 -> "FINDINGS_REPORTED"
                     errors.length() > 0 -> "REFERENCES_UNCHECKED"
@@ -300,8 +348,8 @@ object ResearchExport {
                     .put("created_ms", nowMs).put("created_ist", ist(nowMs)).put("device_tz", ZoneId.systemDefault().id)
                     .put("build", identity)
                     .put("calendar_version", ResearchCalendar.VERSION).put("collector_schema", ResearchCollector.SCHEMA)
-                    .put("protocol_ref", JSONObject().put("name", PROTOCOL_NAME)
-                        .put("sha256", JSONObject.NULL).put("note", "protocol file is not embedded in the app; bind offline by name+sha"))
+                    .put("protocol_ref", JSONObject().put("name", PROTOCOL_NAME).put("file", PROTOCOL_FILE)
+                        .put("sha256", PROTOCOL_SHA256).put("binding", "full-file SHA-256 of the reviewed immutable protocol text; frozen by decision record CDX-M0-PLAN-V3 (2026-10-23 IST)"))
                     .put("scope", JSONObject()
                         .put("included", JSONArray(listOf("filesDir/research_m0/** (every file, exact bytes)", "research capacity status (read-only)", "named build identity")))
                         .put("excluded", JSONArray(listOf("shared preferences", "credentials/tokens", "app logs", "all files outside filesDir/research_m0"))))
@@ -327,35 +375,47 @@ object ResearchExport {
         return Snapshot(t, hex(zipMd.digest()), t.length(), mSha, evidence, counts.first, counts.second)
     }
 
-    /** Manifests -> imap versions; protection entries -> envelope / manifest files. Missing targets are findings. */
-    private fun missingReferences(rels: Set<String>, bodies: Map<String, JSONObject>, errors: JSONArray): JSONArray {
-        val out = JSONArray()
-        for ((rel, m) in bodies) {
-            if (!rel.startsWith("manifest_")) continue
-            val idx = m.optJSONObject("indices") ?: continue
-            for (i in idx.keys()) { val sl = idx.optJSONObject(i)?.optJSONObject("slots") ?: continue
-                for (k in sl.keys()) { val a = sl.optJSONObject(k)?.optJSONArray("attempts") ?: continue
-                    for (j in 0 until a.length()) {
-                        val v = a.optJSONObject(j)?.optJSONObject("capture")?.optString("imap_version")?.takeIf { it.isNotBlank() && it != "null" } ?: continue
-                        val f = "imap_" + v.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80) + ".json"
-                        if (f !in rels) out.put(JSONObject().put("from", ROOT + rel).put("ref", "imap:$v").put("expected", ROOT + f))
-                    } } }
-        }
-        val prot = bodies["protection.json"]
-        if (prot == null && "protection.json" in rels) errors.put("protection.json not checked (corrupt or too large)")
-        prot?.optJSONObject("entries")?.let { e ->
-            for (id in e.keys()) {
-                val x = e.optJSONObject(id) ?: continue
-                if (x.optString("state") == "RELEASED") continue
-                when {
-                    id.startsWith("env|") -> { val f = "env_" + id.removePrefix("env|").replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80) + ".json"
-                        if (f !in rels) out.put(JSONObject().put("from", ROOT + "protection.json").put("ref", id).put("expected", ROOT + f)) }
-                    id.startsWith("manifest|") -> { val f = "manifest_" + id.removePrefix("manifest|").replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80) + ".json"
-                        if (f !in rels) out.put(JSONObject().put("from", ROOT + "protection.json").put("ref", id).put("expected", ROOT + f)) }
+    /**
+     * Bounded reference collector: keeps only reference strings, never parsed bodies. Session manifests contribute imap
+     * versions (deduplicated); the protection ledger contributes non-RELEASED env/manifest ids. Bodies are dropped by
+     * the caller immediately after [collect].
+     */
+    private class Refs {
+        val imap = LinkedHashMap<String, String>()          // imap file -> first referencing manifest
+        val prot = ArrayList<String>()                      // non-released env|/manifest| ids
+        var protSeen = false
+        val unchecked = ArrayList<String>()
+        companion object { fun isSource(rel: String) = rel == "protection.json" || (rel.startsWith("manifest_") && rel.endsWith(".json")) }
+        private fun safe(v: String) = v.replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80)
+        fun collect(rel: String, m: JSONObject) {
+            if (rel.startsWith("manifest_") && rel.endsWith(".json")) {
+                val idx = m.optJSONObject("indices") ?: return
+                for (i in idx.keys()) { val sl = idx.optJSONObject(i)?.optJSONObject("slots") ?: continue
+                    for (k in sl.keys()) { val a = sl.optJSONObject(k)?.optJSONArray("attempts") ?: continue
+                        for (j in 0 until a.length()) {
+                            val v = a.optJSONObject(j)?.optJSONObject("capture")?.optString("imap_version")?.takeIf { it.isNotBlank() && it != "null" } ?: continue
+                            imap.putIfAbsent("imap_" + safe(v) + ".json", rel)
+                        } } }
+            } else if (rel == "protection.json") {
+                protSeen = true
+                val e = m.optJSONObject("entries") ?: return
+                for (id in e.keys()) {
+                    if (e.optJSONObject(id)?.optString("state") == "RELEASED") continue
+                    if (id.startsWith("env|") || id.startsWith("manifest|")) prot.add(id)
                 }
             }
         }
-        return out
+        fun missing(rels: Set<String>, errors: JSONArray): JSONArray {
+            val out = JSONArray()
+            for ((f, from) in imap) if (f !in rels) out.put(JSONObject().put("from", ROOT + from).put("ref", "imap:" + f.removePrefix("imap_").removeSuffix(".json")).put("expected", ROOT + f))
+            if (!protSeen && "protection.json" in rels) errors.put("protection.json not checked (corrupt or too large)")
+            for (u in unchecked) if (u != "protection.json") errors.put("$u not checked for references (size above validation cap)")
+            for (id in prot) {
+                val f = if (id.startsWith("env|")) "env_" + safe(id.removePrefix("env|")) + ".json" else "manifest_" + safe(id.removePrefix("manifest|")) + ".json"
+                if (f !in rels) out.put(JSONObject().put("from", ROOT + "protection.json").put("ref", id).put("expected", ROOT + f))
+            }
+            return out
+        }
     }
 
     /** Independent readback: whole-stream SHA-256 must equal [expectedZipSha]; every entry re-hashed vs the manifest. */

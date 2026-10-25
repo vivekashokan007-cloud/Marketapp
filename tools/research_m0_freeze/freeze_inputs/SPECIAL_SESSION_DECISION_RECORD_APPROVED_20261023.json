@@ -1,0 +1,20 @@
+{
+  "record_schema": "special_session_decision_record_v1",
+  "protocol_version": "special_session_protocol_v1",
+  "protocol_file": "SPECIAL_SESSION_PROTOCOL_V1_20261023.md",
+  "protocol_sha256": "cf65c2ada8f91da1f077836935eb6fbb15e78e39b8689bedbbae2679a4b74aa5",
+  "decision": "FREEZE",
+  "decided_by": "Vivek",
+  "decision_ist_datetime": "2026-10-23T17:49+05:30",
+  "codex_review_reference": "CDX-M0-PLAN-V3",
+  "external_time_evidence": "Approval in this ChatGPT conversation: Vivek replied \"Yes I fully agree\" to the seven-rule research explanation and explicit approval question. Exact platform message timestamp is not exposed.",
+  "recorded_by": "Codex, on Vivek's explicit instruction/approval",
+  "recorded_at_utc": "2026-10-23T12:19:13+00:00",
+  "timestamp_provenance": "Tool-observed recording time immediately after receiving the approval; decision time is recorded at minute precision. This is not an independently signed message timestamp.",
+  "approved_decisions": [
+    "Q-4: special-session protocol freeze",
+    "Q-5: initial nearest-expiry/no-roll universe with whole-lifetime limitation",
+    "Q-6: strict-before-entry IST date-only freeze form"
+  ],
+  "notes": "Vivek explicitly approved all seven research rules, including separate reporting for holdings spanning 8 November. This records research-method approval. Pilot details, capacity gate, export/B9 readiness, installation, release, migration, and activation remain subject to their separate operational decisions. Grok's next task is the Stage 2 planning procedure."
+}

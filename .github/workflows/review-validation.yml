@@ -92,7 +92,15 @@ jobs:
       - name: Verify generated lot-table source
         run: python3 scripts/generate_contract_lot_table_kt.py --check
       - name: M0 Stage 2 offline export verifier + B9 reproduction regressions
-        run: python3 -W error::ResourceWarning -m unittest discover -s tools/research_m0_export -p 'test_*.py' -v
+        run: |
+          python3 -W error::ResourceWarning -m unittest discover -s tools/research_m0_export -p 'test_*.py' -v
+          python3 tools/research_m0_export/Stage2B9Counterexamples.py --tool-dir tools/research_m0_export -v
+      - name: CI-3 freeze verifier regressions + approved record + immutable protocol hash
+        run: |
+          python3 -m unittest discover -s tools/research_m0_freeze -p 'test_*.py' -v
+          echo "cf65c2ada8f91da1f077836935eb6fbb15e78e39b8689bedbbae2679a4b74aa5  tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_PROTOCOL_V1_20261023.md" | sha256sum -c
+          echo "70274ccdab7aa1bdedaf50955a1f94552089238d95c46ad405725779fcefdec9  tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json" | sha256sum -c
+          python3 -I tools/research_m0_freeze/freeze_inputs/verify_freeze_record_20261023.py tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_PROTOCOL_V1_20261023.md tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json
 
       - name: Run complete Python safety suite
         run: |
