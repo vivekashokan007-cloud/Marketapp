@@ -899,6 +899,8 @@ class MarketWatchService : Service() {
     }
 
     private fun startPolling() {
+        // M0: reconcile the research manifest after process death / reboot / update (collection only).
+        m0Safely("reconcile", Unit) { if (ResearchCollector.isEnabled(m0Dir())) ResearchCollector.reconcile(m0Dir(), System.currentTimeMillis()) }
         if (pollingJob?.isActive == true) {
             Log.w(TAG, "POLL_LOOP_IGNORED: polling loop already active")
             LogBuffer.add('W', TAG, "POLL_LOOP_IGNORED: polling loop already active")
@@ -1078,6 +1080,8 @@ class MarketWatchService : Service() {
         }
         try {
             val slotKey = currentPollSlotKey()
+            // M0 research collector: persist the scheduled identity + attempt BEFORE any request (collection only).
+            m0Attempts = m0BeginAttempts(slotKey)
             val pollCount = slotKey?.let { slotOrdinalFromSlotKey(it) } ?: reservePollNumberForToday()
             Log.d(TAG, "POLL_START: performPoll() entered")
             LogBuffer.add('I', "MarketWatchService", "Poll #$pollCount starting${slotKey?.let { " slot=$it" } ?: ""}")
@@ -1123,6 +1127,8 @@ class MarketWatchService : Service() {
             // b510 X1: per-index chain receipt times for THIS poll only (0 = fetch failed).
             x1NfChainFetchedAtMs = 0L
             x1BnfChainFetchedAtMs = 0L
+            var m0BnfFetchStartMs = 0L
+            var m0NfFetchStartMs = 0L
             val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
@@ -1130,9 +1136,9 @@ class MarketWatchService : Service() {
                         quotesFetchStartedAtMs = System.currentTimeMillis()
                         fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
                     },
-                    async(Dispatchers.IO) { fetchSync(bnfUrl, token).also { if (it != null) x1BnfChainFetchedAtMs = System.currentTimeMillis() } },
+                    async(Dispatchers.IO) { m0BnfFetchStartMs = System.currentTimeMillis(); fetchSync(bnfUrl, token).also { if (it != null) x1BnfChainFetchedAtMs = System.currentTimeMillis() } },
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
-                    async(Dispatchers.IO) { fetchSync(nfUrl, token).also {
+                    async(Dispatchers.IO) { m0NfFetchStartMs = System.currentTimeMillis(); fetchSync(nfUrl, token).also {
                         evNfChainFetchedAtMs = System.currentTimeMillis()
                         if (it != null) x1NfChainFetchedAtMs = evNfChainFetchedAtMs
                     } }
@@ -1254,6 +1260,10 @@ class MarketWatchService : Service() {
             // required by the post-close teacher. The database write is
             // idempotent on (poll_ts,index_key,strike,option_type).
             val (chainEvidenceRef, chainEvidenceCoverage) = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
+            m0RecordCaptures(mapOf(
+                "BNF" to Triple(bnfChainJson, m0BnfFetchStartMs, x1BnfChainFetchedAtMs),
+                "NF" to Triple(nfChainJson, m0NfFetchStartMs, x1NfChainFetchedAtMs)
+            ), chainEvidenceRef)
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1279,7 +1289,71 @@ class MarketWatchService : Service() {
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
             LogBuffer.add('D', TAG, "LEASE_HEARTBEAT_WRITTEN: pollNum=$pollCount ts=$hbTs")
         } finally {
+            // M0: an attempt that ended before its capture was recorded (fetch failure, early return) is closed
+            // against its ORIGINAL slot here, so it is never left looking like a live attempt.
+            m0CloseOpenAttempts()
             pollInProgress.set(false)
+        }
+    }
+
+    // ---------------------------------------------------------------- M0 research collector (collection only)
+    @Volatile private var m0Attempts: Map<String, ResearchCollector.Begin.Started> = emptyMap()
+    private fun m0Dir(): File = File(filesDir, ResearchCollector.DIR)
+    private inline fun <T> m0Safely(where: String, fallback: T, block: () -> T): T = try { block() } catch (t: Throwable) {
+        ResearchCollector.recordFailure(m0Dir(), where, t)
+        LogBuffer.add('W', TAG, "M0_COLLECTOR_FAIL[$where]: ${t.javaClass.simpleName}")
+        fallback
+    }
+
+    private fun m0BeginAttempts(slotKey: String?): Map<String, ResearchCollector.Begin.Started> = m0Safely("begin", emptyMap()) {
+        val dir = m0Dir()
+        if (slotKey.isNullOrBlank() || !ResearchCollector.isEnabled(dir)) return@m0Safely emptyMap()
+        val now = System.currentTimeMillis()
+        ResearchCollector.INDICES_FOR_POLL.mapNotNull { idx ->
+            (ResearchCollector.beginAttempt(dir, idx, slotKey, now) as? ResearchCollector.Begin.Started)?.let { idx to it }
+        }.toMap()
+    }
+
+    private fun m0RecordCaptures(chains: Map<String, Triple<JSONObject?, Long, Long>>, chainRef: JSONObject?) {
+        val attempts = m0Attempts
+        if (attempts.isEmpty()) return
+        m0Safely("capture", Unit) {
+            val dir = m0Dir()
+            val now = System.currentTimeMillis()
+            val table = chainRef?.takeIf { it.has("persist_table") && !it.isNull("persist_table") }?.optString("persist_table")
+            val pollTs = chainRef?.optString("poll_ts")
+            for ((idx, att) in attempts) {
+                val (chain, start, end) = chains[idx] ?: continue
+                val cap = ResearchCollector.captureFromChain(dir, idx, chain, start.takeIf { it > 0 }, end.takeIf { it > 0 },
+                    table, now, pollTs, now, leaseId = att.attemptId)
+                ResearchCollector.recordCapture(dir, att.slotId, att.attemptId, cap, now)
+            }
+        }
+    }
+
+    private fun m0CloseOpenAttempts() {
+        val attempts = m0Attempts
+        m0Attempts = emptyMap()
+        if (attempts.isEmpty()) return
+        m0Safely("close", Unit) {
+            val now = System.currentTimeMillis()
+            for ((_, att) in attempts) ResearchCollector.closeIfOpen(m0Dir(), att.slotId, att.attemptId, now)
+            // W4: bounded runtime point for reconcile + protection lag (at most once per 30 min, after the poll).
+            ResearchCollector.maybeReconcile(m0Dir(), now)
+        }
+    }
+
+    private fun m0CaptureEnvelope(poll: JSONObject, raw: JSONObject?, startedMs: Long, completedMs: Long?,
+                                  ctxObj: JSONObject?, failure: String?) {
+        m0Safely("envelope", Unit) {
+            val dir = m0Dir()
+            val slot = poll.optString("slot_key", "")
+            if (slot.isBlank() || !ResearchCollector.isEnabled(dir)) return@m0Safely
+            val policy = JSONObject().put("execution_mode", ctxObj?.optString("executionMode", "") ?: "")
+                .put("trade_mode", ctxObj?.optString("tradeMode", "") ?: "")
+            val env = ResearchCollector.buildEnvelope(slot, raw, startedMs.takeIf { it > 0 }, completedMs,
+                BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, policy, failure)
+            ResearchCollector.putEnvelope(dir, env, System.currentTimeMillis())
         }
     }
 
@@ -2684,6 +2758,11 @@ class MarketWatchService : Service() {
                 // broadcasts or snapshots the result; it is persisted only through its own path.
                 val paperDecisionMenu = resultObj.optJSONObject("paper_decision_menu")
                 resultObj.remove("paper_decision_menu")
+                // M0 research collector: detach the raw pre-alignment forecast (never snapshotted/broadcast); a
+                // REFRESH result is never recorded as any slot's forecast.
+                val m0Raw = resultObj.optJSONObject(ResearchCollector.RAW_FORECAST_KEY)
+                resultObj.remove(ResearchCollector.RAW_FORECAST_KEY)
+                if (!isRefresh) m0CaptureEnvelope(poll, m0Raw, brainAnalyzeStartedAtMs, brainAnalyzeCompletedAtMs, ctxObj, null)
                 // Implied-EV v1.2: envelopes/outcomes leave the result here (exact bytes -> outbox); only the
                 // small recommendation view stays for the PWA.
                 if (isRefresh) {
@@ -3121,6 +3200,7 @@ class MarketWatchService : Service() {
                     .apply()
                 Log.w(TAG, "BRAIN_TIMEOUT: brain.analyze timed out after ${PY_POLL_ANALYZE_TIMEOUT_MS}ms")
                 outcome = AnalysisAuthority.Outcome.TIMED_OUT
+                if (!isRefresh) m0CaptureEnvelope(poll, null, brainAnalyzeStartedAtMs, null, null, "brain_timeout")
                 paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_analyze_timeout") }
                 paperMenuAttemptSlot = null
             }
@@ -3133,6 +3213,7 @@ class MarketWatchService : Service() {
                 .putLong(PREF_LAST_BRAIN_ANALYSIS_DURATION_MS, elapsedMs)
                 .putString(PREF_LAST_BRAIN_ANALYSIS_FAILURE_REASON, "EXCEPTION:${e.javaClass.simpleName}")
                 .apply()
+            if (!isRefresh) m0CaptureEnvelope(poll, null, brainAnalyzeStartedAtMs, null, null, "brain_exception:${e.javaClass.simpleName}")
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
             paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_exception:${e.javaClass.simpleName}") }
             paperMenuAttemptSlot = null

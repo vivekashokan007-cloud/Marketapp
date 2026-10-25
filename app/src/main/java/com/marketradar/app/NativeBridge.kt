@@ -668,6 +668,57 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun isNative(): Boolean = true
 
+    /** M0 full-day research collector status (collection only; reconciles the scheduled manifest first). */
+    @JavascriptInterface
+    fun getResearchCollectorStatus(): String = try {
+        val dir = File(context.filesDir, ResearchCollector.DIR)
+        val now = System.currentTimeMillis()
+        val rec = if (ResearchCollector.isEnabled(dir)) ResearchCollector.reconcile(dir, now) else null
+        ResearchCollector.status(dir, now).put("reconcile", rec ?: JSONObject.NULL).toString()
+    } catch (t: Throwable) {
+        JSONObject().put("label", "ERROR").put("label_text", "Full-day research — status unavailable")
+            .put("error", t.javaClass.simpleName).toString()
+    }
+
+    /** Explicit user opt-in/out for the M0 collector. Changes no trading, Paper, Real or EV behaviour. */
+    @JavascriptInterface
+    fun setResearchCollectorEnabled(enabled: Boolean): String = try {
+        val dir = File(context.filesDir, ResearchCollector.DIR)
+        ResearchCollector.setEnabled(dir, enabled, System.currentTimeMillis())
+        getResearchCollectorStatus()
+    } catch (t: Throwable) {
+        JSONObject().put("label", "ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    /**
+     * Stage 2 CI-2: user-initiated, read-only research export via the Storage Access Framework (ACTION_CREATE_DOCUMENT).
+     * Opens the system picker; the result is delivered to window.m0OnResearchExportResult and via
+     * [getResearchExportResult]. [pwaIdentityJson] carries the PWA version/build/app.js identity for the manifest.
+     */
+    @JavascriptInterface
+    fun exportResearchEvidence(pwaIdentityJson: String?): String = try {
+        val act = context as? MainActivity
+        when {
+            act == null -> JSONObject().put("status", "UNAVAILABLE").put("reason", "NO_ACTIVITY").toString()
+            ResearchExport.running -> JSONObject().put("status", "BUSY").toString()
+            else -> { act.runOnUiThread { act.launchResearchExport(pwaIdentityJson) }
+                JSONObject().put("status", "PICKER_OPENING").toString() }
+        }
+    } catch (t: Throwable) {
+        JSONObject().put("status", "ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    @JavascriptInterface
+    fun getResearchExportResult(): String =
+        (ResearchExport.lastResult ?: JSONObject().put("status", if (ResearchExport.running) "RUNNING" else "NONE"))
+            .let { JSONObject(it.toString()).put("running", ResearchExport.running) }.toString()
+
+    @JavascriptInterface
+    fun cancelResearchExport(): String {
+        if (ResearchExport.running) ResearchExport.cancelRequested = true
+        return JSONObject().put("cancel_requested", ResearchExport.cancelRequested).put("running", ResearchExport.running).toString()
+    }
+
     @JavascriptInterface
     fun startMarketService() {
         clearStaleSessionStateIfNeeded()
