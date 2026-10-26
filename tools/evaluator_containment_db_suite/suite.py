@@ -263,14 +263,43 @@ def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
 
-def mint_jwt(role: str, sub: str | None = None, secret: str = JWT_SECRET) -> str:
+def mint_jwt(role: str, sub: str | None = None, secret: str = JWT_SECRET, *, is_anonymous: bool = False) -> str:
     header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     payload = {"role": role, "iss": "supabase", "iat": int(time.time()), "exp": int(time.time()) + 3600}
     if sub:
         payload["sub"] = sub
+    # A4: include standard anonymous-auth JWT claim shape when testing that contract.
+    if is_anonymous:
+        payload["is_anonymous"] = True
+        payload["aal"] = "aal1"
     body = b64url(json.dumps(payload).encode())
     sig = hmac.new(secret.encode(), f"{header}.{body}".encode(), hashlib.sha256).digest()
     return f"{header}.{body}.{b64url(sig)}"
+
+
+def classify_write_outcome(code: int, body: str) -> str:
+    """A2 strict classifier. Returns 'ok' | 'denied' | 'unrelated_error'.
+    Status 0, 404, 5xx are unrelated_error (NOT a write denial).
+    401/403 with permission/JWT hints, or 2xx with empty representation (RLS zero-row), are denied.
+    2xx with a non-empty representation is ok (write landed). Other 4xx are unrelated_error.
+    """
+    if code in (0, 404) or code >= 500:
+        return "unrelated_error"
+    if code in (401, 403):
+        if not body.strip():
+            return "denied"
+        low = body.lower()
+        if ("42501" in body) or ("permission" in low) or ("jwt" in low) or ("unauthorized" in low) or ("forbidden" in low) or ("not authorized" in low):
+            return "denied"
+        return "unrelated_error"
+    if 200 <= code < 300:
+        if body.strip() in ("", "[]", "null"):
+            return "denied"  # RLS zero-row UPDATE / empty representation
+        return "ok"
+    # other 4xx (400 syntax, 409 conflict, 422, etc.) are not authz denials
+    return "unrelated_error"
+
+
 
 
 class Rest:
@@ -318,8 +347,8 @@ db-channel-enabled = false
             self.errlog.flush(); self.errlog.seek(0)
             raise RuntimeError("postgrest not ready: " + self.errlog.read()[:500])
 
-    def _raw(self, method: str, path: str, role: str, body: dict | None = None, sub: str | None = None) -> tuple[int, str]:
-        token = mint_jwt(role, sub=sub)
+    def _raw(self, method: str, path: str, role: str, body: dict | None = None, sub: str | None = None, *, is_anonymous: bool = False) -> tuple[int, str]:
+        token = mint_jwt(role, sub=sub, is_anonymous=is_anonymous)
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path if path.startswith('/') else '/' + path}",
@@ -339,9 +368,9 @@ db-channel-enabled = false
         except Exception as e:
             return 0, str(e)
 
-    def call(self, method: str, path: str, role: str, body: dict | None = None, sub: str | None = None) -> tuple[int, str]:
+    def call(self, method: str, path: str, role: str, body: dict | None = None, sub: str | None = None, *, is_anonymous: bool = False) -> tuple[int, str]:
         for _ in range(8):
-            code, body_text = self._raw(method, path, role, body, sub)
+            code, body_text = self._raw(method, path, role, body, sub, is_anonymous=is_anonymous)
             if code != 503:
                 return code, body_text
             time.sleep(0.3)
@@ -502,69 +531,86 @@ def measure_rest(db: str, ids: dict, phase: str, rest: Rest | None) -> None:
         ("service_role", "service_role", None),
     ]
     for actor, role, sub in actors:
+        anon_claim = actor == "anonymous_auth"
         # Parent creation
         code, body = rest.call(
             "POST", "ai_evaluation_jobs", role,
             {"date_from": "2026-10-01", "date_to": "2026-10-02", "brain_version": "b", "dataset_version": "d", "model_name": "m"},
-            sub=sub,
+            sub=sub, is_anonymous=anon_claim,
         )
         if phase == "baseline":
             expect_ok = actor != "anon"
         else:
             expect_ok = actor == "service_role"
-        check(f"{phase}/rest/{actor}/ai_evaluation_jobs.POST", (200 <= code < 300) == expect_ok,
-              f"code={code} body={body[:120]}")
+        outcome = classify_write_outcome(code, body)
+        passed = (outcome == "ok") if expect_ok else (outcome == "denied")
+        check(f"{phase}/rest/{actor}/ai_evaluation_jobs.POST", passed,
+              f"code={code} outcome={outcome} body={body[:120]}")
 
         # Direct approved INSERT
         code, body = rest.call(
             "POST", "ai_branch_proposals", role,
             {"job_id": ids["job_id"], "proposal_id": secrets.token_hex(3), "status": "approved",
              "index_key": "BNF", "category": "strategy", "proposal_json": {"x": 1}},
-            sub=sub,
+            sub=sub, is_anonymous=anon_claim,
         )
         if phase == "baseline":
             expect_ok = actor != "anon"
         else:
             expect_ok = actor == "service_role"
-        check(f"{phase}/rest/{actor}/ai_branch_proposals.POST_approved", (200 <= code < 300) == expect_ok,
-              f"code={code} body={body[:120]}")
+        outcome = classify_write_outcome(code, body)
+        passed = (outcome == "ok") if expect_ok else (outcome == "denied")
+        check(f"{phase}/rest/{actor}/ai_branch_proposals.POST_approved", passed,
+              f"code={code} outcome={outcome} body={body[:120]}")
 
         # Status/content UPDATE
         code, body = rest.call(
             "PATCH", f"ai_branch_proposals?id=eq.{ids['prop_proposed']}", role,
             {"status": "approved", "proposal_json": {"hijacked": True}},
-            sub=sub,
+            sub=sub, is_anonymous=anon_claim,
         )
         if phase == "baseline":
             expect_ok = actor != "anon"
         else:
             expect_ok = actor == "service_role"
-        # For REST, a 200 with empty representation also counts as "denied by RLS" for anon; treat non-2xx OR empty body as deny.
-        succeeded = 200 <= code < 300 and body.strip() not in ("", "[]")
-        check(f"{phase}/rest/{actor}/ai_branch_proposals.PATCH_status_content", succeeded == expect_ok,
-              f"code={code} body={body[:120]}")
+        # A2: only count structured authz denial or RLS zero-row; reject 0/404/5xx as unrelated.
+        outcome = classify_write_outcome(code, body)
+        if expect_ok:
+            passed = outcome == "ok"
+        else:
+            passed = outcome == "denied"
+        check(f"{phase}/rest/{actor}/ai_branch_proposals.PATCH_status_content", passed,
+              f"code={code} outcome={outcome} body={body[:120]}")
 
         # View UPDATE (owner-rights)
         code, body = rest.call(
             "PATCH", f"evaluator_proposals_app_view?id=eq.{ids['eval_prop']}", role,
             {"status": "approved"},
-            sub=sub,
+            sub=sub, is_anonymous=anon_claim,
         )
         if phase == "baseline":
             expect_ok = True  # every role has UPDATE on the view; owner-rights bypasses base RLS
         else:
             expect_ok = actor == "service_role"
-        succeeded = 200 <= code < 300 and body.strip() not in ("", "[]")
+        outcome = classify_write_outcome(code, body)
+        if expect_ok:
+            passed = outcome == "ok"
+        else:
+            passed = outcome == "denied"
         # Re-seed view row between actors so a successful update does not starve later actors
         psql(
             f"update public.evaluator_proposals set status='proposed' where id='{ids['eval_prop']}';",
             db, user="postgres",
         )
-        check(f"{phase}/rest/{actor}/evaluator_proposals_app_view.PATCH", succeeded == expect_ok,
-              f"code={code} body={body[:120]}")
+        check(f"{phase}/rest/{actor}/evaluator_proposals_app_view.PATCH", passed,
+              f"code={code} outcome={outcome} body={body[:120]}")
+        # A5: also assert the view operation privilege/result, not privilege alone
+        if phase == "contained" and actor != "service_role":
+            check(f"{phase}/rest/{actor}/evaluator_proposals_app_view.PATCH_denied_not_unrelated",
+                  outcome == "denied", f"outcome={outcome}")
 
         # Intended SELECT
-        code, body = rest.call("GET", "ai_branch_proposals?status=eq.approved&select=id", role, sub=sub)
+        code, body = rest.call("GET", "ai_branch_proposals?status=eq.approved&select=id", role, sub=sub, is_anonymous=anon_claim)
         check(f"{phase}/rest/{actor}/ai_branch_proposals.GET_approved", 200 <= code < 300,
               f"code={code} body={body[:80]}")
 
@@ -598,11 +644,35 @@ def build_db(name: str, profile: str) -> None:
     else:
         check(f"profile/{profile}/new_table_NOT_granted_to_anon", anon_sel == "f", f"has={anon_sel}")
         # PUBLIC EXECUTE still present on a new function (platform change does not remove it).
+        # A3: probe PUBLIC (grantee 0) separately from direct/inherited anon EXECUTE.
         psql("create function public._probe_fn() returns int language sql as $$ select 1 $$;", name, user="postgres")
-        check(
-            f"profile/{profile}/new_function_PUBLIC_EXECUTE_still_present",
-            at("select has_function_privilege('anon','public._probe_fn()','EXECUTE');", name) == "t",
+        public_exec = at(
+            "select coalesce((select true from pg_proc p join pg_namespace n on n.oid=p.pronamespace, "
+            "lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x "
+            "where n.nspname='public' and p.proname='_probe_fn' "
+            "and x.grantee=0 and x.privilege_type='EXECUTE'), false);",
+            name,
         )
+        anon_exec = at("select has_function_privilege('anon','public._probe_fn()','EXECUTE');", name)
+        check(f"profile/{profile}/new_function_PUBLIC_EXECUTE_still_present", public_exec == "t", f"public={public_exec} anon={anon_exec}")
+        check(f"profile/{profile}/new_function_anon_EXECUTE_via_PUBLIC", anon_exec == "t", f"anon={anon_exec}")
+        # Counterexample shape: revoke PUBLIC, grant anon directly — PUBLIC probe must go false while anon stays true.
+        psql(
+            "revoke execute on function public._probe_fn() from public; "
+            "grant execute on function public._probe_fn() to anon;",
+            name, user="postgres",
+        )
+        public_after = at(
+            "select coalesce((select true from pg_proc p join pg_namespace n on n.oid=p.pronamespace, "
+            "lateral aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x "
+            "where n.nspname='public' and p.proname='_probe_fn' "
+            "and x.grantee=0 and x.privilege_type='EXECUTE'), false);",
+            name,
+        )
+        anon_after = at("select has_function_privilege('anon','public._probe_fn()','EXECUTE');", name)
+        check(f"profile/{profile}/PUBLIC_EXECUTE_revoked_while_direct_anon_kept",
+              public_after == "f" and anon_after == "t",
+              f"public={public_after} anon={anon_after}")
 
 
 def run_profile(profile: str, rest_bin: str | None) -> None:
@@ -633,8 +703,9 @@ def run_profile(profile: str, rest_bin: str | None) -> None:
 
 
 def ensure_tcp_auth() -> None:
-    """Allow authenticator password auth over 127.0.0.1 (scratch only)."""
-    # Find data directory via the running server.
+    """Allow authenticator password auth over 127.0.0.1 (scratch only). A3: create role first."""
+    # A3: create required scratch roles BEFORE altering authenticator password / HBA.
+    psql(ROLES_SQL, "postgres")
     data_dir = at("show data_directory;", "postgres")
     hba = Path(data_dir) / "pg_hba.conf"
     line = "host all authenticator 127.0.0.1/32 scram-sha-256\n"
@@ -642,7 +713,7 @@ def ensure_tcp_auth() -> None:
     if "authenticator 127.0.0.1/32" not in text:
         hba.write_text(line + text)
         psql("select pg_reload_conf();", "postgres")
-    # Make sure the role password uses SCRAM.
+    # Password mutation is cluster-local to this disposable scratch server only.
     psql(f"alter role authenticator password '{AUTH_PW}';", "postgres")
 
 

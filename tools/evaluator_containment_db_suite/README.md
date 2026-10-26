@@ -1,14 +1,15 @@
-# Evaluator containment scratch DB suite
+# Evaluator / ai_* containment scratch suites
 
-Never production. Builds disposable PostgreSQL 17 databases that mirror the live
-evaluator / ai_* shape, measures effective access for anon / authenticated /
-anonymous-auth / service_role (SQL + PostgREST), applies the proposed migration,
-re-measures, and re-applies for idempotence. Runs under both pre- and post-
-30-Oct-2026 default-grant profiles.
+Never production. Requires `EVALUATOR_CONTAINMENT_SCRATCH_OK=1` and a disposable PostgreSQL 17.
 
-```sh
-PGHOST=127.0.0.1 PGPORT=55440 PGUSER=supabase_admin \
-EVALUATOR_CONTAINMENT_SCRATCH_OK=1 \
-EVALUATOR_CONTAINMENT_POSTGREST_BIN=/path/to/postgrest \
-tools/evaluator_containment_db_suite/run.sh
-```
+## Suites
+
+1. **`suite.py` / `run.sh`** — effective-access matrix (SQL + optional PostgREST) for pre/post Oct-30 default-privilege profiles; applies the proposed migration; asserts reads preserved and client writes denied. Uses strict write-outcome classifier (A2) and PUBLIC EXECUTE probe distinct from direct anon grant (A3).
+2. **`r1_r5_corrections.py`** — focused A1–A3 counterexamples reconstructed from CDX-GROK-CONTAINMENT-HOSTINGER-R1 handoff text (Codex companion ZIP was unavailable on the build machine):
+   - A1 statement-at-a-time partial persistence vs transactional rollback when SELECT policy missing
+   - A2 classifier rejects status 0 / 404 / 500 as denials
+   - A3 PUBLIC EXECUTE probe not masked by direct anon grant
+
+## CI
+
+Wired into `.github/workflows/review-validation.yml` (scratch postgres service + PostgREST 12.2.3). That workflow does not deploy APKs or publish Pages; `release.yml` is `workflow_dispatch` only.

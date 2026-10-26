@@ -1,0 +1,37 @@
+# TEMPLATE ONLY — CDX-GROK-CONTAINMENT-HOSTINGER-R1 Track D
+# Do NOT install/enable without Vivek's explicit later operational decision.
+# Reconstructs a thin Python/uvicorn API from versioned Marketapp/oracle_server sources.
+# Scope: confirmed routes only (/health, /elephant, /monthly_eval). Do not invent /evaluation-jobs*.
+
+[Unit]
+Description=Market Radar Oracle thin API (Hostinger VPS candidate)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marketradar
+Group=marketradar
+WorkingDirectory=/opt/marketradar/oracle_server
+EnvironmentFile=-/etc/marketradar/oracle.env
+# Resource budget (provisional; tune after measured multi-session validation)
+CPUQuota=80%
+MemoryMax=1500M
+TasksMax=256
+# Single-runner: refuse a second instance
+ExecStartPre=/usr/bin/flock -n /run/marketradar-oracle.lock true
+ExecStart=/usr/bin/flock -n /run/marketradar-oracle.lock \
+  /opt/marketradar/venv/bin/uvicorn evaluator_app:app \
+    --host 127.0.0.1 --port 8000 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+# Do not clobber EnvironmentFile (historical Oracle restart.sh defect)
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/marketradar /run
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

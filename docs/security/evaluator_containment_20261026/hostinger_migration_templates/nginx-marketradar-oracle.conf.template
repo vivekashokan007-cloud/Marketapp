@@ -1,0 +1,48 @@
+# TEMPLATE ONLY — reverse proxy in front of local uvicorn (127.0.0.1:8000).
+# TLS termination here; certbot/renewal is a later operational step — not authorised now.
+# Do not point production DNS until cutover is explicitly approved.
+
+upstream marketradar_oracle {
+    server 127.0.0.1:8000;
+    keepalive 8;
+}
+
+server {
+    listen 80;
+    server_name marketradar-oracle.online;  # or a future test hostname
+    # ACME only until cutover; do not force-redirect until cert is ready
+    location /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name marketradar-oracle.online;
+
+    # ssl_certificate /etc/letsencrypt/live/marketradar-oracle.online/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/marketradar-oracle.online/privkey.pem;
+
+    # Only expose confirmed routes; reject unknown paths
+    location = /health {
+        proxy_pass http://marketradar_oracle;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /elephant {
+        proxy_pass http://marketradar_oracle;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 1m;
+        proxy_read_timeout 120s;
+    }
+    location = /monthly_eval {
+        proxy_pass http://marketradar_oracle;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+    location / { return 404; }
+}

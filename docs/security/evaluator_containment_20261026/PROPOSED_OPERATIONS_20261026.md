@@ -61,3 +61,16 @@ Server containment does **not** clear or attest an old phone SharedPreferences c
 ## Permanent-repair design note (design only; not implemented)
 
 See `PERMANENT_REPAIR_DESIGN_NOTE_20261026.md`.
+
+## A4 addendum (HOSTINGER-R1) — partial function deployment and recovery
+
+Five Edge Function deployments are **not atomic**. Chosen order (client ACL revocation does **not** disable service-role handlers, but C1 removes the live service-role-using handlers):
+
+1. Apply SQL containment migration first (single BEGIN/COMMIT owned by the migration file; runner must not wrap another BEGIN). On precondition/postcondition failure, nothing persists.
+2. Deploy deny handlers **one slug at a time** in this order (least-coupled first):  
+   `evaluator-jobs-status` → `evaluator-jobs-proposals` → `evaluator-jobs-create` → `evaluator-jobs-run` → `evaluator-proposals-review`.  
+   After each: curl the function URL expecting fixed 403 body; abort the batch for review on mismatch.
+3. Version/hash check: record `sha256` of each deployed `index.ts` and of the migration file before/after.
+4. Normal failure response: **retain already-deployed safe denies**, stop further deploys, open review. Do **not** auto-redeploy captured unauthenticated handlers (those are audit evidence, not the safe recovery target).
+5. Never redeploy mismatched repo `main` handlers as rollback. Restoring known vulnerable access is a **separate named decision**, not an automatic recovery command.
+6. SQL recovery helper remains `recovery_restore_captured_ai_view_acl_20261026.sql` (restores exact captured defect — prefer a narrowly reviewed grant).
