@@ -1,0 +1,1613 @@
+[
+ {
+  "j": {
+   "columns": [
+    {
+     "t": "ai_branch_proposals",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "proposal_id",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "status",
+     "type": "text",
+     "notnull": true,
+     "default": "'proposed'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "index_key",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "category",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "priority",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "proposal_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "validation_notes",
+     "type": "jsonb",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "approved_by",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals",
+     "col": "approved_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals_job_id_proposal_id_key",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals_job_id_proposal_id_key",
+     "col": "proposal_id",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_branch_proposals_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "col": "example_id",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "col": "example_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples_job_id_example_id_key",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples_job_id_example_id_key",
+     "col": "example_id",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_examples_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "now()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "date_from",
+     "type": "date",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "date_to",
+     "type": "date",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "brain_version",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "dataset_version",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "model_name",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "status",
+     "type": "text",
+     "notnull": true,
+     "default": "'queued'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "error_text",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "prompt_hash",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "col": "response_hash",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "ai_evaluation_jobs_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "proposal_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "branch_key",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "title",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "summary",
+     "type": "text",
+     "notnull": true,
+     "default": "''::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "diff_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'[]'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "metrics_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "approved_by",
+     "type": "text",
+     "notnull": true,
+     "default": "'android_app'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "approval_note",
+     "type": "text",
+     "notnull": true,
+     "default": "''::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "updated_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "rationale",
+     "type": "text",
+     "notnull": true,
+     "default": "''::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "proposal_payload",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals",
+     "col": "approved_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals_branch_key_idx",
+     "col": "branch_key",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "approved_branch_proposals_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "artifact_kind",
+     "type": "text",
+     "notnull": true,
+     "default": "'prompt_bundle'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "prompt_version",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "input_payload",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "snapshot_count",
+     "type": "integer",
+     "notnull": true,
+     "default": "0",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "decision_count",
+     "type": "integer",
+     "notnull": true,
+     "default": "0",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "col": "run_attempt",
+     "type": "integer",
+     "notnull": true,
+     "default": "1",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts_job_attempt_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts_job_attempt_idx",
+     "col": "run_attempt",
+     "type": "integer",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts_job_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts_job_idx",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_brief_artifacts_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "month_key",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "requested_by",
+     "type": "text",
+     "notnull": true,
+     "default": "'android_app'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "status",
+     "type": "text",
+     "notnull": true,
+     "default": "'queued'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "started_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "completed_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "proposal_count",
+     "type": "integer",
+     "notnull": true,
+     "default": "0",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "summary_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "artifact_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "error_text",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "updated_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "runner_type",
+     "type": "text",
+     "notnull": true,
+     "default": "'supabase_edge'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "model_name",
+     "type": "text",
+     "notnull": true,
+     "default": "'gemini-2.5-pro'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "date_from",
+     "type": "date",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "date_to",
+     "type": "date",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "index_scope",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'[\"BNF\", \"NF\"]'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "request_payload",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "summary",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "error",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs",
+     "col": "run_attempt",
+     "type": "integer",
+     "notnull": true,
+     "default": "1",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs_status_created_idx",
+     "col": "status",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_jobs_status_created_idx",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "branch_key",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "title",
+     "type": "text",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "summary",
+     "type": "text",
+     "notnull": true,
+     "default": "''::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "diff_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'[]'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "metrics_json",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "risk_flags",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'[]'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "status",
+     "type": "text",
+     "notnull": true,
+     "default": "'proposed'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "updated_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "rationale",
+     "type": "text",
+     "notnull": true,
+     "default": "''::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "proposal_payload",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "confidence",
+     "type": "numeric(5,2)",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals",
+     "col": "priority",
+     "type": "integer",
+     "notnull": true,
+     "default": "100",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "status",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "category",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "priority",
+     "type": "integer",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "validation_notes",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "approved_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "index_key",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_app_view",
+     "col": "proposal_json",
+     "type": "jsonb",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_branch_key_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_branch_key_idx",
+     "col": "branch_key",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_status_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_status_idx",
+     "col": "status",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_status_idx",
+     "col": "priority",
+     "type": "integer",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_job_status_idx",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_proposals_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "id",
+     "type": "uuid",
+     "notnull": true,
+     "default": "gen_random_uuid()",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": true,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "verdict_kind",
+     "type": "text",
+     "notnull": true,
+     "default": "'gemini_response'::text",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "model_name",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "raw_text",
+     "type": "text",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "normalized_payload",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "token_usage",
+     "type": "jsonb",
+     "notnull": true,
+     "default": "'{}'::jsonb",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": true,
+     "default": "timezone('utc'::text, now())",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "col": "run_attempt",
+     "type": "integer",
+     "notnull": true,
+     "default": "1",
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts_job_attempt_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts_job_attempt_idx",
+     "col": "run_attempt",
+     "type": "integer",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts_job_idx",
+     "col": "job_id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts_job_idx",
+     "col": "created_at",
+     "type": "timestamp with time zone",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    },
+    {
+     "t": "evaluator_verdict_artifacts_pkey",
+     "col": "id",
+     "type": "uuid",
+     "notnull": false,
+     "default": null,
+     "attacl": null,
+     "identity": "",
+     "generated": ""
+    }
+   ],
+   "constraints": [
+    {
+     "t": "ai_branch_proposals",
+     "name": "ai_branch_proposals_approved_by_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (approved_by) REFERENCES auth.users(id)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "name": "ai_branch_proposals_job_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (job_id) REFERENCES ai_evaluation_jobs(id) ON DELETE CASCADE"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "name": "ai_branch_proposals_job_id_proposal_id_key",
+     "type": "u",
+     "def": "UNIQUE (job_id, proposal_id)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "name": "ai_branch_proposals_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "name": "ai_evaluation_examples_job_id_example_id_key",
+     "type": "u",
+     "def": "UNIQUE (job_id, example_id)"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "name": "ai_evaluation_examples_job_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (job_id) REFERENCES ai_evaluation_jobs(id) ON DELETE CASCADE"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "name": "ai_evaluation_examples_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "name": "ai_evaluation_jobs_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "approved_branch_proposals",
+     "name": "approved_branch_proposals_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "approved_branch_proposals",
+     "name": "approved_branch_proposals_proposal_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (proposal_id) REFERENCES evaluator_proposals(id) ON DELETE SET NULL"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "name": "evaluator_brief_artifacts_job_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "name": "evaluator_brief_artifacts_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "evaluator_jobs",
+     "name": "evaluator_jobs_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (job_id)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "name": "evaluator_proposals_job_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    },
+    {
+     "t": "evaluator_proposals",
+     "name": "evaluator_proposals_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "name": "evaluator_verdict_artifacts_job_id_fkey",
+     "type": "f",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "name": "evaluator_verdict_artifacts_pkey",
+     "type": "p",
+     "def": "PRIMARY KEY (id)"
+    }
+   ],
+   "fk_into": [
+    {
+     "from": "ai_branch_proposals",
+     "to": "auth.users",
+     "name": "ai_branch_proposals_approved_by_fkey",
+     "def": "FOREIGN KEY (approved_by) REFERENCES auth.users(id)"
+    },
+    {
+     "from": "ai_branch_proposals",
+     "to": "ai_evaluation_jobs",
+     "name": "ai_branch_proposals_job_id_fkey",
+     "def": "FOREIGN KEY (job_id) REFERENCES ai_evaluation_jobs(id) ON DELETE CASCADE"
+    },
+    {
+     "from": "ai_evaluation_examples",
+     "to": "ai_evaluation_jobs",
+     "name": "ai_evaluation_examples_job_id_fkey",
+     "def": "FOREIGN KEY (job_id) REFERENCES ai_evaluation_jobs(id) ON DELETE CASCADE"
+    },
+    {
+     "from": "evaluator_proposals",
+     "to": "evaluator_jobs",
+     "name": "evaluator_proposals_job_id_fkey",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    },
+    {
+     "from": "approved_branch_proposals",
+     "to": "evaluator_proposals",
+     "name": "approved_branch_proposals_proposal_id_fkey",
+     "def": "FOREIGN KEY (proposal_id) REFERENCES evaluator_proposals(id) ON DELETE SET NULL"
+    },
+    {
+     "from": "evaluator_brief_artifacts",
+     "to": "evaluator_jobs",
+     "name": "evaluator_brief_artifacts_job_id_fkey",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    },
+    {
+     "from": "evaluator_verdict_artifacts",
+     "to": "evaluator_jobs",
+     "name": "evaluator_verdict_artifacts_job_id_fkey",
+     "def": "FOREIGN KEY (job_id) REFERENCES evaluator_jobs(job_id) ON DELETE CASCADE"
+    }
+   ],
+   "indexes": [
+    {
+     "t": "evaluator_jobs",
+     "i": "evaluator_jobs_pkey",
+     "def": "CREATE UNIQUE INDEX evaluator_jobs_pkey ON public.evaluator_jobs USING btree (job_id)"
+    },
+    {
+     "t": "evaluator_jobs",
+     "i": "idx_evaluator_jobs_month_key",
+     "def": "CREATE INDEX idx_evaluator_jobs_month_key ON public.evaluator_jobs USING btree (month_key)"
+    },
+    {
+     "t": "evaluator_jobs",
+     "i": "evaluator_jobs_status_created_idx",
+     "def": "CREATE INDEX evaluator_jobs_status_created_idx ON public.evaluator_jobs USING btree (status, created_at DESC)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "i": "evaluator_proposals_pkey",
+     "def": "CREATE UNIQUE INDEX evaluator_proposals_pkey ON public.evaluator_proposals USING btree (id)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "i": "idx_evaluator_proposals_job_id",
+     "def": "CREATE INDEX idx_evaluator_proposals_job_id ON public.evaluator_proposals USING btree (job_id)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "i": "idx_evaluator_proposals_status",
+     "def": "CREATE INDEX idx_evaluator_proposals_status ON public.evaluator_proposals USING btree (status)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "i": "evaluator_proposals_job_branch_key_idx",
+     "def": "CREATE UNIQUE INDEX evaluator_proposals_job_branch_key_idx ON public.evaluator_proposals USING btree (job_id, branch_key)"
+    },
+    {
+     "t": "evaluator_proposals",
+     "i": "evaluator_proposals_job_status_idx",
+     "def": "CREATE INDEX evaluator_proposals_job_status_idx ON public.evaluator_proposals USING btree (job_id, status, priority, created_at DESC)"
+    },
+    {
+     "t": "approved_branch_proposals",
+     "i": "approved_branch_proposals_pkey",
+     "def": "CREATE UNIQUE INDEX approved_branch_proposals_pkey ON public.approved_branch_proposals USING btree (id)"
+    },
+    {
+     "t": "approved_branch_proposals",
+     "i": "approved_branch_proposals_branch_key_idx",
+     "def": "CREATE UNIQUE INDEX approved_branch_proposals_branch_key_idx ON public.approved_branch_proposals USING btree (branch_key)"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "i": "evaluator_brief_artifacts_pkey",
+     "def": "CREATE UNIQUE INDEX evaluator_brief_artifacts_pkey ON public.evaluator_brief_artifacts USING btree (id)"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "i": "idx_evaluator_brief_artifacts_job_id",
+     "def": "CREATE INDEX idx_evaluator_brief_artifacts_job_id ON public.evaluator_brief_artifacts USING btree (job_id)"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "i": "evaluator_brief_artifacts_job_idx",
+     "def": "CREATE INDEX evaluator_brief_artifacts_job_idx ON public.evaluator_brief_artifacts USING btree (job_id, created_at DESC)"
+    },
+    {
+     "t": "evaluator_brief_artifacts",
+     "i": "evaluator_brief_artifacts_job_attempt_idx",
+     "def": "CREATE UNIQUE INDEX evaluator_brief_artifacts_job_attempt_idx ON public.evaluator_brief_artifacts USING btree (job_id, run_attempt)"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "i": "evaluator_verdict_artifacts_pkey",
+     "def": "CREATE UNIQUE INDEX evaluator_verdict_artifacts_pkey ON public.evaluator_verdict_artifacts USING btree (id)"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "i": "idx_evaluator_verdict_artifacts_job_id",
+     "def": "CREATE INDEX idx_evaluator_verdict_artifacts_job_id ON public.evaluator_verdict_artifacts USING btree (job_id)"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "i": "evaluator_verdict_artifacts_job_idx",
+     "def": "CREATE INDEX evaluator_verdict_artifacts_job_idx ON public.evaluator_verdict_artifacts USING btree (job_id, created_at DESC)"
+    },
+    {
+     "t": "evaluator_verdict_artifacts",
+     "i": "evaluator_verdict_artifacts_job_attempt_idx",
+     "def": "CREATE UNIQUE INDEX evaluator_verdict_artifacts_job_attempt_idx ON public.evaluator_verdict_artifacts USING btree (job_id, run_attempt)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "i": "ai_branch_proposals_job_id_proposal_id_key",
+     "def": "CREATE UNIQUE INDEX ai_branch_proposals_job_id_proposal_id_key ON public.ai_branch_proposals USING btree (job_id, proposal_id)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "i": "ai_branch_proposals_pkey",
+     "def": "CREATE UNIQUE INDEX ai_branch_proposals_pkey ON public.ai_branch_proposals USING btree (id)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "i": "idx_ai_branch_prop_job_id",
+     "def": "CREATE INDEX idx_ai_branch_prop_job_id ON public.ai_branch_proposals USING btree (job_id)"
+    },
+    {
+     "t": "ai_branch_proposals",
+     "i": "idx_ai_branch_prop_status",
+     "def": "CREATE INDEX idx_ai_branch_prop_status ON public.ai_branch_proposals USING btree (status)"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "i": "ai_evaluation_examples_job_id_example_id_key",
+     "def": "CREATE UNIQUE INDEX ai_evaluation_examples_job_id_example_id_key ON public.ai_evaluation_examples USING btree (job_id, example_id)"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "i": "ai_evaluation_examples_pkey",
+     "def": "CREATE UNIQUE INDEX ai_evaluation_examples_pkey ON public.ai_evaluation_examples USING btree (id)"
+    },
+    {
+     "t": "ai_evaluation_examples",
+     "i": "idx_ai_eval_examples_job_id",
+     "def": "CREATE INDEX idx_ai_eval_examples_job_id ON public.ai_evaluation_examples USING btree (job_id)"
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "i": "ai_evaluation_jobs_pkey",
+     "def": "CREATE UNIQUE INDEX ai_evaluation_jobs_pkey ON public.ai_evaluation_jobs USING btree (id)"
+    },
+    {
+     "t": "ai_evaluation_jobs",
+     "i": "idx_ai_eval_jobs_status",
+     "def": "CREATE INDEX idx_ai_eval_jobs_status ON public.ai_evaluation_jobs USING btree (status)"
+    }
+   ]
+  }
+ }
+]

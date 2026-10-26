@@ -1,33 +1,25 @@
-import { adminClient } from "../_shared/client.ts";
-import { json, okOptions } from "../_shared/cors.ts";
+// CDX-GROK-CONTAINMENT-PREP-1 — PROPOSED containment C1 (review branch; DO NOT DEPLOY without an explicit decision).
+// Fixed deny handler for the evaluator Edge Function "evaluator-jobs-proposals".
+// * Every method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, ...) and every path answers 403.
+// * No imports, no environment / secret access, no database client, no request-body read, no CORS grant
+//   (no Access-Control-Allow-* headers, so browser preflights fail closed).
+// * Self-contained so the deployed bundle is reproducible from this file alone.
+// The previous deployed handler (live v1/v2) is preserved as review-only audit evidence under
+// docs/security/evaluator_containment_20261026/live_baseline/ and is NOT an automatic recovery target.
+const FUNCTION_NAME = "evaluator-jobs-proposals";
+const CONTAINMENT_REF = "CDX-GROK-CONTAINMENT-PREP-1";
 
-function jobIdFromRequest(req: Request) {
-  const url = new URL(req.url);
-  return String(url.searchParams.get("job_id") || "").trim();
+export function containedResponse(req: Request): Response {
+  const headers = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (req.method === "HEAD") return new Response(null, { status: 403, headers });
+  return new Response(
+    JSON.stringify({ ok: false, error: "evaluator_contained", function: FUNCTION_NAME, ref: CONTAINMENT_REF }),
+    { status: 403, headers },
+  );
 }
 
-Deno.serve(async (req) => {
-  const options = okOptions(req);
-  if (options) return options;
-  if (req.method !== "GET") return json({ ok: false, error: "Method not allowed" }, { status: 405 });
-
-  try {
-    const jobId = jobIdFromRequest(req);
-    if (!jobId) throw new Error("job_id is required");
-    const supabase = adminClient();
-    const { data, error } = await supabase
-      .from("evaluator_proposals")
-      .select("id,job_id,branch_key,title,summary,rationale,proposal_payload,status,confidence,priority,created_at,updated_at")
-      .eq("job_id", jobId)
-      .order("priority", { ascending: true })
-      .order("created_at", { ascending: false });
-    if (error) throw error;
-    return json({
-      ok: true,
-      job_id: jobId,
-      proposals: data || [],
-    });
-  } catch (error) {
-    return json({ ok: false, error: error.message || String(error) }, { status: 400 });
-  }
-});
+Deno.serve((req: Request) => containedResponse(req));

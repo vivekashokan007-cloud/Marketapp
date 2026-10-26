@@ -1,0 +1,574 @@
+{
+ "lints": [
+  {
+   "name": "rls_enabled_no_policy",
+   "title": "RLS Enabled No Policy",
+   "level": "INFO",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects cases where row level security (RLS) has been enabled on a table but no RLS policies have been created.",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0008_rls_enabled_no_policy",
+   "count": 27,
+   "findings": [
+    {
+     "detail": "Table \\`capture_private.conflicts\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "conflicts",
+      "type": "table",
+      "schema": "capture_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`capture_private.writer_ledger\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "writer_ledger",
+      "type": "table",
+      "schema": "capture_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.builder_runs\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "builder_runs",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.builder_state\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "builder_state",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.conflicts\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "conflicts",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.observations\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "observations",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.quotas\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "quotas",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.receipt_quotas\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "receipt_quotas",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`ev_private.writers\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "writers",
+      "type": "table",
+      "schema": "ev_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`pc2_private.ingest_devices\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ingest_devices",
+      "type": "table",
+      "schema": "pc2_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`pc2_private.ingest_ledger\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ingest_ledger",
+      "type": "table",
+      "schema": "pc2_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`pdm_private.collectors\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "collectors",
+      "type": "table",
+      "schema": "pdm_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`pdm_private.conflicts\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "conflicts",
+      "type": "table",
+      "schema": "pdm_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`pdm_private.menu_writers\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "menu_writers",
+      "type": "table",
+      "schema": "pdm_private"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.config_nf50_constituents\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "config_nf50_constituents",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.evaluator_brief_artifacts\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "evaluator_brief_artifacts",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.evaluator_jobs\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "evaluator_jobs",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.evaluator_proposals\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "evaluator_proposals",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.evaluator_verdict_artifacts\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "evaluator_verdict_artifacts",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.historical_option_candles\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "historical_option_candles",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.ml_daily_accuracy_lane\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ml_daily_accuracy_lane",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.ml_monthly_accuracy_lane\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ml_monthly_accuracy_lane",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.ml_recommendation_outcomes_archive\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ml_recommendation_outcomes_archive",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.ml_weekly_accuracy_lane\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "ml_weekly_accuracy_lane",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.signal_reliability\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "signal_reliability",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.teaching_sessions\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "teaching_sessions",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Table \\`public.teaching_snapshots\\` has RLS enabled, but no policies exist",
+     "metadata": {
+      "name": "teaching_snapshots",
+      "type": "table",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  },
+  {
+   "name": "security_definer_view",
+   "title": "Security Definer View",
+   "level": "ERROR",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects views defined with the SECURITY DEFINER property. These views enforce Postgres permissions and row level security policies (RLS) of the view creator, rather than that of the querying user",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0010_security_definer_view",
+   "count": 2,
+   "findings": [
+    {
+     "detail": "View \\`public.evaluator_proposals_app_view\\` is defined with the SECURITY DEFINER property",
+     "metadata": {
+      "name": "evaluator_proposals_app_view",
+      "type": "view",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "View \\`public.ml_calibration_report\\` is defined with the SECURITY DEFINER property",
+     "metadata": {
+      "name": "ml_calibration_report",
+      "type": "view",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  },
+  {
+   "name": "function_search_path_mutable",
+   "title": "Function Search Path Mutable",
+   "level": "WARN",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects functions where the search_path parameter is not set.",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0011_function_search_path_mutable",
+   "count": 2,
+   "findings": [
+    {
+     "detail": "Function \\`public.ab_week1_decisions_set_updated_at\\` has a role mutable search_path",
+     "metadata": {
+      "name": "ab_week1_decisions_set_updated_at",
+      "type": "function",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function \\`public.touch_updated_at\\` has a role mutable search_path",
+     "metadata": {
+      "name": "touch_updated_at",
+      "type": "function",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  },
+  {
+   "name": "materialized_view_in_api",
+   "title": "Materialized View in API",
+   "level": "WARN",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects materialized views that are accessible over the Data APIs.",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0016_materialized_view_in_api",
+   "count": 1,
+   "findings": [
+    {
+     "detail": "Materialized view \\`public.mat_view_daily_leg_counts\\` is selectable by anon or authenticated roles",
+     "metadata": {
+      "name": "mat_view_daily_leg_counts",
+      "type": "materialized view",
+      "schema": "public"
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  },
+  {
+   "name": "anon_security_definer_function_executable",
+   "title": "Public Can Execute SECURITY DEFINER Function",
+   "level": "WARN",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects `SECURITY DEFINER` functions that are callable without signing in. Revoke `EXECUTE`, switch the function to `SECURITY INVOKER`, or move it out of your exposed API schema if it is not meant to be public.",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0028_anon_security_definer_function_executable",
+   "count": 9,
+   "findings": [
+    {
+     "detail": "Function `public.capture_event_record(p_device_key text, p_event jsonb)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/capture_event_record`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "capture_event_record",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_event jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.ev_submit_decision(p_device_key text, p_envelope_text text)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/ev_submit_decision`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "ev_submit_decision",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_envelope_text text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.ev_submit_outcome(p_device_key text, p_decision_id text, p_outcome_text text)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/ev_submit_outcome`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "ev_submit_outcome",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_decision_id text, p_outcome_text text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_collector_status(p_device_key text)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_collector_status`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_collector_status",
+      "schema": "public",
+      "language": "sql",
+      "arguments": "p_device_key text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_finalize(p_device_key text, p_menu_id text, p_payload_sha256 text)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_finalize`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_finalize",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_menu_id text, p_payload_sha256 text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_ingest_candidates(p_device_key text, p_menu_id text, p_payload_sha256 text, p_rows jsonb)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_ingest_candidates`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_ingest_candidates",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_menu_id text, p_payload_sha256 text, p_rows jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_ingest_manifest(p_device_key text, p_manifest jsonb)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_ingest_manifest`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_ingest_manifest",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_manifest jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.pc2_ingest_compact_batch(p_device_key text, p_policy jsonb, p_batch jsonb)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/pc2_ingest_compact_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "pc2_ingest_compact_batch",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_policy jsonb, p_batch jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.pc2_ingest_device_status(p_device_key text)` can be executed by the `anon` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/pc2_ingest_device_status`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "pc2_ingest_device_status",
+      "schema": "public",
+      "language": "sql",
+      "arguments": "p_device_key text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  },
+  {
+   "name": "authenticated_security_definer_function_executable",
+   "title": "Signed-In Users Can Execute SECURITY DEFINER Function",
+   "level": "WARN",
+   "facing": "EXTERNAL",
+   "categories": [
+    "SECURITY"
+   ],
+   "description": "Detects `SECURITY DEFINER` functions that are callable by signed-in users. Revoke `EXECUTE`, switch the function to `SECURITY INVOKER`, or move it out of your exposed API schema if signed-in users should not call it.",
+   "remediation": "https://supabase.com/docs/guides/database/database-linter?lint=0029_authenticated_security_definer_function_executable",
+   "count": 9,
+   "findings": [
+    {
+     "detail": "Function `public.capture_event_record(p_device_key text, p_event jsonb)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/capture_event_record`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "capture_event_record",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_event jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.ev_submit_decision(p_device_key text, p_envelope_text text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/ev_submit_decision`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "ev_submit_decision",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_envelope_text text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.ev_submit_outcome(p_device_key text, p_decision_id text, p_outcome_text text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/ev_submit_outcome`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "ev_submit_outcome",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_decision_id text, p_outcome_text text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_collector_status(p_device_key text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_collector_status`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_collector_status",
+      "schema": "public",
+      "language": "sql",
+      "arguments": "p_device_key text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_finalize(p_device_key text, p_menu_id text, p_payload_sha256 text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_finalize`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_finalize",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_menu_id text, p_payload_sha256 text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_ingest_candidates(p_device_key text, p_menu_id text, p_payload_sha256 text, p_rows jsonb)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_ingest_candidates`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_ingest_candidates",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_menu_id text, p_payload_sha256 text, p_rows jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.paper_decision_menu_ingest_manifest(p_device_key text, p_manifest jsonb)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/paper_decision_menu_ingest_manifest`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "paper_decision_menu_ingest_manifest",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_manifest jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.pc2_ingest_compact_batch(p_device_key text, p_policy jsonb, p_batch jsonb)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/pc2_ingest_compact_batch`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "pc2_ingest_compact_batch",
+      "schema": "public",
+      "language": "plpgsql",
+      "arguments": "p_device_key text, p_policy jsonb, p_batch jsonb",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    },
+    {
+     "detail": "Function `public.pc2_ingest_device_status(p_device_key text)` can be executed by the `authenticated` role as a `SECURITY DEFINER` function via `/rest/v1/rpc/pc2_ingest_device_status`. Revoke `EXECUTE` or switch it to `SECURITY INVOKER` if that is not intentional.",
+     "metadata": {
+      "name": "pc2_ingest_device_status",
+      "schema": "public",
+      "language": "sql",
+      "arguments": "p_device_key text",
+      "security_definer": true
+     },
+     "observed_at": "2026-10-26T01:04:29.908Z"
+    }
+   ]
+  }
+ ]
+}

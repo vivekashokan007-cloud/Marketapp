@@ -1,0 +1,156 @@
+[
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_branch_proposals",
+  "policyname": "Enable insert for authenticated users only",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "INSERT",
+  "qual": null,
+  "with_check": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_branch_proposals",
+  "policyname": "Enable read access for all users",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_branch_proposals",
+  "policyname": "Enable update for authenticated users only",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "UPDATE",
+  "qual": "(auth.role() = 'authenticated'::text)",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_evaluation_examples",
+  "policyname": "Enable insert for authenticated users only",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "INSERT",
+  "qual": null,
+  "with_check": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_evaluation_examples",
+  "policyname": "Enable read access for all users",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_evaluation_jobs",
+  "policyname": "Enable insert for authenticated users only",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "INSERT",
+  "qual": null,
+  "with_check": "(auth.role() = 'authenticated'::text)"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_evaluation_jobs",
+  "policyname": "Enable read access for all users",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ai_evaluation_jobs",
+  "policyname": "Enable update for authenticated users only",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "UPDATE",
+  "qual": "(auth.role() = 'authenticated'::text)",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "approved_branch_proposals",
+  "policyname": "approved_branch_proposals_read_all",
+  "permissive": "PERMISSIVE",
+  "roles": "{public}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "approved_branch_proposals",
+  "policyname": "approved_branch_proposals_read_anon",
+  "permissive": "PERMISSIVE",
+  "roles": "{anon,authenticated}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "elephant_assessments",
+  "policyname": "elephant_assessments_anon_all",
+  "permissive": "PERMISSIVE",
+  "roles": "{anon,authenticated}",
+  "cmd": "ALL",
+  "qual": "true",
+  "with_check": "true"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ml_evaluation_outcomes",
+  "policyname": "anon_rw_ml_eval",
+  "permissive": "PERMISSIVE",
+  "roles": "{anon}",
+  "cmd": "ALL",
+  "qual": "true",
+  "with_check": "true"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ml_evaluation_outcomes_s1",
+  "policyname": "anon_insert_ml_eval_s1",
+  "permissive": "PERMISSIVE",
+  "roles": "{anon}",
+  "cmd": "INSERT",
+  "qual": null,
+  "with_check": "true"
+ },
+ {
+  "observed_at": "2026-10-26 01:00:22.491506+00",
+  "schemaname": "public",
+  "tablename": "ml_evaluation_outcomes_s1",
+  "policyname": "anon_select_ml_eval_s1",
+  "permissive": "PERMISSIVE",
+  "roles": "{anon}",
+  "cmd": "SELECT",
+  "qual": "true",
+  "with_check": null
+ }
+]

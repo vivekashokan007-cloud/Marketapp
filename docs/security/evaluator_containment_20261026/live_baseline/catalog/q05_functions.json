@@ -1,0 +1,299 @@
+[
+ {
+  "j": {
+   "referencing": null,
+   "public_fns": [
+    {
+     "fn": "ab_week1_decisions_set_updated_at()",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": null,
+     "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "capture_event_record(text,jsonb)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "ev_builder_compact(date,jsonb)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,service_role=X/postgres}",
+     "anon_exec": false,
+     "auth_exec": false,
+     "dyn": false
+    },
+    {
+     "fn": "ev_builder_publish(jsonb,jsonb,date)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,service_role=X/postgres}",
+     "anon_exec": false,
+     "auth_exec": false,
+     "dyn": false
+    },
+    {
+     "fn": "ev_builder_seed(jsonb,jsonb,date,text,text,text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,service_role=X/postgres}",
+     "anon_exec": false,
+     "auth_exec": false,
+     "dyn": false
+    },
+    {
+     "fn": "ev_builder_state()",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,service_role=X/postgres}",
+     "anon_exec": false,
+     "auth_exec": false,
+     "dyn": false
+    },
+    {
+     "fn": "ev_submit_decision(text,text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "ev_submit_outcome(text,text,text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "paper_decision_menu_collector_status(text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "sql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "paper_decision_menu_finalize(text,text,text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "paper_decision_menu_ingest_candidates(text,text,text,jsonb)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "paper_decision_menu_ingest_manifest(text,jsonb)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_derive_policy_version(jsonb)",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "sql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_grouped_payload_valid(jsonb)",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_ingest_compact_batch(text,jsonb,jsonb)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_ingest_device_status(text)",
+     "owner": "postgres",
+     "secdef": true,
+     "lang": "sql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_poll_ts_valid(text,text)",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pc2_poll_utc(text)",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "pdm_guard_frozen()",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": "{\"search_path=\\\"\\\"\"}",
+     "acl": "{postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    },
+    {
+     "fn": "touch_updated_at()",
+     "owner": "postgres",
+     "secdef": false,
+     "lang": "plpgsql",
+     "kind": "f",
+     "config": null,
+     "acl": "{=X/postgres,postgres=X/postgres,anon=X/postgres,authenticated=X/postgres,service_role=X/postgres}",
+     "anon_exec": true,
+     "auth_exec": true,
+     "dyn": false
+    }
+   ],
+   "secdef_other_schemas": [
+    {
+     "fn": "pdm_private.authorize(text)",
+     "schema": "pdm_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    },
+    {
+     "fn": "pdm_private.record_conflict(text,text,text,text,text,text,text,text)",
+     "schema": "pdm_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    },
+    {
+     "fn": "ev_private.conflict(text,text,text,text,text,text)",
+     "schema": "ev_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    },
+    {
+     "fn": "ev_private.charge(text,date,integer,integer,integer)",
+     "schema": "ev_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    },
+    {
+     "fn": "ev_private.insert_observations(jsonb,date,date,integer)",
+     "schema": "ev_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    },
+    {
+     "fn": "ev_private.prune()",
+     "schema": "ev_private",
+     "owner": "postgres",
+     "anon_exec": false,
+     "auth_exec": false
+    }
+   ],
+   "touch_updated_at_src": [
+    {
+     "fn": "touch_updated_at()",
+     "src": "\nbegin\n  new.updated_at = timezone('utc', now());\n  return new;\nend;\n"
+    }
+   ]
+  }
+ }
+]
