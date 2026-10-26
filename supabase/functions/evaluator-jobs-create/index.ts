@@ -1,41 +1,25 @@
-import { adminClient } from "../_shared/client.ts";
-import { normalizeRequest } from "../_shared/contracts.ts";
-import { json, okOptions } from "../_shared/cors.ts";
+// CDX-GROK-CONTAINMENT-PREP-1 — PROPOSED containment C1 (review branch; DO NOT DEPLOY without an explicit decision).
+// Fixed deny handler for the evaluator Edge Function "evaluator-jobs-create".
+// * Every method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, ...) and every path answers 403.
+// * No imports, no environment / secret access, no database client, no request-body read, no CORS grant
+//   (no Access-Control-Allow-* headers, so browser preflights fail closed).
+// * Self-contained so the deployed bundle is reproducible from this file alone.
+// The previous deployed handler (live v1/v2) is preserved as review-only audit evidence under
+// docs/security/evaluator_containment_20261026/live_baseline/ and is NOT an automatic recovery target.
+const FUNCTION_NAME = "evaluator-jobs-create";
+const CONTAINMENT_REF = "CDX-GROK-CONTAINMENT-PREP-1";
 
-Deno.serve(async (req) => {
-  const options = okOptions(req);
-  if (options) return options;
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, { status: 405 });
+export function containedResponse(req: Request): Response {
+  const headers = {
+    "Content-Type": "application/json",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (req.method === "HEAD") return new Response(null, { status: 403, headers });
+  return new Response(
+    JSON.stringify({ ok: false, error: "evaluator_contained", function: FUNCTION_NAME, ref: CONTAINMENT_REF }),
+    { status: 403, headers },
+  );
+}
 
-  try {
-    const payload = normalizeRequest(await req.json());
-    const supabase = adminClient();
-    const row = {
-      requested_by: payload.requested_by,
-      runner_type: "supabase_edge",
-      model_name: payload.model_name,
-      date_from: payload.date_from,
-      date_to: payload.date_to,
-      index_scope: payload.index_scope,
-      request_payload: payload,
-      status: "queued",
-      summary: {
-        mode: payload.mode,
-        advisory_only: true,
-      },
-    };
-    const { data, error } = await supabase
-      .from("evaluator_jobs")
-      .insert(row)
-      .select("job_id,status,request_payload,proposal_count,created_at,updated_at")
-      .single();
-    if (error) throw error;
-    return json({
-      ok: true,
-      ...data,
-      message: "Evaluator job queued in advisory-only mode.",
-    });
-  } catch (error) {
-    return json({ ok: false, error: error.message || String(error) }, { status: 400 });
-  }
-});
+Deno.serve((req: Request) => containedResponse(req));

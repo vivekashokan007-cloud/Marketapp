@@ -1,0 +1,51 @@
+[
+ {
+  "j": {
+   "views": [
+    {
+     "schema": "public",
+     "view": "evaluator_proposals_app_view",
+     "owner": "postgres",
+     "options": null,
+     "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+     "def": " SELECT id,\n    job_id,\n    status,\n    COALESCE(proposal_payload ->> 'category'::text, title, 'proposal'::text) AS category,\n    COALESCE((proposal_payload ->> 'priority'::text)::integer, priority) AS priority,\n    COALESCE(proposal_payload ->> 'validation_notes'::text, proposal_payload ->> 'validationNotes'::text, ''::text) AS validation_notes,\n        CASE\n            WHEN status = 'approved'::text THEN updated_at\n            ELSE NULL::timestamp with time zone\n        END AS approved_at,\n    COALESCE(proposal_payload ->> 'index_key'::text, proposal_payload ->> 'index'::text, 'ALL'::text) AS index_key,\n    jsonb_build_object('proposal_id', COALESCE(proposal_payload ->> 'proposal_id'::text, id::text), 'status', status, 'index', COALESCE(proposal_payload ->> 'index'::text, proposal_payload ->> 'index_key'::text, 'ALL'::text), 'index_key', COALESCE(proposal_payload ->> 'index_key'::text, proposal_payload ->> 'index'::text, 'ALL'::text), 'category', COALESCE(proposal_payload ->> 'category'::text, title, 'proposal'::text), 'priority', COALESCE((proposal_payload ->> 'priority'::text)::integer, priority), 'hypothesis', COALESCE(proposal_payload ->> 'hypothesis'::text, ''::text), 'explanation', COALESCE(proposal_payload ->> 'explanation'::text, rationale, ''::text), 'conditions', COALESCE(proposal_payload -> 'conditions'::text, '{}'::jsonb), 'action', COALESCE(proposal_payload -> 'action'::text, '{}'::jsonb), 'evidence', COALESCE(proposal_payload -> 'evidence'::text, '{}'::jsonb)) AS proposal_json\n   FROM evaluator_proposals p;",
+     "is_insertable": "YES",
+     "is_updatable": "YES",
+     "trigger_insertable": "NO"
+    }
+   ],
+   "triggers": [
+    {
+     "t": "evaluator_jobs",
+     "trg": "trg_evaluator_jobs_updated_at",
+     "enabled": "O",
+     "def": "CREATE TRIGGER trg_evaluator_jobs_updated_at BEFORE UPDATE ON public.evaluator_jobs FOR EACH ROW EXECUTE FUNCTION touch_updated_at()",
+     "fn": "touch_updated_at()"
+    },
+    {
+     "t": "evaluator_proposals",
+     "trg": "trg_evaluator_proposals_updated_at",
+     "enabled": "O",
+     "def": "CREATE TRIGGER trg_evaluator_proposals_updated_at BEFORE UPDATE ON public.evaluator_proposals FOR EACH ROW EXECUTE FUNCTION touch_updated_at()",
+     "fn": "touch_updated_at()"
+    },
+    {
+     "t": "evaluator_jobs",
+     "trg": "evaluator_jobs_touch_updated_at",
+     "enabled": "O",
+     "def": "CREATE TRIGGER evaluator_jobs_touch_updated_at BEFORE UPDATE ON public.evaluator_jobs FOR EACH ROW EXECUTE FUNCTION touch_updated_at()",
+     "fn": "touch_updated_at()"
+    },
+    {
+     "t": "evaluator_proposals",
+     "trg": "evaluator_proposals_touch_updated_at",
+     "enabled": "O",
+     "def": "CREATE TRIGGER evaluator_proposals_touch_updated_at BEFORE UPDATE ON public.evaluator_proposals FOR EACH ROW EXECUTE FUNCTION touch_updated_at()",
+     "fn": "touch_updated_at()"
+    }
+   ],
+   "rules": null,
+   "publications": null
+  }
+ }
+]

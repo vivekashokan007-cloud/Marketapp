@@ -1,0 +1,153 @@
+[
+ {
+  "name": "evaluator-jobs-create",
+  "keys": [
+   "created_at",
+   "entrypoint_path",
+   "ezbr_sha256",
+   "files",
+   "id",
+   "import_map",
+   "name",
+   "slug",
+   "status",
+   "updated_at",
+   "verify_jwt",
+   "version"
+  ],
+  "version": 2,
+  "verify_jwt": false,
+  "ezbr": "d549fa04800d15988c3ccf1b6c3a7e228abbc5d91d299946d5d0e0b2b22846e6",
+  "status": "ACTIVE",
+  "updated_at": 1783058136380,
+  "files": {
+   "functions/evaluator-jobs-create/index.ts": "04cd48190be069a60ab108bf02ea9721e523fbb00e1b05ad8348f525f57fd57f",
+   "functions/_shared/client.ts": "0a59f4a215fe0b942cb45107a30195e97b85d37dadb3ad4a45ba718e0eb729bb",
+   "functions/_shared/contracts.ts": "fa417ab537bfee98073d9126a310403dd4a4b99efc95427c36d769162501095a",
+   "functions/_shared/cors.ts": "62583782f17af3d30bd42706894ffe683b35171bc9a169ad2bad091040764f60"
+  },
+  "files_identical_to_20261025_snapshot": true,
+  "metadata_identical_to_20261025_snapshot": true,
+  "list_meta_matches": true
+ },
+ {
+  "name": "evaluator-jobs-run",
+  "keys": [
+   "created_at",
+   "entrypoint_path",
+   "ezbr_sha256",
+   "files",
+   "id",
+   "import_map",
+   "name",
+   "slug",
+   "status",
+   "updated_at",
+   "verify_jwt",
+   "version"
+  ],
+  "version": 2,
+  "verify_jwt": false,
+  "ezbr": "a6f01d2c49c1bd2187c0c165b4975d9ea38e7d935f97dff22ae7c04266f75387",
+  "status": "ACTIVE",
+  "updated_at": 1783143906679,
+  "files": {
+   "functions/evaluator-jobs-run/index.ts": "b93251bc8765ed262071f3c7aa5e9362826aa7bfc97e751c6d066be7181fd847",
+   "functions/_shared/client.ts": "0a59f4a215fe0b942cb45107a30195e97b85d37dadb3ad4a45ba718e0eb729bb",
+   "functions/_shared/cors.ts": "62583782f17af3d30bd42706894ffe683b35171bc9a169ad2bad091040764f60"
+  },
+  "files_identical_to_20261025_snapshot": true,
+  "metadata_identical_to_20261025_snapshot": true,
+  "list_meta_matches": true
+ },
+ {
+  "name": "evaluator-jobs-status",
+  "keys": [
+   "created_at",
+   "entrypoint_path",
+   "ezbr_sha256",
+   "files",
+   "id",
+   "import_map",
+   "name",
+   "slug",
+   "status",
+   "updated_at",
+   "verify_jwt",
+   "version"
+  ],
+  "version": 1,
+  "verify_jwt": false,
+  "ezbr": "4c633fbb052f68fe0a422149623c46e88e388e9c25f6070db36112a175b7b454",
+  "status": "ACTIVE",
+  "updated_at": 1783056934831,
+  "files": {
+   "functions/evaluator-jobs-status/index.ts": "e415b65d053cbd034f0de408135878ca7999551eb654044bb656d74063866081",
+   "functions/_shared/client.ts": "0a59f4a215fe0b942cb45107a30195e97b85d37dadb3ad4a45ba718e0eb729bb",
+   "functions/_shared/cors.ts": "62583782f17af3d30bd42706894ffe683b35171bc9a169ad2bad091040764f60"
+  },
+  "files_identical_to_20261025_snapshot": true,
+  "metadata_identical_to_20261025_snapshot": true,
+  "list_meta_matches": true
+ },
+ {
+  "name": "evaluator-jobs-proposals",
+  "keys": [
+   "created_at",
+   "entrypoint_path",
+   "ezbr_sha256",
+   "files",
+   "id",
+   "import_map",
+   "name",
+   "slug",
+   "status",
+   "updated_at",
+   "verify_jwt",
+   "version"
+  ],
+  "version": 1,
+  "verify_jwt": false,
+  "ezbr": "b08c3b4b7fcb762a1e7032161f6d701ce6af609e3d6b809ae2e94aa39ab22649",
+  "status": "ACTIVE",
+  "updated_at": 1783057083395,
+  "files": {
+   "functions/evaluator-jobs-proposals/index.ts": "494e3c472511494f0da53b6be7e35caf9a2a1189c05a8861fdfeb08c00420895",
+   "functions/_shared/client.ts": "0a59f4a215fe0b942cb45107a30195e97b85d37dadb3ad4a45ba718e0eb729bb",
+   "functions/_shared/cors.ts": "62583782f17af3d30bd42706894ffe683b35171bc9a169ad2bad091040764f60"
+  },
+  "files_identical_to_20261025_snapshot": true,
+  "metadata_identical_to_20261025_snapshot": true,
+  "list_meta_matches": true
+ },
+ {
+  "name": "evaluator-proposals-review",
+  "keys": [
+   "created_at",
+   "entrypoint_path",
+   "ezbr_sha256",
+   "files",
+   "id",
+   "import_map",
+   "name",
+   "slug",
+   "status",
+   "updated_at",
+   "verify_jwt",
+   "version"
+  ],
+  "version": 2,
+  "verify_jwt": false,
+  "ezbr": "4c3bc001545ce46629c38f21f0b28c8f42162ab6ad32bbf9e5626896075c8ce8",
+  "status": "ACTIVE",
+  "updated_at": 1783059253525,
+  "files": {
+   "functions/evaluator-proposals-review/index.ts": "7bcd264cce37e8a3d5f812b7ca950be855e68d9803958420e23cc98a69f59b9a",
+   "functions/_shared/client.ts": "0a59f4a215fe0b942cb45107a30195e97b85d37dadb3ad4a45ba718e0eb729bb",
+   "functions/_shared/cors.ts": "62583782f17af3d30bd42706894ffe683b35171bc9a169ad2bad091040764f60"
+  },
+  "files_identical_to_20261025_snapshot": true,
+  "metadata_identical_to_20261025_snapshot": true,
+  "list_meta_matches": true
+ }
+]

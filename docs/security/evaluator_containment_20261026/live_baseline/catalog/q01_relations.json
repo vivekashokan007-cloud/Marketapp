@@ -1,0 +1,134 @@
+[
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "ai_branch_proposals",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "ai_evaluation_examples",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "ai_evaluation_jobs",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "approved_branch_proposals",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "elephant_assessments",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "evaluator_brief_artifacts",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "evaluator_jobs",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "evaluator_proposals",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "evaluator_proposals_app_view",
+  "relkind": "v",
+  "owner": "postgres",
+  "rls": false,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "evaluator_verdict_artifacts",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "ml_evaluation_outcomes",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ },
+ {
+  "observed_at": "2026-10-26 01:00:03.406007+00",
+  "nspname": "public",
+  "relname": "ml_evaluation_outcomes_s1",
+  "relkind": "r",
+  "owner": "postgres",
+  "rls": true,
+  "force_rls": false,
+  "acl": "{postgres=arwdDxtm/postgres,anon=arwxtm/postgres,authenticated=arwdxtm/postgres,service_role=arwdDxtm/postgres}",
+  "opts": null
+ }
+]
