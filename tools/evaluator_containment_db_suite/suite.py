@@ -312,8 +312,12 @@ class Rest:
         conf = tempfile.NamedTemporaryFile("w", delete=False, suffix=".conf")
         # Force TCP to 127.0.0.1 so the password we set is used (Unix-socket trust would ignore it
         # and then SET ROLE would still work, but password-less TCP fails).
+        # Use libpq host/port query form (same as s1a/ev suites) so CI service-container
+        # TCP and local unix-socket clusters both work without embedding 127.0.0.1 only.
+        pghost = os.environ.get("PGHOST", "127.0.0.1")
+        pgport = os.environ.get("PGPORT", "5432")
         conf.write(
-            f"""db-uri = "postgres://authenticator:{AUTH_PW}@127.0.0.1:{os.environ.get('PGPORT')}/{db}"
+            f"""db-uri = "postgres://authenticator:{AUTH_PW}@/{db}?host={pghost}&port={pgport}"
 db-schemas = "public"
 db-anon-role = "anon"
 jwt-secret = "{JWT_SECRET}"
@@ -703,16 +707,22 @@ def run_profile(profile: str, rest_bin: str | None) -> None:
 
 
 def ensure_tcp_auth() -> None:
-    """Allow authenticator password auth over 127.0.0.1 (scratch only). A3: create role first."""
+    """Allow authenticator password auth for PostgREST (scratch only). A3: create role first."""
     # A3: create required scratch roles BEFORE altering authenticator password / HBA.
     psql(ROLES_SQL, "postgres")
     data_dir = at("show data_directory;", "postgres")
     hba = Path(data_dir) / "pg_hba.conf"
-    line = "host all authenticator 127.0.0.1/32 scram-sha-256\n"
-    text = hba.read_text()
-    if "authenticator 127.0.0.1/32" not in text:
-        hba.write_text(line + text)
-        psql("select pg_reload_conf();", "postgres")
+    # Local disposable clusters expose pg_hba on this filesystem. GitHub Actions postgres
+    # *service* containers do not — their data_directory is inside the container. In that
+    # case the image default already accepts password auth over TCP; skip HBA mutation.
+    if hba.is_file() and os.access(hba, os.W_OK):
+        line = "host all authenticator 127.0.0.1/32 scram-sha-256\n"
+        text = hba.read_text()
+        if "authenticator 127.0.0.1/32" not in text:
+            hba.write_text(line + text)
+            psql("select pg_reload_conf();", "postgres")
+    else:
+        print(f"ensure_tcp_auth: pg_hba not writable at {hba}; relying on server default host auth")
     # Password mutation is cluster-local to this disposable scratch server only.
     psql(f"alter role authenticator password '{AUTH_PW}';", "postgres")
 
