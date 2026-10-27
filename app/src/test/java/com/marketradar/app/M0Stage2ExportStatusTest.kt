@@ -29,7 +29,7 @@ class M0Stage2ExportStatusTest {
     private lateinit var dir: File
     private lateinit var tmp: File
     private val S1 = "2026-10-22"
-    private val ID = JSONObject().put("version_name", "2.6.83").put("version_code", 514).put("marketapp_source_head", "test")
+    private val ID = JSONObject().put("version_name", "2.6.84").put("version_code", 515).put("marketapp_source_head", "test")
 
     private fun ms(day: String, h: Int, m: Int, s: Int = 0): Long =
         LocalDateTime.of(LocalDate.parse(day), java.time.LocalTime.of(h, m, s)).atZone(ResearchCalendar.IST).toInstant().toEpochMilli()
@@ -54,8 +54,8 @@ class M0Stage2ExportStatusTest {
             ResearchCollector.closeIfOpen(dir, a.slotId, a.attemptId, now)
         }
         val raw = JSONObject().put("schema", "research_m0_raw_forecast_v1").put("status", "VALID").put("direction", "BULL")
-            .put("confidence", 60.0).put("horizon", "UNDECLARED").put("brain_version", "2.6.83").put("input_last_poll_slot_key", "$S1|$ord")
-        ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$S1|$ord", raw, now, now + 100, "2.6.83", 514, JSONObject()), now + 200)
+            .put("confidence", 60.0).put("horizon", "UNDECLARED").put("brain_version", "2.6.84").put("input_last_poll_slot_key", "$S1|$ord")
+        ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$S1|$ord", raw, now, now + 100, "2.6.84", 515, JSONObject()), now + 200)
     }
 
     private fun tree(d: File): Map<String, String> = d.walkTopDown().filter { it.isFile }.associate {
@@ -95,7 +95,7 @@ class M0Stage2ExportStatusTest {
         assertEquals(ResearchExport.SCHEMA, man.getString("schema"))
         assertEquals(ResearchCalendar.VERSION, man.getString("calendar_version"))
         assertEquals("special_session_protocol_v1", man.getJSONObject("protocol_ref").getString("name"))
-        assertEquals(514, man.getJSONObject("build").getInt("version_code"))
+        assertEquals(515, man.getJSONObject("build").getInt("version_code"))
         assertTrue(man.getString("created_ist").endsWith("+05:30"))
         assertEquals("NO_FINDINGS", man.getString("evidence_status"))
         // independent readback: each exported entry == source bytes, and == manifest hash/size

@@ -123,6 +123,9 @@ class MainActivity : AppCompatActivity() {
     private var instanceSeq = 0
     private var createKind = LifecycleDiagnostics.CreateKind.FRESH_PROCESS_LAUNCH
     private var droppedUiCallbacks = 0
+    /** b515: the current WebView document of THIS instance finished loading (reset on every onPageStarted). */
+    private var pageFinishedThisInstance = false
+    private var pollReceiverRegistered = false
     /** b512 R2: retains a launch/onNewIntent tab until the PWA acknowledges it (Codex R1). */
     private val launchNav = LaunchNavigation(object : LaunchNavigation.Host {
         override fun evaluate(script: String, onResult: (String?) -> Unit) {
@@ -275,6 +278,7 @@ class MainActivity : AppCompatActivity() {
                     super.onPageStarted(view, url, favicon)
                     errorView.visibility = View.GONE
                     lastLoadFailedMainFrame = false
+                    pageFinishedThisInstance = false
                     injectNativeBridge()
                 }
 
@@ -286,6 +290,7 @@ class MainActivity : AppCompatActivity() {
                     lastLoadFailedMainFrame = false
                     persistCurrentWebUrl(url)
                     injectNativeBridge()
+                    pageFinishedThisInstance = true
                     launchNav.onPageFinished()
 
                     // Check if web app version changed since last load
@@ -584,7 +589,10 @@ class MainActivity : AppCompatActivity() {
         // receives them. Other apps can no longer inject `data` into the WebView.
         uiAlive = true
         launchNav.onUiReady()   // b512 R2: deliver a cold-launch openTab now that the view is live (retried until the PWA acks)
-        ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (!pollReceiverRegistered) {   // b515: exactly one receiver per Activity instance
+            ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            pollReceiverRegistered = true
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -644,6 +652,11 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val savedUrl = prefs.getString(PREF_LAST_WEB_URL, null)?.trim().orEmpty()
         return if (savedUrl.startsWith(APP_URL)) savedUrl else APP_URL
+    }
+
+    private fun heapNow(): String {
+        val rt = Runtime.getRuntime()
+        return BackgroundResume.heapSummary(rt.totalMemory() - rt.freeMemory(), rt.maxMemory())
     }
 
     private fun dp(value: Int) = TypedValue.applyDimension(
@@ -820,6 +833,16 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         persistCurrentWebUrl(webView.url)
         LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
+        // b515: let the page persist tab/scroll/unsaved drafts NOW, while it is still live; onStop's
+        // WebView.onPause()/pauseTimers() may defer the page's own visibilitychange handler past a background destroy.
+        if (uiAlive && ::webView.isInitialized && !webViewRendererGone) {   // script is a no-op on a page without mrUiFlush
+            val seq = instanceSeq
+            runCatching {
+                webView.evaluateJavascript(BackgroundResume.FLUSH_SCRIPT) { r ->
+                    LogBuffer.add('I', "MainActivity", "UI_STATE_FLUSH: result=${r.orEmpty().replace("\"", "").take(16)} seq=$seq")
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -831,15 +854,19 @@ class MainActivity : AppCompatActivity() {
         // Sync native data with WebView on resume
         postToLiveWebView("resume_sync") { webView ->
             val neverLoaded = webView.url == null && webView.originalUrl == null
-            if (lastLoadFailedMainFrame || neverLoaded) {
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            val action = BackgroundResume.resumeAction(lastLoadFailedMainFrame, neverLoaded, pageFinishedThisInstance,
+                if (lastNativeSyncElapsedMs > 0) nowElapsed - lastNativeSyncElapsedMs else Long.MAX_VALUE)
+            if (action != BackgroundResume.ResumeAction.SYNC) {
+                LogBuffer.add('I', "MainActivity", "RESUME_SYNC: action=$action kind=$createKind seq=$instanceSeq")
+            }
+            if (action == BackgroundResume.ResumeAction.RELOAD) {
                 lastLoadFailedMainFrame = false
                 webView.loadUrl(restoredWebUrl())
                 return@postToLiveWebView
             }
-            val nowElapsed = android.os.SystemClock.elapsedRealtime()
-            if (nowElapsed - lastNativeSyncElapsedMs < 5_000L) {
-                return@postToLiveWebView
-            }
+            // b515: a re-created WebView still loading its restored page boots and pulls native state itself.
+            if (action != BackgroundResume.ResumeAction.SYNC) return@postToLiveWebView
             injectNativeBridge()
             val syncJs = """
                 (function() {
@@ -870,7 +897,7 @@ class MainActivity : AppCompatActivity() {
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
+            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing seq=$instanceSeq ${heapNow()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
         if (::webView.isInitialized) {
             webView.onPause()
@@ -979,10 +1006,10 @@ class MainActivity : AppCompatActivity() {
             "MainActivity",
             "ACTIVITY_DESTROY: changingConfig=$isChangingConfigurations finishing=$isFinishing seq=$instanceSeq kind=$createKind " +
                 "rendererGone=$webViewRendererGone alwaysFinish=$alwaysFinish lastTrim=${LifecycleDiagnostics.lastTrimLevel} " +
-                "lastTrimAgoS=$trimAgoS lowMemory=$lowMem droppedUiCallbacks=$droppedUiCallbacks " +
+                "lastTrimAgoS=$trimAgoS lowMemory=$lowMem droppedUiCallbacks=$droppedUiCallbacks ${heapNow()} " +
                 "pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
-        runCatching { unregisterReceiver(pollReceiver) }
+        if (pollReceiverRegistered) { runCatching { unregisterReceiver(pollReceiver) }; pollReceiverRegistered = false }
         client.dispatcher.cancelAll() // pending update check must not call back into this instance
         if (::webView.isInitialized) {
             persistCurrentWebUrl(webView.url)
