@@ -126,6 +126,8 @@ class MainActivity : AppCompatActivity() {
     /** b515: the current WebView document of THIS instance finished loading (reset on every onPageStarted). */
     private var pageFinishedThisInstance = false
     private var pollReceiverRegistered = false
+    /** b515 CANDIDATE-ONLY: non-null only when BuildConfig.PWA_CANDIDATE (candidate build type); null in debug/release. */
+    @Volatile private var candidatePwa: CandidatePwaServer? = null
     /** b512 R2: retains a launch/onNewIntent tab until the PWA acknowledges it (Codex R1). */
     private val launchNav = LaunchNavigation(object : LaunchNavigation.Host {
         override fun evaluate(script: String, onResult: (String?) -> Unit) {
@@ -207,6 +209,8 @@ class MainActivity : AppCompatActivity() {
             "MainActivity",
             "ACTIVITY_CREATE: restored=${savedInstanceState != null} kind=$createKind seq=$instanceSeq taskId=$taskId pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
+        // b515 CANDIDATE-ONLY: bundled, hash-verified PWA served on the production origin. Compile-time false in debug/release.
+        if (BuildConfig.PWA_CANDIDATE) setUpCandidatePwa(savedInstanceState != null)
         // Request notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -248,6 +252,12 @@ class MainActivity : AppCompatActivity() {
                 } else false
             }
         }
+        if (BuildConfig.PWA_CANDIDATE) {   // b515 CANDIDATE-ONLY: the candidate visibly identifies itself
+            toolbar.title = "Market Radar CANDIDATE b${BuildConfig.VERSION_CODE}"
+            toolbar.subtitle = "native ${BuildConfig.SOURCE_HEAD.take(8)} · pwa ${BuildConfig.PWA_SOURCE_HEAD.take(8)}" +
+                if (candidatePwa?.verified == true) "" else " · BUNDLE ERROR"
+            toolbar.setSubtitleTextColor(PURPLE)
+        }
         appBarLayout.addView(toolbar)
         container.addView(appBarLayout)
 
@@ -274,6 +284,11 @@ class MainActivity : AppCompatActivity() {
                     view: WebView?, request: WebResourceRequest?
                 ) = false
 
+                // b515 CANDIDATE-ONLY hook: candidatePwa is null outside the candidate build type, so debug/release
+                // always take super (null = normal network loading), exactly as before this override existed.
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
+                    candidatePwa?.intercept(request, instanceSeq, "$createKind") ?: super.shouldInterceptRequest(view, request)
+
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     errorView.visibility = View.GONE
@@ -298,7 +313,9 @@ class MainActivity : AppCompatActivity() {
                         "(function() { var s = document.querySelector('script[src*=\"app.js\"]'); return s ? s.getAttribute('src') : ''; })()"
                     ) { result ->
                         val version = result.replace("\"", "").trim()
-                        if (version.isNotEmpty()) checkVersionUpdate(version)
+                        // b515 CANDIDATE-ONLY: the candidate never records or announces a web "update"; it logs identity instead.
+                        if (BuildConfig.PWA_CANDIDATE) logCandidatePage(view, url, version)
+                        else if (version.isNotEmpty()) checkVersionUpdate(version)
                     }
                 }
 
@@ -518,7 +535,8 @@ class MainActivity : AppCompatActivity() {
             setColorSchemeColors(PURPLE)
             setOnRefreshListener {
                 isManualRefresh = true
-                Toast.makeText(this@MainActivity, "Checking for updates...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity,
+                    if (BuildConfig.PWA_CANDIDATE) "Candidate: reloading bundled PWA" else "Checking for updates...", Toast.LENGTH_SHORT).show()
                 webView.reload()
             }
             addView(webView)
@@ -631,6 +649,43 @@ class MainActivity : AppCompatActivity() {
         } else if (isManualRefresh) {
             Toast.makeText(this, "✓ Already up to date", Toast.LENGTH_SHORT).show()
         }
+        isManualRefresh = false
+    }
+
+    /**
+     * b515 CANDIDATE-ONLY: process-wide verification of the bundled bytes (once per process = cold boot), identity logged
+     * for EVERY Activity instance (cold boot and restored/re-created state). Also routes service-worker fetches through
+     * the same interceptor so a lingering worker cannot fetch live runtime bytes. Clears nothing.
+     */
+    private fun setUpCandidatePwa(restored: Boolean) {
+        val server = CandidatePwaServer.obtain(this)
+        candidatePwa = server
+        val seq = instanceSeq
+        val kind = "$createKind"
+        server.identityLines(seq, kind, restored).forEach { LogBuffer.add(if (server.verified) 'I' else 'E', "MainActivity", it) }
+        runCatching {
+            ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {
+                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+                    server.intercept(request, seq, kind, "service_worker")
+            })
+        }.onFailure { LogBuffer.add('W', "MainActivity", "PWA_CANDIDATE_SW_CLIENT: unavailable ${it.javaClass.simpleName} seq=$seq") }
+        if (!server.verified) Toast.makeText(this, "CANDIDATE bundle verification FAILED: see log", Toast.LENGTH_LONG).show()
+    }
+
+    /** b515 CANDIDATE-ONLY: what the finished page actually runs (script src, PWA identity, SW control). Log only; no prefs written. */
+    private fun logCandidatePage(view: WebView?, url: String?, appJsSrc: String) {
+        val seq = instanceSeq
+        view?.evaluateJavascript(
+            "(function(){try{var id=(typeof M0_PWA_IDENTITY!=='undefined')?JSON.stringify(M0_PWA_IDENTITY):'none';" +
+                "var sw=(navigator.serviceWorker&&navigator.serviceWorker.controller)?'controlled':'none';return id+'|'+sw;}catch(e){return 'err|'+e;}})()"
+        ) { r ->
+            val v = r.orEmpty().trim('"').replace("\\\"", "\"")
+            val sw = v.substringAfterLast('|', "unknown")
+            LogBuffer.add(if (sw == "none") 'I' else 'E', "MainActivity",
+                "PWA_CANDIDATE_PAGE: url=$url appJsSrc=$appJsSrc identity=${v.substringBeforeLast('|')} swController=$sw " +
+                    "pwa=${BuildConfig.PWA_SOURCE_HEAD} seq=$seq kind=$createKind")
+        }
+        if (isManualRefresh) Toast.makeText(this, "Candidate: bundled PWA reloaded (update check disabled)", Toast.LENGTH_SHORT).show()
         isManualRefresh = false
     }
 
@@ -910,7 +965,9 @@ class MainActivity : AppCompatActivity() {
     private fun showVersionDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Market Radar")
-            .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
+            .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)" +
+                if (BuildConfig.PWA_CANDIDATE) "\n\nCANDIDATE build (bundled PWA, not a release)\nnative ${BuildConfig.SOURCE_HEAD}\n" +
+                    "pwa ${BuildConfig.PWA_SOURCE_HEAD}\nbundle ${if (candidatePwa?.verified == true) "verified" else "FAILED"}" else "")
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }
@@ -919,6 +976,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkForUpdates(isManual: Boolean) {
+        if (BuildConfig.PWA_CANDIDATE) {   // b515 CANDIDATE-ONLY: never offer/apply the normal release update during testing
+            LogBuffer.add('I', "MainActivity", "PWA_CANDIDATE_UPDATE_CHECK: suppressed manual=$isManual seq=$instanceSeq")
+            if (isManual) Toast.makeText(this, "Candidate build: update check disabled during testing", Toast.LENGTH_SHORT).show()
+            return
+        }
         val request = Request.Builder().url(UPDATE_URL).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {

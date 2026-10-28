@@ -1,0 +1,38 @@
+{
+  "candidate_only": true,
+  "document_base": "https://vivekashokan007-cloud.github.io/MarketVivi/",
+  "files": {
+    "api.js": {
+      "bytes": 3632,
+      "sha256": "6d5a4318a21d2cd2d185fc962768616c19e70dcb0733b5286797ed645594ca4e"
+    },
+    "app.js": {
+      "bytes": 593888,
+      "sha256": "1241d33ad57280ecd6bb994fd4c9e332a7bacbfa9e4a898b18c5ee511e9286f0"
+    },
+    "index.html": {
+      "bytes": 14414,
+      "sha256": "f96c3c852323c87f8f6c10f81b028de9a587d6b857b4b31e7418b70e2d1e8c80"
+    },
+    "log-viewer.js": {
+      "bytes": 26037,
+      "sha256": "504f8d5b08a6f2812b22fe0859bd89c92c683ee802e59e3d430677d406632357"
+    },
+    "manifest.json": {
+      "bytes": 636,
+      "sha256": "2fd9a0ebc6a815414733cad00cecb49b2edc866f2aa8a166b91780ab24f241bd"
+    },
+    "style.css": {
+      "bytes": 34199,
+      "sha256": "6c42d09cd54db80b7a5f4c9b54832289a85d0509ffffdbed3df4f920cd75d372"
+    }
+  },
+  "marketvivi_sha": "6cb5ad51376314b9dbff0cb1df3e0e08aff75df3",
+  "pwa_identity": {
+    "app_js_v": 1379,
+    "build": 515,
+    "index_app_js_v": 1379,
+    "version": "2.6.84"
+  },
+  "schema": "marketradar.pwa_candidate.v1"
+}
