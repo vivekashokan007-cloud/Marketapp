@@ -1,0 +1,13 @@
+case,infer,dep,n_eval,rate
+P2_single_typeI_at_margin,mbb5,base,100,0.07733333333333334
+P2_single_typeI_at_margin,mbb5,base,220,0.056
+P2_single_typeI_at_margin,mbb5,base,300,0.04733333333333333
+P2_single_typeI_at_margin,mbb5,high,100,0.08733333333333333
+P2_single_typeI_at_margin,mbb5,high,220,0.07933333333333334
+P2_single_typeI_at_margin,mbb5,high,300,0.07466666666666667
+P2_single_typeI_at_margin,mbb10,base,100,0.07533333333333334
+P2_single_typeI_at_margin,mbb10,base,220,0.08266666666666667
+P2_single_typeI_at_margin,mbb10,base,300,0.06466666666666666
+P2_single_typeI_at_margin,mbb10,high,100,0.08866666666666667
+P2_single_typeI_at_margin,mbb10,high,220,0.06933333333333333
+P2_single_typeI_at_margin,mbb10,high,300,0.07933333333333334

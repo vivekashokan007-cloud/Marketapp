@@ -4,3 +4,7 @@ tools/research_m0_freeze/test_freeze_verifier.py -text
 tools/research_m0_export/Stage2B9Counterexamples.py -text
 app/src/test/java/com/marketradar/app/Stage2CapacityCounterexamples.kt -text
 app/src/test/java/com/marketradar/app/Stage2ExportMemoryProbe.kt -text
+# Direction research prep (2026-10-29): attributed Claude reference inputs and hashed synthetic fixtures, exact bytes
+tools/direction_research/reference_claude_20261029/* -text
+tools/direction_research/fixtures/* -text
+tools/direction_research/protocol/* -text

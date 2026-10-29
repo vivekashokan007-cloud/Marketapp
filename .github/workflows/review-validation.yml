@@ -108,6 +108,11 @@ jobs:
           PYTHONPATH=app/src/main/python python3 -m unittest discover \
             -s app/src/main/python/tests -p 'test_*.py'
 
+      - name: Direction research prep (stdlib DRAFT tooling, synthetic counterexamples; no data access)
+        run: |
+          python3 -m unittest discover -s tools/direction_research/tests -p 'test_*.py' -v
+          python3 tools/direction_research/make_fixtures.py --check
+
       - name: Brain parity determinism (C5, repeated)
         run: |
           for i in 1 2 3; do
