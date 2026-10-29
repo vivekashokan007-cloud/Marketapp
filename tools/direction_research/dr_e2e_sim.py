@@ -21,6 +21,8 @@ sys.path.insert(0, HERE)
 import dr_core as C  # noqa: E402
 import dr_synth as S  # noqa: E402
 
+E2E_IDG = C.identity_digest(S.identity())
+
 
 def simulate_rep(seed, n_eval, skill, momentum=0.0, a=0.27, p_untimed=0.03, p_stale=0.02, p_obs_missing=0.03,
                  gap_start=0.02, gap_stay=0.8, warm=25, max_sched=900, chunk=60):
@@ -83,7 +85,11 @@ def simulate_rep(seed, n_eval, skill, momentum=0.0, a=0.27, p_untimed=0.03, p_st
                                       bnf=round(day['BNF'][sl] * math.exp(rng.gauss(0, 0.0005)), 2)))
         n_done_sched = si - warm + 1
         if n_done_sched % chunk == 0 or si == len(sessions) - 1:
-            study = C.Study(sessions[:si + 1], start=sessions[warm])
+            # explicit deployment manifest (R3): one synthetic stream scheduled from the first study session,
+            # established before it; coverage never derived from observed forecast success
+            study = C.Study(sessions[:si + 1], start=sessions[warm], manifest=[{
+                'source_kind': 'ENVELOPE', 'device_key': 'dev1', 'from_session': sessions[warm], 'to_session': None,
+                'identity_digest': E2E_IDG, 'established_at': S.at(sessions[warm - 1], '16:00:00')}])
             rows = study.audit(fcs, obs)
             tbl = C.session_table(rows)
             nf = [t for t in tbl if t['index'] == 'NF' and t['target'] == 'T1' and t['evaluable']]

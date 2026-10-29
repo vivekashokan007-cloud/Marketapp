@@ -111,8 +111,8 @@ class PerIndexDedupe(C.Study):
 class MeanSignBaseline(C.Study):
     """'Majority' baseline implemented as the sign of the mean return (B-DRIFT in v1)."""
 
-    def baselines(self, outcomes, ix, s, slot, target, s_dec):
-        b, maj, trend = super().baselines(outcomes, ix, s, slot, target, s_dec)
+    def baselines(self, outcomes, ix, s, slot, target, s_dec, input_status="INPUT_OK"):
+        b, maj, trend = super().baselines(outcomes, ix, s, slot, target, s_dec, input_status)
         mean = self.bmean(outcomes, ix, s, slot, target)
         return b, (mean if maj is not None else None), trend
 
@@ -120,14 +120,14 @@ class MeanSignBaseline(C.Study):
 class NoCutoffBaseline(C.Study):
     """Majority history ignores resolution time (T2 would use session s-1, resolved after the slot)."""
 
-    def baselines(self, outcomes, ix, s, slot, target, s_dec):
+    def baselines(self, outcomes, ix, s, slot, target, s_dec, input_status="INPUT_OK"):
         saved = self.cutoff
         self.cutoff = lambda *_a: float('inf')
         try:
-            b, maj, _t = super().baselines(outcomes, ix, s, slot, target, s_dec)
+            b, maj, _t = super().baselines(outcomes, ix, s, slot, target, s_dec, input_status)
         finally:
             self.cutoff = saved
-        _b2, _m2, trend = super().baselines(outcomes, ix, s, slot, target, s_dec)
+        _b2, _m2, trend = super().baselines(outcomes, ix, s, slot, target, s_dec, input_status)
         return ('B_OK' if maj is not None and trend is not None else b), maj, trend
 
 

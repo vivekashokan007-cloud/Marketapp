@@ -276,7 +276,7 @@ class Counterexamples(unittest.TestCase):
     def test_identical_paired_denominators(self):
         rows, _, _ = run('trend_gap')
         r = row(rows, '12:30')
-        self.assertEqual(r['axes']['B'], 'B_TREND_UNAVAILABLE')
+        self.assertEqual(r['axes']['B'], 'B_TREND_INPUT_MISSING')
         self.assertFalse(r['evaluable_slot'])
         tbl = [t for t in C.session_table(rows) if t['index'] == 'NF'][0]
         self.assertEqual(tbl['n_slots'], 5)

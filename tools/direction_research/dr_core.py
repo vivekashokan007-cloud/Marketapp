@@ -44,6 +44,16 @@ DEFAULTS = {
     'maj_window': 20,
     'maj_max_lookback_sessions': 60,
     'm_min': 2,
+    # R1 (Codex review 2026-10-29): bounded clock skew. A feed timestamp may exceed its own fetch-completion
+    # time by at most the observation's declared clock uncertainty (feed - u <= fetch); anything later is
+    # demonstrably future-dated and rejected. Declared uncertainty above this bound is not trusted.
+    'max_clock_uncertainty_s': 5.0,
+    # None = any declared (non-empty, non-UNKNOWN) clock/source id; else an explicit allow-list.
+    'trusted_clock_ids': None,
+    'trusted_source_ids': None,
+    # R2: an input spot belongs to the watermark poll when its fetch completed at the poll time (within this
+    # tolerance plus the declared clock uncertainty); a poll_id on the input spot, when present, must match.
+    'input_poll_tolerance_s': 0.0,
     'regimes': (('R1', None, '2026-12-07'), ('R2', '2026-12-07', '2027-02-08'), ('R2b', '2027-02-08', None)),
 }
 
@@ -163,6 +173,7 @@ def _norm_spot_fields(o, field):
         'clock_id': o.get('clock_id'),
         'clock_u': float(o.get('clock_uncertainty_s')) if _nonneg(o.get('clock_uncertainty_s')) else None,
         'source_id': o.get('source_id'),
+        'poll_id': o.get('poll_id'),
     }
 
 
@@ -278,6 +289,44 @@ def normalize_forecast(rec):
     }
 
 
+def _declared(v):
+    return isinstance(v, str) and v != '' and v != 'UNKNOWN'
+
+
+def normalize_manifest(manifest):
+    """Explicit expected-deployment manifest (R3). Independent of observed forecast success.
+
+    Each entry: {source_kind, device_key, from_session, to_session (inclusive, or None = open),
+    identity_digest (64-hex, or None = deployment identity explicitly unknown), established_at (ISO with
+    offset: when this deployment evidence became known), slots (optional subset of scheduled slots)}.
+    """
+    if manifest is None:
+        return None
+    if not isinstance(manifest, list):
+        raise InputRejected('manifest:not_list')
+    out = []
+    for e in manifest:
+        if not isinstance(e, dict):
+            raise InputRejected('manifest:entry')
+        if e.get('source_kind') not in SOURCE_KINDS or not _declared(e.get('device_key')):
+            raise InputRejected('manifest:stream')
+        for f in ('from_session',):
+            date.fromisoformat(e[f])
+        if e.get('to_session') is not None:
+            date.fromisoformat(e['to_session'])
+        idg = e.get('identity_digest')
+        if idg is not None and not (isinstance(idg, str) and len(idg) == 64
+                                    and all(c in '0123456789abcdef' for c in idg)):
+            raise InputRejected('manifest:identity_digest')
+        est = ts(e.get('established_at'), 'manifest.established_at')
+        if est is None:
+            raise InputRejected('manifest:established_at')
+        out.append({'source_kind': e['source_kind'], 'device_key': e['device_key'], 'from': e['from_session'],
+                    'to': e.get('to_session'), 'identity_digest': idg, 'established': est,
+                    'slots': tuple(e['slots']) if e.get('slots') else None})
+    return out
+
+
 # ----------------------------------------------------------------------------------------------
 # cohort / regime / feasibility
 
@@ -319,7 +368,8 @@ class Study(object):
     ``as_of``: epoch seconds; data with availability/fetch time after it is invisible (no retroactive change).
     """
 
-    def __init__(self, sessions, special=(), params=None, permitted_cohorts=None, targets=('T1',), start=None):
+    def __init__(self, sessions, special=(), params=None, permitted_cohorts=None, targets=('T1',), start=None,
+                 manifest=None):
         self.p = dict(DEFAULTS)
         if params:
             self.p.update(params)
@@ -332,6 +382,8 @@ class Study(object):
         self.targets = tuple(targets)
         self.start = start or (self.sessions[0] if self.sessions else None)   # earlier sessions: market history only
         self.check_invariant = True
+        self.manifest = normalize_manifest(manifest)
+        self.unmanifested_streams = []
 
     # --- times
     def slot_t(self, s, slot):
@@ -359,11 +411,61 @@ class Study(object):
             return prefix + '_INVALID', o
         if o['feed'] is None:
             return prefix + '_UNTIMED', o
+        if not self._clock_known(o):
+            return prefix + '_CLOCK_UNKNOWN', o
+        if o['clock_u'] > self.p['max_clock_uncertainty_s']:
+            return prefix + '_CLOCK_UNCERTAIN', o
+        if o['feed'] - o['clock_u'] > o['fetch_completed'] or o['feed'] - o['clock_u'] > as_of:
+            return prefix + '_FUTURE_FEED', o            # feed demonstrably later than its own receipt
         if o['feed'] < lo or o['fetch_completed'] - o['feed'] > self.p['max_quote_age_s']:
             return prefix + '_STALE', o
         if o['feed'] - o['clock_u'] < lo:
             return prefix + '_CLOCK_UNCERTAIN', o
         return prefix + '_OK', o
+
+    def _clock_known(self, o):
+        tc, tsrc = self.p['trusted_clock_ids'], self.p['trusted_source_ids']
+        if not _declared(o.get('clock_id')) or not _declared(o.get('source_id')):
+            return False
+        if tc is not None and o['clock_id'] not in tc:
+            return False
+        if tsrc is not None and o['source_id'] not in tsrc:
+            return False
+        return True
+
+    def input_spot_status(self, f, ix, s, slot):
+        """R2: validate the decision price S_dec for B-TREND. Returns (status, price_or_None).
+
+        S_dec must be the index price fetched in the forecast's own watermark poll, known by the forecast's
+        availability time, the baseline information cutoff C and ``as_of``, with valid feed/fetch chronology,
+        trusted clock and bounded age. Never repaired or substituted."""
+        if f is None:
+            return 'NO_FORECAST', None
+        sp = f['input_spots'].get(ix)
+        if sp is None:
+            return 'INPUT_MISSING', None
+        if not sp['price_valid']:
+            return 'INPUT_INVALID_PRICE', None
+        if sp['fetch_completed'] is None or sp['feed'] is None:
+            return 'INPUT_UNTIMED', None
+        if not self._clock_known(sp) or sp['clock_u'] is None or sp['clock_u'] > self.p['max_clock_uncertainty_s']:
+            return 'INPUT_CLOCK_UNKNOWN', None
+        wm, wid = f['watermark_poll_ts'], f['watermark_poll_id']
+        if wm is None:
+            return 'INPUT_POLL_UNLINKED', None
+        if sp.get('poll_id') is not None and sp['poll_id'] != wid:
+            return 'INPUT_POLL_UNLINKED', None
+        if abs(sp['fetch_completed'] - wm) > self.p['input_poll_tolerance_s'] + sp['clock_u']:
+            return 'INPUT_POLL_UNLINKED', None
+        c = self.cutoff(s, slot)
+        if f['A'] is None or sp['fetch_completed'] > f['A'] or sp['fetch_completed'] > c \
+                or sp['fetch_completed'] > self._as_of:
+            return 'INPUT_AFTER_CUTOFF', None
+        if sp['feed'] - sp['clock_u'] > sp['fetch_completed']:
+            return 'INPUT_FUTURE_FEED', None
+        if sp['fetch_completed'] - sp['feed'] > self.p['max_quote_age_s']:
+            return 'INPUT_STALE', None
+        return 'INPUT_OK', sp['price']
 
     def market_outcome(self, obs_by_ix, ix, s, slot, target, as_of):
         """Market-only outcome for (index, session, slot, target): independent of any forecast."""
@@ -389,6 +491,14 @@ class Study(object):
         """Group by scheduled stream slot; resolve duplicates using ONLY records available by C."""
         groups = {}
         for f in forecasts:
+            # R3: visibility is restricted to ``as_of`` BEFORE any stream/identity/duplicate decision. A record
+            # with unknown availability time cannot be shown to have been known by a finite cutoff, so it is
+            # visible only to an unbounded (as_of = +inf) audit.
+            if f['A'] is None:
+                if as_of != float('inf'):
+                    continue
+            elif f['A'] > as_of:
+                continue
             groups.setdefault((f['source_kind'], f['device_key'], f['session'], f['slot']), []).append(f)
         out = {}
         for key, recs in groups.items():
@@ -413,9 +523,7 @@ class Study(object):
                     out[key] = (None, 'DUPLICATE_CONFLICT', None, diag)
             else:
                 # No record available by C: report why (never promote a late record).
-                visible = [r for r in recs if r['A'] is None or r['A'] <= as_of]
-                if not visible:
-                    continue
+                visible = recs                       # already restricted to as_of above
                 late_known = [r for r in visible if r['A'] is not None]
                 reason = 'LATE' if late_known else 'UNVERIFIED_AVAILABILITY'
                 out[key] = (min(visible, key=lambda r: r['record_id']), 'UNIQUE', reason, diag)
@@ -439,7 +547,7 @@ class Study(object):
         return f['f_status']
 
     # --- baselines (causal: only outcomes resolved before C)
-    def baselines(self, outcomes, ix, s, slot, target, s_dec):
+    def baselines(self, outcomes, ix, s, slot, target, s_dec, input_status='INPUT_OK'):
         c = self.cutoff(s, slot)
         W, L = self.p['maj_window'], self.p['maj_max_lookback_sessions']
         i = self.pos[s]
@@ -463,7 +571,7 @@ class Study(object):
         if k >= 0:
             t_end = ist_epoch(self.sessions[k], self.p['end_time'])
             st, o = self._select(self._obs, ix, t_end, t_end + self.p['end_window_s'], 'S1', self._as_of)
-            if st == 'S1_OK' and o['fetch_completed'] < c:
+            if st == 'S1_OK' and o['fetch_completed'] < c and o['feed'] < c:
                 prev = o['price']
         trend = None
         if prev is not None and s_dec is not None:
@@ -471,6 +579,9 @@ class Study(object):
         b = 'B_OK'
         if maj is None:
             b = 'B_MAJ_WARMUP'
+        elif input_status not in ('INPUT_OK', 'NO_FORECAST'):
+            b = 'B_TREND_' + input_status           # unverified decision-price provenance: explicit exclusion
+            trend = None
         elif trend is None:
             b = 'B_TREND_UNAVAILABLE'
         return b, maj, trend
@@ -507,14 +618,28 @@ class Study(object):
                     for tg in set(self.targets) | {'T1'}:
                         outcomes[(ix, s, slot, tg)] = self.market_outcome(obs_by_ix, ix, s, slot, tg, as_of)
         fslots = self._forecast_slots(forecasts, as_of)
-        streams = sorted({(k[0], k[1]) for k in fslots})
+        observed_streams = sorted({(k[0], k[1]) for k in fslots})
         rows = []
+        if self.manifest is not None:
+            # R3: expected streams/slots come ONLY from the explicit manifest (visible by as_of), never from
+            # observed forecast success. Records of streams absent from the manifest are reported, not scored.
+            mvis = [e for e in self.manifest if e['established'] <= as_of]
+            streams = sorted({(e['source_kind'], e['device_key']) for e in mvis})
+            self.unmanifested_streams = [st for st in observed_streams if st not in streams]
+        else:
+            mvis = None
+            streams = observed_streams
+            self.unmanifested_streams = []
         for sk, dev in streams:
-            # identity of a slot with no usable record = the stream's most recent earlier identity (else the
-            # next one); flagged so a missing slot is counted in the deployed cohort's coverage, never invented
-            known = sorted((k[2], k[3], v[0]['identity_digest']) for k, v in fslots.items()
-                           if k[0] == sk and k[1] == dev and v[0] is not None and v[0]['identity_digest'])
-            self._stream_ids = known
+            first_seen = None
+            if mvis is None:
+                # No manifest: a stream exists only from its first VISIBLE record; earlier slots are not
+                # attributed to it (deployment unknown), so later records can never create earlier rows.
+                seen = sorted((k[2], k[3]) for k in fslots if k[0] == sk and k[1] == dev)
+                first_seen = seen[0] if seen else None
+            # identity evidence: only visible records strictly EARLIER than the slot (never later ones)
+            self._stream_ids = sorted((k[2], k[3], v[0]['identity_digest']) for k, v in fslots.items()
+                                      if k[0] == sk and k[1] == dev and v[0] is not None and v[0]['identity_digest'])
             for s in self.sessions:
                 if s < self.start:
                     continue
@@ -522,44 +647,75 @@ class Study(object):
                     c = self.cutoff(s, slot)
                     if c > as_of:
                         continue
+                    if mvis is None:
+                        if first_seen is None or (s, slot) < first_seen:
+                            continue
+                        dep = None
+                    else:
+                        dep = self._manifest_entry(mvis, sk, dev, s, slot)
+                        if dep is None:
+                            continue                # not scheduled for this stream
                     ent = fslots.get((sk, dev, s, slot))
                     f, d_axis, forced, diag = ent if ent else (None, 'UNIQUE', 'MISSING', {})
                     for ix in INDICES:          # one combined forecast expanded AFTER duplicate resolution
                         for tg in self.targets:
                             rows.append(self._row(sk, dev, s, slot, slot_i, ix, tg, f, d_axis, forced, diag,
-                                                  outcomes))
+                                                  outcomes, dep))
         rows.sort(key=lambda r: (r['source_kind'], r['device_key'], r['index'], r['target'],
                                  r['session_position'], r['slot_ordinal']))
         return rows
 
-    def _row(self, sk, dev, s, slot, slot_i, ix, tg, f, d_axis, forced, diag, outcomes):
+    def _manifest_entry(self, mvis, sk, dev, s, slot):
+        """Latest-established visible manifest entry scheduling (sk, dev) at (s, slot), or None."""
+        hits = [e for e in mvis if e['source_kind'] == sk and e['device_key'] == dev and e['from'] <= s
+                and (e['to'] is None or s <= e['to']) and (e['slots'] is None or slot in e['slots'])]
+        if not hits:
+            return None
+        return max(hits, key=lambda e: (e['from'], e['established']))
+
+    def _row(self, sk, dev, s, slot, slot_i, ix, tg, f, d_axis, forced, diag, outcomes, dep=None):
         c = self.cutoff(s, slot)
         regime = regime_of(s, self.p['regimes'])
         mo = outcomes[(ix, s, slot, tg)]
         idg = f['identity_digest'] if f else None
-        carried = False
-        if f is None:
+        x = None
+        if dep is not None:
+            # manifest-scheduled slot: identity evidence must predate the slot's cutoff (no retroactive use)
+            dep_known = dep['established'] <= c
+            m_idg = dep['identity_digest'] if dep_known else None
+            basis = 'MANIFEST' if dep_known and m_idg else 'DEPLOYMENT_IDENTITY_UNKNOWN'
+            if f is None:
+                idg = m_idg
+            elif m_idg is not None and idg is not None and idg != m_idg:
+                x = 'IDENTITY_MANIFEST_CONFLICT'
+            diag = dict(diag, identity_basis=basis if f is None else 'RECORD')
+            if f is None and idg is None:
+                x = 'DEPLOYMENT_IDENTITY_UNKNOWN'
+        elif f is None:
+            # no manifest: carry only an identity observed in a visible record EARLIER than this slot
             prior = [k[2] for k in self._stream_ids if (k[0], k[1]) < (s, slot)]
-            later = [k[2] for k in self._stream_ids if (k[0], k[1]) > (s, slot)]
-            idg = prior[-1] if prior else (later[0] if later else None)
-            carried = idg is not None
-            diag = dict(diag, identity_carried_forward=carried)
-        x = 'IN_COHORT'
-        if f is not None and idg is None:
+            idg = prior[-1] if prior else None
+            diag = dict(diag, identity_carried_forward=idg is not None,
+                        identity_basis='PRIOR_OBSERVED_RECORD' if idg else 'DEPLOYMENT_IDENTITY_UNKNOWN')
+            if idg is None:
+                x = 'DEPLOYMENT_IDENTITY_UNKNOWN'
+        if x is not None:
+            pass
+        elif f is not None and idg is None:
             x = 'IDENTITY_UNRESOLVED'
         elif s in self.special:
             x = 'SPAN_SPECIAL'
         elif mo.get('end_session') and regime_of(mo['end_session'], self.p['regimes']) != regime:
             x = 'SPAN_REGIME'
+        else:
+            x = 'IN_COHORT'
         cohort = (sk, idg, regime)
         if x == 'IN_COHORT' and self.permitted is not None and list(cohort) not in [list(p) for p in self.permitted]:
             x = 'OUT_OF_COHORT'
         f_axis = 'MISSING' if f is None and d_axis != 'DUPLICATE_CONFLICT' else (
             self._f_axis(f, forced, s, slot) if f is not None else 'MISSING')
-        s_dec = None
-        if f is not None and ix in f['input_spots'] and f['input_spots'][ix]['price_valid']:
-            s_dec = f['input_spots'][ix]['price']
-        b_axis, maj, trend = self.baselines(outcomes, ix, s, slot, tg, s_dec)
+        in_status, s_dec = self.input_spot_status(f, ix, s, slot)
+        b_axis, maj, trend = self.baselines(outcomes, ix, s, slot, tg, s_dec, in_status)
         axes = {'X': x, 'D': d_axis, 'F': f_axis, 'P0': mo['P0'], 'B': b_axis, 'P1': mo['P1']}
         primary = None
         for a in AXIS_ORDER:
@@ -599,7 +755,7 @@ class Study(object):
             'evaluable_slot': evaluable_slot, 'invariant_ok': inv,
             'rule_call': rule, 'maj_call': maj, 'trend_call': trend,
             'bmean_call_descriptive': self.bmean(outcomes, ix, s, slot, tg),
-            'hits': hits, 'log_return': mo['r'], 'diagnostics': diag,
+            'hits': hits, 'log_return': mo['r'], 'diagnostics': diag, 'input_spot_status': in_status,
         }
 
 
