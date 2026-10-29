@@ -1,0 +1,115 @@
+{
+  "document": "market_radar_direction_protocol_draft",
+  "draft_version": "dr_protocol_draft_v0_20261029",
+  "status": "DRAFT_NOT_FROZEN",
+  "confirmation_enabled": false,
+  "pass_output_enabled": false,
+  "basis": {
+    "codex_task": "CODEX_REVIEW_AND_GROK_DIRECTION_TASK_20261029 section 4",
+    "codex_addendum": "CODEX_V2_REVIEW_ADDENDUM_20261029",
+    "claude_draft": "CLAUDE_PREREG_V2_20261029",
+    "handoff_sha256": "646d7ff905a9876f3b1ca4adf50e961f5f0a8f7b5ff121b01ff83da52b94b552",
+    "note": "Machine-readable working draft for synthetic preparation only. Not approved. Every field marked UNRESOLVED needs a Claude/Codex/Vivek decision before any freeze."
+  },
+  "freeze_requirements": {
+    "required_freeze_record_fields": ["protocol_digest_sha256", "decided_at", "decided_by", "decisions", "source_identities", "permitted_cohorts", "first_confirmatory_session"],
+    "decided_at_must_precede_first_confirmatory_session": true,
+    "no_unresolved_fields_allowed": true,
+    "approval_id": null,
+    "frozen_at": null,
+    "note": "No approval ID exists. None is invented. Any scorer must refuse confirmatory scoring and PASS output until a freeze record matching this digest's successor is supplied."
+  },
+  "clocks": {
+    "zone": "Asia/Kolkata",
+    "timestamps_must_carry_offset": true,
+    "slot_times_ist": ["09:30", "10:30", "11:30", "12:30", "13:30", "14:30"],
+    "slot_panel_status": "PROPOSED",
+    "watermark_window_s": 90,
+    "forecast_cutoff_offset_s": 240,
+    "reference_window_s": 150,
+    "end_time_ist": "15:05:00",
+    "end_window_s": 90,
+    "invariant": "A <= C <= t(S0) < t(S1), every term with its clock id",
+    "max_quote_age_s": {"value": 60, "status": "UNRESOLVED"},
+    "clock_uncertainty_policy": {"value": "t_obs - u_obs >= C and A + u_A <= C when clocks differ", "status": "UNRESOLVED"},
+    "absent_feed_ts_policy": "S0_UNTIMED / S1_UNTIMED: excluded from confirmation, retained as exploratory diagnostics",
+    "earlier_price_fallback": "FORBIDDEN"
+  },
+  "availability_levels": {
+    "L0": {"evidence": "poll_ts/created_at on snapshots; client-settable", "admissible_for": "EXPLORATORY"},
+    "L1": {"evidence": "device-clock available_at in immutable on-device envelope", "admissible_for": "PROSPECTIVE_DEVICE_ATTESTED", "confirmatory": "UNRESOLVED (V-7)"},
+    "L2": {"evidence": "server-assigned receipt time bound to anchored content before C", "admissible_for": "CONFIRMATORY_ELIGIBLE", "currently_available": false, "blocked_by": "G-3: M0 research_m0 migration unapplied; no authenticated ingest path"}
+  },
+  "input_schema": {
+    "forecast_record": {
+      "schema": "dr_forecast_input_v0",
+      "required": ["schema", "source_kind", "record_id", "device_key", "artifact_identity", "mode", "session_date", "slot", "source_watermark", "availability", "forecast", "input_spots"],
+      "source_kind": ["SNAPSHOT", "ENVELOPE"],
+      "artifact_identity_fields": ["apk_sha256", "signing_cert_sha256", "version_code", "python_bundle_commit", "python_sources_sha256", "config_identity_sha256", "input_contract_versions", "execution_mode", "execution_environment"],
+      "input_contract_versions_fields": ["poll_schema", "chain_schema", "direction_semantics_version"],
+      "config_identity_definition": "sha256 of canonical JSON of STATIC configuration values and dependency/input-contract identities on the verdict path (executionMode, evExperimentMode, feature flags, constants). Changing market observations are NOT part of it; they live in input_provenance per forecast.",
+      "availability_fields": ["availability_level", "available_at", "available_clock_id", "available_clock_uncertainty_s", "server_received_at", "anchored_content_sha256"],
+      "forecast_fields": ["market_direction", "status"],
+      "market_direction_values": ["BULL", "BEAR", "NEUTRAL"],
+      "legacy_fields_ignored": ["direction", "confidence", "bull_score", "bear_score", "bias"],
+      "legacy_inference": "FORBIDDEN: market_direction is never inferred from legacy direction, confidence or rounded scores",
+      "input_spots": "per index NF and BNF separately: price, fetch_completed_at, feed_ts (nullable), clock_id, clock_uncertainty_s, source_id"
+    },
+    "spot_observation": {
+      "schema": "dr_spot_obs_v0",
+      "required": ["schema", "obs_id", "index", "price", "fetch_started_at", "fetch_completed_at", "feed_ts", "clock_id", "clock_uncertainty_s", "source_id"],
+      "price_rule": "finite and > 0"
+    }
+  },
+  "status_axes": {
+    "order": ["X", "D", "F", "P0", "B", "P1"],
+    "X": ["IN_COHORT", "OUT_OF_COHORT", "SPAN_REGIME", "SPAN_SPECIAL", "IDENTITY_UNRESOLVED"],
+    "D": ["UNIQUE", "DUPLICATE_IDENTICAL", "DUPLICATE_CONFLICT"],
+    "F": ["BULL", "BEAR", "NEUTRAL", "NO_OBS", "MISSING", "MALFORMED", "WATERMARK_AFTER_SLOT", "LATE", "UNVERIFIED_AVAILABILITY"],
+    "P0": ["S0_OK", "S0_MISSING", "S0_STALE", "S0_INVALID", "S0_UNTIMED", "S0_CLOCK_UNCERTAIN"],
+    "B": ["B_OK", "B_MAJ_WARMUP", "B_TREND_UNAVAILABLE"],
+    "P1": ["S1_OK", "S1_MISSING", "S1_STALE", "S1_INVALID", "S1_UNTIMED", "S1_CLOCK_UNCERTAIN"],
+    "O": ["RESOLVED", "TIE"],
+    "tie_bp": 1.0,
+    "tie_treatment": "scored 0 for rule and both baselines; not an exclusion",
+    "added_by_grok_prep": ["S0_CLOCK_UNCERTAIN", "S1_CLOCK_UNCERTAIN", "S1_UNTIMED", "SPAN_REGIME (generalises SPAN_R1_R2)"]
+  },
+  "duplicates": {
+    "key": ["source_kind", "artifact_identity_digest", "device_key", "session_date", "slot_ordinal", "index_scope"],
+    "index_scope": "NF+BNF (one combined forecast record, expanded to NF and BNF evaluation rows AFTER duplicate resolution)",
+    "identical": "collapse",
+    "conflicting": "exclude all; no earliest-wins"
+  },
+  "baselines": {
+    "B_MAJ": {"window_W": 20, "max_lookback_sessions": {"value": 60, "status": "UNRESOLVED"}, "tie_skip": true, "even_split": "most recent outcome sign in window", "eligibility": "outcome fully resolved (S1 fetch time) before C", "warmup_status": "B_MAJ_WARMUP", "note": "TIE skipping makes warm-up depend on |r| (not sign); eligibility is not fully outcome-independent"},
+    "B_TREND": {"definition": "sign(S_dec - S_prev); S_dec = watermark poll spot; S_prev = previous regular session S1", "equal": "B_MAJ call"},
+    "descriptive_only": ["B_MEAN (sign of 20-session mean return)", "CONST_BULL", "CONST_BEAR", "HALF"]
+  },
+  "targets": {"T1": "S0 -> same-session 15:05", "T2": "S0 -> next regular session 15:05", "T3": "DEFERRED", "primary": {"value": null, "status": "UNRESOLVED (V-2)"}},
+  "indices": {"report": ["NF", "BNF"], "combined_probe": "optional, never primary", "primary_structure": {"value": null, "status": "UNRESOLVED (V-1)"}},
+  "session_aggregation": {"m_min": {"value": 2, "status": "UNRESOLVED (V-5)"}, "weights": "equal over E_s", "paired_rows": "identical E_s for rule and both baselines", "warmup_consumes_N": false},
+  "cohorts": {
+    "regime_boundaries": {"R1_end_exclusive": "2026-12-07", "R2_start": "2026-12-07", "R2b_start": "2027-02-08"},
+    "default": "separate cohorts per (source_kind, artifact identity, regime); no automatic pooling",
+    "regime_policy": {"value": null, "status": "UNRESOLVED (V-3)"},
+    "claim_type": {"value": null, "status": "UNRESOLVED (V-6)"},
+    "interventions": "dated append-only intervention records; per-identity results retained",
+    "start_date": {"value": null, "status": "UNRESOLVED"},
+    "eligible_calendar": {"value": "authoritative NSE calendar for covered years only", "status": "UNRESOLVED", "covered_years_now": [2026]},
+    "H_max_scheduled_sessions": {"value": null, "status": "UNRESOLVED (V-4)"},
+    "N_min_evaluable_sessions": {"value": null, "status": "UNRESOLVED (V-4)"},
+    "coverage_floors": {"value": null, "status": "UNRESOLVED (V-5)"}
+  },
+  "inference": {
+    "method": {"value": "moving block bootstrap, b=5, joint index draw for both comparators, mean statistic, numpy quantile type 7", "status": "PROVISIONAL"},
+    "gap_handling": "evaluable sessions concatenated in order (modelling choice, NOT calendar-time equivalence); scheduled positions retained in audit",
+    "B_draws": 9999,
+    "rng": {"value": "numpy.random.default_rng(seed)", "seed": null, "status": "UNRESOLVED"},
+    "alpha_nominal": {"value": null, "status": "UNRESOLVED: 0.025 only provisionally calibrated within simulated families; see Grok OC report"},
+    "rule": {"value": null, "candidates": ["P1_cal", "P2", "FUT"], "withdrawn": ["P0"], "status": "UNRESOLVED (V-4)"},
+    "p_values": "not computed",
+    "design_effect": {"value": null, "status": "UNRESOLVED (V-4)"}
+  },
+  "monitoring": {"publishes": ["axis status counts", "evaluable session count N", "scheduled session count"], "never_publishes": ["returns", "hits", "signs", "differences", "bounds"], "single_look": "N == N_min or H_max"},
+  "authority": "report file only; no effect on ranking, gates, sizing, exits, advice, mode, notifications or overrides"
+}
