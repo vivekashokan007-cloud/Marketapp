@@ -126,17 +126,52 @@ class ExtensionMechanics(unittest.TestCase):
 
 
 class LotAuthority(unittest.TestCase):
-    def test_lot_authority_is_open_ended_and_fails_closed_without_table(self):
+    """Split (Codex 2026-10-29 B1): the embedded-fallback refusal, the REAL packaged table's 2027 behaviour
+    and the captured-lot conflict are separate claims. No lot behaviour is changed here."""
+
+    def test_lot_authority_window_is_open_ended(self):
         win = CLT.supported_project_data_window()
         self.assertIsNone(win.get("end"))          # current circulars carry no end date
         self.assertTrue(win.get("fail_closed_outside"))
+
+    def test_embedded_fallback_table_refuses_every_date(self):
+        """Missing-table refusal ONLY: the zero-rule embedded fallback answers no lot for ANY date.
+        (Formerly test_lot_authority_is_open_ended_and_fails_closed_without_table; it never tested 2027.)"""
         saved = dict(CLT._TABLE_CACHE) if isinstance(CLT._TABLE_CACHE, dict) else CLT._TABLE_CACHE
         try:
             CLT._TABLE_CACHE = dict(CLT._EMBEDDED_TABLE)
-            r = CLT.resolve_contract_lot("NIFTY", "2027-01-05", expiry="2027-01-05")
-            self.assertIsNone(r.get("lot_size"))
+            for session, expiry in (("2026-10-28", "2026-11-03"), ("2027-01-05", "2027-01-05")):
+                r = CLT.resolve_contract_lot("NIFTY", session, expiry=expiry)
+                self.assertIsNone(r.get("lot_size"), session)
         finally:
             CLT._TABLE_CACHE = saved
+
+    def _real(self, ix, session, expiry, captured=None):
+        return CLT.resolve_contract_lot(ix, session, number_of_lots=1, expiry=expiry, captured_contract_lot=captured)
+
+    def test_packaged_table_resolves_2027_under_open_ended_rules(self):
+        """Observation about the CURRENT resolver, not verification of future exchange contracts."""
+        cases = (("NIFTY", "2027-01-05", "2027-01-12", 65, "FAOP70616_NF_weekly_revised"),
+                 ("NIFTY", "2027-03-02", "2027-03-09", 65, "FAOP70616_NF_weekly_revised"),
+                 ("BANKNIFTY", "2027-01-05", "2027-01-26", 30, "FAOP70616_BNF_monthly_revised"))
+        for ix, session, expiry, lot, rule in cases:
+            r = self._real(ix, session, expiry)
+            self.assertTrue(r["resolved"], (ix, session))
+            self.assertTrue(r["authoritative"])
+            self.assertEqual(r["contract_lot_size"], lot)
+            self.assertEqual(r["matched_rule_id"], rule)
+            self.assertEqual(r["lot_table_version"], "contract_lot_table_v3_20260914")
+
+    def test_packaged_table_captured_lot_conflict_excludes_2027_row(self):
+        conflict = self._real("NIFTY", "2027-01-05", "2027-01-12", captured=75)
+        self.assertFalse(conflict["resolved"])
+        self.assertIsNone(conflict["contract_lot_size"])
+        self.assertTrue(conflict["exclude_authoritative_calc"])
+        agree = self._real("NIFTY", "2027-01-05", "2027-01-12", captured=65)
+        self.assertTrue(agree["resolved"])
+        self.assertEqual(agree["contract_lot_size"], 65)
+        absent = self._real("NIFTY", "2027-01-05", "2027-01-12", captured=None)
+        self.assertTrue(absent["resolved"])       # no captured lot -> the conflict guard cannot fire
 
 
 if __name__ == "__main__":
