@@ -731,6 +731,8 @@ class MainActivity : AppCompatActivity() {
                     // ML Methods (b105)
                     isMLModelReady: function() { return AndroidBridge.isMLModelReady(); },
                     getMLModelStatus: function() { return AndroidBridge.getMLModelStatus(); },
+                    dailyReviewRun: function(d, p, t) { return AndroidBridge.dailyReviewRun(String(d || ''), String(p || '[]'), String(t || '')); },
+                    dailyReviewLatest: function(d) { return AndroidBridge.dailyReviewLatest(String(d || '')); },
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { return AndroidBridge.triggerMLRetrain(); },
                     triggerDayEvaluation: function() { return AndroidBridge.triggerDayEvaluation(); },

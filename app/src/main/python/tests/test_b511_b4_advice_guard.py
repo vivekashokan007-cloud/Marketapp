@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import unittest
+import unittest.mock as _ia_mock
 from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -87,6 +88,10 @@ class NoLongSingleLeg(unittest.TestCase):
             self.assertTrue(top and top[0].get('entryEligible') is True, key)
 
 
+# Delivery A: this class asserts legacy_combined_v0 semantics, which now exist only under the reviewed
+# single-authority config rollback. Pinned explicitly; index_direction_v1 behaviour is covered in
+# test_index_authority_v1_delivery_a.py.
+@_ia_mock.patch('brain.ACTIVE_DIRECTION_AUTHORITY', 'legacy_combined_v0')
 class DirectionCannotAuthorize(unittest.TestCase):
     def test_direction_buy_premium_thesis_without_eligible_debit_is_not_final(self):
         hits = 0

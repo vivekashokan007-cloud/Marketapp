@@ -2734,6 +2734,13 @@ class MarketWatchService : Service() {
                 LogBuffer.add('W', TAG, "EV12_CTX_FAIL: ${e.message}"); false
             }
             if (!isRefresh) evRefreshCalibrationIfDue(evApplied, System.currentTimeMillis())
+            // Delivery A: local durable state for index_direction_v1 (scale at the open reference, bounded
+            // per-index decision history). Local files only; no network, no Supabase.
+            try {
+                IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis())
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "INDEX_AUTHORITY_CTX_FAIL: ${e.javaClass.simpleName}")
+            }
             brainAnalyzeStartedAtMs = System.currentTimeMillis()
             val result = PyTimeout.callWithTimeout(PY_POLL_TIMEOUT_KEY, PY_POLL_ANALYZE_TIMEOUT_MS) {
                 brain.callAttr("analyze",

@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import unittest
+import unittest.mock as _ia_mock
 from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -138,6 +139,10 @@ class AcceptanceProbe(unittest.TestCase):
         self.assertIsNone(brain._freeze_market_view(forged))
 
 
+# Delivery A: this class asserts legacy_combined_v0 semantics, which now exist only under the reviewed
+# single-authority config rollback. Pinned explicitly; index_direction_v1 behaviour is covered in
+# test_index_authority_v1_delivery_a.py.
+@_ia_mock.patch('brain.ACTIVE_DIRECTION_AUTHORITY', 'legacy_combined_v0')
 class AnalyzePaths(unittest.TestCase):
     def test_warmup_is_unavailable_not_neutral(self):
         out = json.loads(brain.analyze(json.dumps(POLLS[:2]), '[]', '{}', '[]', '[]', '{}',

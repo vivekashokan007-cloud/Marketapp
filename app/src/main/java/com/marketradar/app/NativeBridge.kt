@@ -1650,6 +1650,36 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    // Delivery A: local Daily review (per index). Local files only; no network; no Supabase.
+    @JavascriptInterface
+    fun dailyReviewRun(sessionDate: String, pollsJson: String, paperTradesJson: String): String {
+        return try {
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            val dir = context.filesDir
+            PyTimeout.callWithTimeout("bridge.daily_review", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("daily_review_run",
+                    IndexAuthorityContext.stateDir(dir).absolutePath,
+                    IndexAuthorityContext.reportDir(dir).absolutePath,
+                    sessionDate.take(10), pollsJson, paperTradesJson, null).toString()
+            } ?: "{\"status\":\"TIMEOUT\",\"written\":false}"
+        } catch (e: Exception) {
+            "{\"status\":\"REPORT_ERROR\",\"written\":false}"
+        }
+    }
+
+    @JavascriptInterface
+    fun dailyReviewLatest(sessionDate: String): String {
+        return try {
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            PyTimeout.callWithTimeout("bridge.daily_review_read", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("daily_review_read",
+                    IndexAuthorityContext.reportDir(context.filesDir).absolutePath, sessionDate.take(10)).toString()
+            } ?: "{\"status\":\"TIMEOUT\"}"
+        } catch (e: Exception) {
+            "{\"status\":\"STORE_UNAVAILABLE\"}"
+        }
+    }
+
     // Method 16: Trigger online update after trade closes
     @JavascriptInterface
     fun triggerMLOnlineUpdate(tradeJson: String) {

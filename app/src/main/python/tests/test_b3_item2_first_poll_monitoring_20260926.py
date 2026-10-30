@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import unittest
+import unittest.mock as _ia_mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -66,6 +67,10 @@ def _real(tid=900, **extra):
     return t
 
 
+# Delivery A: this class asserts legacy_combined_v0 semantics, which now exist only under the reviewed
+# single-authority config rollback. Pinned explicitly; index_direction_v1 behaviour is covered in
+# test_index_authority_v1_delivery_a.py.
+@_ia_mock.patch('brain.ACTIVE_DIRECTION_AUTHORITY', 'legacy_combined_v0')
 class TestFirstPollPaperMonitoring(unittest.TestCase):
     def test_paper_position_valued_and_verdicted_at_first_poll(self):
         r = _run(POLL1, [_trade_284()], _ctx({"284": _p1_mark(pnl=-1596.0)}))
@@ -153,6 +158,10 @@ class TestFirstPollPaperMonitoring(unittest.TestCase):
         self.assertNotIn("monitoring_mode", r["positions"]["284"])
 
 
+# Delivery A: this class asserts legacy_combined_v0 semantics, which now exist only under the reviewed
+# single-authority config rollback. Pinned explicitly; index_direction_v1 behaviour is covered in
+# test_index_authority_v1_delivery_a.py.
+@_ia_mock.patch('brain.ACTIVE_DIRECTION_AUTHORITY', 'legacy_combined_v0')
 class TestRealParityAtFirstPoll(unittest.TestCase):
     LEGACY_EARLY_KEYS = {
         "app_version", "brain_version", "verdict", "market", "positions", "candidates", "timing",

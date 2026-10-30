@@ -17186,6 +17186,7 @@ def _is_ev_rule_b_trade(t):
 
 
 X1_CONTEXT_KEYS = ('x1CaptureSource', 'x1StateDir', 'x1PollMs', 'x1QuoteFetchedMs')
+IA_CONTEXT_KEYS = ('indexAuthorityStateDir', 'pollReceiptMs')
 
 
 def _attach_paper_buying_research(result, ctx):
@@ -17244,6 +17245,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     _attach_paper_buying_research(result, ctx)
     daily_risk_state = _apply_daily_risk_state(ctx, closed_trades, open_trades)
     result['dailyRiskState'] = daily_risk_state
+    # Delivery A: the per-index authority is computed first (including warm-up polls, so the open-reference
+    # scale is observed at its own poll).  Single writer; consumers below only read it.
+    _ia_authority = None
+    if _index_authority_active():
+        try:
+            _ia_authority = compute_index_authority(polls, ctx)
+        except Exception as e:
+            result['index_authority_error'] = str(e)[:200]
     if len(polls) < 3:
         # Do not return an empty stub for low-history sessions. Emit an explicit
         # WAIT verdict so UI and logs can explain why strategy generation is empty.
@@ -17281,6 +17290,11 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
             )
         except Exception as e:
             result["position_monitoring_error"] = str(e)
+        if _ia_authority is not None:
+            try:
+                _ia_apply_cutover(result, ctx, polls, open_trades, _ia_authority)
+            except Exception as e:
+                result['index_authority_error'] = str(e)[:200]
         try:
             result["agent"] = build_explanation_audit_agent(result, ctx, open_trades)
         except Exception as e:
@@ -18399,6 +18413,14 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         'matched_by_index': ctx.get('_learned_branch_matches', {}),
     }
 
+    # Delivery A cutover: every decision-bearing output is re-derived from by_index before the
+    # explanation agent, alerts, fact pack and notifications read the result.
+    if _ia_authority is not None:
+        try:
+            _ia_apply_cutover(result, ctx, polls, open_trades, _ia_authority)
+        except Exception as e:
+            result['index_authority_error'] = str(e)[:200]
+
     # Phase A agent: deterministic explanation/audit JSON only. This must run
     # after candidates/watchlist/gaps/positions are populated.
     try:
@@ -18487,6 +18509,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         result['vixRegime'] = {'error': str(e)}
 
     result['verdict'] = _apply_market_view(result.get('verdict'), frozen_market_view)
+    if _ia_authority is not None and isinstance(result.get('verdict'), dict) \
+            and result['verdict'].get('policy_version') == _ia.POLICY_VERSION:
+        _ia_retire_combined_view(result['verdict'])
     out_str, _ = _safe_json(result)
     return out_str
 
@@ -18592,6 +18617,9 @@ def replay(inputs, calibration_override=None, expected_baseline=None,
         raise ValueError("replay: context_json is not valid JSON")
     # b510: replay may never advance the prospective X1 journal.
     for key in X1_CONTEXT_KEYS:
+        ctx_dict.pop(key, None)
+    # Delivery A: replay never advances the local authority store.
+    for key in IA_CONTEXT_KEYS:
         ctx_dict.pop(key, None)
     ctx_dict['_debug'] = True
     ctx_dict['_trace_source_override'] = source_tag
@@ -21718,7 +21746,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     b1b_nf = (b1b_historical_rv.get('indices') or {}).get('NF') or {}
 
     # Generate Recommendation ID
-    band = f"{(verdict.get('confidence', 0) // 10) * 10}"
+    band = f"{((verdict.get('confidence') or 0) // 10) * 10}"
     key = f"{verdict.get('action')}|{verdict.get('strategy')}|{top_cand.get('sellStrike') if top_cand else ''}|{verdict.get('direction')}|{band}"
     rec_id = hashlib.md5(key.encode()).hexdigest()[:8]
 
@@ -22094,6 +22122,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     # Keep existing keys intact; append under snapshot_* namespaces.
     snapshot_context = dict(ctx) if isinstance(ctx, dict) else {}
     for key in X1_CONTEXT_KEYS:      # b510: native-only keys (local path) never persisted
+        snapshot_context.pop(key, None)
+    for key in IA_CONTEXT_KEYS:      # Delivery A: native-only local path / receipt clock never persisted
         snapshot_context.pop(key, None)
     snapshot_context['snapshot_app_version'] = BRAIN_VERSION
     snapshot_context['snapshot_brain_version'] = BRAIN_VERSION
@@ -27013,3 +27043,320 @@ def reset_notification_agent(state_json='null'):
     else:
         _NOTIFICATION_AGENT = NotificationAgent()
     return 'ok'
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+# Delivery A (draft): per-index direction authority cutover  (index_direction_v1)
+# One live direction authority per index.  ACTIVE_DIRECTION_AUTHORITY is the single switch; the only
+# other accepted value is the reviewed single-authority config rollback 'legacy_combined_v0'.
+# The legacy pipeline above still runs, unchanged, so X1 / EV v1.2 / evaluator evidence stay byte-
+# identical; under index_direction_v1 its verdict/primary/ranking are recorded as evidence only and
+# every decision-bearing output is re-derived from by_index[i] below.
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+import index_authority_v1 as _ia
+import index_construction_v1 as _icn
+import index_authority_store as _ias
+from ev_v12_calendar import DEFAULT_CALENDAR as _IA_CALENDAR
+
+ACTIVE_DIRECTION_AUTHORITY = _ia.POLICY_VERSION
+_IA_ALLOWED_AUTHORITIES = (_ia.POLICY_VERSION, _ia.LEGACY_AUTHORITY)
+
+
+def _index_authority_active():
+    return ACTIVE_DIRECTION_AUTHORITY == _ia.POLICY_VERSION
+
+
+def _ia_session_date(ctx, polls):
+    for k in ('today_ist', 'session_date', 'sessionDate'):
+        d = _ia._parse_date((ctx or {}).get(k))
+        if d is not None:
+            return d.isoformat()
+    for p in reversed(polls or []):
+        dt = _ia.parse_ts((p or {}).get('poll_ts') or (p or {}).get('ts')) if isinstance(p, dict) else None
+        if dt is not None:
+            return dt.date().isoformat()
+    return datetime.now(_ia.IST).date().isoformat()
+
+
+def _ia_receipt_dt(ctx):
+    for k in ('pollReceiptMs', 'receiptTsMs', 'x1PollMs'):
+        v = (ctx or {}).get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return _ia.parse_ts(v)
+    return None
+
+
+def compute_index_authority(polls, ctx):
+    """Writer of by_index (the only one).  Returns {NF: IndexDecision, BNF: IndexDecision}."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    session = _ia_session_date(ctx, polls)
+    latest = polls[-1] if isinstance(polls, list) and polls else {}
+    decision_dt = _ia.poll_time(latest, session)
+    receipt_dt = _ia_receipt_dt(ctx)
+    sdir = _ias.state_dir(ctx)
+    state = _ias.load(sdir, session) if sdir else None
+    state_ok = isinstance(state, dict)
+    state = state if state_ok else {}
+    scales = state.setdefault('scales', {})
+    out = {}
+    persisted = False
+    for ix in _ia.INDICES:
+        chain = ctx.get('nfChain' if ix == 'NF' else 'bnfChain') or {}
+        expiry = ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry')
+        available, why = True, None
+        if _ia._parse_date(expiry) is None:
+            available, why = False, 'EXPIRY_INVALID'
+        scale = scales.get(ix)
+        if available and not (isinstance(scale, dict) and scale.get('status')):
+            series = _ia.valid_spot_series(polls, ix, session, decision_dt)
+            a = _ia.find_open_ref(series, session)
+            if a is None:
+                scale = {'status': 'UNAVAILABLE', 'reason': 'OPEN_REF_MISSING'}
+            elif decision_dt is not None and a['_dt'] == series[-1][0] and series[-1][0] == decision_dt:
+                # the current poll IS the open reference: observe the scale once, from this chain
+                scale = _ia.compute_scale(ix, chain, a['value'], session, a['_dt'], expiry, _IA_CALENDAR)
+                if sdir and state_ok:
+                    scales[ix] = scale
+                    persisted = True
+            elif isinstance(ctx.get('indexAuthorityScale'), dict) and isinstance(ctx['indexAuthorityScale'].get(ix), dict):
+                scale = ctx['indexAuthorityScale'][ix]  # replay/test injection of a recorded scale
+            else:
+                scale = {'status': 'UNAVAILABLE',
+                         'reason': 'OPEN_REF_CHAIN_NOT_OBSERVED' if state_ok and sdir else 'SCALE_STATE_UNAVAILABLE'}
+        # calendar coverage is evaluated per contract every poll (expiry can roll)
+        cov = _ia.calendar_coverage(ix, session, expiry, _IA_CALENDAR) if available else None
+        if cov is not None and cov['status'] != 'COVERED':
+            scale = {'status': 'CALENDAR_UNAVAILABLE', 'reason': cov['reason']}
+        dec = _ia.build_index_decision(
+            ix, polls, session, decision_dt, scale, receipt_dt=receipt_dt,
+            index_available=available, availability_reason=why,
+            vol_context={'vix': _safe_num(ctx.get('vix'), None), 'used_in_direction': False},
+            single_leg_enabled=bool(ctx.get('singleLegPaperEnabled')) and _explicit_execution_mode(ctx) == 'paper')
+        dec['calendar_coverage'] = cov
+        out[ix] = dec
+        if sdir and state_ok and decision_dt is not None:
+            h = state.setdefault('history', {}).setdefault(ix, [])
+            if not h or h[-1].get('decision_poll_ts') != dec['decision_poll_ts']:
+                h.append(_ias.compact_decision(dec))
+                persisted = True
+    if sdir and state_ok and persisted:
+        _ias.save(sdir, session, state)
+    out['_meta'] = {'session_date': session, 'state_dir_available': bool(sdir), 'state_readable': state_ok,
+                    'history': state.get('history') if state_ok else None}
+    return out
+
+
+def _ia_lot(chain):
+    v = _safe_num((chain or {}).get('lotSize') or (chain or {}).get('lot_size'), None)
+    return int(v) if v is not None and v > 0 and float(v) == int(v) else None
+
+
+def _ia_candidate_from_construction(con, ctx, decision):
+    """Project an index_construction_v1 result into the legacy candidate shape used by screens/entry paths."""
+    ix = con.get('index')
+    legs = []
+    for l in con.get('legs') or []:
+        rec = _build_leg_record(l['strike'], l['option_type'], l['action'], con.get('expiry'),
+                                {'bid': l.get('bid'), 'ask': l.get('ask'), 'instrument_key': l.get('instrument_key')},
+                                con.get('k0'))
+        rec['ltp'] = None  # never an execution price
+        rec['bid_qty'], rec['ask_qty'], rec['exchange_ts'] = l.get('bid_qty'), l.get('ask_qty'), l.get('exchange_ts')
+        legs.append(rec)
+    lot = con.get('lot_size')
+    sells = [l for l in legs if l['action'] == 'SELL']
+    buys = [l for l in legs if l['action'] == 'BUY']
+    cand = {
+        'id': con.get('id') or f"{con.get('type')}_{ix}_unconstructed",
+        'type': con.get('type'), 'strategy_type': con.get('type'), 'index': ix, 'index_key': ix,
+        'expiry': con.get('expiry'), 'width': con.get('width'), 'legs': legs, 'lotSize': lot, 'lots': 1,
+        'isCredit': bool(con.get('is_credit')),
+        'sellStrike': sells[0]['strike'] if sells else None, 'sellType': sells[0]['option_type'] if sells else None,
+        'buyStrike': buys[0]['strike'] if buys else None, 'buyType': buys[0]['option_type'] if buys else None,
+        'sellStrike2': sells[1]['strike'] if len(sells) > 1 else None, 'sellType2': sells[1]['option_type'] if len(sells) > 1 else None,
+        'buyStrike2': buys[1]['strike'] if len(buys) > 1 else None, 'buyType2': buys[1]['option_type'] if len(buys) > 1 else None,
+        'maxProfit': con.get('max_profit_rupees'), 'maxLoss': con.get('max_loss_rupees'),
+        'maxProfitPoints': con.get('max_profit_points'), 'maxLossPoints': con.get('max_loss_points'),
+        'netPremium': con.get('net_premium_points'),
+        'constructionVersion': _icn.CONSTRUCTION_VERSION, 'constructionStatus': con.get('status'),
+        'constructionReason': con.get('reason'), 'k0': con.get('k0'),
+        'authorityPolicyVersion': _ia.POLICY_VERSION, 'indexDecisionId': (decision or {}).get('decision_id'),
+        'indexPolicyAllowed': con.get('type') in ((decision or {}).get('structure_policy') or {}).get('allowed', []),
+        'directionSafe': con.get('type') in ((decision or {}).get('structure_policy') or {}).get('allowed', []),
+        'capitalBlocked': bool(con.get('capital_blocked')),
+        'poll_ts': (decision or {}).get('decision_poll_ts'),
+        # retired predictive fields are explicitly null, never fabricated
+        'p_ml': None, 'mlAction': None, 'entryConfidence': None, 'netPremiumEdge': None,
+        'retiredFieldsNotUsed': ['p_ml', 'mlAction', 'mlOod', 'netPremiumEdge', 'premiumEdge', 'probProfit',
+                                 'calibrationWinRate', 'forces', 'varsityTier', 'teacherScore', 'contextPercentile'],
+    }
+    reasons = []
+    st = con.get('status')
+    if st != 'OK':
+        reasons.append('quote_incomplete' if st == 'QUOTE_INCOMPLETE' else ('construction_' + str(con.get('reason') or st)))
+    if st == 'OK' and con.get('reason') == 'LOT_UNAVAILABLE':
+        reasons.append('lot_unavailable')
+    if cand['capitalBlocked']:
+        reasons.append('capital_blocked')
+    friction = None
+    if st == 'OK':
+        fb = _candidate_decision_friction(cand)
+        friction = _safe_num((fb or {}).get('total'), None)
+        cand['frictionCost'] = friction
+        cand['frictionCostStatus'] = (fb or {}).get('status') or ('OK' if friction is not None else 'UNAVAILABLE')
+        if friction is None or str(cand['frictionCostStatus']).upper() != 'OK':
+            reasons.append('friction_unavailable')
+    cand['entryEligible'] = not reasons
+    cand['entryGate'] = 'ENTRY' if not reasons else 'MONITOR'
+    cand['entryEligibility'] = {'schema': 1, 'version': 'index_execution_gates_v1', 'eligible': not reasons,
+                                'reasons': reasons, 'demoted_evidence_not_used': True}
+    return cand
+
+
+def _ia_apply_cutover(result, ctx, polls, open_trades, authority):
+    """Re-derive every decision-bearing output from by_index.  Legacy outputs kept as labelled evidence."""
+    if not isinstance(authority, dict):
+        return
+    meta = authority.get('_meta') or {}
+    by_index = {ix: authority[ix] for ix in _ia.INDICES if ix in authority}
+    session = meta.get('session_date')
+    decision_dt = _ia.parse_ts((by_index.get('NF') or by_index.get('BNF') or {}).get('decision_poll_ts'))
+    candidates_by_index, managed = {}, {}
+    for ix, dec in by_index.items():
+        chain = ctx.get('nfChain' if ix == 'NF' else 'bnfChain') or {}
+        spot = _safe_num(((dec.get('direction') or {}).get('inputs') or {}).get('spot', {}).get('value'), None)
+        cands = []
+        if (dec.get('action') or {}).get('value') == 'CANDIDATES' and spot:
+            cons = _icn.construct_allowed(ix, dec['structure_policy']['allowed'], chain, spot,
+                                          lot_size=_ia_lot(chain), capital=float(ctx.get('capital') or _CONST['CAPITAL']),
+                                          max_risk_pct=float(_CONST['MAX_RISK_PCT']),
+                                          expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'))
+            cands = [_ia_candidate_from_construction(c, ctx, dec) for c in cons]
+            dec['action']['candidate_ids'] = [c['id'] for c in cands]
+            if not any(c['entryEligible'] for c in cands):
+                dec['action'] = {'value': 'NO_TRADE', 'candidate_ids': [c['id'] for c in cands],
+                                 'reasons': sorted({r for c in cands for r in c['entryEligibility']['reasons']}) or ['NO_EXECUTABLE_CANDIDATE']}
+        candidates_by_index[ix] = cands
+        gates = [_ia.managed_entry_gate(dec, c, open_trades, decision_dt) for c in cands if c['entryEligible']]
+        admissible = [g for g, c in zip(gates, [c for c in cands if c['entryEligible']]) if g['admit']]
+        managed[ix] = {'policy_id': _ia.MANAGED_POLICY_ID, 'gates': gates,
+                       'selected': None,
+                       'reason': (None if len(admissible) == 1 else
+                                  ('NO_ADMISSIBLE_CANDIDATE' if not admissible else 'STRUCTURE_CHOICE_RULE_UNSPECIFIED')),
+                       'manual_paper_locked': False}
+        if len(admissible) == 1:
+            managed[ix]['selected'] = admissible[0]
+        dec['display'] = _ia.plain_words(dec)
+    legacy_verdict = result.get('verdict') if isinstance(result.get('verdict'), dict) else {}
+    result['legacy_evidence'] = {
+        'label': 'legacy_combined_v0 recorded evidence; not used in any decision',
+        'verdict': {k: legacy_verdict.get(k) for k in ('action', 'strategy', 'direction', 'confidence')},
+        'pc2_paper_primary_candidate_id': (result.get('pc2_paper_primary') or {}).get('pc2_primary_candidate_id')
+        if isinstance(result.get('pc2_paper_primary'), dict) else None,
+        'effective_bias': (result.get('effective_bias') or {}).get('bias') if isinstance(result.get('effective_bias'), dict) else None,
+    }
+    selector = str(ctx.get('indexSelector') or 'BOTH').upper()
+    selector = selector if selector in ('NF', 'BNF', 'BOTH') else 'BOTH'
+    views = {ix: _ia.legacy_view(d) for ix, d in by_index.items()}
+    result['by_index'] = by_index
+    result['candidates_by_index'] = candidates_by_index
+    result['managed_policy'] = managed
+    result['index_selector'] = selector
+    result['direction_authority'] = {
+        'active': _ia.POLICY_VERSION, 'regime': _ia.REGIME_VERSION, 'structure_policy': _ia.STRUCTURE_POLICY_VERSION,
+        'construction': _icn.CONSTRUCTION_VERSION, 'freshness': _ia.FRESHNESS_VERSION,
+        'calendar_rule_version': _IA_CALENDAR.version, 'combined_direction_retired': True,
+        'real_display_follows_authority': True, 'real_orders_unchanged': True,
+        'freshness_coverage': _ia.freshness_coverage({'NF': ctx.get('nfChain') or {}, 'BNF': ctx.get('bnfChain') or {}}),
+        'state': {k: v for k, v in meta.items() if k != 'history'},
+    }
+    # pc2 paper-primary selector replaced: no cross-index/cross-structure ranking
+    result['pc2_paper_primary'] = {'replaced_by': _ia.POLICY_VERSION, 'pc2_primary_candidate_id': None,
+                                   'reason': 'per_index_authority_no_cross_index_ranking'}
+    # Verdict adapter (Real and Paper display): never a combined direction, never a legacy bias
+    shown = [selector] if selector in ('NF', 'BNF') else list(_ia.INDICES)
+    result['verdict'] = {
+        'action': 'WAIT', 'strategy': None, 'direction': None, 'confidence': None,
+        'urgency': 'PER_INDEX', 'reasoning': ' | '.join(by_index[ix].get('display', '') for ix in shown if ix in by_index),
+        'decision_gate': {'state': 'PER_INDEX_AUTHORITY', 'reason': 'see by_index'},
+        'execution_candidate_id': None, 'execution_candidate_index': None,
+        'by_index': views, 'policy_version': _ia.POLICY_VERSION, 'combined_direction_retired': True,
+        'conflicts': [], 'bull': None, 'bear': None,
+    }
+    result['execution_candidate_index'] = None
+    # watchlist: legacy forces are context only
+    for w in result.get('watchlist') or []:
+        if isinstance(w, dict):
+            ix = str(w.get('index') or w.get('index_key') or '').upper()
+            w['legacy_forces_not_used'] = True
+            w['index_decision_id'] = (by_index.get(ix) or {}).get('decision_id')
+    # positions: original exit contract persisted / reported; managed invalidation only for managed contracts
+    hist = (meta.get('history') or {})
+    pos = result.get('positions') if isinstance(result.get('positions'), dict) else {}
+    for t in open_trades or []:
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get('id') or t.get('trade_id') or '')
+        contract = _ia.exit_contract_for(t)
+        ix = str(t.get('index_key') or t.get('index') or '').upper()
+        dirs = [(h.get('decision_poll_ts'), (h.get('direction') or {}).get('value')) for h in (hist.get(ix) or [])]
+        entry = {'exit_contract': contract, 'managed_invalidation': _ia.managed_invalidation(t, dirs)}
+        if tid:
+            pv = pos.get(tid) if isinstance(pos.get(tid), dict) else None
+            if pv is not None:
+                pv.update(entry)
+            else:
+                result.setdefault('position_exit_contracts', {})[tid] = entry
+
+
+def _ia_retire_combined_view(verdict):
+    """The combined NF+BNF market view is retired from display under index_direction_v1."""
+    verdict['legacy_market_direction_evidence'] = verdict.get('market_direction')
+    verdict.update({'market_direction': None, 'market_bull_score': None, 'market_bear_score': None,
+                    'market_view_status': 'RETIRED_LEGACY_COMBINED', 'market_view_source': None,
+                    'market_direction_scope': 'PER_INDEX_AUTHORITY', 'execution_lane_direction': None,
+                    'direction_semantics': 'index_direction_v1_per_index'})
+    return verdict
+
+
+def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper_trades_json=None, teacher_status=None):
+    """Local Daily review (Delivery A).  Reads the bounded authority history; writes one local report.
+    Independent of the teacher; never raises; never writes outside report_dir."""
+    try:
+        import daily_review_v1 as _dr
+        hist = None
+        if isinstance(state_dir, str) and _os.path.basename(_os.path.normpath(state_dir)) == _ias.STATE_DIR_NAME:
+            doc = _ias.load(state_dir, str(session_date)[:10])
+            hist = (doc or {}).get('history') if isinstance(doc, dict) else None
+        if hist is None:
+            return json.dumps({'status': 'AUTHORITY_HISTORY_UNAVAILABLE', 'written': False})
+        try:
+            polls = json.loads(polls_json or '[]')
+            trades = json.loads(paper_trades_json) if paper_trades_json not in (None, '') else None
+        except Exception:
+            return json.dumps({'status': 'INPUT_INVALID', 'written': False})
+        if not polls:
+            # the index spot series recorded with each authority decision (own index only)
+            polls = []
+            for ix, rows in (hist or {}).items():
+                key = _ia.spot_key(ix)
+                for h in rows or []:
+                    sp = h.get('spot') or {}
+                    if sp.get('asof') and sp.get('value'):
+                        polls.append({'poll_ts': sp['asof'], key: sp['value']})
+        out = _dr.run_daily_review(report_dir, str(session_date)[:10], hist, polls, trades,
+                                   schema_ids={'authority': _ia.AUTHORITY_SCHEMA, 'policy': _ia.POLICY_VERSION,
+                                               'brain_version': BRAIN_VERSION,
+                                               'calendar': _IA_CALENDAR.version},
+                                   teacher_status=teacher_status)
+        return json.dumps(out)
+    except Exception as exc:
+        return json.dumps({'status': 'REPORT_ERROR', 'reason': type(exc).__name__, 'written': False})
+
+
+def daily_review_read(report_dir, session_date):
+    try:
+        import daily_review_v1 as _dr
+        doc = _dr.ReportStore(report_dir).read(str(session_date)[:10])
+        return json.dumps(doc if doc is not None else {'status': 'NO_REPORT'})
+    except Exception as exc:
+        return json.dumps({'status': 'STORE_UNAVAILABLE', 'reason': type(exc).__name__})
