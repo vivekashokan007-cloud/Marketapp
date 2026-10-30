@@ -34,6 +34,9 @@ object IndexAuthorityContext {
 
     fun stateDir(filesDir: File) = File(filesDir, STATE_DIR_NAME)
     fun reportDir(filesDir: File) = File(filesDir, REPORT_DIR_NAME)
+    const val SINGLE_LEG_DIR_NAME = "single_leg_v1"
+    const val PREF_SINGLE_LEG_PAPER = "single_leg_paper_enabled_v1"   // default OFF; explicit user opt-in
+    fun singleLegDir(filesDir: File) = File(filesDir, SINGLE_LEG_DIR_NAME)
 
     fun normalizeSelector(raw: String?): String = when (raw?.trim()?.uppercase()) {
         "NF", "NIFTY" -> "NF"
@@ -49,6 +52,8 @@ object IndexAuthorityContext {
         ctx.put("analysisClockMs", nowMs)
         ctx.put("indexAuthorityDeferredWrite", true)
         ctx.put("indexSelector", normalizeSelector(selector))
+        // Delivery B: managed single-leg store (read-only during analyze; written by bridge admit / IO monitor)
+        ctx.put("singleLegStateDir", singleLegDir(filesDir).absolutePath)
     }
 
     /** Detach the state delta from the result so it is never stored or shown as part of the brain result. */
@@ -95,6 +100,24 @@ object IndexAuthorityIo {
                 if (!out.contains("\"written\": true")) LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST: ${out.take(160)}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST_FAIL: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Delivery B s3 step 5: advance open single-leg Paper positions on a PUBLISHED poll (serialized IO). */
+    fun monitorSingleLeg(filesDir: File, sessionDate: String, chainsJson: String, nowMs: Long, snapshotMs: Long,
+                         spotsJson: String) {
+        val sl = IndexAuthorityContext.singleLegDir(filesDir)
+        if (!File(sl, "positions.json").exists()) return
+        executor.execute {
+            try {
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                val out = brain.callAttr("single_leg_monitor", sl.absolutePath,
+                    IndexAuthorityContext.stateDir(filesDir).absolutePath, sessionDate, chainsJson, nowMs,
+                    snapshotMs, spotsJson).toString()
+                LogBuffer.add('I', TAG, "SINGLE_LEG_MONITOR: ${out.take(160)}")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_FAIL: ${e.javaClass.simpleName}")
             }
         }
     }

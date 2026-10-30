@@ -1699,6 +1699,44 @@ class NativeBridge(private val context: Context) {
         }
     }
 
+    // Delivery B s3 steps 3-4: explicit user admission of the CURRENT published single-leg proposal for one
+    // index into local Paper (idempotent, locked store). Python re-validates every gate; no broker call.
+    @JavascriptInterface
+    fun singleLegAdmit(index: String): String {
+        return try {
+            val current = getBrainResult()
+            if (current == "null") return "{\"status\":\"REJECTED\",\"reason\":\"NO_CURRENT_RESULT\"}"
+            val openTrades = prefs.getString("open_trades", "[]") ?: "[]"
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            PyTimeout.callWithTimeout("bridge.single_leg_admit", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("single_leg_admit", IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath,
+                    current, index, System.currentTimeMillis(), openTrades).toString()
+            } ?: "{\"status\":\"TIMEOUT\"}"
+        } catch (e: Exception) {
+            "{\"status\":\"ERROR\"}"
+        }
+    }
+
+    @JavascriptInterface
+    fun setSingleLegPaperEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, enabled).apply()
+    }
+
+    @JavascriptInterface
+    fun getSingleLegPaperEnabled(): Boolean = prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
+
+    @JavascriptInterface
+    fun singleLegRead(): String {
+        return try {
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            PyTimeout.callWithTimeout("bridge.single_leg_read", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("single_leg_read", IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath).toString()
+            } ?: "{\"status\":\"TIMEOUT\"}"
+        } catch (e: Exception) {
+            "{\"status\":\"STORE_UNAVAILABLE\"}"
+        }
+    }
+
     @JavascriptInterface
     fun dailyReviewLatest(sessionDate: String): String {
         return try {

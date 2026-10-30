@@ -2316,6 +2316,10 @@ class MarketWatchService : Service() {
                 // b510 R1: stamp the request this chain answered (same values as the option/chain URL).
                 val formattedLive = OptionChainBrainFormatter.stampRequest(
                     formatChainForBrain(liveChainRaw, spot), expiry, requestedUnderlyingKey)
+                // Delivery B (R5 s4): managed-only evidence in a SEPARATE ctx object; the X1 formatter output above
+                // is untouched and the raw chain is only read.
+                try { ManagedEvidenceFormatter.attachQuantities(ctxObj, liveChainRaw, System.currentTimeMillis()) }
+                catch (e: Exception) { LogBuffer.add('W', TAG, "MANAGED_EVIDENCE_QTY_FAIL: ${e.javaClass.simpleName}") }
                 val liveCw = if (cwPoll > 0.0) cwPoll else formattedLive.optDouble("callWallStrike", 0.0)
                 val livePw = if (pwPoll > 0.0) pwPoll else formattedLive.optDouble("putWallStrike", 0.0)
                 val livePcr = if (pcrPoll > 0.0) pcrPoll else formattedLive.optDouble("pcr", 0.0)
@@ -2739,6 +2743,7 @@ class MarketWatchService : Service() {
             try {
                 IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis(),
                     prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
+                ctxObj.put("singleLegPaperEnabled", prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false))
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "INDEX_AUTHORITY_CTX_FAIL: ${e.javaClass.simpleName}")
             }
@@ -3155,6 +3160,18 @@ class MarketWatchService : Service() {
                 if (iaPersist != null) {
                     IndexAuthorityIo.persist(filesDir, iaPersist,
                         IndexAuthorityContext.publishedMs(publishNow, System.currentTimeMillis()))
+                }
+                if (publishNow && sideEffects) {
+                    try {
+                        val nowMs = System.currentTimeMillis()
+                        val chains = JSONObject().put("NF", ctxObj.optJSONObject("nfChain") ?: JSONObject())
+                            .put("BNF", ctxObj.optJSONObject("bnfChain") ?: JSONObject())
+                        val spots = JSONObject().put("NF", nfSpot).put("BNF", bnfSpot)
+                        IndexAuthorityIo.monitorSingleLeg(filesDir, IndexAuthorityContext.istSession(nowMs),
+                            chains.toString(), nowMs, ctxObj.optLong("pollReceiptMs", 0L), spots.toString())
+                    } catch (e: Exception) {
+                        LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_CTX_FAIL: ${e.javaClass.simpleName}")
+                    }
                 }
                 if (sideEffects) IndexAuthorityIo.maybeRunDailyReview(filesDir, prefs, System.currentTimeMillis(), closedTradesJson)
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()
