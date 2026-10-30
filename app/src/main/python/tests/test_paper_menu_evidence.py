@@ -403,7 +403,11 @@ class BrainIntegrationTests(unittest.TestCase):
                     req = brain.analyze(*args, json.dumps(ctx_req))
                 a, a2, b = json.loads(plain), json.loads(plain2), json.loads(req)
                 self.assertNotIn('paper_decision_menu', b, (name, mode))
-                populated += 1 if (b.get('watchlist') and b.get('ranked_candidates_full')) else 0
+                # Delivery A R5: under index_direction_v1 the legacy ranked lists are evidence only
+                # (legacy_evidence ids/counts); the result's watchlist holds the authority candidates.
+                le = b.get('legacy_evidence') or {}
+                populated += 1 if ((b.get('watchlist') and b.get('ranked_candidates_full'))
+                                   or (le.get('watchlist_ids') and le.get('ranked_full_count'))) else 0
                 nondeterministic = {k for k in set(a) | set(a2) if json.dumps(a.get(k), sort_keys=True, default=str)
                                     != json.dumps(a2.get(k), sort_keys=True, default=str)}
                 self.assertEqual(set(a), set(b), (name, mode))

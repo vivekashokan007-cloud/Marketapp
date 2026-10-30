@@ -1,6 +1,7 @@
 """Bounded replay coverage for index_direction_v1 (Delivery A, draft).
 
-Input: a JSON file {"sessions": [{"date": "YYYY-MM-DD", "decisions": [{"polls": [...], "ctx": {...}}]}]}
+Input: a JSON file {"sessions": [{"date": "YYYY-MM-DD", "decisions": [{"polls": [...], "ctx": {...},
+"analysis_clock_ms": <frozen analysis clock>}]}]}
 captured offline (no network, no Supabase).  For every decision record it recomputes the per-index
 authority with brain.compute_index_authority and classifies the outcome into exactly one bucket:
 
@@ -26,6 +27,7 @@ MISSING_EVIDENCE_CODES = frozenset({
     'CHAIN_MISSING', 'CONSTRUCTION_CHAIN_MISSING', 'LOT_UNAVAILABLE', 'QUOTE_INCOMPLETE', 'INDEX_UNAVAILABLE',
     'SESSION_DATE_INVALID', 'DECISION_TIME_INVALID', 'SPARSE_PATH', 'AUTHORITY_UNAVAILABLE',
     'EXCHANGE_TIMESTAMP_MISSING', 'EXCHANGE_TIMESTAMP_INVALID', 'FRESHNESS_UNVERIFIED',
+    'ANALYSIS_CLOCK_MISSING', 'CLOCK_SKEW',
 })
 
 
@@ -69,6 +71,11 @@ def replay(doc, brain):
                 break
             n += 1
             ctx = dict(rec.get('ctx') or {})
+            # R5 R1: replay runs at an EXPLICIT frozen analysis clock recorded with the decision; without one
+            # the authority is ANALYSIS_CLOCK_MISSING (missing evidence), never the poll's own time
+            ctx.pop('analysisClockMs', None)
+            if isinstance(rec.get('analysis_clock_ms'), (int, float)) and rec['analysis_clock_ms'] > 0:
+                ctx['analysisClockMs'] = int(rec['analysis_clock_ms'])
             ctx['indexAuthorityStateDir'] = os.path.join(tmp.name, 'index_authority_v1')
             try:
                 auth = brain.compute_index_authority(rec.get('polls') or [], ctx) or {}

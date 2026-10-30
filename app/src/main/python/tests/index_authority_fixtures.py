@@ -62,6 +62,22 @@ def ctx(nf_spot0=24000.0, bnf_spot0=52000.0, **kw):
     return c
 
 
+def clock_ms(poll_list, lag_s=20.0, session=SESSION):
+    """Synthetic trusted analysis clock: the last poll's own time + lag (a fixture, stated as such)."""
+    import index_authority_v1 as ia
+    last = poll_list[-1] if poll_list else {}
+    t = ia.poll_time(last, session)
+    return int((t.timestamp() + lag_s) * 1000) if t is not None else None
+
+
+def with_clock(c, poll_list, lag_s=20.0):
+    if 'analysisClockMs' in c:
+        return c
+    session = c.get('session_date') or SESSION
+    return dict(c, analysisClockMs=clock_ms(poll_list, lag_s, session))
+
+
 def run(brain, poll_list, c, open_trades=None, closed=None, baseline=None):
+    c = with_clock(c, poll_list)
     return json.loads(brain.analyze(json.dumps(poll_list), json.dumps(closed or []), json.dumps(baseline or {}),
                                     json.dumps(open_trades or []), '[]', '{}', json.dumps(c)))
