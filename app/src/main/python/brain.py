@@ -27212,6 +27212,30 @@ def _ia_candidate_from_construction(con, ctx, decision):
     return cand
 
 
+def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades):
+    """Delivery B (draft): index_single_leg_v1 entry proposal from A's authority only (no second direction).
+
+    Broker margin evidence arrives only through ctx['singleLegMarginEvidence'][ix] (no live call is made here);
+    entry history through ctx['singleLegHistory'] (list of {index, entry_ts, exit_ts})."""
+    import index_single_leg_v1 as _sl
+    try:
+        margins = ctx.get('singleLegMarginEvidence') if isinstance(ctx.get('singleLegMarginEvidence'), dict) else {}
+        hist = ctx.get('singleLegHistory') if isinstance(ctx.get('singleLegHistory'), list) else None
+        plan = _sl.plan_entry(ix, dec, chain, spot, session_date=session, decision_dt=decision_dt,
+                              expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'), captured_lot=_ia_lot(chain),
+                              open_positions=open_trades, history=hist or [],
+                              capital=float(ctx.get('capital') or _CONST['CAPITAL']),
+                              max_risk_pct=float(_CONST['MAX_RISK_PCT']), margin=margins.get(ix))
+        if hist is None:
+            plan['history_note'] = 'SINGLE_LEG_HISTORY_NOT_SUPPLIED'
+            plan['admit'] = False
+            plan['reasons'] = list(plan.get('reasons') or []) + ['SINGLE_LEG_HISTORY_NOT_SUPPLIED']
+        return plan
+    except Exception as exc:
+        return {'policy_id': 'index_single_leg_v1', 'index': ix, 'admit': False,
+                'reasons': ['SINGLE_LEG_ERROR:' + type(exc).__name__]}
+
+
 def _ia_apply_cutover(result, ctx, polls, open_trades, authority):
     """Re-derive every decision-bearing output from by_index.  Legacy outputs kept as labelled evidence."""
     if not isinstance(authority, dict):
@@ -27220,13 +27244,14 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority):
     by_index = {ix: authority[ix] for ix in _ia.INDICES if ix in authority}
     session = meta.get('session_date')
     decision_dt = _ia.parse_ts((by_index.get('NF') or by_index.get('BNF') or {}).get('decision_poll_ts'))
-    candidates_by_index, managed = {}, {}
+    candidates_by_index, managed, single_leg = {}, {}, {}
     for ix, dec in by_index.items():
         chain = ctx.get('nfChain' if ix == 'NF' else 'bnfChain') or {}
         spot = _safe_num(((dec.get('direction') or {}).get('inputs') or {}).get('spot', {}).get('value'), None)
         cands = []
         if (dec.get('action') or {}).get('value') == 'CANDIDATES' and spot:
-            cons = _icn.construct_allowed(ix, dec['structure_policy']['allowed'], chain, spot,
+            cons = _icn.construct_allowed(ix, [a for a in dec['structure_policy']['allowed']
+                                               if a in _icn.STRUCTURES], chain, spot,
                                           lot_size=_ia_lot(chain), capital=float(ctx.get('capital') or _CONST['CAPITAL']),
                                           max_risk_pct=float(_CONST['MAX_RISK_PCT']),
                                           expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'))
@@ -27246,6 +27271,10 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority):
         if len(admissible) == 1:
             managed[ix]['selected'] = admissible[0]
         dec['display'] = _ia.plain_words(dec)
+        if any(a in _ia.ALL_SINGLE_LEG for a in (dec.get('structure_policy') or {}).get('allowed') or []):
+            single_leg[ix] = _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades)
+    if single_leg:
+        result['single_leg_by_index'] = single_leg
     legacy_verdict = result.get('verdict') if isinstance(result.get('verdict'), dict) else {}
     result['legacy_evidence'] = {
         'label': 'legacy_combined_v0 recorded evidence; not used in any decision',
