@@ -2737,7 +2737,8 @@ class MarketWatchService : Service() {
             // Delivery A: local durable state for index_direction_v1 (scale at the open reference, bounded
             // per-index decision history). Local files only; no network, no Supabase.
             try {
-                IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis())
+                IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis(),
+                    prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "INDEX_AUTHORITY_CTX_FAIL: ${e.javaClass.simpleName}")
             }
@@ -2761,6 +2762,8 @@ class MarketWatchService : Service() {
                     .put("brain_result_started_at_ms", brainAnalyzeStartedAtMs)
                     .put("brain_result_completed_at_ms", brainAnalyzeCompletedAtMs)
                     .put("brain_result_duration_ms", brainAnalyzeDurationMs)
+                // R5 s2: authority state delta leaves the result; persisted by the serialized IO worker below
+                val iaPersist = try { IndexAuthorityContext.takePersist(resultObj) } catch (e: Exception) { null }
                 // Evidence batch 1 (Item B): detach the menu before anything else reads, caches,
                 // broadcasts or snapshots the result; it is persisted only through its own path.
                 val paperDecisionMenu = resultObj.optJSONObject("paper_decision_menu")
@@ -3148,6 +3151,12 @@ class MarketWatchService : Service() {
                     BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
                 }
                 val publishNow = outcome == AnalysisAuthority.Outcome.PUBLISHED
+                // R5 s2: persist the authority delta off the analysis path; published_at only when PUBLISHED
+                if (iaPersist != null) {
+                    IndexAuthorityIo.persist(filesDir, iaPersist,
+                        IndexAuthorityContext.publishedMs(publishNow, System.currentTimeMillis()))
+                }
+                if (sideEffects) IndexAuthorityIo.maybeRunDailyReview(filesDir, prefs, System.currentTimeMillis(), closedTradesJson)
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT || outcome == AnalysisAuthority.Outcome.STALE_MARKET
                     || outcome == AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE) {

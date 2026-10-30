@@ -1,22 +1,125 @@
 package com.marketradar.app
 
+import com.marketradar.app.util.LogBuffer
 import org.json.JSONObject
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /**
- * Delivery A (draft): context keys for the per-index direction authority (index_direction_v1).
+ * Delivery A: context keys for the per-index direction authority (index_direction_v1).
  * Local app-private directories only. No network, no Supabase, no credentials.
+ *
+ * R5 corrections:
+ *  - R1: a trusted analysis clock (analysisClockMs) is stamped immediately before EVERY analyze (live poll and
+ *    refresh); Python judges staleness against it and never relabels the source poll time.
+ *  - s2: analyze performs no authority-state file I/O (indexAuthorityDeferredWrite); the state delta returned in
+ *    the result is persisted by ONE single-thread IO worker, stamped with the publication time only when the
+ *    native publisher reported PUBLISHED.
+ *  - s2: the user's index selector (NF / BNF / BOTH) gates new managed admission only.
+ *  - s2: the local Daily review runs on the same serialized worker after the session, once per session, with a
+ *    cooperative budget; it is independent of the teacher.
  */
 object IndexAuthorityContext {
     const val STATE_DIR_NAME = "index_authority_v1"
     const val REPORT_DIR_NAME = "self_study_v1"
+    const val PREF_SELECTOR = "index_authority_selector_v1"
+    const val PREF_REVIEW_DONE_SESSION = "index_authority_daily_review_done_session_v1"
+    const val PERSIST_KEY = "index_authority_persist"
+    const val DAILY_REVIEW_AFTER_MIN = 15 * 60 + 40          // 15:40 IST
+    const val DAILY_REVIEW_BUDGET_S = 20.0
+    private val IST: ZoneId = ZoneId.of("Asia/Kolkata")
 
     fun stateDir(filesDir: File) = File(filesDir, STATE_DIR_NAME)
     fun reportDir(filesDir: File) = File(filesDir, REPORT_DIR_NAME)
 
-    fun apply(ctx: JSONObject, filesDir: File, isRefresh: Boolean, nowMs: Long) {
+    fun normalizeSelector(raw: String?): String = when (raw?.trim()?.uppercase()) {
+        "NF", "NIFTY" -> "NF"
+        "BNF", "BANKNIFTY" -> "BNF"
+        else -> "BOTH"
+    }
+
+    fun apply(ctx: JSONObject, filesDir: File, isRefresh: Boolean, nowMs: Long, selector: String? = null) {
         ctx.put("indexAuthorityStateDir", stateDir(filesDir).absolutePath)
-        // Receipt time of a live poll (analysis-start clock); a refresh re-analysis carries none.
+        // Receipt time of a live poll; a refresh re-analysis carries none.
         if (isRefresh) ctx.remove("pollReceiptMs") else ctx.put("pollReceiptMs", nowMs)
+        // R1: trusted analysis clock for every analysis (live and refresh)
+        ctx.put("analysisClockMs", nowMs)
+        ctx.put("indexAuthorityDeferredWrite", true)
+        ctx.put("indexSelector", normalizeSelector(selector))
+    }
+
+    /** Detach the state delta from the result so it is never stored or shown as part of the brain result. */
+    fun takePersist(result: JSONObject): JSONObject? {
+        val p = result.optJSONObject(PERSIST_KEY) ?: return null
+        result.remove(PERSIST_KEY)
+        val session = p.optString("session_date", "")
+        val delta = p.optJSONObject("delta")
+        if (session.length < 10 || delta == null) return null
+        return p
+    }
+
+    fun publishedMs(published: Boolean, nowMs: Long): Long = if (published) nowMs else 0L
+
+    fun istSession(nowMs: Long): String = Instant.ofEpochMilli(nowMs).atZone(IST).toLocalDate().toString()
+
+    fun dailyReviewDue(nowMs: Long, doneSession: String?): Boolean {
+        val z = Instant.ofEpochMilli(nowMs).atZone(IST)
+        val minutes = z.hour * 60 + z.minute
+        if (minutes < DAILY_REVIEW_AFTER_MIN) return false
+        val dow = z.dayOfWeek.value
+        if (dow >= 6) return false
+        return doneSession != istSession(nowMs)
+    }
+
+    fun reviewFinished(status: String?): Boolean = status == "WRITTEN" || status == "ALREADY_COMPLETE"
+}
+
+/** ONE serialized local worker for authority state persistence and the Daily review (no network). */
+object IndexAuthorityIo {
+    private const val TAG = "IndexAuthorityIo"
+    val executor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "index-authority-io").apply { isDaemon = true }
+    }
+
+    fun persist(filesDir: File, persist: JSONObject, publishedMs: Long) {
+        val dir = IndexAuthorityContext.stateDir(filesDir).absolutePath
+        val session = persist.optString("session_date", "")
+        val delta = persist.optJSONObject("delta")?.toString() ?: return
+        executor.execute {
+            try {
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                val out = brain.callAttr("index_authority_persist", dir, session, delta, publishedMs).toString()
+                if (!out.contains("\"written\": true")) LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST: ${out.take(160)}")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST_FAIL: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    fun maybeRunDailyReview(filesDir: File, prefs: android.content.SharedPreferences, nowMs: Long,
+                            closedTradesJson: String?) {
+        if (!IndexAuthorityContext.dailyReviewDue(nowMs, prefs.getString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, null))) return
+        val session = IndexAuthorityContext.istSession(nowMs)
+        executor.execute {
+            try {
+                if (!IndexAuthorityContext.dailyReviewDue(System.currentTimeMillis(),
+                        prefs.getString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, null))) return@execute
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                val out = brain.callAttr("daily_review_run",
+                    IndexAuthorityContext.stateDir(filesDir).absolutePath,
+                    IndexAuthorityContext.reportDir(filesDir).absolutePath,
+                    session, "[]", closedTradesJson, null, IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null).toString()
+                val status = try { JSONObject(out).optString("status") } catch (e: Exception) { "" }
+                if (IndexAuthorityContext.reviewFinished(status)) {
+                    prefs.edit().putString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, session).apply()
+                }
+                LogBuffer.add('I', TAG, "DAILY_REVIEW: session=$session status=$status")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "DAILY_REVIEW_FAIL: ${e.javaClass.simpleName}")
+            }
+        }
     }
 }

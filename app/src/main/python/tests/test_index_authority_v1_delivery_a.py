@@ -104,6 +104,8 @@ class DirectionRule(unittest.TestCase):
         p = path_polls(F.linear(24000, 8, n))
         base = ia.compute_direction('NF', p[:15], F.SESSION, dt('10:25'), scale_ok())
         withfuture = ia.compute_direction('NF', p, F.SESSION, dt('10:25'), scale_ok())
+        self.assertIn('FUTURE_POLL_EXCLUDED', withfuture['reason_codes'])
+        withfuture['reason_codes'].remove('FUTURE_POLL_EXCLUDED')
         self.assertEqual(base, withfuture)
         skew = ia.compute_direction('NF', p, F.SESSION, dt('11:00'), scale_ok(), receipt_dt=dt('10:58'))
         self.assertEqual(skew['reason_codes'], ['CLOCK_SKEW'])
@@ -208,7 +210,7 @@ class ScaleAndCalendar(unittest.TestCase):
                   bnfExpiry='2027-01-26')
         ts = F.times('09:15', '09:20')
         p = [dict(x) for x in F.polls([24000, 24000], [52000, 52000], ts)]
-        out = brain.compute_index_authority(p, c)
+        out = brain.compute_index_authority(p, F.with_clock(c, p))
         self.assertEqual(out['BNF']['calendar_coverage']['status'], 'CALENDAR_UNAVAILABLE')
         self.assertIn('CALENDAR_UNAVAILABLE', out['BNF']['reason_codes'])
         self.assertEqual(out['NF']['calendar_coverage']['status'], 'COVERED')
@@ -264,12 +266,12 @@ class LabelTarget(unittest.TestCase):
     def test_target_not_applicable_at_or_after_delayed_start(self):
         s = self.series()
         for hm in ('15:01', '15:05', '15:20', '14:52'):
-            self.assertEqual(dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt(hm).isoformat()}, s)['label'],
+            self.assertEqual(dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt(hm).isoformat(), 'published_at': dt(hm).isoformat()}, s)['label'],
                              'TARGET_NOT_APPLICABLE', hm)
 
     def test_match_mismatch_tie_abstain_unavailable(self):
         s = self.series()
-        d = lambda v: {'direction': v, 'decision_poll_ts': dt('10:00').isoformat()}
+        d = lambda v: {'direction': v, 'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat()}
         self.assertEqual(dr.label_decision(d('BULL'), s)['label'], 'MATCH')
         self.assertEqual(dr.label_decision(d('BEAR'), s)['label'], 'MISMATCH')
         self.assertEqual(dr.label_decision(d('NEUTRAL'), s)['label'], 'ABSTAIN')
@@ -279,16 +281,16 @@ class LabelTarget(unittest.TestCase):
 
     def test_missing_endpoint_and_late_start_unresolved(self):
         s = [r for r in self.series() if r[0] < dt('15:05')]
-        r = dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt('10:00').isoformat()}, s)
+        r = dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat()}, s)
         self.assertEqual((r['label'], r['reason']), ('UNRESOLVED', 'ENDPOINT_MISSING'))
         gap = [r for r in self.series() if not (dt('10:00') < r[0] < dt('10:20'))]
-        r = dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt('10:00').isoformat()}, gap)
+        r = dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat()}, gap)
         self.assertEqual(r['label'], 'UNRESOLVED')
 
     def test_availability_after_poll_is_respected(self):
         s = self.series()
         r = dr.label_decision({'direction': 'BULL', 'decision_poll_ts': dt('10:00').isoformat(),
-                               'available_ts': dt('10:03').isoformat()}, s)
+                               'published_at': dt('10:03').isoformat()}, s)
         self.assertEqual(r['entry_observation_ts'][11:16], '10:07')
 
     def test_outcome_labels_are_descriptive(self):
@@ -436,26 +438,26 @@ class AnalyzeCutover(unittest.TestCase):
 
     def test_expiry_invalid_on_one_index_other_proceeds(self):
         c = dict(self.ctx, bnfExpiry='garbage', indexAuthorityStateDir=os.path.join(self.tmp, 'exp', 'index_authority_v1'))
-        out = brain.compute_index_authority(self.polls[:2], c)
-        out = brain.compute_index_authority(self.polls, c)
+        out = brain.compute_index_authority(self.polls[:2], F.with_clock(c, self.polls[:2]))
+        out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
         self.assertEqual(out['BNF']['reason_codes'], ['EXPIRY_INVALID'])
         self.assertEqual(out['NF']['direction']['value'], 'BULL')
 
     def test_restart_reads_persisted_scale_and_corrupt_state_is_unavailable(self):
         d = os.path.join(self.tmp, 'restart', 'index_authority_v1')
         c = dict(self.ctx, indexAuthorityStateDir=d)
-        brain.compute_index_authority(self.polls[:2], c)          # observes the scale at 09:20
-        out = brain.compute_index_authority(self.polls, c)        # "restart": fresh call, state from disk
+        brain.compute_index_authority(self.polls[:2], F.with_clock(c, self.polls[:2]))          # observes the scale at 09:20
+        out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))        # "restart": fresh call, state from disk
         self.assertEqual(out['NF']['direction']['value'], 'BULL')
         with open(os.path.join(d, F.SESSION + '.json'), 'w') as f:
             f.write('{corrupt')
-        out2 = brain.compute_index_authority(self.polls, c)
+        out2 = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
         self.assertEqual(out2['NF']['availability'], 'UNAVAILABLE')
         self.assertIn('SCALE_SCALE_STATE_UNAVAILABLE', out2['NF']['reason_codes'])
 
     def test_no_state_dir_never_invents_scale(self):
         c = {k: v for k, v in self.ctx.items() if k != 'indexAuthorityStateDir'}
-        out = brain.compute_index_authority(self.polls, c)
+        out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
         self.assertEqual(out['NF']['availability'], 'UNAVAILABLE')
 
     def test_snapshot_and_replay_never_carry_local_paths(self):
@@ -499,7 +501,11 @@ class ManualPaperAndExitContinuity(unittest.TestCase):
         t = {'exit_contract': ia.managed_exit_contract('NF', 'BULL_CALL', 'idx1_x')}
         ts = lambda m: (dt('10:00') + timedelta(minutes=m)).isoformat()
         self.assertFalse(ia.managed_invalidation(t, [(ts(0), 'BULL'), (ts(5), 'BEAR')])['exit'])
-        self.assertTrue(ia.managed_invalidation(t, [(ts(0), 'BEAR'), (ts(5), 'NEUTRAL')])['exit'])
+        # R5 R2: NEUTRAL is not the opposite direction; UNAVAILABLE interrupts confirmation
+        self.assertFalse(ia.managed_invalidation(t, [(ts(0), 'BEAR'), (ts(5), 'NEUTRAL')])['exit'])
+        self.assertFalse(ia.managed_invalidation(t, [(ts(0), 'NEUTRAL'), (ts(5), 'NEUTRAL')])['exit'])
+        self.assertTrue(ia.managed_invalidation(t, [(ts(0), 'BEAR'), (ts(5), 'BEAR')])['exit'])
+        self.assertFalse(ia.managed_invalidation(t, [(ts(0), 'BEAR'), (ts(5), 'UNAVAILABLE'), (ts(10), 'BEAR')])['exit'])
         self.assertFalse(ia.managed_invalidation(t, [(ts(0), 'BEAR'), (ts(5), 'UNAVAILABLE')])['exit'])
         r = ia.managed_invalidation(t, [(ts(0), 'BULL')] + [(ts(5 * i), 'UNAVAILABLE') for i in range(1, 8)])
         self.assertFalse(r['exit'])
@@ -553,8 +559,8 @@ class ReportStoreDurability(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def decisions(self, v='BULL'):
-        return {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'direction': {'value': v}, 'reason_codes': []}],
-                'BNF': [{'decision_poll_ts': dt('10:00').isoformat(), 'direction': {'value': 'UNAVAILABLE'}, 'reason_codes': ['CALENDAR_UNAVAILABLE']}]}
+        return {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat(), 'direction': {'value': v}, 'reason_codes': []}],
+                'BNF': [{'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat(), 'direction': {'value': 'UNAVAILABLE'}, 'reason_codes': ['CALENDAR_UNAVAILABLE']}]}
 
     def polls(self):
         return [{'t': t, 'nfSpot': 24000 + i, 'bnfSpot': 52000} for i, t in enumerate(F.times('09:15', '15:30', 1))]
@@ -590,7 +596,7 @@ class ReportStoreDurability(unittest.TestCase):
         files = [f for f in os.listdir(self.dir) if f.endswith('.json') and f != 'lease.json']
         self.assertEqual(len(files), dr.MAX_SESSIONS_RETAINED)
         self.assertLess(dr.ReportStore(self.dir).total_bytes(), dr.MAX_SESSIONS_RETAINED * dr.MAX_REPORT_BYTES)
-        big = {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'direction': {'value': v}, 'reason_codes': ['X' * 50]}
+        big = {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat(), 'direction': {'value': v}, 'reason_codes': ['X' * 50]}
                       for v in ['BULL', 'BEAR'] * 300], 'BNF': []}
         r = dr.run_daily_review(self.dir, F.SESSION, big, self.polls())
         self.assertIn(r['status'], ('WRITTEN', 'SIZE_LIMIT'))
@@ -615,11 +621,11 @@ class ReportStoreDurability(unittest.TestCase):
         self.assertLessEqual(len(ias.load(d, F.SESSION)['history']['NF']), ias.MAX_DECISIONS)
         for i in range(15):
             ias.save(d, f'2026-01-{i + 1:02d}', {'history': {}})
-        self.assertLessEqual(len(os.listdir(d)), ias.MAX_SESSIONS)
+        self.assertLessEqual(len([f for f in os.listdir(d) if f.endswith('.json')]), ias.MAX_SESSIONS)
 
     def test_brain_entry_points_local_only(self):
         sd = os.path.join(self.tmp, 'index_authority_v1')
-        ias.save(sd, F.SESSION, {'history': {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'direction': {'value': 'BULL'}, 'reason_codes': []}], 'BNF': []}})
+        ias.save(sd, F.SESSION, {'history': {'NF': [{'decision_poll_ts': dt('10:00').isoformat(), 'published_at': dt('10:00').isoformat(), 'direction': {'value': 'BULL'}, 'reason_codes': []}], 'BNF': []}})
         out = json.loads(brain.daily_review_run(sd, self.dir, F.SESSION, json.dumps(self.polls()), '[]'))
         self.assertEqual(out['status'], 'WRITTEN')
         doc = json.loads(brain.daily_review_read(self.dir, F.SESSION))

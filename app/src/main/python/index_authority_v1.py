@@ -348,8 +348,19 @@ def efficiency_ratio(series_since_a):
     return abs(series_since_a[-1][1] - series_since_a[0][1]) / path, None
 
 
-def compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt=None):
-    """index_direction_v1 for one index at one decision time.  scale: dict from compute_scale (or stored)."""
+def analysis_clock(decision_dt=None, receipt_dt=None, analysis_dt=None):
+    """R5 correction R1: freshness is judged against the latest TRUSTED clock available (the analysis clock,
+    the poll receipt clock, or the decision time), never only against the source poll's own timestamp."""
+    clocks = [x for x in (decision_dt, receipt_dt, analysis_dt) if isinstance(x, datetime)]
+    return max(clocks) if clocks else None
+
+
+def compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt=None, analysis_dt=None):
+    """index_direction_v1 for one index at one decision time.  scale: dict from compute_scale (or stored).
+
+    decision_dt: the evaluation time of the decision.  receipt_dt / analysis_dt: trusted device clocks.  The
+    effective clock is the latest of the three, so an old poll analysed (or refreshed / replayed) later is
+    judged at the later clock and becomes SPOT_STALE rather than looking current."""
     res = {'value': 'UNAVAILABLE', 'strength': None, 'z_open': None, 'z_30': None, 'er': None,
            'er_reason': None, 'reason_codes': [], 'inputs': {}}
 
@@ -361,17 +372,25 @@ def compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt
         return unavailable('DECISION_TIME_INVALID')
     if receipt_dt is not None and (decision_dt - receipt_dt).total_seconds() > CLOCK_SKEW_TOLERANCE_S:
         return unavailable('CLOCK_SKEW')
-    d = decision_dt.date()
+    clock = analysis_clock(decision_dt, receipt_dt, analysis_dt)
+    res['inputs']['clock'] = {'evaluated_at': clock.isoformat(),
+                              'receipt_ts': receipt_dt.isoformat() if receipt_dt else None,
+                              'analysis_ts': analysis_dt.isoformat() if analysis_dt else None}
+    d = clock.date()
     close = _at(d, SESSION_CLOSE)
-    eval_dt = decision_dt
-    session_closed = decision_dt > close
+    eval_dt = clock
+    session_closed = clock > close
     if session_closed:
-        eval_dt = close  # last in-session value is kept
+        eval_dt = close  # last in-session value is kept (if it was itself fresh at the close)
+    future = [p for p in polls or [] if (poll_time(p, session_date) or clock) > clock + timedelta(seconds=CLOCK_SKEW_TOLERANCE_S)]
+    if future:
+        res['reason_codes'].append('FUTURE_POLL_EXCLUDED')
     series = valid_spot_series(polls, index, session_date, eval_dt)
     if not series:
         return unavailable('SPOT_MISSING')
     t, s = series[-1]
-    if _minutes(t, eval_dt) * 60 > SPOT_MAX_AGE_S and not session_closed:
+    if _minutes(t, eval_dt) * 60 > SPOT_MAX_AGE_S:
+        res['inputs']['spot'] = {'value': s, 'asof': t.isoformat(), 'age_s': round(_minutes(t, eval_dt) * 60, 3)}
         return unavailable('SPOT_STALE')
     res['inputs']['spot'] = {'value': s, 'asof': t.isoformat()}
     a = find_open_ref(series, session_date)
@@ -461,14 +480,18 @@ def in_spread_entry_window(dt):
 
 def build_index_decision(index, polls, session_date, decision_dt, scale, *, receipt_dt=None,
                          index_available=True, availability_reason=None, vol_context=None,
-                         single_leg_enabled=False):
-    """The authority object for one index (R3 s4.1).  Writer: this function only."""
+                         single_leg_enabled=False, analysis_dt=None, source_poll_dt=None):
+    """The authority object for one index (R3 s4.1).  Writer: this function only.
+
+    decision_dt is the evaluation clock; source_poll_dt is the event time of the latest poll used (kept as
+    decision_poll_ts, never relabelled as publication time).  Publication time is stamped by the store when
+    the decision is actually persisted (published_at)."""
     reasons = []
     if not index_available:
         direction = {'value': 'UNAVAILABLE', 'strength': None, 'z_open': None, 'z_30': None, 'er': None,
                      'reason_codes': [availability_reason or 'INDEX_UNAVAILABLE'], 'inputs': {}}
     else:
-        direction = compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt)
+        direction = compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt, analysis_dt)
     regime = compute_regime(direction)
     policy = compute_structure_policy(regime, vol_context, single_leg_enabled)
     reasons.extend(direction.get('reason_codes') or [])
@@ -490,7 +513,9 @@ def build_index_decision(index, polls, session_date, decision_dt, scale, *, rece
         'structure_policy_version': STRUCTURE_POLICY_VERSION,
         'index': index,
         'session_date': str(session_date) if session_date else None,
-        'decision_poll_ts': decision_dt.isoformat() if decision_dt else None,
+        'decision_poll_ts': (source_poll_dt or decision_dt).isoformat() if (source_poll_dt or decision_dt) else None,
+        'analysis_ts': decision_dt.isoformat() if decision_dt else None,
+        'receipt_ts': receipt_dt.isoformat() if receipt_dt else None,
         'input_asof_ts': (direction.get('inputs', {}).get('spot') or {}).get('asof'),
         'availability': availability,
         'reason_codes': list(dict.fromkeys(reasons)),
@@ -505,7 +530,7 @@ def build_index_decision(index, polls, session_date, decision_dt, scale, *, rece
 
 
 def decision_identity(obj):
-    core = {k: obj.get(k) for k in ('policy_version', 'index', 'session_date', 'decision_poll_ts', 'availability',
+    core = {k: obj.get(k) for k in ('policy_version', 'index', 'session_date', 'decision_poll_ts', 'analysis_ts', 'availability',
                                     'reason_codes', 'direction', 'regime', 'structure_policy')}
     return 'idx1_' + hashlib.sha256(json.dumps(core, sort_keys=True, default=str, separators=(',', ':')).encode()).hexdigest()[:20]
 
@@ -631,29 +656,68 @@ def freshness_coverage(chains):
 
 
 # ---- managed-policy admission (one position per index; never manual Paper) -------------------
-def managed_open_positions(open_trades, index):
-    n = 0
-    for t in open_trades or []:
-        if not isinstance(t, dict):
-            continue
-        es = t.get('entry_snapshot') if isinstance(t.get('entry_snapshot'), dict) else {}
-        pol = t.get('managed_policy_id') or es.get('managed_policy_id') or ((es.get('exit_contract') or {}).get('policy_id'))
-        ix = str(t.get('index_key') or t.get('index') or es.get('index_key') or '').upper()
-        ix = 'BNF' if ix in ('BNF', 'BANKNIFTY', 'BANK NIFTY') else ('NF' if ix in ('NF', 'NIFTY', 'NIFTY50') else ix)
-        status = str(t.get('status') or 'OPEN').upper()
-        if pol == MANAGED_POLICY_ID and ix == index and status not in ('CLOSED', 'EXITED'):
-            n += 1
-    return n
+SINGLE_LEG_POLICY_ID = 'index_single_leg_v1'
+MANAGED_POLICY_IDS = (MANAGED_POLICY_ID, SINGLE_LEG_POLICY_ID)
+TERMINAL_STATUSES = frozenset({'CLOSED', 'EXITED', 'CANCELLED', 'REJECTED', 'EXPIRED_UNOPENED'})
 
 
-def managed_entry_gate(decision, candidate, open_trades, decision_dt, histories=None):
-    """New managed-policy entry admission.  Manual Paper is never routed through this gate."""
+def _norm_index(v):
+    ix = str(v or '').upper()
+    return 'BNF' if ix in ('BNF', 'BANKNIFTY', 'BANK NIFTY', 'NIFTY BANK') else (
+        'NF' if ix in ('NF', 'NIFTY', 'NIFTY50', 'NIFTY 50') else ix)
+
+
+def _policy_of(t):
+    es = t.get('entry_snapshot') if isinstance(t.get('entry_snapshot'), dict) else {}
+    return (t.get('policy_id') or t.get('managed_policy_id') or es.get('managed_policy_id')
+            or ((t.get('exit_contract') or {}).get('policy_id') if isinstance(t.get('exit_contract'), dict) else None)
+            or ((es.get('exit_contract') or {}).get('policy_id')))
+
+
+def managed_exposure(index, open_trades=None, single_leg_positions=None, reservations=None):
+    """R5 R3: ONE normalized managed-exposure inventory per index across both managed policy types
+    (index_managed_v1 spreads and index_single_leg_v1), counting every NON-TERMINAL item (OPEN,
+    EXIT_PENDING, PENDING_ENTRY, unknown) and every pending reservation.  Manual Paper / legacy trades
+    (no managed policy id) are not counted and are never restricted by automatic admission."""
+    items = []
+    seen = set()
+    for src, rows in (('trade', open_trades), ('single_leg', single_leg_positions), ('reservation', reservations)):
+        for t in rows or []:
+            if not isinstance(t, dict):
+                continue
+            pol = _policy_of(t)
+            if pol not in MANAGED_POLICY_IDS:
+                continue
+            es = t.get('entry_snapshot') if isinstance(t.get('entry_snapshot'), dict) else {}
+            ix = _norm_index(t.get('index_key') or t.get('index') or es.get('index_key'))
+            status = str(t.get('status') or 'OPEN').upper()
+            if ix != index or status in TERMINAL_STATUSES:
+                continue
+            key = str(t.get('id') or t.get('position_id') or t.get('reservation_id') or '') or None
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            items.append({'source': src, 'policy_id': pol, 'id': key, 'status': status})
+    return {'index': index, 'count': len(items), 'items': items}
+
+
+def managed_open_positions(open_trades, index, single_leg_positions=None, reservations=None):
+    return managed_exposure(index, open_trades, single_leg_positions, reservations)['count']
+
+
+def managed_entry_gate(decision, candidate, open_trades, decision_dt, histories=None, *,
+                       single_leg_positions=None, reservations=None, selector='BOTH'):
+    """New managed-policy entry admission.  Manual Paper is never routed through this gate.
+    decision_dt is the trusted analysis clock (quote freshness is judged against it)."""
     reasons = []
     ix = (decision or {}).get('index')
     if (decision or {}).get('availability') != 'AVAILABLE':
         reasons.append('AUTHORITY_UNAVAILABLE')
     if ((decision or {}).get('action') or {}).get('value') != 'CANDIDATES':
         reasons.append('ACTION_' + str(((decision or {}).get('action') or {}).get('value')))
+    if selector in ('NF', 'BNF') and selector != ix:
+        reasons.append('INDEX_NOT_SELECTED')
     if candidate is None:
         reasons.append('NO_CONSTRUCTED_CANDIDATE')
         fresh = {'status': 'FRESHNESS_UNVERIFIED', 'reason': 'NO_LEGS', 'legs': []}
@@ -665,11 +729,32 @@ def managed_entry_gate(decision, candidate, open_trades, decision_dt, histories=
         fresh = legs_freshness(candidate.get('legs') or [], decision_dt, histories)
         if fresh['status'] != 'FRESHNESS_VERIFIED':
             reasons.append(fresh['status'] + (':' + fresh['reason'] if fresh.get('reason') else ''))
-    if managed_open_positions(open_trades, ix) >= 1:
+    exp = managed_exposure(ix, open_trades, single_leg_positions, reservations)
+    if exp['count'] >= 1:
         reasons.append('MANAGED_POLICY_CAP_ONE_PER_INDEX')
     return {'policy_id': MANAGED_POLICY_ID, 'index': ix, 'candidate_id': (candidate or {}).get('id'),
-            'admit': not reasons, 'reasons': reasons,
+            'admit': not reasons, 'reasons': reasons, 'exposure': exp,
             'freshness': fresh, 'manual_paper_locked': False}
+
+
+# ---- opposite-direction confirmation (shared by spread and single-leg managed exits) ---------
+CONFIRMATION_CONTRACT = 'opposite_direction_confirmation_v1'
+OPPOSITE = {'BULL': 'BEAR', 'BEAR': 'BULL'}
+
+
+def contrary_confirmation(entry_dir, observations, required=2):
+    """observations: published direction values for the position's index, oldest..newest.
+
+    Contract opposite_direction_confirmation_v1 (R5 R2):
+      * only the OPPOSITE direction (BULL<->BEAR) counts; NEUTRAL is valid but not opposite -> resets;
+      * UNAVAILABLE (or any non-direction) is not a valid observation and INTERRUPTS confirmation -> resets;
+      * exit when the last `required` observations are consecutive valid opposite directions.
+    Returns (count, confirmed)."""
+    opp = OPPOSITE.get(entry_dir)
+    n = 0
+    for v in observations or []:
+        n = n + 1 if (opp is not None and v == opp) else 0
+    return n, bool(opp and n >= required)
 
 
 # ---- versioned exit contract (existing positions keep their original contract) --------------
@@ -682,7 +767,8 @@ LEGACY_EXIT_CONTRACT = {'schema': EXIT_CONTRACT_SCHEMA, 'policy_id': LEGACY_AUTH
 def managed_exit_contract(index, structure, decision_id):
     return {'schema': EXIT_CONTRACT_SCHEMA, 'policy_id': MANAGED_POLICY_ID, 'authority': POLICY_VERSION,
             'index': index, 'structure': structure, 'entry_decision_id': decision_id,
-            'exits': {'invalidation': 'two_consecutive_valid_contrary_directions',
+            'exits': {'invalidation': CONFIRMATION_CONTRACT, 'confirmation_required': 2,
+                      'neutral_is_not_opposite': True, 'unavailable_interrupts_confirmation': True,
                       'unavailable_direction_never_exits': True, 'direction_unmonitored_after_min': 30,
                       'stops_and_time_exits': 'unchanged_existing_risk_exits'}}
 
@@ -709,8 +795,9 @@ def managed_invalidation(trade, direction_history):
     entry_dir = 'BULL' if c.get('structure') in ('BULL_CALL', 'BULL_PUT', 'BUY_CE', 'SELL_PE') else (
         'BEAR' if c.get('structure') in ('BEAR_PUT', 'BEAR_CALL', 'BUY_PE', 'SELL_CE') else None)
     valid = [(t, v) for t, v in rows if v in ('BULL', 'BEAR', 'NEUTRAL')]
-    exit_now = bool(entry_dir and len(valid) >= 2 and all(v != entry_dir for _, v in valid[-2:])
-                    and rows[-1][1] in ('BULL', 'BEAR', 'NEUTRAL'))
+    ex = c.get('exits') if isinstance(c.get('exits'), dict) else {}
+    required = int(ex.get('confirmation_required') or 2)      # persisted parameter, not a module constant
+    _, exit_now = contrary_confirmation(entry_dir, [v for _, v in rows], required)
     unmonitored = None
     last_ts = parse_ts(rows[-1][0]) if rows and rows[-1][0] else None
     last_valid_ts = parse_ts(valid[-1][0]) if valid and valid[-1][0] else None
@@ -722,5 +809,5 @@ def managed_invalidation(trade, direction_history):
         else:
             unmonitored = (last_ts - ref).total_seconds() >= 30 * 60
     return {'applies': True, 'exit': exit_now,
-            'reason': 'INVALIDATION_TWO_VALID_CONTRARY' if exit_now else None,
+            'reason': 'INVALIDATION_OPPOSITE_CONFIRMED' if exit_now else None, 'confirmation_contract': CONFIRMATION_CONTRACT,
             'direction_unmonitored': unmonitored}

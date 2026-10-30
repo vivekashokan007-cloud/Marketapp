@@ -1660,10 +1660,42 @@ class NativeBridge(private val context: Context) {
                 brain.callAttr("daily_review_run",
                     IndexAuthorityContext.stateDir(dir).absolutePath,
                     IndexAuthorityContext.reportDir(dir).absolutePath,
-                    sessionDate.take(10), pollsJson, paperTradesJson, null).toString()
+                    sessionDate.take(10), pollsJson, paperTradesJson, null,
+                    IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null).toString()
             } ?: "{\"status\":\"TIMEOUT\",\"written\":false}"
         } catch (e: Exception) {
             "{\"status\":\"REPORT_ERROR\",\"written\":false}"
+        }
+    }
+
+    // R5 s2: the user's index selector (NF / BNF / BOTH) gates NEW managed admission only; open positions on
+    // both indices stay monitored.  Stored locally; read into the analysis context before every analyze.
+    @JavascriptInterface
+    fun setIndexSelector(selector: String): String {
+        val v = IndexAuthorityContext.normalizeSelector(selector)
+        prefs.edit().putString(IndexAuthorityContext.PREF_SELECTOR, v).apply()
+        return v
+    }
+
+    @JavascriptInterface
+    fun getIndexSelector(): String =
+        IndexAuthorityContext.normalizeSelector(prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
+
+    // R5 s2: explicit user choice between the index's allowed alternatives, validated by Python against the
+    // CURRENT published brain result (same decision, allowed, executable) and persisted locally.
+    @JavascriptInterface
+    fun indexAuthorityChoose(index: String, decisionId: String, candidateId: String): String {
+        return try {
+            val current = getBrainResult()
+            if (current == "null") return "{\"status\":\"REJECTED\",\"reason\":\"NO_CURRENT_RESULT\"}"
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            PyTimeout.callWithTimeout("bridge.index_choice", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("index_authority_record_choice",
+                    IndexAuthorityContext.stateDir(context.filesDir).absolutePath, current,
+                    index, decisionId, candidateId, System.currentTimeMillis()).toString()
+            } ?: "{\"status\":\"TIMEOUT\"}"
+        } catch (e: Exception) {
+            "{\"status\":\"ERROR\"}"
         }
     }
 
