@@ -17187,7 +17187,8 @@ def _is_ev_rule_b_trade(t):
 
 X1_CONTEXT_KEYS = ('x1CaptureSource', 'x1StateDir', 'x1PollMs', 'x1QuoteFetchedMs')
 IA_CONTEXT_KEYS = ('indexAuthorityStateDir', 'pollReceiptMs', 'analysisClockMs', 'indexAuthorityDeferredWrite',
-                   'indexSelector', 'managedEvidence', 'singleLegStateDir', 'singleLegPaperEnabled')
+                   'indexSelector', 'managedEvidence', 'singleLegStateDir', 'singleLegPaperEnabled',
+                   'contractLotTable')
 
 
 def _attach_paper_buying_research(result, ctx):
@@ -27286,29 +27287,44 @@ def _ia_candidate_from_construction(con, ctx, decision):
     return cand
 
 
-def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades, single_leg_positions=None):
-    """Delivery B (draft): index_single_leg_v1 entry proposal from A's authority only (no second direction).
+def _ia_single_leg_dir(ctx):
+    """ctx['singleLegStateDir'] (native: filesDir/single_leg_v1).  Read-only during analyze."""
+    v = (ctx or {}).get('singleLegStateDir')
+    if isinstance(v, str) and _os.path.isabs(v) and _os.path.basename(_os.path.normpath(v)) == 'single_leg_v1':
+        return v
+    return None
 
-    Broker margin evidence arrives only through ctx['singleLegMarginEvidence'][ix] (no live call is made here);
-    entry history through ctx['singleLegHistory'] (list of {index, entry_ts, exit_ts})."""
+
+def _ia_managed_evidence(ctx):
+    import managed_evidence_v1 as _me
+    # Read-only: never writes into ctx (X1 journal byte-identity).
+    return _me.from_native(ctx.get('managedEvidence') if isinstance(ctx, dict) else None)
+
+
+def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades, single_leg_positions=None):
+    """Delivery B: index_single_leg_v1 entry proposal from A's authority only (no second direction).
+
+    Contract identity / lot / tick / quantities / broker margin come only from ctx['managedEvidence']
+    (managed_evidence_v1, keyed by exact instrument; X1 never reads it).  Entry history and open single-leg
+    exposure come from the durable local store (single_leg_store_v1); no network call is made here."""
     import index_single_leg_v1 as _sl
+    import single_leg_store_v1 as _sls
     try:
-        margins = ctx.get('singleLegMarginEvidence') if isinstance(ctx.get('singleLegMarginEvidence'), dict) else {}
-        hist = ctx.get('singleLegHistory') if isinstance(ctx.get('singleLegHistory'), list) else None
+        d = _ia_single_leg_dir(ctx)
+        hist = _sls.history(d) if d else None
         plan = _sl.plan_entry(ix, dec, chain, spot, session_date=session, decision_dt=decision_dt,
                               expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'), captured_lot=_ia_lot(chain),
-                              open_positions=open_trades, history=hist or [],
+                              open_trades=open_trades, single_leg_positions=single_leg_positions,
+                              history=hist or [], history_supplied=hist is not None,
                               capital=float(ctx.get('capital') or _CONST['CAPITAL']),
-                              max_risk_pct=float(_CONST['MAX_RISK_PCT']), margin=margins.get(ix))
-        if hist is None:
-            plan['history_note'] = 'SINGLE_LEG_HISTORY_NOT_SUPPLIED'
-            plan['admit'] = False
-            plan['reasons'] = list(plan.get('reasons') or []) + ['SINGLE_LEG_HISTORY_NOT_SUPPLIED']
+                              max_risk_pct=float(_CONST['MAX_RISK_PCT']),
+                              evidence=_ia_managed_evidence(ctx),
+                              lot_table=ctx.get('contractLotTable') if isinstance(ctx.get('contractLotTable'), dict) else None)
+        plan['paper_enabled'] = bool(ctx.get('singleLegPaperEnabled'))
         return plan
     except Exception as exc:
         return {'policy_id': 'index_single_leg_v1', 'index': ix, 'admit': False,
                 'reasons': ['SINGLE_LEG_ERROR:' + type(exc).__name__]}
-
 
 
 def _ia_selector(ctx):
@@ -27514,8 +27530,20 @@ def _ia_apply_or_fail_closed(result, ctx, polls, open_trades, authority, stage_e
 
 
 def _ia_single_leg_positions(ctx):
-    """Delivery B hook (no single-leg store on the A branch)."""
-    return None
+    """Delivery B: non-terminal single-leg positions from the durable store (shared managed exposure).
+    An unreadable store is reported as one unknown exposure item, so managed admission fails closed."""
+    import single_leg_store_v1 as _sls
+    d = _ia_single_leg_dir(ctx)
+    if not d:
+        return None
+    try:
+        rows = _sls.open_positions(d)
+    except Exception:
+        rows = None
+    if rows is None:
+        return [{'index': ix, 'policy_id': 'index_single_leg_v1', 'status': 'UNKNOWN_STORE_UNREADABLE'}
+                for ix in _ia.INDICES]
+    return rows
 
 
 def _ia_index_alerts(result, ctx):
@@ -27565,9 +27593,16 @@ DAILY_REVIEW_BUDGET_S = 20.0
 DAILY_REVIEW_SCHEDULE = None   # no poll-schedule contract is known to the brain -> scheduled=UNKNOWN
 
 
-def daily_review_extra_outcomes(session_date):
-    """Delivery B hook: closed local single-leg Paper outcomes (none on the A branch)."""
-    return []
+def daily_review_extra_outcomes(session_date, state_dir=None):
+    """Delivery B: closed/unresolved local single-leg Paper outcomes (sibling dir single_leg_v1)."""
+    import single_leg_store_v1 as _sls
+    try:
+        if not isinstance(state_dir, str):
+            return []
+        d = _os.path.join(_os.path.dirname(_os.path.normpath(state_dir)), _sls.STATE_DIR_NAME)
+        return _sls.outcomes(d, session_date) if _os.path.isdir(d) else []
+    except Exception:
+        return []
 
 
 def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper_trades_json=None, teacher_status=None,
@@ -27590,7 +27625,7 @@ def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper
             schedule = json.loads(schedule_json) if schedule_json not in (None, '') else DAILY_REVIEW_SCHEDULE
         except Exception:
             return json.dumps({'status': 'INPUT_INVALID', 'written': False})
-        extra = daily_review_extra_outcomes(str(session_date)[:10])
+        extra = daily_review_extra_outcomes(str(session_date)[:10], state_dir)
         if extra:
             trades = list(trades or []) + list(extra)
         if not polls:
@@ -27696,5 +27731,47 @@ def index_authority_record_choice(state_dir, result_json, index, decision_id, ca
                 doc['choices'] = (list(doc.get('choices') or []) + [choice])[-STRUCTURE_CHOICES_MAX:]
                 _atomic_write(path, _canon(doc).encode())
         return json.dumps({'status': 'CHOSEN', 'choice': choice})
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+
+# ═══ Delivery B R5: local single-leg Paper executor (bridge entry points; local files only) ═══
+def single_leg_admit(sl_dir, result_json, index, now_ms, open_trades_json='[]'):
+    import single_leg_store_v1 as _sls
+    try:
+        res = json.loads(result_json or '{}')
+        ot = json.loads(open_trades_json or '[]')
+        now = _ia.parse_ts(int(now_ms)) if now_ms else None
+        return json.dumps(_sls.admit(sl_dir, res, str(index or '').upper(), now, ot))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_monitor(sl_dir, ia_state_dir, session_date, chains_json, now_ms, snapshot_ms=0, spots_json='{}'):
+    """Native IO worker, after publication: advance open single-leg positions on the published poll.
+    Direction observations = PUBLISHED authority decisions of the position's index (persisted history)."""
+    import single_leg_store_v1 as _sls
+    try:
+        chains = json.loads(chains_json or '{}')
+        spots = json.loads(spots_json or '{}')
+        now = _ia.parse_ts(int(now_ms)) if now_ms else None
+        obs = {}
+        doc = _ias.load(_ias.state_dir({'indexAuthorityStateDir': ia_state_dir}), str(session_date)[:10]) \
+            if ia_state_dir else None
+        for ix, rows in ((doc or {}).get('history') or {}).items():
+            obs[ix] = [(r.get('decision_poll_ts'), (r.get('direction') or {}).get('value'))
+                       for r in rows or [] if r.get('published_at')]
+        return json.dumps(_sls.monitor(sl_dir, chains, obs, now, spots=spots,
+                                       snapshot_ms=int(snapshot_ms) if snapshot_ms else None))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_read(sl_dir):
+    import single_leg_store_v1 as _sls
+    try:
+        doc = _sls.read(sl_dir)
+        return json.dumps(doc if doc is not None else {'status': 'STORE_CORRUPT'})
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
