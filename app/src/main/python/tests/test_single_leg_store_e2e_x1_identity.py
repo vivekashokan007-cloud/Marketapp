@@ -165,7 +165,7 @@ class X1ByteIdentity(unittest.TestCase):
         ev = me.build_context({'NF': rows}, qty, [m])
         self.assertTrue(ev['contracts'] and ev['quantities'] and ev['margins'])
         outs, raws = [], []
-        for with_ev in (False, True):
+        for with_ev in (False, True, 'native'):
             h = Harness()
             try:
                 seq = [(FRI, '15:20:30', 'fri_1520_reference', 20), (MON, '09:20:40', 'mon_0920_entry', 20),
@@ -176,6 +176,15 @@ class X1ByteIdentity(unittest.TestCase):
                     c = h.ctx(day, hms, g(sid, 'NF'), g(sid, 'BNF'), q_lag_s=lag)
                     if with_ev:
                         c['managedEvidence'] = copy.deepcopy(ev)
+                    if with_ev == 'native':
+                        # R7: the native collectors' raw form + a populated single-leg snapshot store
+                        c['managedEvidence'] = {'schema': 'managed_evidence_v1', 'native_raw': {
+                            'quantities': qty, 'contracts': {'NF': {'response': fx['option_contracts_NF'], 'fetched_at_ms': 1}},
+                            'margins': [{'request': fx['margin_request'], 'response': fx['margin_response'], 'received_at_ms': 2}]}}
+                        sd = os.path.join(tempfile.mkdtemp(), 'single_leg_v1')
+                        sls.put_snapshots(sd, {'SYNTH': {'contract': 'paper_broker_snapshot_v1', 'receipt_ms': 1}})
+                        c['singleLegStateDir'] = sd
+                        c['singleLegPaperEnabled'] = True
                     o.append(json.dumps(h.run(c), sort_keys=True))
                 outs.append(o)
                 raws.append(h.raw())
@@ -183,6 +192,8 @@ class X1ByteIdentity(unittest.TestCase):
                 h.close()
         self.assertEqual(outs[0], outs[1])
         self.assertEqual(raws[0], raws[1])
+        self.assertEqual(outs[0], outs[2])
+        self.assertEqual(raws[0], raws[2])
 
     def test_x1_sources_never_read_managed_evidence(self):
         import paper_buying_research as x1
