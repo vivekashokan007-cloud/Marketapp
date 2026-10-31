@@ -51,10 +51,10 @@ class B515CandidatePwaTest {
     @Test fun indexResolutionQueryStringsAndFragments() {
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "index.html"))
-        assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "?v=1379"))
+        assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "?v=1380"))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "#tab=positions"))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "index.html?x=1#scroll"))
-        assertEquals(Decision.Serve("app.js", "text/javascript"), serve(base + "app.js?v=1379"))
+        assertEquals(Decision.Serve("app.js", "text/javascript"), serve(base + "app.js?v=1380"))
         assertEquals(Decision.Serve("api.js", "text/javascript"), serve(base + "api.js?v=1134"))
         assertEquals(Decision.Serve("log-viewer.js", "text/javascript"), serve(base + "log-viewer.js?v=1161"))
         assertEquals(Decision.Serve("style.css", "text/css"), serve(base + "style.css?v=1142"))
@@ -169,7 +169,7 @@ class B515CandidatePwaTest {
         assertEquals("1241d33ad57280ecd6bb994fd4c9e332a7bacbfa9e4a898b18c5ee511e9286f0",
             pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
-        assertEquals("2.6.84", id.getString("version")); assertEquals(515, id.getInt("build")); assertEquals(1379, id.getInt("app_js_v"))
+        assertEquals("2.6.85", id.getString("version")); assertEquals(516, id.getInt("build")); assertEquals(1380, id.getInt("app_js_v"))
         // When a MarketVivi checkout at the pinned commit is available (local review), its real bytes verify too.
         val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
             ?: return println("SKIPPED real-bytes pin check: MARKETVIVI_DIR not set")
@@ -185,7 +185,7 @@ class B515CandidatePwaTest {
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
         assertTrue(g.contains("applicationId = \"com.marketradar.app\""))
-        assertTrue(g.contains("versionCode = 515")); assertTrue(g.contains("versionName = \"2.6.84\""))
+        assertTrue(g.contains("versionCode = 516")); assertTrue(g.contains("versionName = \"2.6.85\""))
         for (bad in listOf("applicationIdSuffix", "versionNameSuffix", "isDebuggable = true", "debuggable true", "setDataDirectorySuffix"))
             assertFalse(bad, g.contains(bad))
         val cand = g.substring(g.indexOf("create(\"candidate\") {")).let { it.substring(0, it.indexOf("\n        }\n")) }

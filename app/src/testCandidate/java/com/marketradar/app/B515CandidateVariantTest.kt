@@ -11,8 +11,8 @@ class B515CandidateVariantTest {
         assertEquals("candidate", BuildConfig.BUILD_TYPE)
         assertEquals("com.marketradar.app", BuildConfig.APPLICATION_ID)   // no suffix: installs in place, same data
         assertFalse(BuildConfig.DEBUG)
-        assertEquals(515, BuildConfig.VERSION_CODE)
-        assertEquals("2.6.84", BuildConfig.VERSION_NAME)
+        assertEquals(516, BuildConfig.VERSION_CODE)
+        assertEquals("2.6.85", BuildConfig.VERSION_NAME)
         assertEquals("6cb5ad51376314b9dbff0cb1df3e0e08aff75df3", BuildConfig.PWA_SOURCE_HEAD)
         val pin = listOf(File("src/candidate/pwa_expected_manifest.json"), File("app/src/candidate/pwa_expected_manifest.json")).first { it.isFile }
         assertEquals(CandidatePwaManifest.sha256Hex(pin.readBytes()), BuildConfig.PWA_MANIFEST_SHA256)

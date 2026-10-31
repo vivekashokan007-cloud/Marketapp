@@ -32,8 +32,8 @@ class FakeMarketVivi:
         git(self.dir, "init", "-q")
         git(self.dir, "config", "user.email", "t@example.invalid")
         git(self.dir, "config", "user.name", "t")
-        (self.dir / "index.html").write_text('<script src="app.js?v=1379"></script>\n')
-        (self.dir / "app.js").write_text("const M0_PWA_IDENTITY = { version: '2.6.84', build: 515, app_js_v: 1379 };\n")
+        (self.dir / "index.html").write_text('<script src="app.js?v=1380"></script>\n')
+        (self.dir / "app.js").write_text("const M0_PWA_IDENTITY = { version: '2.6.85', build: 516, app_js_v: 1380 };\n")
         for n in ("api.js", "log-viewer.js", "style.css", "manifest.json"):
             (self.dir / n).write_text(f"/* {n} */\n")
         (self.dir / "CLAUDE.md").write_text("secret-ish notes\n")
@@ -69,7 +69,7 @@ class StageTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256((out / n).read_bytes()).hexdigest(), m["files"][n]["sha256"])
         self.assertFalse((out / "CLAUDE.md").exists())
         self.assertFalse((out / "docs").exists())
-        self.assertEqual(m["pwa_identity"], {"version": "2.6.84", "build": 515, "app_js_v": 1379, "index_app_js_v": 1379})
+        self.assertEqual(m["pwa_identity"], {"version": "2.6.85", "build": 516, "app_js_v": 1380, "index_app_js_v": 1380})
 
     def test_tampered_pin_fails_closed(self):
         m = json.loads(self.pin.read_text())

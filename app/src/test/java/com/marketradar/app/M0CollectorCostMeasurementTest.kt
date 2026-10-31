@@ -35,7 +35,7 @@ class M0CollectorCostMeasurementTest {
         ResearchCollector.setEnabled(dir, true, ms(9, 0))
         val nf = chain("NF", "2026-10-27", 131, 21000, 50); val bnf = chain("BNF", "2026-10-28", 131, 48000, 100)
         val raw = JSONObject().put("schema", "research_m0_raw_forecast_v1").put("status", "NEUTRAL").put("direction", "NEUTRAL")
-            .put("confidence", 41.0).put("horizon", "UNDECLARED").put("brain_version", "2.6.84")
+            .put("confidence", 41.0).put("horizon", "UNDECLARED").put("brain_version", "2.6.85")
             .put("raw", JSONObject().put("action", "WAIT").put("strategy", JSONObject.NULL).put("direction", "NEUTRAL")
                 .put("market_direction", "NEUTRAL").put("confidence", 41).put("market_confidence", 41)
                 .put("market_bull_score", 1.2).put("market_bear_score", 1.1).put("market_view_status", "AVAILABLE")
@@ -59,7 +59,7 @@ class M0CollectorCostMeasurementTest {
             }
             timed("envelope") {
                 ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$day|${s.ordinal}", JSONObject(raw.toString()).put("input_last_poll_slot_key", "$day|${s.ordinal}"),
-                    now + 2000, now + 9000, "2.6.84", 513, JSONObject().put("execution_mode", "paper").put("trade_mode", "swing")), now + 9100)
+                    now + 2000, now + 9000, "2.6.85", 513, JSONObject().put("execution_mode", "paper").put("trade_mode", "swing")), now + 9100)
             }
         }
         timed("reconcile") { ResearchCollector.reconcile(dir, ms(16, 0)) }

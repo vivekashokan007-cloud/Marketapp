@@ -27,12 +27,12 @@ on:
       expected_version_code:
         description: 'versionCode agreed after checking the installed phone build'
         required: true
-        default: '515'
+        default: '516'
         type: string
       expected_version_name:
         description: 'versionName in app/build.gradle.kts at native_sha'
         required: true
-        default: '2.6.84'
+        default: '2.6.85'
         type: string
       expected_cert_sha256:
         description: 'SHA-256 of the existing release signing certificate (hex, colons optional)'

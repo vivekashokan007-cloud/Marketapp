@@ -11,10 +11,10 @@ test('facade forwards export / result / cancel with a string identity only', () 
   const calls = [];
   const ctx = ctxWith({ exportResearchEvidence: (s) => (calls.push(['e', s]), '{"status":"PICKER_OPENING"}'),
     getResearchExportResult: () => (calls.push(['r']), '{"status":"NONE"}'), cancelResearchExport: () => (calls.push(['c']), '{}') });
-  assert.equal(JSON.parse(ctx.NativeBridge.exportResearchEvidence('{"version":"2.6.84"}')).status, 'PICKER_OPENING');
+  assert.equal(JSON.parse(ctx.NativeBridge.exportResearchEvidence('{"version":"2.6.85"}')).status, 'PICKER_OPENING');
   ctx.NativeBridge.exportResearchEvidence({ not: 'a string' });
   ctx.NativeBridge.getResearchExportResult(); ctx.NativeBridge.cancelResearchExport();
-  assert.deepEqual(calls, [['e', '{"version":"2.6.84"}'], ['e', ''], ['r'], ['c']]);
+  assert.deepEqual(calls, [['e', '{"version":"2.6.85"}'], ['e', ''], ['r'], ['c']]);
 });
 
 test('missing native export methods -> explicit NATIVE_METHOD_ABSENT', () => {
