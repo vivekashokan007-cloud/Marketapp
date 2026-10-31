@@ -1,8 +1,24 @@
+import groovy.json.JsonSlurper
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.chaquo.python")
 }
+
+// b515 CANDIDATE-ONLY (DO NOT MERGE): pin for the bundled-PWA `candidate` build type. The committed expected manifest
+// names the accepted MarketVivi commit and the sha256 of each runtime file. Debug/release do not read the bundle.
+val candidatePwaManifestFile = file("src/candidate/pwa_expected_manifest.json")
+val candidatePwaRuntimeFiles = listOf("index.html", "app.js", "api.js", "log-viewer.js", "style.css", "manifest.json")
+fun candidateSha256(bytes: ByteArray): String =
+    MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+@Suppress("UNCHECKED_CAST")
+val candidatePwaManifest: Map<String, Any?> =
+    JsonSlurper().parse(candidatePwaManifestFile) as Map<String, Any?>
+val candidatePwaSourceHead = candidatePwaManifest["marketvivi_sha"] as String
+val candidatePwaManifestSha256 = candidateSha256(candidatePwaManifestFile.readBytes())
+val candidatePwaStagedDir = layout.buildDirectory.dir("generated/candidatePwa/assets")
 
 android {
     namespace = "com.marketradar.app"
@@ -44,8 +60,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 514
-        versionName = "2.6.83"
+        versionCode = 515
+        versionName = "2.6.84"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
@@ -58,6 +74,10 @@ android {
         } catch (e: Exception) { "unknown" }
         buildConfigField("String", "SOURCE_HEAD", "\"${mrSourceHead.ifBlank { "unknown" }}\"")
         buildConfigField("String", "SUPABASE_URL", "\"https://fdynxkfxohbnlvayouje.supabase.co\"")
+        // b515 CANDIDATE-ONLY: off for debug/release; only the `candidate` build type below turns bundled routing on.
+        buildConfigField("boolean", "PWA_CANDIDATE", "false")
+        buildConfigField("String", "PWA_SOURCE_HEAD", "\"none\"")
+        buildConfigField("String", "PWA_MANIFEST_SHA256", "\"none\"")
     }
 
     signingConfigs {
@@ -78,7 +98,21 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // b515 CANDIDATE-ONLY (DO NOT MERGE): same applicationId (no suffix), same release signing config, not debuggable,
+        // so a signed candidate installs IN PLACE over the existing app and keeps its data. Bundles the pinned PWA.
+        create("candidate") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("release")
+            matchingFallbacks += listOf("release")
+            buildConfigField("boolean", "PWA_CANDIDATE", "true")
+            buildConfigField("String", "PWA_SOURCE_HEAD", "\"$candidatePwaSourceHead\"")
+            buildConfigField("String", "PWA_MANIFEST_SHA256", "\"$candidatePwaManifestSha256\"")
+        }
     }
+
+    // b515 CANDIDATE-ONLY: bundle bytes are staged at build time (tools/candidate_pwa/stage_candidate_pwa.py) into
+    // build/generated, never committed; verifyCandidatePwaBundle re-checks them before the candidate assets merge.
+    sourceSets.getByName("candidate").assets.srcDir(candidatePwaStagedDir)
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -94,6 +128,39 @@ android {
             useLegacyPackaging = false
         }
     }
+}
+
+// b515 CANDIDATE-ONLY: build-time verification of the staged bundle against the committed pin. Wired only into
+// candidate asset merging, so debug/release (and their unit tests) never depend on it.
+val verifyCandidatePwaBundle by tasks.registering {
+    group = "verification"
+    description = "Fail unless build/generated/candidatePwa holds exactly the pinned PWA runtime bytes."
+    inputs.file(candidatePwaManifestFile)
+    inputs.dir(candidatePwaStagedDir).optional()
+    doLast {
+        val dir = candidatePwaStagedDir.get().asFile.resolve("pwa_candidate")
+        if (!dir.isDirectory) throw GradleException("CANDIDATE_PWA_ERROR: bundle not staged at $dir (run tools/candidate_pwa/stage_candidate_pwa.py)")
+        val present = (dir.list() ?: emptyArray()).sorted()
+        val wanted = (candidatePwaRuntimeFiles + "candidate_manifest.json").sorted()
+        if (present != wanted) throw GradleException("CANDIDATE_PWA_ERROR: bundle dir must contain exactly $wanted, found $present")
+        if (!dir.resolve("candidate_manifest.json").readBytes().contentEquals(candidatePwaManifestFile.readBytes()))
+            throw GradleException("CANDIDATE_PWA_ERROR: packaged candidate_manifest.json differs from the committed pin")
+        @Suppress("UNCHECKED_CAST")
+        val files = candidatePwaManifest["files"] as Map<String, Map<String, Any?>>
+        if (files.keys.sorted() != candidatePwaRuntimeFiles.sorted()) throw GradleException("CANDIDATE_PWA_ERROR: pin is not the runtime allowlist")
+        for (name in candidatePwaRuntimeFiles) {
+            val bytes = dir.resolve(name).readBytes()
+            val got = candidateSha256(bytes)
+            val want = files.getValue(name)["sha256"] as String
+            val wantBytes = (files.getValue(name)["bytes"] as Number).toInt()
+            if (got != want || bytes.size != wantBytes) throw GradleException("CANDIDATE_PWA_ERROR: $name sha256=$got bytes=${bytes.size} != pinned $want/$wantBytes")
+            println("CANDIDATE_PWA_VERIFIED $got  $name")
+        }
+        println("CANDIDATE_PWA_VERIFIED marketvivi=$candidatePwaSourceHead manifest_sha256=$candidatePwaManifestSha256")
+    }
+}
+tasks.matching { it.name == "mergeCandidateAssets" || it.name == "preCandidateBuild" }.configureEach {
+    dependsOn(verifyCandidatePwaBundle)
 }
 
 chaquopy {

@@ -123,6 +123,11 @@ class MainActivity : AppCompatActivity() {
     private var instanceSeq = 0
     private var createKind = LifecycleDiagnostics.CreateKind.FRESH_PROCESS_LAUNCH
     private var droppedUiCallbacks = 0
+    /** b515: the current WebView document of THIS instance finished loading (reset on every onPageStarted). */
+    private var pageFinishedThisInstance = false
+    private var pollReceiverRegistered = false
+    /** b515 CANDIDATE-ONLY: non-null only when BuildConfig.PWA_CANDIDATE (candidate build type); null in debug/release. */
+    @Volatile private var candidatePwa: CandidatePwaServer? = null
     /** b512 R2: retains a launch/onNewIntent tab until the PWA acknowledges it (Codex R1). */
     private val launchNav = LaunchNavigation(object : LaunchNavigation.Host {
         override fun evaluate(script: String, onResult: (String?) -> Unit) {
@@ -204,6 +209,8 @@ class MainActivity : AppCompatActivity() {
             "MainActivity",
             "ACTIVITY_CREATE: restored=${savedInstanceState != null} kind=$createKind seq=$instanceSeq taskId=$taskId pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
+        // b515 CANDIDATE-ONLY: bundled, hash-verified PWA served on the production origin. Compile-time false in debug/release.
+        if (BuildConfig.PWA_CANDIDATE) setUpCandidatePwa(savedInstanceState != null)
         // Request notification permission (Android 13+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -245,6 +252,12 @@ class MainActivity : AppCompatActivity() {
                 } else false
             }
         }
+        if (BuildConfig.PWA_CANDIDATE) {   // b515 CANDIDATE-ONLY: the candidate visibly identifies itself
+            toolbar.title = "Market Radar CANDIDATE b${BuildConfig.VERSION_CODE}"
+            toolbar.subtitle = "native ${BuildConfig.SOURCE_HEAD.take(8)} · pwa ${BuildConfig.PWA_SOURCE_HEAD.take(8)}" +
+                if (candidatePwa?.verified == true) "" else " · BUNDLE ERROR"
+            toolbar.setSubtitleTextColor(PURPLE)
+        }
         appBarLayout.addView(toolbar)
         container.addView(appBarLayout)
 
@@ -271,10 +284,16 @@ class MainActivity : AppCompatActivity() {
                     view: WebView?, request: WebResourceRequest?
                 ) = false
 
+                // b515 CANDIDATE-ONLY hook: candidatePwa is null outside the candidate build type, so debug/release
+                // always take super (null = normal network loading), exactly as before this override existed.
+                override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
+                    candidatePwa?.intercept(request, instanceSeq, "$createKind") ?: super.shouldInterceptRequest(view, request)
+
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     errorView.visibility = View.GONE
                     lastLoadFailedMainFrame = false
+                    pageFinishedThisInstance = false
                     injectNativeBridge()
                 }
 
@@ -286,6 +305,7 @@ class MainActivity : AppCompatActivity() {
                     lastLoadFailedMainFrame = false
                     persistCurrentWebUrl(url)
                     injectNativeBridge()
+                    pageFinishedThisInstance = true
                     launchNav.onPageFinished()
 
                     // Check if web app version changed since last load
@@ -293,7 +313,9 @@ class MainActivity : AppCompatActivity() {
                         "(function() { var s = document.querySelector('script[src*=\"app.js\"]'); return s ? s.getAttribute('src') : ''; })()"
                     ) { result ->
                         val version = result.replace("\"", "").trim()
-                        if (version.isNotEmpty()) checkVersionUpdate(version)
+                        // b515 CANDIDATE-ONLY: the candidate never records or announces a web "update"; it logs identity instead.
+                        if (BuildConfig.PWA_CANDIDATE) logCandidatePage(view, url, version)
+                        else if (version.isNotEmpty()) checkVersionUpdate(version)
                     }
                 }
 
@@ -513,7 +535,8 @@ class MainActivity : AppCompatActivity() {
             setColorSchemeColors(PURPLE)
             setOnRefreshListener {
                 isManualRefresh = true
-                Toast.makeText(this@MainActivity, "Checking for updates...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity,
+                    if (BuildConfig.PWA_CANDIDATE) "Candidate: reloading bundled PWA" else "Checking for updates...", Toast.LENGTH_SHORT).show()
                 webView.reload()
             }
             addView(webView)
@@ -584,7 +607,10 @@ class MainActivity : AppCompatActivity() {
         // receives them. Other apps can no longer inject `data` into the WebView.
         uiAlive = true
         launchNav.onUiReady()   // b512 R2: deliver a cold-launch openTab now that the view is live (retried until the PWA acks)
-        ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        if (!pollReceiverRegistered) {   // b515: exactly one receiver per Activity instance
+            ContextCompat.registerReceiver(this, pollReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            pollReceiverRegistered = true
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -626,6 +652,43 @@ class MainActivity : AppCompatActivity() {
         isManualRefresh = false
     }
 
+    /**
+     * b515 CANDIDATE-ONLY: process-wide verification of the bundled bytes (once per process = cold boot), identity logged
+     * for EVERY Activity instance (cold boot and restored/re-created state). Also routes service-worker fetches through
+     * the same interceptor so a lingering worker cannot fetch live runtime bytes. Clears nothing.
+     */
+    private fun setUpCandidatePwa(restored: Boolean) {
+        val server = CandidatePwaServer.obtain(this)
+        candidatePwa = server
+        val seq = instanceSeq
+        val kind = "$createKind"
+        server.identityLines(seq, kind, restored).forEach { LogBuffer.add(if (server.verified) 'I' else 'E', "MainActivity", it) }
+        runCatching {
+            ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {
+                override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? =
+                    server.intercept(request, seq, kind, "service_worker")
+            })
+        }.onFailure { LogBuffer.add('W', "MainActivity", "PWA_CANDIDATE_SW_CLIENT: unavailable ${it.javaClass.simpleName} seq=$seq") }
+        if (!server.verified) Toast.makeText(this, "CANDIDATE bundle verification FAILED: see log", Toast.LENGTH_LONG).show()
+    }
+
+    /** b515 CANDIDATE-ONLY: what the finished page actually runs (script src, PWA identity, SW control). Log only; no prefs written. */
+    private fun logCandidatePage(view: WebView?, url: String?, appJsSrc: String) {
+        val seq = instanceSeq
+        view?.evaluateJavascript(
+            "(function(){try{var id=(typeof M0_PWA_IDENTITY!=='undefined')?JSON.stringify(M0_PWA_IDENTITY):'none';" +
+                "var sw=(navigator.serviceWorker&&navigator.serviceWorker.controller)?'controlled':'none';return id+'|'+sw;}catch(e){return 'err|'+e;}})()"
+        ) { r ->
+            val v = r.orEmpty().trim('"').replace("\\\"", "\"")
+            val sw = v.substringAfterLast('|', "unknown")
+            LogBuffer.add(if (sw == "none") 'I' else 'E', "MainActivity",
+                "PWA_CANDIDATE_PAGE: url=$url appJsSrc=$appJsSrc identity=${v.substringBeforeLast('|')} swController=$sw " +
+                    "pwa=${BuildConfig.PWA_SOURCE_HEAD} seq=$seq kind=$createKind")
+        }
+        if (isManualRefresh) Toast.makeText(this, "Candidate: bundled PWA reloaded (update check disabled)", Toast.LENGTH_SHORT).show()
+        isManualRefresh = false
+    }
+
     private fun hideSplashAfterDelay() {
         loadingOverlay.visibility = View.GONE
     }
@@ -644,6 +707,11 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val savedUrl = prefs.getString(PREF_LAST_WEB_URL, null)?.trim().orEmpty()
         return if (savedUrl.startsWith(APP_URL)) savedUrl else APP_URL
+    }
+
+    private fun heapNow(): String {
+        val rt = Runtime.getRuntime()
+        return BackgroundResume.heapSummary(rt.totalMemory() - rt.freeMemory(), rt.maxMemory())
     }
 
     private fun dp(value: Int) = TypedValue.applyDimension(
@@ -832,6 +900,16 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         persistCurrentWebUrl(webView.url)
         LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
+        // b515: let the page persist tab/scroll/unsaved drafts NOW, while it is still live; onStop's
+        // WebView.onPause()/pauseTimers() may defer the page's own visibilitychange handler past a background destroy.
+        if (uiAlive && ::webView.isInitialized && !webViewRendererGone) {   // script is a no-op on a page without mrUiFlush
+            val seq = instanceSeq
+            runCatching {
+                webView.evaluateJavascript(BackgroundResume.FLUSH_SCRIPT) { r ->
+                    LogBuffer.add('I', "MainActivity", "UI_STATE_FLUSH: result=${r.orEmpty().replace("\"", "").take(16)} seq=$seq")
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -843,15 +921,19 @@ class MainActivity : AppCompatActivity() {
         // Sync native data with WebView on resume
         postToLiveWebView("resume_sync") { webView ->
             val neverLoaded = webView.url == null && webView.originalUrl == null
-            if (lastLoadFailedMainFrame || neverLoaded) {
+            val nowElapsed = android.os.SystemClock.elapsedRealtime()
+            val action = BackgroundResume.resumeAction(lastLoadFailedMainFrame, neverLoaded, pageFinishedThisInstance,
+                if (lastNativeSyncElapsedMs > 0) nowElapsed - lastNativeSyncElapsedMs else Long.MAX_VALUE)
+            if (action != BackgroundResume.ResumeAction.SYNC) {
+                LogBuffer.add('I', "MainActivity", "RESUME_SYNC: action=$action kind=$createKind seq=$instanceSeq")
+            }
+            if (action == BackgroundResume.ResumeAction.RELOAD) {
                 lastLoadFailedMainFrame = false
                 webView.loadUrl(restoredWebUrl())
                 return@postToLiveWebView
             }
-            val nowElapsed = android.os.SystemClock.elapsedRealtime()
-            if (nowElapsed - lastNativeSyncElapsedMs < 5_000L) {
-                return@postToLiveWebView
-            }
+            // b515: a re-created WebView still loading its restored page boots and pulls native state itself.
+            if (action != BackgroundResume.ResumeAction.SYNC) return@postToLiveWebView
             injectNativeBridge()
             val syncJs = """
                 (function() {
@@ -882,7 +964,7 @@ class MainActivity : AppCompatActivity() {
         LogBuffer.add(
             'I',
             "MainActivity",
-            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
+            "ACTIVITY_STOP: changingConfig=$isChangingConfigurations finishing=$isFinishing seq=$instanceSeq ${heapNow()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
         if (::webView.isInitialized) {
             webView.onPause()
@@ -895,7 +977,9 @@ class MainActivity : AppCompatActivity() {
     private fun showVersionDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Market Radar")
-            .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)")
+            .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)" +
+                if (BuildConfig.PWA_CANDIDATE) "\n\nCANDIDATE build (bundled PWA, not a release)\nnative ${BuildConfig.SOURCE_HEAD}\n" +
+                    "pwa ${BuildConfig.PWA_SOURCE_HEAD}\nbundle ${if (candidatePwa?.verified == true) "verified" else "FAILED"}" else "")
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }
@@ -904,6 +988,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkForUpdates(isManual: Boolean) {
+        if (BuildConfig.PWA_CANDIDATE) {   // b515 CANDIDATE-ONLY: never offer/apply the normal release update during testing
+            LogBuffer.add('I', "MainActivity", "PWA_CANDIDATE_UPDATE_CHECK: suppressed manual=$isManual seq=$instanceSeq")
+            if (isManual) Toast.makeText(this, "Candidate build: update check disabled during testing", Toast.LENGTH_SHORT).show()
+            return
+        }
         val request = Request.Builder().url(UPDATE_URL).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -991,10 +1080,10 @@ class MainActivity : AppCompatActivity() {
             "MainActivity",
             "ACTIVITY_DESTROY: changingConfig=$isChangingConfigurations finishing=$isFinishing seq=$instanceSeq kind=$createKind " +
                 "rendererGone=$webViewRendererGone alwaysFinish=$alwaysFinish lastTrim=${LifecycleDiagnostics.lastTrimLevel} " +
-                "lastTrimAgoS=$trimAgoS lowMemory=$lowMem droppedUiCallbacks=$droppedUiCallbacks " +
+                "lastTrimAgoS=$trimAgoS lowMemory=$lowMem droppedUiCallbacks=$droppedUiCallbacks ${heapNow()} " +
                 "pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}"
         )
-        runCatching { unregisterReceiver(pollReceiver) }
+        if (pollReceiverRegistered) { runCatching { unregisterReceiver(pollReceiver) }; pollReceiverRegistered = false }
         client.dispatcher.cancelAll() // pending update check must not call back into this instance
         if (::webView.isInitialized) {
             persistCurrentWebUrl(webView.url)
