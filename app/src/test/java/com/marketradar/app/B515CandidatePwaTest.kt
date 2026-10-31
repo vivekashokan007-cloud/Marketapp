@@ -162,7 +162,7 @@ class B515CandidatePwaTest {
 
     @Test fun committedPinIsTheAcceptedMarketViviCommitAndRuntimeAllowlist() {
         val pin = JSONObject(file("src/candidate/pwa_expected_manifest.json").readText())
-        assertEquals("4b0d49f468e6100830967b842114e0322bb68535", pin.getString("marketvivi_sha"))
+        assertEquals("aabccc26b828b03935ff93f3b54ae50c97ce9e84", pin.getString("marketvivi_sha"))
         assertEquals(CandidatePwaManifest.SCHEMA, pin.getString("schema"))
         assertEquals(base, pin.getString("document_base"))
         assertEquals(CandidatePwaRoute.RUNTIME_FILES.toSortedSet(), pin.getJSONObject("files").keys().asSequence().toSortedSet())
@@ -230,6 +230,24 @@ class B515CandidatePwaTest {
         assertTrue(a.contains("if (BuildConfig.PWA_CANDIDATE) logCandidatePage(view, url, version)\n                        else if (version.isNotEmpty()) checkVersionUpdate(version)"))
     }
 
+    @Test fun serviceWorkerFetchesUseTheSameBundledRouteAndPageReportsSwControl() {
+        val a = src("MainActivity.kt")
+        val cand = a.substring(a.indexOf("private fun setUpCandidatePwa("), a.indexOf("private fun hideSplashAfterDelay()"))
+        assertTrue(cand.contains("ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {"))
+        assertTrue(cand.contains("server.intercept(request, seq, kind, \"service_worker\")"))
+        assertTrue(cand.contains("PWA_CANDIDATE_SW_CLIENT: unavailable"))
+        // A page still controlled by a worker is logged as an error so the phone test catches it.
+        assertTrue(cand.contains("navigator.serviceWorker.controller") && cand.contains("if (sw == \"none\") 'I' else 'E'"))
+        // No sw script is bundled, so a registration attempt hits the explicit in-scope 404, never live bytes.
+        assertFalse(CandidatePwaRoute.RUNTIME_FILES.any { it.startsWith("sw") || it.contains("worker") })
+        // Real bundled index.html (when the pinned checkout is available) unregisters workers and drops Cache Storage.
+        val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
+            ?: return println("SKIPPED real index.html SW check: MARKETVIVI_DIR not set")
+        val idx = File(mv, "index.html").readText()
+        assertTrue(idx.contains("getRegistrations") && idx.contains("unregister") && idx.contains("caches"))
+        assertFalse(idx.contains("serviceWorker.register("))
+    }
+
     @Test fun candidateCodeNeverClearsDataStorageOrCookies() {
         val clearing = listOf("clearCache", "clearHistory", "clearFormData", "clearMatches", "clearSslPreferences", "deleteDatabase",
             "WebStorage", "deleteAllData", "CookieManager", "removeAllCookie", "clearApplicationUserData", "setDataDirectorySuffix",
@@ -255,7 +273,7 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "4b0d49f468e6100830967b842114e0322bb68535"
+        const val PWA = "aabccc26b828b03935ff93f3b54ae50c97ce9e84"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)

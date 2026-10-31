@@ -13,7 +13,7 @@ class B515CandidateVariantTest {
         assertFalse(BuildConfig.DEBUG)
         assertEquals(516, BuildConfig.VERSION_CODE)
         assertEquals("2.6.85", BuildConfig.VERSION_NAME)
-        assertEquals("4b0d49f468e6100830967b842114e0322bb68535", BuildConfig.PWA_SOURCE_HEAD)
+        assertEquals("aabccc26b828b03935ff93f3b54ae50c97ce9e84", BuildConfig.PWA_SOURCE_HEAD)
         val pin = listOf(File("src/candidate/pwa_expected_manifest.json"), File("app/src/candidate/pwa_expected_manifest.json")).first { it.isFile }
         assertEquals(CandidatePwaManifest.sha256Hex(pin.readBytes()), BuildConfig.PWA_MANIFEST_SHA256)
     }

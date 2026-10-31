@@ -2,7 +2,7 @@
   "schema": "marketradar.candidate_build_authorization.v1",
   "artifact_only": true,
   "native_sha": "",
-  "pwa_sha": "4b0d49f468e6100830967b842114e0322bb68535",
+  "pwa_sha": "aabccc26b828b03935ff93f3b54ae50c97ce9e84",
   "version_code": "516",
   "version_name": "2.6.85",
   "cert_sha256": "",

@@ -130,7 +130,7 @@ class StageTests(unittest.TestCase):
 class CommittedPinTests(unittest.TestCase):
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
-        self.assertEqual(m["marketvivi_sha"], "4b0d49f468e6100830967b842114e0322bb68535")
+        self.assertEqual(m["marketvivi_sha"], "aabccc26b828b03935ff93f3b54ae50c97ce9e84")
         self.assertEqual(sorted(m["files"]), sorted(S.RUNTIME_FILES))
         self.assertEqual(m["files"]["app.js"]["sha256"], "ca0d7a352939e93cd67bb12dce7a37c575748523731796c6d886d2d3b0df426b")
         self.assertEqual(m["document_base"], S.DOCUMENT_BASE)
