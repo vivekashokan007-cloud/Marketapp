@@ -2,7 +2,7 @@
 decision history for the Daily review and managed-position invalidation).
 
 Directory: ctx['indexAuthorityStateDir'] (absolute, basename 'index_authority_v1').  Local only.
-Caps: 128 KiB per session file, 10 sessions retained, 400 decisions per index per session.
+Caps: 512 KiB per session file (PM1-1; 128 KiB through 2.6.85), 10 sessions retained, 400 decisions per index per session.
 
 R5 corrections:
   * every compact record keeps availability, policy/config and input lineage;
@@ -23,7 +23,7 @@ from daily_review_v1 import _atomic_write, _canon
 from local_lock_v1 import FileLock
 
 STATE_DIR_NAME = 'index_authority_v1'
-MAX_SESSION_BYTES = 128 * 1024
+MAX_SESSION_BYTES = 512 * 1024      # PM1-1 (was 128 KiB in <= 2.6.85)
 MAX_SESSIONS = 10
 MAX_DECISIONS = 400
 COMPACT_KEYS = ('decision_poll_ts', 'analysis_ts', 'receipt_ts', 'availability', 'reason_codes', 'decision_id',
@@ -115,6 +115,19 @@ def merge(doc, delta):
             if record_key(r) not in keys:
                 h.append(dict(r))
                 keys.add(record_key(r))
+    # PM1-3: write-once diagnostic attached by decision_id to an existing NEW record; unmatched ids ignored
+    why = (delta or {}).get('why')
+    if isinstance(why, dict) and why:
+        import decision_why_v1 as _dw
+        by_id = {}
+        for recs in hist.values():
+            for r in recs:
+                if r.get('decision_id') and 'why' not in r:
+                    by_id.setdefault(r['decision_id'], r)
+        for did in sorted(why):
+            r = by_id.get(did)
+            if r is not None:
+                r['why'] = _dw.bound(why[did])
     pub = (delta or {}).get('published') or {}
     if pub.get('decision_ids') and pub.get('published_at'):
         ids = set(pub['decision_ids'])
@@ -125,27 +138,82 @@ def merge(doc, delta):
     return out
 
 
+class BoundedWriteFailed(Exception):
+    """PM1-1: the hard caps cannot be met because only protected records remain.  The caller keeps the
+    previous durable file and reports the failure; the cap is never silently exceeded."""
+
+
+def protected_indices(h):
+    """PM1-1 protected positions in one index's history: the first record, the first record carrying an
+    open reference, the first AVAILABLE record and the last two (exit confirmation reads the trailing run)."""
+    n = len(h)
+    keep = {0} if n else set()
+    for i, r in enumerate(h):
+        if ((r or {}).get('lineage') or {}).get('open_ref_ts'):
+            keep.add(i)
+            break
+    for i, r in enumerate(h):
+        if (r or {}).get('availability') == 'AVAILABLE':
+            keep.add(i)
+            break
+    keep.update(i for i in (n - 2, n - 1) if i >= 0)
+    return keep
+
+
+def drop_victim(h):
+    """PM1-1: the ONE deterministic drop rule shared by the count cap and the byte cap.
+    Phase A: the oldest unprotected refresh variant (same decision_poll_ts as the previous record).
+    Phase B: the oldest unprotected record.  None when only protected records remain."""
+    prot = protected_indices(h)
+    for i in range(1, len(h)):
+        if i not in prot and (h[i] or {}).get('decision_poll_ts') == (h[i - 1] or {}).get('decision_poll_ts'):
+            return i
+    for i in range(len(h)):
+        if i not in prot:
+            return i
+    return None
+
+
 def _compact_for_caps(doc):
+    """Apply MAX_DECISIONS and MAX_SESSION_BYTES with the shared drop rule.  Returns the canonical bytes,
+    always <= MAX_SESSION_BYTES, or raises BoundedWriteFailed (never returns an over-cap document)."""
     dropped = doc.setdefault('dropped', {})
     hist = doc.setdefault('history', {})
-    for ix in list(hist):
-        h = hist[ix]
-        if len(h) > MAX_DECISIONS:
-            n = len(h) - MAX_DECISIONS
-            hist[ix] = h[:1] + h[1 + n:]           # keep the first (open-reference era) record
-            dropped[ix] = int(dropped.get(ix) or 0) + n
-    raw = _canon(doc).encode()
-    while len(raw) > MAX_SESSION_BYTES:
-        longest = max(hist, key=lambda k: len(hist[k]), default=None)
-        if longest is None or len(hist[longest]) <= 2:
-            break
-        hist[longest] = hist[longest][:1] + hist[longest][2:]   # drop the oldest after the first, one at a time
-        dropped[longest] = int(dropped.get(longest) or 0) + 1
-        raw = _canon(doc).encode()
+
+    def drop(ix, i):
+        del hist[ix][i]
+        dropped[ix] = int(dropped.get(ix) or 0) + 1
+        doc['coverage'] = 'INCOMPLETE'   # truncation is never silent (persisted with the doc)
+
+    for ix in sorted(hist):
+        while len(hist[ix]) > MAX_DECISIONS:
+            v = drop_victim(hist[ix])
+            if v is None:
+                raise BoundedWriteFailed('COUNT_CAP_PROTECTED_ONLY')
+            drop(ix, v)
     if any(dropped.values()):
-        doc['coverage'] = 'INCOMPLETE'      # persisted with the doc (R5: truncation is never silent)
+        doc['coverage'] = 'INCOMPLETE'
+    raw = _canon(doc).encode()
+    if len(raw) <= MAX_SESSION_BYTES:
+        return raw
+    # byte cap: per-record canonical sizes computed once; estimated total updated per drop; serialize once
+    sizes = {ix: [len(_canon(r).encode()) + 1 for r in hist[ix]] for ix in hist}
+    for _ in range(64):
+        est = len(raw)
+        while est > MAX_SESSION_BYTES:
+            order = sorted(hist, key=lambda k: (-len(hist[k]), k))
+            for ix in order:
+                v = drop_victim(hist[ix])
+                if v is not None:
+                    est -= sizes[ix].pop(v)
+                    drop(ix, v)
+                    break
+            else:
+                raise BoundedWriteFailed('BYTE_CAP_PROTECTED_ONLY')
         raw = _canon(doc).encode()
-    return raw
+        if len(raw) <= MAX_SESSION_BYTES:
+            return raw
+    raise BoundedWriteFailed('BYTE_CAP_NOT_CONVERGED')
 
 
 def save(d, session, doc, counters=None):
@@ -168,7 +236,12 @@ def persist_delta(d, session, delta, published_at=None):
                 ids = [r.get('decision_id') for recs in (delta.get('history') or {}).values() for r in recs or []]
                 delta['published'] = {'decision_ids': [i for i in ids if i], 'published_at': published_at}
             doc = merge(cur, delta)
-            raw = _compact_for_caps(doc)
+            try:
+                raw = _compact_for_caps(doc)
+            except BoundedWriteFailed as bwf:
+                # PM1-1: the previous durable file is kept unchanged; the cap is never exceeded
+                return {'status': 'BOUNDED_WRITE_FAILED', 'written': False, 'reason': str(bwf),
+                        'max_bytes': MAX_SESSION_BYTES}
             _atomic_write(_path(d, session), raw)
             files = sorted(f for f in os.listdir(d) if f.endswith('.json'))
             for f in files[:-MAX_SESSIONS]:
