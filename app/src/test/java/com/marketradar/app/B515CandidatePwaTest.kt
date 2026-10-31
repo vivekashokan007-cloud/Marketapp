@@ -162,11 +162,11 @@ class B515CandidatePwaTest {
 
     @Test fun committedPinIsTheAcceptedMarketViviCommitAndRuntimeAllowlist() {
         val pin = JSONObject(file("src/candidate/pwa_expected_manifest.json").readText())
-        assertEquals("6cb5ad51376314b9dbff0cb1df3e0e08aff75df3", pin.getString("marketvivi_sha"))
+        assertEquals("4b0d49f468e6100830967b842114e0322bb68535", pin.getString("marketvivi_sha"))
         assertEquals(CandidatePwaManifest.SCHEMA, pin.getString("schema"))
         assertEquals(base, pin.getString("document_base"))
         assertEquals(CandidatePwaRoute.RUNTIME_FILES.toSortedSet(), pin.getJSONObject("files").keys().asSequence().toSortedSet())
-        assertEquals("1241d33ad57280ecd6bb994fd4c9e332a7bacbfa9e4a898b18c5ee511e9286f0",
+        assertEquals("ca0d7a352939e93cd67bb12dce7a37c575748523731796c6d886d2d3b0df426b",
             pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
         assertEquals("2.6.85", id.getString("version")); assertEquals(516, id.getInt("build")); assertEquals(1380, id.getInt("app_js_v"))
@@ -255,7 +255,7 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "6cb5ad51376314b9dbff0cb1df3e0e08aff75df3"
+        const val PWA = "4b0d49f468e6100830967b842114e0322bb68535"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)
