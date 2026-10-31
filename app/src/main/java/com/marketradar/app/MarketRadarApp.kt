@@ -54,6 +54,8 @@ class MarketRadarApp : Application() {
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(this))
             }
+            // R7: retry any pending/attempted Daily review after an app (re)start
+            DailyReviewScheduler.request(this, "app_start")
 
             // b503: process-owned capture runtime. Reconcile local capture journals at process
             // start (a different run id proves the previous process ended); network drains

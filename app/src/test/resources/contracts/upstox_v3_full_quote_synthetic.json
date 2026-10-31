@@ -1,0 +1,6 @@
+{"_note":"SYNTHETIC, redacted, shape per Upstox v3 full market quote docs; values invented for tests, not market data",
+ "status":"success",
+ "data":{"NSE_FO:SYNTHNIFTY24100CE":{"instrument_token":"SYNTH_FO|NF24100CE","last_price":198.5,
+   "timestamp":"2026-11-02T09:40:05.000+05:30","last_trade_time":"1793592600000",
+   "depth":{"buy":[{"quantity":325,"price":198.4,"orders":3}],"sell":[{"quantity":390,"price":198.6,"orders":4}]},
+   "ohlc":{"open":190.0,"high":201.0,"low":188.0,"close":198.5,"volume":0,"ts":1793592000000}}}}

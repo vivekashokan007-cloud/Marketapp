@@ -2744,6 +2744,22 @@ class MarketWatchService : Service() {
                 IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis(),
                     prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
                 ctxObj.put("singleLegPaperEnabled", prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false))
+                if (prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false) && !isRefresh) {
+                    // R7: exact option-contract metadata, cached once per (index, expiry, session); bounded.
+                    val tok = (prefs.getString("auth_token", "") ?: "").trim()
+                    if (tok.isNotEmpty()) {
+                        val tr = ManagedReadAdapters.HttpTransport { tok }
+                        val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
+                        val sess = IndexAuthorityContext.istSession(System.currentTimeMillis())
+                        val slDir = IndexAuthorityContext.singleLegDir(filesDir)
+                        for ((ix, exKey) in listOf("NF" to "nfExpiry", "BNF" to "bnfExpiry")) {
+                            val ex = ctxObj.optString(exKey, "")
+                            ManagedReadAdapters.ensureContracts(slDir, ix, ex, sess, tr, clocks)?.let { e ->
+                                ManagedEvidenceFormatter.attachContracts(ctxObj, ix, e.getJSONObject("response"), e.optLong("fetched_at_ms"))
+                            }
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "INDEX_AUTHORITY_CTX_FAIL: ${e.javaClass.simpleName}")
             }
@@ -3163,12 +3179,10 @@ class MarketWatchService : Service() {
                 }
                 if (publishNow && sideEffects) {
                     try {
-                        val nowMs = System.currentTimeMillis()
-                        val chains = JSONObject().put("NF", ctxObj.optJSONObject("nfChain") ?: JSONObject())
-                            .put("BNF", ctxObj.optJSONObject("bnfChain") ?: JSONObject())
                         val spots = JSONObject().put("NF", nfSpot).put("BNF", bnfSpot)
-                        IndexAuthorityIo.monitorSingleLeg(filesDir, IndexAuthorityContext.istSession(nowMs),
-                            chains.toString(), nowMs, ctxObj.optLong("pollReceiptMs", 0L), spots.toString())
+                        val tok = (prefs.getString("auth_token", "") ?: "").trim()
+                        IndexAuthorityIo.monitorSingleLeg(filesDir, spots.toString(),
+                            if (tok.isNotEmpty()) ManagedReadAdapters.HttpTransport { (prefs.getString("auth_token", "") ?: "").trim() } else null)
                     } catch (e: Exception) {
                         LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_CTX_FAIL: ${e.javaClass.simpleName}")
                     }

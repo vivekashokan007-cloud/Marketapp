@@ -1706,11 +1706,33 @@ class NativeBridge(private val context: Context) {
         return try {
             val current = getBrainResult()
             if (current == "null") return "{\"status\":\"REJECTED\",\"reason\":\"NO_CURRENT_RESULT\"}"
+            val ix = index.trim().uppercase()
+            val plan = JSONObject(current).optJSONObject("single_leg_by_index")?.optJSONObject(ix)
+                ?: return "{\"status\":\"REJECTED\",\"reason\":\"NO_PROPOSAL\"}"
+            val enabled = prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
+            val paper = EvAcceptance.executionMode(prefs) == "paper"
+            val selector = IndexAuthorityContext.normalizeSelector(prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
             val openTrades = prefs.getString("open_trades", "[]") ?: "[]"
+            // R7: fetch the exact instrument's dedicated v3 quote (and, for SELL only, its margin) at tap time.
+            // Gate-failing taps (toggle off, not Paper, other index) make no broker call; Python still records why.
+            var q: ManagedReadAdapters.QuoteFetch? = null
+            var m: ManagedReadAdapters.MarginFetch? = null
+            val tok = (prefs.getString("auth_token", "") ?: "").trim()
+            if (enabled && paper && (selector == "BOTH" || selector == ix) && tok.isNotEmpty()) {
+                val tr = ManagedReadAdapters.HttpTransport { tok }
+                val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
+                val keys = plan.optJSONArray("quote_needed")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+                q = ManagedReadAdapters.fetchQuotes(keys.take(1), tr, clocks)
+                val units = plan.optJSONObject("contract")?.optInt("lot_size", 0) ?: 0
+                m = ManagedReadAdapters.fetchShortMargin(plan.optString("action", ""), plan.optString("instrument_key", ""),
+                    units, tr, clocks)
+            }
             val brain = com.chaquo.python.Python.getInstance().getModule("brain")
             PyTimeout.callWithTimeout("bridge.single_leg_admit", PY_VALIDATE_TIMEOUT_MS) {
                 brain.callAttr("single_leg_admit", IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath,
-                    current, index, System.currentTimeMillis(), openTrades).toString()
+                    current, ix, openTrades, enabled, paper, selector,
+                    q?.requestedJson ?: "[]", q?.body, q?.requestStartMs, q?.receiptMs, q?.receiptMonoMs,
+                    m?.requestJson, m?.body, m?.receiptMs).toString()
             } ?: "{\"status\":\"TIMEOUT\"}"
         } catch (e: Exception) {
             "{\"status\":\"ERROR\"}"

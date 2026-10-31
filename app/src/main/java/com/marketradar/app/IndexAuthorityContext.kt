@@ -105,16 +105,34 @@ object IndexAuthorityIo {
     }
 
     /** Delivery B s3 step 5: advance open single-leg Paper positions on a PUBLISHED poll (serialized IO). */
-    fun monitorSingleLeg(filesDir: File, sessionDate: String, chainsJson: String, nowMs: Long, snapshotMs: Long,
-                         spotsJson: String) {
+    private val slCoalescer = MonitorCoalescer()
+
+    /**
+     * R7 (Codex R6 s4): advance open single-leg Paper positions. Queued work is COALESCED (at most one pending
+     * run); the run reads the session and clock WHEN IT EXECUTES (Python reads the wall clock itself), fetches
+     * dedicated v3 quotes for OPEN positions first (exact instruments, bounded), stores them with their original
+     * receipt times, then monitors. Direction observations are read from the persisted authority history.
+     */
+    fun monitorSingleLeg(filesDir: File, spotsJson: String, transport: ManagedReadAdapters.Transport?) {
         val sl = IndexAuthorityContext.singleLegDir(filesDir)
         if (!File(sl, "positions.json").exists()) return
+        if (!slCoalescer.offer(spotsJson)) return
         executor.execute {
+            val spots = slCoalescer.begin()
             try {
                 val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                if (transport != null) {
+                    val tgt = JSONObject(brain.callAttr("single_leg_quote_targets", sl.absolutePath, "null").toString())
+                    val keys = (0 until (tgt.optJSONArray("open")?.length() ?: 0)).map { tgt.getJSONArray("open").getString(it) }
+                    val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
+                    ManagedReadAdapters.fetchQuotes(keys, transport, clocks)?.let { q ->
+                        brain.callAttr("single_leg_put_quotes", sl.absolutePath, q.requestedJson, q.body,
+                            q.requestStartMs, q.receiptMs, q.receiptMonoMs)
+                    }
+                }
+                val session = IndexAuthorityContext.istSession(System.currentTimeMillis())   // at execution
                 val out = brain.callAttr("single_leg_monitor", sl.absolutePath,
-                    IndexAuthorityContext.stateDir(filesDir).absolutePath, sessionDate, chainsJson, nowMs,
-                    snapshotMs, spotsJson).toString()
+                    IndexAuthorityContext.stateDir(filesDir).absolutePath, session, spots).toString()
                 LogBuffer.add('I', TAG, "SINGLE_LEG_MONITOR: ${out.take(160)}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_FAIL: ${e.javaClass.simpleName}")
