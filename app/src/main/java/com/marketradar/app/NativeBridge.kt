@@ -1673,7 +1673,7 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun setIndexSelector(selector: String): String {
         val v = IndexAuthorityContext.normalizeSelector(selector)
-        prefs.edit().putString(IndexAuthorityContext.PREF_SELECTOR, v).apply()
+        bumpSingleLegConfigRev(prefs.edit().putString(IndexAuthorityContext.PREF_SELECTOR, v)).apply()
         return v
     }
 
@@ -1696,6 +1696,130 @@ class NativeBridge(private val context: Context) {
             } ?: "{\"status\":\"TIMEOUT\"}"
         } catch (e: Exception) {
             "{\"status\":\"ERROR\"}"
+        }
+    }
+
+    // Delivery B s3 / R8 (Codex R7 s1-s2): explicit user admission of the CURRENT published single-leg proposal.
+    // Non-blocking: returns {"status":"PENDING","request_id":...}; the page polls singleLegAdmitStatus(id).
+    // The coordinator fetches the exact instrument's quote (and SELL margin), RE-READS the state after the fetch,
+    // and Python re-reads it again through a StateProbe under the store lock with the trusted capital/risk.
+    private fun singleLegState(ix: String): SingleLegAdmissionCoordinator.State {
+        val current = getBrainResult().takeIf { it != "null" }
+        val root = current?.let { try { JSONObject(it) } catch (e: Exception) { null } }
+        val plan = root?.optJSONObject("single_leg_by_index")?.optJSONObject(ix)
+        val dec = root?.optJSONObject("by_index")?.optJSONObject(ix)
+        val pdid = plan?.optString("decision_id")?.takeIf { it.isNotEmpty() }
+        val keys = plan?.optJSONArray("quote_needed")?.let { a -> (0 until a.length()).map { a.getString(it) } } ?: emptyList()
+        return SingleLegAdmissionCoordinator.State(
+            resultJson = current, index = ix,
+            decisionId = if (pdid != null && pdid == dec?.optString("decision_id")) pdid else null,
+            instrumentKey = plan?.optString("instrument_key")?.takeIf { it.isNotEmpty() },
+            action = plan?.optString("action"), lotSize = plan?.optJSONObject("contract")?.optInt("lot_size", 0) ?: 0,
+            quoteNeeded = keys,
+            enabled = prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false),
+            paper = EvAcceptance.executionMode(prefs) == "paper",
+            selector = IndexAuthorityContext.normalizeSelector(prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null)),
+            openTrades = prefs.getString("open_trades", "[]") ?: "[]",
+            capital = if (prefs.contains("capital")) EvAcceptance.capitalTotal(prefs) else null,   // never a default
+            maxRiskPct = singleLegRiskPct(),
+            configRevision = prefs.getLong(IndexAuthorityContext.PREF_SINGLE_LEG_CONFIG_REV, 0L))
+    }
+
+    @Volatile private var riskPctCache: Double? = null
+    private fun singleLegRiskPct(): Double? = riskPctCache ?: try {
+        val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+        JSONObject(brain.callAttr("single_leg_policy_config").toString()).optDouble("max_risk_pct", Double.NaN)
+            .takeIf { it.isFinite() }?.also { riskPctCache = it }
+    } catch (e: Exception) { null }
+
+    private fun bumpSingleLegConfigRev(ed: android.content.SharedPreferences.Editor) =
+        ed.putLong(IndexAuthorityContext.PREF_SINGLE_LEG_CONFIG_REV,
+            prefs.getLong(IndexAuthorityContext.PREF_SINGLE_LEG_CONFIG_REV, 0L) + 1)
+
+    private val singleLegCoordinator by lazy {
+        SingleLegAdmissionCoordinator(
+            readState = { singleLegState(it) },
+            transport = {
+                val tok = (prefs.getString("auth_token", "") ?: "").trim()
+                if (tok.isEmpty()) null else ManagedReadAdapters.HttpTransport { tok }
+            },
+            clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() }),
+            admit = { c ->
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                PyTimeout.callWithTimeout("bridge.single_leg_admit", PY_VALIDATE_TIMEOUT_MS) {
+                    brain.callAttr("single_leg_admit", IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath,
+                        c.state.resultJson, c.state.index, c.state.openTrades, c.state.enabled, c.state.paper, c.state.selector,
+                        c.quote?.requestedJson ?: "[]", c.quote?.body, c.quote?.requestStartMs, c.quote?.receiptMs,
+                        c.quote?.receiptMonoMs, c.margin?.requestJson, c.margin?.body, c.margin?.receiptMs,
+                        c.state.capital, c.state.maxRiskPct, c.configJson(), c.probe, c.requestId, c.deadlineMs).toString()
+                }
+            },
+            reconcile = { id ->
+                try {
+                    val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                    PyTimeout.callWithTimeout("bridge.single_leg_request_status", PY_VALIDATE_TIMEOUT_MS) {
+                        brain.callAttr("single_leg_request_status",
+                            IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath, id).toString()
+                    }
+                } catch (e: Exception) { null }
+            },
+            cancel = { id ->
+                try {
+                    val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                    PyTimeout.callWithTimeout("bridge.single_leg_request_cancel", PY_VALIDATE_TIMEOUT_MS) {
+                        brain.callAttr("single_leg_request_cancel",
+                            IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath, id).toString()
+                    }
+                } catch (e: Exception) { null }
+            })
+    }
+
+    @JavascriptInterface
+    fun singleLegAdmit(index: String): String = try {
+        singleLegCoordinator.submit(index)
+    } catch (e: Exception) {
+        "{\"status\":\"ERROR\"}"
+    }
+
+    @JavascriptInterface
+    fun singleLegAdmitStatus(requestId: String): String = try {
+        singleLegCoordinator.status(requestId)
+    } catch (e: Exception) {
+        "{\"status\":\"ERROR\"}"
+    }
+
+    // R8: the capital the managed policy context and single-leg admission both read ("capital" pref).
+    // Unset = single-leg admission rejects CAPITAL_CONFIG_UNAVAILABLE (a default is never treated as verified).
+    @JavascriptInterface
+    fun setSingleLegCapital(rupees: Double): String {
+        if (!rupees.isFinite() || rupees <= 0 || rupees > 1e9) return "{\"status\":\"REJECTED\",\"reason\":\"CAPITAL_CONFIG_INVALID\"}"
+        val ed = prefs.edit().putInt("capital", rupees.toInt())
+        bumpSingleLegConfigRev(ed).apply()
+        return "{\"status\":\"OK\",\"capital\":${rupees.toInt()}}"
+    }
+
+    @JavascriptInterface
+    fun getSingleLegCapital(): String =
+        if (prefs.contains("capital")) "{\"status\":\"SET\",\"capital\":${EvAcceptance.capitalTotal(prefs)}}"
+        else "{\"status\":\"UNSET\"}"
+
+    @JavascriptInterface
+    fun setSingleLegPaperEnabled(enabled: Boolean) {
+        bumpSingleLegConfigRev(prefs.edit().putBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, enabled)).apply()
+    }
+
+    @JavascriptInterface
+    fun getSingleLegPaperEnabled(): Boolean = prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
+
+    @JavascriptInterface
+    fun singleLegRead(): String {
+        return try {
+            val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            PyTimeout.callWithTimeout("bridge.single_leg_read", PY_VALIDATE_TIMEOUT_MS) {
+                brain.callAttr("single_leg_read", IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath).toString()
+            } ?: "{\"status\":\"TIMEOUT\"}"
+        } catch (e: Exception) {
+            "{\"status\":\"STORE_UNAVAILABLE\"}"
         }
     }
 

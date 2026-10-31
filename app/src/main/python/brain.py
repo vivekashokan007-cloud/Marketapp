@@ -17187,7 +17187,8 @@ def _is_ev_rule_b_trade(t):
 
 X1_CONTEXT_KEYS = ('x1CaptureSource', 'x1StateDir', 'x1PollMs', 'x1QuoteFetchedMs')
 IA_CONTEXT_KEYS = ('indexAuthorityStateDir', 'pollReceiptMs', 'analysisClockMs', 'indexAuthorityDeferredWrite',
-                   'indexSelector', 'managedEvidence', 'singleLegStateDir', 'singleLegPaperEnabled')
+                   'indexSelector', 'managedEvidence', 'singleLegStateDir', 'singleLegPaperEnabled',
+                   'contractLotTable')
 
 
 def _attach_paper_buying_research(result, ctx):
@@ -27286,6 +27287,51 @@ def _ia_candidate_from_construction(con, ctx, decision):
     return cand
 
 
+def _ia_single_leg_dir(ctx):
+    """ctx['singleLegStateDir'] (native: filesDir/single_leg_v1).  Read-only during analyze."""
+    v = (ctx or {}).get('singleLegStateDir')
+    if isinstance(v, str) and _os.path.isabs(v) and _os.path.basename(_os.path.normpath(v)) == 'single_leg_v1':
+        return v
+    return None
+
+
+def _ia_managed_evidence(ctx, sl_dir=None):
+    import managed_evidence_v1 as _me
+    import single_leg_store_v1 as _sls
+    # Read-only: never writes into ctx (X1 journal byte-identity).
+    ev = _me.from_native(ctx.get('managedEvidence') if isinstance(ctx, dict) else None)
+    snaps = _sls.read_snapshots(sl_dir) if sl_dir else {}
+    if snaps:
+        ev = dict(ev or _me.build_context())
+        ev['snapshots'] = snaps          # paper_broker_snapshot_v1 objects, stored with their original receipt time
+    return ev
+
+
+def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades, single_leg_positions=None):
+    """Delivery B: index_single_leg_v1 entry proposal from A's authority only (no second direction).
+
+    Contract identity / lot / tick / quantities / broker margin come only from ctx['managedEvidence']
+    (managed_evidence_v1, keyed by exact instrument; X1 never reads it).  Entry history and open single-leg
+    exposure come from the durable local store (single_leg_store_v1); no network call is made here."""
+    import index_single_leg_v1 as _sl
+    import single_leg_store_v1 as _sls
+    try:
+        d = _ia_single_leg_dir(ctx)
+        hist = _sls.history(d) if d else None
+        plan = _sl.plan_entry(ix, dec, chain, spot, session_date=session, decision_dt=decision_dt,
+                              expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'), captured_lot=_ia_lot(chain),
+                              open_trades=open_trades, single_leg_positions=single_leg_positions,
+                              history=hist or [], history_supplied=hist is not None,
+                              capital=float(ctx.get('capital') or _CONST['CAPITAL']),
+                              max_risk_pct=float(_CONST['MAX_RISK_PCT']),
+                              evidence=_ia_managed_evidence(ctx, d))
+        plan['paper_enabled'] = bool(ctx.get('singleLegPaperEnabled'))
+        return plan
+    except Exception as exc:
+        return {'policy_id': 'index_single_leg_v1', 'index': ix, 'admit': False,
+                'reasons': ['SINGLE_LEG_ERROR:' + type(exc).__name__]}
+
+
 def _ia_selector(ctx):
     sel = str((ctx or {}).get('indexSelector') or 'BOTH').upper()
     return sel if sel in ('NF', 'BNF', 'BOTH') else 'BOTH'
@@ -27489,14 +27535,20 @@ def _ia_apply_or_fail_closed(result, ctx, polls, open_trades, authority, stage_e
 
 
 def _ia_single_leg_positions(ctx):
-    """Delivery B hook (no single-leg store on the A branch)."""
-    return None
-
-
-def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades, single_leg_positions=None):
-    """Delivery B hook: single-leg Paper is not part of the Delivery A build."""
-    return {'policy_id': 'index_single_leg_v1', 'index': ix, 'admit': False,
-            'reasons': ['SINGLE_LEG_NOT_IN_THIS_BUILD']}
+    """Delivery B: non-terminal single-leg positions from the durable store (shared managed exposure).
+    An unreadable store is reported as one unknown exposure item, so managed admission fails closed."""
+    import single_leg_store_v1 as _sls
+    d = _ia_single_leg_dir(ctx)
+    if not d:
+        return None
+    try:
+        rows = _sls.open_positions(d)
+    except Exception:
+        rows = None
+    if rows is None:
+        return [{'index': ix, 'policy_id': 'index_single_leg_v1', 'status': 'UNKNOWN_STORE_UNREADABLE'}
+                for ix in _ia.INDICES]
+    return rows
 
 
 def _ia_index_alerts(result, ctx):
@@ -27546,9 +27598,33 @@ DAILY_REVIEW_BUDGET_S = 20.0
 DAILY_REVIEW_SCHEDULE = None   # no poll-schedule contract is known to the brain -> scheduled=UNKNOWN
 
 
-def daily_review_extra_outcomes(session_date):
-    """Delivery B hook: closed local single-leg Paper outcomes (none on the A branch)."""
-    return []
+def daily_review_extra_outcomes(session_date, state_dir=None):
+    """Delivery B: closed/unresolved local single-leg Paper outcomes (sibling dir single_leg_v1)."""
+    import single_leg_store_v1 as _sls
+    try:
+        if not isinstance(state_dir, str):
+            return []
+        d = _os.path.join(_os.path.dirname(_os.path.normpath(state_dir)), _sls.STATE_DIR_NAME)
+        return _sls.outcomes(d, session_date) if _os.path.isdir(d) else []
+    except Exception:
+        return []
+
+
+def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_trades_json=None, trigger='unknown'):
+    """R7 (Codex R6 s6): polling-independent evening trigger.  Called by the native persistent background job;
+    runs the review for retained, due, not-yet-completed sessions (ledger: PENDING/ATTEMPTED/COMPLETED).
+    Never depends on the teacher.  now_ms=0 -> the clock is read here, when the job executes."""
+    import daily_review_ledger_v1 as _drl
+    import time as _t
+    try:
+        now = _ia.parse_ts(int(now_ms) if now_ms else int(_t.time() * 1000))
+
+        def run(sid):
+            out = json.loads(daily_review_run(state_dir, report_dir, sid, '[]', closed_trades_json, None, budget_s))
+            return out.get('status')
+        return json.dumps(_drl.catch_up(state_dir, report_dir, now, run, trigger=str(trigger)))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 
 
 def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper_trades_json=None, teacher_status=None,
@@ -27571,7 +27647,7 @@ def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper
             schedule = json.loads(schedule_json) if schedule_json not in (None, '') else DAILY_REVIEW_SCHEDULE
         except Exception:
             return json.dumps({'status': 'INPUT_INVALID', 'written': False})
-        extra = daily_review_extra_outcomes(str(session_date)[:10])
+        extra = daily_review_extra_outcomes(str(session_date)[:10], state_dir)
         if extra:
             trades = list(trades or []) + list(extra)
         if not polls:
@@ -27677,5 +27753,145 @@ def index_authority_record_choice(state_dir, result_json, index, decision_id, ca
                 doc['choices'] = (list(doc.get('choices') or []) + [choice])[-STRUCTURE_CHOICES_MAX:]
                 _atomic_write(path, _canon(doc).encode())
         return json.dumps({'status': 'CHOSEN', 'choice': choice})
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+
+# ═══ Delivery B R5: local single-leg Paper executor (bridge entry points; local files only) ═══
+def _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms):
+    import paper_broker_snapshot_v1 as _pbs
+    if not quote_json:
+        return {}, []
+    req = json.loads(requested_json or '[]')
+    return _pbs.parse_v3_response(req, json.loads(quote_json), request_start_ms=request_start_ms,
+                                  receipt_ms=receipt_ms, receipt_mono_ms=receipt_mono_ms)
+
+
+def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=False, paper_mode=False,
+                     selector='BOTH', requested_json='[]', quote_json=None, request_start_ms=None, receipt_ms=None,
+                     receipt_mono_ms=None, margin_request_json=None, margin_response_json=None,
+                     margin_receipt_ms=None, capital=None, max_risk_pct=None, config_json=None, state_probe=None,
+                     request_id=None, deadline_ms=None):
+    """R7/R8: explicit admission.  The dedicated v3 quote (and, for SELL, the margin) were fetched natively for
+    the exact instrument at tap time.  The final check reads the clock itself AFTER the store lock wait and,
+    through `state_probe` (native object with current() -> JSON), RE-READS the published decision identity,
+    opt-in, mode, selector, open managed exposure and capital/risk config at commit time."""
+    import single_leg_store_v1 as _sls
+    import managed_evidence_v1 as _me
+    try:
+        res = json.loads(result_json or '{}')
+        ot = json.loads(open_trades_json or '[]')
+        ix = str(index or '').upper()
+        snaps, rej = _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms)
+        plan = (res.get('single_leg_by_index') or {}).get(ix) or {}
+        snap = snaps.get(plan.get('instrument_key')) if snaps else None
+        if snaps:
+            _sls.put_snapshots(sl_dir, snaps)
+        margins = []
+        if margin_request_json and margin_response_json:
+            row, _ = _me.parse_margin(json.loads(margin_request_json), json.loads(margin_response_json),
+                                      margin_receipt_ms)
+            if row:
+                margins.append(row)
+        ev = _me.build_context(None, None, margins)
+        probe = None
+        if state_probe is not None:
+            probe = (lambda: str(state_probe.current())) if hasattr(state_probe, 'current') else state_probe
+        cfg = json.loads(config_json) if config_json else None
+        out = _sls.admit(sl_dir, res, ix, open_trades=ot, enabled=bool(enabled), paper_mode=bool(paper_mode),
+                         selector=str(selector or 'BOTH').upper(), snapshot=snap, evidence=ev,
+                         capital=capital, max_risk_pct=max_risk_pct, config=cfg, state_probe=probe,
+                         request_id=request_id, deadline_ms=deadline_ms)
+        if rej:
+            out['quote_rejections'] = rej
+        return json.dumps(out)
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'request_id': request_id})
+
+
+def single_leg_request_status(sl_dir, request_id):
+    import single_leg_store_v1 as _sls
+    try:
+        return json.dumps(_sls.request_status(sl_dir, request_id))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_request_cancel(sl_dir, request_id, reason='CANCELLED_BEFORE_COMMIT'):
+    """Definitive reconcile under the admission lock: recorded outcome, or a persisted terminal fence, or
+    OUTCOME_UNCONFIRMED when the lock is busy (never a guessed negative outcome)."""
+    import single_leg_store_v1 as _sls
+    try:
+        return json.dumps(_sls.cancel_request(sl_dir, request_id, reason))
+    except Exception as exc:
+        return json.dumps({'status': 'OUTCOME_UNCONFIRMED', 'found': False, 'reason': type(exc).__name__,
+                           'request_id': request_id})
+
+
+def single_leg_policy_config():
+    """The policy-side risk budget the managed policies use (same basis as analysis)."""
+    return json.dumps({'max_risk_pct': float(_CONST['MAX_RISK_PCT']), 'risk_source': 'brain._CONST.MAX_RISK_PCT'})
+
+
+def single_leg_quote_targets(sl_dir, result_json='null', max_keys=4):
+    """Bounded exact-instrument quote targets: OPEN positions first (independent of any proposal), then the
+    instruments named by current proposals' quote_needed (whether or not admissible: non-circular)."""
+    import single_leg_store_v1 as _sls
+    try:
+        res = json.loads(result_json or 'null') or {}
+        opens = _sls.open_instruments(sl_dir) or []
+        cands = []
+        for ix in ('NF', 'BNF'):
+            p = (res.get('single_leg_by_index') or {}).get(ix) or {}
+            if p.get('status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT'):
+                cands += [k for k in p.get('quote_needed') or [] if k not in opens]
+        keys = (opens + [k for k in cands if k not in opens])[:int(max_keys)]
+        return json.dumps({'open': opens, 'candidates': cands, 'keys': keys})
+    except Exception as exc:
+        return json.dumps({'open': [], 'candidates': [], 'keys': [], 'error': type(exc).__name__})
+
+
+def single_leg_put_quotes(sl_dir, requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms=None):
+    """Store dedicated v3 snapshots (original receipt times; bounded)."""
+    import single_leg_store_v1 as _sls
+    try:
+        snaps, rej = _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms)
+        n = _sls.put_snapshots(sl_dir, snaps) if snaps else 0
+        return json.dumps({'status': 'OK', 'stored': n, 'rejected': rej})
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_observations(ia_state_dir, session_date):
+    """PUBLISHED authority decisions per index: {published_at, source_poll_ts, value, observation_id}."""
+    doc = _ias.load(_ias.state_dir({'indexAuthorityStateDir': ia_state_dir}), str(session_date)[:10]) \
+        if ia_state_dir else None
+    obs = {}
+    for ix, rows in ((doc or {}).get('history') or {}).items():
+        obs[ix] = [{'published_at': r.get('published_at'), 'source_poll_ts': r.get('decision_poll_ts'),
+                    'value': (r.get('direction') or {}).get('value'),
+                    'observation_id': '%s|%s' % (ix, r.get('decision_poll_ts'))}
+                   for r in rows or [] if r.get('published_at')]
+    return obs
+
+
+def single_leg_monitor(sl_dir, ia_state_dir, session_date, spots_json='{}'):
+    """Native IO worker: advance open single-leg positions.  The clock is read by the store WHEN THIS RUNS;
+    quotes are only the stored paper_broker_snapshot_v1 objects (fetched for open instruments first)."""
+    import single_leg_store_v1 as _sls
+    try:
+        spots = json.loads(spots_json or '{}')
+        obs = single_leg_observations(ia_state_dir, session_date)
+        return json.dumps(_sls.monitor(sl_dir, _sls.read_snapshots(sl_dir), obs, spots=spots))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_read(sl_dir):
+    import single_leg_store_v1 as _sls
+    try:
+        doc = _sls.read(sl_dir)
+        return json.dumps(doc if doc is not None else {'status': 'STORE_CORRUPT'})
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})

@@ -34,6 +34,10 @@ object IndexAuthorityContext {
 
     fun stateDir(filesDir: File) = File(filesDir, STATE_DIR_NAME)
     fun reportDir(filesDir: File) = File(filesDir, REPORT_DIR_NAME)
+    const val SINGLE_LEG_DIR_NAME = "single_leg_v1"
+    const val PREF_SINGLE_LEG_PAPER = "single_leg_paper_enabled_v1"   // default OFF; explicit user opt-in
+    const val PREF_SINGLE_LEG_CONFIG_REV = "single_leg_config_revision_v1"
+    fun singleLegDir(filesDir: File) = File(filesDir, SINGLE_LEG_DIR_NAME)
 
     fun normalizeSelector(raw: String?): String = when (raw?.trim()?.uppercase()) {
         "NF", "NIFTY" -> "NF"
@@ -49,6 +53,8 @@ object IndexAuthorityContext {
         ctx.put("analysisClockMs", nowMs)
         ctx.put("indexAuthorityDeferredWrite", true)
         ctx.put("indexSelector", normalizeSelector(selector))
+        // Delivery B: managed single-leg store (read-only during analyze; written by bridge admit / IO monitor)
+        ctx.put("singleLegStateDir", singleLegDir(filesDir).absolutePath)
     }
 
     /** Detach the state delta from the result so it is never stored or shown as part of the brain result. */
@@ -95,6 +101,42 @@ object IndexAuthorityIo {
                 if (!out.contains("\"written\": true")) LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST: ${out.take(160)}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "INDEX_AUTHORITY_PERSIST_FAIL: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /** Delivery B s3 step 5: advance open single-leg Paper positions on a PUBLISHED poll (serialized IO). */
+    private val slCoalescer = MonitorCoalescer()
+
+    /**
+     * R7 (Codex R6 s4): advance open single-leg Paper positions. Queued work is COALESCED (at most one pending
+     * run); the run reads the session and clock WHEN IT EXECUTES (Python reads the wall clock itself), fetches
+     * dedicated v3 quotes for OPEN positions first (exact instruments, bounded), stores them with their original
+     * receipt times, then monitors. Direction observations are read from the persisted authority history.
+     */
+    fun monitorSingleLeg(filesDir: File, spotsJson: String, transport: ManagedReadAdapters.Transport?) {
+        val sl = IndexAuthorityContext.singleLegDir(filesDir)
+        if (!File(sl, "positions.json").exists()) return
+        if (!slCoalescer.offer(spotsJson)) return
+        executor.execute {
+            val spots = slCoalescer.begin()
+            try {
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                if (transport != null) {
+                    val tgt = JSONObject(brain.callAttr("single_leg_quote_targets", sl.absolutePath, "null").toString())
+                    val keys = (0 until (tgt.optJSONArray("open")?.length() ?: 0)).map { tgt.getJSONArray("open").getString(it) }
+                    val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
+                    ManagedReadAdapters.fetchQuotes(keys, transport, clocks)?.let { q ->
+                        brain.callAttr("single_leg_put_quotes", sl.absolutePath, q.requestedJson, q.body,
+                            q.requestStartMs, q.receiptMs, q.receiptMonoMs)
+                    }
+                }
+                val session = IndexAuthorityContext.istSession(System.currentTimeMillis())   // at execution
+                val out = brain.callAttr("single_leg_monitor", sl.absolutePath,
+                    IndexAuthorityContext.stateDir(filesDir).absolutePath, session, spots).toString()
+                LogBuffer.add('I', TAG, "SINGLE_LEG_MONITOR: ${out.take(160)}")
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_FAIL: ${e.javaClass.simpleName}")
             }
         }
     }

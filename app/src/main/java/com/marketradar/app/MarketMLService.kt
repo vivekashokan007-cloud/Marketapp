@@ -53,6 +53,9 @@ class MLAlarmReceiver : BroadcastReceiver() {
 
 class EvaluationAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // R7: the evening alarm also requests the polling-independent Daily review catch-up (never blocked by
+        // the teacher evaluation below; the review job has its own ledger and retries).
+        DailyReviewScheduler.request(context, "evening_evaluation_alarm")
         val isContinuation = intent.getBooleanExtra("continuation", false)
         val requestedSessionDate = intent.getStringExtra("session_date")
         val istToday = MarketMLService.todayIstDate()
