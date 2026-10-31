@@ -801,6 +801,7 @@ class MainActivity : AppCompatActivity() {
                     getMLModelStatus: function() { return AndroidBridge.getMLModelStatus(); },
                     dailyReviewRun: function(d, p, t) { return AndroidBridge.dailyReviewRun(String(d || ''), String(p || '[]'), String(t || '')); },
                     dailyReviewLatest: function(d) { return AndroidBridge.dailyReviewLatest(String(d || '')); },
+                    exportSessionEvidence: function(d, v) { return AndroidBridge.exportSessionEvidence(String(d || ''), String(v || '')); },
                     setIndexSelector: function(s) { return AndroidBridge.setIndexSelector(String(s || 'BOTH')); },
                     getIndexSelector: function() { return AndroidBridge.getIndexSelector(); },
                     indexAuthorityChoose: function(i, d, c) { return AndroidBridge.indexAuthorityChoose(String(i || ''), String(d || ''), String(c || '')); },

@@ -1652,19 +1652,65 @@ class NativeBridge(private val context: Context) {
 
     // Delivery A: local Daily review (per index). Local files only; no network; no Supabase.
     @JavascriptInterface
-    fun dailyReviewRun(sessionDate: String, pollsJson: String, paperTradesJson: String): String {
+    fun dailyReviewRun(sessionDate: String, pollsJson: String, @Suppress("UNUSED_PARAMETER") paperTradesJson: String): String {
+        // PM1-2: the PWA's trade argument is IGNORED (signature kept for old PWAs); the manual input is read
+        // from prefs.closed_trades inside the call, exactly as the service and catch-up runs read it.
         return try {
             val brain = com.chaquo.python.Python.getInstance().getModule("brain")
             val dir = context.filesDir
             PyTimeout.callWithTimeout("bridge.daily_review", PY_VALIDATE_TIMEOUT_MS) {
+                val trades = IndexAuthorityContext.reviewTrades(prefs)
                 brain.callAttr("daily_review_run",
                     IndexAuthorityContext.stateDir(dir).absolutePath,
                     IndexAuthorityContext.reportDir(dir).absolutePath,
-                    sessionDate.take(10), pollsJson, paperTradesJson, null,
-                    IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null).toString()
+                    sessionDate.take(10), pollsJson, trades.json, null,
+                    IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null,
+                    IndexAuthorityContext.REVIEW_TRADES_SOURCE, trades.status).toString()
             } ?: "{\"status\":\"TIMEOUT\",\"written\":false}"
         } catch (e: Exception) {
             "{\"status\":\"REPORT_ERROR\",\"written\":false}"
+        }
+    }
+
+    /**
+     * PM1-5: allow-listed, bounded session evidence export (mr.session_evidence.v1).  Runs on the ONE serialized
+     * authority IO worker (so it never interleaves with a state write), waits at most 20 s, and saves through the
+     * existing Downloads routine.  Reads only prefs.closed_trades (via reviewTrades) -- never another preference
+     * and never a token.  Returns {ok, status, bytes, sha256, session_date_used, fileName}.
+     */
+    @JavascriptInterface
+    fun exportSessionEvidence(sessionDate: String, pwaVersion: String): String {
+        return try {
+            val date = sessionDate.take(10)
+            if (!Regex("""\d{4}-\d{2}-\d{2}""").matches(date)) {
+                return JSONObject().put("ok", false).put("status", "INPUT_INVALID").toString()
+            }
+            val dir = context.filesDir
+            val meta = JSONObject().put("pwa", pwaVersion.take(40))
+                .put("app", "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}").toString()
+            val fut = IndexAuthorityIo.executor.submit(java.util.concurrent.Callable {
+                val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                brain.callAttr("session_evidence_bundle", dir.absolutePath, date,
+                    IndexAuthorityContext.reviewTrades(prefs).json, meta).toString()
+            })
+            val out = try { fut.get(20, java.util.concurrent.TimeUnit.SECONDS) } catch (e: java.util.concurrent.TimeoutException) {
+                fut.cancel(false)
+                return JSONObject().put("ok", false).put("status", "TIMEOUT").toString()
+            }
+            val bytes = out.toByteArray(Charsets.UTF_8)
+            val man = try { JSONObject(out).optJSONObject("manifest") } catch (e: Exception) { null }
+            val status = man?.optString("status", "UNKNOWN") ?: "UNPARSABLE"
+            val used = man?.optString("session_date_used", "")?.takeIf { it.length == 10 } ?: date
+            if (bytes.size > 4 * 1024 * 1024 + 65536) {
+                return JSONObject().put("ok", false).put("status", "OVER_CAP").put("bytes", bytes.size).toString()
+            }
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val saved = saveExportBytes("mr_session_evidence_$used.json", "application/json", bytes)
+            JSONObject().put("ok", status == "OK" && saved.optBoolean("ok")).put("status", status)
+                .put("bytes", bytes.size).put("sha256", sha).put("session_date_used", used)
+                .put("fileName", saved.optString("fileName")).toString()
+        } catch (e: Exception) {
+            JSONObject().put("ok", false).put("status", "EXPORT_ERROR").put("error", e.javaClass.simpleName).toString()
         }
     }
 

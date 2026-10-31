@@ -70,11 +70,13 @@ class DailyReviewWorker(context: Context, params: WorkerParameters) : Worker(con
             }
             val prefs = applicationContext.getSharedPreferences("market_radar", Context.MODE_PRIVATE)
             val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+            val trades = IndexAuthorityContext.reviewTrades(prefs)   // PM1-2: one helper for every review run
             val out = brain.callAttr("daily_review_catchup",
                 IndexAuthorityContext.stateDir(applicationContext.filesDir).absolutePath,
                 IndexAuthorityContext.reportDir(applicationContext.filesDir).absolutePath,
-                0, IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, prefs.getString("closed_trades", null),
-                inputData.getString(DailyReviewScheduler.KEY_TRIGGER) ?: "unknown").toString()
+                0, IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, trades.json,
+                inputData.getString(DailyReviewScheduler.KEY_TRIGGER) ?: "unknown",
+                IndexAuthorityContext.REVIEW_TRADES_SOURCE, trades.status).toString()
             LogBuffer.add('I', "DailyReviewWorker", "DAILY_REVIEW_CATCHUP: ${out.take(200)}")
             when (DailyReviewScheduler.outcome(out, runAttemptCount)) {
                 "RETRY" -> Result.retry()

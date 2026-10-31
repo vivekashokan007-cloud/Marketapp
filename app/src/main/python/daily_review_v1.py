@@ -383,6 +383,34 @@ def _atomic_write(path, raw: bytes):
             os.unlink(tmp)
 
 
+KEPT_RICHER_REVISION = 'KEPT_RICHER_REVISION'
+FINISHED_STATUSES = ('WRITTEN', 'ALREADY_COMPLETE', KEPT_RICHER_REVISION)
+
+
+def richer_guard(existing, report):
+    """PM1-2 poorer-input overwrite guard.  Returns a dict (keep the existing revision) or None (write).
+    * new manual input MALFORMED or UNREADABLE -> never replaces any existing valid report;
+    * new manual input MISSING -> never replaces a revision whose manual input was supplied;
+    * any SUPPLIED input (including an explicit []) may replace: legitimate corrections stay possible.
+    A kept revision whose local single-leg outcomes differ is reported (stale_single_leg) -- never silent.
+    Reports without 'inputs' (2.6.85 callers / revisions) are not guarded and stay identifiable."""
+    new = (report or {}).get('inputs')
+    if not isinstance(new, dict):
+        return None
+    st = new.get('manual_status')
+    old = ((existing or {}).get('latest') or {}).get('inputs')
+    old = old if isinstance(old, dict) else None
+    if st in ('MALFORMED', 'UNREADABLE'):
+        reason = 'NEW_MANUAL_INPUT_' + st
+    elif st == 'MISSING' and old is not None and old.get('manual_trades_supplied') is True:
+        reason = 'NEW_MANUAL_INPUT_MISSING'
+    else:
+        return None
+    return {'reason': reason, 'kept_manual_status': (old or {}).get('manual_status', 'LEGACY_NO_PROVENANCE'),
+            'new_manual_status': st,
+            'stale_single_leg': (old or {}).get('single_leg_outcomes_sha') != new.get('single_leg_outcomes_sha')}
+
+
 class ReportStore:
     _before_replace = None   # test hook (interleaving tests); never set in production
 
@@ -440,12 +468,17 @@ class ReportStore:
                 revs = existing.get('revisions') or []
                 if revs and revs[-1].get('input_hash') == report.get('input_hash'):
                     return {'status': 'ALREADY_COMPLETE', 'written': False, 'revision': len(revs)}
+                kept = richer_guard(existing, report)
+                if kept:
+                    return dict(kept, status=KEPT_RICHER_REVISION, written=False, revision=len(revs))
             else:
                 revs = []
             rev = dict(report, revision=len(revs) + 1, generation=generation)
             doc = {'schema': REPORT_SCHEMA, 'session_date': session,
-                   'revisions': [{'revision': r.get('revision'), 'input_hash': r.get('input_hash')} for r in revs] +
-                                [{'revision': rev['revision'], 'input_hash': rev.get('input_hash')}],
+                   'revisions': [{k: r.get(k) for k in ('revision', 'input_hash', 'manual_status') if k in r}
+                                 for r in revs] +
+                                [{'revision': rev['revision'], 'input_hash': rev.get('input_hash'),
+                                  'manual_status': (rev.get('inputs') or {}).get('manual_status', 'LEGACY_NO_PROVENANCE')}],
                    'latest': rev}
             raw = _canon(doc).encode()
             if len(raw) > MAX_REPORT_BYTES:
@@ -478,7 +511,7 @@ class ReportStore:
 
 
 def run_daily_review(directory, session_date, decisions_by_index, polls, paper_trades=None, schema_ids=None,
-                     teacher_status=None, budget_s=None, schedule=None, state_coverage=None):
+                     teacher_status=None, budget_s=None, schedule=None, state_coverage=None, inputs=None):
     """Independent of the teacher: teacher status is only recorded; a failure here never alters it.
     budget_s: cooperative wall-clock budget; the worker also stops as soon as a newer generation exists."""
     import time as _t
@@ -490,6 +523,8 @@ def run_daily_review(directory, session_date, decisions_by_index, polls, paper_t
         rep = build_report(session_date, decisions_by_index, polls, paper_trades, schema_ids=schema_ids,
                            budget=budget, schedule=schedule, state_coverage=state_coverage)
         rep['teacher_status_observed'] = teacher_status
+        if isinstance(inputs, dict):
+            rep['inputs'] = dict(inputs)      # PM1-2 provenance; added AFTER input_hash (never hashed)
         if store.current_generation() != gen:
             return {'status': 'OBSOLETE_WORKER_ABORTED', 'written': False, 'generation': gen}
         res = store.commit(session_date, rep, gen)

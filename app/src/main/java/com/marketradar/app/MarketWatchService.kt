@@ -3187,7 +3187,7 @@ class MarketWatchService : Service() {
                         LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_CTX_FAIL: ${e.javaClass.simpleName}")
                     }
                 }
-                if (sideEffects) IndexAuthorityIo.maybeRunDailyReview(filesDir, prefs, System.currentTimeMillis(), closedTradesJson)
+                if (sideEffects) IndexAuthorityIo.maybeRunDailyReview(filesDir, prefs, System.currentTimeMillis())
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT || outcome == AnalysisAuthority.Outcome.STALE_MARKET
                     || outcome == AnalysisAuthority.Outcome.MARKET_IDENTITY_UNAVAILABLE) {

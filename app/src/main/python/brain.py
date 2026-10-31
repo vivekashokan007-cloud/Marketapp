@@ -7209,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.85"
+BRAIN_VERSION = "2.6.86"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -27211,6 +27211,8 @@ def compute_index_authority(polls, ctx):
     out['_meta'] = {'session_date': session, 'state_dir_available': bool(sdir), 'state_readable': state_ok,
                     'history': state.get('history') if state_ok else None,
                     'state_delta': delta if write == 'DEFERRED' else None, 'state_write': write,
+                    'new_record_ids': [r.get('decision_id') for recs in delta['history'].values() for r in recs
+                                       if r.get('decision_id')],
                     'analysis_ts': analysis_dt.isoformat() if analysis_dt else None,
                     'source_poll_ts': source_poll_dt.isoformat() if source_poll_dt else None}
     return out
@@ -27351,6 +27353,29 @@ def _ia_flatten_candidates(candidates_by_index, by_index):
     return out
 
 
+def _ia_attach_why(meta, by_index, candidates_by_index, managed, single_leg, ctx, session):
+    """PM1-3: build {decision_id: why} for decisions that created a new history record in this analysis and
+    attach it to the deferred delta (native IO worker) or persist it synchronously (tests / replay)."""
+    import decision_why_v1 as _dw
+    sd = meta.get('state_delta')
+    new_ids = set(meta.get('new_record_ids') or [])
+    if not new_ids:
+        return
+    mode = _explicit_execution_mode(ctx)
+    why_map = {}
+    for ix, dec in by_index.items():
+        did = dec.get('decision_id')
+        if did and did in new_ids:
+            why_map[did] = _dw.build_bounded(ix, dec, candidates_by_index.get(ix), managed.get(ix),
+                                             single_leg.get(ix), ctx, mode)
+    if not why_map:
+        return
+    if sd is not None:
+        sd['why'] = why_map
+    elif meta.get('state_write') == 'WRITTEN':
+        _ias.persist_delta(_ias.state_dir(ctx), session, {'why': why_map})
+
+
 def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_positions=None):
     """Re-derive every decision-bearing output from by_index.  Legacy outputs kept as labelled evidence.
     Any exception propagates to the caller, which fails CLOSED (never back to the legacy projection)."""
@@ -27430,8 +27455,14 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
         'calendar_rule_version': _IA_CALENDAR.version, 'combined_direction_retired': True,
         'real_display_follows_authority': True, 'real_orders_unchanged': True,
         'freshness_coverage': _ia.freshness_coverage({'NF': ctx.get('nfChain') or {}, 'BNF': ctx.get('bnfChain') or {}}),
-        'state': {k: v for k, v in meta.items() if k not in ('history', 'state_delta')},
+        'state': {k: v for k, v in meta.items() if k not in ('history', 'state_delta', 'new_record_ids')},
     }
+    # PM1-3: write-once post-cutover diagnostic for NEW retained authority observations only (see
+    # decision_why_v1 sampling contract).  Never alters the live result; any failure is contained.
+    try:
+        _ia_attach_why(meta, by_index, candidates_by_index, managed, single_leg, ctx, session)
+    except Exception:
+        pass
     if meta.get('state_delta') is not None:
         result['index_authority_persist'] = {'session_date': session, 'delta': meta['state_delta']}
     result['pc2_paper_primary'] = {'replaced_by': _ia.POLICY_VERSION, 'pc2_primary_candidate_id': None,
@@ -27610,7 +27641,26 @@ def daily_review_extra_outcomes(session_date, state_dir=None):
         return []
 
 
-def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_trades_json=None, trigger='unknown'):
+DAILY_REVIEW_MANUAL_STATUSES = ('SUPPLIED', 'SUPPLIED_EMPTY', 'MISSING', 'MALFORMED', 'UNREADABLE')
+
+
+def daily_review_manual_input(paper_trades_json, read_status=None):
+    """PM1-2: (trades or None, manual_status).  Never raises.  MALFORMED/UNREADABLE are never treated as []."""
+    if str(read_status or '').upper() == 'UNREADABLE':
+        return None, 'UNREADABLE'
+    if paper_trades_json is None or (isinstance(paper_trades_json, str) and not paper_trades_json.strip()):
+        return None, 'MISSING'
+    try:
+        v = json.loads(paper_trades_json) if isinstance(paper_trades_json, str) else paper_trades_json
+    except Exception:
+        return None, 'MALFORMED'
+    if not isinstance(v, list):
+        return None, 'MALFORMED'
+    return v, ('SUPPLIED_EMPTY' if not v else 'SUPPLIED')
+
+
+def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_trades_json=None, trigger='unknown',
+                         trades_source=None, trades_read_status=None):
     """R7 (Codex R6 s6): polling-independent evening trigger.  Called by the native persistent background job;
     runs the review for retained, due, not-yet-completed sessions (ledger: PENDING/ATTEMPTED/COMPLETED).
     Never depends on the teacher.  now_ms=0 -> the clock is read here, when the job executes."""
@@ -27620,7 +27670,8 @@ def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_
         now = _ia.parse_ts(int(now_ms) if now_ms else int(_t.time() * 1000))
 
         def run(sid):
-            out = json.loads(daily_review_run(state_dir, report_dir, sid, '[]', closed_trades_json, None, budget_s))
+            out = json.loads(daily_review_run(state_dir, report_dir, sid, '[]', closed_trades_json, None, budget_s,
+                                              None, trades_source, trades_read_status))
             return out.get('status')
         return json.dumps(_drl.catch_up(state_dir, report_dir, now, run, trigger=str(trigger)))
     except Exception as exc:
@@ -27628,7 +27679,7 @@ def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_
 
 
 def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper_trades_json=None, teacher_status=None,
-                     budget_s=None, schedule_json=None):
+                     budget_s=None, schedule_json=None, trades_source=None, trades_read_status=None):
     """Local Daily review (Delivery A).  Reads the bounded authority history; writes one local report.
     Independent of the teacher; never raises; never writes outside report_dir.  Runs on the native
     single-thread report worker with a cooperative budget (also stops when a newer run starts)."""
@@ -27643,13 +27694,24 @@ def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper
             return json.dumps({'status': 'AUTHORITY_HISTORY_UNAVAILABLE', 'written': False})
         try:
             polls = json.loads(polls_json or '[]')
-            trades = json.loads(paper_trades_json) if paper_trades_json not in (None, '') else None
             schedule = json.loads(schedule_json) if schedule_json not in (None, '') else DAILY_REVIEW_SCHEDULE
         except Exception:
             return json.dumps({'status': 'INPUT_INVALID', 'written': False})
+        # PM1-2: classify the MANUAL input BEFORE local single-leg outcomes are appended (appending turns a
+        # missing input into a list).  Missing, explicit [], malformed and unreadable are distinct.
+        trades, manual_status = daily_review_manual_input(paper_trades_json, trades_read_status)
+        manual_rows = len(trades) if isinstance(trades, list) else 0
         extra = daily_review_extra_outcomes(str(session_date)[:10], state_dir)
         if extra:
             trades = list(trades or []) + list(extra)
+        inputs = {'schema': 'mr.daily_review.inputs.v1',
+                  'trades_source': str(trades_source)[:40] if trades_source else
+                  ('CALLER' if manual_status not in ('MISSING',) else 'NOT_SUPPLIED'),
+                  'manual_status': manual_status,
+                  'manual_trades_supplied': manual_status in ('SUPPLIED', 'SUPPLIED_EMPTY'),
+                  'manual_trade_rows': manual_rows, 'single_leg_outcome_rows': len(extra or []),
+                  'single_leg_outcomes_sha': hashlib.sha256(json.dumps(extra or [], sort_keys=True, separators=(',', ':'),
+                                                                        default=str).encode()).hexdigest()[:16]}
         if not polls:
             # the index spot series recorded with each authority decision (own index only)
             polls = []
@@ -27667,7 +27729,8 @@ def daily_review_run(state_dir, report_dir, session_date, polls_json='[]', paper
                                    budget_s=float(budget_s) if budget_s else DAILY_REVIEW_BUDGET_S,
                                    schedule=schedule,
                                    state_coverage={'dropped': (doc or {}).get('dropped') or {},
-                                                   'coverage': (doc or {}).get('coverage')})
+                                                   'coverage': (doc or {}).get('coverage')},
+                                   inputs=inputs)
         return json.dumps(out)
     except Exception as exc:
         return json.dumps({'status': 'REPORT_ERROR', 'reason': type(exc).__name__, 'written': False})
@@ -27685,6 +27748,32 @@ def index_authority_persist(state_dir, session_date, delta_json, published_ms=0)
         return json.dumps(_ias.persist_delta(sdir, str(session_date)[:10], delta, published_at=pub))
     except Exception as exc:
         return json.dumps({'status': 'PERSIST_ERROR', 'reason': type(exc).__name__, 'written': False})
+
+
+def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, meta_json='{}'):
+    """PM1-5: allow-listed, bounded session evidence export (session_evidence_v1).  Returns the bundle JSON text
+    (manifest + parts, <= 4 MiB) or a bounded failure manifest.  Local files only; never raises."""
+    try:
+        import session_evidence_v1 as _se
+        import daily_review_v1 as _dr
+        import decision_why_v1 as _dw
+        import index_single_leg_v1 as _isl
+        try:
+            meta = json.loads(meta_json or '{}')
+        except Exception:
+            meta = {}
+        versions = {'brain': BRAIN_VERSION, 'policy': _ia.POLICY_VERSION, 'regime': _ia.REGIME_VERSION,
+                    'structure_policy': _ia.STRUCTURE_POLICY_VERSION, 'managed': _ia.MANAGED_POLICY_ID,
+                    'single_leg': _isl.POLICY_ID, 'label_target': _dr.LABEL_TARGET_VERSION}
+        caps = {'export': _se.SCHEMA, 'why': _dw.WHY_SCHEMA, 'why_max_bytes': _dw.WHY_MAX_BYTES,
+                'review_inputs': 'mr.daily_review.inputs.v1', 'authority_session_cap_bytes': _ias.MAX_SESSION_BYTES,
+                'review_explanations': False}
+        _bundle, raw = _se.build(files_dir, session_date, closed_trades_json, meta, versions, caps,
+                                 trade_session=_dr._trade_session)
+        return raw.decode()
+    except Exception as exc:
+        return json.dumps({'manifest': {'schema': 'mr.session_evidence.v1', 'status': 'EXPORT_ERROR',
+                                        'reason': type(exc).__name__}})
 
 
 def daily_review_read(report_dir, session_date):

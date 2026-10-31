@@ -80,7 +80,26 @@ object IndexAuthorityContext {
         return doneSession != istSession(nowMs)
     }
 
-    fun reviewFinished(status: String?): Boolean = status == "WRITTEN" || status == "ALREADY_COMPLETE"
+    /** PM1-2: KEPT_RICHER_REVISION finishes a run exactly like ALREADY_COMPLETE (same set as Python
+     *  daily_review_v1.FINISHED_STATUSES and the catch-up ledger DONE tuple). */
+    fun reviewFinished(status: String?): Boolean =
+        status == "WRITTEN" || status == "ALREADY_COMPLETE" || status == "KEPT_RICHER_REVISION"
+
+    const val REVIEW_TRADES_SOURCE = "prefs.closed_trades"
+
+    /** PM1-2: the ONE manual closed-trade input for every Daily review run (service, catch-up, bridge),
+     *  read inside the executing worker.  json == null with status MISSING = not stored / blank;
+     *  UNREADABLE = the preference exists but cannot be read as a string.  Never reads any other key. */
+    data class ReviewTrades(val json: String?, val status: String)
+
+    fun reviewTrades(prefs: android.content.SharedPreferences): ReviewTrades = try {
+        val v = prefs.getString("closed_trades", null)
+        if (v == null || v.isBlank()) ReviewTrades(null, "MISSING") else ReviewTrades(v, "READ")
+    } catch (e: Exception) {
+        ReviewTrades(null, "UNREADABLE")
+    }
+
+    fun reviewTradesJson(prefs: android.content.SharedPreferences): String? = reviewTrades(prefs).json
 }
 
 /** ONE serialized local worker for authority state persistence and the Daily review (no network). */
@@ -141,8 +160,7 @@ object IndexAuthorityIo {
         }
     }
 
-    fun maybeRunDailyReview(filesDir: File, prefs: android.content.SharedPreferences, nowMs: Long,
-                            closedTradesJson: String?) {
+    fun maybeRunDailyReview(filesDir: File, prefs: android.content.SharedPreferences, nowMs: Long) {
         if (!IndexAuthorityContext.dailyReviewDue(nowMs, prefs.getString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, null))) return
         val session = IndexAuthorityContext.istSession(nowMs)
         executor.execute {
@@ -150,10 +168,12 @@ object IndexAuthorityIo {
                 if (!IndexAuthorityContext.dailyReviewDue(System.currentTimeMillis(),
                         prefs.getString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, null))) return@execute
                 val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                val trades = IndexAuthorityContext.reviewTrades(prefs)   // PM1-2: read at run time, in the worker
                 val out = brain.callAttr("daily_review_run",
                     IndexAuthorityContext.stateDir(filesDir).absolutePath,
                     IndexAuthorityContext.reportDir(filesDir).absolutePath,
-                    session, "[]", closedTradesJson, null, IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null).toString()
+                    session, "[]", trades.json, null, IndexAuthorityContext.DAILY_REVIEW_BUDGET_S, null,
+                    IndexAuthorityContext.REVIEW_TRADES_SOURCE, trades.status).toString()
                 val status = try { JSONObject(out).optString("status") } catch (e: Exception) { "" }
                 if (IndexAuthorityContext.reviewFinished(status)) {
                     prefs.edit().putString(IndexAuthorityContext.PREF_REVIEW_DONE_SESSION, session).apply()
