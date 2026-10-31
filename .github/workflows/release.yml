@@ -81,11 +81,14 @@ jobs:
           tag_name: v${{ env.VERSION_NAME }}
           name: Market Radar v${{ env.VERSION_NAME }}
           files: app/build/outputs/apk/release/*.apk
-          draft: false
+          # PM1 release gate: always a DRAFT, never marked latest by this workflow. Promotion (publish + latest)
+          # is a separate manual step after the signer/package/version/brain/asset checks and Vivek's approval.
+          draft: true
           prerelease: false
+          make_latest: "false"
           body: |
             ### Market Radar v${{ env.VERSION_NAME }}
 
-            Automated signed release.
+            Signed DRAFT build. Not published and not latest until verified and approved.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
