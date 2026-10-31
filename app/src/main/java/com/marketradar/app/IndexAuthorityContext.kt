@@ -36,6 +36,7 @@ object IndexAuthorityContext {
     fun reportDir(filesDir: File) = File(filesDir, REPORT_DIR_NAME)
     const val SINGLE_LEG_DIR_NAME = "single_leg_v1"
     const val PREF_SINGLE_LEG_PAPER = "single_leg_paper_enabled_v1"   // default OFF; explicit user opt-in
+    const val PREF_SINGLE_LEG_CONFIG_REV = "single_leg_config_revision_v1"
     fun singleLegDir(filesDir: File) = File(filesDir, SINGLE_LEG_DIR_NAME)
 
     fun normalizeSelector(raw: String?): String = when (raw?.trim()?.uppercase()) {
