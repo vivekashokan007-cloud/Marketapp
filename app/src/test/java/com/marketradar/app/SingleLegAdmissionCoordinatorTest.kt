@@ -33,6 +33,8 @@ class SingleLegAdmissionCoordinatorTest {
             """{"status":"ADMITTED","position_id":"sl1_x","request_id":"${c.requestId}"}"""
         }
         var reconcileResult: (String) -> String? = { null }
+        var cancelResult: (String) -> String? = { id -> """{"found":true,"status":"REJECTED","reason":"CANCELLED_BEFORE_COMMIT","fence":true,"request_id":"$id"}""" }
+        val cancels = AtomicInteger(0)
         val wall = AtomicLong(1_000_000L)
         val transport = ManagedReadAdapters.Transport { _, _, _ ->
             fetches.incrementAndGet(); entered.countDown(); release.await(5, TimeUnit.SECONDS)
@@ -43,8 +45,9 @@ class SingleLegAdmissionCoordinatorTest {
             clocks = ManagedReadAdapters.Clocks({ wall.get() }, { wall.get() }),
             admit = { c -> admits.incrementAndGet(); admitResult(c) },
             reconcile = { reconcileResult(it) },
+            cancel = { cancels.incrementAndGet(); cancelResult(it) },
             executor = Executors.newSingleThreadExecutor(),
-            sleeper = { wall.addAndGet(it * 20) })
+            sleeper = { wall.addAndGet(it * 20); Thread.sleep(1) })
 
         fun await(id: String): JSONObject {
             val end = System.currentTimeMillis() + 5000
@@ -122,13 +125,61 @@ class SingleLegAdmissionCoordinatorTest {
         assertTrue(out.getBoolean("reconciled"))
     }
 
-    @Test fun timeoutNeverBecomesUnknownLateAdmission() {
+    @Test fun timeoutStaysUnconfirmedUntilDefinitiveThenAdmitted() {
+        // Codex R8 regression 3/4: commit still in flight past deadline+grace -> PENDING/OUTCOME_UNCONFIRMED (never
+        // a terminal NOT_ADMITTED); when the lock frees, the recorded ADMITTED is reported.
         val rig = Rig(state())
         rig.admitResult = { null }
         rig.reconcileResult = { """{"found":false,"status":"NOT_RECORDED"}""" }
+        val busy = AtomicInteger(0)
+        rig.cancelResult = { id -> if (busy.incrementAndGet() < 4) """{"found":false,"status":"OUTCOME_UNCONFIRMED","reason":"STORE_LOCK_BUSY"}"""
+            else """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
         rig.coord.submit("NF", "r5"); rig.release.countDown()
-        val out = rig.await("r5")
-        assertEquals("NOT_ADMITTED_COMMIT_DEADLINE_PASSED", out.getString("reason"))
+        val seen = mutableListOf<String>()
+        val end = System.currentTimeMillis() + 5000
+        var out: JSONObject? = null
+        while (System.currentTimeMillis() < end) {
+            val j = JSONObject(rig.coord.status("r5"))
+            if (j.optBoolean("completed")) { out = j; break }
+            seen.add(j.optString("phase")); Thread.sleep(2)
+        }
+        assertEquals("ADMITTED", out!!.getString("status"))
+        assertTrue(seen.none { it.contains("NOT_ADMITTED") })
+        assertTrue(seen.contains("OUTCOME_UNCONFIRMED") || busy.get() >= 4)
+    }
+
+    @Test fun timeoutFencedIsDefinitiveRejection() {
+        val rig = Rig(state())
+        rig.admitResult = { null }
+        rig.reconcileResult = { """{"found":false,"status":"NOT_RECORDED"}""" }
+        rig.coord.submit("NF", "r5b"); rig.release.countDown()
+        val out = rig.await("r5b")
+        assertEquals("CANCELLED_BEFORE_COMMIT", out.getString("reason"))
+        assertTrue(out.getBoolean("fence"))
+    }
+
+    @Test fun restartUnknownRequestIsReconciledUnderLockNotGuessed() {
+        // Codex R8 regression 5: a fresh coordinator (app restart) has no memory of the id.
+        val rig = Rig(state())
+        rig.cancelResult = { id -> """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
+        val a = JSONObject(rig.coord.status("old-1"))
+        assertTrue(a.getBoolean("completed")); assertEquals("ADMITTED", a.getString("status"))
+        rig.cancelResult = { """{"found":false,"status":"OUTCOME_UNCONFIRMED","reason":"STORE_LOCK_BUSY"}""" }
+        val b = JSONObject(rig.coord.status("old-2"))
+        assertFalse(b.optBoolean("completed")); assertEquals("OUTCOME_UNCONFIRMED", b.getString("phase"))
+    }
+
+    @Test fun inFlightStatusesAreNeverEvicted() {
+        val rig = Rig(state())
+        rig.admitResult = { null }
+        rig.reconcileResult = { """{"found":false}""" }
+        rig.cancelResult = { """{"found":false,"status":"OUTCOME_UNCONFIRMED"}""" }
+        rig.coord.submit("NF", "keep"); rig.release.countDown()
+        Thread.sleep(50)
+        val other = Rig(state(enabled = false))
+        repeat(60) { other.coord.submit("NF", "o$it") }
+        val st = JSONObject(rig.coord.status("keep"))
+        assertEquals("PENDING", st.getString("status"))
     }
 
     @Test fun gatesClosedMakeNoBrokerCall() {
@@ -148,9 +199,10 @@ class SingleLegAdmissionCoordinatorTest {
         assertEquals("NaN", JSONObject(state(capital = Double.NaN).probeJson()).getString("capital"))
     }
 
-    @Test fun unknownRequestFallsBackToReconcile() {
+    @Test fun unknownRequestFencesUnderLock() {
         val rig = Rig(state())
-        rig.reconcileResult = { """{"found":false,"status":"NOT_RECORDED"}""" }
-        assertEquals("NOT_RECORDED", JSONObject(rig.coord.status("zzz")).getString("status"))
+        val j = JSONObject(rig.coord.status("zzz"))
+        assertEquals("CANCELLED_BEFORE_COMMIT", j.getString("reason"))
+        assertEquals(1, rig.cancels.get())
     }
 }

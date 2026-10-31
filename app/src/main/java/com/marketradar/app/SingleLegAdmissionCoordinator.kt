@@ -15,8 +15,8 @@ import java.util.concurrent.Executors
  *    selector, open managed exposure, capital/risk and the config revision); any change rejects with
  *    STATE_CHANGED_DURING_FETCH:<field> so an old proposal is never filled against a new quote;
  *  - Python receives a StateProbe and re-reads the same state again UNDER the store lock at commit, plus a
- *    commit deadline, so a PyTimeout can never turn into an unknown late admission: after a timeout the
- *    request is reconciled by id against the store's request record.
+ *    commit deadline; after a PyTimeout the request stays PENDING/RECONCILING until a definitive outcome is
+ *    read or fenced under the admission lock (single_leg_request_cancel).
  * Pure Kotlin (no Android types) so the paused-transport integration tests run on the JVM.
  */
 class SingleLegAdmissionCoordinator(
@@ -24,11 +24,14 @@ class SingleLegAdmissionCoordinator(
     private val transport: () -> ManagedReadAdapters.Transport?,
     private val clocks: ManagedReadAdapters.Clocks,
     private val admit: (Call) -> String?,            // null = PyTimeout
-    private val reconcile: (String) -> String?,      // brain.single_leg_request_status
+    private val reconcile: (String) -> String?,      // brain.single_leg_request_status (read-only)
+    private val cancel: (String) -> String?,         // brain.single_leg_request_cancel (under the admission lock)
     private val executor: Executor = Executors.newSingleThreadExecutor(),
     private val commitWindowMs: Long = 15_000L,
     private val reconcileGraceMs: Long = 5_000L,
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
+    private val reconcileExecutor: Executor = Executors.newCachedThreadPool(),
+    private val maxBackoffMs: Long = 5_000L,
 ) {
     data class State(
         val resultJson: String?, val index: String, val decisionId: String?, val instrumentKey: String?,
@@ -73,11 +76,15 @@ class SingleLegAdmissionCoordinator(
             .put("capital_source", "prefs.capital").put("risk_source", "brain._CONST.MAX_RISK_PCT").toString()
     }
 
-    private val statuses = object : LinkedHashMap<String, String>(16, 0.75f, true) {
-        override fun removeEldestEntry(e: MutableMap.MutableEntry<String, String>?) = size > 50
-    }
+    // in-flight requests are never evicted; only completed outcomes are pruned (oldest first) beyond 50
+    private val statuses = LinkedHashMap<String, String>()
+    private val completed = LinkedHashMap<String, Boolean>()
 
-    private fun put(id: String, json: JSONObject) = synchronized(statuses) { statuses[id] = json.put("request_id", id).toString() }
+    private fun put(id: String, json: JSONObject) = synchronized(statuses) {
+        statuses[id] = json.put("request_id", id).toString()
+        if (json.optBoolean("completed")) completed[id] = true
+        while (completed.size > 50) { val k = completed.keys.first(); completed.remove(k); statuses.remove(k) }
+    }
 
     /** Non-blocking: returns PENDING with the request id. */
     fun submit(index: String, requestId: String = UUID.randomUUID().toString()): String {
@@ -87,9 +94,17 @@ class SingleLegAdmissionCoordinator(
         return JSONObject().put("status", "PENDING").put("request_id", requestId).put("index", ix).toString()
     }
 
-    fun status(requestId: String): String =
-        synchronized(statuses) { statuses[requestId] } ?: (reconcile(requestId)
-            ?: JSONObject().put("status", "UNKNOWN_REQUEST").put("request_id", requestId).toString())
+    /**
+     * Known in this process: its live status.  Unknown (e.g. after an app restart): no admission for it can be in
+     * flight in this process, so reconcile DEFINITIVELY under the admission lock (recorded outcome, or a persisted
+     * fence).  If the lock is busy the answer is OUTCOME_UNCONFIRMED (not completed) - never a guessed negative.
+     */
+    fun status(requestId: String): String {
+        synchronized(statuses) { statuses[requestId] }?.let { return it }
+        val c = cancel(requestId)?.let { try { JSONObject(it) } catch (e: Exception) { null } }
+        if (c != null && c.optBoolean("found")) return c.put("completed", true).put("reconciled", true).toString()
+        return JSONObject().put("status", "PENDING").put("phase", "OUTCOME_UNCONFIRMED").put("request_id", requestId).toString()
+    }
 
     internal fun run(ix: String, id: String) {
         try {
@@ -111,18 +126,34 @@ class SingleLegAdmissionCoordinator(
             val probe = StateProbe { readState(ix).probeJson() }
             val out = admit(Call(s1, q, m, id, deadline, probe))
             if (out != null) return done(id, JSONObject(out))
-            // PyTimeout: never an unknown late admission. Python refuses to commit after `deadline`, and every
-            // outcome it decides is recorded by request id; reconcile until recorded or the deadline has passed.
+            // PyTimeout: the Python call may still be running.  Report PENDING/RECONCILING until the outcome is
+            // definitive; never NOT_ADMITTED because a timer elapsed.  Reconcile off the admission executor.
             put(id, JSONObject().put("status", "PENDING").put("phase", "RECONCILING").put("index", ix))
-            while (true) {
-                val r = reconcile(id)?.let { JSONObject(it) }
-                if (r != null && r.optBoolean("found")) return done(id, r.put("reconciled", true))
-                if (clocks.wallMs() > deadline + reconcileGraceMs)
-                    return done(id, rej("NOT_ADMITTED_COMMIT_DEADLINE_PASSED").put("reconciled", true))
-                sleeper(250)
-            }
+            reconcileExecutor.execute { reconcileLoop(ix, id, deadline) }
         } catch (e: Exception) {
             done(id, JSONObject().put("status", "ERROR").put("reason", e.javaClass.simpleName))
+        }
+    }
+
+    internal fun reconcileLoop(ix: String, id: String, deadline: Long) {
+        var wait = 250L
+        while (true) {
+            try {
+                val r = reconcile(id)?.let { JSONObject(it) }
+                if (r != null && r.optBoolean("found")) return done(id, r.put("reconciled", true))
+                if (clocks.wallMs() > deadline + reconcileGraceMs) {
+                    // definitive under the admission lock: the recorded outcome, or a persisted terminal fence that
+                    // blocks any later commit for this id.  Lock busy -> still unconfirmed, keep reconciling.
+                    val c = cancel(id)?.let { JSONObject(it) }
+                    if (c != null && c.optBoolean("found")) return done(id, c.put("reconciled", true))
+                    put(id, JSONObject().put("status", "PENDING").put("phase", "OUTCOME_UNCONFIRMED").put("index", ix))
+                }
+            } catch (e: Exception) {
+                put(id, JSONObject().put("status", "PENDING").put("phase", "OUTCOME_UNCONFIRMED").put("index", ix)
+                    .put("last_error", e.javaClass.simpleName))
+            }
+            sleeper(wait)
+            wait = minOf(wait * 2, maxBackoffMs)
         }
     }
 

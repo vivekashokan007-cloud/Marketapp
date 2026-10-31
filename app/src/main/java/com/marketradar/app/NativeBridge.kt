@@ -1762,6 +1762,15 @@ class NativeBridge(private val context: Context) {
                             IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath, id).toString()
                     }
                 } catch (e: Exception) { null }
+            },
+            cancel = { id ->
+                try {
+                    val brain = com.chaquo.python.Python.getInstance().getModule("brain")
+                    PyTimeout.callWithTimeout("bridge.single_leg_request_cancel", PY_VALIDATE_TIMEOUT_MS) {
+                        brain.callAttr("single_leg_request_cancel",
+                            IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath, id).toString()
+                    }
+                } catch (e: Exception) { null }
             })
     }
 
