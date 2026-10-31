@@ -32,8 +32,8 @@ class FakeMarketVivi:
         git(self.dir, "init", "-q")
         git(self.dir, "config", "user.email", "t@example.invalid")
         git(self.dir, "config", "user.name", "t")
-        (self.dir / "index.html").write_text('<script src="app.js?v=1380"></script>\n')
-        (self.dir / "app.js").write_text("const M0_PWA_IDENTITY = { version: '2.6.85', build: 516, app_js_v: 1380 };\n")
+        (self.dir / "index.html").write_text('<script src="app.js?v=1381"></script>\n')
+        (self.dir / "app.js").write_text("const M0_PWA_IDENTITY = { version: '2.6.86', build: 517, app_js_v: 1381 };\n")
         for n in ("api.js", "log-viewer.js", "style.css", "manifest.json"):
             (self.dir / n).write_text(f"/* {n} */\n")
         (self.dir / "CLAUDE.md").write_text("secret-ish notes\n")
@@ -69,7 +69,7 @@ class StageTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256((out / n).read_bytes()).hexdigest(), m["files"][n]["sha256"])
         self.assertFalse((out / "CLAUDE.md").exists())
         self.assertFalse((out / "docs").exists())
-        self.assertEqual(m["pwa_identity"], {"version": "2.6.85", "build": 516, "app_js_v": 1380, "index_app_js_v": 1380})
+        self.assertEqual(m["pwa_identity"], {"version": "2.6.86", "build": 517, "app_js_v": 1381, "index_app_js_v": 1381})
 
     def test_tampered_pin_fails_closed(self):
         m = json.loads(self.pin.read_text())
@@ -130,9 +130,9 @@ class StageTests(unittest.TestCase):
 class CommittedPinTests(unittest.TestCase):
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
-        self.assertEqual(m["marketvivi_sha"], "aabccc26b828b03935ff93f3b54ae50c97ce9e84")
+        self.assertEqual(m["marketvivi_sha"], "877b02fd6d703ca43148a0f119b60216d9b509ce")
         self.assertEqual(sorted(m["files"]), sorted(S.RUNTIME_FILES))
-        self.assertEqual(m["files"]["app.js"]["sha256"], "ca0d7a352939e93cd67bb12dce7a37c575748523731796c6d886d2d3b0df426b")
+        self.assertEqual(m["files"]["app.js"]["sha256"], "004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230")
         self.assertEqual(m["document_base"], S.DOCUMENT_BASE)
 
 

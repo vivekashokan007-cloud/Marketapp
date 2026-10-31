@@ -51,10 +51,10 @@ class B515CandidatePwaTest {
     @Test fun indexResolutionQueryStringsAndFragments() {
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "index.html"))
-        assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "?v=1380"))
+        assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "?v=1381"))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "#tab=positions"))
         assertEquals(Decision.Serve("index.html", "text/html"), serve(base + "index.html?x=1#scroll"))
-        assertEquals(Decision.Serve("app.js", "text/javascript"), serve(base + "app.js?v=1380"))
+        assertEquals(Decision.Serve("app.js", "text/javascript"), serve(base + "app.js?v=1381"))
         assertEquals(Decision.Serve("api.js", "text/javascript"), serve(base + "api.js?v=1134"))
         assertEquals(Decision.Serve("log-viewer.js", "text/javascript"), serve(base + "log-viewer.js?v=1161"))
         assertEquals(Decision.Serve("style.css", "text/css"), serve(base + "style.css?v=1142"))
@@ -162,14 +162,14 @@ class B515CandidatePwaTest {
 
     @Test fun committedPinIsTheAcceptedMarketViviCommitAndRuntimeAllowlist() {
         val pin = JSONObject(file("src/candidate/pwa_expected_manifest.json").readText())
-        assertEquals("aabccc26b828b03935ff93f3b54ae50c97ce9e84", pin.getString("marketvivi_sha"))
+        assertEquals("877b02fd6d703ca43148a0f119b60216d9b509ce", pin.getString("marketvivi_sha"))
         assertEquals(CandidatePwaManifest.SCHEMA, pin.getString("schema"))
         assertEquals(base, pin.getString("document_base"))
         assertEquals(CandidatePwaRoute.RUNTIME_FILES.toSortedSet(), pin.getJSONObject("files").keys().asSequence().toSortedSet())
-        assertEquals("ca0d7a352939e93cd67bb12dce7a37c575748523731796c6d886d2d3b0df426b",
+        assertEquals("004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230",
             pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
-        assertEquals("2.6.85", id.getString("version")); assertEquals(516, id.getInt("build")); assertEquals(1380, id.getInt("app_js_v"))
+        assertEquals("2.6.86", id.getString("version")); assertEquals(517, id.getInt("build")); assertEquals(1381, id.getInt("app_js_v"))
         // When a MarketVivi checkout at the pinned commit is available (local review), its real bytes verify too.
         val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
             ?: return println("SKIPPED real-bytes pin check: MARKETVIVI_DIR not set")
@@ -185,7 +185,7 @@ class B515CandidatePwaTest {
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
         assertTrue(g.contains("applicationId = \"com.marketradar.app\""))
-        assertTrue(g.contains("versionCode = 516")); assertTrue(g.contains("versionName = \"2.6.85\""))
+        assertTrue(g.contains("versionCode = 517")); assertTrue(g.contains("versionName = \"2.6.86\""))
         for (bad in listOf("applicationIdSuffix", "versionNameSuffix", "isDebuggable = true", "debuggable true", "setDataDirectorySuffix"))
             assertFalse(bad, g.contains(bad))
         val cand = g.substring(g.indexOf("create(\"candidate\") {")).let { it.substring(0, it.indexOf("\n        }\n")) }
@@ -273,7 +273,7 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "aabccc26b828b03935ff93f3b54ae50c97ce9e84"
+        const val PWA = "877b02fd6d703ca43148a0f119b60216d9b509ce"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)

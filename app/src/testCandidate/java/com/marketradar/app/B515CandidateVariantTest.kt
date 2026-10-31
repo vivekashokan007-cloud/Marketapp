@@ -11,9 +11,9 @@ class B515CandidateVariantTest {
         assertEquals("candidate", BuildConfig.BUILD_TYPE)
         assertEquals("com.marketradar.app", BuildConfig.APPLICATION_ID)   // no suffix: installs in place, same data
         assertFalse(BuildConfig.DEBUG)
-        assertEquals(516, BuildConfig.VERSION_CODE)
-        assertEquals("2.6.85", BuildConfig.VERSION_NAME)
-        assertEquals("aabccc26b828b03935ff93f3b54ae50c97ce9e84", BuildConfig.PWA_SOURCE_HEAD)
+        assertEquals(517, BuildConfig.VERSION_CODE)
+        assertEquals("2.6.86", BuildConfig.VERSION_NAME)
+        assertEquals("877b02fd6d703ca43148a0f119b60216d9b509ce", BuildConfig.PWA_SOURCE_HEAD)
         val pin = listOf(File("src/candidate/pwa_expected_manifest.json"), File("app/src/candidate/pwa_expected_manifest.json")).first { it.isFile }
         assertEquals(CandidatePwaManifest.sha256Hex(pin.readBytes()), BuildConfig.PWA_MANIFEST_SHA256)
     }
@@ -24,7 +24,7 @@ class B515CandidateVariantTest {
         val r = CandidatePwaManifest.verify(File(dir, CandidatePwaManifest.MANIFEST_ASSET).readBytes(), BuildConfig.PWA_MANIFEST_SHA256,
             BuildConfig.PWA_SOURCE_HEAD) { File(dir, it).takeIf { f -> f.isFile }?.readBytes() }
         assertTrue("$r", r is CandidatePwaManifest.Result.Verified)
-        assertEquals("ca0d7a352939e93cd67bb12dce7a37c575748523731796c6d886d2d3b0df426b",
+        assertEquals("004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230",
             (r as CandidatePwaManifest.Result.Verified).hashes.first { it.name == "app.js" }.sha256)
     }
 }
