@@ -11,10 +11,16 @@ makes NO network call):
   * Margin Details  POST /v2/charges/margin        -> request {instrument_key, quantity, product,
     transaction_type}; response data.required_margin / final_margin / margins[]
 
-Tick units: the documented option-contract example returns tick_size=5 for a NIFTY index option, whose NSE
-tick is Rs 0.05.  The Upstox value is therefore read as PAISE and normalised ONCE here (rupees = paise / 100).
-Any value that does not normalise to a positive whole-paise rupee tick <= Rs 1 is rejected (TICK_UNIT_UNVERIFIED),
-never guessed.
+Tick units (R6 review s5): the Upstox option-contract `tick_size` is read as PAISE.  The unit rule is an
+INFERENCE from the documented example only (tick_size=5 for a NIFTY index option whose NSE tick is Rs 0.05); it
+is not stated as a unit in the reviewed docs.  Every contract row keeps the raw value, its source field and the
+unit-rule provenance (TICK_UNIT_RULE_SOURCE).  The Rs 1 upper bound is an APP PLAUSIBILITY bound, not an
+exchange rule.  Values that are not whole paise or fall outside the bound are rejected, never guessed.
+
+Lots (R6 review s5): the contract lot must agree with the AUTHORITATIVE dated resolver
+(contract_lot_table.resolve_contract_lot for the exact index, session and expiry).  Missing table evidence is a
+named unavailable result; no freely supplied dictionary is consulted; fractional lots are never truncated.
+minimum_lot policy: absent -> MINIMUM_LOT_UNAVAILABLE (reject); present and != lot_size -> reject.
 """
 from __future__ import annotations
 
@@ -22,6 +28,9 @@ import math
 
 SCHEMA = 'managed_evidence_v1'
 TICK_UNIT_UPSTOX = 'UPSTOX_PAISE'
+TICK_SOURCE_FIELD = 'upstox_v2_option_contract.tick_size'
+TICK_UNIT_RULE_SOURCE = 'INFERRED_FROM_DOCUMENTED_EXAMPLE_tick_size_5_eq_NSE_Rs0.05'
+TICK_APP_PLAUSIBILITY_MAX_RUPEES = 1.0     # app sanity bound, NOT an exchange rule
 UNDERLYING_KEYS = {'NF': 'NSE_INDEX|Nifty 50', 'BNF': 'NSE_INDEX|Nifty Bank'}
 MARGIN_PRODUCTS = ('I', 'D')
 MARGIN_SIDES = ('BUY', 'SELL')
@@ -47,8 +56,8 @@ def normalize_tick(raw, unit=TICK_UNIT_UPSTOX):
     if v != int(v):
         return None, 'TICK_UNIT_UNVERIFIED'          # paise must be whole
     rupees = round(v / 100.0, 2)
-    if not (0 < rupees <= 1.0):
-        return None, 'TICK_UNIT_UNVERIFIED'
+    if not (0 < rupees <= TICK_APP_PLAUSIBILITY_MAX_RUPEES):
+        return None, 'TICK_OUTSIDE_APP_PLAUSIBILITY_BOUND'
     return rupees, None
 
 
@@ -72,7 +81,9 @@ def parse_option_contracts(index, response, fetched_at=None):
         lot, mlot = _num(r.get('lot_size')), _num(r.get('minimum_lot'))
         if lot is None or lot <= 0 or lot != int(lot):
             why.append('LOT_INVALID')
-        elif mlot is not None and mlot != lot:
+        elif mlot is None:
+            why.append('MINIMUM_LOT_UNAVAILABLE')      # explicit policy: unknown is rejected, never assumed equal
+        elif mlot != lot:
             why.append('LOT_MINIMUM_LOT_DISAGREE')
         tick, twhy = normalize_tick(r.get('tick_size'))
         if twhy:
@@ -86,6 +97,8 @@ def parse_option_contracts(index, response, fetched_at=None):
         out[key] = {'index': index, 'instrument_key': key, 'expiry': str(r.get('expiry') or '')[:10],
                     'strike': strike, 'option_type': r.get('instrument_type'), 'lot_size': int(lot),
                     'tick_size': tick, 'tick_size_raw': r.get('tick_size'), 'tick_unit': TICK_UNIT_UPSTOX,
+                    'tick_source': TICK_SOURCE_FIELD, 'tick_unit_rule_source': TICK_UNIT_RULE_SOURCE,
+                    'minimum_lot': int(mlot), 'minimum_lot_status': 'PRESENT_EQUAL',
                     'underlying_key': want, 'trading_symbol': r.get('trading_symbol'),
                     'source': 'upstox_v2_option_contract', 'fetched_at': fetched_at}
     return out, rejected
@@ -151,8 +164,10 @@ def build_context(contracts_by_index=None, quantities=None, margins=None):
             'margins': {m['key']: m for m in (margins or []) if isinstance(m, dict) and m.get('key')}}
 
 
-def resolve_contract(evidence, index, chain_leg, *, expiry, strike, option_type, captured_lot=None, lot_table=None):
-    """Exact per-contract identity for a managed entry.  Returns (contract|None, reasons)."""
+def resolve_contract(evidence, index, chain_leg, *, expiry, strike, option_type, session_date=None,
+                     captured_lot=None, lot_resolver=None):
+    """Exact per-contract identity for a managed entry.  Returns (contract|None, reasons).
+    The lot must agree with the authoritative dated resolver for (index, session_date, expiry)."""
     reasons = []
     ev = evidence if isinstance(evidence, dict) and evidence.get('schema') == SCHEMA else None
     key = (chain_leg or {}).get('instrument_key') if isinstance(chain_leg, dict) else None
@@ -172,15 +187,41 @@ def resolve_contract(evidence, index, chain_leg, *, expiry, strike, option_type,
     if str(expiry or '')[:10] != c.get('expiry'):
         reasons.append('CONTRACT_EXPIRY_MISMATCH')
     lot = c.get('lot_size')
-    cl = _num(captured_lot)
-    if cl is not None and int(cl) != lot:
-        reasons.append('LOT_CAPTURED_METADATA_DISAGREE')
-    tl = _num((lot_table or {}).get(index)) if isinstance(lot_table, dict) else None
-    if tl is not None and int(tl) != lot:
+    if captured_lot is not None:
+        cl = _num(captured_lot)
+        if cl is None or cl != lot:            # exact; a fractional value never equals an integral lot
+            reasons.append('LOT_CAPTURED_METADATA_DISAGREE')
+    tl = authoritative_lot(index, session_date, expiry, resolver=lot_resolver)
+    if tl.get('lot_size') is None:
+        reasons.append('LOT_TABLE_UNAVAILABLE:' + str(tl.get('reason')))
+    elif tl['lot_size'] != lot:
         reasons.append('LOT_TABLE_METADATA_DISAGREE')
     if c.get('tick_size') is None:
         reasons.append('TICK_UNAVAILABLE')
-    return (c if not reasons else None), reasons
+    if c.get('minimum_lot_status') != 'PRESENT_EQUAL':
+        reasons.append('MINIMUM_LOT_UNAVAILABLE')
+    if reasons:
+        return None, reasons
+    return dict(c, lot_table=tl), []
+
+
+def authoritative_lot(index, session_date, expiry, resolver=None):
+    """The dated authoritative contract-lot resolver for the exact index/session/expiry.  Returns
+    {'lot_size': float|None, 'reason', 'version', 'source'}; never a truncated value."""
+    if not session_date or not expiry:
+        return {'lot_size': None, 'reason': 'SESSION_OR_EXPIRY_MISSING'}
+    try:
+        if resolver is None:
+            from contract_lot_table import resolve_contract_lot as resolver
+        r = resolver(index, str(session_date)[:10], number_of_lots=1, expiry=str(expiry)[:10])
+    except Exception as exc:
+        return {'lot_size': None, 'reason': 'RESOLVER_ERROR:' + type(exc).__name__}
+    if not isinstance(r, dict) or not r.get('resolved'):
+        return {'lot_size': None, 'reason': (r or {}).get('reason') if isinstance(r, dict) else 'RESOLVER_INVALID'}
+    v = _num(r.get('lot_size'))
+    if v is None or v <= 0 or v != int(v):
+        return {'lot_size': None, 'reason': 'LOT_TABLE_NOT_INTEGRAL'}
+    return {'lot_size': int(v), 'reason': None, 'version': r.get('lot_table_version'), 'source': r.get('lot_source')}
 
 
 def leg_quantities(evidence, instrument_key):

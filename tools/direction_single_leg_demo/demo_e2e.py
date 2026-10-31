@@ -1,7 +1,9 @@
 """End-to-end SYNTHETIC local Paper demonstration of index_single_leg_v1 (Delivery B, R5 review s7).
 
-proposal -> admission -> persisted position -> RESTART (separate OS process) -> monitored exit -> net costs ->
-Daily review.  Synthetic fixtures only (tests/index_authority_fixtures.py); no network, no broker, no Supabase.
+proposal -> exact-instrument dedicated v3 quote (synthetic fixture, paper_broker_snapshot_v1) -> admission
+(final recheck at the deterministic execution clock) -> persisted position -> RESTART (separate OS process) ->
+open-position quote first -> monitored exit -> net costs -> Daily review.
+Deterministic clocks: single_leg_store_v1._wall_clock is replaced by the simulated wall clock.  Synthetic fixtures only (tests/index_authority_fixtures.py); no network, no broker, no Supabase.
 This demonstrates the integrated code path; it says NOTHING about profitability.
 
 Usage:  python demo_e2e.py <work_dir>         (prints a JSON transcript; also writes <work_dir>/transcript.json)
@@ -61,10 +63,38 @@ def _ctx(dirs, poll_list):
                 s[ot]['instrument_key'] = f'SYNTH_FO|{ix}{k}{ot}'
     c = F.ctx(last['nfSpot'], last['bnfSpot'], nfChain=nf, bnfChain=bnf,
               indexAuthorityStateDir=dirs['ia'], singleLegStateDir=dirs['sl'], singleLegPaperEnabled=True,
-              executionMode='paper', indexAuthorityDeferredWrite=True, analysisClockMs=clk,
-              contractLotTable={'NF': 65, 'BNF': 30})
+              executionMode='paper', indexAuthorityDeferredWrite=True, analysisClockMs=clk)
     c['managedEvidence'] = _evidence({'NF': nf, 'BNF': bnf})
     return c, clk
+
+
+def _v3(chains, keys, gen_ms):
+    """Synthetic dedicated v3 full-quote response (documented shape) for exactly `keys`."""
+    data = {}
+    for ix, c in chains.items():
+        for k, s in c['strikes'].items():
+            for ot in ('CE', 'PE'):
+                leg = s[ot]
+                if leg['instrument_key'] in keys:
+                    data['NSE_FO:SYNTH%s%s%s' % (ix, k, ot)] = {
+                        'instrument_token': leg['instrument_key'], 'timestamp': str(int(gen_ms)),
+                        'depth': {'buy': [{'price': leg['bid'], 'quantity': 900, 'orders': 3}],
+                                  'sell': [{'price': leg['ask'], 'quantity': 900, 'orders': 3}]}}
+    return {'status': 'success', 'data': data}
+
+
+def _fetch_quotes(brain, dirs, c, keys, clk):
+    """Native-equivalent bounded fetch: request at clk, response generated clk+300, received clk+600."""
+    if not keys:
+        return None
+    resp = _v3({'NF': c['nfChain'], 'BNF': c['bnfChain']}, keys, clk + 300)
+    return json.dumps(keys), json.dumps(resp), clk, clk + 600
+
+
+def _set_clock(ms):
+    import single_leg_store_v1 as sls
+    import index_authority_v1 as ia
+    sls._wall_clock = lambda: ia.parse_ts(int(ms))
 
 
 def _analyze_publish(brain, dirs, poll_list):
@@ -92,13 +122,23 @@ def phase1(work):
         log.append({'t': polls[i - 1]['t'], 'nf_direction': r['by_index']['NF']['direction']['value'],
                     'nf_er': r['by_index']['NF']['direction'].get('er'), 'proposal_action': plan.get('action'),
                     'proposal_admit': plan.get('admit'), 'block_reasons': plan.get('reasons')})
-        if plan.get('admit') and admitted is None:
-            res = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', clk + 1000, '[]'))
-            again = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', clk + 2000, '[]'))
+        log[-1]['proposal_status'] = plan.get('status')
+        if plan.get('status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT') and admitted is None:
+            # user taps Admit: native fetches the exact instrument's dedicated v3 quote, then the final check
+            tgt = json.loads(brain.single_leg_quote_targets(dirs['sl'], json.dumps(r)))
+            req, resp, rs, rc = _fetch_quotes(brain, dirs, c, tgt['keys'], clk + 1000)
+            _set_clock(clk + 1700)
+            res = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
+                                                    req, resp, rs, rc, 1))
+            _set_clock(clk + 2500)
+            again = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
+                                                      req, resp, rs, rc, 2))
+            pos = res.get('position') or {}
             admitted = {'t': polls[i - 1]['t'], 'admit': res['status'], 'retry': again['status'],
-                        'position_id': res.get('position_id'), 'proposal': {k: plan.get(k) for k in (
+                        'reasons': res.get('reasons'), 'quote_targets': tgt,
+                        'position_id': res.get('position_id'), 'proposal': {k: pos.get(k) for k in (
                             'action', 'strike', 'option_type', 'instrument_key', 'entry_fill', 'entry_fee', 'units',
-                            'capital_required', 'capital_basis', 'contract', 'freshness')}}
+                            'capital_required', 'capital_basis', 'contract', 'entry_quote', 'exit_contract')}}
     return {'phase': 1, 'pid': os.getpid(), 'polls': log, 'admission': admitted,
             'store_after_phase1': json.loads(brain.single_leg_read(dirs['sl']))}
 
@@ -112,9 +152,14 @@ def phase2(work):
     events = []
     for i in range(start + 1, len(polls) + 1):
         r, c, clk = _analyze_publish(brain, dirs, polls[:i])
+        # IO worker: open-position quotes first (exact instruments), then monitor at the worker's own clock
+        tgt = json.loads(brain.single_leg_quote_targets(dirs['sl'], json.dumps(r)))
+        fq = _fetch_quotes(brain, dirs, c, tgt['open'], clk + 1000)
+        if fq:
+            brain.single_leg_put_quotes(dirs['sl'], *fq)
+        _set_clock(clk + 2000)
         out = json.loads(brain.single_leg_monitor(dirs['sl'], dirs['ia'], SESSION,
-                                                  json.dumps({'NF': c['nfChain'], 'BNF': c['bnfChain']}), clk,
-                                                  0, json.dumps({'NF': polls[i - 1]['nfSpot']})))
+                                                  json.dumps({'NF': polls[i - 1]['nfSpot']})))
         for e in out.get('events') or []:
             events.append(dict(e, t=polls[i - 1]['t']))
     review = json.loads(brain.daily_review_run(dirs['ia'], dirs['rep'], SESSION, '[]', '[]'))

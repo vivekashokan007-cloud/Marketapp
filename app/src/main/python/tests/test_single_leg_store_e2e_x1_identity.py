@@ -16,6 +16,7 @@ import index_authority_v1 as ia
 import managed_evidence_v1 as me
 import single_leg_store_v1 as sls
 import index_authority_fixtures as F
+import test_index_single_leg_v1_delivery_b as TB
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEMO = os.path.normpath(os.path.join(HERE, '..', '..', '..', '..', '..', 'tools', 'direction_single_leg_demo'))
@@ -23,16 +24,23 @@ RES = os.path.join(HERE, '..', '..', '..', 'test', 'resources', 'contracts')
 D = ia.parse_ts('2026-11-02T10:00:20+05:30')
 
 
-def admissible_result(index='NF', decision_id='idx1_a', key='SYNTH_FO|NF24100CE'):
-    plan = {'policy_id': 'index_single_leg_v1', 'index': index, 'admit': True, 'reasons': [],
-            'decision_id': decision_id, 'action': 'BUY_CE', 'strike': 24100, 'option_type': 'CE',
-            'instrument_key': key, 'entry_fill': 100.05, 'entry_fee': 20.0, 'units': 65,
-            'capital_required': 6523.25, 'capital_basis': 'LONG_PREMIUM_PLUS_FEE',
-            'contract': {'expiry': F.NF_EXPIRY, 'instrument_key': key, 'lot_size': 65, 'tick_size': 0.05}}
+def admissible_result(index='NF', decision_id='idx1_a', **plan_kw):
+    """A REAL published v2 plan (index_single_leg_v1.plan_entry, synthetic chain + v3 snapshot at D-20 s)."""
+    p = TB.plan(**plan_kw)
+    assert p['admit'], p['reasons']
+    p['decision_id'] = decision_id
     return {'direction_authority': {'status': 'OK', 'active': ia.POLICY_VERSION},
-            'by_index': {index: {'decision_id': decision_id, 'analysis_ts': D.isoformat(), 'session_date': F.SESSION,
-                                 'direction': {'value': 'BULL'}}},
-            'single_leg_by_index': {index: plan}}
+            'by_index': {index: {'decision_id': decision_id, 'analysis_ts': TB.D.isoformat(),
+                                 'session_date': F.SESSION, 'direction': {'value': 'BULL'}}},
+            'single_leg_by_index': {index: p}}
+
+
+def at(seconds):
+    t = TB.D + timedelta(seconds=seconds)
+    return lambda: t
+
+
+OK = dict(enabled=True, paper_mode=True, selector='BOTH')
 
 
 class StoreAdmission(unittest.TestCase):
@@ -45,21 +53,25 @@ class StoreAdmission(unittest.TestCase):
 
     def test_idempotent_retry_and_restart(self):
         r = admissible_result()
-        a = sls.admit(self.d, r, 'NF', D + timedelta(seconds=5))
-        b = sls.admit(self.d, r, 'NF', D + timedelta(seconds=9))
-        self.assertEqual((a['status'], b['status']), ('ADMITTED', 'DUPLICATE_IGNORED'))
+        a = sls.admit(self.d, r, 'NF', clock=at(5), **OK)
+        b = sls.admit(self.d, r, 'NF', clock=at(9), **OK)
+        self.assertEqual((a['status'], b['status']), ('ADMITTED', 'DUPLICATE_IGNORED'), a)
         doc = sls.read(self.d)                                   # "restart": fresh read from disk
         self.assertEqual(len(doc['positions']), 1)
         self.assertEqual(len(doc['history']), 1)
-        self.assertEqual(doc['positions'][0]['exit_contract']['schema'], 'mr.single_leg_exit_contract.v1')
-        c = sls.admit(self.d, admissible_result(decision_id='idx1_b'), 'NF', D + timedelta(seconds=9))
+        pos = doc['positions'][0]
+        self.assertEqual(pos['exit_contract']['schema'], 'mr.single_leg_exit_contract.v2')
+        self.assertEqual(pos['entry_quote']['basis'], 'BROKER_SNAPSHOT')
+        self.assertEqual(pos['entry_snapshot']['contract'], 'paper_broker_snapshot_v1')   # exact accepted evidence
+        self.assertEqual(pos['admitted_at'], (TB.D + timedelta(seconds=5)).isoformat())
+        c = sls.admit(self.d, admissible_result(decision_id='idx1_b'), 'NF', clock=at(9), **OK)
         self.assertEqual(c['reason'], 'MANAGED_POLICY_CAP_ONE_PER_INDEX')
 
     def test_interleaved_admissions_one_position(self):
         out, lock = [], threading.Lock()
 
         def w(i):
-            res = sls.admit(self.d, admissible_result(decision_id=f'idx1_{i % 3}'), 'NF', D + timedelta(seconds=5))
+            res = sls.admit(self.d, admissible_result(decision_id=f'idx1_{i % 3}'), 'NF', clock=at(5), **OK)
             with lock:
                 out.append(res['status'])
         ts = [threading.Thread(target=w, args=(i,)) for i in range(12)]
@@ -70,19 +82,20 @@ class StoreAdmission(unittest.TestCase):
 
     def test_rejections_and_corrupt_store_fails_closed(self):
         r = admissible_result()
-        self.assertEqual(sls.admit(self.d, r, 'NF', D + timedelta(seconds=400))['reason'], 'DECISION_NOT_CURRENT')
+        self.assertEqual(sls.admit(self.d, r, 'NF', clock=at(400), **OK)['reason'], 'DECISION_NOT_CURRENT')
         bad = copy.deepcopy(r)
-        bad['single_leg_by_index']['NF']['admit'] = False
-        self.assertEqual(sls.admit(self.d, bad, 'NF', D)['reason'], 'PROPOSAL_NOT_ADMISSIBLE')
+        bad['single_leg_by_index']['NF']['status'] = 'BLOCKED'
+        self.assertEqual(sls.admit(self.d, bad, 'NF', clock=at(5), **OK)['reason'], 'PROPOSAL_NOT_ADMISSIBLE')
         bad2 = copy.deepcopy(r)
         bad2['single_leg_by_index']['NF']['decision_id'] = 'idx1_old'
-        self.assertEqual(sls.admit(self.d, bad2, 'NF', D)['reason'], 'DECISION_MISMATCH')
+        self.assertEqual(sls.admit(self.d, bad2, 'NF', clock=at(5), **OK)['reason'], 'DECISION_MISMATCH')
         spread = [{'id': 's', 'index_key': 'NF', 'status': 'EXIT_PENDING', 'managed_policy_id': ia.MANAGED_POLICY_ID}]
-        self.assertEqual(sls.admit(self.d, r, 'NF', D, open_trades=spread)['reason'], 'MANAGED_POLICY_CAP_ONE_PER_INDEX')
+        self.assertEqual(sls.admit(self.d, r, 'NF', clock=at(5), open_trades=spread, **OK)['reason'],
+                         'MANAGED_POLICY_CAP_ONE_PER_INDEX')
         os.makedirs(self.d, exist_ok=True)
         with open(os.path.join(self.d, sls.DOC), 'w') as f:
             f.write('{corrupt')
-        self.assertEqual(sls.admit(self.d, r, 'NF', D)['reason'], 'STORE_CORRUPT')
+        self.assertEqual(sls.admit(self.d, r, 'NF', clock=at(5), **OK)['reason'], 'STORE_CORRUPT')
         rows = brain._ia_single_leg_positions({'singleLegStateDir': self.d})
         self.assertEqual({x['status'] for x in rows}, {'UNKNOWN_STORE_UNREADABLE'})
         self.assertEqual(ia.managed_exposure('NF', [], rows)['count'], 1)
@@ -90,14 +103,17 @@ class StoreAdmission(unittest.TestCase):
             sls.read('/tmp/not_the_store')
 
     def test_monitor_pending_then_close_and_outcome(self):
-        sls.admit(self.d, admissible_result(), 'NF', D)
-        chain = {'strikes': {'24100': {'CE': {'instrument_key': 'SYNTH_FO|NF24100CE', 'bid': 120.0, 'ask': 121.0}}}}
+        r = admissible_result()
+        sls.admit(self.d, r, 'NF', clock=at(5), **OK)
+        key = r['single_leg_by_index']['NF']['instrument_key']
+        pos = sls.read(self.d)['positions'][0]
         t = ia.parse_ts('2026-11-02T15:05:20+05:30')
-        out = sls.monitor(self.d, {'NF': chain}, {}, t)                       # undated quote -> pending
+        out = sls.monitor(self.d, {}, {}, clock=lambda: t)                 # no dedicated snapshot -> pending
         self.assertEqual(out['events'][0]['event'], 'EXIT_PENDING')
+        self.assertEqual(out['events'][0]['pending'], 'BROKER_SNAPSHOT_UNAVAILABLE')
         self.assertEqual(sls.outcomes(self.d, F.SESSION)[0]['status'], 'EXIT_PENDING')
-        chain['strikes']['24100']['CE']['exchange_ts'] = (t - timedelta(seconds=10)).isoformat()
-        out = sls.monitor(self.d, {'NF': chain}, {}, t + timedelta(minutes=1))
+        snap = TB.q(pos, 120.0, 121.0, t + timedelta(seconds=50))
+        out = sls.monitor(self.d, {key: snap}, {}, clock=lambda: t + timedelta(minutes=1))
         self.assertEqual(out['events'][0]['event'], 'EXIT')
         oc = sls.outcomes(self.d, F.SESSION)
         self.assertEqual(oc[0]['status'], 'CLOSED')
@@ -116,6 +132,8 @@ class EndToEndDemo(unittest.TestCase):
             self.assertNotEqual(p1['pid'], p2['pid'])                       # real restart (separate process)
             self.assertEqual((p1['admission']['admit'], p1['admission']['retry']), ('ADMITTED', 'DUPLICATE_IGNORED'))
             self.assertEqual(p1['admission']['proposal']['contract']['tick_unit'], 'UPSTOX_PAISE')
+            self.assertEqual(p1['admission']['proposal']['entry_quote']['basis'], 'BROKER_SNAPSHOT')
+            self.assertEqual(p1['admission']['quote_targets']['keys'], [p1['admission']['proposal']['instrument_key']])
             self.assertEqual(p2['restart_loaded_positions'], 1)
             ex = [e for e in p2['events'] if e['event'] == 'EXIT']
             self.assertEqual(len(ex), 1)
@@ -158,7 +176,6 @@ class X1ByteIdentity(unittest.TestCase):
                     c = h.ctx(day, hms, g(sid, 'NF'), g(sid, 'BNF'), q_lag_s=lag)
                     if with_ev:
                         c['managedEvidence'] = copy.deepcopy(ev)
-                        c['contractLotTable'] = {'NF': 65, 'BNF': 30}
                     o.append(json.dumps(h.run(c), sort_keys=True))
                 outs.append(o)
                 raws.append(h.raw())

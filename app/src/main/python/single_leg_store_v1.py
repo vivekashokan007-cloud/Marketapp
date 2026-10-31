@@ -83,78 +83,150 @@ def idempotency_key(plan):
     return 'sl1_' + hashlib.sha256(raw.encode()).hexdigest()[:20]
 
 
-def admit(d, result, index, now_dt, open_trades=None):
-    """Admit the CURRENT published single-leg proposal for `index`.  Re-validates (fresh decision, plan admitted,
-    shared managed exposure from the durable store) under the store lock; persists position + history atomically."""
+def _wall_clock():
+    import time as _t
+    return _ia.parse_ts(int(_t.time() * 1000))
+
+
+def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
+          snapshot=None, evidence=None, lot_resolver=None, lock_timeout_s=5.0):
+    """Admit the CURRENT published single-leg proposal for `index` (R6 review s3).
+
+    The cached plan is only a proposal.  Under the store lock, AFTER any lock wait, the actual current time is
+    read (clock()) and EVERY gate is rechecked (index_single_leg_v1.revalidate_for_admission): opt-in toggle,
+    Paper mode, selector, published authority identity, schema, entry window, quote (paper_broker_snapshot_v1;
+    a fresher dedicated snapshot for the exact instrument may be supplied), margin (SELL), lot/metadata, history,
+    cooldown and shared exposure from the store.  Fill/fee/capital are recomputed from the accepted snapshot and
+    the exact accepted evidence is persisted.  Idempotent: the same decision/index/action/instrument -> DUPLICATE."""
     check_dir(d)
+    clock = clock or _wall_clock
     res = result if isinstance(result, dict) else {}
     plan = ((res.get('single_leg_by_index') or {}).get(index)) or {}
     dec = (res.get('by_index') or {}).get(index) or {}
     if (res.get('direction_authority') or {}).get('status') != 'OK':
         return {'status': 'REJECTED', 'reason': 'AUTHORITY_NOT_ACTIVE'}
-    if not plan.get('admit'):
-        return {'status': 'REJECTED', 'reason': 'PROPOSAL_NOT_ADMISSIBLE', 'reasons': plan.get('reasons')}
-    if plan.get('decision_id') != dec.get('decision_id'):
+    if not plan or plan.get('decision_id') != dec.get('decision_id') or not dec.get('decision_id'):
         return {'status': 'REJECTED', 'reason': 'DECISION_MISMATCH'}
-    at = _ia.parse_ts(dec.get('analysis_ts'))
-    if at is None or now_dt is None or not (0 <= (now_dt - at).total_seconds() <= ADMIT_MAX_DECISION_AGE_S):
-        return {'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'}
     key = idempotency_key(plan)
-    with _lock(d):
+    try:
+        lk = FileLock(os.path.join(d, '.lock'), timeout_s=lock_timeout_s)
+        os.makedirs(d, exist_ok=True)
+        lk.__enter__()
+    except Exception:
+        return {'status': 'REJECTED', 'reason': 'STORE_LOCK_TIMEOUT'}
+    try:
+        now_dt = clock()                                   # read AFTER the lock wait
         doc = read(d)
         if doc is None:
             return {'status': 'REJECTED', 'reason': 'STORE_CORRUPT'}
         for p in doc.get('positions') or []:
             if p.get('position_id') == key:
                 return {'status': 'DUPLICATE_IGNORED', 'position_id': key, 'position': p}
+        at = _ia.parse_ts(dec.get('analysis_ts'))
+        if at is None or now_dt is None or not (0 <= (now_dt - at).total_seconds() <= ADMIT_MAX_DECISION_AGE_S):
+            return {'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'}
         live = [p for p in doc.get('positions') or [] if p.get('status') in NON_TERMINAL]
-        exp = _ia.managed_exposure(index, open_trades, live)
-        if exp['count'] > 0:
-            return {'status': 'REJECTED', 'reason': 'MANAGED_POLICY_CAP_ONE_PER_INDEX', 'exposure': exp}
-        pos = _sl.open_position(plan, now_dt.isoformat(), (dec.get('direction') or {}).get('value'))
+        accepted, reasons = _sl.revalidate_for_admission(
+            plan, dec, now_dt, snapshot=snapshot, evidence=evidence, store_positions=live,
+            history=list(doc.get('history') or []), open_trades=open_trades, enabled=enabled,
+            paper_mode=paper_mode, selector=selector, lot_resolver=lot_resolver)
+        if accepted is None:
+            r0 = reasons[0] if reasons else 'PROPOSAL_NOT_ADMISSIBLE'
+            if 'MANAGED_POLICY_CAP_ONE_PER_INDEX' in reasons:
+                r0 = 'MANAGED_POLICY_CAP_ONE_PER_INDEX'
+            return {'status': 'REJECTED', 'reason': r0, 'reasons': reasons, 'checked_at': now_dt.isoformat()}
+        pos = _sl.open_position(accepted, now_dt.isoformat(), (dec.get('direction') or {}).get('value'))
         pos['position_id'] = key
         pos['session_date'] = dec.get('session_date')
         pos['admitted_at'] = now_dt.isoformat()
-        pos['plan'] = {k: plan.get(k) for k in ('reasons', 'rel_spread', 'freshness', 'exposure', 'er_switch',
-                                                 'er_switch_status', 'worst_case_loss', 'loss_note')}
+        pos['entry_decision_published'] = {'decision_id': dec.get('decision_id'), 'analysis_ts': dec.get('analysis_ts')}
+        pos['plan'] = {k: accepted.get(k) for k in ('reasons', 'rel_spread', 'entry_quote', 'exposure', 'er_switch',
+                                                     'er_switch_status', 'worst_case_loss', 'loss_note',
+                                                     'admission_checked_at', 'margin_identity')}
         doc.setdefault('positions', []).append(pos)
         doc.setdefault('history', []).append({'index': index, 'position_id': key, 'entry_ts': pos['entry_ts'],
                                               'exit_ts': None, 'action': pos['action']})
         _write(d, doc)
-    return {'status': 'ADMITTED', 'position_id': key, 'position': pos}
+        return {'status': 'ADMITTED', 'position_id': key, 'position': pos}
+    finally:
+        lk.__exit__(None, None, None)
 
 
-def _find_leg(chain, instrument_key):
-    for k, sides in ((chain or {}).get('strikes') or {}).items():
-        for ot in ('CE', 'PE'):
-            leg = (sides or {}).get(ot) or {}
-            if leg.get('instrument_key') == instrument_key:
-                return leg
-    return None
+SNAPSHOTS = 'snapshots.json'
+MAX_SNAPSHOTS = 16
 
 
-def quote_for(pos, chain, evidence=None, snapshot_ms=None):
-    """The leg quote for the position's exact instrument.  exchange_ts when the feed has one; otherwise the
-    broker snapshot receipt time (labelled) if the caller supplies it.  Never borrowed from another strike."""
-    leg = _find_leg(chain, pos.get('instrument_key'))
-    if not leg:
-        return None
-    q = {'instrument_key': leg.get('instrument_key'), 'bid': leg.get('bid'), 'ask': leg.get('ask')}
-    for k in ('exchange_ts', 'exchangeTs', 'quote_ts'):
-        if leg.get(k) not in (None, '', 0):
-            q['exchange_ts'] = leg.get(k)
-            break
-    if 'exchange_ts' not in q and snapshot_ms:
-        q['snapshot_ts'] = int(snapshot_ms)
-    return q
+def read_snapshots(d):
+    """Latest dedicated v3 snapshot per exact instrument (stored with its ORIGINAL receipt time)."""
+    try:
+        check_dir(d)
+        with open(os.path.join(d, SNAPSHOTS), 'rb') as f:
+            doc = json.loads(f.read().decode())
+        return dict(doc.get('snapshots') or {}) if isinstance(doc, dict) else {}
+    except Exception:
+        return {}
 
 
-def monitor(d, chains, observations_by_index, now_dt, spots=None, snapshot_ms=None):
-    """Advance every open/exit-pending position one poll; close+account where a valid quote resolves an exit.
-    observations_by_index[ix]: published direction values AFTER each position's entry (caller filters)."""
+def put_snapshots(d, snaps):
+    """Keep the newest snapshot per instrument (by receipt_ms; an older response never replaces a newer one);
+    bounded to MAX_SNAPSHOTS.  Receipt times are never rewritten."""
     check_dir(d)
+    with _lock(d):
+        cur = read_snapshots(d)
+        n = 0
+        for k, v in (snaps or {}).items():
+            if not isinstance(v, dict):
+                continue
+            old = cur.get(k)
+            if old is None or (v.get('receipt_ms') or 0) > (old.get('receipt_ms') or 0):
+                cur[k] = v
+                n += 1
+        keep = sorted(cur.items(), key=lambda kv: kv[1].get('receipt_ms') or 0)[-MAX_SNAPSHOTS:]
+        _atomic_write(os.path.join(d, SNAPSHOTS), _canon({'schema': 'mr.single_leg_snapshots.v1',
+                                                          'snapshots': dict(keep)}).encode())
+    return n
+
+
+def observations_for(pos, rows):
+    """R6 review s4: direction observations AVAILABLE after entry, ordered by published_at, deduplicated by a
+    stable observation identity (index|source_poll_ts) so re-analysis of one poll never counts twice.  Source
+    poll time is preserved separately; a source poll before entry published after entry IS available."""
+    ent = _ia.parse_ts(pos.get('entry_ts'))
+    seen, out = set(), []
+    good = []
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        pub = _ia.parse_ts(r.get('published_at'))
+        if pub is None or ent is None or pub <= ent:
+            continue
+        good.append((pub, r))
+    good.sort(key=lambda t: t[0])
+    for pub, r in good:
+        oid = r.get('observation_id') or '%s|%s' % (pos.get('index'), r.get('source_poll_ts'))
+        if oid in seen:
+            continue
+        seen.add(oid)
+        out.append(r.get('value'))
+    return out
+
+
+def open_instruments(d):
+    """Exact instrument keys of open / exit-pending positions (priority quote targets)."""
+    ps = open_positions(d) or []
+    return sorted({p['instrument_key'] for p in ps if p.get('status') in ('OPEN', 'EXIT_PENDING') and p.get('instrument_key')})
+
+
+def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
+    """Advance every open/exit-pending position once.  clock() is read when the WORK EXECUTES (inside the lock),
+    never at enqueue time.  Quotes: ONLY the source-specific paper_broker_snapshot_v1 object for the position's
+    exact instrument (snapshots[instrument_key]); there is no generic receipt-time fallback.
+    observations_by_index[ix]: rows {published_at, source_poll_ts, value[, observation_id]}."""
+    check_dir(d)
+    clock = clock or _wall_clock
     events = []
     with _lock(d):
+        now_dt = clock()
         doc = read(d)
         if doc is None:
             return {'status': 'STORE_CORRUPT', 'events': []}
@@ -163,10 +235,10 @@ def monitor(d, chains, observations_by_index, now_dt, spots=None, snapshot_ms=No
             if p.get('status') not in ('OPEN', 'EXIT_PENDING'):
                 continue
             ix = p['index']
-            obs = [v for (ts, v) in (observations_by_index or {}).get(ix, [])
-                   if (_ia.parse_ts(ts) and _ia.parse_ts(p['entry_ts']) and _ia.parse_ts(ts) > _ia.parse_ts(p['entry_ts']))]
-            q = quote_for(p, (chains or {}).get(ix), snapshot_ms=snapshot_ms)
+            obs = observations_for(p, (observations_by_index or {}).get(ix, []))
+            q = (snapshots or {}).get(p.get('instrument_key'))
             np_, ev = _sl.evaluate_exit(p, q, obs, now_dt, spot=(spots or {}).get(ix))
+            np_['last_monitor_at'] = now_dt.isoformat() if now_dt else None
             if np_ != p:
                 doc['positions'][i] = np_
                 changed = True
@@ -185,7 +257,7 @@ def monitor(d, chains, observations_by_index, now_dt, spots=None, snapshot_ms=No
                                'reason': np_.get('exit_reason'), 'pending': np_.get('exit_pending_reason')})
         if changed:
             _write(d, doc)
-    return {'status': 'OK', 'events': events}
+    return {'status': 'OK', 'events': events, 'executed_at': now_dt.isoformat() if now_dt else None}
 
 
 def outcomes(d, session_date):

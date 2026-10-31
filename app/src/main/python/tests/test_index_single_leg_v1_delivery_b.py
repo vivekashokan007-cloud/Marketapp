@@ -15,6 +15,7 @@ import ev_v12_fees as fees
 import index_authority_v1 as ia
 import index_single_leg_v1 as sl
 import managed_evidence_v1 as me
+import paper_broker_snapshot_v1 as pbs
 import index_authority_fixtures as F
 import advice_parity_instrumentation as _api
 
@@ -62,10 +63,40 @@ def margin_row(key, qty=65, product='I', side='SELL', req=120000.0, asof=D):
     return m
 
 
-def evidence(c=None, margins=(), **kw):
+def v3_response(c, gen=None, qty=75, keys=None):
+    """Synthetic dedicated v3 full-quote response (documented shape) mirroring the chain's bid/ask."""
+    gen = gen or (D - timedelta(seconds=20))
+    data = {}
+    for k, sides in c['strikes'].items():
+        for ot in ('CE', 'PE'):
+            leg = sides[ot]
+            if keys is not None and leg['instrument_key'] not in keys:
+                continue
+            data['NSE_FO:SYNTH%s%s' % (int(k), ot)] = {
+                'instrument_token': leg['instrument_key'], 'timestamp': gen.isoformat(),
+                'last_trade_time': str(int(gen.timestamp() * 1000)), 'last_price': leg.get('ltp'),
+                'depth': {'buy': [{'price': leg['bid'], 'quantity': qty, 'orders': 1}],
+                          'sell': [{'price': leg['ask'], 'quantity': qty, 'orders': 1}]}}
+    return {'status': 'success', 'data': data}
+
+
+def snapshots(c, gen=None, qty=75, receipt=None):
+    gen = gen or (D - timedelta(seconds=20))
+    rc = receipt or (gen + timedelta(seconds=1))
+    keys = [sides[ot]['instrument_key'] for sides in c['strikes'].values() for ot in ('CE', 'PE')]
+    out, rej = pbs.parse_v3_response(keys, v3_response(c, gen, qty), request_start_ms=int(gen.timestamp() * 1000) - 500,
+                                     receipt_ms=int(rc.timestamp() * 1000), receipt_mono_ms=123)
+    assert not rej, rej
+    return out
+
+
+def evidence(c=None, margins=(), snaps=True, snap_gen=None, snap_qty=75, **kw):
     c = c or chain()
     rows, rej = me.parse_option_contracts('NF', contracts_response(c, **kw))
-    return me.build_context({'NF': rows}, {}, list(margins))
+    ev = me.build_context({'NF': rows}, {}, list(margins))
+    if snaps:
+        ev['snapshots'] = snapshots(c, snap_gen, snap_qty)
+    return ev
 
 
 def dec(value='BULL', er=0.5):
@@ -110,7 +141,7 @@ class TickUnits(unittest.TestCase):
         self.assertEqual(me.normalize_tick(5), (0.05, None))
         self.assertEqual(me.normalize_tick(10), (0.1, None))
         self.assertEqual(me.normalize_tick(7.5)[1], 'TICK_UNIT_UNVERIFIED')
-        self.assertEqual(me.normalize_tick(500)[1], 'TICK_UNIT_UNVERIFIED')
+        self.assertEqual(me.normalize_tick(500)[1], 'TICK_OUTSIDE_APP_PLAUSIBILITY_BOUND')   # app bound, not an exchange rule
         self.assertEqual(me.normalize_tick(0)[1], 'TICK_UNAVAILABLE')
         self.assertEqual(me.normalize_tick(5, unit='RUPEES')[1], 'TICK_UNIT_UNKNOWN')
 
@@ -174,7 +205,15 @@ class IdentityAndFills(unittest.TestCase):
         self.assertIn('CONTRACT_METADATA_UNAVAILABLE', plan(chain=c, evidence=None)['reasons'])
         self.assertIn('CONTRACT_EXPIRY_MISMATCH', plan(chain=c, evidence=evidence(c, expiry='2026-11-16'))['reasons'])
         self.assertIn('LOT_CAPTURED_METADATA_DISAGREE', plan(chain=c, evidence=evidence(c, lot=75))['reasons'])
-        self.assertIn('LOT_TABLE_METADATA_DISAGREE', plan(chain=c, lot_table={'NF': 75})['reasons'])
+        r75 = lambda *a, **k: {'resolved': True, 'lot_size': 75.0}
+        self.assertIn('LOT_TABLE_METADATA_DISAGREE', plan(chain=c, lot_resolver=r75)['reasons'])
+        none = lambda *a, **k: {'resolved': False, 'reason': 'lot_table_unavailable'}
+        self.assertIn('LOT_TABLE_UNAVAILABLE:lot_table_unavailable', plan(chain=c, lot_resolver=none)['reasons'])
+        frac = lambda *a, **k: {'resolved': True, 'lot_size': 65.4}
+        self.assertIn('LOT_TABLE_UNAVAILABLE:LOT_TABLE_NOT_INTEGRAL', plan(chain=c, lot_resolver=frac)['reasons'])
+        self.assertIn('LOT_CAPTURED_METADATA_DISAGREE', plan(chain=c, captured_lot=65.4)['reasons'])   # never truncated
+        # the dated authoritative resolver is used by default (no dictionary): exact index/session/expiry
+        self.assertEqual(plan(chain=c)['contract']['lot_table']['source'], 'authoritative_contract_rule')
         self.assertIn('CONTRACT_METADATA_UNAVAILABLE', plan(chain=c, evidence=evidence(c, underlying=UNDER['BNF']))['reasons'])
         self.assertIn('CONTRACT_METADATA_UNAVAILABLE', plan(chain=c, evidence=evidence(c, tick=7.5))['reasons'])
         self.assertIn('EXPIRY_DAY_NO_NEXT_CHAIN', plan(expiry=F.SESSION)['reasons'])
@@ -185,10 +224,21 @@ class IdentityAndFills(unittest.TestCase):
         ev = me.build_context({'BNF': rows})
         self.assertIn('CONTRACT_INDEX_MISMATCH', plan(chain=c, evidence=ev)['reasons'])
 
-    def test_freshness_unverified_blocks_managed_entry(self):
-        c = chain(fresh=False)
-        r = plan(chain=c, evidence=evidence(c))['reasons']
-        self.assertTrue(any(x.startswith('FRESHNESS_UNVERIFIED') for x in r))
+    def test_missing_or_stale_snapshot_blocks_but_still_names_the_quote_target(self):
+        c = chain()
+        p = plan(chain=c, evidence=evidence(c, snaps=False))
+        self.assertEqual((p['admit'], p['status'], p['reasons']), (False, 'ELIGIBLE_PENDING_SNAPSHOT', ['BROKER_SNAPSHOT_UNAVAILABLE']))
+        k0 = ia.parity_strike(c, 24000.0)[0]
+        self.assertEqual(p['quote_needed'], [c['strikes'][str(k0)]['CE']['instrument_key']])   # non-circular target
+        p = plan(chain=c, evidence=evidence(c, snap_gen=D - timedelta(seconds=91)))
+        self.assertIn('SNAPSHOT_STALE', p['reasons'])
+        p = plan(chain=c, evidence=evidence(c, snap_qty=10))
+        self.assertIn('QUANTITY_SHORTFALL', p['reasons'])
+        self.assertEqual(p['status'], 'BLOCKED')
+        ok = plan(chain=c)
+        self.assertEqual((ok['entry_quote']['basis'], ok['entry_quote']['contract']), ('BROKER_SNAPSHOT', 'paper_broker_snapshot_v1'))
+        self.assertNotIn('FRESHNESS_VERIFIED', json.dumps(ok))
+        self.assertEqual(ok['entry_quote']['disclosure'], pbs.SNAPSHOT_DISCLOSURE)
 
     def test_spread_and_window(self):
         c = chain()
@@ -229,9 +279,20 @@ def opened(short=False):
     return sl.open_position(p, D.isoformat(), 'BULL')
 
 
-def q(pos, bid, ask, at=None, key=None, basis='exchange_ts'):
-    return {'instrument_key': key or pos['instrument_key'], 'bid': bid, 'ask': ask,
-            basis: (at or D).isoformat()}
+def q(pos, bid, ask, at=None, key=None, qty=500):
+    """A paper_broker_snapshot_v1 object from a synthetic dedicated v3 response (generation time `at`)."""
+    at = at or D
+    k = key or pos['instrument_key']
+    resp = {'status': 'success', 'data': {'NSE_FO:SYNTH': {
+        'instrument_token': k, 'timestamp': at.isoformat(),
+        'depth': {'buy': [{'price': bid, 'quantity': qty}], 'sell': [{'price': ask, 'quantity': qty}]}}}}
+    ms = int(at.timestamp() * 1000)
+    out, _ = pbs.parse_v3_response([k], resp, request_start_ms=ms - 300, receipt_ms=ms + 200)
+    return out[k]
+
+
+def legacy_q(pos, bid, ask, at):
+    return {'instrument_key': pos['instrument_key'], 'bid': bid, 'ask': ask, 'exchange_ts': at.isoformat()}
 
 
 class Lifecycle(unittest.TestCase):
@@ -270,13 +331,25 @@ class Lifecycle(unittest.TestCase):
         t2 = D.replace(hour=15, minute=10)
         p, ev = sl.evaluate_exit(p, dict(q(pos, 50.0, 51.0, t2), ltp=999), ['BULL'], t2)
         self.assertEqual((ev, p['exit_reason'], p['exit_fill']), ('EXIT', 'TIME_EXIT', 49.95))
-        self.assertEqual(p['exit_quote']['basis'], 'EXCHANGE_TS')
+        self.assertEqual(p['exit_quote']['basis'], 'BROKER_SNAPSHOT')
 
-    def test_broker_snapshot_basis_labelled(self):
+    def test_broker_snapshot_basis_labelled_and_quantity_shortfall_stays_pending(self):
         pos = opened()
+        self.assertEqual(pos['exit_contract']['schema'], 'mr.single_leg_exit_contract.v2')
         t = D.replace(hour=15, minute=6)
-        p, ev = sl.evaluate_exit(pos, q(pos, 50.0, 51.0, t - timedelta(seconds=30), basis='snapshot_ts'), [], t)
-        self.assertEqual((ev, p['exit_quote']['basis']), ('EXIT', 'BROKER_SNAPSHOT_RECEIPT'))
+        p, ev = sl.evaluate_exit(pos, q(pos, 50.0, 51.0, t - timedelta(seconds=30), qty=10), [], t)
+        self.assertEqual((ev, p['status'], p['exit_pending_reason']), ('EXIT_PENDING', 'EXIT_PENDING', 'QUANTITY_SHORTFALL'))
+        p, ev = sl.evaluate_exit(pos, q(pos, 50.0, 51.0, t - timedelta(seconds=30)), [], t)
+        self.assertEqual((ev, p['exit_quote']['basis'], p['exit_quote']['disclosure']), ('EXIT', 'BROKER_SNAPSHOT', pbs.SNAPSHOT_DISCLOSURE))
+
+    def test_historical_v1_position_keeps_its_original_contract(self):
+        pos = opened()
+        pos['exit_contract'] = dict(pos['exit_contract'], schema=sl.EXIT_CONTRACT_SCHEMA, quote_validity='exit_quote_validity_v1')
+        t = D.replace(hour=15, minute=6)
+        p, ev = sl.evaluate_exit(pos, legacy_q(pos, 50.0, 51.0, t - timedelta(seconds=10)), [], t)
+        self.assertEqual((ev, p['exit_quote']['basis']), ('EXIT', 'EXCHANGE_TS'))
+        p, ev = sl.evaluate_exit(pos, q(pos, 50.0, 51.0, t), [], t)        # never reinterpreted under v2
+        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'QUOTE_UNDATED'))
 
     def test_marks_never_use_ltp(self):
         pos = opened()
@@ -322,13 +395,13 @@ class CodexR2Probes(unittest.TestCase):
         pos = opened()
         t = D.replace(hour=15, minute=5)
         p, ev = sl.evaluate_exit(pos, q(pos, 50, 51, t - timedelta(days=1)), [], t)
-        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'QUOTE_STALE'))
+        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'SNAPSHOT_STALE'))
         p, ev = sl.evaluate_exit(pos, q(pos, 50, 51, t, key='WRONG'), [], t)
-        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'QUOTE_INSTRUMENT_MISMATCH'))
+        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'SNAPSHOT_INSTRUMENT_MISMATCH'))
         p, ev = sl.evaluate_exit(pos, {'instrument_key': pos['instrument_key'], 'bid': 50, 'ask': 51}, [], t)
-        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'QUOTE_UNDATED'))
+        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'SNAPSHOT_CONTRACT_MISMATCH'))
         p, ev = sl.evaluate_exit(pos, q(pos, 50, 51, t + timedelta(seconds=30)), [], t)
-        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'QUOTE_FUTURE_TIMESTAMP'))
+        self.assertEqual((ev, p['exit_pending_reason']), ('EXIT_PENDING', 'SNAPSHOT_FUTURE_TIMESTAMP'))
         self.assertEqual(sl.account(p)['status'], 'UNRESOLVED_EXIT')
 
     def test_margin_four_minutes_in_future_rejected(self):

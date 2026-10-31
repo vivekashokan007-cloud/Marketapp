@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 import ev_v12_fees as _fees
 import index_authority_v1 as _ia
 import managed_evidence_v1 as _me
+import paper_broker_snapshot_v1 as _pbs
 
 POLICY_ID = 'index_single_leg_v1'
 ER_SWITCH = 0.30
@@ -51,7 +52,10 @@ SHORT_PRODUCT = 'I'                    # intraday product: positions exit by 15:
 QUOTE_VALIDITY_CONTRACT = 'exit_quote_validity_v1'
 QUOTE_MAX_AGE_S = 90
 QUOTE_FUTURE_TOLERANCE_S = 5
-EXIT_CONTRACT_SCHEMA = 'mr.single_leg_exit_contract.v1'
+EXIT_CONTRACT_SCHEMA = 'mr.single_leg_exit_contract.v1'      # historical positions keep this contract
+EXIT_CONTRACT_SCHEMA_V2 = 'mr.single_leg_exit_contract.v2'   # R7: paper_broker_snapshot_v1 marks/exits
+ENTRY_CONTRACT = 'mr.single_leg_entry_contract.v2'
+PLAN_SCHEMA = 'mr.single_leg_plan.v2'
 ACTIONS = ('BUY_CE', 'BUY_PE', 'SELL_CE', 'SELL_PE')
 DIR_OF = {'BUY_CE': 'BULL', 'SELL_PE': 'BULL', 'BUY_PE': 'BEAR', 'SELL_CE': 'BEAR'}
 
@@ -85,7 +89,7 @@ def choose_action(direction):
 
 
 def contract_identity(index, chain_leg, session_date, expiry, strike, option_type, *, evidence=None,
-                      captured_lot=None, lot_table=None):
+                      captured_lot=None, lot_resolver=None):
     """R5 R2: exact per-contract identity from contract METADATA (managed_evidence_v1) keyed by the chain leg's
     instrument_key: index/underlying, option type, strike, expiry, lot and tick must all agree; the captured
     chain lot and the lot table must agree with the metadata.  A chain-level lot/tick or an externally supplied
@@ -98,11 +102,13 @@ def contract_identity(index, chain_leg, session_date, expiry, strike, option_typ
     elif sd is not None and ed <= sd:
         out['reasons'].append('EXPIRY_DAY_NO_NEXT_CHAIN')
     c, why = _me.resolve_contract(evidence, index, chain_leg, expiry=expiry, strike=strike, option_type=option_type,
-                                  captured_lot=captured_lot, lot_table=lot_table)
+                                  session_date=session_date, captured_lot=captured_lot, lot_resolver=lot_resolver)
     out['reasons'] += why
     if c is not None:
         out.update(lot_size=c['lot_size'], tick_size=c['tick_size'], instrument_key=c['instrument_key'],
-                   source=c.get('source'), tick_unit=c.get('tick_unit'), tick_size_raw=c.get('tick_size_raw'))
+                   source=c.get('source'), tick_unit=c.get('tick_unit'), tick_size_raw=c.get('tick_size_raw'),
+                   tick_source=c.get('tick_source'), tick_unit_rule_source=c.get('tick_unit_rule_source'),
+                   minimum_lot=c.get('minimum_lot'), lot_table=c.get('lot_table'))
     return out
 
 
@@ -183,19 +189,71 @@ def exposure_state(index, session_date, decision_dt, *, open_trades=None, single
     return reasons, exp
 
 
+def entry_economics(action, ident, bid, ask, session_date, now_dt, *, evidence=None, capital=250000.0,
+                    max_risk_pct=10.0):
+    """Fill, fee and capital from ONE accepted quote (plan time and again at admission time)."""
+    out, reasons = {}, []
+    tick, lot = ident.get('tick_size'), ident.get('lot_size')
+    if tick is None or lot is None or bid is None or ask is None or not (0 < bid <= ask):
+        return out, ['ECONOMICS_INPUTS_UNAVAILABLE']
+    fill = ask + tick if action.startswith('BUY') else bid - tick
+    if fill <= 0:
+        return out, ['FILL_NONPOSITIVE']
+    units = lot  # one lot; sizing beyond one lot is not part of the frozen default
+    try:
+        fee = entry_fee(action, fill, units, session_date)
+    except _fees.FeeUnavailable as exc:
+        fee = None
+        reasons.append(str(exc))
+    out.update(entry_fill=round(fill, 4), units=units, entry_fee=None if fee is None else round(fee, 2))
+    if action.startswith('BUY'):
+        # long premium: capital = premium + fee (premium/cost evidence); NO short margin is required
+        if fee is not None:
+            cap = fill * units + fee
+            out.update(capital_required=round(cap, 2), capital_basis='LONG_PREMIUM_PLUS_FEE', worst_case_loss=round(cap, 2))
+            if cap > capital * max_risk_pct / 100.0:
+                reasons.append('AFFORDABILITY_FAILED')
+    else:
+        margin = _me.find_margin(evidence, ident.get('instrument_key'), SHORT_PRODUCT, 'SELL', units)
+        ok, mwhy = margin_evidence_ok(margin, ident.get('instrument_key'), units, now_dt)
+        if not ok:
+            reasons.append(mwhy)   # blocks this managed SHORT entry only
+        else:
+            out.update(capital_required=round(_num(margin['required_margin']), 2),
+                       capital_basis='SHORT_BROKER_REQUIRED_MARGIN',
+                       margin_identity={k_: margin.get(k_) for k_ in ('instrument_key', 'product', 'side', 'quantity',
+                                                                     'asof', 'provider', 'key', 'required_margin')})
+            if out['capital_required'] > capital:
+                reasons.append('MARGIN_EXCEEDS_CAPITAL')
+        out['worst_case_loss'] = None
+        out['loss_note'] = 'short option: loss is not bounded; the stop is a planned exit, not a cap'
+    return out, reasons
+
+
+def _snapshot_for(evidence, instrument_key):
+    ev = evidence if isinstance(evidence, dict) else {}
+    return (ev.get('snapshots') or {}).get(instrument_key) if instrument_key else None
+
+
 def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expiry, captured_lot=None,
                open_trades=None, single_leg_positions=None, reservations=None, history=None, capital=250000.0,
-               max_risk_pct=10.0, evidence=None, lot_table=None, freshness_history=None, history_supplied=True):
-    """One managed single-leg Paper entry proposal (or every named reason it is blocked).
-    decision_dt is the trusted analysis clock."""
-    out = {'policy_id': POLICY_ID, 'index': index, 'admit': False, 'reasons': [], 'er_switch': ER_SWITCH,
-           'er_switch_status': 'UNVALIDATED_PAPER_CHOICE',
+               max_risk_pct=10.0, evidence=None, lot_resolver=None, history_supplied=True):
+    """One managed single-leg Paper entry PROPOSAL (or every named reason it is blocked).
+    decision_dt is the trusted analysis clock.  Quotes: paper_broker_snapshot_v1 only (dedicated v3 response in
+    evidence['snapshots']); the chain bid/ask is never a fill price.  `quote_needed` names the exact instrument
+    whenever one is selected, whether or not the proposal is admissible (non-circular fetch target).
+    status: ADMISSIBLE | ELIGIBLE_PENDING_SNAPSHOT (only the broker snapshot is missing/expired) | BLOCKED.
+    Admission ALWAYS revalidates at the actual execution time (revalidate_for_admission)."""
+    out = {'policy_id': POLICY_ID, 'schema': PLAN_SCHEMA, 'index': index, 'admit': False, 'reasons': [],
+           'er_switch': ER_SWITCH, 'er_switch_status': 'UNVALIDATED_PAPER_CHOICE', 'quote_needed': [],
+           'quote_contract': _pbs.CONTRACT, 'session_date': str(session_date)[:10] if session_date else None,
            'decision_id': (decision or {}).get('decision_id') if isinstance(decision, dict) else None}
     d = decision if isinstance(decision, dict) else {}
     action, why = choose_action(d.get('direction'))
     out['action'] = action
     if why:
         out['reasons'].append(why)
+        out['status'] = 'BLOCKED'
         return out
     if not history_supplied:
         out['reasons'].append('SINGLE_LEG_HISTORY_NOT_SUPPLIED')
@@ -214,79 +272,121 @@ def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expir
     ot = action[-2:]
     leg = ((_strike_map(chain).get(k) or {}).get(ot) or {}) if k is not None else {}
     ident = contract_identity(index, leg, session_date, expiry, k, ot, evidence=evidence,
-                              captured_lot=captured_lot, lot_table=lot_table)
+                              captured_lot=captured_lot, lot_resolver=lot_resolver)
     out['contract'] = ident
     out['reasons'] += ident['reasons']
-    bid, ask = _num(leg.get('bid')), _num(leg.get('ask'))
-    out.update(strike=k, option_type=ot, instrument_key=ident['instrument_key'], bid=bid, ask=ask)
+    out.update(strike=k, option_type=ot, instrument_key=ident['instrument_key'])
+    key = leg.get('instrument_key') if isinstance(leg, dict) else None
+    if key:
+        out['quote_needed'] = [key]
+    snap_reason = None
     if k is not None:
-        if bid is None or ask is None or not (0 < bid <= ask):
-            out['reasons'].append('QUOTE_NOT_TWO_SIDED')
+        snap = _snapshot_for(evidence, key)
+        side = 'BUY' if action.startswith('BUY') else 'SELL'
+        ok, snap_reason, q = _pbs.validate(snap, key, decision_dt, side=side, units=ident.get('lot_size'))
+        if not ok:
+            out['reasons'].append(snap_reason)
         else:
-            mid = (bid + ask) / 2.0
-            out['rel_spread'] = round((ask - bid) / mid, 6)
+            out['rel_spread'] = round((q['ask'] - q['bid']) / ((q['ask'] + q['bid']) / 2.0), 6)
             if out['rel_spread'] > MAX_REL_SPREAD:
                 out['reasons'].append('SPREAD_GT_3PCT')
-        qleg = dict(leg)
-        q = _me.leg_quantities(evidence, leg.get('instrument_key')) if leg.get('instrument_key') else None
-        if isinstance(q, dict):
-            for f in ('bid_qty', 'ask_qty'):
-                if qleg.get(f) is None and q.get(f) is not None:
-                    qleg[f] = q[f]
-        fr = _ia.classify_leg_freshness(qleg, decision_dt, freshness_history)
-        out['freshness'] = fr
-        if fr.get('status') != 'FRESHNESS_VERIFIED':
-            out['reasons'].append('FRESHNESS_UNVERIFIED:' + str(fr.get('reason')))
-        out['entry_quote'] = {'instrument_key': leg.get('instrument_key'), 'bid': bid, 'ask': ask,
-                              'quote_ts': fr.get('quote_ts'), 'basis': 'EXCHANGE_TS'}
-    tick, lot = ident['tick_size'], ident['lot_size']
-    if tick is not None and lot is not None and bid is not None and ask is not None and 0 < bid <= ask:
-        fill = ask + tick if action.startswith('BUY') else bid - tick
-        if fill <= 0:
-            out['reasons'].append('FILL_NONPOSITIVE')
-        else:
-            units = lot  # one lot; sizing beyond one lot is not part of the frozen default
-            try:
-                fee = entry_fee(action, fill, units, session_date)
-            except _fees.FeeUnavailable as exc:
-                fee = None
-                out['reasons'].append(str(exc))
-            out.update(entry_fill=round(fill, 4), units=units, entry_fee=None if fee is None else round(fee, 2))
-            if action.startswith('BUY'):
-                # long premium: capital = premium + fee; NO margin evidence is required (R5 s3)
-                if fee is not None:
-                    cap = fill * units + fee
-                    out['capital_required'] = round(cap, 2)
-                    out['capital_basis'] = 'LONG_PREMIUM_PLUS_FEE'
-                    out['worst_case_loss'] = round(cap, 2)
-                    if cap > capital * max_risk_pct / 100.0:
-                        out['reasons'].append('AFFORDABILITY_FAILED')
-            else:
-                margin = _me.find_margin(evidence, ident['instrument_key'], SHORT_PRODUCT, 'SELL', units)
-                ok, mwhy = margin_evidence_ok(margin, ident['instrument_key'], units, decision_dt)
-                if not ok:
-                    out['reasons'].append(mwhy)   # blocks this managed SHORT entry only
-                else:
-                    out['capital_required'] = round(_num(margin['required_margin']), 2)
-                    out['capital_basis'] = 'SHORT_BROKER_REQUIRED_MARGIN'
-                    out['margin_identity'] = {k_: margin.get(k_) for k_ in ('instrument_key', 'product', 'side',
-                                                                            'quantity', 'asof', 'provider')}
-                    if out['capital_required'] > capital:
-                        out['reasons'].append('MARGIN_EXCEEDS_CAPITAL')
-                out['worst_case_loss'] = None
-                out['loss_note'] = 'short option: loss is not bounded; the stop is a planned exit, not a cap'
+            out['entry_quote'] = dict(q, instrument_key=key)
+            out['entry_snapshot'] = snap
+            out.update(bid=q['bid'], ask=q['ask'])
+            econ, er = entry_economics(action, ident, q['bid'], q['ask'], session_date, decision_dt,
+                                       evidence=evidence, capital=capital, max_risk_pct=max_risk_pct)
+            out.update(econ)
+            out['reasons'] += er
     out['admit'] = not out['reasons']
+    snap_only = {'BROKER_SNAPSHOT_UNAVAILABLE', 'SNAPSHOT_STALE'}
+    out['status'] = ('ADMISSIBLE' if out['admit'] else
+                     'ELIGIBLE_PENDING_SNAPSHOT' if out['reasons'] and set(out['reasons']) <= snap_only else 'BLOCKED')
+    if action.startswith('SELL') and out['status'] != 'BLOCKED':
+        out['margin_needed'] = {'instrument_key': key, 'product': SHORT_PRODUCT, 'side': 'SELL',
+                                'quantity': ident.get('lot_size')}
     return out
 
 
+def revalidate_for_admission(plan, decision, now_dt, *, snapshot=None, evidence=None, store_positions=None,
+                             history=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
+                             lot_resolver=None, capital=250000.0, max_risk_pct=10.0):
+    """R6 review s3: the FINAL admission check, run under the store lock with now_dt read AFTER the lock wait.
+    Nothing time-sensitive is trusted from the cached plan: quote, margin, lot/metadata, entry window, history,
+    cooldown and exposure are re-checked; fill/fee/capital are recomputed from the accepted snapshot.
+    Returns (accepted_plan|None, reasons)."""
+    p = plan if isinstance(plan, dict) else {}
+    reasons = []
+    ix = p.get('index')
+    if not enabled:
+        reasons.append('SINGLE_LEG_PAPER_DISABLED')
+    if not paper_mode:
+        reasons.append('NOT_PAPER_MODE')
+    if selector not in ('BOTH', ix):
+        reasons.append('INDEX_NOT_SELECTED')
+    if p.get('policy_id') != POLICY_ID or p.get('schema') != PLAN_SCHEMA or p.get('quote_contract') != _pbs.CONTRACT:
+        reasons.append('PLAN_SCHEMA_UNSUPPORTED')
+        return None, reasons
+    action = p.get('action')
+    if action not in ACTIONS or p.get('status') not in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT'):
+        reasons.append('PROPOSAL_NOT_ADMISSIBLE')
+        return None, reasons
+    if not isinstance(now_dt, datetime):
+        return None, reasons + ['EXECUTION_CLOCK_UNAVAILABLE']
+    session = str(p.get('session_date') or '')[:10]
+    if now_dt.date().isoformat() != session:
+        reasons.append('SESSION_CHANGED')
+    hm = _hm(now_dt)
+    if not (ENTRY_START <= hm <= ENTRY_END):
+        reasons.append('ENTRY_WINDOW_CLOSED_AT_ADMISSION')
+    ex, exp = exposure_state(ix, session, now_dt, open_trades=open_trades, single_leg_positions=store_positions,
+                             history=history)
+    reasons += ex
+    c = dict(p.get('contract') or {})
+    key = c.get('instrument_key')
+    if not key or c.get('tick_size') is None or c.get('lot_size') is None:
+        reasons.append('CONTRACT_METADATA_UNAVAILABLE')
+    else:
+        tl = _me.authoritative_lot(ix, session, c.get('expiry'), resolver=lot_resolver)
+        if tl.get('lot_size') is None:
+            reasons.append('LOT_TABLE_UNAVAILABLE:' + str(tl.get('reason')))
+        elif tl['lot_size'] != c['lot_size']:
+            reasons.append('LOT_TABLE_METADATA_DISAGREE')
+        ed = _ia._parse_date(c.get('expiry'))
+        if ed is None or ed <= now_dt.date():
+            reasons.append('EXPIRY_DAY_NO_NEXT_CHAIN')
+    snap = snapshot if snapshot is not None else p.get('entry_snapshot')
+    side = 'BUY' if str(action).startswith('BUY') else 'SELL'
+    ok, why, q = _pbs.validate(snap, key, now_dt, side=side, units=c.get('lot_size'))
+    out = None
+    if not ok:
+        reasons.append(why + '_AT_ADMISSION')
+    else:
+        rel = (q['ask'] - q['bid']) / ((q['ask'] + q['bid']) / 2.0)
+        if rel > MAX_REL_SPREAD:
+            reasons.append('SPREAD_GT_3PCT_AT_ADMISSION')
+        econ, er = entry_economics(action, c, q['bid'], q['ask'], session, now_dt, evidence=evidence,
+                                   capital=capital, max_risk_pct=max_risk_pct)
+        reasons += [r + '_AT_ADMISSION' for r in er]
+        out = dict(p, **econ)
+        out.update(entry_quote=dict(q, instrument_key=key), entry_snapshot=snap, rel_spread=round(rel, 6),
+                   exposure=exp, admitted_reasons=[], admit=True, status='ADMISSIBLE',
+                   admission_checked_at=now_dt.isoformat())
+    if reasons:
+        return None, reasons
+    return out, []
+
+
 def exit_contract():
-    """Persisted with every position; evaluate_exit reads THESE values, never the module constants."""
-    return {'schema': EXIT_CONTRACT_SCHEMA, 'id': POLICY_ID + '_exit', 'buy_stop_frac': BUY_STOP_FRAC,
+    """Persisted with every NEW position (v2); evaluate_exit reads the PERSISTED values, never the module
+    constants.  Positions stored under v1 keep v1 (no reinterpretation of historical fills)."""
+    return {'schema': EXIT_CONTRACT_SCHEMA_V2, 'id': POLICY_ID + '_exit', 'buy_stop_frac': BUY_STOP_FRAC,
             'sell_stop_frac': SELL_STOP_FRAC, 'time_exit': '%02d:%02d' % TIME_EXIT,
             'invalidation': _ia.CONFIRMATION_CONTRACT, 'confirmation_required': 2,
             'neutral_is_not_opposite': True, 'unavailable_interrupts_confirmation': True,
-            'quote_validity': QUOTE_VALIDITY_CONTRACT, 'quote_max_age_s': QUOTE_MAX_AGE_S,
-            'quote_future_tolerance_s': QUOTE_FUTURE_TOLERANCE_S, 'fill_ticks': 1}
+            'observation_order': 'published_at', 'observation_identity': 'index|source_poll_ts',
+            'quote_validity': _pbs.CONTRACT, 'quote_max_age_s': _pbs.MAX_AGE_S,
+            'quote_future_tolerance_s': _pbs.FUTURE_SKEW_S, 'quote_max_latency_ms': _pbs.MAX_LATENCY_MS,
+            'quantity_shortfall': 'EXIT_PENDING', 'fill_ticks': 1}
 
 
 def open_position(plan, entry_ts, entry_direction):
@@ -300,7 +400,8 @@ def open_position(plan, entry_ts, entry_direction):
             'entry_fee': plan['entry_fee'], 'entry_ts': entry_ts, 'entry_direction': entry_direction,
             'entry_decision_id': plan.get('decision_id'), 'entry_quote': plan.get('entry_quote'),
             'capital_required': plan.get('capital_required'), 'capital_basis': plan.get('capital_basis'),
-            'margin_identity': plan.get('margin_identity'),
+            'margin_identity': plan.get('margin_identity'), 'entry_snapshot': plan.get('entry_snapshot'),
+            'entry_contract': ENTRY_CONTRACT, 'quote_contract': plan.get('quote_contract'),
             'status': 'OPEN', 'contrary_valid_polls': 0, 'max_ask_seen': None, 'max_adverse_spot': None,
             'exit_contract': exit_contract()}
 
@@ -346,7 +447,11 @@ def evaluate_exit(pos, leg_quote, direction_observations, analysis_dt, spot=None
     if p.get('status') not in ('OPEN', 'EXIT_PENDING'):
         return p, None
     c = p.get('exit_contract') or {}
-    ok, qwhy, q = quote_validity(p, leg_quote, analysis_dt, c)
+    v2 = c.get('quote_validity') == _pbs.CONTRACT
+    if v2:
+        ok, qwhy, q = _pbs.validate(leg_quote, p.get('instrument_key'), analysis_dt)
+    else:
+        ok, qwhy, q = quote_validity(p, leg_quote, analysis_dt, c)   # historical v1 contract, unchanged
     raw = leg_quote if isinstance(leg_quote, dict) else {}
     if raw.get('instrument_key') == p.get('instrument_key'):
         a_ = _num(raw.get('ask'))
@@ -378,9 +483,15 @@ def evaluate_exit(pos, leg_quote, direction_observations, analysis_dt, spot=None
         p['mark_quote_status'] = qwhy or 'VALID'
         return p, None
     p['exit_reason'] = reason
+    if ok and v2:
+        # closing a BUY sells at the bid (needs bid_qty); closing a SELL buys at the ask (needs ask_qty)
+        close_side = 'SELL' if p['action'].startswith('BUY') else 'BUY'
+        ok, qwhy, q2 = _pbs.validate(leg_quote, p.get('instrument_key'), analysis_dt, side=close_side,
+                                     units=p.get('units'))
+        q = q2 if ok else q
     if not ok:
         p['status'] = 'EXIT_PENDING'
-        p['mark'] = 'STALE'
+        p['mark'] = 'STALE' if qwhy != 'QUANTITY_SHORTFALL' else p.get('mark')
         p['exit_pending_reason'] = qwhy
         return p, 'EXIT_PENDING'
     tick = p['tick_size']
