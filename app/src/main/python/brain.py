@@ -27771,9 +27771,12 @@ def _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, 
 def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=False, paper_mode=False,
                      selector='BOTH', requested_json='[]', quote_json=None, request_start_ms=None, receipt_ms=None,
                      receipt_mono_ms=None, margin_request_json=None, margin_response_json=None,
-                     margin_receipt_ms=None):
-    """R7: explicit admission.  The dedicated v3 quote (and, for SELL, the margin) were fetched natively for the
-    exact instrument at tap time; the final check reads the clock itself AFTER the store lock wait."""
+                     margin_receipt_ms=None, capital=None, max_risk_pct=None, config_json=None, state_probe=None,
+                     request_id=None, deadline_ms=None):
+    """R7/R8: explicit admission.  The dedicated v3 quote (and, for SELL, the margin) were fetched natively for
+    the exact instrument at tap time.  The final check reads the clock itself AFTER the store lock wait and,
+    through `state_probe` (native object with current() -> JSON), RE-READS the published decision identity,
+    opt-in, mode, selector, open managed exposure and capital/risk config at commit time."""
     import single_leg_store_v1 as _sls
     import managed_evidence_v1 as _me
     try:
@@ -27792,13 +27795,32 @@ def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=
             if row:
                 margins.append(row)
         ev = _me.build_context(None, None, margins)
+        probe = None
+        if state_probe is not None:
+            probe = (lambda: str(state_probe.current())) if hasattr(state_probe, 'current') else state_probe
+        cfg = json.loads(config_json) if config_json else None
         out = _sls.admit(sl_dir, res, ix, open_trades=ot, enabled=bool(enabled), paper_mode=bool(paper_mode),
-                         selector=str(selector or 'BOTH').upper(), snapshot=snap, evidence=ev)
+                         selector=str(selector or 'BOTH').upper(), snapshot=snap, evidence=ev,
+                         capital=capital, max_risk_pct=max_risk_pct, config=cfg, state_probe=probe,
+                         request_id=request_id, deadline_ms=deadline_ms)
         if rej:
             out['quote_rejections'] = rej
         return json.dumps(out)
     except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'request_id': request_id})
+
+
+def single_leg_request_status(sl_dir, request_id):
+    import single_leg_store_v1 as _sls
+    try:
+        return json.dumps(_sls.request_status(sl_dir, request_id))
+    except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def single_leg_policy_config():
+    """The policy-side risk budget the managed policies use (same basis as analysis)."""
+    return json.dumps({'max_risk_pct': float(_CONST['MAX_RISK_PCT']), 'risk_source': 'brain._CONST.MAX_RISK_PCT'})
 
 
 def single_leg_quote_targets(sl_dir, result_json='null', max_keys=4):

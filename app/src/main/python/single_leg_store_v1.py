@@ -60,10 +60,63 @@ def read(d):
         return None          # corrupt: callers fail closed (no admission), never invent
 
 
-def _write(d, doc):
-    doc['closed'] = (doc.get('closed') or [])[-MAX_CLOSED:]
+MAX_DOC_BYTES = 256 * 1024            # explicit byte budget for positions.json (R7 review s4)
+MAX_TERMINAL_FULL = 20                # most recent terminal positions kept with full evidence
+MAX_TOMBSTONES = 1000                 # compact idempotency identities (retry window across sessions)
+MAX_REQUESTS = 200                    # request-id -> outcome records for reconcile
+RETENTION_SESSIONS = 10
+TERMINAL = ('CLOSED',)
+
+
+class StoreFull(Exception):
+    pass
+
+
+def _compact(p):
+    return {'position_id': p.get('position_id'), 'index': p.get('index'), 'status': p.get('status'),
+            'session_date': p.get('session_date'), 'entry_ts': p.get('entry_ts'), 'exit_ts': p.get('exit_ts'),
+            'action': p.get('action'), 'compacted': True}
+
+
+def _bound(doc):
+    """Prune/compact TERMINAL payloads only.  Non-terminal positions (OPEN / EXIT_PENDING / PENDING_ENTRY) and
+    their exit contracts are never evicted.  Compact tombstones keep idempotency ids for duplicate handling."""
+    pos = doc.get('positions') or []
+    live = [p for p in pos if p.get('status') not in TERMINAL]
+    term = [p for p in pos if p.get('status') in TERMINAL]
+    full = [p for p in term if not p.get('compacted')]
+    keep_full = full[-MAX_TERMINAL_FULL:]
+    tomb = [p for p in term if p.get('compacted')] + [_compact(p) for p in full[:-MAX_TERMINAL_FULL]]
+    sessions = sorted({str(x.get('session_date') or '')[:10] for x in tomb + keep_full + live if x.get('session_date')})
+    recent = set(sessions[-RETENTION_SESSIONS:])
+    tomb = [t for t in tomb if str(t.get('session_date') or '')[:10] in recent or not t.get('session_date')][-MAX_TOMBSTONES:]
+    doc['positions'] = tomb + keep_full + live
+    doc['closed'] = [c for c in (doc.get('closed') or []) if not c.get('session_date')
+                     or str(c['session_date'])[:10] in recent][-MAX_CLOSED:]
     doc['history'] = (doc.get('history') or [])[-MAX_HISTORY:]
-    _atomic_write(_path(d), _canon(doc).encode())
+    rq = doc.get('requests') or {}
+    if len(rq) > MAX_REQUESTS:
+        doc['requests'] = dict(sorted(rq.items(), key=lambda kv: kv[1].get('at') or '')[-MAX_REQUESTS:])
+    raw = _canon(doc).encode()
+    # still over budget: shed terminal evidence first (full -> tombstone), then oldest closed accounts
+    while len(raw) > MAX_DOC_BYTES and (keep_full or doc['closed']):
+        if keep_full:
+            p = keep_full.pop(0)
+            tomb.append(_compact(p))
+        else:
+            doc['closed'] = doc['closed'][1:]
+        doc['positions'] = tomb + keep_full + live
+        raw = _canon(doc).encode()
+    return raw
+
+
+def _write(d, doc, *, strict=False):
+    """Atomic replace within the byte budget.  strict=True (new admissions): raise StoreFull instead of
+    writing when only non-terminal state remains and it still exceeds the budget."""
+    raw = _bound(doc)
+    if strict and len(raw) > MAX_DOC_BYTES:
+        raise StoreFull()
+    _atomic_write(_path(d), raw)
 
 
 def open_positions(d):
@@ -88,66 +141,146 @@ def _wall_clock():
     return _ia.parse_ts(int(_t.time() * 1000))
 
 
-def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
-          snapshot=None, evidence=None, lot_resolver=None, lock_timeout_s=5.0):
-    """Admit the CURRENT published single-leg proposal for `index` (R6 review s3).
+def _valid_config(capital, max_risk_pct):
+    def fin(x):
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return v if v == v and v not in (float('inf'), float('-inf')) else None
+    if capital is None or max_risk_pct is None:
+        return None, 'CAPITAL_CONFIG_UNAVAILABLE'
+    c, r = fin(capital), fin(max_risk_pct)
+    if c is None or c <= 0 or isinstance(capital, bool):
+        return None, 'CAPITAL_CONFIG_INVALID'
+    if r is None or not (0 < r <= 100) or isinstance(max_risk_pct, bool):
+        return None, 'RISK_CONFIG_INVALID'
+    return (c, r), None
 
-    The cached plan is only a proposal.  Under the store lock, AFTER any lock wait, the actual current time is
-    read (clock()) and EVERY gate is rechecked (index_single_leg_v1.revalidate_for_admission): opt-in toggle,
-    Paper mode, selector, published authority identity, schema, entry window, quote (paper_broker_snapshot_v1;
-    a fresher dedicated snapshot for the exact instrument may be supplied), margin (SELL), lot/metadata, history,
-    cooldown and shared exposure from the store.  Fill/fee/capital are recomputed from the accepted snapshot and
-    the exact accepted evidence is persisted.  Idempotent: the same decision/index/action/instrument -> DUPLICATE."""
+
+def request_status(d, request_id):
+    """Reconcile a tap by its stable request id (e.g. after a native PyTimeout)."""
+    doc = read(d)
+    if doc is None:
+        return {'status': 'STORE_CORRUPT'}
+    r = (doc.get('requests') or {}).get(str(request_id))
+    return dict(r, request_id=request_id, found=True) if r else {'request_id': request_id, 'found': False,
+                                                                 'status': 'NOT_RECORDED'}
+
+
+def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
+          snapshot=None, evidence=None, lot_resolver=None, lock_timeout_s=5.0, capital=None, max_risk_pct=None,
+          config=None, state_probe=None, request_id=None, deadline_ms=None):
+    """Admit the CURRENT published single-leg proposal for `index` (R6 s3, R7 s1/s2/s4).
+
+    Under the store lock, AFTER any lock wait: read the clock; if a native state_probe is supplied, RE-READ the
+    current published decision identity, opt-in, mode, selector, open managed exposure, capital/risk config and
+    its revision (overriding the values copied at tap time) and reject on any decision/contract/config change;
+    validate the capital/risk configuration (finite, positive; never a hard-coded default); then recheck every
+    gate (revalidate_for_admission) with that configuration and persist the accepted configuration identity.
+    request_id: a stable tap id; every outcome decided here is recorded for reconcile (request_status), and a
+    replayed request returns its recorded outcome.  deadline_ms: commit is refused after this wall time
+    (ADMISSION_EXPIRED_BEFORE_COMMIT) so a timed-out native call can never become an unknown late admission."""
     check_dir(d)
     clock = clock or _wall_clock
     res = result if isinstance(result, dict) else {}
     plan = ((res.get('single_leg_by_index') or {}).get(index)) or {}
     dec = (res.get('by_index') or {}).get(index) or {}
-    if (res.get('direction_authority') or {}).get('status') != 'OK':
-        return {'status': 'REJECTED', 'reason': 'AUTHORITY_NOT_ACTIVE'}
-    if not plan or plan.get('decision_id') != dec.get('decision_id') or not dec.get('decision_id'):
-        return {'status': 'REJECTED', 'reason': 'DECISION_MISMATCH'}
-    key = idempotency_key(plan)
+    rid = str(request_id) if request_id else None
     try:
         lk = FileLock(os.path.join(d, '.lock'), timeout_s=lock_timeout_s)
         os.makedirs(d, exist_ok=True)
         lk.__enter__()
     except Exception:
-        return {'status': 'REJECTED', 'reason': 'STORE_LOCK_TIMEOUT'}
+        return {'status': 'REJECTED', 'reason': 'STORE_LOCK_TIMEOUT', 'request_id': rid}
     try:
         now_dt = clock()                                   # read AFTER the lock wait
         doc = read(d)
         if doc is None:
-            return {'status': 'REJECTED', 'reason': 'STORE_CORRUPT'}
+            return {'status': 'REJECTED', 'reason': 'STORE_CORRUPT', 'request_id': rid}
+
+        def done(out, write=True):
+            out = dict(out, request_id=rid, checked_at=now_dt.isoformat() if now_dt else None)
+            if rid:
+                rec = {k: out.get(k) for k in ('status', 'reason', 'reasons', 'position_id', 'checked_at')}
+                rec['at'] = rec['checked_at']
+                doc.setdefault('requests', {})[rid] = rec
+                if write:
+                    _write(d, doc)
+            return out
+
+        if rid and rid in (doc.get('requests') or {}):
+            return dict(doc['requests'][rid], request_id=rid, replayed=True)
+        if deadline_ms is not None and now_dt is not None and now_dt.timestamp() * 1000 > float(deadline_ms):
+            return done({'status': 'REJECTED', 'reason': 'ADMISSION_EXPIRED_BEFORE_COMMIT'})
+        cfg_in = dict(config or {})
+        if state_probe is not None:
+            try:
+                st = state_probe()
+                st = json.loads(st) if isinstance(st, str) else dict(st)
+            except Exception:
+                return done({'status': 'REJECTED', 'reason': 'NATIVE_STATE_UNAVAILABLE'})
+            cur = (st.get('decisions') or {}).get(index) or {}
+            if cur.get('decision_id') != plan.get('decision_id') or cur.get('instrument_key') != plan.get('instrument_key'):
+                return done({'status': 'REJECTED', 'reason': 'DECISION_CHANGED_BEFORE_COMMIT'})
+            if cfg_in.get('revision') is not None and st.get('config_revision') != cfg_in.get('revision'):
+                return done({'status': 'REJECTED', 'reason': 'CONFIG_CHANGED_BEFORE_COMMIT'})
+            enabled, paper_mode = bool(st.get('enabled')), bool(st.get('paper_mode'))
+            selector = str(st.get('selector') or 'BOTH').upper()
+            open_trades = st.get('open_trades') if isinstance(st.get('open_trades'), list) else open_trades
+            capital, max_risk_pct = st.get('capital'), st.get('max_risk_pct')
+            cfg_in.update({k: st.get(k) for k in ('capital_source', 'risk_source', 'config_revision') if k in st})
+        if (res.get('direction_authority') or {}).get('status') != 'OK':
+            return done({'status': 'REJECTED', 'reason': 'AUTHORITY_NOT_ACTIVE'})
+        if not plan or plan.get('decision_id') != dec.get('decision_id') or not dec.get('decision_id'):
+            return done({'status': 'REJECTED', 'reason': 'DECISION_MISMATCH'})
+        key = idempotency_key(plan)
         for p in doc.get('positions') or []:
             if p.get('position_id') == key:
-                return {'status': 'DUPLICATE_IGNORED', 'position_id': key, 'position': p}
+                return done({'status': 'DUPLICATE_IGNORED', 'position_id': key, 'position': p})
         at = _ia.parse_ts(dec.get('analysis_ts'))
         if at is None or now_dt is None or not (0 <= (now_dt - at).total_seconds() <= ADMIT_MAX_DECISION_AGE_S):
-            return {'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'}
+            return done({'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'})
+        cr, cwhy = _valid_config(capital, max_risk_pct)
+        if cwhy:
+            return done({'status': 'REJECTED', 'reason': cwhy, 'reasons': [cwhy]})
         live = [p for p in doc.get('positions') or [] if p.get('status') in NON_TERMINAL]
         accepted, reasons = _sl.revalidate_for_admission(
             plan, dec, now_dt, snapshot=snapshot, evidence=evidence, store_positions=live,
             history=list(doc.get('history') or []), open_trades=open_trades, enabled=enabled,
-            paper_mode=paper_mode, selector=selector, lot_resolver=lot_resolver)
+            paper_mode=paper_mode, selector=selector, lot_resolver=lot_resolver,
+            capital=cr[0], max_risk_pct=cr[1])
         if accepted is None:
             r0 = reasons[0] if reasons else 'PROPOSAL_NOT_ADMISSIBLE'
             if 'MANAGED_POLICY_CAP_ONE_PER_INDEX' in reasons:
                 r0 = 'MANAGED_POLICY_CAP_ONE_PER_INDEX'
-            return {'status': 'REJECTED', 'reason': r0, 'reasons': reasons, 'checked_at': now_dt.isoformat()}
+            return done({'status': 'REJECTED', 'reason': r0, 'reasons': reasons})
         pos = _sl.open_position(accepted, now_dt.isoformat(), (dec.get('direction') or {}).get('value'))
         pos['position_id'] = key
         pos['session_date'] = dec.get('session_date')
         pos['admitted_at'] = now_dt.isoformat()
+        pos['request_id'] = rid
         pos['entry_decision_published'] = {'decision_id': dec.get('decision_id'), 'analysis_ts': dec.get('analysis_ts')}
+        pos['admission_config'] = {'capital': cr[0], 'max_risk_pct': cr[1],
+                                   'capital_source': cfg_in.get('capital_source'),
+                                   'risk_source': cfg_in.get('risk_source'),
+                                   'config_revision': cfg_in.get('config_revision', cfg_in.get('revision')),
+                                   'basis': 'PER_TRADE_RISK_BUDGET_OF_CONFIGURED_CAPITAL; one managed position per index'}
         pos['plan'] = {k: accepted.get(k) for k in ('reasons', 'rel_spread', 'entry_quote', 'exposure', 'er_switch',
                                                      'er_switch_status', 'worst_case_loss', 'loss_note',
                                                      'admission_checked_at', 'margin_identity')}
         doc.setdefault('positions', []).append(pos)
         doc.setdefault('history', []).append({'index': index, 'position_id': key, 'entry_ts': pos['entry_ts'],
                                               'exit_ts': None, 'action': pos['action']})
-        _write(d, doc)
-        return {'status': 'ADMITTED', 'position_id': key, 'position': pos}
+        out = {'status': 'ADMITTED', 'position_id': key, 'position': pos}
+        try:
+            out = done(out, write=False)
+            _write(d, doc, strict=True)
+        except StoreFull:
+            doc['positions'].pop()
+            doc['history'].pop()
+            return done({'status': 'REJECTED', 'reason': 'SINGLE_LEG_STORE_FULL'})
+        return out
     finally:
         lk.__exit__(None, None, None)
 
@@ -273,10 +406,15 @@ def outcomes(d, session_date):
                     'status': 'CLOSED' if a.get('status') == 'RESOLVED' else 'UNRESOLVED',
                     'net_pnl': a.get('net_pnl'), 'exit_ts': a.get('exit_ts'), 'entry_ts': a.get('entry_ts'),
                     'strategy_type': a.get('action'), 'entry_decision_id': a.get('entry_decision_id'),
-                    'exit_reason': a.get('exit_reason'), 'net_basis': 'NET_OF_FEES_FEE_CONTRACT_DATED'})
+                    'exit_reason': a.get('exit_reason'), 'net_basis': 'NET_OF_FEES_FEE_CONTRACT_DATED',
+                    'action': a.get('action'), 'fees': a.get('fees'), 'policy_version': _sl.POLICY_ID,
+                    'capital_required': a.get('capital_required'), 'capital_basis': a.get('capital_basis'),
+                    'source': 'ACTUAL_PAPER'})
     for p in doc.get('positions') or []:
         if p.get('status') in NON_TERMINAL and str(p.get('session_date'))[:10] == str(session_date)[:10]:
             out.append({'id': p.get('position_id'), 'index_key': p.get('index'), 'policy_id': _sl.POLICY_ID,
                         'status': p.get('status'), 'net_pnl': None, 'entry_ts': p.get('entry_ts'),
-                        'strategy_type': p.get('action'), 'entry_decision_id': p.get('entry_decision_id')})
+                        'strategy_type': p.get('action'), 'entry_decision_id': p.get('entry_decision_id'),
+                        'action': p.get('action'), 'policy_version': _sl.POLICY_ID, 'source': 'ACTUAL_PAPER',
+                        'capital_required': p.get('capital_required'), 'capital_basis': p.get('capital_basis')})
     return out

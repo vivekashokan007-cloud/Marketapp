@@ -129,10 +129,10 @@ def phase1(work):
             req, resp, rs, rc = _fetch_quotes(brain, dirs, c, tgt['keys'], clk + 1000)
             _set_clock(clk + 1700)
             res = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
-                                                    req, resp, rs, rc, 1))
+                                                    req, resp, rs, rc, 1, capital=250000.0, max_risk_pct=10.0))
             _set_clock(clk + 2500)
             again = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
-                                                      req, resp, rs, rc, 2))
+                                                      req, resp, rs, rc, 2, capital=250000.0, max_risk_pct=10.0))
             pos = res.get('position') or {}
             admitted = {'t': polls[i - 1]['t'], 'admit': res['status'], 'retry': again['status'],
                         'reasons': res.get('reasons'), 'quote_targets': tgt,

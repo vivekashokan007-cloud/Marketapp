@@ -309,8 +309,8 @@ def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expir
 
 def revalidate_for_admission(plan, decision, now_dt, *, snapshot=None, evidence=None, store_positions=None,
                              history=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
-                             lot_resolver=None, capital=250000.0, max_risk_pct=10.0):
-    """R6 review s3: the FINAL admission check, run under the store lock with now_dt read AFTER the lock wait.
+                             lot_resolver=None, capital=None, max_risk_pct=None):
+    """R6 review s3 / R7 review s1 (capital and risk are REQUIRED; no default is treated as verified): the FINAL admission check, run under the store lock with now_dt read AFTER the lock wait.
     Nothing time-sensitive is trusted from the cached plan: quote, margin, lot/metadata, entry window, history,
     cooldown and exposure are re-checked; fill/fee/capital are recomputed from the accepted snapshot.
     Returns (accepted_plan|None, reasons)."""
@@ -323,6 +323,16 @@ def revalidate_for_admission(plan, decision, now_dt, *, snapshot=None, evidence=
         reasons.append('NOT_PAPER_MODE')
     if selector not in ('BOTH', ix):
         reasons.append('INDEX_NOT_SELECTED')
+    if capital is None or max_risk_pct is None:
+        reasons.append('CAPITAL_CONFIG_UNAVAILABLE_AT_ADMISSION')
+        return None, reasons
+    try:
+        capital, max_risk_pct = float(capital), float(max_risk_pct)
+    except (TypeError, ValueError):
+        capital = max_risk_pct = float('nan')
+    if not (math.isfinite(capital) and capital > 0 and math.isfinite(max_risk_pct) and 0 < max_risk_pct <= 100):
+        reasons.append('CAPITAL_CONFIG_INVALID_AT_ADMISSION')
+        return None, reasons
     if p.get('policy_id') != POLICY_ID or p.get('schema') != PLAN_SCHEMA or p.get('quote_contract') != _pbs.CONTRACT:
         reasons.append('PLAN_SCHEMA_UNSUPPORTED')
         return None, reasons

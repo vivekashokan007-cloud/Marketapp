@@ -40,7 +40,7 @@ def at(seconds):
     return lambda: t
 
 
-OK = dict(enabled=True, paper_mode=True, selector='BOTH')
+OK = dict(enabled=True, paper_mode=True, selector='BOTH', capital=250000.0, max_risk_pct=10.0)
 
 
 class StoreAdmission(unittest.TestCase):

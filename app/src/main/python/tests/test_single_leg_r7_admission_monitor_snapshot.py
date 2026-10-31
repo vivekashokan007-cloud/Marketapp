@@ -217,7 +217,7 @@ class AdmissionRevalidation(Tmp):
     def test_bridge_admit_reads_its_own_clock(self):
         r = admissible_result()
         with mock.patch.object(sls, '_wall_clock', lambda: D + timedelta(seconds=200)):
-            out = json.loads(brain.single_leg_admit(self.d, json.dumps(r), 'NF', '[]', True, True, 'BOTH'))
+            out = json.loads(brain.single_leg_admit(self.d, json.dumps(r), 'NF', '[]', True, True, 'BOTH', capital=250000.0, max_risk_pct=10.0))
         self.assertIn('SNAPSHOT_STALE_AT_ADMISSION', out['reasons'])
 
 
