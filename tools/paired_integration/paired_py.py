@@ -29,6 +29,8 @@ def main(cmd, d, *a):
                                      state_probe=lambda: json.dumps(st), request_id=rid))
     elif cmd == 'status':
         print(brain.single_leg_request_status(d, a[0]))
+    elif cmd == 'cancel':
+        print(brain.single_leg_request_cancel(d, a[0]))
     elif cmd == 'read':
         print(brain.single_leg_read(d))
     elif cmd == 'review':

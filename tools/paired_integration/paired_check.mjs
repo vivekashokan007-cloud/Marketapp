@@ -42,7 +42,9 @@ const AndroidBridge = {
   singleLegAdmit: ix => { const id = `pair-${++seq}`; pending[id] = ix; return JSON.stringify({ status: 'PENDING', request_id: id, index: ix }); },
   singleLegAdmitStatus: id => {
     if (pending[id]) { delete pending[id]; const o = JSON.parse(py('admit', sl, id, capital == null ? 'null' : String(capital), resultPath)); return JSON.stringify({ ...o, completed: true }); }
-    return py('status', sl, id);
+    // unknown id (stand-in for a restarted coordinator): definitive reconcile under the admission lock
+    const c = JSON.parse(py('cancel', sl, id));
+    return JSON.stringify(c.found ? { ...c, completed: true, reconciled: true } : { status: 'PENDING', phase: 'OUTCOME_UNCONFIRMED', request_id: id });
   },
   singleLegRead: () => py('read', sl),
   dailyReviewLatest: () => '{}',
@@ -54,12 +56,12 @@ const NB = runFacade(ctx);
 const src = readFileSync(path.join(V, 'app.js'), 'utf8');
 const fn = name => { const m = new RegExp(`^function ${name}\\(`, 'm').exec(src); assert.ok(m, `app.js defines ${name}`); return src.slice(m.index, src.indexOf('\n}\n', m.index) + 3); };
 const FNS = ['getIndexSelector', 'iaEsc', 'singleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'pollSingleLegAdmit',
-  'finishSingleLegAdmit', 'singleLegCapital', 'renderSingleLegCard', 'reviewNet', 'renderReviewGroups', 'renderDailyReviewCard'];
+  'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'renderSingleLegCard', 'reviewNet', 'renderReviewGroups', 'renderDailyReviewCard'];
 const alerts = [];
 const timers = [];
 const pctx = vm.createContext({ JSON, String, Object, Array, Math, Intl, Date, Number, window: { NativeBridge: NB }, alert: m => alerts.push(m),
-  setTimeout: f => timers.push(f), localStorage: { getItem: () => null, setItem() {} } });
-vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SINGLE_LEG_STORE=null; let SINGLE_LEG_PENDING={};\n${FNS.map(fn).join('\n')}`, pctx);
+  setTimeout: f => timers.push(f), localStorage: (() => { const m = {}; return { getItem: k => m[k] ?? null, setItem: (k, v) => { m[k] = v; } }; })() });
+vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={};\n${FNS.map(fn).join('\n')}`, pctx);
 const drain = () => { let n = 0; while (timers.length && n++ < 20) timers.shift()(); };
 
 // 1. bridge surface: every NativeBridge method the PWA calls for single-leg / daily review exists in the facade
@@ -93,6 +95,13 @@ check('capital set -> ADMITTED; store read renders the simulated position', () =
 check('request status reconciles by id after completion', () => {
   const st = JSON.parse(NB.singleLegAdmitStatus('pair-2'));
   assert.equal(st.found, true); assert.equal(st.status, 'ADMITTED');
+});
+// 5b. unknown request after a restart is fenced (definitive) and the fence blocks a later admission for that id
+check('restart: unknown id is fenced under the lock; later admit with that id cannot commit', () => {
+  const st = JSON.parse(NB.singleLegAdmitStatus('pair-lost'));
+  assert.equal(st.completed, true); assert.equal(st.reason, 'CANCELLED_BEFORE_COMMIT');
+  const late = JSON.parse(py('admit', sl, 'pair-lost', '250000', resultPath));
+  assert.equal(late.reason, 'CANCELLED_BEFORE_COMMIT'); assert.equal(late.replayed, true);
 });
 // 6. daily review report from the same store -> groups rendered per index
 let review = null;
