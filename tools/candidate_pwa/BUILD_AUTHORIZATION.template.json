@@ -1,0 +1,13 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "artifact_only": true,
+  "native_sha": "",
+  "pwa_sha": "4b0d49f468e6100830967b842114e0322bb68535",
+  "version_code": "516",
+  "version_name": "2.6.85",
+  "cert_sha256": "",
+  "approved_by": "",
+  "approval_reference": "",
+  "codex_final_check_reference": "",
+  "_usage": "TEMPLATE ONLY. Copy to candidate/BUILD_AUTHORIZATION.json in ONE commit on a candidate-build/** branch whose parent is the exact reviewed native_sha, only after Codex's final check and Vivek's explicit build approval. Fill every empty field (cert_sha256 = full release cert SHA-256, fb6042a2...)."
+}

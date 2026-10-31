@@ -148,16 +148,41 @@ class WorkflowContractTests(unittest.TestCase):
         except ImportError:  # pragma: no cover
             cls.y = None
 
-    def test_trigger_is_workflow_dispatch_only(self):
+    def test_triggers_are_manual_dispatch_or_isolated_authorisation_push_only(self):
         if self.y is not None:
             on = self.y.get("on", self.y.get(True))
-            self.assertEqual(list(on.keys()), ["workflow_dispatch"])
+            self.assertEqual(sorted(on.keys()), ["push", "workflow_dispatch"])
+            self.assertEqual(on["push"], {"branches": ["candidate-build/**"], "paths": ["candidate/BUILD_AUTHORIZATION.json"]})
             ins = on["workflow_dispatch"]["inputs"]
             for k in ("native_sha", "pwa_sha", "expected_cert_sha256", "expected_version_code", "expected_version_name",
                       "confirm_candidate_artifact_only"):
                 self.assertIn(k, ins)
-        for bad in ("\n  push:", "\n  pull_request:", "\n  schedule:", "workflow_call", "repository_dispatch", "pull_request_target"):
+            job = self.y["jobs"]["candidate"]
+            self.assertIn("startsWith(github.ref, 'refs/heads/candidate-build/')", job["if"])
+            self.assertIn("inputs.confirm_candidate_artifact_only == true", job["if"])
+        for bad in ("\n  pull_request:", "\n  schedule:", "workflow_call", "repository_dispatch", "pull_request_target",
+                    "tags:", "'review/", "branches: [main", "- main"):
             self.assertNotIn(bad, self.text)
+
+    def test_isolated_route_builds_the_parent_of_a_single_file_authorisation_commit(self):
+        for must in ('test "$parents" = 2', 'test "$changed" = "candidate/BUILD_AUTHORIZATION.json"',
+                     'a["native_sha"] == sys.argv[1]', 'a["artifact_only"] is True', "codex_final_check_reference",
+                     "approval_reference", "approved_by", "ref: ${{ env.NATIVE_SHA }}",
+                     "test ! -e candidate/BUILD_AUTHORIZATION.json",
+                     'git merge-base --is-ancestor "$ACCEPTED_R9_NATIVE" "$NATIVE_SHA"',
+                     'git merge-base --is-ancestor "$ACCEPTED_ROUTE_NATIVE" "$NATIVE_SHA"'):
+            self.assertIn(must, self.text)
+        # Build/stage steps never take raw dispatch inputs directly; only the resolver maps them.
+        after = self.text.split("- name: Validate inputs", 1)[1]
+        self.assertNotIn("inputs.", after)
+
+    def test_authorisation_template_is_not_live_and_not_on_trigger_path(self):
+        root = WORKFLOW.parents[2]
+        self.assertFalse((root / "candidate" / "BUILD_AUTHORIZATION.json").exists())
+        tpl = json.loads((root / "tools/candidate_pwa/BUILD_AUTHORIZATION.template.json").read_text())
+        self.assertEqual(tpl["schema"], "marketradar.candidate_build_authorization.v1")
+        self.assertIs(tpl["artifact_only"], True)
+        self.assertEqual(tpl["approved_by"], "")
 
     def test_permissions_read_only(self):
         if self.y is not None:
