@@ -191,9 +191,110 @@ def partition_outcomes(session_date, index, paper_trades):
         row = {'id': t.get('id') or t.get('position_id'), 'structure': t.get('strategy_type') or t.get('type') or t.get('action'),
                'policy_id': pol, 'entry_decision_id': t.get('entry_decision_id'), 'status': status or None,
                'recorded_net_pnl': pnl if mature else None,
-               'exit_reason': t.get('exit_reason'), 'net_basis': t.get('net_basis')}
+               'exit_reason': t.get('exit_reason'), 'net_basis': t.get('net_basis'),
+               'action': t.get('action'),
+               'fees': _fin(next((t.get(k) for k in ('fees', 'charges', 'total_charges') if t.get(k) is not None), None)),
+               'policy_version': t.get('policy_version') or t.get('managed_policy_version') or pol,
+               'capital_required': _fin(t.get('capital_required')), 'capital_basis': t.get('capital_basis'),
+               'source': 'HYPOTHETICAL' if t.get('hypothetical') or t.get('source') == 'HYPOTHETICAL' else
+                         ('ACTUAL_PAPER' if t.get('source') in (None, 'ACTUAL_PAPER') else str(t.get('source'))),
+               'provenance': t.get('provenance') or t.get('origin') or t.get('source_tag')}
         out[grp]['resolved' if mature else 'unresolved'].append(row)
     return out, excluded_other_session
+
+
+def _fin(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
+SINGLE_LEG_SIDES = {'SINGLE_LEG_BUY': ('BUY_CE', 'BUY_PE'), 'SINGLE_LEG_SELL': ('SELL_CE', 'SELL_PE')}
+
+
+def _group_key(grp, row):
+    st = str(row.get('action') or row.get('structure') or '').upper()
+    if grp == 'index_single_leg_v1':
+        if st in SINGLE_LEG_SIDES['SINGLE_LEG_BUY']:
+            return 'SINGLE_LEG_BUY'
+        if st in SINGLE_LEG_SIDES['SINGLE_LEG_SELL']:
+            return 'SINGLE_LEG_SELL'
+        return 'SINGLE_LEG_UNKNOWN_ACTION'
+    if grp == 'manual_or_legacy':
+        return 'MANUAL_OR_LEGACY'
+    return 'MULTI_LEG:' + (st or 'UNKNOWN_STRATEGY')
+
+
+def _summ(rows):
+    res = [r for r in rows if r['_resolved']]
+    unres = [r for r in rows if not r['_resolved']]
+    # a net claim needs every resolved row to carry a finite recorded net; any unknown -> total unknown
+    # unknown costs -> unknown net (never a positive claim from an unpriced trade)
+    net_known = [r['recorded_net_pnl'] for r in res if r['recorded_net_pnl'] is not None and r['fees'] is not None]
+    fees_known = [r['fees'] for r in res if r['fees'] is not None]
+    unknown_net = len(res) - len(net_known)
+    unknown_fee = len(res) - len(fees_known)
+    reasons = {}
+    for r in res:
+        k = r.get('exit_reason') or 'UNKNOWN'
+        reasons[k] = reasons.get(k, 0) + 1
+    caps = {}
+    for r in rows:
+        b = r.get('capital_basis') or 'UNKNOWN'
+        c = caps.setdefault(b, {'n': 0, 'capital_known': 0, 'capital_sum': 0.0})
+        c['n'] += 1
+        if r.get('capital_required') is not None:
+            c['capital_known'] += 1
+            c['capital_sum'] = round(c['capital_sum'] + r['capital_required'], 2)
+    net = round(sum(net_known), 2) if (res and unknown_net == 0) else None
+    return {'entries': len(rows), 'exits': len(res), 'resolved': len(res), 'unresolved': len(unres),
+            'fees_total': round(sum(fees_known), 2) if (res and unknown_fee == 0) else None,
+            'fees_unknown': unknown_fee,
+            'net_pnl_after_costs': net, 'net_unknown': unknown_net,
+            'net_status': 'NO_OBSERVATIONS' if not rows else ('NO_RESOLVED' if not res else
+                          ('KNOWN' if net is not None else 'UNKNOWN')),
+            'exit_reasons': dict(sorted(reasons.items())),
+            'coverage': {'resolved_of_entries': f"{len(res)}/{len(rows)}",
+                         'net_known_of_resolved': f"{len(net_known)}/{len(res)}"},
+            # long premium and short broker margin are different denominators: never pooled
+            'denominators': dict(sorted(caps.items()))}
+
+
+def group_outcomes(partitioned):
+    """R7 review s3: per index (caller) and per policy/version segment: SINGLE_LEG_BUY (BUY_CE/BUY_PE visible),
+    SINGLE_LEG_SELL (SELL_CE/SELL_PE visible), MULTI_LEG:<exact strategy>, MANUAL_OR_LEGACY (provenance kept).
+    Actual Paper and hypothetical rows are separate.  Empty single-leg groups show zero observations."""
+    if partitioned is None:
+        return None
+    seg = {}
+    for grp, parts in partitioned.items():
+        for kind in ('resolved', 'unresolved'):
+            for r in parts[kind]:
+                rr = dict(r, _resolved=(kind == 'resolved'))
+                src = rr.get('source') or 'ACTUAL_PAPER'
+                key = f"{src}|{rr.get('policy_version') or grp}"
+                seg.setdefault(key, {}).setdefault(_group_key(grp, rr), []).append(rr)
+    # the single-leg segment always shows both sides, even with zero observations
+    seg.setdefault('ACTUAL_PAPER|index_single_leg_v1', {})
+    out = {}
+    for key, groups in sorted(seg.items()):
+        if key.endswith('|index_single_leg_v1'):
+            for g in SINGLE_LEG_SIDES:
+                groups.setdefault(g, [])
+        o = {}
+        for g, rows in sorted(groups.items()):
+            s_ = _summ(rows)
+            if g in SINGLE_LEG_SIDES:
+                s_['by_action'] = {a: _summ([r for r in rows if str(r.get('action') or r.get('structure') or '').upper() == a])
+                                   for a in SINGLE_LEG_SIDES[g]}
+            if g == 'MANUAL_OR_LEGACY':
+                prov = {}
+                for r in rows:
+                    k = str(r.get('provenance') or r.get('policy_id') or 'UNKNOWN')
+                    prov[k] = prov.get(k, 0) + 1
+                s_['provenance'] = dict(sorted(prov.items()))
+            o[g] = s_
+        src, ver = key.split('|', 1)
+        out[key] = {'source': src, 'policy_version': ver, 'groups': o}
+    return out
 
 
 def build_report(session_date, decisions_by_index, polls, paper_trades=None, *, schema_ids=None, budget=None,
@@ -250,6 +351,7 @@ def build_report(session_date, decisions_by_index, polls, paper_trades=None, *, 
                          'status': 'INCOMPLETE' if (dropped or truncated) else 'COMPLETE'},
             'data_issues': dict(sorted(data_issues.items())),
             'paper_outcomes': outcomes,
+            'paper_outcome_groups': group_outcomes(outcomes),
             'paper_outcomes_other_session_excluded': other,
             'paper_trades_supplied': paper_trades is not None,
             'findings': {'observed_outcome': [], 'verified_defect': [], 'policy_hypothesis': [],
