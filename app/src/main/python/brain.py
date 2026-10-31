@@ -27818,6 +27818,17 @@ def single_leg_request_status(sl_dir, request_id):
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 
 
+def single_leg_request_cancel(sl_dir, request_id, reason='CANCELLED_BEFORE_COMMIT'):
+    """Definitive reconcile under the admission lock: recorded outcome, or a persisted terminal fence, or
+    OUTCOME_UNCONFIRMED when the lock is busy (never a guessed negative outcome)."""
+    import single_leg_store_v1 as _sls
+    try:
+        return json.dumps(_sls.cancel_request(sl_dir, request_id, reason))
+    except Exception as exc:
+        return json.dumps({'status': 'OUTCOME_UNCONFIRMED', 'found': False, 'reason': type(exc).__name__,
+                           'request_id': request_id})
+
+
 def single_leg_policy_config():
     """The policy-side risk budget the managed policies use (same basis as analysis)."""
     return json.dumps({'max_risk_pct': float(_CONST['MAX_RISK_PCT']), 'risk_source': 'brain._CONST.MAX_RISK_PCT'})

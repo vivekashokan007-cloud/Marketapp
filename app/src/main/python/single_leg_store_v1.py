@@ -158,6 +158,40 @@ def _valid_config(capital, max_risk_pct):
     return (c, r), None
 
 
+MAX_REVALIDATE_PASSES = 3
+REVALIDATE_DRIFT_S = 1.0
+
+
+def cancel_request(d, request_id, reason='CANCELLED_BEFORE_COMMIT', *, lock_timeout_s=2.0, clock=None):
+    """R8 review: definitive reconcile/expiry UNDER the admission lock.  If the request already has a recorded
+    outcome it is returned unchanged (found=True).  Otherwise a terminal fence is persisted so any later admit for
+    this request id returns the fence instead of admitting.  If the lock is held (an admission may be in flight),
+    returns status=OUTCOME_UNCONFIRMED (never a negative outcome)."""
+    check_dir(d)
+    rid = str(request_id)
+    try:
+        lk = FileLock(os.path.join(d, '.lock'), timeout_s=lock_timeout_s)
+        os.makedirs(d, exist_ok=True)
+        lk.__enter__()
+    except Exception:
+        return {'request_id': rid, 'found': False, 'status': 'OUTCOME_UNCONFIRMED', 'reason': 'STORE_LOCK_BUSY'}
+    try:
+        doc = read(d)
+        if doc is None:
+            return {'request_id': rid, 'found': False, 'status': 'OUTCOME_UNCONFIRMED', 'reason': 'STORE_CORRUPT'}
+        r = (doc.get('requests') or {}).get(rid)
+        if r:
+            return dict(r, request_id=rid, found=True)
+        at = (clock or _wall_clock)().isoformat()
+        rec = {'status': 'REJECTED', 'reason': reason, 'reasons': [reason], 'position_id': None,
+               'checked_at': at, 'at': at, 'fence': True}
+        doc.setdefault('requests', {})[rid] = rec
+        _write(d, doc)
+        return dict(rec, request_id=rid, found=True)
+    finally:
+        lk.__exit__(None, None, None)
+
+
 def request_status(d, request_id):
     """Reconcile a tap by its stable request id (e.g. after a native PyTimeout)."""
     doc = read(d)
@@ -209,17 +243,29 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
                     _write(d, doc)
             return out
 
+        def expired(t):
+            return deadline_ms is not None and (t is None or t.timestamp() * 1000 > float(deadline_ms))
+
         if rid and rid in (doc.get('requests') or {}):
             return dict(doc['requests'][rid], request_id=rid, replayed=True)
-        if deadline_ms is not None and now_dt is not None and now_dt.timestamp() * 1000 > float(deadline_ms):
+        if expired(now_dt):
             return done({'status': 'REJECTED', 'reason': 'ADMISSION_EXPIRED_BEFORE_COMMIT'})
         cfg_in = dict(config or {})
         if state_probe is not None:
             try:
                 st = state_probe()
                 st = json.loads(st) if isinstance(st, str) else dict(st)
-            except Exception:
-                return done({'status': 'REJECTED', 'reason': 'NATIVE_STATE_UNAVAILABLE'})
+            except Exception as exc:                   # fail closed, named
+                now_dt = clock()
+                return done({'status': 'REJECTED', 'reason': 'NATIVE_STATE_UNAVAILABLE',
+                             'reasons': ['NATIVE_STATE_UNAVAILABLE:' + type(exc).__name__]})
+            # R8 review: the probe may block; refresh the execution clock and recheck the deadline before anything
+            now_dt = clock()
+            if expired(now_dt):
+                return done({'status': 'REJECTED', 'reason': 'ADMISSION_EXPIRED_BEFORE_COMMIT',
+                             'reasons': ['DEADLINE_PASSED_DURING_STATE_PROBE']})
+            if not isinstance(st, dict) or not isinstance(st.get('decisions'), dict):
+                return done({'status': 'REJECTED', 'reason': 'NATIVE_STATE_INVALID'})
             cur = (st.get('decisions') or {}).get(index) or {}
             if cur.get('decision_id') != plan.get('decision_id') or cur.get('instrument_key') != plan.get('instrument_key'):
                 return done({'status': 'REJECTED', 'reason': 'DECISION_CHANGED_BEFORE_COMMIT'})
@@ -238,18 +284,31 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
         for p in doc.get('positions') or []:
             if p.get('position_id') == key:
                 return done({'status': 'DUPLICATE_IGNORED', 'position_id': key, 'position': p})
-        at = _ia.parse_ts(dec.get('analysis_ts'))
-        if at is None or now_dt is None or not (0 <= (now_dt - at).total_seconds() <= ADMIT_MAX_DECISION_AGE_S):
-            return done({'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'})
         cr, cwhy = _valid_config(capital, max_risk_pct)
         if cwhy:
             return done({'status': 'REJECTED', 'reason': cwhy, 'reasons': [cwhy]})
         live = [p for p in doc.get('positions') or [] if p.get('status') in NON_TERMINAL]
-        accepted, reasons = _sl.revalidate_for_admission(
-            plan, dec, now_dt, snapshot=snapshot, evidence=evidence, store_positions=live,
-            history=list(doc.get('history') or []), open_trades=open_trades, enabled=enabled,
-            paper_mode=paper_mode, selector=selector, lot_resolver=lot_resolver,
-            capital=cr[0], max_risk_pct=cr[1])
+        at = _ia.parse_ts(dec.get('analysis_ts'))
+        # R8 review: every time-dependent gate (decision age, entry window, quote age, margin age) is evaluated at
+        # an execution time read AFTER the potentially blocking steps; if the clock moved materially while
+        # revalidating, revalidate again at the new time; the deadline is rechecked at the last clock read.
+        for _attempt in range(MAX_REVALIDATE_PASSES):
+            t0 = now_dt
+            if at is None or now_dt is None or not (0 <= (now_dt - at).total_seconds() <= ADMIT_MAX_DECISION_AGE_S):
+                return done({'status': 'REJECTED', 'reason': 'DECISION_NOT_CURRENT'})
+            accepted, reasons = _sl.revalidate_for_admission(
+                plan, dec, now_dt, snapshot=snapshot, evidence=evidence, store_positions=live,
+                history=list(doc.get('history') or []), open_trades=open_trades, enabled=enabled,
+                paper_mode=paper_mode, selector=selector, lot_resolver=lot_resolver,
+                capital=cr[0], max_risk_pct=cr[1])
+            now_dt = clock()
+            if expired(now_dt):
+                return done({'status': 'REJECTED', 'reason': 'ADMISSION_EXPIRED_BEFORE_COMMIT',
+                             'reasons': ['DEADLINE_PASSED_DURING_REVALIDATION']})
+            if accepted is None or (now_dt - t0).total_seconds() <= REVALIDATE_DRIFT_S:
+                break
+        else:
+            return done({'status': 'REJECTED', 'reason': 'ADMISSION_CLOCK_UNSTABLE'})
         if accepted is None:
             r0 = reasons[0] if reasons else 'PROPOSAL_NOT_ADMISSIBLE'
             if 'MANAGED_POLICY_CAP_ONE_PER_INDEX' in reasons:
