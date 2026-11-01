@@ -2756,6 +2756,7 @@ class MarketMLService : Service() {
                 sessionDate = sessionDate,
                 rows = rows,
                 rowsFile = metricsInput,
+                policySelectorVersion = metricsInput?.let { brain.callAttr("evaluation_policy_selector", it.absolutePath).toString() } ?: "no_evaluated_candidates",
                 activeRecommendationId = null
             ) } finally { metricsInput?.delete() }
             // Re-load run after updateRunStage(running) mutated activeEvaluationRun

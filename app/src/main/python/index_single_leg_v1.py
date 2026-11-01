@@ -247,7 +247,8 @@ def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expir
     out = {'policy_id': POLICY_ID, 'schema': PLAN_SCHEMA, 'index': index, 'admit': False, 'reasons': [],
            'er_switch': ER_SWITCH, 'er_switch_status': 'UNVALIDATED_PAPER_CHOICE', 'quote_needed': [],
            'quote_contract': _pbs.CONTRACT, 'session_date': str(session_date)[:10] if session_date else None,
-           'decision_id': (decision or {}).get('decision_id') if isinstance(decision, dict) else None}
+           'decision_id': (decision or {}).get('decision_id') if isinstance(decision, dict) else None,
+           'decision_poll_ts': (decision or {}).get('decision_poll_ts') if isinstance(decision, dict) else None}
     d = decision if isinstance(decision, dict) else {}
     action, why = choose_action(d.get('direction'))
     out['action'] = action
@@ -380,7 +381,12 @@ def revalidate_for_admission(plan, decision, now_dt, *, snapshot=None, evidence=
         out = dict(p, **econ)
         out.update(entry_quote=dict(q, instrument_key=key), entry_snapshot=snap, rel_spread=round(rel, 6),
                    exposure=exp, admitted_reasons=[], admit=True, status='ADMISSIBLE',
-                   admission_checked_at=now_dt.isoformat())
+                   admission_checked_at=now_dt.isoformat(),
+                   admission_evidence={'enabled': bool(enabled), 'paper_mode': bool(paper_mode),
+                       'selector': selector, 'capital': capital, 'max_risk_pct': max_risk_pct,
+                       'decision_id': (decision or {}).get('decision_id'),
+                       'decision_poll_ts': (decision or {}).get('decision_poll_ts'),
+                       'analysis_ts': (decision or {}).get('analysis_ts')})
     if reasons:
         return None, reasons
     return out, []
@@ -409,6 +415,8 @@ def open_position(plan, entry_ts, entry_direction):
             'units': plan['units'], 'entry_fill': plan['entry_fill'],
             'entry_fee': plan['entry_fee'], 'entry_ts': entry_ts, 'entry_direction': entry_direction,
             'entry_decision_id': plan.get('decision_id'), 'entry_quote': plan.get('entry_quote'),
+            'entry_decision_poll_ts': plan.get('decision_poll_ts'),
+            'admission_evidence': plan.get('admission_evidence'),
             'capital_required': plan.get('capital_required'), 'capital_basis': plan.get('capital_basis'),
             'margin_identity': plan.get('margin_identity'), 'entry_snapshot': plan.get('entry_snapshot'),
             'entry_contract': ENTRY_CONTRACT, 'quote_contract': plan.get('quote_contract'),
@@ -480,7 +488,17 @@ def evaluate_exit(pos, leg_quote, direction_observations, analysis_dt, spot=None
         hm = _hm(analysis_dt)
         te = tuple(int(x) for x in str(c.get('time_exit', '15:05')).split(':')[:2])
         ef = p['entry_fill']
-        if hm is not None and hm >= te:
+        entry_day = _ia._parse_date(p.get('session_date'))
+        if entry_day is None:
+            ent = _ia.parse_ts(p.get('entry_ts'))
+            entry_day = ent.date() if ent else None
+        overdue = isinstance(analysis_dt, datetime) and entry_day is not None and analysis_dt.astimezone(_ia.IST).date() > entry_day
+        if overdue:
+            reason = 'TIME_EXIT_OVERDUE'
+        elif entry_day is None:
+            p.update(status='EXIT_PENDING', exit_pending_reason='ENTRY_SESSION_UNAVAILABLE')
+            return p, 'EXIT_PENDING'
+        elif hm is not None and hm >= te:
             reason = 'TIME_EXIT'
         elif ok and p['action'].startswith('BUY') and q['bid'] <= float(c.get('buy_stop_frac', BUY_STOP_FRAC)) * ef:
             reason = 'STOP_PLANNED'

@@ -14,7 +14,7 @@ import os
 
 import index_authority_v1 as _ia
 import index_single_leg_v1 as _sl
-from daily_review_v1 import _atomic_write, _canon
+from daily_review_v1 import _atomic_write, _canon, _trade_session
 from local_lock_v1 import FileLock
 
 STATE_DIR_NAME = 'single_leg_v1'
@@ -75,7 +75,8 @@ class StoreFull(Exception):
 def _compact(p):
     return {'position_id': p.get('position_id'), 'index': p.get('index'), 'status': p.get('status'),
             'session_date': p.get('session_date'), 'entry_ts': p.get('entry_ts'), 'exit_ts': p.get('exit_ts'),
-            'action': p.get('action'), 'compacted': True}
+            'action': p.get('action'), 'entry_decision_id': p.get('entry_decision_id'),
+            'entry_decision_poll_ts': p.get('entry_decision_poll_ts'), 'compacted': True}
 
 
 def _bound(doc):
@@ -88,11 +89,13 @@ def _bound(doc):
     keep_full = full[-MAX_TERMINAL_FULL:]
     tomb = [p for p in term if p.get('compacted')] + [_compact(p) for p in full[:-MAX_TERMINAL_FULL]]
     sessions = sorted({str(x.get('session_date') or '')[:10] for x in tomb + keep_full + live if x.get('session_date')})
+    sessions = sorted(set(sessions) | {d for c in doc.get('closed', []) for d in [_trade_session(c)] if d})
     recent = set(sessions[-RETENTION_SESSIONS:])
     tomb = [t for t in tomb if str(t.get('session_date') or '')[:10] in recent or not t.get('session_date')][-MAX_TOMBSTONES:]
     doc['positions'] = tomb + keep_full + live
     doc['closed'] = [c for c in (doc.get('closed') or []) if not c.get('session_date')
-                     or str(c['session_date'])[:10] in recent][-MAX_CLOSED:]
+                     or str(c['session_date'])[:10] in recent
+                     or _trade_session(c) in recent][-MAX_CLOSED:]
     doc['history'] = (doc.get('history') or [])[-MAX_HISTORY:]
     rq = doc.get('requests') or {}
     if len(rq) > MAX_REQUESTS:
@@ -438,7 +441,9 @@ def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
                 acc = _sl.account(np_)
                 acc.update(session_date=np_.get('session_date'), status_detail=acc.get('status'),
                            exit_reason=np_.get('exit_reason'), exit_quote=np_.get('exit_quote'),
-                           entry_quote=np_.get('entry_quote'))
+                           entry_quote=np_.get('entry_quote'),
+                           entry_decision_poll_ts=np_.get('entry_decision_poll_ts'),
+                           admission_evidence=np_.get('admission_evidence'))
                 doc.setdefault('closed', []).append(acc)
                 for h in doc.get('history') or []:
                     if h.get('position_id') == np_['position_id']:
@@ -459,9 +464,11 @@ def outcomes(d, session_date):
         return []
     out = []
     for a in doc.get('closed') or []:
-        if str(a.get('session_date') or a.get('exit_ts') or '')[:10] != str(session_date)[:10]:
+        if (_trade_session(a) or str(a.get('session_date') or '')[:10]) != str(session_date)[:10]:
             continue
         out.append({'id': a.get('position_id'), 'index_key': a.get('index'), 'policy_id': _sl.POLICY_ID,
+                    'entry_session_date': a.get('session_date'),
+                    'cross_day_exit': _trade_session(a) != str(a.get('session_date') or '')[:10],
                     'status': 'CLOSED' if a.get('status') == 'RESOLVED' else 'UNRESOLVED',
                     'net_pnl': a.get('net_pnl'), 'exit_ts': a.get('exit_ts'), 'entry_ts': a.get('entry_ts'),
                     'strategy_type': a.get('action'), 'entry_decision_id': a.get('entry_decision_id'),

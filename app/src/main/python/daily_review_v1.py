@@ -190,6 +190,8 @@ def partition_outcomes(session_date, index, paper_trades):
         mature = pnl is not None and status in ('CLOSED', 'EXITED', '')
         row = {'id': t.get('id') or t.get('position_id'), 'structure': t.get('strategy_type') or t.get('type') or t.get('action'),
                'policy_id': pol, 'entry_decision_id': t.get('entry_decision_id'), 'status': status or None,
+               'entry_session_date': t.get('entry_session_date'), 'cross_day_exit': t.get('cross_day_exit'),
+               'entry_ts': t.get('entry_ts'), 'exit_ts': t.get('exit_ts'),
                'recorded_net_pnl': pnl if mature else None,
                'exit_reason': t.get('exit_reason'), 'net_basis': t.get('net_basis'),
                'action': t.get('action'),

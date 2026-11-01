@@ -24212,6 +24212,11 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     if teacher is None:
         return None
     outcome.update(teacher)
+    for key in ('authorityPolicyVersion', 'indexDecisionId', 'constructionVersion'):
+        if cand.get(key) is not None:
+            outcome[key] = cand[key]
+    if cand.get('authorityPolicyVersion') == 'index_direction_v1':
+        outcome['evaluation_coverage'] = 'HYPOTHETICAL_MULTI_LEG_TEACHER_V1: single-leg and NEUTRAL not evaluated; teacher TP/SL/EOD, not managed invalidation'
     # G4: additive net-target fields. canonical_won / outcome_h2 / won /
     # is_success (TP-hit) keep their historical meanings. Net-basis
     # alignment is a new policy version.
@@ -24233,7 +24238,9 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
             candidate_id=outcome.get('candidate_id') or cand.get('id'),
             role=role,
             policy_selector_version=(
-                cand.get('pc2PaperSelectorVersion')
+                cand.get('policySelectorVersion')
+                or ('index_managed_v1' if cand.get('authorityPolicyVersion') == 'index_direction_v1' else None)
+                or cand.get('pc2PaperSelectorVersion')
                 or cand.get('pc2_paper_selector_version')
                 or 'pc2_paper_primary_v7'
             ),
@@ -25975,6 +25982,7 @@ def session_teacher_research_report(session_date_str, snapshots_json_str, outcom
         'schema_version': 2,
         'session_date': session_date_str,
         'scope': 'daily_primary_vs_generated_teacher_research',
+        'evaluation_coverage': 'Hypothetical multi-leg teacher_v1 TP/SL/end-of-day outcomes. Single-leg and NEUTRAL decisions are not evaluated; managed invalidation exits are not simulated.',
         'snapshot_count': len(snapshots),
         'outcome_count': len(primary_rows) + len(secondary_rows),
         'rejected_research_outcome_count': len(rejected_outcome_rows),
@@ -27252,6 +27260,7 @@ def _ia_candidate_from_construction(con, ctx, decision):
         'constructionVersion': _icn.CONSTRUCTION_VERSION, 'constructionStatus': con.get('status'),
         'constructionReason': con.get('reason'), 'k0': con.get('k0'),
         'authorityPolicyVersion': _ia.POLICY_VERSION, 'indexDecisionId': (decision or {}).get('decision_id'),
+        'policySelectorVersion': 'index_managed_v1',
         'indexPolicyAllowed': con.get('type') in ((decision or {}).get('structure_policy') or {}).get('allowed', []),
         'directionSafe': con.get('type') in ((decision or {}).get('structure_policy') or {}).get('allowed', []),
         'capitalBlocked': bool(con.get('capital_blocked')),
@@ -27673,7 +27682,14 @@ def daily_review_catchup(state_dir, report_dir, now_ms=0, budget_s=None, closed_
             out = json.loads(daily_review_run(state_dir, report_dir, sid, '[]', closed_trades_json, None, budget_s,
                                               None, trades_source, trades_read_status))
             return out.get('status')
-        return json.dumps(_drl.catch_up(state_dir, report_dir, now, run, trigger=str(trigger)))
+        review = _drl.catch_up(state_dir, report_dir, now, run, trigger=str(trigger))
+        # Independent pass: completed reviews still need backfill and later trade reconciliation.
+        try:
+            import learning_ledger_v1 as _ll
+            review['evidence_capture'] = _ll.capture(_os.path.dirname(_os.path.normpath(state_dir)))
+        except Exception as exc:
+            review['evidence_capture'] = {'status': 'ERROR', 'reason': type(exc).__name__}
+        return json.dumps(review)
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 
@@ -27984,3 +28000,17 @@ def single_leg_read(sl_dir):
         return json.dumps(doc if doc is not None else {'status': 'STORE_CORRUPT'})
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def evaluation_policy_selector(rows_path):
+    versions = set()
+    for row in _iter_json_array_file(rows_path):
+        version = row.get('policy_selector_version')
+        if not version:
+            version = 'index_managed_v1' if row.get('authorityPolicyVersion') == 'index_direction_v1' else None
+        if not version:
+            raise ValueError('METRICS_SELECTOR_PROVENANCE_MISSING')
+        versions.add(version)
+    if len(versions) > 1:
+        raise ValueError('METRICS_MIXED_SELECTORS_REFUSED')
+    return next(iter(versions)) if versions else 'no_evaluated_candidates'

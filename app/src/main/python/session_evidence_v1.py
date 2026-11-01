@@ -93,6 +93,12 @@ def resolve_session(files_dir, requested):
         names = sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json') and valid_date(f[:-5]))
     except Exception:
         names = []
+    # Archived evidence remains exportable after the shorter authority retention expires.
+    archive = os.path.join(files_dir, 'learning_ledger_v1')
+    if valid_date(requested):
+        archived = _contained(archive, requested + '.json')
+        if archived and os.path.isfile(archived):
+            return requested
     if requested in names:
         return requested
     prior = [n for n in names if n <= requested]
@@ -157,8 +163,9 @@ def _single_leg(files_dir, session):
     part = {'positions_status': st, 'snapshots_status': sst}
     if isinstance(doc, dict):
         sd = lambda x: str((x or {}).get('session_date') or '')[:10]
-        part['positions'] = [p for p in (doc.get('positions') or []) if sd(p) == session]
-        part['closed'] = [c for c in (doc.get('closed') or []) if sd(c) == session]
+        from daily_review_v1 import _trade_session
+        part['positions'] = [p for p in (doc.get('positions') or []) if sd(p) == session or _trade_session(p) == session]
+        part['closed'] = [c for c in (doc.get('closed') or []) if sd(c) == session or _trade_session(c) == session]
         part['requests'] = {k: v for k, v in sorted((doc.get('requests') or {}).items())
                             if sd(v) == session or str((v or {}).get('at') or '')[:10] == session}
     if isinstance(snaps, dict):
@@ -282,6 +289,10 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                       'admission_join': admission_join(auth if isinstance(auth, dict) else None, sl),
                       'not_reconstructed': ['fills for proposals not admitted', 'quotes not fetched',
                                             'log lines outside the retained file']}
+    # Optional archive: bounded, allow-listed, same requested session; no authority fallback.
+    st, ledger = _json_part(_contained(os.path.join(files_dir, 'learning_ledger_v1'), used + '.json'), 512 * 1024)
+    parts['learning_ledger'] = ledger
+    entries['learning_ledger'] = _part_entry(st, ledger)
     man['status'] = 'OK'
     man['parts'] = entries
 
