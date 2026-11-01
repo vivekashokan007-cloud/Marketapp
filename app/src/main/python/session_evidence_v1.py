@@ -293,6 +293,9 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
     st, ledger = _json_part(_contained(os.path.join(files_dir, 'learning_ledger_v1'), used + '.json'), 512 * 1024)
     parts['learning_ledger'] = ledger
     entries['learning_ledger'] = _part_entry(st, ledger)
+    st, capture = _json_part(_contained(os.path.join(files_dir, 'learning_ledger_v1'), 'capture_status.json'), 256 * 1024)
+    parts['learning_ledger_status'] = capture
+    entries['learning_ledger_status'] = _part_entry(st, capture)
     man['status'] = 'OK'
     man['parts'] = entries
 
