@@ -7,12 +7,12 @@
       "sha256": "6d5a4318a21d2cd2d185fc962768616c19e70dcb0733b5286797ed645594ca4e"
     },
     "app.js": {
-      "bytes": 619168,
-      "sha256": "004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230"
+      "bytes": 619720,
+      "sha256": "75738b75d7aae36c5737fdc49be0e118d3c0fa6f33e8356d3035f46fb2d3da98"
     },
     "index.html": {
       "bytes": 14414,
-      "sha256": "59ef7d45e28a1e6f4651dcc119091d55f765d0db4aad7a499f51198bb797598c"
+      "sha256": "38373a6b1cb1bdaf24508e76a93cf934e5b6fdcde6718b6baa4ca42ed78b535f"
     },
     "log-viewer.js": {
       "bytes": 26037,
@@ -27,12 +27,12 @@
       "sha256": "6c42d09cd54db80b7a5f4c9b54832289a85d0509ffffdbed3df4f920cd75d372"
     }
   },
-  "marketvivi_sha": "877b02fd6d703ca43148a0f119b60216d9b509ce",
+  "marketvivi_sha": "cd8b6e84416c012e782c9efb19e36c933b50c935",
   "pwa_identity": {
-    "app_js_v": 1381,
-    "build": 517,
-    "index_app_js_v": 1381,
-    "version": "2.6.86"
+    "app_js_v": 1382,
+    "build": 518,
+    "index_app_js_v": 1382,
+    "version": "2.6.87"
   },
   "schema": "marketradar.pwa_candidate.v1"
 }
