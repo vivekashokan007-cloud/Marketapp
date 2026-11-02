@@ -162,14 +162,14 @@ class B515CandidatePwaTest {
 
     @Test fun committedPinIsTheAcceptedMarketViviCommitAndRuntimeAllowlist() {
         val pin = JSONObject(file("src/candidate/pwa_expected_manifest.json").readText())
-        assertEquals("cd8b6e84416c012e782c9efb19e36c933b50c935", pin.getString("marketvivi_sha"))
+        assertEquals("52fdb102a05d777176e910ab2370f7f33d1fe3ac", pin.getString("marketvivi_sha"))
         assertEquals(CandidatePwaManifest.SCHEMA, pin.getString("schema"))
         assertEquals(base, pin.getString("document_base"))
         assertEquals(CandidatePwaRoute.RUNTIME_FILES.toSortedSet(), pin.getJSONObject("files").keys().asSequence().toSortedSet())
-        assertEquals("75738b75d7aae36c5737fdc49be0e118d3c0fa6f33e8356d3035f46fb2d3da98",
+        assertEquals("f6c1cd44bb39b35e13e1412549e742885c906a8d4ecc4204bbe36e70acecd87c",
             pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
-        assertEquals("2.6.87", id.getString("version")); assertEquals(518, id.getInt("build")); assertEquals(1382, id.getInt("app_js_v"))
+        assertEquals("2.6.88", id.getString("version")); assertEquals(519, id.getInt("build")); assertEquals(1383, id.getInt("app_js_v"))
         // When a MarketVivi checkout at the pinned commit is available (local review), its real bytes verify too.
         val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
             ?: return println("SKIPPED real-bytes pin check: MARKETVIVI_DIR not set")
@@ -185,7 +185,7 @@ class B515CandidatePwaTest {
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
         assertTrue(g.contains("applicationId = \"com.marketradar.app\""))
-        assertTrue(g.contains("versionCode = 518")); assertTrue(g.contains("versionName = \"2.6.87\""))
+        assertTrue(g.contains("versionCode = 519")); assertTrue(g.contains("versionName = \"2.6.88\""))
         for (bad in listOf("applicationIdSuffix", "versionNameSuffix", "isDebuggable = true", "debuggable true", "setDataDirectorySuffix"))
             assertFalse(bad, g.contains(bad))
         val cand = g.substring(g.indexOf("create(\"candidate\") {")).let { it.substring(0, it.indexOf("\n        }\n")) }
@@ -273,7 +273,7 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "cd8b6e84416c012e782c9efb19e36c933b50c935"
+        const val PWA = "52fdb102a05d777176e910ab2370f7f33d1fe3ac"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)

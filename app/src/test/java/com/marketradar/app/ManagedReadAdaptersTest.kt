@@ -13,6 +13,14 @@ import java.nio.file.Files
 
 /** R7: bounded read adapters with captured/redacted fixture shapes and deterministic clocks; no network. */
 class ManagedReadAdaptersTest {
+    @Test fun allPaperPollsNeedContractsIndependentlyOfSingleLegOptIn() {
+        assertTrue(ManagedReadAdapters.contractsRequired("paper", false))
+        assertTrue(ManagedReadAdapters.contractsRequired("PAPER", false))
+        assertFalse(ManagedReadAdapters.contractsRequired("paper", true))
+        for (mode in listOf("", "live", "sandbox")) {
+            assertFalse(ManagedReadAdapters.contractsRequired(mode, false))
+        }
+    }
     private fun resource(name: String): String = requireNotNull(
         javaClass.classLoader?.getResourceAsStream("contracts/$name")).bufferedReader().readText()
 

@@ -7209,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.87"
+BRAIN_VERSION = "2.6.88"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -27259,6 +27259,7 @@ def _ia_candidate_from_construction(con, ctx, decision):
         'netPremium': con.get('net_premium_points'),
         'constructionVersion': _icn.CONSTRUCTION_VERSION, 'constructionStatus': con.get('status'),
         'constructionReason': con.get('reason'), 'k0': con.get('k0'),
+        'lotEvidence': con.get('lot_evidence'),
         'authorityPolicyVersion': _ia.POLICY_VERSION, 'indexDecisionId': (decision or {}).get('decision_id'),
         'policySelectorVersion': 'index_managed_v1',
         'indexPolicyAllowed': con.get('type') in ((decision or {}).get('structure_policy') or {}).get('allowed', []),
@@ -27296,6 +27297,28 @@ def _ia_candidate_from_construction(con, ctx, decision):
     cand['entryEligibility'] = {'schema': 1, 'version': 'index_execution_gates_v1', 'eligible': not reasons,
                                 'reasons': reasons, 'demoted_evidence_not_used': True}
     return cand
+
+
+def _ia_construct_managed(ix, allowed, chain, spot, ctx, session):
+    import managed_construction_lot_v1 as _mcl
+    kw = dict(capital=float(ctx.get('capital') or _CONST['CAPITAL']),
+              max_risk_pct=float(_CONST['MAX_RISK_PCT']),
+              expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'))
+    # Keep the historical chain-root interface for old callers. Native managed
+    # polls carry separate evidence and always take the exact-contract path below.
+    if ctx.get('managedEvidence') is None:
+        return _icn.construct_allowed(ix, allowed, chain, spot, lot_size=_ia_lot(chain), **kw)
+    ev = _ia_managed_evidence(ctx)
+    out = []
+    raw_lot = chain.get('lotSize', chain.get('lot_size'))
+    for con in _icn.construct_allowed(ix, allowed, chain, spot, lot_size=None, **kw):
+        if con.get('status') == 'OK':
+            lot, evidence = _mcl.resolve(con, ev, session, captured_lot=raw_lot)
+            if lot is not None:
+                con = _icn.construct(ix, con['type'], chain, spot, lot_size=lot, **kw)
+            con['lot_evidence'] = evidence
+        out.append(con)
+    return out
 
 
 def _ia_single_leg_dir(ctx):
@@ -27403,11 +27426,8 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
         spot = _safe_num(((dec.get('direction') or {}).get('inputs') or {}).get('spot', {}).get('value'), None)
         cands = []
         if (dec.get('action') or {}).get('value') == 'CANDIDATES' and spot:
-            cons = _icn.construct_allowed(ix, [a for a in dec['structure_policy']['allowed']
-                                               if a in _icn.STRUCTURES], chain, spot,
-                                          lot_size=_ia_lot(chain), capital=float(ctx.get('capital') or _CONST['CAPITAL']),
-                                          max_risk_pct=float(_CONST['MAX_RISK_PCT']),
-                                          expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'))
+            cons = _ia_construct_managed(ix, [a for a in dec['structure_policy']['allowed']
+                                             if a in _icn.STRUCTURES], chain, spot, ctx, session)
             cands = [_ia_candidate_from_construction(c, ctx, dec) for c in cons]
             dec['action']['candidate_ids'] = [c['id'] for c in cands]
             if cands and not any(c['entryEligible'] for c in cands):

@@ -2744,8 +2744,10 @@ class MarketWatchService : Service() {
                 IndexAuthorityContext.apply(ctxObj, filesDir, isRefresh, System.currentTimeMillis(),
                     prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null))
                 ctxObj.put("singleLegPaperEnabled", prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false))
-                if (prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false) && !isRefresh) {
-                    // R7: exact option-contract metadata, cached once per (index, expiry, session); bounded.
+                if (ManagedReadAdapters.contractsRequired(ctxObj.optString("executionMode", ""), isRefresh)) {
+                    // Shared managed Paper metadata (multi-leg AND single-leg). This must not
+                    // depend on the single-leg opt-in. X1's chain formatter stays unchanged.
+                    // Cached once per (index, expiry, session), with bounded failure retries.
                     val tok = (prefs.getString("auth_token", "") ?: "").trim()
                     if (tok.isNotEmpty()) {
                         val tr = ManagedReadAdapters.HttpTransport { tok }

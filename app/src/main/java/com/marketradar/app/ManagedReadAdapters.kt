@@ -41,6 +41,10 @@ object ManagedReadAdapters {
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
+    // Multi-leg Paper needs this evidence even when single-leg Paper is off.
+    fun contractsRequired(executionMode: String, isRefresh: Boolean) =
+        !isRefresh && executionMode.equals("paper", ignoreCase = true)
+
     // ── contracts (cached per session/expiry) ──────────────────────────────────────────────────────────
     fun contractCacheKey(index: String, expiry: String, session: String) = "$index|$expiry|$session"
 
