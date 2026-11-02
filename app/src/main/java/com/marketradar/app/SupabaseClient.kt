@@ -3384,7 +3384,11 @@ object SupabaseClient {
         return out
     }
 
-    fun fetchEvaluationLaneSummary(sessionDate: String, limit: Int = 1000): JSONObject {
+    fun fetchEvaluationLaneSummary(
+        sessionDate: String,
+        limit: Int = 1000,
+        ledgerGate: TrainingLabelCountContract.LedgerGate = TrainingLabelCountContract.LedgerGate(null, null)
+    ): JSONObject {
         val attributedRecommendationRows = fetchAttributedRecommendationOutcomes(sessionDate, limit)
         val rows = if (attributedRecommendationRows.length() > 0) {
             attributedRecommendationRows
@@ -3639,8 +3643,20 @@ object SupabaseClient {
             )
         }
 
+        // Training progress uses only the documented chosen-primary contract.
+        // `lanes` below still counts primary+secondary rows and is research/menu scope only.
+        val trainingLabelProgress = TrainingLabelCountContract.build(
+            todayRows,
+            sessionDate,
+            ledgerGate,
+            if (attributedRecommendationRows.length() > 0) TrainingLabelCountContract.SCOPE_SESSION_ATTRIBUTED
+            else TrainingLabelCountContract.SCOPE_RECENT_FALLBACK
+        )
+
         return JSONObject()
             .put("session_date", sessionDate)
+            .put("training_label_progress", trainingLabelProgress)
+            .put("lanes_scope", "primary_and_secondary_research_rows_not_training_labels")
             .put("rowsFetched", rows.length())
             .put("rowsToday", todayRows.length())
             .put("attributedRows", attributedRows)

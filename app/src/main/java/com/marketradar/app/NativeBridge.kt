@@ -3358,7 +3358,18 @@ class NativeBridge(private val context: Context) {
     fun getMLEvaluationLaneSummary(limit: Int): String {
         val targetDate = latestEligibleEvaluationDate(todayIstDate()) ?: todayIstDate()
         return try {
-            SupabaseClient.fetchEvaluationLaneSummary(targetDate, limit).toString()
+            // Ledger gate for this exact session only; absent run => labelsSaved null (fail closed).
+            val doneDate = prefs.getString("evaluation_done_date", "") ?: ""
+            val phase = if (doneDate == targetDate) prefs.getString("evaluation_phase", "") ?: "" else ""
+            val run = EvaluationRunLedger.loadLocal(context, prefs, targetDate)
+            val labelsSaved = if (run != null && run.optString("session_date", targetDate) == targetDate) {
+                run.optBoolean("labels_saved", false)
+            } else null
+            SupabaseClient.fetchEvaluationLaneSummary(
+                targetDate,
+                limit,
+                TrainingLabelCountContract.LedgerGate(phase, labelsSaved)
+            ).toString()
         } catch (e: Exception) {
             Log.e(TAG, "getMLEvaluationLaneSummary failed", e)
             JSONObject()
