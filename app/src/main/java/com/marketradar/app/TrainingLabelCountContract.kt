@@ -19,8 +19,14 @@ import java.util.Locale
  *  5. outcome is known (canonical_won, else outcome_h2, else won in {0,1});
  *     unknown outcomes are primary_outcome_unknown, never losses,
  *  6. the session's authoritative evaluation ledger gate is open:
- *     labels_saved == true, phase != RESEARCH_ONLY, and the rows came from the
- *     session-attributed source (not the recent-outcomes fallback).
+ *     labels_saved == true, phase != RESEARCH_ONLY, a run_id exists whose
+ *     session_date equals the requested session, and the rows came from the
+ *     session-attributed source (not the recent-outcomes fallback),
+ *  7. (R2) the row is not an s1 shadow row (source_table == "s1_shadow"), and
+ *  8. (R2) the row's snapshot identity is in that exact run's verified chosen
+ *     identity set = expected_identity_ids ∩ persisted_identity_ids (ledger
+ *     identities are snapshot ids; nonlabelable ids never count). Primary rows
+ *     outside the set are `unverified_identity_rows`.
  *
  * When the gate is closed, verified counts are 0 and the observed primary
  * counts are reported as `primary_labeled_unverified`. win_rate_pct is null
@@ -38,8 +44,31 @@ object TrainingLabelCountContract {
         /** evaluation phase recorded for this exact session, or blank if unknown. */
         val phase: String?,
         /** ledger labels_saved for this exact session; null when no ledger run exists. */
-        val labelsSaved: Boolean?
+        val labelsSaved: Boolean?,
+        /** run_id of the exact ledger run; blank/null => no verified identities. */
+        val runId: String? = null,
+        /** session_date recorded in that run. */
+        val runSessionDate: String? = null,
+        /** expected ∩ persisted identity ids of that run (snapshot ids). null => unavailable. */
+        val verifiedChosenIdentityIds: Set<String>? = null
     )
+
+    /** Build the gate from an EvaluationRunLedger run JSON (null => fail closed). */
+    fun gateFromRun(phase: String?, run: JSONObject?): LedgerGate {
+        if (run == null) return LedgerGate(phase, null)
+        fun ids(key: String): Set<String> {
+            val arr = run.optJSONArray(key) ?: return emptySet()
+            return (0 until arr.length()).mapNotNull { arr.opt(it)?.toString()?.trim()?.takeIf { v -> v.isNotEmpty() } }.toSet()
+        }
+        val verified = ids("expected_identity_ids") intersect ids("persisted_identity_ids")
+        return LedgerGate(
+            phase = phase,
+            labelsSaved = run.optBoolean("labels_saved", false),
+            runId = run.optString("run_id", "").trim().ifEmpty { null },
+            runSessionDate = run.optString("session_date", "").trim().ifEmpty { null },
+            verifiedChosenIdentityIds = verified - ids("nonlabelable_identity_ids")
+        )
+    }
 
     private fun normalizeWon(value: Any?): Int? = when (value) {
         is Boolean -> if (value) 1 else 0
@@ -72,7 +101,7 @@ object TrainingLabelCountContract {
     }
 
     private class Lane {
-        var primaryRows = 0; var primaryLabeled = 0; var primaryWins = 0; var primaryUnknown = 0
+        var primaryRows = 0; var primaryUnproven = 0; var primaryLabeled = 0; var primaryWins = 0; var primaryUnknown = 0
         var secondaryRows = 0; var secondaryLabeled = 0; var secondaryWins = 0
         var rejectedRows = 0
     }
@@ -84,8 +113,15 @@ object TrainingLabelCountContract {
         var duplicates = 0
         var attributionPending = 0
         var crossIndexRejected = 0
+        var shadowExcluded = 0
+        var unverifiedIdentity = 0
+        val phaseEarly = gate.phase?.trim()?.uppercase(Locale.US).orEmpty()
+        val verifiedIds = gate.verifiedChosenIdentityIds
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: continue
+            if (row.optString("source_table", "").trim().equals("s1_shadow", ignoreCase = true)) {
+                shadowExcluded += 1; continue
+            }
             val rowSession = row.optString("session_date", "").trim().take(10)
             if (rowSession != sessionDate) { otherSession += 1; continue }
             val role = row.optString("role", "").trim().lowercase(Locale.US)
@@ -103,7 +139,12 @@ object TrainingLabelCountContract {
                 "primary" -> {
                     lane.primaryRows += 1
                     if (won == null) lane.primaryUnknown += 1 else {
-                        lane.primaryLabeled += 1; if (won == 1) lane.primaryWins += 1
+                        val proven = verifiedIds != null && snap in verifiedIds
+                        if (proven) {
+                            lane.primaryLabeled += 1; if (won == 1) lane.primaryWins += 1
+                        } else {
+                            unverifiedIdentity += 1; lane.primaryUnproven += 1
+                        }
                     }
                 }
                 "secondary" -> {
@@ -114,12 +155,15 @@ object TrainingLabelCountContract {
             }
         }
 
-        val phase = gate.phase?.trim()?.uppercase(Locale.US).orEmpty()
+        val phase = phaseEarly
         val ineligibleReason = when {
             sourceScope != SCOPE_SESSION_ATTRIBUTED -> "SOURCE_NOT_SESSION_ATTRIBUTED"
             phase == EvaluationIdentityCoverage.PHASE_RESEARCH_ONLY -> "RESEARCH_ONLY"
             gate.labelsSaved == null -> "LEDGER_UNAVAILABLE"
             gate.labelsSaved == false -> "LABELS_NOT_SAVED"
+            gate.runId.isNullOrBlank() -> "LEDGER_RUN_ID_MISSING"
+            gate.runSessionDate != sessionDate -> "LEDGER_SESSION_MISMATCH"
+            gate.verifiedChosenIdentityIds == null -> "LEDGER_IDENTITIES_UNAVAILABLE"
             else -> null
         }
         val eligible = ineligibleReason == null
@@ -140,7 +184,7 @@ object TrainingLabelCountContract {
                 .put("verified_training_wins", wins)
                 .put("win_rate_pct", rate(wins, verified))
                 .put("primary_rows", l.primaryRows)
-                .put("primary_labeled_unverified", if (eligible) 0 else l.primaryLabeled)
+                .put("primary_labeled_unverified", (if (eligible) 0 else l.primaryLabeled) + l.primaryUnproven)
                 .put("primary_outcome_unknown", l.primaryUnknown)
                 .put("secondary_research_rows", l.secondaryRows)
                 .put("secondary_research_labeled", l.secondaryLabeled)
@@ -171,7 +215,12 @@ object TrainingLabelCountContract {
             .put("verified_training_wins", tWins)
             .put("win_rate_pct", rate(tWins, tVerified))
             .put("primary_rows", tPrimary)
-            .put("primary_labeled_unverified", if (eligible) 0 else tPrimaryLabeled)
+            .put("primary_labeled_unverified", (if (eligible) 0 else tPrimaryLabeled) + unverifiedIdentity)
+            .put("unverified_identity_rows", unverifiedIdentity)
+            .put("shadow_rows_excluded", shadowExcluded)
+            .put("ledger_run_id", gate.runId ?: JSONObject.NULL)
+            .put("ledger_run_session_date", gate.runSessionDate ?: JSONObject.NULL)
+            .put("count_scope", "this_session_only")
             .put("primary_outcome_unknown", tUnknown)
             .put("secondary_research_rows", tSecondary)
             .put("secondary_research_labeled", tSecondaryLabeled)

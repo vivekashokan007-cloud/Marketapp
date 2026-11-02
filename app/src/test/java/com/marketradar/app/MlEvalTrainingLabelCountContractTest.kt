@@ -10,7 +10,8 @@ import org.junit.Test
 /** 2 Nov 2026 ML eval count correction: chosen-primary training label contract. */
 class MlEvalTrainingLabelCountContractTest {
     private val day = "2026-11-02"
-    private val open = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true)
+    private val allIds = (0..9999).map { it.toString() }.toSet()
+    private val open = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-1", day, allIds)
     private val researchOnly = TrainingLabelCountContract.LedgerGate("RESEARCH_ONLY", false)
     private val scope = TrainingLabelCountContract.SCOPE_SESSION_ATTRIBUTED
 
@@ -147,5 +148,51 @@ class MlEvalTrainingLabelCountContractTest {
         assertEquals(1, c.getInt("cross_index_mismatch_rows"))
         assertEquals(1, c.getJSONObject("lanes").getJSONObject("NF_swing").getInt("verified_training_labels"))
         assertEquals(1, c.getJSONObject("lanes").getJSONObject("NF_intraday").getInt("verified_training_labels"))
+    }
+
+    // ---- R2 (Codex review of #34) ----
+    @Test fun r2ShadowRowsAreExcludedExplicitly() {
+        val a = JSONArray()
+            .put(row("primary", "NF_intraday", 1, "a", 1).put("source_table", "s1_shadow"))
+            .put(row("primary", "NF_intraday", 2, "b", 1))
+        val c = build(a)
+        assertEquals(1, c.getInt("shadow_rows_excluded"))
+        assertEquals(1, c.getInt("verified_training_labels"))
+    }
+
+    @Test fun r2UnverifiedIdentityOnLabelsSavedRunIsNotCounted() {
+        val gate = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-7", day, setOf("10"))
+        val a = JSONArray()
+            .put(row("primary", "NF_intraday", 10, "a", 1))
+            .put(row("primary", "NF_intraday", 11, "b", 1)) // same day, primary, but not proven by run
+        val c = build(a, gate)
+        assertTrue(c.getBoolean("eligible"))
+        assertEquals(1, c.getInt("verified_training_labels"))
+        assertEquals(1, c.getInt("unverified_identity_rows"))
+        assertEquals(1, c.getInt("primary_labeled_unverified"))
+        assertEquals("run-7", c.getString("ledger_run_id"))
+        assertEquals("this_session_only", c.getString("count_scope"))
+    }
+
+    @Test fun r2GateFromRunUsesExpectedIntersectPersistedMinusNonlabelable() {
+        val run = JSONObject().put("run_id", "r").put("session_date", day).put("labels_saved", true)
+            .put("expected_identity_ids", JSONArray(listOf("1", "2", "3")))
+            .put("persisted_identity_ids", JSONArray(listOf("2", "3", "4")))
+            .put("nonlabelable_identity_ids", JSONArray(listOf("3")))
+        val g = TrainingLabelCountContract.gateFromRun("LABELS_SAVED", run)
+        assertEquals(setOf("2"), g.verifiedChosenIdentityIds)
+        val c = build(JSONArray().put(row("primary", "NF_intraday", 2, "a", 1)).put(row("primary", "NF_intraday", 3, "b", 1)).put(row("primary", "NF_intraday", 4, "c", 1)), g)
+        assertEquals(1, c.getInt("verified_training_labels"))
+        assertEquals(2, c.getInt("unverified_identity_rows"))
+        assertEquals("LEDGER_UNAVAILABLE", build(JSONArray(), TrainingLabelCountContract.gateFromRun("", null)).getString("ineligible_reason"))
+    }
+
+    @Test fun r2RunIdMissingOrRunSessionMismatchFailsClosed() {
+        val a = JSONArray().put(row("primary", "NF_intraday", 1, "a", 1))
+        assertEquals("LEDGER_RUN_ID_MISSING", build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, null, day, allIds)).getString("ineligible_reason"))
+        val c = build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-old", "2026-10-30", allIds))
+        assertEquals("LEDGER_SESSION_MISMATCH", c.getString("ineligible_reason"))
+        assertEquals(0, c.getInt("verified_training_labels"))
+        assertEquals("LEDGER_IDENTITIES_UNAVAILABLE", build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "r", day, null)).getString("ineligible_reason"))
     }
 }
