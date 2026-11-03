@@ -265,6 +265,22 @@ object EvaluationRunLedger {
         return refreshCompletionFlags(run)
     }
 
+    /** R3: freeze the exact chosen primary keys (snapshot_id|candidate_id|primary) of the input manifest. */
+    fun setExpectedPrimaryCompositeKeys(run: JSONObject, keys: Collection<String>): JSONObject {
+        val k = keys.map { it.trim() }.filter { it.endsWith("|primary") }.distinct().sorted()
+        run.put("expected_primary_composite_keys", JSONArray(k))
+        if (!run.has("verified_primary_composite_keys")) run.put("verified_primary_composite_keys", JSONArray())
+        return run
+    }
+
+    /** R3: record server-verified primary composite keys (union, primary role only). */
+    fun recordVerifiedPrimaryCompositeKeys(run: JSONObject, keys: Collection<String>): JSONObject {
+        val existing = jsonStringSet(run.optJSONArray("verified_primary_composite_keys")).toMutableSet()
+        keys.map { it.trim() }.filter { it.endsWith("|primary") }.forEach { existing.add(it) }
+        run.put("verified_primary_composite_keys", JSONArray(existing.sorted()))
+        return run
+    }
+
     fun recordPersistedIdentities(run: JSONObject, persistedIds: Collection<String>): JSONObject {
         val existing = jsonStringSet(run.optJSONArray("persisted_identity_ids")).toMutableList()
         val seen = existing.toMutableSet()
