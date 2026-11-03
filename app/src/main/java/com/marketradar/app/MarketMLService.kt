@@ -3078,7 +3078,10 @@ class MarketMLService : Service() {
             val expectedIdentityIds = labelableMap.filterValues { it }.keys.map { it.toString() }
             val nonlabelableIdentityIds = labelableMap.filterValues { !it }.keys.map { it.toString() }
             activeEvaluationRun?.let { run ->
-                val stamped = EvaluationRunLedger.setExpectedIdentities(run, expectedIdentityIds, nonlabelableIdentityIds)
+                val stamped = EvaluationRunLedger.setExpectedPrimaryCompositeKeys(
+                    EvaluationRunLedger.setExpectedIdentities(run, expectedIdentityIds, nonlabelableIdentityIds),
+                    expectedPrimaryCompositeKeys
+                )
                 persistEvaluationRun(stamped)
                 Log.i(
                     TAG,
@@ -3415,9 +3418,9 @@ class MarketMLService : Service() {
             val assessment = finalAssessment
             activeEvaluationRun?.let { run ->
                 // Record only identities proven present by server readback ∩ produced set.
-                val stamped = EvaluationRunLedger.recordPersistedIdentities(
-                    run,
-                    assessment.verifiedSnapshotIds
+                val stamped = EvaluationRunLedger.recordVerifiedPrimaryCompositeKeys(
+                    EvaluationRunLedger.recordPersistedIdentities(run, assessment.verifiedSnapshotIds),
+                    assessment.verifiedCompositeKeys
                 )
                 persistEvaluationRun(stamped)
                 Log.i(

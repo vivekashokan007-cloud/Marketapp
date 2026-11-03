@@ -34,8 +34,15 @@ class MlEvalTrainingLabelCountContractTest {
         return a
     }
 
-    private fun build(rows: JSONArray, gate: TrainingLabelCountContract.LedgerGate = open, s: String = scope) =
-        TrainingLabelCountContract.build(rows, day, gate, s)
+    /** Open gate proving exactly the primary keys present in [rows] (R3: full chosen identity). */
+    private fun keysOf(rows: JSONArray): Set<String> = (0 until rows.length()).mapNotNull { i ->
+        val r = rows.optJSONObject(i) ?: return@mapNotNull null
+        "${r.opt("snapshot_id")}|${r.opt("candidate_id")}|primary"
+    }.toSet()
+    private fun openFor(rows: JSONArray) = open.copy(verifiedChosenPrimaryKeys = keysOf(rows))
+
+    private fun build(rows: JSONArray, gate: TrainingLabelCountContract.LedgerGate? = null, s: String = scope) =
+        TrainingLabelCountContract.build(rows, day, gate ?: openFor(rows), s)
 
     @Test fun state1803ResearchOnlyGivesZeroTrainingLabelsAndUnknownWinRate() {
         val c = build(rows1803(), researchOnly)
@@ -55,7 +62,7 @@ class MlEvalTrainingLabelCountContractTest {
     }
 
     @Test fun secondaryRowsNeverCountEvenWhenLedgerOpen() {
-        val c = build(rows1803(), open)
+        val c = build(rows1803())
         assertTrue(c.getBoolean("eligible"))
         assertEquals(0, c.getInt("verified_training_labels"))
         assertTrue(c.isNull("win_rate_pct"))
@@ -161,7 +168,7 @@ class MlEvalTrainingLabelCountContractTest {
     }
 
     @Test fun r2UnverifiedIdentityOnLabelsSavedRunIsNotCounted() {
-        val gate = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-7", day, setOf("10"))
+        val gate = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-7", day, setOf("10"), setOf("10|a|primary", "11|b|primary"))
         val a = JSONArray()
             .put(row("primary", "NF_intraday", 10, "a", 1))
             .put(row("primary", "NF_intraday", 11, "b", 1)) // same day, primary, but not proven by run
@@ -179,8 +186,11 @@ class MlEvalTrainingLabelCountContractTest {
             .put("expected_identity_ids", JSONArray(listOf("1", "2", "3")))
             .put("persisted_identity_ids", JSONArray(listOf("2", "3", "4")))
             .put("nonlabelable_identity_ids", JSONArray(listOf("3")))
+            .put("expected_primary_composite_keys", JSONArray(listOf("2|a|primary", "3|b|primary", "4|c|primary")))
+            .put("verified_primary_composite_keys", JSONArray(listOf("2|a|primary", "3|b|primary", "4|c|primary")))
         val g = TrainingLabelCountContract.gateFromRun("LABELS_SAVED", run)
         assertEquals(setOf("2"), g.verifiedChosenIdentityIds)
+        assertEquals(setOf("2|a|primary"), g.verifiedChosenPrimaryKeys)
         val c = build(JSONArray().put(row("primary", "NF_intraday", 2, "a", 1)).put(row("primary", "NF_intraday", 3, "b", 1)).put(row("primary", "NF_intraday", 4, "c", 1)), g)
         assertEquals(1, c.getInt("verified_training_labels"))
         assertEquals(2, c.getInt("unverified_identity_rows"))
@@ -189,10 +199,56 @@ class MlEvalTrainingLabelCountContractTest {
 
     @Test fun r2RunIdMissingOrRunSessionMismatchFailsClosed() {
         val a = JSONArray().put(row("primary", "NF_intraday", 1, "a", 1))
-        assertEquals("LEDGER_RUN_ID_MISSING", build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, null, day, allIds)).getString("ineligible_reason"))
-        val c = build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-old", "2026-10-30", allIds))
+        assertEquals("LEDGER_RUN_ID_MISSING", build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, null, day, allIds, keysOf(a))).getString("ineligible_reason"))
+        val c = build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-old", "2026-10-30", allIds, keysOf(a)))
         assertEquals("LEDGER_SESSION_MISMATCH", c.getString("ineligible_reason"))
         assertEquals(0, c.getInt("verified_training_labels"))
         assertEquals("LEDGER_IDENTITIES_UNAVAILABLE", build(a, TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "r", day, null)).getString("ineligible_reason"))
+    }
+
+    // ---- R3 (Codex review of #34 R2) ----
+    @Test fun r3SessionWithShadowAndCanonicalCountsCanonicalVerifiedRows() {
+        val shadow = JSONArray()
+            .put(row("primary", "NF_intraday", 1, "a", 1).put("source_table", "s1_shadow"))
+            .put(row("primary", "BNF_intraday", 2, "b", 0).put("source_table", "s1_shadow"))
+        val canonical = JSONArray()
+            .put(row("primary", "NF_intraday", 1, "a", 1))
+            .put(row("primary", "BNF_intraday", 2, "b", 0))
+            .put(row("secondary", "NF_intraday", 1, "s", 1))
+        val merged = SupabaseClient.mergeShadowWithCanonical(shadow, canonical)
+        assertEquals(5, merged.length())
+        val c = build(merged, openFor(canonical))
+        assertTrue(c.getBoolean("eligible"))
+        assertEquals(2, c.getInt("verified_training_labels"))
+        assertEquals(1, c.getInt("verified_training_wins"))
+        assertEquals(2, c.getInt("shadow_rows_excluded"))
+        // research display keeps the prior shadow preference
+        assertEquals(2, SupabaseClient.researchDisplayRows(merged).length())
+        assertEquals(canonical.length(), SupabaseClient.mergeShadowWithCanonical(JSONArray(), canonical).length())
+    }
+
+    @Test fun r3WrongPrimaryCandidateOnVerifiedSnapshotIsNotCounted() {
+        val gate = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-9", day, setOf("10"), setOf("10|chosen|primary"))
+        val wrong = build(JSONArray().put(row("primary", "NF_intraday", 10, "other", 1)), gate)
+        assertTrue(wrong.getBoolean("eligible"))
+        assertEquals(0, wrong.getInt("verified_training_labels"))
+        assertEquals(1, wrong.getInt("unverified_identity_rows"))
+        assertTrue(wrong.isNull("win_rate_pct"))
+        val right = build(JSONArray().put(row("primary", "NF_intraday", 10, "chosen", 1)), gate)
+        assertEquals(1, right.getInt("verified_training_labels"))
+    }
+
+    @Test fun r3GateWithoutPrimaryKeysFailsClosedAndLedgerRecordsKeys() {
+        val run = JSONObject().put("run_id", "r").put("session_date", day).put("labels_saved", true)
+            .put("expected_identity_ids", JSONArray(listOf("1"))).put("persisted_identity_ids", JSONArray(listOf("1")))
+        val g = TrainingLabelCountContract.gateFromRun("LABELS_SAVED", run)
+        val c = build(JSONArray().put(row("primary", "NF_intraday", 1, "a", 1)), g)
+        assertEquals("LEDGER_IDENTITIES_UNAVAILABLE", c.getString("ineligible_reason"))
+        assertEquals(0, c.getInt("verified_training_labels"))
+        EvaluationRunLedger.setExpectedPrimaryCompositeKeys(run, listOf("1|a|primary", "1|z|secondary"))
+        EvaluationRunLedger.recordVerifiedPrimaryCompositeKeys(run, listOf("1|a|primary", "1|q|secondary"))
+        val g2 = TrainingLabelCountContract.gateFromRun("LABELS_SAVED", run)
+        assertEquals(setOf("1|a|primary"), g2.verifiedChosenPrimaryKeys)
+        assertEquals(1, build(JSONArray().put(row("primary", "NF_intraday", 1, "a", 1)), g2).getInt("verified_training_labels"))
     }
 }

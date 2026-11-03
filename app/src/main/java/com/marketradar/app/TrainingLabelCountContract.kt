@@ -25,8 +25,14 @@ import java.util.Locale
  *  7. (R2) the row is not an s1 shadow row (source_table == "s1_shadow"), and
  *  8. (R2) the row's snapshot identity is in that exact run's verified chosen
  *     identity set = expected_identity_ids ∩ persisted_identity_ids (ledger
- *     identities are snapshot ids; nonlabelable ids never count). Primary rows
- *     outside the set are `unverified_identity_rows`.
+ *     identities are snapshot ids; nonlabelable ids never count), and
+ *  9. (R3) the row's FULL chosen identity key snapshot_id|candidate_id|primary
+ *     is in the run's frozen-manifest expected_primary_composite_keys ∩
+ *     verified_primary_composite_keys. A snapshot id alone never proves the
+ *     chosen candidate; a different primary candidate on a verified snapshot
+ *     is not counted. Runs without stored primary keys fail closed
+ *     (LEDGER_IDENTITIES_UNAVAILABLE). Primary rows outside the set are
+ *     `unverified_identity_rows`.
  *
  * When the gate is closed, verified counts are 0 and the observed primary
  * counts are reported as `primary_labeled_unverified`. win_rate_pct is null
@@ -50,7 +56,9 @@ object TrainingLabelCountContract {
         /** session_date recorded in that run. */
         val runSessionDate: String? = null,
         /** expected ∩ persisted identity ids of that run (snapshot ids). null => unavailable. */
-        val verifiedChosenIdentityIds: Set<String>? = null
+        val verifiedChosenIdentityIds: Set<String>? = null,
+        /** (R3) exact chosen keys snapshot_id|candidate_id|primary proven by that run. null => unavailable. */
+        val verifiedChosenPrimaryKeys: Set<String>? = null
     )
 
     /** Build the gate from an EvaluationRunLedger run JSON (null => fail closed). */
@@ -61,12 +69,18 @@ object TrainingLabelCountContract {
             return (0 until arr.length()).mapNotNull { arr.opt(it)?.toString()?.trim()?.takeIf { v -> v.isNotEmpty() } }.toSet()
         }
         val verified = ids("expected_identity_ids") intersect ids("persisted_identity_ids")
+        val snapIds = verified - ids("nonlabelable_identity_ids")
+        val hasKeys = run.has("expected_primary_composite_keys") && run.has("verified_primary_composite_keys")
+        val keys = if (!hasKeys) null else
+            (ids("expected_primary_composite_keys") intersect ids("verified_primary_composite_keys"))
+                .filter { it.endsWith("|primary") && it.substringBefore('|') in snapIds }.toSet()
         return LedgerGate(
+            verifiedChosenPrimaryKeys = keys,
             phase = phase,
             labelsSaved = run.optBoolean("labels_saved", false),
             runId = run.optString("run_id", "").trim().ifEmpty { null },
             runSessionDate = run.optString("session_date", "").trim().ifEmpty { null },
-            verifiedChosenIdentityIds = verified - ids("nonlabelable_identity_ids")
+            verifiedChosenIdentityIds = snapIds
         )
     }
 
@@ -117,6 +131,7 @@ object TrainingLabelCountContract {
         var unverifiedIdentity = 0
         val phaseEarly = gate.phase?.trim()?.uppercase(Locale.US).orEmpty()
         val verifiedIds = gate.verifiedChosenIdentityIds
+        val verifiedKeys = gate.verifiedChosenPrimaryKeys
         for (i in 0 until rows.length()) {
             val row = rows.optJSONObject(i) ?: continue
             if (row.optString("source_table", "").trim().equals("s1_shadow", ignoreCase = true)) {
@@ -139,7 +154,8 @@ object TrainingLabelCountContract {
                 "primary" -> {
                     lane.primaryRows += 1
                     if (won == null) lane.primaryUnknown += 1 else {
-                        val proven = verifiedIds != null && snap in verifiedIds
+                        val proven = verifiedIds != null && snap in verifiedIds &&
+                            verifiedKeys != null && "$snap|$cand|primary" in verifiedKeys
                         if (proven) {
                             lane.primaryLabeled += 1; if (won == 1) lane.primaryWins += 1
                         } else {
@@ -163,7 +179,7 @@ object TrainingLabelCountContract {
             gate.labelsSaved == false -> "LABELS_NOT_SAVED"
             gate.runId.isNullOrBlank() -> "LEDGER_RUN_ID_MISSING"
             gate.runSessionDate != sessionDate -> "LEDGER_SESSION_MISMATCH"
-            gate.verifiedChosenIdentityIds == null -> "LEDGER_IDENTITIES_UNAVAILABLE"
+            gate.verifiedChosenIdentityIds == null || gate.verifiedChosenPrimaryKeys == null -> "LEDGER_IDENTITIES_UNAVAILABLE"
             else -> null
         }
         val eligible = ineligibleReason == null

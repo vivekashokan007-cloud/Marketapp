@@ -3339,7 +3339,30 @@ object SupabaseClient {
         val shadowRows = normalizeShadowOutcomeRows(
             select("ml_recommendation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
         )
-        if (shadowRows.length() > 0) return shadowRows
+        // R3: shadow presence must never short-circuit the canonical fetch; the
+        // count contract excludes s1_shadow rows, so canonical rows are always fetched.
+        return mergeShadowWithCanonical(shadowRows, fetchCanonicalAttributedOutcomes(sessionDate, filter, limit))
+    }
+
+    internal fun mergeShadowWithCanonical(shadowRows: JSONArray, canonicalRows: JSONArray): JSONArray {
+        if (shadowRows.length() == 0) return canonicalRows
+        val out = JSONArray()
+        for (i in 0 until canonicalRows.length()) out.put(canonicalRows.opt(i))
+        for (i in 0 until shadowRows.length()) out.put(shadowRows.opt(i))
+        return out
+    }
+
+    /** Prior display preference: shadow rows only when any exist, else canonical. */
+    internal fun researchDisplayRows(merged: JSONArray): JSONArray {
+        val shadow = JSONArray()
+        for (i in 0 until merged.length()) {
+            val r = merged.optJSONObject(i) ?: continue
+            if (r.optString("source_table", "") == "s1_shadow") shadow.put(r)
+        }
+        return if (shadow.length() > 0) shadow else merged
+    }
+
+    private fun fetchCanonicalAttributedOutcomes(sessionDate: String, filter: String, limit: Int): JSONArray {
         val rows = normalizeLegacyOutcomeRows(select("ml_recommendation_outcomes", filter, "created_at.desc", limit))
         if (rows.length() > 0) {
             var hasNonPrimary = false
@@ -3389,7 +3412,10 @@ object SupabaseClient {
         limit: Int = 1000,
         ledgerGate: TrainingLabelCountContract.LedgerGate = TrainingLabelCountContract.LedgerGate(null, null)
     ): JSONObject {
-        val attributedRecommendationRows = fetchAttributedRecommendationOutcomes(sessionDate, limit)
+        // R3: merged = canonical + shadow; training contract always sees canonical rows.
+        val mergedAttributedRows = fetchAttributedRecommendationOutcomes(sessionDate, limit)
+        // Research/menu aggregates keep the prior source preference (shadow when present).
+        val attributedRecommendationRows = researchDisplayRows(mergedAttributedRows)
         val rows = if (attributedRecommendationRows.length() > 0) {
             attributedRecommendationRows
         } else {
@@ -3646,10 +3672,10 @@ object SupabaseClient {
         // Training progress uses only the documented chosen-primary contract.
         // `lanes` below still counts primary+secondary rows and is research/menu scope only.
         val trainingLabelProgress = TrainingLabelCountContract.build(
-            todayRows,
+            if (mergedAttributedRows.length() > 0) mergedAttributedRows else todayRows,
             sessionDate,
             ledgerGate,
-            if (attributedRecommendationRows.length() > 0) TrainingLabelCountContract.SCOPE_SESSION_ATTRIBUTED
+            if (mergedAttributedRows.length() > 0) TrainingLabelCountContract.SCOPE_SESSION_ATTRIBUTED
             else TrainingLabelCountContract.SCOPE_RECENT_FALLBACK
         )
 
