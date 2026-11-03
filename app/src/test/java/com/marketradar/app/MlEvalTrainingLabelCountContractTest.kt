@@ -251,4 +251,35 @@ class MlEvalTrainingLabelCountContractTest {
         assertEquals(setOf("1|a|primary"), g2.verifiedChosenPrimaryKeys)
         assertEquals(1, build(JSONArray().put(row("primary", "NF_intraday", 1, "a", 1)), g2).getInt("verified_training_labels"))
     }
+
+    // ---- R4 (Codex review of #34 R3) ----
+    @Test fun r4FetchPathKeepsPrimaryOnlyRecommendationRowsWhenEvaluationTableEmpty() {
+        val calls = mutableListOf<String>()
+        val fake = SupabaseClient.OutcomeRowSource { table, filter, _, _ ->
+            calls.add(table)
+            when (table) {
+                "ml_recommendation_outcomes_s1" -> JSONArray()
+                    .put(JSONObject().put("role", "primary").put("lane", "NF_intraday").put("effective_session_date", day)
+                        .put("snapshot_id", 10).put("candidate_id", "chosen").put("new_canonical_won", 1))
+                "ml_recommendation_outcomes" -> {
+                    assertTrue(filter.contains("session_date=eq.$day"))
+                    JSONArray().put(row("primary", "NF_intraday", 10, "chosen", 1, index = "NF"))
+                }
+                "ml_evaluation_outcomes" -> JSONArray()
+                else -> error("unexpected table $table")
+            }
+        }
+        val merged = SupabaseClient.fetchAttributedRecommendationOutcomes(day, 1000, fake)
+        assertEquals(listOf("ml_recommendation_outcomes_s1", "ml_recommendation_outcomes", "ml_evaluation_outcomes"), calls)
+        assertEquals(2, merged.length())
+        val gate = TrainingLabelCountContract.LedgerGate("LABELS_SAVED", true, "run-4", day, setOf("10"), setOf("10|chosen|primary"))
+        val c = TrainingLabelCountContract.build(merged, day, gate, scope)
+        assertTrue(c.getBoolean("eligible"))
+        assertEquals(1, c.getInt("verified_training_labels"))
+        assertEquals(1, c.getInt("verified_training_wins"))
+        assertEquals(1, c.getInt("shadow_rows_excluded"))
+        // wrong candidate on the same verified snapshot still not counted via the fetch path
+        val wrongGate = gate.copy(verifiedChosenPrimaryKeys = setOf("10|other|primary"))
+        assertEquals(0, TrainingLabelCountContract.build(merged, day, wrongGate, scope).getInt("verified_training_labels"))
+    }
 }

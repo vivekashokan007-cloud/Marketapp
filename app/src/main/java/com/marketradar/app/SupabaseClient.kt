@@ -3334,14 +3334,24 @@ object SupabaseClient {
         return JSONArray()
     }
 
-    private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray {
+    /** Row source seam (table, filter, order, limit); production uses [select]. R4: lets tests drive the real fetch path. */
+    internal fun interface OutcomeRowSource {
+        fun rows(table: String, filter: String, order: String, limit: Int): JSONArray
+    }
+
+    private val liveOutcomeRowSource = OutcomeRowSource { t, f, o, l -> select(t, f, o, l) }
+
+    private fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int = 1000): JSONArray =
+        fetchAttributedRecommendationOutcomes(sessionDate, limit, liveOutcomeRowSource)
+
+    internal fun fetchAttributedRecommendationOutcomes(sessionDate: String, limit: Int, source: OutcomeRowSource): JSONArray {
         val filter = "session_date=eq.$sessionDate&snapshot_id=not.is.null"
         val shadowRows = normalizeShadowOutcomeRows(
-            select("ml_recommendation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
+            source.rows("ml_recommendation_outcomes_s1", "effective_session_date=eq.$sessionDate", "created_at.desc", limit)
         )
         // R3: shadow presence must never short-circuit the canonical fetch; the
         // count contract excludes s1_shadow rows, so canonical rows are always fetched.
-        return mergeShadowWithCanonical(shadowRows, fetchCanonicalAttributedOutcomes(sessionDate, filter, limit))
+        return mergeShadowWithCanonical(shadowRows, fetchCanonicalAttributedOutcomes(filter, limit, source))
     }
 
     internal fun mergeShadowWithCanonical(shadowRows: JSONArray, canonicalRows: JSONArray): JSONArray {
@@ -3362,8 +3372,8 @@ object SupabaseClient {
         return if (shadow.length() > 0) shadow else merged
     }
 
-    private fun fetchCanonicalAttributedOutcomes(sessionDate: String, filter: String, limit: Int): JSONArray {
-        val rows = normalizeLegacyOutcomeRows(select("ml_recommendation_outcomes", filter, "created_at.desc", limit))
+    private fun fetchCanonicalAttributedOutcomes(filter: String, limit: Int, source: OutcomeRowSource): JSONArray {
+        val rows = normalizeLegacyOutcomeRows(source.rows("ml_recommendation_outcomes", filter, "created_at.desc", limit))
         if (rows.length() > 0) {
             var hasNonPrimary = false
             for (i in 0 until rows.length()) {
@@ -3375,9 +3385,10 @@ object SupabaseClient {
             }
             if (hasNonPrimary) return rows
         }
-        val evalRows = normalizeLegacyOutcomeRows(select("ml_evaluation_outcomes", filter, "created_at.desc", limit))
+        val evalRows = normalizeLegacyOutcomeRows(source.rows("ml_evaluation_outcomes", filter, "created_at.desc", limit))
         if (evalRows.length() > 0) return evalRows
-        return JSONArray()
+        // R4: primary-only recommendation rows are the fallback; never discard them.
+        return rows
     }
 
     private fun normalizeLegacyOutcomeRows(rows: JSONArray): JSONArray {
