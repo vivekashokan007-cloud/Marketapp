@@ -20,6 +20,7 @@ object EvaluationLocalCache {
     private const val MAX_SUMMARY_ROWS_PER_SESSION = 120
     private const val MAX_SUMMARY_BYTES_PER_SESSION = 4L * 1024L * 1024L
     private const val MAX_COMPACT_SNAPSHOT_BYTES = 2L * 1024L * 1024L
+    internal val IA_SNAPSHOT_CONTEXT_KEYS = arrayOf("snapshot_index_authority_primary", "snapshot_managed_policy")
     // Keep in sync with brain.py _compact_android_snapshot_context Batch A
     // evidence-contract survivors (scalar_keys, object_keys, array_keys).
     // One list feeds both local persistence and the cloud upload compactor.
@@ -353,7 +354,9 @@ object EvaluationLocalCache {
         val source = parseJsonArray(raw) ?: return JSONArray()
         val keys = arrayOf(
             "action", "option_type", "strike", "ltp", "bid", "ask",
-            "expiry", "instrument_key", "leg_schema_version"
+            "expiry", "instrument_key", "leg_schema_version",
+            // G1: quote time + depth needed to audit managed freshness (present-only).
+            "exchange_ts", "bid_qty", "ask_qty"
         )
         val out = JSONArray()
         for (i in 0 until source.length()) {
@@ -633,7 +636,28 @@ object EvaluationLocalCache {
             ?.let { out.put("strategyMarketFitComponents", it) }
         compactEntryEligibility(src.opt("entryEligibility"))
             ?.let { out.put("entryEligibility", it) }
+        putAuthorityLineage(src, out)
         return if (out.length() > 0) out else null
+    }
+
+    /** G1: index-authority lineage keys copied only when present (no null bloat on legacy menus). */
+    internal val AUTHORITY_LINEAGE_KEYS = arrayOf(
+        "authorityPolicyVersion", "policySelectorVersion", "indexDecisionId",
+        "constructionVersion", "constructionStatus", "constructionReason",
+        "authorityOrder", "indexPolicyAllowed", "maxProfitPoints", "maxLossPoints", "k0"
+    )
+
+    private fun putAuthorityLineage(src: JSONObject, out: JSONObject) {
+        for (key in AUTHORITY_LINEAGE_KEYS) {
+            val value = src.opt(key)
+            if (value != null && value != JSONObject.NULL) out.put(key, value)
+        }
+        val lot = parseJsonObject(src.opt("lotEvidence")) ?: return
+        val compactLot = compactObject(lot, arrayOf("schema", "status", "source", "session_date", "leg_count"))
+            ?: JSONObject()
+        if (lot.has("reasons")) compactLot.put("reasons", compactStringArray(lot.opt("reasons"), limit = 8, maxChars = 120))
+        parseJsonArray(lot.opt("legs"))?.let { compactLot.put("leg_count", it.length()) }
+        if (compactLot.length() > 0) out.put("lotEvidence", compactLot)
     }
 
     private fun compactCandidates(raw: Any?, limit: Int = Int.MAX_VALUE): JSONArray {
@@ -699,6 +723,7 @@ object EvaluationLocalCache {
             val value = src.opt(key)
             if (value != null && value != JSONObject.NULL) out.put(key, value)
         }
+        putAuthorityLineage(src, out)
         return if (out.length() > 0) out else null
     }
 
@@ -822,6 +847,12 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
             compactContext.put("snapshot_pc2_paper_primary", it)
+        }
+        // G1: bounded index-authority snapshot record + managed-policy summary. Deliberately NOT in
+        // enforceSnapshotBudget's removable list: they are small and are the only per-poll proof of the
+        // authority decision/selection on uploaded snapshots.
+        IA_SNAPSHOT_CONTEXT_KEYS.forEach { key ->
+            parseJsonObject(context.opt(key))?.let { compactContext.put(key, it) }
         }
         parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let {
             compactContext.put("snapshot_daily_risk_state", it)
@@ -1005,6 +1036,12 @@ object EvaluationLocalCache {
         }
         parseJsonObject(context.opt("snapshot_pc2_paper_primary"))?.let {
             compactContext.put("snapshot_pc2_paper_primary", it)
+        }
+        // G1: bounded index-authority snapshot record + managed-policy summary. Deliberately NOT in
+        // enforceSnapshotBudget's removable list: they are small and are the only per-poll proof of the
+        // authority decision/selection on uploaded snapshots.
+        IA_SNAPSHOT_CONTEXT_KEYS.forEach { key ->
+            parseJsonObject(context.opt(key))?.let { compactContext.put(key, it) }
         }
         parseJsonObject(context.opt("snapshot_daily_risk_state"))?.let {
             compactContext.put("snapshot_daily_risk_state", it)
