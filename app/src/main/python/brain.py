@@ -27435,8 +27435,39 @@ def _ia_construct_managed(ix, allowed, chain, spot, ctx, session):
             if lot is not None:
                 con = _icn.construct(ix, con['type'], chain, spot, lot_size=lot, **kw)
             con['lot_evidence'] = evidence
+        # Managed-only: the X1 chain legs carry no bid/ask quantities (the X1 formatter does
+        # not emit them and is deliberately not changed). The quantities exist in the raw
+        # /v2/option/chain response and are already captured, keyed by exact instrument_key,
+        # in ctx['managedEvidence']. Join them onto the constructed legs here, after any lot
+        # re-construction above, so managed freshness sees the evidence that was actually
+        # collected. No exchange quote timestamp is supplied: /v2/option/chain does not carry
+        # one, and device receipt time is NOT exchange time, so the timestamp blocker stands.
+        _ia_attach_managed_leg_quantities(con, ev)
         out.append(con)
     return out
+
+
+def _ia_attach_managed_leg_quantities(con, ev):
+    """Fill managed leg bid/ask quantities from managed_evidence_v1, matched on EXACT
+    instrument_key only. Never borrows another contract's quantities, never fabricates a
+    quantity, never writes a quote timestamp, and never overwrites a value already present."""
+    import managed_evidence_v1 as _me
+    legs = (con or {}).get('legs')
+    if not isinstance(legs, list):
+        return con
+    for leg in legs:
+        if not isinstance(leg, dict):
+            continue
+        key = leg.get('instrument_key') or leg.get('instrumentKey')
+        if not key:
+            continue
+        q = _me.leg_quantities(ev, key)
+        if not isinstance(q, dict):
+            continue
+        for src, dst in (('bid_qty', 'bid_qty'), ('ask_qty', 'ask_qty')):
+            if leg.get(dst) is None and q.get(src) is not None:
+                leg[dst] = q.get(src)
+    return con
 
 
 def _ia_single_leg_dir(ctx):
