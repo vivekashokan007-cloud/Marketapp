@@ -2,7 +2,9 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.40 · `versionCode` 471 · **Updated**: September 12, 2026 (G5 Release C prep: durable evening-stage ledger, truthful labels-saved vs learning-complete, restartable C3. Training/live orders still frozen.)
+> **Version**: 2.6.92 · `versionCode` 523 · **Updated**: November 4, 2026 (Paper position management + single-leg admission coordinator, dated broker-contract binding, PM1 draft-release gate, bundled-PWA `candidate` build type. Training still frozen; order execution hard-locked to the Upstox **sandbox**.)
+>
+> **Doc-drift warning (recorded 2026-11-04).** This header sat at `2.6.40 / 471` while the code reached `2.6.92 / 523` — 52 builds and ~7 weeks of drift — and every `brain.py` line reference in this file had moved by 2,000–3,000 lines. That is the second recurrence of the drift this file already warns about under "Conventions and gotchas". **Line numbers in this document are a snapshot, not an index**: `brain.py` is ~28k lines and moves constantly. Always `grep` the symbol name rather than trusting a line number here, and re-verify any version string against the source before relying on it.
 
 ## Project overview
 
@@ -13,8 +15,11 @@ Guidance for Claude Code when working in this repository.
 - On-device ML inference via **Chaquopy** (Python 3.11 embedded) for trade-candidate scoring.
 - **Supabase** REST backend for trade / baseline / poll-history persistence.
 - Foreground notifications across six versioned channels (perfect / entry / update / warning / routine / urgent).
+- **Paper position management**: a 60-second `PositionTickService`, a single-leg admission coordinator, dated broker-contract/lot binding, and a daily review ledger.
 
-The WebView ships no bundled HTML — all UI is remote. Native code exists only to run background jobs the web layer cannot, and `app/src/main/python/brain.py` is the canonical brain source.
+In the `debug` and `release` build types the WebView ships no bundled HTML — all UI is remote. **This is no longer universally true:** the `candidate` build type (`app/build.gradle.kts`) bundles a pinned PWA snapshot and serves it through `shouldInterceptRequest` (`MainActivity.kt`, `candidatePwa?.intercept(...)`). See "Build types" below — a candidate build is signed with the *release* key under the *same* `applicationId`, so it installs in place over production.
+
+Native code exists only to run background jobs the web layer cannot, and `app/src/main/python/brain.py` is the canonical brain source.
 
 ## Build / toolchain
 
@@ -30,6 +35,15 @@ The WebView ships no bundled HTML — all UI is remote. Native code exists only 
 
 See `APK_BUILD_KOTLIN.md` for the maintained native build walkthrough. `app/build.gradle.kts` is the version source of truth.
 
+### Build types
+
+- `debug` / `release` — remote PWA, as described above.
+- `candidate` — `initWith(release)`, **release signing config, same `applicationId` (no suffix), not debuggable**, and it **bundles the pinned PWA** (`PWA_SOURCE_HEAD` / `PWA_MANIFEST_SHA256` BuildConfig fields). It deliberately installs *in place* over the existing app and keeps its data. Treat a candidate APK as indistinguishable from production once installed — it is a pinning mechanism, not a sandbox.
+
+### Release gate (PM1) — the in-app updater is NOT automatic
+
+`.github/workflows/release.yml` publishes with `draft: true`, `prerelease: false`, `make_latest: "false"`, and performs no same-run promotion. The app's updater polls `https://api.github.com/repos/vivekashokan007-cloud/Marketapp/releases/latest` (`MainActivity.UPDATE_URL`), and **GitHub's `/releases/latest` excludes drafts**. So a new build will never reach a phone until someone manually publishes the draft and marks it latest. This is the intended human gate — do not "fix" the updater without deciding that promotion should become automatic.
+
 ## Source layout
 
 ```
@@ -39,20 +53,44 @@ app/src/main/
 │   ├── ml_model.json            # Pre-trained GBT + NN weights
 │   ├── temporal_model.json      # Pre-trained GRU temporal model
 │   └── backtest_trades.csv      # 41-column historical training baseline
-├── java/com/marketradar/app/
+├── java/com/marketradar/app/    # ~45k lines; only the load-bearing files are listed
 │   ├── MainActivity.kt          # WebView host, bridge injection, settings dialog, update check
 │   ├── MarketWatchService.kt    # 5-min polling foreground service + Supabase sync + brain invoke
-│   ├── MarketMLService.kt       # ML training service + MLAlarmReceiver + MLModelStatus
+│   ├── MarketMLService.kt       # ML training + post-close evaluation orchestration
 │   ├── NativeBridge.kt          # @JavascriptInterface surface exposed as window.AndroidBridge
 │   ├── NotificationHelper.kt    # Channel creation + send()
-│   └── SupabaseClient.kt        # OkHttp wrapper over Supabase REST
-├── python/
-│   ├── brain.py                 # Poll orchestration + candidate generation, called each poll
+│   ├── SupabaseClient.kt        # OkHttp wrapper over Supabase REST
+│   ├── PyTimeout.kt             # Effective timeout for blocking Chaquopy callAttr (see below)
+│   ├── OrderExecutionService.kt # Upstox order APIs — HARD-LOCKED TO SANDBOX
+│   ├── ExecutionModeResolver.kt # Derives paper|sandbox|live LABEL (does not route orders)
+│   ├── PositionTickService.kt   # 60s position marking, exits, paper close quotes
+│   ├── PositionTickDrain*.kt    # Tick drain/flush coordination
+│   ├── PositionQuoteValidity.kt # Quote freshness/validity contract
+│   ├── PositionExitPolicy.kt    # Exit thresholds (net), paired with position_exit_policy.py
+│   ├── EvaluationLocalCache.kt  # Bounded local snapshot cache (trim markers, C3 fallback)
+│   ├── EvaluationRunLedger.kt   # Durable evening-stage ledger
+│   ├── C3*.kt                   # C3 paging, frame collection, fail-closed local fallback
+│   ├── ContractLotTable.kt      # Dated NSE lot/contract resolution
+│   ├── ContractIdentityPayload.kt
+│   ├── ResearchCollector.kt     # Research M0 capture
+│   ├── CaptureEngine.kt / CaptureStorage.kt
+│   ├── Pc2TelemetryOutbox.kt / Pc2CompactBatch.kt
+│   └── RuleBFillLedger.kt       # Implied-EV v1.2 Rule B ledger
+├── python/                      # ~54k lines
+│   ├── brain.py                 # ~28k lines. Poll orchestration + candidate generation
 │   ├── ml_engine.py             # 38-feature GBT (200×d3) + NN (38→32→16→1) + k-means regime
 │   ├── ml_temporal.py           # Mini-GRU over 6-poll sequences
-│   └── ml_train.py              # Nightly retraining pipeline
+│   ├── ml_train.py              # Retraining pipeline (scheduling disabled)
+│   ├── canonical_net_profitability.py
+│   ├── contract_lot_table.py / contract_identity_schema.py
+│   ├── evaluation_metrics_ledger.py / evaluation_run_ledger.py
+│   ├── implied_ev_v12.py / ev_v12_*.py   # Paper-only experiment, default off
+│   ├── index_authority_v1.py / position_exit_policy.py
+│   └── tests/                   # 156 test files
 └── res/                         # icons, theme, styles
 ```
+
+Test coverage: **134 Kotlin test files** (`app/src/test`) and **156 Python test files**.
 
 ## Runtime architecture
 
@@ -84,15 +122,39 @@ Exposed as `window.AndroidBridge` on page load by `MainActivity.injectNativeBrid
 | GitHub (updates) | `api.github.com/repos/vivekashokan007-cloud/Marketapp/releases/latest` | none |
 | PWA content | `vivekashokan007-cloud.github.io/MarketVivi/` | none |
 
-Supabase tables: `trades_v2` (113 cols live, verified 2026-08-25 — earlier docs said 61; schema has grown with net-economics, sigma-penalty, and journey fields and was never backfilled into this doc until now), `app_config`, `poll_history`, `chain_snapshots`, `ml_models`, `ml_performance`, `ml_decisions`.
+Supabase tables (the set actually referenced from `app/src/main/java`, re-derived 2026-11-04): `trades_v2` (113 cols live, verified 2026-08-25 — earlier docs said 61), `paper_trades`, `paper_trades_export`, `app_config`, `poll_history`, `position_ticks`, `sandbox_orders`, `ml_brain_snapshots`, `ml_option_chain_snapshots`, `ml_generated_candidates`, `ml_evaluation_outcomes`, `ml_recommendation_outcomes`, `ml_rejected_candidate_outcomes`, `ml_context_percentile_history`, `ml_decisions`. Migrations live in `supabase/migrations/` — that directory, not this list, is authoritative.
+
+### Order execution — hard-locked to the Upstox sandbox (read before touching)
+
+`OrderExecutionService.kt` contains **real** Upstox order endpoints (`POST /v2/order/place`, `POST /v2/order/multi/place`, `PUT /v2/order/modify`, `DELETE /v2/order/cancel`). No real-money path is reachable, and that is enforced by two independent runtime assertions, both throwing `SecurityException`:
+
+1. `assertSandboxOnly()` at the top of every `dispatch(...)` — refuses unless `EXECUTION_MODE == "SANDBOX"` **and** `SANDBOX_BASE_URL == "https://sandbox.upstox.com"`.
+2. A second check that the composed URL starts with `"$SANDBOX_BASE_URL/"`.
+
+Also: `dependent_live_short_entry_authorized` is always written `false`, there is exactly one transport call per dispatch (no retry loop), and the transport is a seam that JVM tests replace with a fake (never a live call).
+
+**Important distinction:** `ExecutionModeResolver.derive()` can return `"live"` (explicit mode, or an `https://` order-proxy URL). That string is only a **label** used for context/evidence; it does **not** route orders. The label and the execution lock are decoupled, and the lock wins. Do not treat a `"live"` mode string as evidence that live trading is enabled — and do not remove either assertion to "make live work" without an explicit, separately-reviewed decision.
+
+### Calling Python from Kotlin — use `PyTimeout`, never `withTimeoutOrNull`
+
+`withTimeoutOrNull { py.callAttr(...) }` **does not work** and was a real shipped defect. `withTimeoutOrNull` cancels cooperatively at suspension points; `callAttr` is a blocking JNI call into CPython with none, and the `runBlocking` wrapping it had no dispatcher — so the timeout task could not even be scheduled until the call returned. It bounded nothing.
+
+`PyTimeout.callWithTimeout(key, timeoutMs) { ... }` is the replacement (~14 call sites). It runs the block on a dedicated daemon thread and waits with a real `Future.get(timeout)`. Properties worth knowing:
+
+- On timeout it returns `null`, so the caller's existing fallback branch runs.
+- The Python call is **not** interrupted (CPython frames cannot be interrupted safely) — it keeps running in the background.
+- A pile-up guard means that while a timed-out call for `key` is still running, later calls on that key return `null` immediately instead of starting a second Python call.
+- All three poll-path calls share one key, because a stuck call holds the GIL and any other Python call would block anyway.
+
+Two `runBlocking { withTimeoutOrNull { ... } }` sites survive in `MarketMLService` (`validateModel`, `predictCandidate`). Both are **dead code — zero callers**. Delete or migrate them if you touch that file; do not copy the pattern.
 
 ### ML pipeline (Chaquopy / Python 3.11)
 
 - **Features:** 38-dim vector (VIX norm, sigma, DTE, credit, width, spreads, regime one-hot, weekday one-hot, direction, range, …) built in `ml_engine.py`.
 - **Models:** pure-Python GBT (200 trees, depth-3, log-loss) + MLP (38→32→16→1, ReLU/sigmoid, SGD+momentum). K-means 4-state regime (CALM / TRENDING / CHOPPY / VOLATILE).
-- **Serialization:** JSON in `filesDir` (`ml_model.json`, `temporal_model.json`). On version bump `MainActivity` copies assets → `filesDir` (seen at `MainActivity.kt:348-366`), because Python can't read assets directly.
+- **Serialization:** JSON in `filesDir` (`ml_model.json`, `temporal_model.json`). On version bump `MainActivity` copies assets → `filesDir` (seen at `MainActivity.kt` ~552-580), because Python can't read assets directly.
 - **Training:** `ml_train.py` merges backtest CSV with `trades_v2` (replicated 3×); requires ≥500 rows; deploys only if accuracy improves by ≥0.5 %.
-- **Scheduling:** nightly 11 PM AlarmManager is **currently disabled** — `MainActivity.kt:369` explicitly calls `MarketMLService.cancelNightlyTraining(this)`. Retraining is user-triggered via `ACTION_CONFIRM_TRAIN`.
+- **Scheduling:** nightly 11 PM AlarmManager is **currently disabled** — `MainActivity.kt:584` explicitly calls `MarketMLService.cancelNightlyTraining(this)`. Retraining is user-triggered via `ACTION_CONFIRM_TRAIN`.
 
 ### Notifications (`NotificationHelper`)
 
@@ -148,14 +210,14 @@ Release commit `751c289` fixed the executable quote contract that was still allo
 - **Android quote bridge:** `MarketWatchService.optionQuote()` now preserves missing bid/ask as JSON `null` in the chain payload, full ML slice, and strike resolver. `optionMid()` can still use LTP for display-only mid price, but executable economics no longer inherit that fallback.
 - **Python entry economics:** candidate net economics require executable prices: short entry bid, long entry ask, short close ask, and long close bid. Missing executable quotes now return `QUOTE_INCOMPLETE`, add entry reasons such as `quote_incomplete` / `friction_unavailable`, mark `NET_UNAVAILABLE_FAIL_CLOSED`, and prevent ranking/entry from silently using zero or LTP.
 - **Teacher managed outcome:** `_teacher_candidate_leg_specs()` now accepts camelCase, snake_case, and compact `legs` payloads; `_normalize_teacher_quote_point()` maps compact leg arrays into explicit quote fields. `_managed_teacher_outcome()` drops candidates/points when the friction path is incomplete and uses net max-loss after friction for stop-loss thresholding.
-- **Version markers:** `ENTRY_ELIGIBILITY_VERSION = entry_eligibility_v5_quote_friction_fail_closed`; `NET_ECONOMICS_VERSION = net_economics_v2_executable_quote_contract`; `TEACHER_FRICTION_VERSION = teacher_friction_v2_executable_bid_ask_charges`; `BRAIN_VERSION = "2.6.40"`; `POSITION_EXIT_POLICY_CONTRACT_VERSION = position_exit_policy_v1_net_20260912`; `NET_RANK_EDGE_SCALE = net_premium_edge_absolute_rupees_after_executable_friction`.
+- **Version markers:** `ENTRY_ELIGIBILITY_VERSION = entry_eligibility_v5_quote_friction_fail_closed`; `NET_ECONOMICS_VERSION = net_economics_v2_executable_quote_contract`; `TEACHER_FRICTION_VERSION = teacher_friction_v2_executable_bid_ask_charges`; `BRAIN_VERSION = "2.6.92"` (kept in lockstep with `versionName`); `POSITION_EXIT_POLICY_CONTRACT_VERSION = position_exit_policy_v1_net_20260912`; `NET_RANK_EDGE_SCALE = net_premium_edge_absolute_rupees_after_executable_friction`.
 - **Validation before push:** `python -m py_compile app/src/main/python/brain.py`, `git diff --check`, and a zero-default bid/ask scan passed. Pytest remains unavailable in this environment.
 
 ### BNF strike-step blackout fixed in v2.6.12 (field-verified)
 
 Bank Nifty generated **zero** candidates every session from 2026-08-26 through 2026-09-01 (5 straight sessions; NF was unaffected and kept generating normally). Root cause: `generate_candidates()` computed the strike step as `all_strikes[1] - all_strikes[0]` — the gap between the two *lowest* strikes, correct only for a uniformly-spaced chain. NSE monthly chains are dense near the money (100-pt) and sparse in the far wings (500–1500-pt); BNF's lowest two strikes sit in the sparse wing, so the old formula resolved to `1500`, which made `_pc2_batch_f_width_ladder` return an empty width list and silently built zero BNF candidates every poll. The trigger was BNF rolling off its last weekly expiry onto the wide Sep monthly on 2026-08-26 — NSE has discontinued Bank Nifty weeklies, so BNF now only ever carries the sparse chain, which exposed the latent bug. NF never hit it because its weeklies stayed uniformly 50-pt spaced.
 
-Fix: `_infer_strike_step()` (`brain.py:5963`) now returns the smallest positive gap between adjacent strikes — the true NSE interval, robust to sparse wings, unchanged for uniform chains. Applied at both call sites: `generate_candidates` (`brain.py:12706`) and `_snapshot_teaching_band` (`brain.py:17158`, same latent bug, shadow-only). Guard test: `tests/test_strike_step_inference.py`.
+Fix: `_infer_strike_step()` (`brain.py:7070`) now returns the smallest positive gap between adjacent strikes — the true NSE interval, robust to sparse wings, unchanged for uniform chains. Applied at both call sites: `generate_candidates` (call site `brain.py:14677`) and `_snapshot_teaching_band` (call site `brain.py:19991`, same latent bug, shadow-only). Guard test: `tests/test_strike_step_inference.py`.
 
 **Production verification (not just code review):** confirmed directly against `ml_generated_candidates` for two full sessions after the phone updated (2026-09-02 and 2026-09-03) — `brain_version 2.6.12` on every row, BNF producing candidates across all four strategy types (BEAR_CALL/BULL_PUT/IRON_CONDOR/IRON_BUTTERFLY) at a healthy ~1,100–1,700/session versus NF's ~1,350–2,050, with BNF candidates also being surfaced by the selector (not just generated). The blackout is closed, not just patched.
 
@@ -179,7 +241,7 @@ The OOD flag itself is *correct* — the model genuinely has no training support
 
 This mirrors the PC2 sigma de-rate philosophy (proportional penalty, never a silent delete) and was Vivek's explicit choice over retraining or widening the bound. Production split on 09-03 confirmed the fix targets the right population: of 257 BNF candidates, 176 soft-only (rescued if confidence clears the floor) and 81 also strategy-blind (stay vetoed). New telemetry on `entryEligibility`: `candidate_ml_ood_soft`, `candidate_ml_ood_hard`, `candidate_ml_ood_conf`, `soft_ood_derate_applied`, `entry_confidence_pre_derate`, `ood_policy_contract`. Tests: `tests/test_entry_eligibility.py` (5 new cases). Gate: 349 tests OK. **Field verification pending** — confirm after the phone reports v2.6.13/b444 that BNF primaries and notifications appear, carrying `soft_ood_derate_applied: true` and a de-rated `entry_confidence`.
 
-Known interaction left unchanged: the ranking-side p_ml zeroing (`brain.py` ~13692, `mlOod and mlOodConf < 0.6 -> p_ml_effective = 0`) still applies, but v7 ranks on `rank_edge_effective` (edge), not p_ml, so it does not demote BNF. Out of scope for this fix.
+Known interaction left unchanged: the ranking-side p_ml zeroing (`brain.py:13678`, `ml_unsure or ml_ood_low_conf -> p_ml_effective = 0.0`) still applies, but v7 ranks on `rank_edge_effective` (edge), not p_ml, so it does not demote BNF. Out of scope for this fix.
 
 ### Teacher-research report OOM fixed in v2.6.14 (streaming outcomes read)
 
@@ -216,7 +278,8 @@ These were scoped but explicitly NOT implemented — they require a build (multi
 - WebView has `mixedContentMode = MIXED_CONTENT_ALWAYS_ALLOW`, but all live endpoints are HTTPS and the manifest blocks cleartext traffic — don't introduce HTTP calls.
 - The PWA is authoritative for UI; native code should not render its own screens beyond the loading/error overlays and the settings dialog already present in `MainActivity`.
 - Logging tag = class name (`MainActivity`, `MarketWatchService`, `MarketMLService`, `SupabaseClient`). Follow the pattern.
-- Version comparison for updates is in `MainActivity.kt:558-569` and does lexicographic fallback — be careful when bumping past `2.9.x`.
+- Version comparison for updates is in `MainActivity.isNewer()` (~`MainActivity.kt:1038`) and does lexicographic fallback — be careful when bumping past `2.9.x`.
+- **Keep this file current — it has now drifted twice, the second time badly.** On 2026-11-04 the header still read `2.6.40 / 471` (Sept 12) while the code was `2.6.92 / 523`, and *every* `brain.py` line reference was 2,000–3,000 lines stale. Minimum discipline when you ship: bump the header `Version`/`versionCode`/`Updated` line in the same commit as the `versionCode` bump, and re-`grep` any symbol line number you quote. Prefer citing **symbol names** over line numbers in new text — `brain.py` is ~28k lines and every number here decays.
 - **Keep this file current with ranking-authority constants.** `PC2_PAPER_PRIMARY_SELECTOR_VERSION` and `SIGMA_DISTANCE_PENALTY_VERSION` drifted for 4 days (v6→v7, v1→v2) after commit `2879ed2` (2026-08-31) shipped a real behavioral change without a doc update — caught 2026-09-03 by cross-checking the version strings this file claims against `grep` on `brain.py` and a live production row, not by reading the commit log first. When you bump either constant, or change what a version string actually names, update the "Candidate selection" section in the same commit.
 
 ## Known issues / bugs
@@ -231,8 +294,11 @@ Items fixed by the v2.6.0 audit (M2.2, M3.3, M1.1, the sigma de-rate, the v6 sel
 4. **§C four-leg recording corruption (historical, closed)** — `trades_v2` rows from the 2026-03-30→04-16 window contain corrupted 4-leg IC/IB recordings. Root-caused to the pre-migration PWA-embedded-brain era; the current Android/Chaquopy `brain.py` path builds correct 4-leg structures (confirmed by execution). Do not "fix" old rows without re-confirming this scope — it is a closed fossil, not a live defect.
 5. **Multi-session evaluator and IC/IB-overnight unblock** — see "Still open / deferred" above; deliberately not implemented pending Phase 1 evidence and explicit sign-off. `MIN_SIGMA_OTM` near-money tuning is partially superseded: the v2 symmetric sigma band (above) now de-rates below-floor candidates in *ranking*, but the threshold value itself (`0.5`) is still unchanged, and this is a ranking de-rate, not the separate hard entry-eligibility gate — reducing the threshold value remains a distinct, unexplored change.
 6. **P1 selector observability — closed and production-verified as of 2026-09-03, but not as originally documented.** Fresh `ml_brain_snapshots.primary_candidate_json` rows do persist the full net-economics/sigma telemetry, `entryEligibility`, and `pc2PaperSortComponents` — confirmed against live 2026-09-03 rows. The fields are nested/snake_case, not flat/camelCase as earlier versions of this file claimed — see the corrected telemetry note above. Use `pc2PaperSortComponents` / `entryEligibility`, not the flat keys.
-7. **Teacher coverage collapsed to 100% `unseen` from 2026-08-11 — still active as of 2026-09-03.** `_stage2a_annotate_candidates` (`brain.py:221`) does an exact 4-tuple bucket lookup `(strategy_type, regime_bucket, vix_bucket, dte_bucket)`; any miss → `unseen`. VIX fell below 12 around 08-11 and the teacher table has no `VIX_LT_12` history, so every live candidate maps to an empty bucket (`teacher_bucket_n=0`). Re-confirmed live: 2026-09-03 session VIX ranged 10.97–11.44, and a sampled primary row showed `teacher_bucket_n: 0`, `teacher_coverage: "unseen"`. This is a hard VIX-band gate that fails to zero rather than degrading — the pattern the percentile architecture exists to avoid. Impact is bounded (the teacher signal is evidence-only, not ordering authority) but a nearest-covered-band fallback is still worth building. **Note:** net economics do NOT depend on teacher coverage — `_apply_net_economics` (`brain.py:10845`) computes from gross economics + friction regardless.
+7. **Teacher coverage collapsed to 100% `unseen` from 2026-08-11 — still active as of 2026-09-03.** `_stage2a_annotate_candidates` (`brain.py:274`) does an exact 4-tuple bucket lookup `(strategy_type, regime_bucket, vix_bucket, dte_bucket)`; any miss → `unseen`. VIX fell below 12 around 08-11 and the teacher table has no `VIX_LT_12` history, so every live candidate maps to an empty bucket (`teacher_bucket_n=0`). Re-confirmed live: 2026-09-03 session VIX ranged 10.97–11.44, and a sampled primary row showed `teacher_bucket_n: 0`, `teacher_coverage: "unseen"`. This is a hard VIX-band gate that fails to zero rather than degrading — the pattern the percentile architecture exists to avoid. Impact is bounded (the teacher signal is evidence-only, not ordering authority) but a nearest-covered-band fallback is still worth building. **Note:** net economics do NOT depend on teacher coverage — `_apply_net_economics` (`brain.py:12736`) computes from gross economics + friction regardless.
 8. **Production verification is current as of 2026-09-03 for v2.6.12** (superseding the old v2.6.5 pending item): phone confirmed on `brain_version`/`app_version` 2.6.12 for two full sessions, BNF blackout closed (see above), selector telemetry confirmed present (item 6). Still unverified from this repo's working environment: GitHub Actions/release-workflow status — the sandbox used for these checks has no GitHub API access (`add_repo` not granted), so "the signed release actually built" is inferred from `origin/main` having the commit and the phone running it, not from watching CI directly. Confirm manually if that gap matters to you.
+9. **`Error` (not `Exception`) can still escape the JS bridge — open.** `NativeBridge.kt` exposes **134** `@JavascriptInterface` methods; **67** guard with `catch (e: Exception)` and only **12** with `catch (Throwable)` (counts re-derived 2026-11-04). An `OutOfMemoryError` is an `Error`, so it escapes the bridge, WebView reports *"Java exception was raised during method invocation"*, and **the entire calling JS function aborts**. This already shipped once as a user-visible outage (b321, 2026-07-01): `renderAll` died mid-render and every tab rendered blank. Only `getMLTeacherResearchReport` was hardened at the time. The surface has since grown from 91 to 134 methods. Any bridge method that can allocate large payloads should catch `Throwable`, not `Exception`.
+10. **No origin gate on the WebView bridge — open, architectural.** `addJavascriptInterface(NativeBridge(...), "AndroidBridge")` binds all 134 methods to the WebView, and Android has no per-origin scoping. `shouldOverrideUrlLoading` returns `false` (no navigation allowlist) and `injectNativeBridge()` runs on **both** `onPageStarted` and `onPageFinished` with **no URL check** — so whatever origin the WebView lands on inherits the full bridge, even though `persistCurrentWebUrl`/`restoredWebUrl` *do* check `startsWith(APP_URL)`. Mitigations that genuinely exist: the Upstox `auth_token` is write-only across the bridge (only `setApiToken` writes; status is exposed as a boolean), `setSupabaseUserSession` rejects disallowed credentials, cleartext is disabled, and order execution is sandbox-locked (above). Residual risk concentrates on `setOrderProxyUrl` / sandbox token. Fix is to gate both navigation and injection on an `APP_URL` allowlist.
+11. **Fixed and merged (for the record):** the non-functional Chaquopy timeouts (now `PyTimeout`, see above) and the needlessly-exported tick receiver (now `ContextCompat.RECEIVER_NOT_EXPORTED` in `MainActivity`). Note that below API 33 Android cannot mark a dynamically-registered receiver non-exported at all, so on API 26–32 a foreign sender can still reach it — a platform limit, not a code defect. **Not re-verified as of 2026-11-04:** the shared-monitor contention between heavy `EvaluationLocalCache` reads and `appendBrainSnapshot`, the bare `except:` clauses that swallow `MemoryError`, and `_EVAL_JOB_CACHE` cleanup not being in a `finally`. The ~15k lines of new Paper/admission Kotlin have **not** been audited at all.
 
 ### Sigma de-rate — verified behavior and known blind spots (2026-08-25, pre-dates the v2 symmetric band — re-verify before relying on the quantitative claims below)
 
@@ -240,7 +306,7 @@ Execution-verified against live data on the original **v1, far-OTM-only** de-rat
 
 - **It never touches IRON_BUTTERFLY — still true in v2.** Butterflies sell at-the-money and carry no `sigmaOTM`, so `_sigma_distance_penalty_components` returns `factor: 1.0`, `reason: missing_sigma` regardless of which side of the band would apply. IB has historically taken ~39% of primary picks — the de-rate is blind to all of them by design (absence of a sigma reading is deliberately not treated as a fault). Confirmed directly against a live 2026-09-03 IRON_BUTTERFLY primary row.
 - **On an all-negative-EV menu it barely reorders (v1 finding, not re-measured for v2).** On 2026-08-25 it changed the #1 pick in only 2 of 34 snapshots. Its intended effect — demoting far-OTM candidates when *positive* edges compete — cannot manifest when nothing on the menu is positive. The v2 symmetric band adds a floor-side penalty that didn't exist when this was measured, so the reorder rate should be re-run before quoting this figure again.
-- **It affects ranking only, never generation — still architecturally true.** Sole call site is `_pc2_paper_primary_sort_components` (`brain.py:13590`, calling `_sigma_distance_penalty_components`). Any change in *which candidates get generated* has another cause (e.g. 0-DTE expiry days generate only neutral structures at ~¼ normal volume).
+- **It affects ranking only, never generation — still architecturally true.** Sole call site is `_pc2_paper_primary_sort_components` (`brain.py:15697`, calling `_sigma_distance_penalty_components` at `brain.py:15736`). Any change in *which candidates get generated* has another cause (e.g. 0-DTE expiry days generate only neutral structures at ~¼ normal volume).
 
 GitHub Actions/CI status for this repo still cannot be verified from a working sandbox — see item 8 above.
 
