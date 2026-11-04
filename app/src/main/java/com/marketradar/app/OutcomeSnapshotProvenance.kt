@@ -24,6 +24,21 @@ import org.json.JSONObject
  */
 internal object OutcomeSnapshotProvenance {
     const val CONTRACT = "mr.outcome_snapshot_join.v1"
+    /** Mirrors brain.py IA_DEBIT_COST_BASIS (G2). */
+    const val IA_DEBIT_COST_BASIS = "index_construction_v1_debit_cost_abs_signed_net_premium"
+
+    /**
+     * G2: h2_entry_basis_source is not a server column. It is recovered deterministically from the snapshot
+     * candidate exactly as brain._h2 sets it: index_construction_v1 AND isCredit == false AND netPremium < 0, and
+     * only on a graded row (price_integrity OK; FAIL rows never carry it).
+     */
+    fun h2EntryBasisSource(row: JSONObject, candidate: JSONObject): String? {
+        if (!str(row, "price_integrity").equals("OK", ignoreCase = true)) return null
+        if (str(candidate, "constructionVersion") != "index_construction_v1") return null
+        if (candidate.opt("isCredit") != false) return null
+        val np = candidate.optDouble("netPremium", Double.NaN)
+        return if (np.isFinite() && np < 0) IA_DEBIT_COST_BASIS else null
+    }
 
     private fun obj(raw: Any?): JSONObject? = when (raw) {
         is JSONObject -> raw
@@ -107,6 +122,7 @@ internal object OutcomeSnapshotProvenance {
             .put("candidate_source", JSONArray(found.map { it.first }.distinct()))
             .put("candidate_lineage", lineage)
             .put("is_snapshot_primary", primaryId == cid)
+        h2EntryBasisSource(row, cand)?.let { out.put("derived", JSONObject().put("h2_entry_basis_source", it)) }
 
         obj(ctx.opt("snapshot_index_authority_primary"))?.let { rec ->
             val byIx = obj(rec.opt("by_index"))?.let { obj(it.opt(index)) }

@@ -30,7 +30,7 @@ Each final server outcome row has three identity fields that are already in the 
 | `indexDecisionId` | teacher outcome, snapshot candidate | yes; cross-checked against `snapshot_index_authority_primary.by_index[ix].decision_id` |
 | `policy_selector_version` (teacher output name) | teacher outcome | yes, as `snapshot_managed_policy.by_index[ix].policy_id` |
 | `evaluation_coverage` | teacher outcome / research report | no per row; it is a constant teacher coverage note stated in the research report |
-| `h2_entry_basis_source` (G2, #37) | teacher outcome | yes, derived deterministically from the snapshot candidate. Covered by G2's join test |
+| `h2_entry_basis_source` (G2, #37) | teacher outcome | yes. `OutcomeSnapshotProvenance.h2EntryBasisSource` derives it when the candidate is `index_construction_v1`, has `isCredit=false` and `netPremium<0`, and the final row's `price_integrity` is OK. Proven by `G2DebitTeacherUploaderTest.finalRowsOmitBasisSourceButJoinRecoversItExactly` |
 | `lotEvidence` (compact) | snapshot candidate | yes (snapshot only) |
 | `contract_identity` | local only while `evalContractIdentityCapable=false` (unchanged) | n/a |
 

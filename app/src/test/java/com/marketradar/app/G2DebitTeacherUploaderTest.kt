@@ -91,4 +91,31 @@ class G2DebitTeacherUploaderTest {
             assertEquals(c.getDouble("netPremium"), o.getDouble("h2_entry_basis_points"), 1e-4)
         }
     }
+
+    /** Codex R3: h2_entry_basis_source is absent from the final server rows but recoverable via the G1 join. */
+    @Test fun finalRowsOmitBasisSourceButJoinRecoversItExactly() {
+        val snaps = listOf("bear_pair", "pair_both_admissible").associateWith { G1AuthorityProvenanceChainTest.uploaded.getValue(it) }
+        for ((name, snap) in snaps) {
+            val teacherRows = G1AuthorityProvenanceChainTest.teacher.getValue(name).getJSONObject("batch").getJSONArray("outcomes")
+            val auth = (0 until teacherRows.length()).map { teacherRows.getJSONObject(it) }
+                .filter { it.optString("candidate_id").endsWith("_index_construction_v1") }
+            val built = listOf(
+                invoke("buildEvaluationRows", JSONArray(auth.map { JSONObject(it.toString()) })),
+                invoke("buildRecommendationRows", snap.getString("session_date"), JSONArray(auth.map { JSONObject(it.toString()) }))
+            )
+            for (rows in built) {
+                assertEquals(auth.size, rows.length())
+                for (i in 0 until rows.length()) {
+                    val r = rows.getJSONObject(i)
+                    assertFalse(r.has("h2_entry_basis_source"))
+                    val res = OutcomeSnapshotProvenance.resolve(r, snap)
+                    assertEquals(res.optString("detail"), "RESOLVED", res.getString("status"))
+                    val teacherRow = auth.single { it.getString("candidate_id") == r.getString("candidate_id") }
+                    val expected = teacherRow.optString("h2_entry_basis_source").ifBlank { null }
+                    val recovered = res.optJSONObject("derived")?.optString("h2_entry_basis_source")
+                    assertEquals(r.getString("candidate_id"), expected, recovered)
+                }
+            }
+        }
+    }
 }
