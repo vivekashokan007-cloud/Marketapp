@@ -102,10 +102,18 @@ def _stale_mutator(indices):
     return m
 
 
+def _bear_polls():
+    ts = F.times('09:15', '11:00')
+    n = len(ts)
+    return F.polls(F.linear(24000, -8, n), F.linear(52000, -16, n), ts=ts)
+
+
 def scenarios():
     std = _std_polls()
     late = _std_polls('15:20')
     return {
+        # G2: falling path -> BEAR on both indices -> BEAR_PUT (debit) + BEAR_CALL (credit) pairs
+        'bear_pair': dict(polls=_bear_polls()),
         # both structures of each index admissible -> STRUCTURE_CHOICE_RULE_UNSPECIFIED, no primary
         'pair_both_admissible': dict(polls=std),
         # one managed position open on each index -> MANAGED_POLICY_CAP_ONE_PER_INDEX, both blocked

@@ -23320,11 +23320,29 @@ def _candidate_contract_fields(cand, snap=None):
 
 
 
+IA_DEBIT_COST_BASIS = 'index_construction_v1_debit_cost_abs_signed_net_premium'
+
+
+def _ia_construction_debit(cand):
+    """G2: an index_construction_v1 DEBIT structure (explicit isCredit False).  Its netPremium is SIGNED
+    (credit positive, debit negative) for economics/display; only the teacher needs the positive cost."""
+    return (isinstance(cand, dict)
+            and cand.get('constructionVersion') == 'index_construction_v1'
+            and cand.get('isCredit') is False)
+
+
 def _candidate_entry_premium(cand):
+    """H2 entry basis in points: credit received or debit paid, both positive.
+
+    Legacy candidates and every credit structure: netPremium unchanged (never abs()'d globally).
+    G2: index_construction_v1 debit structures carry a signed (negative) netPremium; the teacher gets the
+    positive debit cost abs(netPremium).  The candidate's own signed netPremium is not modified."""
     entry = _float_or_none(cand.get('netPremium'))
-    if entry is not None:
-        return entry
-    return None
+    if entry is None:
+        return None
+    if entry < 0 and _ia_construction_debit(cand):
+        return abs(entry)
+    return entry
 
 
 def _candidate_vertical_width(cand, sell_label='sell', buy_label='buy'):
@@ -23435,7 +23453,7 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
         sim_pnl = (later_value - entry_premium) * lot_size
         formula = '(close_value - entry_debit) * lot'
 
-    return {
+    out = {
         'sim_pnl_h2': round(sim_pnl, 2),
         'price_integrity': 'OK',
         'h2_price_integrity_reason': 'OK',
@@ -23445,6 +23463,9 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
         'h2_formula': formula,
         'h2_leg_prices': leg_prices,
     }
+    if _ia_construction_debit(cand) and (_float_or_none(cand.get('netPremium')) or 0) < 0:
+        out['h2_entry_basis_source'] = IA_DEBIT_COST_BASIS
+    return out
 
 
 def _teacher_execution_basis(snap, cand, point, entry_point=None):
@@ -24296,6 +24317,8 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
         'h2_bound_width_points': h2.get('h2_bound_width_points'),
         'h2_formula': h2.get('h2_formula'),
     }
+    if h2.get('h2_entry_basis_source'):
+        outcome['h2_entry_basis_source'] = h2['h2_entry_basis_source']
     teacher = _managed_teacher_outcome(
         chain_rows,
         snap,
