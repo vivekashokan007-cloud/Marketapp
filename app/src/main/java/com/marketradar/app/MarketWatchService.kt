@@ -666,21 +666,43 @@ class MarketWatchService : Service() {
                             .commit()
                     }
                 } ?: LogBuffer.add('W', TAG, "CLOSED_TRADE_BOOTSTRAP_UNAVAILABLE: preserving local risk ledger")
+                // Network fetch stays OUTSIDE pollSaveLock so savePoll() is never blocked on it.
                 val history = SupabaseClient.getPollHistory(today)
                 if (history.length() > 0) {
-                    val latest = history.optJSONObject(history.length() - 1)
-                    prefs.edit().apply {
-                        putString("poll_history", history.toString())
-                        putInt("poll_count", history.length())
-                        putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
-                        putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, history.length())
-                        putString(COVERAGE_INTEGRITY_DATE_KEY, today)
-                        putString("last_poll_date", today)
-                        if (latest != null) {
-                            putString("latest_poll", latest.toString())
-                            putString("last_poll_time", latest.optString("t", ""))
-                        }
-                    }.apply()
+                    // The remote copy is sampled (every third assigned poll, best effort) and can lag the
+                    // device, so it is MERGED into the retained local history rather than replacing it.
+                    // Replacing could discard same-session observations the device already holds, and a
+                    // discarded stretch is not recoverable: the ER series is rebuilt from the open
+                    // reference every poll, so one gap over ER_MAX_GAP_MIN suppresses ER for the rest of
+                    // the session. Re-read local state and write under the same lock savePoll() uses, so
+                    // a poll appended while the request was in flight cannot be erased by a stale copy.
+                    synchronized(pollSaveLock) {
+                        val localHistory = try {
+                            JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
+                        } catch (_: Exception) { JSONArray() }
+                        val merged = PollHistoryMerge.merge(localHistory, history, today)
+                        val latest = PollHistoryMerge.latest(merged.history)
+                        LogBuffer.add('I', TAG, "POLL_HISTORY_MERGE: local=${localHistory.length()}" +
+                            " remote=${history.length()} kept=${merged.kept} fromRemote=${merged.fromRemote}" +
+                            " conflicts=${merged.conflicts} rejected=${merged.rejected}" +
+                            " trimmed=${merged.trimmed} v=${PollHistoryMerge.VERSION}")
+                        val priorAssigned = if (prefs.getString(LAST_ASSIGNED_POLL_DATE_KEY, "") == today)
+                            prefs.getInt(LAST_ASSIGNED_POLL_NUMBER_KEY, 0) else 0
+                        prefs.edit().apply {
+                            putString("poll_history", merged.history.toString())
+                            // Counters stay monotonic. A merged row count is evidence of retained
+                            // observations; it is never a reason to rewind poll/slot assignment.
+                            putInt("poll_count", maxOf(prefs.getInt("poll_count", 0), merged.kept))
+                            putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
+                            putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, maxOf(priorAssigned, merged.kept))
+                            putString(COVERAGE_INTEGRITY_DATE_KEY, today)
+                            putString("last_poll_date", today)
+                            if (latest != null) {
+                                putString("latest_poll", latest.toString())
+                                putString("last_poll_time", latest.optString("t", ""))
+                            }
+                        }.commit()
+                    }
                 } else if (
                     lastPollDate != today &&
                     (prefs.getString("poll_history", "[]") != "[]" ||
