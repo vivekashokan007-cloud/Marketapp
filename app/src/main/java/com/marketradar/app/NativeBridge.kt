@@ -1691,7 +1691,7 @@ class NativeBridge(private val context: Context) {
             val fut = IndexAuthorityIo.executor.submit(java.util.concurrent.Callable {
                 val brain = com.chaquo.python.Python.getInstance().getModule("brain")
                 brain.callAttr("session_evidence_bundle", dir.absolutePath, date,
-                    IndexAuthorityContext.reviewTrades(prefs).json, meta).toString()
+                    IndexAuthorityContext.reviewTrades(prefs).json, meta, true).toString()
             })
             val out = try { fut.get(20, java.util.concurrent.TimeUnit.SECONDS) } catch (e: java.util.concurrent.TimeoutException) {
                 fut.cancel(false)
@@ -1701,6 +1701,11 @@ class NativeBridge(private val context: Context) {
             val man = try { JSONObject(out).optJSONObject("manifest") } catch (e: Exception) { null }
             val status = man?.optString("status", "UNKNOWN") ?: "UNPARSABLE"
             val used = man?.optString("session_date_used", "")?.takeIf { it.length == 10 } ?: date
+            // G0: a user-selected session is exact.  Never save another day's evidence as the requested session.
+            if (used != date || status == "SESSION_DATE_MISMATCH" || status == "SESSION_DATE_MISSING") {
+                return JSONObject().put("ok", false).put("status", if (status.startsWith("SESSION_DATE_")) status else "SESSION_DATE_MISMATCH")
+                    .put("session_date_requested", date).put("session_date_used", man?.optString("session_date_used", "") ?: "").toString()
+            }
             if (bytes.size > 4 * 1024 * 1024 + 65536) {
                 return JSONObject().put("ok", false).put("status", "OVER_CAP").put("bytes", bytes.size).toString()
             }
@@ -1708,6 +1713,7 @@ class NativeBridge(private val context: Context) {
             val saved = saveExportBytes("mr_session_evidence_$used.json", "application/json", bytes)
             JSONObject().put("ok", status == "OK" && saved.optBoolean("ok")).put("status", status)
                 .put("bytes", bytes.size).put("sha256", sha).put("session_date_used", used)
+                .put("session_date_requested", date).put("parts", man?.optJSONObject("parts") ?: JSONObject())
                 .put("fileName", saved.optString("fileName")).toString()
         } catch (e: Exception) {
             JSONObject().put("ok", false).put("status", "EXPORT_ERROR").put("error", e.javaClass.simpleName).toString()

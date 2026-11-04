@@ -7209,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.92"
+BRAIN_VERSION = "2.6.93"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -18808,8 +18808,80 @@ def _compact_snapshot_leg(raw):
     keys = (
         'action', 'option_type', 'strike', 'ltp', 'bid', 'ask',
         'expiry', 'instrument_key', 'leg_schema_version',
+        # G1: quote time and depth needed to audit managed freshness. Present
+        # only on legs that carried them (authority constructions); legacy legs
+        # gain no null keys.
+        'exchange_ts', 'bid_qty', 'ask_qty',
     )
     return {key: raw.get(key) for key in keys if raw.get(key) is not None}
+
+
+# G1: per-candidate index-authority lineage. Copied only when present so legacy
+# menus (hundreds of rows) do not gain null keys under the Android budget.
+IA_CANDIDATE_LINEAGE_KEYS = (
+    'authorityPolicyVersion', 'policySelectorVersion', 'indexDecisionId',
+    'constructionVersion', 'constructionStatus', 'constructionReason',
+    'authorityOrder', 'indexPolicyAllowed', 'maxProfitPoints', 'maxLossPoints', 'k0',
+)
+IA_MANAGED_SUMMARY_SCHEMA = 'mr.snapshot_managed_policy.v1'
+IA_MANAGED_GATE_CAP = 6
+IA_MANAGED_REASON_CAP = 8
+IA_MANAGED_TEXT_CAP = 120
+
+
+def _compact_lot_evidence(raw):
+    if not isinstance(raw, dict):
+        return None
+    out = {k: raw.get(k) for k in ('schema', 'status', 'source', 'session_date') if raw.get(k) is not None}
+    reasons = raw.get('reasons')
+    if isinstance(reasons, list):
+        out['reasons'] = [str(r)[:IA_MANAGED_TEXT_CAP] for r in reasons[:IA_MANAGED_REASON_CAP]]
+    legs = raw.get('legs')
+    if isinstance(legs, list):
+        out['leg_count'] = len(legs)
+    return out or None
+
+
+def _ia_candidate_lineage(c):
+    out = {k: c.get(k) for k in IA_CANDIDATE_LINEAGE_KEYS if c.get(k) is not None}
+    lot = _compact_lot_evidence(c.get('lotEvidence'))
+    if lot:
+        out['lotEvidence'] = lot
+    return out
+
+
+def _ia_managed_policy_summary(managed):
+    """G1: bounded per-index managed-policy summary (reason, selection, per-candidate admission)."""
+    if not isinstance(managed, dict):
+        return None
+    out = {'schema': IA_MANAGED_SUMMARY_SCHEMA, 'by_index': {}}
+    for ix in ('NF', 'BNF'):
+        mp = managed.get(ix) if isinstance(managed.get(ix), dict) else {}
+        gates = [g for g in (mp.get('gates') or []) if isinstance(g, dict)]
+        rows = []
+        for g in gates[:IA_MANAGED_GATE_CAP]:
+            fr = g.get('freshness') if isinstance(g.get('freshness'), dict) else {}
+            rows.append({
+                'candidate_id': g.get('candidate_id'),
+                'admit': bool(g.get('admit')),
+                'reasons': [str(r)[:IA_MANAGED_TEXT_CAP] for r in (g.get('reasons') or [])[:IA_MANAGED_REASON_CAP]],
+                'freshness_status': fr.get('status'),
+                'freshness_reason': fr.get('reason'),
+            })
+        exp = mp.get('exposure') if isinstance(mp.get('exposure'), dict) else {}
+        out['by_index'][ix] = {
+            'policy_id': mp.get('policy_id'),
+            'reason': mp.get('reason'),
+            'selected_candidate_id': ((mp.get('selected') or {}).get('candidate_id')
+                                      if isinstance(mp.get('selected'), dict) else None),
+            'gate_count': len(gates),
+            'admissible_count': sum(1 for g in gates if g.get('admit')),
+            'gates_truncated': len(gates) > IA_MANAGED_GATE_CAP,
+            'gates': rows,
+            'exposure_count': exp.get('count'),
+            'managed_entries_disabled': bool(mp.get('managed_entries_disabled')),
+        }
+    return out
 
 
 def _compact_pc2_gate_basis(raw, limit=12):
@@ -19184,6 +19256,8 @@ def _candidate_view(c):
     paper_el = _compact_paper_analysis_eligibility(c.get('paperAnalysisEligibility'))
     if paper_el is not None:
         view['paperAnalysisEligibility'] = paper_el
+    # G1: authority lineage survives the snapshot projection (present-only).
+    view.update(_ia_candidate_lineage(c))
     return view
 
 
@@ -21429,6 +21503,7 @@ def _compact_android_snapshot_context(snapshot_context):
         'snapshot_pc2_batch_f_supply_pattern',
         'snapshot_pc2_paper_primary',
         'snapshot_index_authority_primary',
+        'snapshot_managed_policy',
         'snapshot_pc2_composite_shadow',
         'snapshot_pc2_supply_quality_shadow',
         'snapshot_pc2_batch_f_paper_context',
@@ -21631,6 +21706,9 @@ def _compact_android_snapshot_context(snapshot_context):
                 },
                 'nfDTE': compact.get('nfDTE'),
                 'bnfDTE': compact.get('bnfDTE'),
+                # G1: the bounded authority record/summary survive even the failure stub.
+                **{k: compact[k] for k in ('snapshot_index_authority_primary', 'snapshot_managed_policy')
+                   if isinstance(compact.get(k), dict)},
                 'snapshot_android_compaction': {
                     'schema_version': 'android_compact_v3_fail_closed',
                     'context_byte_cap': context_byte_cap,
@@ -21694,6 +21772,11 @@ def _bounded_x1_snapshot(payload):
     return out
 
 
+IA_SNAPSHOT_COVERAGE_NOTE = ('index_direction_v1 snapshot: primary only when exactly one managed selection across '
+                             'NF/BNF; other authority candidates are secondary teacher rows (hypothetical, '
+                             'not chosen-trade labels)')
+
+
 def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     """Takes snapshot including surfaced and full generated candidates.
     primary_candidate_json = the #1 surfaced recommendation (ML truth target).
@@ -21740,8 +21823,15 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
                               'candidate_ids': ((bi.get(ix) or {}).get('action') or {}).get('candidate_ids') or [],
                               'analysis_ts': (bi.get(ix) or {}).get('analysis_ts'),
                               'decision_poll_ts': (bi.get(ix) or {}).get('decision_poll_ts'),
-                              'managed_selected': ((mp.get(ix) or {}).get('selected') or {}).get('candidate_id')}
+                              'managed_selected': ((mp.get(ix) or {}).get('selected') or {}).get('candidate_id'),
+                              # G1: bounded managed outcome per index (full per-candidate detail in
+                              # snapshot_managed_policy).
+                              'managed_reason': (mp.get(ix) or {}).get('reason'),
+                              'admissible_count': sum(1 for g in ((mp.get(ix) or {}).get('gates') or [])
+                                                      if isinstance(g, dict) and g.get('admit'))}
                          for ix in ('NF', 'BNF')},
+            'selected_candidate_ids': sel_ids,
+            'coverage_note': IA_SNAPSHOT_COVERAGE_NOTE,
         }
     verdict = result.get('verdict', {})
     latest_poll = polls[-1] if isinstance(polls, list) and polls else {}
@@ -21876,6 +21966,8 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
             primary['margin_evidence'] = _pme.normalize_margin_evidence(top_cand, role='PRIMARY')
         except Exception as e:
             primary['margin_evidence'] = {'status': 'EVIDENCE_BUILD_ERROR', 'error': str(e)[:200]}
+        # G1: authority lineage on the chosen primary (present-only; legacy primaries unchanged).
+        primary.update(_ia_candidate_lineage(top_cand))
 
     # Clean top-5 candidates for secondary research only
     clean_cands = []
@@ -22186,6 +22278,9 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     snapshot_context['snapshot_pc2_paper_primary'] = result.get('pc2_paper_primary') if isinstance(result.get('pc2_paper_primary'), dict) else {}
     if ia_record is not None:
         snapshot_context['snapshot_index_authority_primary'] = ia_record
+        _mps = _ia_managed_policy_summary(result.get('managed_policy'))
+        if _mps is not None:
+            snapshot_context['snapshot_managed_policy'] = _mps
     snapshot_context['snapshot_pc2_authority_decisions'] = result.get('pc2_authority_decisions') if isinstance(result.get('pc2_authority_decisions'), list) else []
     snapshot_context['snapshot_pc2_authority_policy'] = result.get('pc2_authority_policy') if isinstance(result.get('pc2_authority_policy'), dict) else {}
     snapshot_context['snapshot_pc2_authority_capture'] = result.get('pc2_authority_capture') if isinstance(result.get('pc2_authority_capture'), dict) else {}
@@ -23225,11 +23320,29 @@ def _candidate_contract_fields(cand, snap=None):
 
 
 
+IA_DEBIT_COST_BASIS = 'index_construction_v1_debit_cost_abs_signed_net_premium'
+
+
+def _ia_construction_debit(cand):
+    """G2: an index_construction_v1 DEBIT structure (explicit isCredit False).  Its netPremium is SIGNED
+    (credit positive, debit negative) for economics/display; only the teacher needs the positive cost."""
+    return (isinstance(cand, dict)
+            and cand.get('constructionVersion') == 'index_construction_v1'
+            and cand.get('isCredit') is False)
+
+
 def _candidate_entry_premium(cand):
+    """H2 entry basis in points: credit received or debit paid, both positive.
+
+    Legacy candidates and every credit structure: netPremium unchanged (never abs()'d globally).
+    G2: index_construction_v1 debit structures carry a signed (negative) netPremium; the teacher gets the
+    positive debit cost abs(netPremium).  The candidate's own signed netPremium is not modified."""
     entry = _float_or_none(cand.get('netPremium'))
-    if entry is not None:
-        return entry
-    return None
+    if entry is None:
+        return None
+    if entry < 0 and _ia_construction_debit(cand):
+        return abs(entry)
+    return entry
 
 
 def _candidate_vertical_width(cand, sell_label='sell', buy_label='buy'):
@@ -23340,7 +23453,7 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
         sim_pnl = (later_value - entry_premium) * lot_size
         formula = '(close_value - entry_debit) * lot'
 
-    return {
+    out = {
         'sim_pnl_h2': round(sim_pnl, 2),
         'price_integrity': 'OK',
         'h2_price_integrity_reason': 'OK',
@@ -23350,6 +23463,9 @@ def _legacy_h2_structure_valuation(chain_rows, cand):
         'h2_formula': formula,
         'h2_leg_prices': leg_prices,
     }
+    if _ia_construction_debit(cand) and (_float_or_none(cand.get('netPremium')) or 0) < 0:
+        out['h2_entry_basis_source'] = IA_DEBIT_COST_BASIS
+    return out
 
 
 def _teacher_execution_basis(snap, cand, point, entry_point=None):
@@ -24201,6 +24317,8 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
         'h2_bound_width_points': h2.get('h2_bound_width_points'),
         'h2_formula': h2.get('h2_formula'),
     }
+    if h2.get('h2_entry_basis_source'):
+        outcome['h2_entry_basis_source'] = h2['h2_entry_basis_source']
     teacher = _managed_teacher_outcome(
         chain_rows,
         snap,
@@ -24212,7 +24330,7 @@ def _eval_single_candidate(chain_rows, snap, cand, teacher_config=None, drop_sin
     if teacher is None:
         return None
     outcome.update(teacher)
-    for key in ('authorityPolicyVersion', 'indexDecisionId', 'constructionVersion'):
+    for key in ('authorityPolicyVersion', 'indexDecisionId', 'constructionVersion', 'policySelectorVersion'):
         if cand.get(key) is not None:
             outcome[key] = cand[key]
     if cand.get('authorityPolicyVersion') == 'index_direction_v1':
@@ -27786,7 +27904,7 @@ def index_authority_persist(state_dir, session_date, delta_json, published_ms=0)
         return json.dumps({'status': 'PERSIST_ERROR', 'reason': type(exc).__name__, 'written': False})
 
 
-def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, meta_json='{}'):
+def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, meta_json='{}', require_exact=False):
     """PM1-5: allow-listed, bounded session evidence export (session_evidence_v1).  Returns the bundle JSON text
     (manifest + parts, <= 4 MiB) or a bounded failure manifest.  Local files only; never raises."""
     try:
@@ -27805,7 +27923,7 @@ def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, me
                 'review_inputs': 'mr.daily_review.inputs.v1', 'authority_session_cap_bytes': _ias.MAX_SESSION_BYTES,
                 'review_explanations': False}
         _bundle, raw = _se.build(files_dir, session_date, closed_trades_json, meta, versions, caps,
-                                 trade_session=_dr._trade_session)
+                                 trade_session=_dr._trade_session, require_exact=bool(require_exact))
         return raw.decode()
     except Exception as exc:
         return json.dumps({'manifest': {'schema': 'mr.session_evidence.v1', 'status': 'EXPORT_ERROR',
