@@ -218,8 +218,13 @@ def _part_entry(status, obj, extra=None):
 
 
 def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=None, capabilities=None,
-          trade_session=None, now=None):
-    """Return (bundle_dict, canonical_bytes).  Never raises for data problems; bounded output."""
+          trade_session=None, now=None, require_exact=False):
+    """Return (bundle_dict, canonical_bytes).  Never raises for data problems; bounded output.
+
+    G0: require_exact=True is used for a user-selected session (the phone export).  resolve_session may fall
+    back to an earlier retained authority date; for an exact request that fallback is an explicit bounded
+    failure (SESSION_DATE_MISMATCH / SESSION_DATE_MISSING, no parts) -- another day's evidence is never
+    exported as the requested session.  Default False keeps the legacy fallback behaviour unchanged."""
     meta = meta if isinstance(meta, dict) else {}
     created = (now or datetime.now(IST)).isoformat()
     req = valid_date(session_date)
@@ -237,6 +242,13 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
         return {'manifest': man}, _canon({'manifest': man}).encode()
     used = resolve_session(files_dir, req)
     man['session_date_used'] = used
+    man['session_date_exact_required'] = bool(require_exact)
+    if require_exact and used != req:
+        man.update(status='SESSION_DATE_MISSING' if used is None else 'SESSION_DATE_MISMATCH',
+                   reason='REQUESTED_SESSION_NOT_RETAINED',
+                   note='no retained authority record or archive for the requested IST session; '
+                        'another session is never exported in its place')
+        return {'manifest': man}, _canon({'manifest': man}).encode()
     sess = used or req
     parts, entries = {}, {}
     # authority (never truncated)
