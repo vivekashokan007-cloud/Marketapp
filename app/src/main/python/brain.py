@@ -27904,7 +27904,7 @@ def index_authority_persist(state_dir, session_date, delta_json, published_ms=0)
         return json.dumps({'status': 'PERSIST_ERROR', 'reason': type(exc).__name__, 'written': False})
 
 
-def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, meta_json='{}'):
+def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, meta_json='{}', require_exact=False):
     """PM1-5: allow-listed, bounded session evidence export (session_evidence_v1).  Returns the bundle JSON text
     (manifest + parts, <= 4 MiB) or a bounded failure manifest.  Local files only; never raises."""
     try:
@@ -27923,7 +27923,7 @@ def session_evidence_bundle(files_dir, session_date, closed_trades_json=None, me
                 'review_inputs': 'mr.daily_review.inputs.v1', 'authority_session_cap_bytes': _ias.MAX_SESSION_BYTES,
                 'review_explanations': False}
         _bundle, raw = _se.build(files_dir, session_date, closed_trades_json, meta, versions, caps,
-                                 trade_session=_dr._trade_session)
+                                 trade_session=_dr._trade_session, require_exact=bool(require_exact))
         return raw.decode()
     except Exception as exc:
         return json.dumps({'manifest': {'schema': 'mr.session_evidence.v1', 'status': 'EXPORT_ERROR',
