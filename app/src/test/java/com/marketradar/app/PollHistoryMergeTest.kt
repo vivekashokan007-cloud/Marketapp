@@ -131,17 +131,34 @@ class PollHistoryMergeTest {
     }
 
     @Test
-    fun unusableRemoteIsAnAccurateNoOpNotARenormalisedRewrite() {
-        // Codex 3C: "do not overwrite good state with an empty normalization result".
-        // Local rows are handed back as the SAME array — not filtered, re-sorted or trimmed.
+    fun unusableRemoteIsReportedAndKeepsEveryOwnedLocalObservation() {
+        // An earlier version returned the raw local array by identity, which looked like a clean
+        // no-op but meant the restore planner judged preserve-versus-reset from the array's stale
+        // header alone. The merge now reports which local rows validated AND proved ownership, so
+        // the planner can tell "nothing to learn" from "this row is independently current".
         val local = arr(poll("09:20"), poll("09:15"))          // deliberately out of order
         for (remote in listOf(JSONArray(), null, arr(JSONObject().put("t", "not-a-time")))) {
             val merged = PollHistoryMerge.merge(local, remote, session)
             assertTrue("no usable remote must be reported as such", merged.remoteUnusable)
-            assertEquals(2, merged.kept)
-            assertSame("local history must be handed back untouched", local, merged.history)
-            assertEquals(listOf("09:20", "09:15"), times(merged.history))
+            assertEquals("every owned local observation is retained", 2, merged.kept)
+            assertEquals(2, merged.localRows)
+            assertEquals(0, merged.fromRemote)
+            assertEquals(listOf("09:15", "09:20"), times(merged.history))
         }
+    }
+
+    @Test
+    fun unusableRemoteStillDropsUnownedLocalRowsWithoutReStampingThem() {
+        val undated = JSONObject().put("t", "09:20").put("nf", 24000.0)
+        val dated = poll("09:25", date = session)
+        val merged = PollHistoryMerge.merge(
+            arr(undated, dated), JSONArray(), session, localSessionDate = "2026-11-03"
+        )
+        assertTrue(merged.remoteUnusable)
+        assertEquals("only the self-dating row proves it belongs to this session", 1, merged.kept)
+        assertEquals(1, merged.unownedLocal)
+        assertEquals(2, merged.localRows)
+        assertEquals(listOf("09:25"), times(merged.history))
     }
 
     // ---- session ownership of undated local rows -------------------------------------------
@@ -183,18 +200,68 @@ class PollHistoryMergeTest {
     @Test
     fun ownershipClassification() {
         assertEquals(PollHistoryMerge.Ownership.EXPLICIT,
-            PollHistoryMerge.ownershipOf(poll("09:20", date = session), false))
+            PollHistoryMerge.ownershipOf(poll("09:20", date = session), session, false))
         assertEquals(PollHistoryMerge.Ownership.EXPLICIT,
-            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", "2026-11-04T09:20:00Z"), false))
+            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", "2026-11-04T09:20:00Z"), session, false))
         assertEquals("an epoch number is self-dating", PollHistoryMerge.Ownership.EXPLICIT,
-            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", 1793764200000L), false))
+            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", 1793764200000L), session, false))
         assertEquals("a clock string in an absolute field is still time-only",
             PollHistoryMerge.Ownership.UNKNOWN,
-            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", "09:20"), false))
+            PollHistoryMerge.ownershipOf(JSONObject().put("poll_ts", "09:20"), session, false))
         assertEquals(PollHistoryMerge.Ownership.VERIFIED_CONTAINER,
-            PollHistoryMerge.ownershipOf(JSONObject().put("t", "09:20"), true))
+            PollHistoryMerge.ownershipOf(JSONObject().put("t", "09:20"), session, true))
         assertEquals(PollHistoryMerge.Ownership.UNKNOWN,
-            PollHistoryMerge.ownershipOf(JSONObject().put("t", "09:20"), false))
+            PollHistoryMerge.ownershipOf(JSONObject().put("t", "09:20"), session, false))
+        assertEquals("a row that resolves to nothing owns nothing",
+            PollHistoryMerge.Ownership.UNKNOWN,
+            PollHistoryMerge.ownershipOf(JSONObject().put("t", "nope"), session, true))
+    }
+
+    // ---- ownership must follow the field that ACTUALLY parsed ------------------------------
+
+    @Test
+    fun anUnparsedAbsoluteFieldDoesNotMakeAClockFallbackSelfDating() {
+        // The naive absolute value is rejected by the consumer, so resolution genuinely falls
+        // back to the container-dependent `t`. Treating the row as self-dating because some
+        // field merely *looked* absolute let a previous session's undated row onto today.
+        val row = JSONObject().put("poll_ts", "2026-11-03T09:20:00").put("t", "09:20").put("nf", 24000.0)
+        val id = PollHistoryMerge.resolveIdentity(row, session)
+        assertEquals("t", id!!.field)
+        assertFalse("the clock fallback is not an absolute instant", id.absolute)
+        assertEquals(PollHistoryMerge.Ownership.UNKNOWN,
+            PollHistoryMerge.ownershipOf(row, session, false))
+        assertEquals(PollHistoryMerge.Ownership.VERIFIED_CONTAINER,
+            PollHistoryMerge.ownershipOf(row, session, true))
+    }
+
+    @Test
+    fun malformedOutOfRangeAndNaiveAbsoluteFieldsAllFallBackWithoutOwnership() {
+        for (bad in listOf("2026-11-03T09:20:00", "not-a-time", "2026-11-04T0920:00+05:30", "2026-11-04")) {
+            val row = JSONObject().put("poll_ts", bad).put("t", "09:20").put("nf", 24000.0)
+            assertEquals("resolution must fall through $bad to the clock field",
+                "t", PollHistoryMerge.resolveIdentity(row, session)?.field)
+            assertEquals("yesterday's container owns nothing of today: $bad",
+                PollHistoryMerge.Ownership.UNKNOWN, PollHistoryMerge.ownershipOf(row, session, false))
+        }
+        // Non-positive and boolean numerics also fall through rather than self-dating.
+        for (bad in listOf(0, -5, true)) {
+            val row = JSONObject().put("poll_ts", bad).put("t", "09:20").put("nf", 24000.0)
+            assertEquals(PollHistoryMerge.Ownership.UNKNOWN,
+                PollHistoryMerge.ownershipOf(row, session, false))
+        }
+    }
+
+    @Test
+    fun aRowWithAnUnparsedAbsoluteFieldIsExcludedUnderAStaleHeader() {
+        // The whole point: this row must not win a conflict against today's remote observation.
+        val stale = JSONObject().put("poll_ts", "2026-11-03T09:20:00").put("t", "09:20")
+            .put("nf", 111.0).put("bnf", 222.0)
+        val merged = PollHistoryMerge.merge(
+            arr(stale), arr(poll("09:20", nf = 24000.0)), session, localSessionDate = "2026-11-03"
+        )
+        assertEquals(1, merged.kept)
+        assertEquals(1, merged.unownedLocal)
+        assertEquals(24000.0, merged.history.getJSONObject(0).optDouble("nf"), 1e-9)
     }
 
     // ---- an unusable row must not suppress usable evidence ----------------------------------
@@ -213,14 +280,35 @@ class PollHistoryMergeTest {
     }
 
     @Test
-    fun aPartiallyUsableLocalRowLosesToAFullyUsableRemoteRowAndIsNeverSpliced() {
+    fun aValidPartialLocalRowIsPreservedAgainstAConflictingFullerRemoteRow() {
+        // The narrow repair is ONLY about a local row the consumer drops entirely. A local row
+        // that serves one index is real evidence the device holds, and must not be overwritten
+        // with a different NF value merely because the remote row also carries BNF.
         val local = arr(JSONObject().put("date", session).put("t", "09:20").put("nfSpot", 24000.0))
         val remote = arr(poll("09:20", nf = 24111.0, bnf = 52111.0))
         val merged = PollHistoryMerge.merge(local, remote, session)
         assertEquals(1, merged.kept)
+        assertEquals("one-usable local must not be replaced", 0, merged.remoteWonUnusable)
         val row = merged.history.getJSONObject(0)
-        assertEquals("the remote row is taken WHOLE", 24111.0, row.optDouble("nf"), 1e-9)
-        assertEquals("fields are never spliced from the losing row", 24111.0, row.optDouble("nfSpot"), 1e-9)
+        assertEquals("the local observation is kept whole", 24000.0, row.optDouble("nfSpot"), 1e-9)
+        assertTrue("no remote field may be spliced in", row.isNull("bnf"))
+        assertEquals("the conflict is recorded, not silently reconciled", 1, merged.conflicts)
+    }
+
+    @Test
+    fun onlyAZeroUsableLocalRowIsReplaced() {
+        // zero-usable local vs usable remote -> replaced
+        val zero = arr(JSONObject().put("date", session).put("t", "09:20").put("nf", 0.0))
+        val replaced = PollHistoryMerge.merge(zero, arr(poll("09:20", nf = 24000.0)), session)
+        assertEquals(1, replaced.remoteWonUnusable)
+        assertEquals(24000.0, replaced.history.getJSONObject(0).optDouble("nf"), 1e-9)
+
+        // zero-usable local vs zero-usable remote -> local still wins, nothing gained
+        val bothZero = PollHistoryMerge.merge(
+            zero, arr(JSONObject().put("date", session).put("t", "09:20").put("bnf", -1.0)), session
+        )
+        assertEquals(0, bothZero.remoteWonUnusable)
+        assertEquals(1, bothZero.kept)
     }
 
     @Test
@@ -245,10 +333,34 @@ class PollHistoryMergeTest {
     @Test
     fun assignedPollNumberIsReadOnlyFromValidMetadata() {
         assertEquals(12, PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", 12)))
+        assertEquals(12, PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", "12")))
         assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", 0)))
         assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", "x")))
         assertNull(PollHistoryMerge.assignedPollNumber(JSONObject()))
         assertNull(PollHistoryMerge.assignedPollNumber(null))
+    }
+
+    @Test
+    fun assignedPollNumberRejectsInvalidMetadataInsteadOfTruncatingIt() {
+        // An earlier version called Number.toInt() BEFORE validating, so 12.9 silently became 12
+        // and an out-of-range double saturated to Int.MAX_VALUE, poisoning the assignment maximum
+        // so the next increment would overflow.
+        assertNull("a fractional value is not an assignment number",
+            PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", 12.9)))
+        assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", "12.9")))
+        assertNull("must not saturate to Int.MAX_VALUE",
+            PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", 1e18)))
+        assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", -3.0)))
+        assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", true)))
+        // The accepted ceiling leaves room for the `+ 1` a reservation performs.
+        assertEquals(PollHistoryMerge.MAX_ASSIGNABLE_POLL_NUMBER,
+            PollHistoryMerge.assignedPollNumber(
+                JSONObject().put("poll_number", PollHistoryMerge.MAX_ASSIGNABLE_POLL_NUMBER)))
+        assertNull(PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", Int.MAX_VALUE)))
+        assertEquals("the ceiling must not overflow when incremented",
+            Int.MAX_VALUE, PollHistoryMerge.MAX_ASSIGNABLE_POLL_NUMBER + 1)
+        // An exactly-integral double is still valid metadata.
+        assertEquals(7, PollHistoryMerge.assignedPollNumber(JSONObject().put("poll_number", 7.0)))
     }
 
     @Test

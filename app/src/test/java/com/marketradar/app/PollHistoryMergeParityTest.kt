@@ -75,6 +75,63 @@ class PollHistoryMergeParityTest {
     }
 
     @Test
+    fun numericEpochsRoundRatherThanTruncate() {
+        // `datetime.fromtimestamp` ROUNDS the fraction (`us = round(frac * 1e6)`). Truncating
+        // split one observation's identity: oracle gives .123000 for the ms epoch below, while
+        // truncation gave .122999 — so a millisecond epoch and its own ISO spelling would never
+        // deduplicate against each other.
+        assertEquals("09:20:00.123000000", keyOf("poll_ts", 1793764200123L))
+        assertEquals("09:20:00.123457000", keyOf("poll_ts", 1793764200.1234567))
+        assertEquals("09:20:00.999000000", keyOf("poll_ts", 1793764200999L))
+        // The exactly-representable case that hid the problem.
+        assertEquals("09:20:00.125000000", keyOf("poll_ts", 1793764200125L))
+        assertEquals(
+            "a millisecond epoch and its ISO spelling are one identity",
+            keyOf("poll_ts", "2026-11-04T09:20:00.123+05:30"),
+            keyOf("poll_ts", 1793764200123L)
+        )
+    }
+
+    @Test
+    fun offsetSecondsAreAppliedNotDropped() {
+        // Oracle: '+05:30:30' is 09:19:30 IST, not 09:20:00. Truncating the offset to +HH:MM
+        // silently shifted the instant, and the old test used only '+05:30:00' so it could not see it.
+        assertEquals("09:19:30", keyOf("poll_ts", "2026-11-04T09:20:00+05:30:30"))
+        assertEquals("20:20:30", keyOf("poll_ts", "2026-11-04T09:20:00-05:30:30"))
+        assertEquals("09:20:00", keyOf("poll_ts", "2026-11-04T09:20:00+05:30:00"))
+    }
+
+    @Test
+    fun anySingleDateTimeSeparatorIsAccepted() {
+        // CPython 3.11 fromisoformat takes whatever sits at index 10 as the separator.
+        for (sep in listOf("T", " ", "X", "x", "_")) {
+            assertEquals(sep, "09:20:00", keyOf("poll_ts", "2026-11-04${sep}09:20:00+05:30"))
+        }
+        // ...but the time still needs two-digit fields, and a missing separator fails.
+        assertNull(keyOf("poll_ts", "2026-11-0409:20:00+05:30"))
+        assertNull(keyOf("poll_ts", "2026-11-04T9:20:00+05:30"))
+    }
+
+    @Test
+    fun strptimeAcceptsOneOrTwoDigitsPerComponent() {
+        // Requiring two minute digits rejected rows the consumer keeps.
+        assertEquals("09:05:00", keyOf("t", "9:5"))
+        assertEquals("01:05:00", keyOf("t", "1:5"))
+        assertEquals("00:00:00", keyOf("t", "0:0"))
+        assertEquals("09:05:03", keyOf("t", "9:5:3"))
+        assertEquals("09:05:03", keyOf("t", "09:5:3"))
+        assertEquals("21:05:00", keyOf("t", "9:5 PM"))
+    }
+
+    @Test
+    fun theAmPmSeparatorIsOneOrMoreSpacesNotZero() {
+        // The literal space in `%I:%M %p` compiles to `\s+`, so `\s*` was too permissive.
+        assertNull(keyOf("t", "09:20AM"))
+        assertEquals("09:20:00", keyOf("t", "09:20  AM"))
+        assertEquals("09:20:00", keyOf("t", "09:20\tAM"))
+    }
+
+    @Test
     fun nonPositiveAndNonNumericValuesAreRejected() {
         // Oracle: True, False, 0, -5 -> None
         assertNull(keyOf("poll_ts", true))

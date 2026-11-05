@@ -72,6 +72,35 @@ class PollIdentityParity(unittest.TestCase):
         self.assertEqual(_value_key(1793764200), '09:20:00')
         self.assertEqual(_value_key(1793764200.0), '09:20:00')
 
+    def test_numeric_epochs_round_rather_than_truncate(self):
+        """`datetime.fromtimestamp` ROUNDS the fraction to microseconds (`us = round(frac*1e6)`).
+
+        Truncating split one observation's identity: epoch ms 1793764200123 truncates to .122999
+        while this consumer and the equivalent ISO string both give .123000, so the two spellings
+        would never deduplicate.
+        """
+        self.assertEqual(_value_key(1793764200123), '09:20:00.123000000')
+        self.assertEqual(_value_key(1793764200.1234567), '09:20:00.123457000')
+        self.assertEqual(_value_key(1793764200999), '09:20:00.999000000')
+        # The exactly-representable case that hid the problem.
+        self.assertEqual(_value_key(1793764200125), '09:20:00.125000000')
+        # A millisecond epoch and its ISO spelling must land on one identity.
+        self.assertEqual(_value_key(1793764200123), _value_key('2026-11-04T09:20:00.123+05:30'))
+
+    def test_offset_seconds_are_applied_not_dropped(self):
+        """A nonzero offset-seconds field shifts the instant; truncating it to +HH:MM did not."""
+        self.assertEqual(_value_key('2026-11-04T09:20:00+05:30:30'), '09:19:30')
+        self.assertEqual(_value_key('2026-11-04T09:20:00-05:30:30'), '20:20:30')
+        self.assertEqual(_value_key('2026-11-04T09:20:00+05:30:00'), '09:20:00')
+
+    def test_any_single_date_time_separator_is_accepted(self):
+        """CPython 3.11 `fromisoformat` takes whatever sits at index 10 as the separator."""
+        for sep in ('T', ' ', 'X', 'x', '_'):
+            self.assertEqual(_value_key('2026-11-04%s09:20:00+05:30' % sep), '09:20:00', sep)
+        # ...but the time itself still needs two-digit fields, and a missing separator fails.
+        self.assertIsNone(_value_key('2026-11-0409:20:00+05:30'))
+        self.assertIsNone(_value_key('2026-11-04T9:20:00+05:30'))
+
     def test_non_positive_and_boolean_values_are_rejected(self):
         for v in (True, False, 0, -5, float('nan'), float('inf')):
             self.assertIsNone(_value_key(v), repr(v))
@@ -103,8 +132,23 @@ class PollIdentityParity(unittest.TestCase):
         self.assertEqual(_value_key('9:20'), '09:20:00')
         self.assertEqual(_value_key('09:20:30'), '09:20:30')
         self.assertEqual(_value_key('  09:20  '), '09:20:00')
-        for v in ('25:00', '09:60', 'not-a-time', ''):
+        for v in ('25:00', '24:00', '09:60', 'not-a-time', ''):
             self.assertIsNone(_value_key(v), repr(v))
+
+    def test_strptime_accepts_one_or_two_digits_per_component(self):
+        """Requiring two minute digits rejected rows this consumer keeps."""
+        self.assertEqual(_value_key('9:5'), '09:05:00')
+        self.assertEqual(_value_key('1:5'), '01:05:00')
+        self.assertEqual(_value_key('0:0'), '00:00:00')
+        self.assertEqual(_value_key('9:5:3'), '09:05:03')
+        self.assertEqual(_value_key('09:5:3'), '09:05:03')
+        self.assertEqual(_value_key('9:5 PM'), '21:05:00')
+
+    def test_the_am_pm_separator_is_one_or_more_spaces_not_zero(self):
+        """The literal space in `%I:%M %p` compiles to `\\s+`, so `\\s*` was too permissive."""
+        self.assertIsNone(_value_key('09:20AM'))
+        self.assertEqual(_value_key('09:20  AM'), '09:20:00')
+        self.assertEqual(_value_key('09:20\tAM'), '09:20:00')
 
     # ---- field precedence ---------------------------------------------------------------
 

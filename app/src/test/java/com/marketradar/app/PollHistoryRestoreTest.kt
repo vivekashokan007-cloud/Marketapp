@@ -45,18 +45,65 @@ class PollHistoryRestoreTest {
         latestPollPresent = latestPollPresent, lastPollTimePresent = lastPollTimePresent
     )
 
+    // ---- the real application seam -----------------------------------------------------------
+    //
+    // These are the production key names. The plan is applied by PollHistoryRestore.apply -- the
+    // same code the service runs -- through a map-backed StateWriter, so removals are represented
+    // exactly as a RESET performs them. An earlier helper modelled null plan fields as "reuse the
+    // prior value", which does not describe the reset transaction at all.
+
+    private val assignedDateKey = "last_assigned_poll_date"
+    private val assignedNumberKey = "last_assigned_poll_number"
+    private val coverageDateKey = "coverage_integrity_date"
+    private val extraResetKeys = listOf(
+        "last_poll_dispatch_slot", "last_successful_poll_slot",
+        "coverage_integrity", "coverage_integrity_issue"
+    )
+
+    /** A map standing in for SharedPreferences, with the same get-or-default semantics. */
+    private class Prefs(val map: MutableMap<String, Any> = LinkedHashMap()) :
+        PollHistoryRestore.StateWriter {
+        override fun putString(key: String, value: String) { map[key] = value }
+        override fun putInt(key: String, value: Int) { map[key] = value }
+        override fun remove(key: String) { map.remove(key) }
+        fun str(key: String, def: String = "") = (map[key] as? String) ?: def
+        fun int(key: String, def: Int = 0) = (map[key] as? Int) ?: def
+        fun has(key: String) = map.containsKey(key)
+    }
+
+    private fun prefsFrom(local: PollHistoryRestore.LocalState): Prefs {
+        val p = Prefs()
+        p.map["poll_history"] = local.historyJson ?: "[]"
+        p.map["poll_count"] = local.pollCount
+        p.map["last_poll_date"] = local.lastPollDate
+        p.map[assignedDateKey] = local.assignedDate
+        p.map[assignedNumberKey] = local.assignedNumber
+        if (local.latestPollPresent) p.map["latest_poll"] = "{}"
+        if (local.lastPollTimePresent) p.map["last_poll_time"] = "09:00"
+        return p
+    }
+
+    /** Runs plan + real application, returning the resulting state. */
+    private fun applied(
+        local: PollHistoryRestore.LocalState,
+        remote: JSONArray?,
+        requested: String = today,
+        active: String = today
+    ): Pair<PollHistoryRestore.Plan, Prefs> {
+        val plan = PollHistoryRestore.plan(local, remote, requested, active)
+        val prefs = prefsFrom(local)
+        PollHistoryRestore.apply(plan, prefs, assignedDateKey, assignedNumberKey, coverageDateKey, extraResetKeys)
+        return plan to prefs
+    }
+
     /**
-     * Mirrors `MarketWatchService.reservePollNumberForToday()`:
-     * `maxOf(committedCount, assignedCount) + 1`, where each prior value counts only when its
-     * owning session header is today. The restore must leave state that makes this correct.
+     * `MarketWatchService.reservePollNumberForToday()`, read off the APPLIED state:
+     * `maxOf(committedCount, assignedCount) + 1`, each prior value counting only when its owning
+     * session header is today.
      */
-    private fun nextPollNumberAfter(plan: PollHistoryRestore.Plan, prior: PollHistoryRestore.LocalState): Int {
-        val lastPollDate = plan.lastPollDate ?: prior.lastPollDate
-        val pollCount = plan.pollCount ?: prior.pollCount
-        val assignedDate = plan.assignedDate ?: prior.assignedDate
-        val assignedNumber = plan.assignedNumber ?: prior.assignedNumber
-        val committed = if (lastPollDate == today) pollCount else 0
-        val assigned = if (assignedDate == today) assignedNumber else 0
+    private fun nextPollNumber(p: Prefs): Int {
+        val committed = if (p.str("last_poll_date") == today) p.int("poll_count") else 0
+        val assigned = if (p.str(assignedDateKey) == today) p.int(assignedNumberKey) else 0
         return maxOf(committed, assigned) + 1
     }
 
@@ -71,24 +118,23 @@ class PollHistoryRestoreTest {
             history = arr(poll("09:15")), pollCount = 78,
             lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 78
         )
-        val plan = PollHistoryRestore.plan(
-            prior, arr(poll("09:15"), poll("09:20"), poll("09:25")), today, today
-        )
+        val (plan, p) = applied(prior, arr(poll("09:15"), poll("09:20"), poll("09:25")))
         assertEquals(PollHistoryRestore.Action.MERGE, plan.action)
         assertEquals(3, plan.kept)
-        assertEquals("a previous session's count must not be inherited", 3, plan.pollCount)
-        assertEquals(3, plan.assignedNumber)
-        assertEquals(4, nextPollNumberAfter(plan, prior))
+        assertEquals("a previous session's count must not be inherited", 3, p.int("poll_count"))
+        assertEquals(3, p.int(assignedNumberKey))
+        assertEquals(today, p.str("last_poll_date"))
+        assertEquals(4, nextPollNumber(p))
     }
 
     @Test
     fun todaysOwnCountersStayMonotonic() {
         // The date-scoping must not become a licence to rewind a counter that IS today's.
         val prior = state(pollCount = 9, lastPollDate = today, assignedDate = today, assignedNumber = 9)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:15"), poll("09:20")), today, today)
-        assertEquals(9, plan.pollCount)
-        assertEquals(9, plan.assignedNumber)
-        assertEquals(10, nextPollNumberAfter(plan, prior))
+        val (_, p) = applied(prior, arr(poll("09:15"), poll("09:20")))
+        assertEquals(9, p.int("poll_count"))
+        assertEquals(9, p.int(assignedNumberKey))
+        assertEquals(10, nextPollNumber(p))
     }
 
     @Test
@@ -96,23 +142,39 @@ class PollHistoryRestoreTest {
         // Three rows come back, but they are polls 10, 11 and 12. Assigning from the row COUNT
         // would hand out number 4 again, duplicating an identity the session already used.
         val prior = state(lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 40)
-        val plan = PollHistoryRestore.plan(
+        val (plan, p) = applied(
             prior,
-            arr(poll("10:00", number = 10), poll("10:05", number = 11), poll("10:10", number = 12)),
-            today, today
+            arr(poll("10:00", number = 10), poll("10:05", number = 11), poll("10:10", number = 12))
         )
         assertEquals(3, plan.kept)
-        assertEquals("assigned identity comes from row metadata, not the row count", 12, plan.assignedNumber)
-        assertEquals(13, nextPollNumberAfter(plan, prior))
-        assertEquals("a counter must not imply captured slots that are absent", 3, plan.pollCount)
+        assertEquals("assigned identity comes from row metadata, not the row count",
+            12, p.int(assignedNumberKey))
+        assertEquals(13, nextPollNumber(p))
+        assertEquals("a counter must not imply captured slots that are absent", 3, p.int("poll_count"))
     }
 
     @Test
     fun assignmentMetadataIsNeverInferredWhenAbsent() {
         val prior = state(lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 40)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("10:00"), poll("10:05")), today, today)
-        assertEquals(2, plan.assignedNumber)
-        assertEquals(2, plan.pollCount)
+        val (_, p) = applied(prior, arr(poll("10:00"), poll("10:05")))
+        assertEquals(2, p.int(assignedNumberKey))
+        assertEquals(2, p.int("poll_count"))
+    }
+
+    @Test
+    fun invalidAssignmentMetadataIsIgnoredRatherThanTruncatedOrSaturated() {
+        // 12.9 must not become 12, and a huge double must not saturate to Int.MAX_VALUE and make
+        // the next reservation overflow.
+        val prior = state(lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 0)
+        val fractional = arr(
+            poll("10:00").put("poll_number", 12.9),
+            poll("10:05").put("poll_number", 1e18)
+        )
+        val (_, p) = applied(prior, fractional)
+        assertEquals("invalid metadata contributes nothing", 2, p.int(assignedNumberKey))
+        assertEquals(3, nextPollNumber(p))
+        assertTrue("the assignment must stay well inside Int range",
+            p.int(assignedNumberKey) <= PollHistoryMerge.MAX_ASSIGNABLE_POLL_NUMBER)
     }
 
     // ---- session ownership (Codex 3A) --------------------------------------------------------
@@ -121,10 +183,10 @@ class PollHistoryRestoreTest {
     fun anUndatedLocalRowFromAnEarlierSessionCannotWinAgainstTodaysRemoteRow() {
         val stale = JSONObject().put("t", "09:20").put("nf", 111.0).put("bnf", 222.0)
         val prior = state(history = arr(stale), pollCount = 1, lastPollDate = yesterday)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:20", nf = 24000.0)), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:20", nf = 24000.0)))
         assertEquals(1, plan.kept)
         assertEquals(1, plan.merge!!.unownedLocal)
-        val row = JSONArray(plan.historyJson).getJSONObject(0)
+        val row = JSONArray(p.str("poll_history")).getJSONObject(0)
         assertEquals(24000.0, row.optDouble("nf"), 1e-9)
     }
 
@@ -132,21 +194,26 @@ class PollHistoryRestoreTest {
     fun anUndatedLocalRowIsKeptWhenTheHeaderSaysItIsTodays() {
         val mine = JSONObject().put("t", "09:20").put("nf", 24111.0).put("bnf", 52111.0)
         val prior = state(history = arr(mine), pollCount = 1, lastPollDate = today)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:25")), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:25")))
         assertEquals(2, plan.kept)
         assertEquals(0, plan.merge!!.unownedLocal)
-        assertEquals(24111.0, JSONArray(plan.historyJson).getJSONObject(0).optDouble("nf"), 1e-9)
+        assertEquals(24111.0, JSONArray(p.str("poll_history")).getJSONObject(0).optDouble("nf"), 1e-9)
     }
 
     @Test
     fun aResponseThatArrivesAfterIstRolloverIsDiscardedEntirely() {
         val prior = state(history = arr(poll("09:15")), pollCount = 1, lastPollDate = today)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:20")), today, "2026-11-05")
+        val (plan, p) = applied(prior, arr(poll("09:20")), active = "2026-11-05")
         assertEquals(PollHistoryRestore.Action.ABORT_STALE_SESSION, plan.action)
         assertFalse("nothing may be written for a session that is no longer current", plan.writesHistory)
         assertNull(plan.pollCount)
         assertNull(plan.lastPollDate)
         assertNull(plan.assignedNumber)
+        // and the applied state is byte-identical to what it was
+        assertEquals(1, JSONArray(p.str("poll_history")).length())
+        assertEquals("09:15", JSONArray(p.str("poll_history")).getJSONObject(0).optString("t"))
+        assertEquals(today, p.str("last_poll_date"))
+        assertEquals(1, p.int("poll_count"))
     }
 
     @Test
@@ -170,10 +237,48 @@ class PollHistoryRestoreTest {
             latestPollPresent = true, lastPollTimePresent = true
         )
         for (remote in listOf(JSONArray(), null)) {
-            val plan = PollHistoryRestore.plan(prior, remote, today, today)
+            val (plan, p) = applied(prior, remote)
             assertEquals(PollHistoryRestore.Action.NO_OP, plan.action)
-            assertFalse(plan.writesHistory)
+            assertEquals("09:40", JSONArray(p.str("poll_history")).getJSONObject(0).optString("t"))
+            assertEquals(1, p.int("poll_count"))
         }
+    }
+
+    @Test
+    fun aSelfDatedCurrentRowSurvivesAnEmptyRemoteUnderAStaleHeader() {
+        // Remote availability must not decide whether independently self-dated local evidence is
+        // real. Previously this row was deleted because the header still said yesterday, while
+        // the same row survived if any unrelated valid remote row happened to exist.
+        val prior = state(
+            history = arr(poll("09:40", date = today)), pollCount = 1,
+            lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 5,
+            latestPollPresent = true, lastPollTimePresent = true
+        )
+        for (remote in listOf(JSONArray(), null)) {
+            val (plan, p) = applied(prior, remote)
+            assertEquals(PollHistoryRestore.Action.MERGE, plan.action)
+            assertTrue("the row must still be present", p.has("poll_history"))
+            val rows = JSONArray(p.str("poll_history"))
+            assertEquals(1, rows.length())
+            assertEquals("09:40", rows.getJSONObject(0).optString("t"))
+            assertEquals("the header is corrected to the session the evidence proves",
+                today, p.str("last_poll_date"))
+        }
+    }
+
+    @Test
+    fun anUndatedRowUnderAStaleHeaderIsStillNotReStampedOntoToday() {
+        // The counterpart: preserving self-dated evidence must not become licence to adopt
+        // clocks whose owning session is unknown.
+        val prior = state(
+            history = arr(JSONObject().put("t", "09:40").put("nf", 24000.0)), pollCount = 1,
+            lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 5,
+            latestPollPresent = true, lastPollTimePresent = true
+        )
+        val (plan, p) = applied(prior, JSONArray())
+        assertEquals(PollHistoryRestore.Action.RESET, plan.action)
+        assertFalse("the unowned clock is not adopted", p.has("poll_history"))
+        assertEquals(today, p.str("last_poll_date"))
     }
 
     @Test
@@ -183,10 +288,67 @@ class PollHistoryRestoreTest {
             lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 12,
             latestPollPresent = true, lastPollTimePresent = true
         )
-        val plan = PollHistoryRestore.plan(prior, JSONArray(), today, today)
+        val (plan, p) = applied(prior, JSONArray())
         assertEquals(PollHistoryRestore.Action.RESET, plan.action)
-        assertEquals(today, plan.lastPollDate)
-        assertFalse("a reset clears keys; it never writes a history payload", plan.writesHistory)
+        assertEquals(today, p.str("last_poll_date"))
+        assertFalse(p.has("poll_history"))
+        assertFalse(p.has("poll_count"))
+        assertFalse(p.has("latest_poll"))
+        assertFalse(p.has("last_poll_time"))
+        assertFalse("yesterday's assignment is cleared with the rest", p.has(assignedNumberKey))
+        assertEquals(1, nextPollNumber(p))
+    }
+
+    // ---- an independently current assignment survives a stale-history reset -------------------
+
+    @Test
+    fun aCurrentAssignmentIsPreservedWhenStaleHistoryIsReset() {
+        // The history header and the assignment header are independent:
+        // reservePollNumberForToday() can already have recorded today's number 3 while the
+        // retained history still belongs to yesterday. Clearing it would reissue number 3.
+        val prior = state(
+            history = arr(JSONObject().put("t", "09:40")), pollCount = 12,
+            lastPollDate = yesterday,
+            assignedDate = today, assignedNumber = 3,
+            latestPollPresent = true, lastPollTimePresent = true
+        )
+        val (plan, p) = applied(prior, JSONArray())
+        assertEquals(PollHistoryRestore.Action.RESET, plan.action)
+        assertTrue("the current assignment must survive", plan.keepAssignment)
+        assertFalse("stale history is still cleared", p.has("poll_history"))
+        assertEquals(today, p.str(assignedDateKey))
+        assertEquals(3, p.int(assignedNumberKey))
+        assertEquals("the pending number must not be reissued", 4, nextPollNumber(p))
+    }
+
+    @Test
+    fun aStaleAssignmentIsNotPreservedByTheReset() {
+        val prior = state(
+            history = arr(JSONObject().put("t", "09:40")), pollCount = 12,
+            lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 40,
+            latestPollPresent = true
+        )
+        val (plan, p) = applied(prior, JSONArray())
+        assertEquals(PollHistoryRestore.Action.RESET, plan.action)
+        assertFalse(plan.keepAssignment)
+        assertFalse(p.has(assignedDateKey))
+        assertFalse(p.has(assignedNumberKey))
+        assertEquals(1, nextPollNumber(p))
+    }
+
+    @Test
+    fun aResetAlsoClearsSlotAndCoverageKeysItOwns() {
+        val prior = state(
+            history = arr(JSONObject().put("t", "09:40")), pollCount = 12,
+            lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 12
+        )
+        val prefs = prefsFrom(prior)
+        extraResetKeys.forEach { prefs.map[it] = "stale" }
+        prefs.map[coverageDateKey] = yesterday
+        val plan = PollHistoryRestore.plan(prior, JSONArray(), today, today)
+        PollHistoryRestore.apply(plan, prefs, assignedDateKey, assignedNumberKey, coverageDateKey, extraResetKeys)
+        assertEquals(PollHistoryRestore.Action.RESET, plan.action)
+        extraResetKeys.forEach { assertFalse("$it must be cleared", prefs.has(it)) }
     }
 
     @Test
@@ -197,17 +359,17 @@ class PollHistoryRestoreTest {
             JSONObject().put("poll_ts", "2026-11-04T09:20:00"),    // naive: consumer rejects
             JSONObject().put("date", yesterday).put("t", "09:25")
         )
-        val plan = PollHistoryRestore.plan(prior, remote, today, today)
+        val (plan, p) = applied(prior, remote)
         assertEquals(PollHistoryRestore.Action.NO_OP, plan.action)
-        assertFalse(plan.writesHistory)
         assertTrue(plan.merge!!.remoteUnusable)
+        assertEquals(2, JSONArray(p.str("poll_history")).length())
     }
 
     @Test
     fun anEmptyLocalHistoryWithNothingUsableRemoteIsAQuietNoOp() {
-        val plan = PollHistoryRestore.plan(state(), JSONArray(), today, today)
+        val (plan, p) = applied(state(), JSONArray())
         assertEquals(PollHistoryRestore.Action.NO_OP, plan.action)
-        assertFalse(plan.writesHistory)
+        assertEquals("[]", p.str("poll_history"))
     }
 
     @Test
@@ -217,9 +379,10 @@ class PollHistoryRestoreTest {
             assignedDate = today, assignedNumber = 0,
             latestPollPresent = false, lastPollTimePresent = false
         )
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:20")), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:20")))
         assertEquals(PollHistoryRestore.Action.MERGE, plan.action)
         assertEquals(1, plan.kept)
+        assertEquals(1, JSONArray(p.str("poll_history")).length())
     }
 
     // ---- latest pointer (Codex 3B) -----------------------------------------------------------
@@ -229,18 +392,18 @@ class PollHistoryRestoreTest {
         // `latest.optString("t", "")` blanked last_poll_time for a row carrying only poll_ts.
         val isoOnly = JSONObject().put("poll_ts", "2026-11-04T04:00:00Z")
             .put("nf", 24000.0).put("bnf", 52000.0)
-        val plan = PollHistoryRestore.plan(state(), arr(isoOnly), today, today)
+        val (plan, p) = applied(state(), arr(isoOnly))
         assertEquals(PollHistoryRestore.Action.MERGE, plan.action)
-        assertEquals("09:30:00", plan.lastPollTime)
-        assertTrue(plan.latestPollJson!!.contains("poll_ts"))
+        assertEquals("09:30:00", p.str("last_poll_time"))
+        assertTrue(p.str("latest_poll").contains("poll_ts"))
     }
 
     @Test
     fun theLatestPointerIsTheChronologicallyLastRowNotTheLastReceived() {
         val prior = state(history = arr(poll("09:35")), pollCount = 1, lastPollDate = today)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:15"), poll("09:20")), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:15"), poll("09:20")))
         assertEquals(3, plan.kept)
-        assertEquals("09:35", plan.lastPollTime)
+        assertEquals("09:35", p.str("last_poll_time"))
     }
 
     // ---- unusable local vs usable remote (Codex 3C) -------------------------------------------
@@ -249,10 +412,10 @@ class PollHistoryRestoreTest {
     fun anUnusableLocalRowDoesNotSuppressUsableRemoteEvidenceInTheRestore() {
         val unusable = JSONObject().put("date", today).put("t", "09:20").put("nf", 0.0)
         val prior = state(history = arr(unusable), pollCount = 1, lastPollDate = today)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:20", nf = 24000.0)), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:20", nf = 24000.0)))
         assertEquals(1, plan.kept)
         assertEquals(1, plan.merge!!.remoteWonUnusable)
-        assertEquals(24000.0, JSONArray(plan.historyJson).getJSONObject(0).optDouble("nf"), 1e-9)
+        assertEquals(24000.0, JSONArray(p.str("poll_history")).getJSONObject(0).optDouble("nf"), 1e-9)
     }
 
     // ---- the defect the whole repair exists for ----------------------------------------------
@@ -263,19 +426,19 @@ class PollHistoryRestoreTest {
             history = arr(poll("09:15"), poll("09:20"), poll("09:25"), poll("09:30"), poll("09:35")),
             pollCount = 5, lastPollDate = today, assignedDate = today, assignedNumber = 5
         )
-        val plan = PollHistoryRestore.plan(prior, arr(poll("09:15"), poll("09:20"), poll("09:25")), today, today)
+        val (plan, p) = applied(prior, arr(poll("09:15"), poll("09:20"), poll("09:25")))
         assertEquals(5, plan.kept)
         assertEquals(0, plan.merge!!.fromRemote)
-        assertEquals(5, plan.pollCount)
-        assertEquals(6, nextPollNumberAfter(plan, prior))
+        assertEquals(5, p.int("poll_count"))
+        assertEquals(6, nextPollNumber(p))
     }
 
     @Test
     fun genuineGapsAreNeverFilledByTheRestore() {
         val prior = state(history = arr(poll("09:15"), poll("09:20")), pollCount = 2, lastPollDate = today)
-        val plan = PollHistoryRestore.plan(prior, arr(poll("10:30")), today, today)
+        val (plan, p) = applied(prior, arr(poll("10:30")))
         assertEquals(3, plan.kept)
-        val times = JSONArray(plan.historyJson).let { a ->
+        val times = JSONArray(p.str("poll_history")).let { a ->
             (0 until a.length()).map { a.getJSONObject(it).optString("t") }
         }
         assertEquals(listOf("09:15", "09:20", "10:30"), times)

@@ -44,30 +44,46 @@ class PollHistoryBootstrapContractTest {
     }
 
     @Test
-    fun bootstrapDecidesTheRestoreThroughThePlannedTransition() {
+    fun bootstrapDecidesAndAppliesTheRestoreThroughTheSharedSeam() {
         val region = bootstrapRegion(src("MarketWatchService.kt"))
         assertTrue(
             "the restore decision must come from PollHistoryRestore.plan, not from inline logic",
             region.contains("PollHistoryRestore.plan(")
         )
         assertTrue(
-            "the plan must be applied, not merely computed",
-            region.contains("plan.historyJson") && region.contains("plan.action")
+            "the plan must be applied through the shared seam, so unit tests exercise the real " +
+                "transaction including a RESET's removals",
+            region.contains("PollHistoryRestore.apply(")
         )
         assertFalse(
             "the raw remote copy must never be written over local history",
             region.contains("putString(\"poll_history\", history.toString())")
         )
+        assertFalse(
+            "the call site must not re-implement the branch handling it delegates",
+            region.contains("PollHistoryRestore.Action.MERGE ->")
+        )
     }
 
     @Test
-    fun everyBranchOfThePlanIsHandledIncludingTheAbort() {
+    fun theCallSitePassesItsOwnKeyNamesToTheSeam() {
+        // apply() owns the transaction but not the key names that live in the service.
         val region = bootstrapRegion(src("MarketWatchService.kt"))
-        for (action in listOf("MERGE", "RESET", "NO_OP", "ABORT_STALE_SESSION")) {
-            assertTrue(
-                "plan action $action must be handled at the call site",
-                region.contains("PollHistoryRestore.Action.$action")
-            )
+        for (arg in listOf(
+            "assignedDateKey = LAST_ASSIGNED_POLL_DATE_KEY",
+            "assignedNumberKey = LAST_ASSIGNED_POLL_NUMBER_KEY",
+            "coverageDateKey = COVERAGE_INTEGRITY_DATE_KEY",
+            "extraResetKeys = listOf("
+        )) {
+            assertTrue("the seam must be given $arg", region.contains(arg))
+        }
+        for (key in listOf(
+            "LAST_POLL_DISPATCH_SLOT_KEY",
+            "LAST_SUCCESSFUL_POLL_SLOT_KEY",
+            "COVERAGE_INTEGRITY_KEY",
+            "COVERAGE_INTEGRITY_ISSUE_KEY"
+        )) {
+            assertTrue("$key must still be cleared by a reset", region.contains(key))
         }
     }
 

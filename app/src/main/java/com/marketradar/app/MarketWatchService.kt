@@ -699,40 +699,31 @@ class MarketWatchService : Service() {
                     LogBuffer.add('I', TAG, "POLL_HISTORY_RESTORE: action=${plan.action}" +
                         " remote=${history.length()} ${plan.note}" +
                         " v=${PollHistoryRestore.VERSION}/${PollHistoryMerge.VERSION}")
-                    when (plan.action) {
-                        PollHistoryRestore.Action.MERGE -> prefs.edit().apply {
-                            plan.historyJson?.let { putString("poll_history", it) }
-                            plan.pollCount?.let { putInt("poll_count", it) }
-                            plan.assignedDate?.let { putString(LAST_ASSIGNED_POLL_DATE_KEY, it) }
-                            plan.assignedNumber?.let { putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, it) }
-                            plan.coverageIntegrityDate?.let { putString(COVERAGE_INTEGRITY_DATE_KEY, it) }
-                            plan.lastPollDate?.let { putString("last_poll_date", it) }
-                            plan.latestPollJson?.let { putString("latest_poll", it) }
-                            plan.lastPollTime?.let { putString("last_poll_time", it) }
-                        }.commit()
-
-                        PollHistoryRestore.Action.RESET -> {
-                            prefs.edit().apply {
-                                remove("poll_history")
-                                remove("poll_count")
-                                remove("latest_poll")
-                                remove("last_poll_time")
-                                remove(LAST_POLL_DISPATCH_SLOT_KEY)
-                                remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
-                                remove(LAST_ASSIGNED_POLL_DATE_KEY)
-                                remove(LAST_ASSIGNED_POLL_NUMBER_KEY)
-                                remove(COVERAGE_INTEGRITY_DATE_KEY)
-                                remove(COVERAGE_INTEGRITY_KEY)
-                                remove(COVERAGE_INTEGRITY_ISSUE_KEY)
-                                plan.lastPollDate?.let { putString("last_poll_date", it) }
-                            }.commit()
-                            Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
-                        }
-
-                        // Nothing usable was learned, or the session rolled over mid-fetch:
-                        // leave every key exactly as it is.
-                        PollHistoryRestore.Action.NO_OP,
-                        PollHistoryRestore.Action.ABORT_STALE_SESSION -> Unit
+                    // The plan is applied by PollHistoryRestore.apply, so the production
+                    // transaction -- including the removals a RESET performs -- is the same code
+                    // the unit tests drive through a map-backed StateWriter.
+                    val editor = prefs.edit()
+                    PollHistoryRestore.apply(
+                        plan = plan,
+                        state = object : PollHistoryRestore.StateWriter {
+                            override fun putString(key: String, value: String) { editor.putString(key, value) }
+                            override fun putInt(key: String, value: Int) { editor.putInt(key, value) }
+                            override fun remove(key: String) { editor.remove(key) }
+                        },
+                        assignedDateKey = LAST_ASSIGNED_POLL_DATE_KEY,
+                        assignedNumberKey = LAST_ASSIGNED_POLL_NUMBER_KEY,
+                        coverageDateKey = COVERAGE_INTEGRITY_DATE_KEY,
+                        extraResetKeys = listOf(
+                            LAST_POLL_DISPATCH_SLOT_KEY,
+                            LAST_SUCCESSFUL_POLL_SLOT_KEY,
+                            COVERAGE_INTEGRITY_KEY,
+                            COVERAGE_INTEGRITY_ISSUE_KEY
+                        )
+                    )
+                    editor.commit()
+                    if (plan.action == PollHistoryRestore.Action.RESET) {
+                        Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today" +
+                            if (plan.keepAssignment) " (assignment preserved)" else "")
                     }
                 }
 
