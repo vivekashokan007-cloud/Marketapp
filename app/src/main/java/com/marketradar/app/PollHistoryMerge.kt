@@ -400,11 +400,15 @@ object PollHistoryMerge {
      * come from the identity rather than from one optional field.
      */
     fun latestClock(row: JSONObject?, sessionDate: String): String? {
+        val instant = pollInstant(row, sessionDate) ?: return null
         val t = row?.optString("t", "")?.trim()
-        if (!t.isNullOrEmpty()) return t
-        return pollInstant(row, sessionDate)?.let {
-            val d = OffsetDateTime.ofInstant(it, IST)
-            String.format("%02d:%02d:%02d", d.hour, d.minute, d.second)
-        }
+        // Keep the row's own spelling when it genuinely denotes the identity instant, so an
+        // existing "09:20" is not rewritten to "09:20:00". A `t` that does not parse, or that
+        // disagrees with the identity, is NOT published: a row can carry a valid `poll_ts`
+        // alongside a junk `t`, and publishing that junk as last_poll_time would be worse than
+        // the ISO-only blanking this helper exists to fix.
+        if (!t.isNullOrEmpty() && parseTs(t, sessionDate) == instant) return t
+        val d = OffsetDateTime.ofInstant(instant, IST)
+        return String.format("%02d:%02d:%02d", d.hour, d.minute, d.second)
     }
 }

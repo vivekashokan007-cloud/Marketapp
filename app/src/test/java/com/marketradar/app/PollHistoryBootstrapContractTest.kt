@@ -28,11 +28,19 @@ class PollHistoryBootstrapContractTest {
         File("app/src/main/java/com/marketradar/app/$name")
     ).first { it.exists() }.readText()
 
-    /** The bootstrap restore region, so assertions cannot be satisfied by unrelated code. */
+    /**
+     * The bootstrap restore region, so assertions cannot be satisfied by unrelated code.
+     *
+     * Bounded by the next distinct concern rather than a character count: CI run #207 failed
+     * because a fixed 4000-char window stopped 532 characters short of the `ABORT_STALE_SESSION`
+     * branch, which is a property of the window, not of the code under test.
+     */
     private fun bootstrapRegion(s: String): String {
         val from = s.indexOf("SupabaseClient.getPollHistory(today)")
         assertTrue("bootstrap restore not found", from > 0)
-        return s.substring(from, minOf(s.length, from + 4000))
+        val next = s.indexOf("getContextPercentileDailyHistory", from)
+        val to = if (next > from) next else minOf(s.length, from + 8000)
+        return s.substring(from, to)
     }
 
     @Test

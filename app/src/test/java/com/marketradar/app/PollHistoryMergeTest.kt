@@ -261,6 +261,19 @@ class PollHistoryMergeTest {
     }
 
     @Test
+    fun aJunkClockFieldIsNotPublishedWhenTheIdentityCameFromAnotherField() {
+        // Caught by CI run #207: latestClock returned `t` verbatim whenever it was non-empty, so
+        // a row with a valid poll_ts and a junk `t` would have published the junk as
+        // last_poll_time. The identity is authoritative; `t` is only preferred when it agrees.
+        val row = JSONObject().put("poll_ts", "2026-11-04T03:50:00Z").put("t", "nope")
+            .put("nf", 24000.0).put("bnf", 52000.0)
+        assertEquals("09:20:00", PollHistoryMerge.latestClock(row, session))
+        val disagreeing = JSONObject().put("poll_ts", "2026-11-04T03:50:00Z").put("t", "11:11")
+        assertEquals("a disagreeing clock field is not published either",
+            "09:20:00", PollHistoryMerge.latestClock(disagreeing, session))
+    }
+
+    @Test
     fun emptyLocalStillAcceptsRemote() {
         val merged = PollHistoryMerge.merge(JSONArray(), arr(poll("09:15"), poll("09:20")), session)
         assertEquals(2, merged.kept)
