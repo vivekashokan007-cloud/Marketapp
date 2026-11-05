@@ -249,8 +249,9 @@ class PollHistoryRestoreTest {
         // Remote availability must not decide whether independently self-dated local evidence is
         // real. Previously this row was deleted because the header still said yesterday, while
         // the same row survived if any unrelated valid remote row happened to exist.
+        // `poll()` always stamps `date = today`, so this row is self-dating.
         val prior = state(
-            history = arr(poll("09:40", date = today)), pollCount = 1,
+            history = arr(poll("09:40")), pollCount = 1,
             lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 5,
             latestPollPresent = true, lastPollTimePresent = true
         )

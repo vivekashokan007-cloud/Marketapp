@@ -723,7 +723,7 @@ class MarketWatchService : Service() {
                     editor.commit()
                     if (plan.action == PollHistoryRestore.Action.RESET) {
                         Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today" +
-                            if (plan.keepAssignment) " (assignment preserved)" else "")
+                            (if (plan.keepAssignment) " (assignment preserved)" else ""))
                     }
                 }
 

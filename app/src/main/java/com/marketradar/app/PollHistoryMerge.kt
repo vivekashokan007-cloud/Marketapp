@@ -222,17 +222,6 @@ object PollHistoryMerge {
     }
 
     /**
-     * Port of `poll_time`: the first of `poll_ts`/`pollTs`/`ts` that PARSES, else `t`/`time`
-     * (`t or time`, so a blank `t` falls through). Null when the consumer gets null, or when
-     * the resulting instant's **IST date** is not [sessionDate] — the same test
-     * `valid_spot_series` applies, so an offset crossing the IST date boundary resolves the way
-     * the consumer resolves it rather than by the string's date prefix.
-     *
-     * A row carrying an explicit `date` that disagrees with [sessionDate] is rejected up front.
-     * The consumer has no such field, so this is a deliberately stricter guard: a time-only row
-     * dated yesterday would otherwise be re-stamped onto today by `parse_ts`.
-     */
-    /**
      * A resolved row identity together with **how** it was resolved.
      *
      * The provenance matters for ownership. `ownershipOf` used to scan the raw fields and call a

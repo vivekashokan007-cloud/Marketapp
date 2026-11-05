@@ -143,7 +143,7 @@ object PollHistoryRestore {
                         assignedNumber = if (assignmentIsCurrent) local.assignedNumber else null,
                         merge = merged,
                         note = "no current-session evidence; stale session ${local.lastPollDate} cleared" +
-                            if (assignmentIsCurrent) " (assignment #${local.assignedNumber} preserved)" else ""
+                            (if (assignmentIsCurrent) " (assignment #${local.assignedNumber} preserved)" else "")
                     )
                 } else {
                     Plan(action = Action.NO_OP, merge = merged, note = "nothing retained, nothing stale")
