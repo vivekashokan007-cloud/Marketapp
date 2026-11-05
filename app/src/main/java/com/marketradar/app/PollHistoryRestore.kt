@@ -264,6 +264,12 @@ object PollHistoryRestore {
             Action.RESET -> {
                 RESET_KEYS.forEach { state.remove(it) }
                 extraResetKeys.forEach { state.remove(it) }
+                // The coverage DATE is passed separately because MERGE writes it, but a reset
+                // must still clear it: extracting this seam dropped it from the removal list,
+                // leaving `coverage_integrity_date` orphaned while its own value and issue keys
+                // were deleted. The pre-extraction branch removed all three together, as the
+                // other daily-reset site still does.
+                state.remove(coverageDateKey)
                 if (plan.keepAssignment) {
                     // Independently current assignment survives: re-assert it rather than
                     // clearing a number this session has already handed out.

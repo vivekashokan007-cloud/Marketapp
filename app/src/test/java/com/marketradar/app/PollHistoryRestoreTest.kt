@@ -338,18 +338,64 @@ class PollHistoryRestoreTest {
     }
 
     @Test
-    fun aResetAlsoClearsSlotAndCoverageKeysItOwns() {
-        val prior = state(
-            history = arr(JSONObject().put("t", "09:40")), pollCount = 12,
-            lastPollDate = yesterday, assignedDate = yesterday, assignedNumber = 12
+    fun aResetClearsEverySlotAndCoverageKeyIncludingTheCoverageDate() {
+        // The coverage DATE is passed to apply() separately from extraResetKeys because MERGE
+        // writes it. Extracting the seam dropped it from the RESET removals, so a reset deleted
+        // coverage_integrity and coverage_integrity_issue but left coverage_integrity_date
+        // orphaned. The pre-extraction branch removed all three together.
+        // Both reset shapes are covered: assignment cleared, and assignment preserved.
+        for (assignedDate in listOf(yesterday, today)) {
+            val prior = state(
+                history = arr(JSONObject().put("t", "09:40")), pollCount = 12,
+                lastPollDate = yesterday, assignedDate = assignedDate, assignedNumber = 12
+            )
+            val prefs = prefsFrom(prior)
+            extraResetKeys.forEach { prefs.map[it] = "stale" }
+            prefs.map[coverageDateKey] = yesterday
+            val plan = PollHistoryRestore.plan(prior, JSONArray(), today, today)
+            PollHistoryRestore.apply(plan, prefs, assignedDateKey, assignedNumberKey, coverageDateKey, extraResetKeys)
+
+            assertEquals(PollHistoryRestore.Action.RESET, plan.action)
+            extraResetKeys.forEach { assertFalse("$it must be cleared", prefs.has(it)) }
+            assertFalse(
+                "the coverage date must not survive a reset (assignedDate=$assignedDate)",
+                prefs.has(coverageDateKey)
+            )
+            // Assignment ownership semantics are unchanged by this fix.
+            if (assignedDate == today) {
+                assertTrue(plan.keepAssignment)
+                assertEquals(12, prefs.int(assignedNumberKey))
+            } else {
+                assertFalse(plan.keepAssignment)
+                assertFalse(prefs.has(assignedNumberKey))
+            }
+        }
+    }
+
+    @Test
+    fun mergeStillWritesTheCoverageDateAndTheNonWritingActionsTouchNothing() {
+        // The reset fix must not disturb MERGE's coverage-date write, and NO_OP /
+        // ABORT_STALE_SESSION must remain non-writing.
+        val (mergePlan, merged) = applied(state(), arr(poll("09:20")))
+        assertEquals(PollHistoryRestore.Action.MERGE, mergePlan.action)
+        assertEquals(today, merged.str(coverageDateKey))
+
+        val quiet = state(
+            history = arr(poll("09:40")), pollCount = 1, lastPollDate = today,
+            latestPollPresent = true, lastPollTimePresent = true
         )
-        val prefs = prefsFrom(prior)
-        extraResetKeys.forEach { prefs.map[it] = "stale" }
-        prefs.map[coverageDateKey] = yesterday
-        val plan = PollHistoryRestore.plan(prior, JSONArray(), today, today)
-        PollHistoryRestore.apply(plan, prefs, assignedDateKey, assignedNumberKey, coverageDateKey, extraResetKeys)
-        assertEquals(PollHistoryRestore.Action.RESET, plan.action)
-        extraResetKeys.forEach { assertFalse("$it must be cleared", prefs.has(it)) }
+        for ((remote, active) in listOf<Pair<JSONArray?, String>>(
+            JSONArray() to today,                    // NO_OP
+            arr(poll("09:20")) to "2026-11-05"       // ABORT_STALE_SESSION
+        )) {
+            val prefs = prefsFrom(quiet)
+            prefs.map[coverageDateKey] = today
+            val before = LinkedHashMap(prefs.map)
+            val plan = PollHistoryRestore.plan(quiet, remote, today, active)
+            PollHistoryRestore.apply(plan, prefs, assignedDateKey, assignedNumberKey, coverageDateKey, extraResetKeys)
+            assertFalse("${plan.action} must not write", plan.writesHistory)
+            assertEquals("${plan.action} must leave state byte-identical", before, prefs.map)
+        }
     }
 
     @Test
