@@ -2,7 +2,9 @@
 
 Guidance for Claude Code when working in this repository.
 
-> **Version**: 2.6.40 · `versionCode` 471 · **Updated**: September 12, 2026 (G5 Release C prep: durable evening-stage ledger, truthful labels-saved vs learning-complete, restartable C3. Training/live orders still frozen.)
+> **Version**: 2.6.94 · `versionCode` 525 · **Updated**: November 5, 2026 (ER input continuity: the bootstrap poll-history restore merges the sampled remote copy into retained local observations instead of replacing it, with consumer-parity timestamp identity, resolution-provenance ownership and session-scoped reset/assignment state. Training still frozen; order execution hard-locked to the Upstox **sandbox**.)
+>
+> **This is a header-only refresh.** Only the version line above was updated for the 2.6.94 release. The body below still describes the 2.6.40 era and is badly drifted — a separate, reviewed update is outstanding. Treat every version claim and `brain.py` line reference in it as stale until then, and `grep` the symbol rather than trusting a number.
 
 ## Project overview
 
