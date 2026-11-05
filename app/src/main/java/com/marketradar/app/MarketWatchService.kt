@@ -668,63 +668,72 @@ class MarketWatchService : Service() {
                 } ?: LogBuffer.add('W', TAG, "CLOSED_TRADE_BOOTSTRAP_UNAVAILABLE: preserving local risk ledger")
                 // Network fetch stays OUTSIDE pollSaveLock so savePoll() is never blocked on it.
                 val history = SupabaseClient.getPollHistory(today)
-                if (history.length() > 0) {
-                    // The remote copy is sampled (every third assigned poll, best effort) and can lag the
-                    // device, so it is MERGED into the retained local history rather than replacing it.
-                    // Replacing could discard same-session observations the device already holds, and a
-                    // discarded stretch is not recoverable: the ER series is rebuilt from the open
-                    // reference every poll, so one gap over ER_MAX_GAP_MIN suppresses ER for the rest of
-                    // the session. Re-read local state and write under the same lock savePoll() uses, so
-                    // a poll appended while the request was in flight cannot be erased by a stale copy.
-                    synchronized(pollSaveLock) {
-                        val localHistory = try {
-                            JSONArray(prefs.getString("poll_history", "[]") ?: "[]")
-                        } catch (_: Exception) { JSONArray() }
-                        val merged = PollHistoryMerge.merge(localHistory, history, today)
-                        val latest = PollHistoryMerge.latest(merged.history)
-                        LogBuffer.add('I', TAG, "POLL_HISTORY_MERGE: local=${localHistory.length()}" +
-                            " remote=${history.length()} kept=${merged.kept} fromRemote=${merged.fromRemote}" +
-                            " conflicts=${merged.conflicts} rejected=${merged.rejected}" +
-                            " trimmed=${merged.trimmed} v=${PollHistoryMerge.VERSION}")
-                        val priorAssigned = if (prefs.getString(LAST_ASSIGNED_POLL_DATE_KEY, "") == today)
-                            prefs.getInt(LAST_ASSIGNED_POLL_NUMBER_KEY, 0) else 0
-                        prefs.edit().apply {
-                            putString("poll_history", merged.history.toString())
-                            // Counters stay monotonic. A merged row count is evidence of retained
-                            // observations; it is never a reason to rewind poll/slot assignment.
-                            putInt("poll_count", maxOf(prefs.getInt("poll_count", 0), merged.kept))
-                            putString(LAST_ASSIGNED_POLL_DATE_KEY, today)
-                            putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, maxOf(priorAssigned, merged.kept))
-                            putString(COVERAGE_INTEGRITY_DATE_KEY, today)
-                            putString("last_poll_date", today)
-                            if (latest != null) {
-                                putString("latest_poll", latest.toString())
-                                putString("last_poll_time", latest.optString("t", ""))
-                            }
+                // The remote copy is sampled (every third assigned poll, best effort) and can lag the
+                // device, so it is MERGED into the retained local history rather than replacing it.
+                // Replacing could discard same-session observations the device already holds, and a
+                // discarded stretch is not recoverable: the ER series is rebuilt from the open
+                // reference every poll, so one gap over ER_MAX_GAP_MIN suppresses ER for the rest of
+                // the session.
+                //
+                // BOTH outcomes (usable remote, and empty/invalid remote) are decided from state
+                // re-read under the same lock savePoll() uses, by PollHistoryRestore.plan. That is
+                // what makes the decision safe: a poll appended while the request was in flight
+                // cannot be erased by a stale pre-fetch copy, undated local rows are not assumed to
+                // own this session, prior counters are honoured only by the session that owns them,
+                // and a response that arrives after IST rollover is discarded instead of applied.
+                synchronized(pollSaveLock) {
+                    val plan = PollHistoryRestore.plan(
+                        local = PollHistoryRestore.LocalState(
+                            historyJson = prefs.getString("poll_history", "[]"),
+                            pollCount = prefs.getInt("poll_count", 0),
+                            lastPollDate = prefs.getString("last_poll_date", "") ?: "",
+                            assignedDate = prefs.getString(LAST_ASSIGNED_POLL_DATE_KEY, "") ?: "",
+                            assignedNumber = prefs.getInt(LAST_ASSIGNED_POLL_NUMBER_KEY, 0),
+                            latestPollPresent = prefs.getString("latest_poll", "null") != "null",
+                            lastPollTimePresent = prefs.contains("last_poll_time")
+                        ),
+                        remote = history,
+                        requestedSession = today,
+                        activeSession = todayIstDate()
+                    )
+                    LogBuffer.add('I', TAG, "POLL_HISTORY_RESTORE: action=${plan.action}" +
+                        " remote=${history.length()} ${plan.note}" +
+                        " v=${PollHistoryRestore.VERSION}/${PollHistoryMerge.VERSION}")
+                    when (plan.action) {
+                        PollHistoryRestore.Action.MERGE -> prefs.edit().apply {
+                            plan.historyJson?.let { putString("poll_history", it) }
+                            plan.pollCount?.let { putInt("poll_count", it) }
+                            plan.assignedDate?.let { putString(LAST_ASSIGNED_POLL_DATE_KEY, it) }
+                            plan.assignedNumber?.let { putInt(LAST_ASSIGNED_POLL_NUMBER_KEY, it) }
+                            plan.coverageIntegrityDate?.let { putString(COVERAGE_INTEGRITY_DATE_KEY, it) }
+                            plan.lastPollDate?.let { putString("last_poll_date", it) }
+                            plan.latestPollJson?.let { putString("latest_poll", it) }
+                            plan.lastPollTime?.let { putString("last_poll_time", it) }
                         }.commit()
+
+                        PollHistoryRestore.Action.RESET -> {
+                            prefs.edit().apply {
+                                remove("poll_history")
+                                remove("poll_count")
+                                remove("latest_poll")
+                                remove("last_poll_time")
+                                remove(LAST_POLL_DISPATCH_SLOT_KEY)
+                                remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
+                                remove(LAST_ASSIGNED_POLL_DATE_KEY)
+                                remove(LAST_ASSIGNED_POLL_NUMBER_KEY)
+                                remove(COVERAGE_INTEGRITY_DATE_KEY)
+                                remove(COVERAGE_INTEGRITY_KEY)
+                                remove(COVERAGE_INTEGRITY_ISSUE_KEY)
+                                plan.lastPollDate?.let { putString("last_poll_date", it) }
+                            }.commit()
+                            Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
+                        }
+
+                        // Nothing usable was learned, or the session rolled over mid-fetch:
+                        // leave every key exactly as it is.
+                        PollHistoryRestore.Action.NO_OP,
+                        PollHistoryRestore.Action.ABORT_STALE_SESSION -> Unit
                     }
-                } else if (
-                    lastPollDate != today &&
-                    (prefs.getString("poll_history", "[]") != "[]" ||
-                        prefs.getInt("poll_count", 0) != 0 ||
-                        prefs.getString("latest_poll", "null") != "null" ||
-                        prefs.contains("last_poll_time"))
-                ) {
-                    prefs.edit().apply {
-                        remove("poll_history")
-                        remove("poll_count")
-                        remove("latest_poll")
-                        remove("last_poll_time")
-                        remove(LAST_POLL_DISPATCH_SLOT_KEY)
-                        remove(LAST_SUCCESSFUL_POLL_SLOT_KEY)
-                        remove(LAST_ASSIGNED_POLL_DATE_KEY)
-                        remove(LAST_ASSIGNED_POLL_NUMBER_KEY)
-                        remove(COVERAGE_INTEGRITY_DATE_KEY)
-                        remove(COVERAGE_INTEGRITY_KEY)
-                        remove(COVERAGE_INTEGRITY_ISSUE_KEY)
-                        putString("last_poll_date", today)
-                    }.apply()
-                    Log.i(TAG, "DAILY_RESET_BOOTSTRAP: cleared stale poll state for $today")
                 }
 
                 // 5. Historial Premium Data & Signal
