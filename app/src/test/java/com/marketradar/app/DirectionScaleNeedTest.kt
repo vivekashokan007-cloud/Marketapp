@@ -110,6 +110,13 @@ class DirectionScaleNeedTest {
     /**
      * A full expiry-day session is 78 polls. Before this bound the chain was fetched on every one of
      * them; now the scale is observed at the open reference and the acquisition stops.
+     *
+     * Scope, stated plainly: the saved OK state here is a FIXTURE, so this test shows what the gate
+     * does once a usable scale is persisted — it does not show that the persistence happens. That
+     * transition (a recoverable failure becoming a durable OK, and an OK then staying immutable) is
+     * Python-side and is covered by `tests/test_expiry_day_scale_durability.py`, over both the direct
+     * and the deferred write path. [frozenRecoveredScaleFromTheRealStoreStopsFetching] below uses the
+     * exact shape that store actually writes, so the two sides meet on a real payload.
      */
     @Test fun requestCountOverAFullExpiryDaySessionIsBounded() {
         var stateJson: String? = null
@@ -150,6 +157,43 @@ class DirectionScaleNeedTest {
         for (poll in 1..78) {
             if (DirectionScaleNeed.decide("NF", NEXT, TODAY, null).fetch) fetches++
             if (DirectionScaleNeed.decide("BNF", "2026-11-23", TODAY, null).fetch) fetches++
+        }
+        assertEquals(0, fetches)
+    }
+
+    /**
+     * The gate must stop fetching for a scale that was RECOVERED, not only for one observed at the
+     * open reference. This fixture is the exact payload `index_authority_store` writes after a
+     * successful late recovery (captured from a real run of `brain.compute_index_authority`), so the
+     * Kotlin gate is pinned against the shape Python actually persists rather than a minimal stub.
+     */
+    @Test fun frozenRecoveredScaleFromTheRealStoreStopsFetching() {
+        val recovered = JSONObject()
+            .put("index", "NF").put("status", "OK").put("reason", JSONObject.NULL)
+            .put("value", 0.00789094)
+            .put("method", "atm_straddle_sqrt_2_over_pi_v1")
+            .put("expiry", NEXT).put("trade_expiry", TODAY)
+            .put("k0", 24200).put("ce_mid", 112.5).put("pe_mid", 98.25)
+            .put("forward", 24214.25).put("n_sessions", 5.986667)
+            .put("observed_at", "2026-11-09T11:00:00+05:30")
+            .put("calendar_rule_version", "ev_v12_nse_cal_nf_weekly_tue_prev_session_v1:2026")
+            .put("chain_source", "NEXT_EXPIRY")
+            .put("chain_source_version", "scale_chain_source_v1_next_expiry_for_own_expiry_day")
+            .put("chain_source_reason", JSONObject.NULL)
+            .put("open_ref_observation", false)
+            .put("recovered", true)
+            .put("recovered_from_reason", "NEXT_EXPIRY_CHAIN_MISSING")
+            .put("recovered_at", "2026-11-09T11:00:00+05:30")
+            .put("recovered_spot", 24180.0)
+
+        val d = DirectionScaleNeed.decide("NF", TODAY, TODAY, state("NF" to recovered))
+        assertFalse("a durable recovered scale needs no further chain", d.fetch)
+        assertEquals(DirectionScaleNeed.SCALE_FROZEN_OK, d.reason)
+
+        // and over a whole session it issues nothing further
+        var fetches = 0
+        for (poll in 1..78) {
+            if (DirectionScaleNeed.decide("NF", TODAY, TODAY, state("NF" to recovered)).fetch) fetches++
         }
         assertEquals(0, fetches)
     }
