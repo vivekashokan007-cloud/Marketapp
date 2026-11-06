@@ -99,13 +99,42 @@ def compact_decision(dec, lineage=None):
     return rec
 
 
+def _scale_upgrade_allowed(cur, new):
+    """D9: a stored RECOVERABLE failure may be replaced by a usable scale.
+
+    Everything else stays write-once:
+      - an OK scale is IMMUTABLE -- freezing the open-reference observation is the whole point, and a
+        later poll must never move the yardstick a session has already been measured against;
+      - a failure is never replaced by another failure, so a scale cannot churn between reasons;
+      - an UNRECOVERABLE failure is never replaced, matching what the brain and the Kotlin acquisition
+        gate will even attempt.
+
+    Without this, brain.compute_index_authority could recover a scale and publish a direction from it
+    while merge silently dropped the write, so the next poll read the old failure back and went
+    UNAVAILABLE again -- a per-poll recovery that never became durable.
+    """
+    if not isinstance(cur, dict) or not isinstance(new, dict):
+        return False
+    if cur.get('status') == 'OK':
+        return False
+    if new.get('status') != 'OK':
+        return False
+    import index_authority_v1 as _ia
+    return cur.get('reason') in _ia.SCALE_RECOVERABLE_REASONS
+
+
 def merge(doc, delta):
-    """Merge a state delta into a stored doc: scales are write-once; history records append-if-new by key;
-    publication stamps apply to matching decision_ids that are still unpublished."""
+    """Merge a state delta into a stored doc: scales are write-once except that a recoverable failure
+    may be upgraded to a usable scale (see _scale_upgrade_allowed); history records append-if-new by
+    key; publication stamps apply to matching decision_ids that are still unpublished."""
     out = json.loads(_canon(doc or {}))
     scales = out.setdefault('scales', {})
     for ix, sc in ((delta or {}).get('scales') or {}).items():
-        if ix not in scales and isinstance(sc, dict):
+        if not isinstance(sc, dict):
+            continue
+        if ix not in scales:
+            scales[ix] = sc
+        elif _scale_upgrade_allowed(scales.get(ix), sc):
             scales[ix] = sc
     hist = out.setdefault('history', {})
     for ix, recs in ((delta or {}).get('history') or {}).items():

@@ -54,6 +54,22 @@ Z30_WARMUP_MIN = 10.0
 Z30_ANCHOR_MAX_AGE_MIN = 45.0
 DIRECTION_START_AFTER_OPEN_MIN = 10.0
 ER_MAX_GAP_MIN = 12.0
+
+# ---- scale chain source (D9 repair) --------------------------------------------------------
+# The trading chain is the front expiry.  On an index's OWN expiry day that chain cannot price a
+# forward session move (expiry <= session_date -> EXPIRY_DAY_CHAIN_ONLY), which removed direction for
+# that index for the whole session.  The direction scale may therefore read a SEPARATE next-expiry
+# chain supplied alongside the trading chain.  The trading chain is never substituted or modified.
+SCALE_CHAIN_SOURCE_VERSION = 'scale_chain_source_v1_next_expiry_for_own_expiry_day'
+SCALE_SOURCE_FRONT = 'FRONT_EXPIRY'          # unchanged path: front expiry is still forward-dated
+SCALE_SOURCE_NEXT = 'NEXT_EXPIRY'            # own expiry day: separately supplied next-expiry chain
+SCALE_SOURCE_UNAVAILABLE = 'UNAVAILABLE'     # own expiry day and no usable next-expiry chain
+# Stored scale failures a later poll may re-attempt once a next-expiry chain becomes available.
+# Recovery produces a LATE observation (see select_scale_chain / scale_provenance) and may only affect
+# the current and subsequent polls; it never rewrites an already-published decision.
+SCALE_RECOVERABLE_REASONS = ('EXPIRY_DAY_CHAIN_ONLY', 'OPEN_REF_CHAIN_NOT_OBSERVED',
+                             'SCALE_STATE_UNAVAILABLE', 'NEXT_EXPIRY_CHAIN_MISSING',
+                             'NEXT_EXPIRY_CHAIN_EMPTY', 'NEXT_EXPIRY_INVALID')
 RANGE_ER_MAX = 0.30
 RANGE_MIN_ELAPSED_MIN = 60.0
 SESSION_CLOSE = (15, 30, 0)
@@ -315,6 +331,101 @@ def compute_scale(index, chain, spot, session_date, observed_dt, expiry, calenda
     return dict(out, status='OK', reason=None)
 
 
+def _non_empty_chain(chain):
+    return bool(_strike_map(chain))
+
+
+def select_scale_chain(index, session_date, trade_chain, trade_expiry,
+                       scale_chain=None, scale_expiry=None):
+    """Choose the chain/expiry the DIRECTION SCALE reads.  Never alters the trading chain.
+
+    Returns {'source', 'chain', 'expiry', 'reason', 'version', 'trade_expiry', 'scale_expiry'}.
+
+      FRONT_EXPIRY  the front expiry is still forward-dated -> unchanged behaviour, trading chain used.
+      NEXT_EXPIRY   the front expiry is the session date (own expiry day) and a usable, strictly
+                    forward-dated next-expiry chain was supplied separately -> that chain is used.
+      UNAVAILABLE   own expiry day and no usable next-expiry chain; `reason` says which.
+
+    A missing or malformed trade expiry is passed through to the FRONT path so compute_scale keeps
+    ownership of its own EXPIRY_INVALID branch (fail closed, one place).
+    """
+    out = {'version': SCALE_CHAIN_SOURCE_VERSION, 'index': index,
+           'trade_expiry': str(trade_expiry) if trade_expiry else None,
+           'scale_expiry': str(scale_expiry) if scale_expiry else None}
+    sd = _parse_date(session_date)
+    td = _parse_date(trade_expiry)
+    if sd is None or td is None or td > sd:
+        # unchanged path; compute_scale still validates expiry, coverage, parity and bounds
+        return dict(out, source=SCALE_SOURCE_FRONT, chain=trade_chain, expiry=trade_expiry, reason=None)
+    nd = _parse_date(scale_expiry)
+    if nd is None:
+        return dict(out, source=SCALE_SOURCE_UNAVAILABLE, chain=None, expiry=None,
+                    reason='NEXT_EXPIRY_CHAIN_MISSING' if scale_expiry in (None, '') else 'NEXT_EXPIRY_INVALID')
+    if nd <= sd:
+        # a "next" expiry that is not actually forward-dated is not usable, and must not be
+        # silently accepted - that would reintroduce the very failure this repair removes
+        return dict(out, source=SCALE_SOURCE_UNAVAILABLE, chain=None, expiry=None,
+                    reason='NEXT_EXPIRY_INVALID')
+    if not _non_empty_chain(scale_chain):
+        return dict(out, source=SCALE_SOURCE_UNAVAILABLE, chain=None, expiry=None,
+                    reason='NEXT_EXPIRY_CHAIN_EMPTY')
+    return dict(out, source=SCALE_SOURCE_NEXT, chain=scale_chain, expiry=scale_expiry, reason=None)
+
+
+def scale_provenance(scale, selection, *, open_ref_observation, recovered_from=None,
+                     observed_dt=None, spot=None):
+    """Stamp a computed scale with where its chain came from and whether it is an open-reference
+    observation.  A recovered scale is a LATE observation: m then reflects the straddle at
+    `observed_dt`, not at the open reference, and no consumer may mistake the two.
+
+    Caller contract: only stamp a scale that did NOT come from the front expiry.  `decision_identity`
+    hashes `direction` wholesale, so adding keys here changes every decision_id - which carries
+    admission lineage (entry_decision_id) and history record keys.  Leaving the unchanged front-expiry
+    path unstamped keeps those identities byte-identical on an ordinary session; the absence of these
+    keys therefore MEANS "front expiry, observed at the open reference, as before this repair".
+    """
+    if not isinstance(scale, dict):
+        return scale
+    sel = selection if isinstance(selection, dict) else {}
+    if sel.get('source') == SCALE_SOURCE_FRONT and recovered_from is None:
+        return scale                      # unchanged path: do not alter the decision's identity
+    out = dict(scale)
+    out['chain_source'] = sel.get('source')
+    out['chain_source_version'] = sel.get('version') or SCALE_CHAIN_SOURCE_VERSION
+    out['chain_source_reason'] = sel.get('reason')
+    out['trade_expiry'] = sel.get('trade_expiry')
+    out['open_ref_observation'] = bool(open_ref_observation)
+    if recovered_from is not None:
+        out['recovered'] = True
+        out['recovered_from_reason'] = recovered_from
+        out['recovered_at'] = observed_dt.isoformat() if observed_dt is not None else None
+        out['recovered_spot'] = spot
+    return out
+
+
+def scale_unavailable(selection, index=None):
+    """The fail-closed scale for an own-expiry-day index with no usable next-expiry chain."""
+    sel = selection if isinstance(selection, dict) else {}
+    return {'index': index or sel.get('index'), 'status': 'UNAVAILABLE',
+            'reason': sel.get('reason') or 'NEXT_EXPIRY_CHAIN_MISSING',
+            'value': None, 'chain_source': SCALE_SOURCE_UNAVAILABLE,
+            'chain_source_version': sel.get('version') or SCALE_CHAIN_SOURCE_VERSION,
+            'chain_source_reason': sel.get('reason'), 'trade_expiry': sel.get('trade_expiry'),
+            'open_ref_observation': False}
+
+
+def scale_is_recoverable(scale, selection):
+    """True when a stored FAILED scale may be re-attempted now.  Requires a usable next-expiry
+    chain, so a recovery is only ever attempted with evidence it can succeed."""
+    if not isinstance(scale, dict):
+        return False
+    if scale.get('status') == 'OK':
+        return False
+    if (selection or {}).get('source') != SCALE_SOURCE_NEXT:
+        return False
+    return scale.get('reason') in SCALE_RECOVERABLE_REASONS
+
+
 # ---- direction -----------------------------------------------------------------------------
 def _at(d, hms):
     return datetime(d.year, d.month, d.day, hms[0], hms[1], hms[2], tzinfo=IST)
@@ -405,7 +516,16 @@ def compute_direction(index, polls, session_date, decision_dt, scale, receipt_dt
         return unavailable('CALENDAR_UNAVAILABLE' if st == 'CALENDAR_UNAVAILABLE' else
                            ('SCALE_' + str((scale or {}).get('reason') or 'MISSING')))
     m = float(scale['value'])
-    res['inputs']['scale'] = {k: scale.get(k) for k in ('value', 'expiry', 'k0', 'ce_mid', 'pe_mid', 'forward', 'n_sessions', 'observed_at', 'method')}
+    res['inputs']['scale'] = {k: scale.get(k) for k in (
+        'value', 'expiry', 'k0', 'ce_mid', 'pe_mid', 'forward', 'n_sessions', 'observed_at', 'method')}
+    # D9 repair provenance: which chain priced the scale, and whether it is an open-reference
+    # observation.  Added ONLY when present on the scale, i.e. only when the scale did not come from
+    # the front expiry.  decision_identity hashes `direction` wholesale, so emitting these
+    # unconditionally would change every decision_id - and decision_id carries admission lineage.
+    for k in ('chain_source', 'chain_source_version', 'chain_source_reason', 'trade_expiry',
+              'open_ref_observation', 'recovered', 'recovered_from_reason', 'recovered_at'):
+        if k in scale:
+            res['inputs']['scale'][k] = scale[k]
     a_dt = a['_dt']
     if _minutes(a_dt, t) < DIRECTION_START_AFTER_OPEN_MIN:
         return unavailable('WARMUP')

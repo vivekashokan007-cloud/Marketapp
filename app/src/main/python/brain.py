@@ -27283,23 +27283,67 @@ def compute_index_authority(polls, ctx):
             available, why = False, 'ANALYSIS_CLOCK_MISSING'
         elif _ia._parse_date(expiry) is None:
             available, why = False, 'EXPIRY_INVALID'
+        # D9 repair: the direction scale may read a SEPARATELY supplied next-expiry chain on this
+        # index's own expiry day, when the front (trading) chain cannot price a forward session move.
+        # The trading chain resolved above is never substituted or modified.
+        sel = _ia.select_scale_chain(
+            ix, session, chain, expiry,
+            ctx.get('nfScaleChain' if ix == 'NF' else 'bnfScaleChain'),
+            ctx.get('nfScaleExpiry' if ix == 'NF' else 'bnfScaleExpiry'))
         scale = scales.get(ix)
-        if available and not (isinstance(scale, dict) and scale.get('status')):
+        stored = scale if isinstance(scale, dict) and scale.get('status') else None
+        recover = stored is not None and _ia.scale_is_recoverable(stored, sel)
+        if available and (stored is None or recover):
             series = _ia.valid_spot_series(polls, ix, session, decision_dt)
             a = _ia.find_open_ref(series, session)
             fresh_obs = (source_poll_dt is not None and series and series[-1][0] == source_poll_dt
                          and 0 <= (analysis_dt - source_poll_dt).total_seconds() <= _ia.SPOT_MAX_AGE_S)
             if a is None:
                 scale = {'status': 'UNAVAILABLE', 'reason': 'OPEN_REF_MISSING'}
-            elif fresh_obs and a['_dt'] == series[-1][0]:
-                # the current poll IS the open reference: observe the scale once, from this chain
-                scale = _ia.compute_scale(ix, chain, a['value'], session, a['_dt'], expiry, _IA_CALENDAR)
+            elif sel['source'] == _ia.SCALE_SOURCE_UNAVAILABLE:
+                # own expiry day and no usable next-expiry chain: fail closed, keeping the precise
+                # reason so a later poll can tell a missing chain from an invalid one
+                scale = _ia.scale_unavailable(sel, ix)
                 if sdir and state_ok:
                     scales[ix] = scale
                     delta['scales'][ix] = scale
                     persisted = True
+            elif fresh_obs and a['_dt'] == series[-1][0]:
+                # the current poll IS the open reference: observe the scale once, from the selected chain.
+                # scale_provenance is a no-op on the front-expiry path, so an ordinary session's stored
+                # scale and decision_id stay byte-identical to the pre-repair code.
+                scale = _ia.scale_provenance(
+                    _ia.compute_scale(ix, sel['chain'], a['value'], session, a['_dt'], sel['expiry'],
+                                      _IA_CALENDAR),
+                    sel, open_ref_observation=True)
+                if sdir and state_ok:
+                    scales[ix] = scale
+                    delta['scales'][ix] = scale
+                    persisted = True
+            elif recover and fresh_obs and series:
+                # RECOVERY of a stored failure the next-expiry chain can now fix.  This is a LATE
+                # observation: m is priced from the current straddle at the current spot, not from the
+                # open reference, and is stamped as such.  It affects this poll and later polls only -
+                # records already appended to history are never rewritten.
+                obs_dt, obs_spot = series[-1]
+                recovered = _ia.scale_provenance(
+                    _ia.compute_scale(ix, sel['chain'], obs_spot, session, obs_dt, sel['expiry'],
+                                      _IA_CALENDAR),
+                    sel, open_ref_observation=False, recovered_from=stored.get('reason'),
+                    observed_dt=obs_dt, spot=obs_spot)
+                if recovered.get('status') == 'OK':
+                    scale = recovered
+                    if sdir and state_ok:
+                        scales[ix] = scale
+                        delta['scales'][ix] = scale
+                        persisted = True
+                else:
+                    # a failed attempt leaves the original failure in place so a later poll may retry
+                    scale = stored
             elif isinstance(ctx.get('indexAuthorityScale'), dict) and isinstance(ctx['indexAuthorityScale'].get(ix), dict):
                 scale = ctx['indexAuthorityScale'][ix]  # replay/test injection of a recorded scale
+            elif stored is not None:
+                scale = stored  # recovery not attempted on this poll; keep the stored failure
             else:
                 scale = {'status': 'UNAVAILABLE',
                          'reason': 'OPEN_REF_CHAIN_NOT_OBSERVED' if state_ok and sdir else 'SCALE_STATE_UNAVAILABLE'}

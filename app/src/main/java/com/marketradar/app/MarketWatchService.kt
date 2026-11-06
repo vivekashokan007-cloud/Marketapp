@@ -1287,6 +1287,22 @@ class MarketWatchService : Service() {
                 "NF" to Triple(nfChainJson, m0NfFetchStartMs, x1NfChainFetchedAtMs)
             ), chainEvidenceRef)
 
+            // D9 repair: on an index's OWN expiry day the front (trading) chain cannot price a forward
+            // session move, which removed that index's direction for the entire session (NF, 3 Nov 2026:
+            // 77 of 78 polls SCALE_EXPIRY_DAY_CHAIN_ONLY). Fetch the next expiry's chain SEPARATELY for
+            // the direction scale only.
+            //
+            // Placed here deliberately: AFTER persistFetchedChainEvidenceBeforeBrain, so this extra
+            // request cannot delay the pre-Brain persistence of trading-chain evidence that the b493
+            // gate exists to protect; and OUTSIDE the parallel acquisition above, so the trading chains,
+            // the poll object and the market-snapshot identity stay byte-identical to before. It makes
+            // no request at all on an ordinary session.
+            val scaleChains = mutableMapOf<String, ScaleChainFetch>()
+            fetchDirectionScaleChain("BNF", "NSE_INDEX|Nifty Bank", token, today, bnfExpiry)
+                ?.let { scaleChains["BNF"] = it }
+            fetchDirectionScaleChain("NF", "NSE_INDEX|Nifty 50", token, today, nfExpiry)
+                ?.let { scaleChains["NF"] = it }
+
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
             // b507 R1 (F2/F4): the poll's analysis owns the single analysis lane; on release the authority drains
@@ -1305,7 +1321,8 @@ class MarketWatchService : Service() {
                 spotProvenance,
                 chainEvidenceRef,
                 chainEvidenceCoverage,
-                marketSnapshot = acquisition.identity
+                marketSnapshot = acquisition.identity,
+                scaleChains = scaleChains
             ) }
             val hbTs = System.currentTimeMillis()
             prefs.edit().putLong(LEASE_HEARTBEAT_MS_KEY, hbTs).commit()
@@ -2162,10 +2179,18 @@ class MarketWatchService : Service() {
     private fun formatChainForBrain(chain: JSONObject, spot: Double): JSONObject =
         OptionChainBrainFormatter.format(chain, spot) { Log.e(TAG, it) }
 
+    /**
+     * D9 repair: the chain the DIRECTION SCALE reads for one index, used only when the front
+     * (trading) expiry is the session date itself. `chain` is null when the fetch failed, which the
+     * brain treats as fail-closed rather than as a usable scale.
+     */
+    private data class ScaleChainFetch(val expiry: String, val chain: JSONObject?)
+
     private data class AnalysisInputs(val marketSnapshot: MarketSnapshotIdentity, val poll: JSONObject, val bnfChain: JSONObject,
         val nfChain: JSONObject, val bnfSpot: Double, val nfSpot: Double, val vix: Double, val stocks: JSONObject,
         val nf50Breadth: JSONObject, val bnfExpiry: String, val nfExpiry: String, val spotProvenance: JSONObject?,
-        val chainEvidenceRef: JSONObject?, val chainEvidenceCoverage: JSONObject?)
+        val chainEvidenceRef: JSONObject?, val chainEvidenceCoverage: JSONObject?,
+        val scaleChains: Map<String, ScaleChainFetch> = emptyMap())
 
     @Volatile private var lastAnalysisInputs: AnalysisInputs? = null
     @Volatile private var lastAnalysisStrikeOiJson: String? = null
@@ -2216,7 +2241,8 @@ class MarketWatchService : Service() {
         val outcome = runBrainAnalysis(cached.poll, cached.bnfChain, cached.nfChain, cached.bnfSpot, cached.nfSpot,
             cached.vix, cached.stocks, cached.nf50Breadth, cached.bnfExpiry, cached.nfExpiry,
             cached.spotProvenance, cached.chainEvidenceRef, cached.chainEvidenceCoverage,
-            marketSnapshot = cached.marketSnapshot, mode = ANALYSIS_MODE_REFRESH)
+            marketSnapshot = cached.marketSnapshot, mode = ANALYSIS_MODE_REFRESH,
+            scaleChains = cached.scaleChains)
         writeRefreshState(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) "DONE" else outcome.name, rev)
         LogBuffer.add(if (outcome == AnalysisAuthority.Outcome.PUBLISHED) 'I' else 'W', TAG, "ANALYSIS_REFRESH_OUTCOME: rev=$rev outcome=$outcome")
         return outcome
@@ -2231,7 +2257,8 @@ class MarketWatchService : Service() {
                                          chainEvidenceRef: JSONObject? = null,
                                          chainEvidenceCoverage: JSONObject? = null,
                                          marketSnapshot: MarketSnapshotIdentity,
-                                         mode: String = ANALYSIS_MODE_POLL): AnalysisAuthority.Outcome {
+                                         mode: String = ANALYSIS_MODE_POLL,
+                                         scaleChains: Map<String, ScaleChainFetch> = emptyMap()): AnalysisAuthority.Outcome {
         var outcome = AnalysisAuthority.Outcome.FAILED
         // b507 (condition 7): REFRESH recomputes the analysis for the latest acknowledged inputs from the
         // last poll's cached market inputs, with NO poll-owned side effects (no poll history, strike-OI
@@ -2240,7 +2267,8 @@ class MarketWatchService : Service() {
         val isRefresh = mode == ANALYSIS_MODE_REFRESH
         if (!isRefresh) {
             lastAnalysisInputs = AnalysisInputs(marketSnapshot, poll, bnfChain, nfChain, bnfSpot, nfSpot, vix,
-                stocksJson, nf50Breadth, liveBnfExpiry, liveNfExpiry, spotProvenance, chainEvidenceRef, chainEvidenceCoverage)
+                stocksJson, nf50Breadth, liveBnfExpiry, liveNfExpiry, spotProvenance, chainEvidenceRef, chainEvidenceCoverage,
+                scaleChains)
         }
         // b507 R1 (F4): market-data identity is the collection time of the analysed poll, preserved by a refresh.
         val marketCollectedAtMs = if (marketSnapshot.usableFor(todayIstDate(), System.currentTimeMillis())) marketSnapshot.collectedAtMs else 0L
@@ -2393,6 +2421,43 @@ class MarketWatchService : Service() {
             ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
             mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, resolvedNfExpiry, "NSE_INDEX|Nifty 50")
             ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
+
+            // D9 repair: the direction scale's own chain, in a SEPARATE ctx object. Deliberately not
+            // routed through mergeChain - it must not inherit WebView-enriched trading fields, attach
+            // managed trade evidence, or overwrite any part of nfChain/bnfChain. The brain reads it
+            // only for compute_scale, and only when the front expiry is the session date itself.
+            //
+            // ctxObj is loaded from SharedPreferences above and saved back below, so these keys survive
+            // between polls and between SESSIONS. Clear all four FIRST: otherwise a poll whose fetch
+            // failed would write a fresh expiry while an earlier session's chain stayed behind, pairing
+            // a new expiry with a stale chain. After clearing, a published pair always comes from one
+            // poll, or is not published at all.
+            DirectionScaleNeed.clearCtx(ctxObj)
+            for ((scaleIx, fetched) in scaleChains) {
+                val prefix = if (scaleIx == "NF") "nf" else "bnf"
+                val spot = if (scaleIx == "NF") nfSpot else bnfSpot
+                val underlying = if (scaleIx == "NF") "NSE_INDEX|Nifty 50" else "NSE_INDEX|Nifty Bank"
+                val raw = fetched.chain
+                if (raw == null) {
+                    // fetch failed: publish the expiry but no chain, so the brain fails closed with
+                    // NEXT_EXPIRY_CHAIN_EMPTY rather than silently falling back to the trading chain
+                    ctxObj.put("${prefix}ScaleExpiry", fetched.expiry)
+                    LogBuffer.add('W', TAG, "SCALE_CHAIN_CTX_EMPTY: index=$scaleIx expiry=${fetched.expiry}")
+                    continue
+                }
+                try {
+                    val formatted = OptionChainBrainFormatter.stampRequest(
+                        formatChainForBrain(raw, spot), fetched.expiry, underlying)
+                    ctxObj.put("${prefix}ScaleChain", formatted)
+                    ctxObj.put("${prefix}ScaleExpiry", fetched.expiry)
+                    LogBuffer.add('I', TAG, "SCALE_CHAIN_CTX: index=$scaleIx expiry=${fetched.expiry} " +
+                        "strikes=${formatted.optJSONObject("strikes")?.length() ?: 0}")
+                } catch (e: Exception) {
+                    // never let the scale path break the poll; the brain fails closed on a missing chain
+                    ctxObj.put("${prefix}ScaleExpiry", fetched.expiry)
+                    LogBuffer.add('W', TAG, "SCALE_CHAIN_CTX_FAIL: index=$scaleIx ${e.javaClass.simpleName}")
+                }
+            }
 
             // Phase C: Inject OHLC for profile calculations
             val ohlcStr = prefs.getString("yesterday_ohlc", null)
@@ -4498,6 +4563,89 @@ class MarketWatchService : Service() {
         Log.i(TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
         LogBuffer.add('I', TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
         return Pair(resolvedBnf, resolvedNf)
+    }
+
+    /**
+     * D9 repair: the nearest expiry STRICTLY AFTER `afterDate`.
+     *
+     * [resolveNearestExpiryLive] accepts an expiry equal to today, which is correct for trading but
+     * useless for the direction scale: on an index's own expiry day that contract cannot price a
+     * forward session move, so compute_scale returns EXPIRY_DAY_CHAIN_ONLY and the index loses
+     * direction for the whole session. Resolved once per session per index and cached, so an
+     * expiry-day session does not re-resolve the contract list on every poll.
+     *
+     * Returns "" when no usable forward-dated expiry exists; the brain then fails closed.
+     */
+    private fun resolveNextExpiryAfter(index: String, instrumentKey: String, token: String,
+                                       afterDate: String): String {
+        val cacheKey = "scale_next_expiry_$index"
+        val cacheDateKey = "${cacheKey}_on"
+        val cached = (prefs.getString(cacheKey, "") ?: "").trim()
+        if ((prefs.getString(cacheDateKey, "") ?: "") == afterDate &&
+            cached.length == 10 && cached > afterDate && parseExpiryDate(cached) != null) {
+            return cached
+        }
+        return try {
+            val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
+            val json = fetchSync("https://api.upstox.com/v2/option/contract?instrument_key=$encodedKey", token)
+            val arr = json?.optJSONArray("data")
+            var next: String? = null
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val date = arr.optJSONObject(i)?.optString("expiry", "") ?: ""
+                    if (date.length != 10) continue
+                    if (date <= afterDate) continue          // STRICTLY after: an equal date is the failing case
+                    if (next == null || date < next!!) next = date
+                }
+            }
+            val resolved = next?.takeIf { it > afterDate && parseExpiryDate(it) != null } ?: ""
+            if (resolved.isNotEmpty()) {
+                prefs.edit().putString(cacheKey, resolved).putString(cacheDateKey, afterDate).commit()
+            }
+            resolved
+        } catch (e: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * D9 repair: fetch the next-expiry chain for one index's direction scale, and only when needed.
+     *
+     * Returns null on the normal path (front expiry still forward-dated), so no extra request is
+     * made on an ordinary session. The trading chain is never substituted, and this result never
+     * enters the poll object, trade evidence or the market-snapshot identity.
+     */
+    private fun fetchDirectionScaleChain(index: String, instrumentKey: String, token: String,
+                                         today: String, tradeExpiry: String): ScaleChainFetch? {
+        // Acquisition bound: only fetch when the scale is actually needed. Decided from the authority's
+        // own persisted scales state, so once a usable scale is frozen at the open reference this stops
+        // issuing requests instead of repeating them on all ~78 polls of an expiry-day session.
+        val need = DirectionScaleNeed.decide(
+            index, tradeExpiry, today, DirectionScaleNeed.readState(filesDir, today))
+        if (!need.fetch) {
+            if (need.reason != DirectionScaleNeed.NOT_EXPIRY_DAY) {
+                LogBuffer.add('D', TAG, "SCALE_CHAIN_SKIP: index=$index reason=${need.reason}")
+            }
+            return null
+        }
+        val trade = tradeExpiry.trim()
+        val next = resolveNextExpiryAfter(index, instrumentKey, token, today)
+        if (next.isEmpty()) {
+            Log.w(TAG, "SCALE_CHAIN_NO_NEXT_EXPIRY: index=$index session=$today tradeExpiry=$trade")
+            LogBuffer.add('W', TAG, "SCALE_CHAIN_NO_NEXT_EXPIRY: index=$index session=$today")
+            return null
+        }
+        val encodedKey = URLEncoder.encode(instrumentKey, Charsets.UTF_8.name())
+        val raw = fetchSync(
+            "https://api.upstox.com/v2/option/chain?instrument_key=$encodedKey&expiry_date=$next", token)
+        if (raw == null) {
+            Log.w(TAG, "SCALE_CHAIN_FETCH_FAILED: index=$index scaleExpiry=$next")
+            LogBuffer.add('W', TAG, "SCALE_CHAIN_FETCH_FAILED: index=$index scaleExpiry=$next")
+            return ScaleChainFetch(next, null)
+        }
+        Log.i(TAG, "SCALE_CHAIN_FETCHED: index=$index session=$today tradeExpiry=$trade scaleExpiry=$next")
+        LogBuffer.add('I', TAG, "SCALE_CHAIN_FETCHED: index=$index scaleExpiry=$next")
+        return ScaleChainFetch(next, raw)
     }
 
     private val NSE_HOLIDAYS_2026 = setOf(
