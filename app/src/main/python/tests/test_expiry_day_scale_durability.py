@@ -19,6 +19,7 @@ tests below are what cover it. DirectionScaleNeedTest now says so and names this
 """
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -215,6 +216,88 @@ class TestDeferredWritePath(ScalePathCase):
     """The same invariant through indexAuthorityDeferredWrite, where the delta lands in the pending
     accumulator and is merged on the next load."""
     deferred = True
+
+
+class TestKotlinFixtureIsTheRealPayload(unittest.TestCase):
+    """Codex's R3 review caught DirectionScaleNeedTest carrying the right 22-field SHAPE for a
+    recovered scale but inventing its ce_mid, pe_mid, forward, n_sessions and recovered_spot while the
+    comment claimed they were captured from a real run.  The literals were corrected to the real
+    payload; this test re-captures that payload and asserts the Kotlin literals still match it, so the
+    claim cannot quietly become false again."""
+
+    # tests/ -> python -> main -> src, then src/test/java/...
+    KOTLIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          '..', '..', '..', 'test', 'java', 'com', 'marketradar', 'app',
+                          'DirectionScaleNeedTest.kt')
+
+    def captured(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            sd = os.path.join(tmp, 'index_authority_v1')
+            t = F.times('09:15', '11:00', 5)
+            n = len(t)
+            polls = F.polls(F.linear(24000, 9, n),
+                            [52000 + ((-1) ** i) * 20 for i in range(n)], ts=t)
+
+            def ctx(chain=None, expiry=None):
+                c = F.ctx(session_date=SESSION, today_ist=SESSION, nfExpiry=SESSION,
+                          bnfExpiry=BNF_EXPIRY, nfChain=F.chain(24000, 50, lot=65),
+                          bnfChain=F.chain(52000, 100, lot=30), indexAuthorityStateDir=sd)
+                if chain is not None:
+                    c['nfScaleChain'] = chain
+                if expiry is not None:
+                    c['nfScaleExpiry'] = expiry
+                return c
+
+            brain.compute_index_authority(polls[:2], F.with_clock(ctx(), polls[:2]))
+            brain.compute_index_authority(
+                polls, F.with_clock(ctx(F.chain(24180, 50, lot=65), NEXT), polls))
+            return ias.load(sd, SESSION)['scales']['NF']
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_the_capture_is_a_successful_recovery(self):
+        sc = self.captured()
+        self.assertEqual(sc['status'], 'OK')
+        self.assertTrue(sc['recovered'])
+        self.assertFalse(sc['open_ref_observation'])
+
+    def test_kotlin_literals_match_the_captured_payload(self):
+        sc = self.captured()
+        with open(self.KOTLIN) as f:
+            src = f.read()
+        block = src[src.index('fun frozenRecoveredScaleFromTheRealStoreStopsFetching'):]
+        block = block[:block.index('val d = DirectionScaleNeed.decide')]
+        # the fixture may reference the test's own constants instead of inlining a literal
+        consts = dict(re.findall(r'private val (\w+)\s*=\s*"([^"]+)"', src))
+        checked = 0
+        for key in ('value', 'k0', 'ce_mid', 'pe_mid', 'forward', 'n_sessions', 'recovered_spot',
+                    'method', 'expiry', 'trade_expiry', 'observed_at', 'recovered_at',
+                    'calendar_rule_version', 'chain_source', 'chain_source_version',
+                    'recovered_from_reason'):
+            val = sc[key]
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, str):
+                accepted = ['"%s"' % val] + [n for n, v in consts.items() if v == val]
+            else:
+                accepted = [repr(val)]
+            self.assertTrue(any(a in block for a in accepted),
+                            'Kotlin fixture is missing the real %s=%r (looked for %s)'
+                            % (key, val, ' or '.join(accepted)))
+            checked += 1
+        self.assertGreaterEqual(checked, 14)
+        # and the constants it leans on must actually hold the captured values
+        self.assertEqual(consts.get('NEXT'), sc['expiry'])
+        self.assertEqual(consts.get('TODAY'), sc['trade_expiry'])
+
+    def test_the_fixture_comment_does_not_overclaim(self):
+        with open(self.KOTLIN) as f:
+            src = f.read()
+        head = src[:src.index('fun frozenRecoveredScaleFromTheRealStoreStopsFetching')]
+        doc = head[head.rindex('/**'):]
+        self.assertIn('captured verbatim', doc)
+        self.assertIn('test_expiry_day_scale_durability', doc)
 
 
 # the base class is abstract only in intent; both subclasses run every case above.

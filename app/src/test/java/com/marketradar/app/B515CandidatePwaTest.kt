@@ -185,7 +185,7 @@ class B515CandidatePwaTest {
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
         assertTrue(g.contains("applicationId = \"com.marketradar.app\""))
-        assertTrue(g.contains("versionCode = 525")); assertTrue(g.contains("versionName = \"2.6.94\""))
+        assertTrue(g.contains("versionCode = 526")); assertTrue(g.contains("versionName = \"2.6.95\""))
         for (bad in listOf("applicationIdSuffix", "versionNameSuffix", "isDebuggable = true", "debuggable true", "setDataDirectorySuffix"))
             assertFalse(bad, g.contains(bad))
         val cand = g.substring(g.indexOf("create(\"candidate\") {")).let { it.substring(0, it.indexOf("\n        }\n")) }
