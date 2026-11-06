@@ -2426,6 +2426,13 @@ class MarketWatchService : Service() {
             // routed through mergeChain - it must not inherit WebView-enriched trading fields, attach
             // managed trade evidence, or overwrite any part of nfChain/bnfChain. The brain reads it
             // only for compute_scale, and only when the front expiry is the session date itself.
+            //
+            // ctxObj is loaded from SharedPreferences above and saved back below, so these keys survive
+            // between polls and between SESSIONS. Clear all four FIRST: otherwise a poll whose fetch
+            // failed would write a fresh expiry while an earlier session's chain stayed behind, pairing
+            // a new expiry with a stale chain. After clearing, a published pair always comes from one
+            // poll, or is not published at all.
+            DirectionScaleNeed.clearCtx(ctxObj)
             for ((scaleIx, fetched) in scaleChains) {
                 val prefix = if (scaleIx == "NF") "nf" else "bnf"
                 val spot = if (scaleIx == "NF") nfSpot else bnfSpot
@@ -4610,8 +4617,18 @@ class MarketWatchService : Service() {
      */
     private fun fetchDirectionScaleChain(index: String, instrumentKey: String, token: String,
                                          today: String, tradeExpiry: String): ScaleChainFetch? {
+        // Acquisition bound: only fetch when the scale is actually needed. Decided from the authority's
+        // own persisted scales state, so once a usable scale is frozen at the open reference this stops
+        // issuing requests instead of repeating them on all ~78 polls of an expiry-day session.
+        val need = DirectionScaleNeed.decide(
+            index, tradeExpiry, today, DirectionScaleNeed.readState(filesDir, today))
+        if (!need.fetch) {
+            if (need.reason != DirectionScaleNeed.NOT_EXPIRY_DAY) {
+                LogBuffer.add('D', TAG, "SCALE_CHAIN_SKIP: index=$index reason=${need.reason}")
+            }
+            return null
+        }
         val trade = tradeExpiry.trim()
-        if (trade.isBlank() || trade > today) return null    // normal session: nothing extra to do
         val next = resolveNextExpiryAfter(index, instrumentKey, token, today)
         if (next.isEmpty()) {
             Log.w(TAG, "SCALE_CHAIN_NO_NEXT_EXPIRY: index=$index session=$today tradeExpiry=$trade")
