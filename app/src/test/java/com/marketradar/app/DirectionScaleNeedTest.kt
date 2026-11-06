@@ -163,9 +163,16 @@ class DirectionScaleNeedTest {
 
     /**
      * The gate must stop fetching for a scale that was RECOVERED, not only for one observed at the
-     * open reference. This fixture is the exact payload `index_authority_store` writes after a
-     * successful late recovery (captured from a real run of `brain.compute_index_authority`), so the
-     * Kotlin gate is pinned against the shape Python actually persists rather than a minimal stub.
+     * open reference.
+     *
+     * This fixture is the payload `index_authority_store` actually writes after a successful late
+     * recovery, captured verbatim from `brain.compute_index_authority` on the deterministic
+     * `index_authority_fixtures` session (NF own-expiry-day 2026-11-09, next expiry 2026-11-17).
+     * Codex's R3 review caught an earlier version of this fixture that carried the right 22-field
+     * SHAPE but invented its `ce_mid`, `pe_mid`, `forward`, `n_sessions` and `recovered_spot` values
+     * while the comment claimed they were captured — so every value below is now the real one, and
+     * `tests/test_expiry_day_scale_durability.py::TestKotlinFixtureIsTheRealPayload` re-captures the
+     * payload and asserts these literals still match it, so it cannot drift back into fiction.
      */
     @Test fun frozenRecoveredScaleFromTheRealStoreStopsFetching() {
         val recovered = JSONObject()
@@ -173,8 +180,8 @@ class DirectionScaleNeedTest {
             .put("value", 0.00789094)
             .put("method", "atm_straddle_sqrt_2_over_pi_v1")
             .put("expiry", NEXT).put("trade_expiry", TODAY)
-            .put("k0", 24200).put("ce_mid", 112.5).put("pe_mid", 98.25)
-            .put("forward", 24214.25).put("n_sessions", 5.986667)
+            .put("k0", 24200).put("ce_mid", 172.05).put("pe_mid", 192.05)
+            .put("forward", 24180.0).put("n_sessions", 5.72)
             .put("observed_at", "2026-11-09T11:00:00+05:30")
             .put("calendar_rule_version", "ev_v12_nse_cal_nf_weekly_tue_prev_session_v1:2026")
             .put("chain_source", "NEXT_EXPIRY")
@@ -184,7 +191,7 @@ class DirectionScaleNeedTest {
             .put("recovered", true)
             .put("recovered_from_reason", "NEXT_EXPIRY_CHAIN_MISSING")
             .put("recovered_at", "2026-11-09T11:00:00+05:30")
-            .put("recovered_spot", 24180.0)
+            .put("recovered_spot", 24189.0)
 
         val d = DirectionScaleNeed.decide("NF", TODAY, TODAY, state("NF" to recovered))
         assertFalse("a durable recovered scale needs no further chain", d.fetch)
