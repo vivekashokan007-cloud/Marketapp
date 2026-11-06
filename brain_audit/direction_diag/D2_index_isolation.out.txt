@@ -1,0 +1,27 @@
+==============================================================================
+D2  per-index isolation   (pinned 3ffe72bd, index_authority_v1)
+==============================================================================
+scale NF  status=OK m=0.00279778
+scale BNF status=OK m=0.00279443
+
+A. BNF path SHAPE changed (chop -> steady +1.75%% leg), NF untouched
+   NF  before : {"er": null, "er_reason": "SPARSE_PATH", "reason_codes": ["WEAK"], "strength": null, "value": "NEUTRAL", "z_30": 0.210545, "z_open": 0.148897}
+   NF  after  : {"er": null, "er_reason": "SPARSE_PATH", "reason_codes": ["WEAK"], "strength": null, "value": "NEUTRAL", "z_30": 0.210545, "z_open": 0.148897}
+   BNF before : {"er": null, "er_reason": "SPARSE_PATH", "reason_codes": ["WEAK"], "strength": null, "value": "NEUTRAL", "z_30": 0.180692, "z_open": 0.127782}
+   BNF after  : {"er": null, "er_reason": "SPARSE_PATH", "reason_codes": [], "strength": "STRONG", "value": "BULL", "z_30": 3.112443, "z_open": 6.208292}
+   NF output byte-identical          : True
+   BNF output responded              : True   (NEUTRAL/None -> BULL/STRONG)
+   BNF z_open                        : 0.127782 -> 6.208292
+
+B. BNF series multiplied by 0.95 (uniform rescale, no shape change)
+   NF  output unchanged              : True
+   BNF output unchanged              : True
+   BNF z_open                        : 0.127782 -> 0.127782
+   -> invariance to uniform rescaling, NOT a failed perturbation.
+
+==============================================================================
+D2 verdict
+==============================================================================
+isolation holds (NF identical under a BNF shape change) : True
+perturbation was real (BNF responded)                   : True
+direction is scale-invariant in the index level          : True

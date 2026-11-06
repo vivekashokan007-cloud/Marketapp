@@ -1,0 +1,40 @@
+==============================================================================
+D1  scale failure -> direction UNAVAILABLE   (pinned 3ffe72bd, index_authority_v1)
+==============================================================================
+session=2026-11-04  decision=2026-11-04T11:00:00+05:30  polls=8  path=+0.92% off open ref
+
+case 1  healthy chain + calendar
+        scale status=OK reason=None m=0.00279778 n=3.986667 k0=23800
+        direction                  value=BULL         strength=STRONG    reasons=[]
+
+case 2  expiry == session date (own expiry day, D9)
+        scale status=UNAVAILABLE reason=EXPIRY_DAY_CHAIN_ONLY m=None
+        direction                  value=UNAVAILABLE  strength=None      reasons=['SCALE_EXPIRY_DAY_CHAIN_ONLY']
+
+case 3  calendar year not covered
+        scale status=CALENDAR_UNAVAILABLE reason=CALENDAR_YEAR_NOT_COVERED:2026
+        direction                  value=UNAVAILABLE  strength=None      reasons=['CALENDAR_UNAVAILABLE']
+
+case 4  no valid parity pair (every leg fails 0<bid<=ask)
+        scale status=UNAVAILABLE reason=NO_VALID_PARITY_PAIR
+        direction                  value=UNAVAILABLE  strength=None      reasons=['SCALE_NO_VALID_PARITY_PAIR']
+
+case 5  m outside SCALE_M_BOUNDS (0.002, 0.05)
+        scale status=UNAVAILABLE reason=SCALE_INVALID m=0.13166037
+        direction                  value=UNAVAILABLE  strength=None      reasons=['SCALE_SCALE_INVALID']
+
+==============================================================================
+D1 verdict
+==============================================================================
+healthy scale yields a direction        : True  (BULL)
+every scale failure yields UNAVAILABLE  : True
+identical spot path in all five cases   : True
+
+CONCLUSION: the spot path is never consulted once the scale is unusable.  The scale is
+observed ONCE, in the 09:20-09:35 window, and frozen; a single unusable observation
+removes direction for that index for the rest of the session.
+  1_scale_ok     BULL         []
+  2_expiry_day   UNAVAILABLE  ['SCALE_EXPIRY_DAY_CHAIN_ONLY']
+  3_calendar     UNAVAILABLE  ['CALENDAR_UNAVAILABLE']
+  4_no_parity    UNAVAILABLE  ['SCALE_NO_VALID_PARITY_PAIR']
+  5_m_bounds     UNAVAILABLE  ['SCALE_SCALE_INVALID']

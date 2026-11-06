@@ -1,0 +1,57 @@
+==============================================================================
+D3  5 Nov 09:30 reproduction   (pinned 3ffe72bd, index_authority_v1)
+==============================================================================
+Z30_LOOKBACK_MIN=27.5  -> anchor target = 09:30 minus 27.5 min = 09:02:30, which is before
+the 09:20 open reference, so the z_30 anchor CLAMPS TO A at 09:30 and delta = 10.0 min.
+Z30_WARMUP_MIN=10.0, so delta=10.0 is exactly at the boundary and passes (test is "<").
+With the anchor clamped, the deployed forms reduce to
+    z_open = log(S/A)/m        z_30 = log(S/A)/(m*sqrt(delta/375)) = z_open/sqrt(delta/375)
+
+sqrt(delta/375) = 0.163299316      1/sqrt(delta/375) = 6.123724
+
+T1  self-consistency of the published pair (expected ratio 6.123724)
+    NF   z_30/z_open = 6.1587   vs 6.1237   delta=0.0350   (3-dp inputs)
+    BNF  z_30/z_open = 6.1325   vs 6.1237   delta=0.0087   (3-dp inputs)
+
+T1b round-trip: z_open recovered from z_30, then re-rounded to 3 dp
+    NF   z_open = -0.063360 -> rounds to -0.063   published -0.063   match=True
+    BNF  z_open = -0.151215 -> rounds to -0.151   published -0.151   match=True
+
+T2  m solved under the DEPLOYED (non-time-scaled) z_open; bounds (0.002, 0.05)
+    NF   log(S/A) = -0.000579060   m = 0.00913919   inside bounds = True
+    BNF  log(S/A) = -0.001312712   m = 0.00868109   inside bounds = True
+    for reference, m read from device history: NF 2 Nov 0.00778287, 4 Nov 0.01017554;
+                                               BNF 3 Nov 0.00897558, 4 Nov 0.00942820
+
+T3  m solved under a TIME-SCALED z_open (the R2 convention)
+    NF   m = 0.05596587   inside bounds = False   EXCLUDED (> 0.05)
+    BNF  m = 0.05316057   inside bounds = False   EXCLUDED (> 0.05)
+    A time-scaled z_open would require m above SCALE_M_BOUNDS, so compute_scale would have
+    returned SCALE_INVALID and direction would be UNAVAILABLE - not the observed NEUTRAL/WEAK.
+
+T4  compute_direction run with the solved m
+    NF   solved 09:25 spot = 24364.10 (reconstructed, NOT unique)
+         value=NEUTRAL reasons=['WEAK']        -> matches NEUTRAL/WEAK : True
+         z_open=-0.063360 -> -0.063  published -0.063  match=True
+         z_30  =-0.388000 -> -0.388  published -0.388  match=True
+         er    = 0.493000 -> 0.493   published 0.493   match=True
+         anchor clamped_to_open_ref=True  delta=10.0 min
+    BNF  solved 09:25 spot = 56904.35 (reconstructed, NOT unique)
+         value=NEUTRAL reasons=['WEAK']        -> matches NEUTRAL/WEAK : True
+         z_open=-0.151215 -> -0.151  published -0.151  match=True
+         z_30  =-0.926000 -> -0.926  published -0.926  match=True
+         er    = 1.000000 -> 1.000   published 1.000   match=True
+         anchor clamped_to_open_ref=True  delta=10.0 min
+
+==============================================================================
+D3 verdict
+==============================================================================
+T1  published (z_open, z_30) self-consistent under deployed forms : True
+T2  solved m inside SCALE_M_BOUNDS                                : True
+T3  time-scaled reading of z_open EXCLUDED by SCALE_M_BOUNDS      : True
+T4  compute_direction reproduces label, z_open, z_30 and ER       : True
+
+Labels: A, S, z_open, z_30, ER, direction  = phone-verified (handoff s46-54, Codex
+        reproduced all 78 polls at b524).   m, the 09:25 spot = SOLVED/RECONSTRUCTED
+        here, not read from a record.  The 09:25 spot is one of several paths that
+        give the published ER and is not claimed as the observed value.
