@@ -366,7 +366,11 @@ class TestHistorySnapshot(unittest.TestCase):
         snap = ed.build_history_snapshot(self.RECS, SESSION)
         self.assertEqual(snap['sessions'], 3)
         self.assertEqual(snap['excluded_not_strictly_earlier'], 2)
-        self.assertTrue(all(r['session_date'] < SESSION for r in snap['records']))
+        # Codex R5: records are stored as immutable canonical JSON strings; snapshot_rows()
+        # verifies the hash and parses them.
+        rows, why = ed.snapshot_rows(snap)
+        self.assertIsNone(why)
+        self.assertTrue(all(r['session_date'] < SESSION for r in rows))
 
     def test_malformed_records_are_counted_not_silently_dropped(self):
         snap = ed.build_history_snapshot(self.RECS + ['x', None, {}, {'v': 9}], SESSION)
@@ -417,7 +421,9 @@ class TestCausality(unittest.TestCase):
     def test_future_history_records_cannot_enter_the_population(self):
         snap = ed.build_history_snapshot(
             [{'session_date': '2026-11-10', 'v': 1}, {'session_date': '2026-11-02', 'v': 2}], SESSION)
-        self.assertEqual([r['session_date'] for r in snap['records']], ['2026-11-02'])
+        rows, why = ed.snapshot_rows(snap)
+        self.assertIsNone(why)
+        self.assertEqual([r['session_date'] for r in rows], ['2026-11-02'])
 
 
 class TestNeverRaises(unittest.TestCase):

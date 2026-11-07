@@ -91,6 +91,16 @@ INVALID_RECEIVE_CLOCK = 'INVALID_RECEIVE_CLOCK'
 SNAPSHOT_SESSION_MISMATCH = 'SNAPSHOT_SESSION_MISMATCH'
 SNAPSHOT_NOT_STRICTLY_EARLIER = 'SNAPSHOT_NOT_STRICTLY_EARLIER'
 INCOMPARABLE_FRAME = 'INCOMPARABLE_FRAME'
+# Codex R5: the snapshot's content is verified at consumption, not merely copied at construction.
+SNAPSHOT_INTEGRITY_FAILED = 'SNAPSHOT_INTEGRITY_FAILED'
+# Codex R2: a frame whose span is not fully covered by retained observations cannot report a
+# path-shape metric, because the numerator and the denominator would be measured over different
+# populations.
+INCOMPLETE_FRAME_COVERAGE = 'INCOMPLETE_FRAME_COVERAGE'
+# Codex R4: a historical record must carry its own schema and feature version. Unknown compatibility
+# is refused, not assumed from a window label.
+HISTORY_RECORD_VERSION = 'mr.index_empirical_direction.history_record.v1'
+UNKNOWN_FRAME_COMPATIBILITY = 'UNKNOWN_FRAME_COMPATIBILITY'
 # state structure contract (Codex B5)
 STATE_STRUCTURE_INVALID = 'STATE_STRUCTURE_INVALID'
 TRUNCATED_COVERAGE = 'TRUNCATED_COVERAGE'
@@ -120,6 +130,33 @@ DEFAULT_CONFIG = {
 # ── helpers ────────────────────────────────────────────────────────────────────────────────────
 def canonical_json(obj):
     return json.dumps(obj, sort_keys=True, separators=(',', ':'), default=str)
+
+
+def _cfg_num(cfg, key, default):
+    """Read a numeric setting WITHOUT `value or default`.
+
+    Codex R4: `float(cfg.get(k) or default)` silently replaced an explicitly configured **zero**
+    with the default, so `anchor_tolerance_min=0` reported and applied 2.5 on the historical side
+    while the query side used the real 0. A configured zero is a valid, meaningful setting -- it is
+    the strict-causal choice -- and must survive. Only a MISSING or unusable value falls back.
+    """
+    if not isinstance(cfg, dict):
+        return float(default)
+    if key not in cfg or cfg[key] is None:
+        return float(default)
+    try:
+        v = float(cfg[key])
+    except (TypeError, ValueError):
+        return float(default)
+    return v if math.isfinite(v) and v >= 0 else float(default)
+
+
+def _nonneg_int(value):
+    """A counter must be a non-negative integer. Returns None when it is not, so a corrupt stored
+    counter is refused rather than coerced (Codex R3: int('oops') raised out of the accept path)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if value >= 0 else None
 
 
 def digest(obj, length=16):
@@ -252,14 +289,49 @@ def _references_are_well_formed(state, session_date):
     if isinstance(prior, dict) and prior.get('last_observed_value') is not None:
         if _finite(prior.get('last_observed_value')) is None:
             return False
+    # Codex R3: validate the fields that are actually READ, not a subset. A path_extrema block
+    # carrying reference_ts/reference_value/high/low but no `low_ts` passed the old check and then
+    # raised KeyError deep in the fold; a non-integer `observations_trimmed` raised ValueError on
+    # int(). Every required key must be present and usable, and the counter must be a real counter.
     pe = state.get('path_extrema')
     if isinstance(pe, dict) and pe:
+        for key in ('reference_ts', 'reference_value', 'high', 'high_ts', 'low', 'low_ts',
+                    'observations_folded'):
+            if key not in pe:
+                return False
         for key in ('reference_ts', 'high_ts', 'low_ts'):
-            if pe.get(key) is not None and ia.parse_ts(pe.get(key), session_date) is None:
+            if ia.parse_ts(pe.get(key), session_date) is None:
                 return False
         for key in ('reference_value', 'high', 'low'):
-            if pe.get(key) is not None and _finite(pe.get(key)) is None:
+            if _finite(pe.get(key)) is None:
                 return False
+        for key in ('post_peak_low', 'post_trough_high'):
+            ts_key = key + '_ts'
+            if pe.get(key) is None:
+                if pe.get(ts_key) is not None:
+                    return False                   # a timestamp without its value is incoherent
+            else:
+                if _finite(pe.get(key)) is None:
+                    return False
+                if ia.parse_ts(pe.get(ts_key), session_date) is None:
+                    return False
+        if _nonneg_int(pe.get('observations_folded')) is None:
+            return False
+        # ordering: the high must not be below the low, and both must bracket the reference
+        hi, lo, rv = float(pe['high']), float(pe['low']), float(pe['reference_value'])
+        if hi < lo or hi < rv or lo > rv:
+            return False
+    if state.get('observations_trimmed') is not None \
+            and _nonneg_int(state.get('observations_trimmed')) is None:
+        return False
+    fo = state.get('first_observed')
+    if fo is not None:
+        if not isinstance(fo, dict):
+            return False
+        if _finite(fo.get('value')) is None or float(fo['value']) <= 0:
+            return False
+        if ia.parse_ts(fo.get('source_ts'), session_date) is None:
+            return False
     return True
 
 
@@ -400,6 +472,12 @@ def build_history_snapshot(records, as_of, config=None):
     if len(kept) > cap_rows:                   # separate, documented row bound
         excluded_capped_rows += len(kept) - cap_rows
         kept = kept[-cap_rows:]
+    # Codex R5: the records are stored as canonical JSON STRINGS, which are immutable, rather than
+    # as a tuple of copied dictionaries. The deep copy stopped the caller's later edits reaching the
+    # snapshot, but `snapshot['records'][0]['frames']['m15']['log_return'] = 99` still mutated it
+    # with history_hash unchanged, and consumption happily read 99.0. Strings cannot be mutated in
+    # place, and `snapshot_rows` re-verifies the hash before parsing, so both boundaries hold.
+    rows_json = tuple(canonical_json(r) for r in kept)
     snap = {
         'schema_version': SCHEMA_VERSION,
         'as_of_session': as_of_session,
@@ -413,13 +491,48 @@ def build_history_snapshot(records, as_of, config=None):
         'excluded_capped_rows': excluded_capped_rows,
         'capped_at_sessions': cap_sessions,
         'capped_at_rows': cap_rows,
-        'records': tuple(kept),
+        'records': rows_json,              # canonical JSON strings; read via snapshot_rows()
+        'records_are_json': True,
         'latest_information_session': (max(str(r.get('session_date')) for r in kept)
                                        if kept else None),
     }
     snap['history_hash'] = digest({k: v for k, v in snap.items() if k != 'records'} |
-                                  {'records': [canonical_json(r) for r in kept]})
+                                  {'records': list(rows_json)})
     return snap
+
+
+def snapshot_rows(snapshot):
+    """Parsed rows of a snapshot, AFTER verifying its content against its own hash.
+
+    Codex R5: returns (rows, reason). `reason` is None when the snapshot verifies; otherwise it is
+    SNAPSHOT_INTEGRITY_FAILED and `rows` is empty, so changed contents are refused rather than
+    consumed. Documented guarantee: the stored representation is immutable (canonical JSON strings),
+    AND the hash is re-checked here, so neither an in-place edit nor a wholesale substitution of the
+    records tuple can reach a rank.
+    """
+    if not isinstance(snapshot, dict):
+        return [], SNAPSHOT_INTEGRITY_FAILED
+    raw = snapshot.get('records')
+    if raw is None:
+        return [], SNAPSHOT_INTEGRITY_FAILED
+    try:
+        rows_json = [r if isinstance(r, str) else canonical_json(r) for r in raw]
+    except TypeError:
+        return [], SNAPSHOT_INTEGRITY_FAILED
+    expected = digest({k: v for k, v in snapshot.items()
+                       if k not in ('records', 'history_hash')} | {'records': rows_json})
+    if snapshot.get('history_hash') != expected:
+        return [], SNAPSHOT_INTEGRITY_FAILED
+    out = []
+    for r in rows_json:
+        try:
+            parsed = json.loads(r)
+        except (ValueError, TypeError):
+            return [], SNAPSHOT_INTEGRITY_FAILED
+        if not isinstance(parsed, dict):
+            return [], SNAPSHOT_INTEGRITY_FAILED
+        out.append(parsed)
+    return out, None
 
 
 def snapshot_is_usable_for(snapshot, session_date):
@@ -442,7 +555,10 @@ def snapshot_is_usable_for(snapshot, session_date):
     latest = snapshot.get('latest_information_session')
     if latest is not None and str(latest) >= sd:
         return False, SNAPSHOT_NOT_STRICTLY_EARLIER
-    for r in snapshot.get('records') or ():
+    rows, why = snapshot_rows(snapshot)       # Codex R5: integrity before anything is trusted
+    if why:
+        return False, why
+    for r in rows:
         if str(r.get('session_date')) >= sd:
             return False, SNAPSHOT_NOT_STRICTLY_EARLIER
     return True, None
@@ -532,7 +648,14 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
         # called .get on it and raised -- the same B5 defect as the index/session inference above,
         # on the DISABLED path. Found by grep after fixing the enabled path, not by the probe,
         # which ran with the observer enabled and never reached here.
-        env['operational']['state_observations'] = len(_prev.get('observations') or [])
+        #
+        # Codex R3: `len()` on a shape-dependent field needs its own guard too. `observations = 7`
+        # reached here and raised "object of type 'int' has no len()" -- the observer ships
+        # default-off, so this is the branch production actually takes.
+        _obs = _prev.get('observations')
+        env['operational']['state_observations'] = len(_obs) if isinstance(_obs, list) else None
+        if _obs is not None and not isinstance(_obs, list):
+            env['operational']['failure_reason'] = STATE_STRUCTURE_INVALID
         return _finish(env), (previous_state if isinstance(previous_state, dict)
                               else new_state(index, session_date, config))
 
@@ -683,14 +806,31 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
                 replace_last = True
 
     # ── accept: every validation has passed, so the state may now change ───────────────────────
+    #
+    # Codex R1: the persistent extrema accumulator covers only the COMMITTED PREFIX -- every accepted
+    # observation except the newest one, which is the only one a same-time event can still replace.
+    # Previously every accepted observation was folded immediately, so a superseded value stayed in
+    # the path: 09:25=120 then 09:25=110 kept a retained high of 120 while the reverse arrival order
+    # kept 110, from the same final observation. Folding the previous newest only when a STRICTLY
+    # LATER observation arrives makes the accumulator independent of arrival order.
     if replace_last and state.get('observations'):
         # A same-time replacement must not revise a frozen reference or an already published record.
-        dropped = state['observations'].pop()
+        dropped = state['observations'].pop()        # never folded, so nothing to unwind
+        env['provenance']['same_time_superseded'] = {'source_ts': dropped[0], 'spot': dropped[1]}
         if (state.get('open_reference') or {}).get('source_ts') == dropped[0]:
             # the reference is frozen by design; the replacement supersedes the observation only
             env['provenance']['same_time_reference_frozen'] = True
+    elif state.get('observations'):
+        _commit_prefix_point(state, state['observations'][-1], session_date)
     _bounded_append(state['observations'], [_iso(source_dt), spot, source_field],
                     int(cfg['max_session_observations']), state)
+    fo = state.get('first_observed')
+    if fo is None:                                   # captured once, never revised (Codex R2)
+        state['first_observed'] = {'value': spot, 'source_ts': _iso(source_dt)}
+    elif replace_last and isinstance(fo, dict) and fo.get('source_ts') == _iso(source_dt):
+        # the ONE case where it legitimately changes: the first observation was itself superseded by
+        # a same-time replacement, so the identity follows the surviving observation
+        state['first_observed'] = {'value': spot, 'source_ts': _iso(source_dt)}
     _bounded_append(state['processed_ids'], ident, MAX_PROCESSED_IDS)
     state['last_accepted_source_ts'] = _iso(source_dt)
 
@@ -721,9 +861,24 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
     else:
         _reason(env, MISSING_PREVIOUS_CLOSE)
 
-    env['references']['first_observed_reference'] = {
+    # Codex R2: this read observations[0], which is the start of the ROLLING BUFFER, not the first
+    # observation of the session. After trimming it silently moved (reproduced: it reported 110.0 at
+    # 09:30 when the first accepted observation was 100.0 at 09:20) while still being labelled
+    # "first observed". The identity is now captured once, at the first accept, and never changed;
+    # the buffer's start is reported separately under its own name.
+    fo = state.get('first_observed')
+    if isinstance(fo, dict) and _finite(fo.get('value')) is not None:
+        env['references']['first_observed_reference'] = {
+            'value': fo['value'], 'source_ts': fo.get('source_ts'), 'provenance': 'observed',
+        }
+    else:
+        env['references']['first_observed_reference'] = None
+    env['references']['buffer_start_reference'] = {
         'value': state['observations'][0][1],
         'source_ts': state['observations'][0][0],
+        'is_session_first': (isinstance(fo, dict)
+                             and fo.get('source_ts') == state['observations'][0][0]),
+        'observations_trimmed': _nonneg_int(state.get('observations_trimmed')) or 0,
     }
 
     # Commit C: observed path and empirical ranks. Commit D still owns the forecast.
@@ -775,6 +930,71 @@ def _minutes(a, b):
     return (b - a).total_seconds() / 60.0
 
 
+def _new_prefix_accumulator(ref_ts_iso, ref_v):
+    """A fixed-reference accumulator containing only the reference itself."""
+    return {'reference_ts': ref_ts_iso, 'reference_value': ref_v,
+            'high': ref_v, 'high_ts': ref_ts_iso, 'low': ref_v, 'low_ts': ref_ts_iso,
+            'post_peak_low': None, 'post_peak_low_ts': None,
+            'post_trough_high': None, 'post_trough_high_ts': None,
+            'observations_folded': 0}
+
+
+def _fold_points(acc, points, session_date):
+    """Fold points into a COPY of `acc` and return it. Never mutates the input.
+
+    Monotone in the high and the low, so a trimmed-away extreme survives. A new extreme restarts its
+    own post-extreme summary, and a post-extreme value is only taken from an observation strictly
+    later than the extreme it follows, so a trough is never backdated to its peak.
+    """
+    out = dict(acc)
+    for t, v in points:
+        if _finite(out.get('high')) is None or v > float(out['high']):
+            out['high'], out['high_ts'] = v, _iso(t)
+            out['post_peak_low'], out['post_peak_low_ts'] = None, None
+        if _finite(out.get('low')) is None or v < float(out['low']):
+            out['low'], out['low_ts'] = v, _iso(t)
+            out['post_trough_high'], out['post_trough_high_ts'] = None, None
+        out['observations_folded'] = int(out.get('observations_folded') or 0) + 1
+    hi_t = ia.parse_ts(out.get('high_ts'), session_date)
+    lo_t = ia.parse_ts(out.get('low_ts'), session_date)
+    for t, v in points:
+        if hi_t is not None and t > hi_t:
+            if _finite(out.get('post_peak_low')) is None or v < float(out['post_peak_low']):
+                out['post_peak_low'], out['post_peak_low_ts'] = v, _iso(t)
+        if lo_t is not None and t > lo_t:
+            if _finite(out.get('post_trough_high')) is None or v > float(out['post_trough_high']):
+                out['post_trough_high'], out['post_trough_high_ts'] = v, _iso(t)
+    return out
+
+
+def _ensure_prefix_accumulator(state, ref_ts, ref_v, session_date):
+    """The committed-prefix accumulator for the current reference, created if absent or re-keyed."""
+    pe = state.get('path_extrema')
+    if not isinstance(pe, dict) or pe.get('reference_ts') != _iso(ref_ts):
+        pe = _new_prefix_accumulator(_iso(ref_ts), ref_v)
+        state['path_extrema'] = pe
+    return pe
+
+
+def _commit_prefix_point(state, observation, session_date):
+    """Fold one now-unreplaceable observation into the committed-prefix accumulator.
+
+    Called when a STRICTLY LATER observation is accepted, which is the moment the previous newest
+    one can no longer be superseded by a same-time event. Observations before the reference are not
+    part of the reference-anchored path and are skipped.
+    """
+    pe = state.get('path_extrema')
+    if not isinstance(pe, dict) or not pe.get('reference_ts'):
+        return                      # no reference yet; the accumulator is built when one exists
+    sd = state.get('session_date')
+    t = ia.parse_ts(observation[0], sd)
+    v = _finite(observation[1])
+    ref_t = ia.parse_ts(pe.get('reference_ts'), sd)
+    if t is None or v is None or ref_t is None or t < ref_t:
+        return
+    state['path_extrema'] = _fold_points(pe, [(t, v)], sd)
+
+
 def update_reference_extrema(state, session_date):
     """Recompute the causal high/low since the fixed reference, from accepted observations only.
 
@@ -798,63 +1018,31 @@ def update_reference_extrema(state, session_date):
     if not pts or pts[0][0] != ref_ts:
         pts = [(ref_ts, ref_v)] + pts          # the reference is part of its own path
 
-    hi_t, hi_v = ref_ts, ref_v
-    lo_t, lo_v = ref_ts, ref_v
-    for t, v in pts:
-        if v > hi_v:
-            hi_v, hi_t = v, t
-        if v < lo_v:
-            lo_v, lo_t = v, t
+    # ── persistent fixed-reference extrema (Codex B5.2), over the COMMITTED PREFIX (Codex R1) ──
+    #
+    # B5.2: recomputing from the rolling buffer alone erased accepted history -- with cap 3 and
+    # prices 100 -> 120 -> 110 -> 108 -> 105 the high became 110 though the real high was 120. So a
+    # persistent accumulator is kept, keyed by the reference's own timestamp.
+    #
+    # R1: but folding EVERY accepted observation immediately made the accumulator arrival-dependent,
+    # because a superseded same-time observation stayed folded. The accumulator therefore covers only
+    # the committed prefix -- everything except the newest observation, the one a same-time event can
+    # still replace -- and the REPORTED extrema fold that replaceable tail in on top, without
+    # persisting it. Same final observation, same reported path, whatever order the events arrived in.
+    pe = _ensure_prefix_accumulator(state, ref_ts, ref_v, session_date)
+    reported = _fold_points(pe, pts[-1:], session_date)
 
-    # post-peak trough and post-trough peak, only from strictly later observations
-    after_hi = [(t, v) for t, v in pts if t > hi_t]
-    after_lo = [(t, v) for t, v in pts if t > lo_t]
-    post_peak_low = min(after_hi, key=lambda p: p[1]) if after_hi else None
-    post_trough_high = max(after_lo, key=lambda p: p[1]) if after_lo else None
-
-    # ── Codex B5: fold into PERSISTENT fixed-reference extrema ─────────────────────────────────
-    # Recomputation alone reads only the rolling buffer, so trimming erased accepted history:
-    # with cap 3 and causal prices 100 -> 120 -> 110 -> 108 -> 105, `extrema.high` became 110
-    # although the real high since the reference was 120. The persistent record below is keyed by
-    # the reference's own timestamp, is monotone in the high and the low, and is never lowered by a
-    # buffer that no longer contains the extreme.
-    pe = state.get('path_extrema')
-    if not isinstance(pe, dict) or pe.get('reference_ts') != _iso(ref_ts):
-        pe = {'reference_ts': _iso(ref_ts), 'reference_value': ref_v,
-              'high': hi_v, 'high_ts': _iso(hi_t), 'low': lo_v, 'low_ts': _iso(lo_t),
-              'post_peak_low': None, 'post_peak_low_ts': None,
-              'post_trough_high': None, 'post_trough_high_ts': None,
-              'observations_folded': 0}
-    if _finite(pe.get('high')) is None or hi_v > float(pe['high']):
-        pe['high'], pe['high_ts'] = hi_v, _iso(hi_t)
-        pe['post_peak_low'], pe['post_peak_low_ts'] = None, None   # a new peak restarts its trough
-    if _finite(pe.get('low')) is None or lo_v < float(pe['low']):
-        pe['low'], pe['low_ts'] = lo_v, _iso(lo_t)
-        pe['post_trough_high'], pe['post_trough_high_ts'] = None, None
-    # post-extreme summaries fold against the PERSISTENT extreme's timestamp, so a trough is only
-    # ever recorded from observations that arrived after the peak it follows -- never backdated.
-    pe_hi_t = ia.parse_ts(pe.get('high_ts'), session_date)
-    pe_lo_t = ia.parse_ts(pe.get('low_ts'), session_date)
-    for t, v in pts:
-        if pe_hi_t is not None and t > pe_hi_t:
-            if _finite(pe.get('post_peak_low')) is None or v < float(pe['post_peak_low']):
-                pe['post_peak_low'], pe['post_peak_low_ts'] = v, _iso(t)
-        if pe_lo_t is not None and t > pe_lo_t:
-            if _finite(pe.get('post_trough_high')) is None or v > float(pe['post_trough_high']):
-                pe['post_trough_high'], pe['post_trough_high_ts'] = v, _iso(t)
-    pe['observations_folded'] = int(pe.get('observations_folded') or 0) + 1
-    state['path_extrema'] = pe
-
-    trimmed = int(state.get('observations_trimmed') or 0)
-    hi_v, hi_t_iso = float(pe['high']), pe['high_ts']
-    lo_v, lo_t_iso = float(pe['low']), pe['low_ts']
-    hi_t = ia.parse_ts(hi_t_iso, session_date) or hi_t
-    lo_t = ia.parse_ts(lo_t_iso, session_date) or lo_t
-    post_peak_low = ((ia.parse_ts(pe['post_peak_low_ts'], session_date), pe['post_peak_low'])
-                     if pe.get('post_peak_low') is not None else None)
-    post_trough_high = ((ia.parse_ts(pe['post_trough_high_ts'], session_date),
-                         pe['post_trough_high'])
-                        if pe.get('post_trough_high') is not None else None)
+    trimmed = _nonneg_int(state.get('observations_trimmed')) or 0
+    hi_v = float(reported['high'])
+    lo_v = float(reported['low'])
+    hi_t = ia.parse_ts(reported['high_ts'], session_date) or ref_ts
+    lo_t = ia.parse_ts(reported['low_ts'], session_date) or ref_ts
+    post_peak_low = ((ia.parse_ts(reported['post_peak_low_ts'], session_date),
+                      reported['post_peak_low'])
+                     if reported.get('post_peak_low') is not None else None)
+    post_trough_high = ((ia.parse_ts(reported['post_trough_high_ts'], session_date),
+                         reported['post_trough_high'])
+                        if reported.get('post_trough_high') is not None else None)
 
     ex = {
         'reference': 'authority_open_reference',
@@ -921,14 +1109,21 @@ def excursion_measures(extrema, spot_now):
     )
 
 
-def _frame(pts, now_t, now_v, window_min, tolerance_min):
+def _frame(pts, now_t, now_v, window_min, tolerance_min, buffer_start_t=None, trimmed=0):
     """One rolling frame. The anchor is the LATEST observation at or before the requested anchor time
-    — never a later one merely because it is closer in absolute terms."""
+    — never a later one merely because it is closer in absolute terms.
+
+    Codex R2: a frame now publishes whether its span is fully covered by retained observations, and
+    a path-shape metric is withheld when it is not. The anchor itself is a real retained observation,
+    so a rolling frame is covered by construction; the check is kept uniform so every frame carries
+    the field and the session-to-date frame (whose anchor is a FROZEN reference that may have been
+    trimmed out of the buffer) cannot be the only one without it.
+    """
     requested = now_t - timedelta(minutes=window_min)
     candidates = [(t, v) for t, v in pts if t <= requested]
     if not candidates:
         return {'available': False, 'reason': NO_ANCHOR, 'window_min': window_min,
-                'requested_anchor_ts': _iso(requested)}
+                'requested_anchor_ts': _iso(requested), 'coverage_complete': None}
     anchor_t, anchor_v = candidates[-1]
     elapsed = _minutes(anchor_t, now_t)
     r = log_return(now_v, anchor_v)
@@ -936,6 +1131,13 @@ def _frame(pts, now_t, now_v, window_min, tolerance_min):
     path = sum(abs(log_return(span[i + 1][1], span[i][1]) or 0.0) for i in range(len(span) - 1))
     net = abs(r) if r is not None else None
     gaps = [_minutes(span[i][0], span[i + 1][0]) for i in range(len(span) - 1)]
+    covered = (buffer_start_t is None or anchor_t >= buffer_start_t)
+    eff = (net / path if (net is not None and path > 0) else None)
+    eff_reason = None if path > 0 else 'FLAT_OR_SINGLE_OBSERVATION'
+    if not covered:
+        # the numerator spans anchor -> now while the denominator can only sum the observations
+        # still retained, so the ratio is measured over two different populations
+        eff, eff_reason = None, INCOMPLETE_FRAME_COVERAGE
     return {
         'available': r is not None,
         'reason': None if r is not None else NO_VALID_SPOT,
@@ -948,8 +1150,10 @@ def _frame(pts, now_t, now_v, window_min, tolerance_min):
         'tolerance_min': tolerance_min,
         'log_return': r,
         'log_return_per_min': (r / elapsed if (r is not None and elapsed > 0) else None),
-        'path_efficiency': (net / path if (net is not None and path > 0) else None),
-        'path_efficiency_reason': None if path > 0 else 'FLAT_OR_SINGLE_OBSERVATION',
+        'path_efficiency': eff,
+        'path_efficiency_reason': eff_reason,
+        'coverage_complete': covered,
+        'observations_trimmed': trimmed,
         'observations': len(span),
         'max_gap_min': (round(max(gaps), 4) if gaps else None),
         'window_extreme_high': max((v for _t, v in span), default=None),
@@ -964,10 +1168,13 @@ def observed_path(state, session_date, cfg):
     if not pts:
         return dict(out, reason=NO_VALID_SPOT)
     now_t, now_v = pts[-1]
-    tol = float(cfg.get('anchor_tolerance_min', ANCHOR_TOLERANCE_MIN))
+    tol = _cfg_num(cfg, 'anchor_tolerance_min', ANCHOR_TOLERANCE_MIN)
+    trimmed = _nonneg_int(state.get('observations_trimmed')) or 0
+    buffer_start_t = pts[0][0] if trimmed else None
 
     for w in cfg.get('frame_windows_min', FRAME_WINDOWS_MIN):
-        out['frames']['m%g' % w] = _frame(pts, now_t, now_v, float(w), tol)
+        out['frames']['m%g' % w] = _frame(pts, now_t, now_v, float(w), tol,
+                                          buffer_start_t=buffer_start_t, trimmed=trimmed)
 
     # session-to-date, anchored on the fixed causal reference rather than a rolling window
     ref = state.get('open_reference')
@@ -977,18 +1184,33 @@ def observed_path(state, session_date, cfg):
         span = [(t, v) for t, v in pts if ref_t is not None and t >= ref_t]
         path = sum(abs(log_return(span[i + 1][1], span[i][1]) or 0.0) for i in range(len(span) - 1))
         r = log_return(now_v, ref['value'])
+        # Codex R2: the frozen reference may no longer be in the buffer. The net return is measured
+        # from it, but the total variation can only sum the observations still retained, so the
+        # efficiency ratio mixes two populations and went ABOVE 1 (1.048799393197891 reproduced).
+        # Do not clip it: withhold the metric and say why.
+        covered = (ref_t is not None
+                   and (buffer_start_t is None or ref_t >= buffer_start_t)
+                   and bool(span) and span[0][0] == ref_t)
+        eff = (abs(r) / path if (r is not None and path > 0) else None)
+        eff_reason = None if path > 0 else 'FLAT_OR_SINGLE_OBSERVATION'
+        if not covered:
+            eff, eff_reason = None, INCOMPLETE_FRAME_COVERAGE
         out['frames']['session_to_date'] = {
             'available': r is not None, 'window_min': None,
             'anchor_ts': ref.get('source_ts'), 'anchor_value': ref.get('value'),
             'elapsed_min': (round(elapsed, 4) if elapsed is not None else None),
             'within_tolerance': True, 'log_return': r,
             'log_return_per_min': (r / elapsed if (r is not None and elapsed and elapsed > 0) else None),
-            'path_efficiency': (abs(r) / path if (r is not None and path > 0) else None),
+            'path_efficiency': eff,
+            'path_efficiency_reason': eff_reason,
+            'coverage_complete': covered,
+            'observations_trimmed': trimmed,
             'observations': len(span),
             'anchor_kind': 'authority_open_reference',
         }
     else:
-        out['frames']['session_to_date'] = {'available': False, 'reason': NO_REFERENCE}
+        out['frames']['session_to_date'] = {'available': False, 'reason': NO_REFERENCE,
+                                            'coverage_complete': None}
 
     out['previous_close_frame'] = _previous_close_frame(state, now_v)
     out['excursion'] = excursion_measures(state.get('extrema'), now_v)
@@ -1045,7 +1267,7 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
     hash-based duplicate choice, a null-valued row could win the choice and discard a valid
     alternative for that session. Every rejection now has its own counted reason.
     """
-    tol = float((cfg or {}).get('anchor_tolerance_min') or ANCHOR_TOLERANCE_MIN)
+    tol = _cfg_num(cfg, 'anchor_tolerance_min', ANCHOR_TOLERANCE_MIN)
     try:
         nominal = float(str(window_key).lstrip('m'))
     except Exception:
@@ -1053,9 +1275,24 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
     chosen = {}
     rej = {'other_index': 0, 'slot': 0, 'frame_absent': 0, 'frame_unavailable': 0,
            'out_of_tolerance': 0, 'horizon_mismatch': 0, 'non_finite_value': 0,
-           'feature_version': 0}
+           'feature_version': 0, 'record_schema': 0, 'unknown_compatibility': 0,
+           'incomplete_coverage': 0, 'snapshot_integrity': 0}
     duplicates = 0
-    for r in (snapshot or {}).get('records') or ():
+    rows, integrity = snapshot_rows(snapshot)          # Codex R5
+    if integrity:
+        rej['snapshot_integrity'] += 1
+        rows = []
+    for r in rows:
+        # Codex R4: a record must declare its own schema and feature version. The earlier screen
+        # checked flags only when they were exactly False and explicitly permitted a missing frame
+        # version, so a frame carrying nothing but elapsed_min and log_return was accepted -- i.e.
+        # UNKNOWN compatibility was implicitly accepted, which is the opposite of what I claimed.
+        if r.get('record_version') != HISTORY_RECORD_VERSION:
+            rej['record_schema'] += 1
+            continue
+        if feature_version is not None and r.get('feature_version') != feature_version:
+            rej['feature_version'] += 1
+            continue
         if r.get('index') != index:
             rej['other_index'] += 1
             continue
@@ -1067,23 +1304,24 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
         if not isinstance(fr, dict) or feature not in fr:
             rej['frame_absent'] += 1
             continue
-        if fr.get('available') is False:
-            rej['frame_unavailable'] += 1
+        # availability and tolerance must be POSITIVELY evidenced, not merely "not False"
+        if fr.get('available') is not True:
+            rej['frame_unavailable' if fr.get('available') is False
+                else 'unknown_compatibility'] += 1
             continue
-        if fr.get('within_tolerance') is False:
-            rej['out_of_tolerance'] += 1
+        if fr.get('within_tolerance') is not True:
+            rej['out_of_tolerance' if fr.get('within_tolerance') is False
+                else 'unknown_compatibility'] += 1
+            continue
+        if fr.get('coverage_complete') is False:      # Codex R2: truncated frames are not comparable
+            rej['incomplete_coverage'] += 1
             continue
         elapsed = _finite(fr.get('elapsed_min'))
-        if nominal is not None:
-            if elapsed is None:
-                # unknown compatibility is EXPLICIT, never inferred from the label "m15"
-                rej['horizon_mismatch'] += 1
-                continue
-            if abs(elapsed - nominal) > tol:
-                rej['horizon_mismatch'] += 1
-                continue
-        if feature_version is not None and fr.get('version') not in (None, feature_version):
-            rej['feature_version'] += 1
+        if elapsed is None:
+            rej['unknown_compatibility'] += 1
+            continue
+        if nominal is not None and abs(elapsed - nominal) > tol:
+            rej['horizon_mismatch'] += 1
             continue
         if _finite(fr.get(feature)) is None:
             # filtered BEFORE the duplicate choice, so a null row cannot win and evict a valid one
@@ -1104,9 +1342,45 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
             'rejected_slot_or_frame': (rej['slot'] + rej['frame_absent']
                                        + rej['frame_unavailable']),
             'nominal_window_min': nominal, 'tolerance_min': tol,
+            'snapshot_integrity': integrity,
             'cohort_key': {'index': index, 'feature': feature, 'window': window_key, 'slot': slot,
                            'nominal_window_min': nominal, 'tolerance_min': tol,
-                           'feature_version': feature_version}}
+                           'feature_version': feature_version,
+                           'record_version': HISTORY_RECORD_VERSION}}
+
+
+def history_record(assessment, *, index=None, session_date=None, feature_version=None):
+    """Build a historical record from REAL observer output — the versioned adapter Codex asked for.
+
+    The point is that a record is produced from an assessment rather than hand-built, so the schema
+    the eligibility screen demands is exactly the schema real output produces. `observed_path` stamps
+    its version at the top level and not on each frame, so requiring a frame-level version would
+    demand a field no producer emits; the version is therefore carried at the RECORD level, where
+    this adapter puts it, and the screen checks it there.
+
+    Returns None when the assessment has no usable path, rather than a partially-populated record.
+    """
+    if not isinstance(assessment, dict):
+        return None
+    path = assessment.get('observed_path') or {}
+    frames = path.get('frames') or {}
+    spot = path.get('spot') or {}
+    ident = assessment.get('identity') or {}
+    ix = index or ident.get('index')
+    sd = session_date or ident.get('session_date')
+    src_ts = spot.get('source_ts')
+    if not ix or not sd or not src_ts or not frames:
+        return None
+    return {
+        'record_version': HISTORY_RECORD_VERSION,
+        'feature_version': feature_version or path.get('version') or PATH_VERSION,
+        'schema_version': assessment.get('identity', {}).get('schema_version') or SCHEMA_VERSION,
+        'session_date': str(sd),
+        'index': ix,
+        'slot': _slot_of(src_ts),
+        'source_ts': src_ts,
+        'frames': json.loads(canonical_json(frames)),      # detached copy, never a live reference
+    }
 
 
 def empirical_comparison(path, snapshot, index, session_date, cfg):

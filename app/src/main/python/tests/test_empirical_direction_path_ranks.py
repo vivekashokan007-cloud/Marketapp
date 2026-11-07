@@ -303,7 +303,11 @@ def hist_record(session, slot, index, window, r, elapsed=None, within_tolerance=
     frame = {'log_return': r, 'available': available, 'window_min': nominal,
              'elapsed_min': (nominal if elapsed is None else elapsed),
              'within_tolerance': within_tolerance}
-    d = {'session_date': session, 'slot': slot, 'index': index, 'frames': {window: frame}}
+    # Codex R4: a record must declare its own schema and feature version, or its compatibility is
+    # unknown and it is refused. `history_record()` is the adapter that stamps these from real
+    # observer output; the fixture mirrors it.
+    d = {'record_version': ed.HISTORY_RECORD_VERSION, 'feature_version': ed.PATH_VERSION,
+         'session_date': session, 'slot': slot, 'index': index, 'frames': {window: frame}}
     d.update(kw)
     return d
 
@@ -354,7 +358,8 @@ class TestEligiblePopulation(unittest.TestCase):
         self.assertEqual(pop['cohort_key'], {'index': 'NF', 'feature': 'log_return',
                                              'window': 'm30', 'slot': '10:00',
                                              'nominal_window_min': 30.0, 'tolerance_min': 2.5,
-                                             'feature_version': None})
+                                             'feature_version': None,
+                                             'record_version': ed.HISTORY_RECORD_VERSION})
 
 
 class TestEmpiricalComparison(unittest.TestCase):

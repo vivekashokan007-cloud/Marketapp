@@ -56,12 +56,23 @@ def feed(st, ts, spot, decision=None, index='NF', session=SESSION, cfg=None, rec
                           session_date=session, decision_dt=decision or ts, receive_dt=receive)
 
 
-def hist(session, slot, r, index='NF', window='m15', elapsed=None, within=True, available=True):
+def hist(session, slot, r, index='NF', window='m15', elapsed=None, within=True, available=True,
+         record_version=ed.HISTORY_RECORD_VERSION, feature_version=ed.PATH_VERSION):
+    """A historical record in the schema the eligibility screen demands (Codex R4).
+
+    `history_record()` is the adapter that stamps `record_version` / `feature_version` from real
+    observer output; this fixture mirrors what that adapter produces.
+    """
     nominal = float(window.lstrip('m'))
-    return {'session_date': session, 'slot': slot, 'index': index,
-            'frames': {window: {'log_return': r, 'available': available, 'window_min': nominal,
-                                'elapsed_min': (nominal if elapsed is None else elapsed),
-                                'within_tolerance': within}}}
+    rec = {'session_date': session, 'slot': slot, 'index': index,
+           'frames': {window: {'log_return': r, 'available': available, 'window_min': nominal,
+                               'elapsed_min': (nominal if elapsed is None else elapsed),
+                               'within_tolerance': within}}}
+    if record_version is not None:
+        rec['record_version'] = record_version
+    if feature_version is not None:
+        rec['feature_version'] = feature_version
+    return rec
 
 
 # ─────────────────────────────── B1: the clock contract ───────────────────────────────
@@ -172,14 +183,54 @@ class TestB2SnapshotTrust(unittest.TestCase):
         self.assertEqual(why2, ed.SNAPSHOT_NOT_STRICTLY_EARLIER)
 
     def test_snapshot_contents_cannot_change_beneath_the_hash(self):
+        """Codex R5 strengthened this. The deep copy stopped the CALLER's later edits reaching the
+        snapshot, but `snapshot['records'][0]['frames']['m15']['log_return'] = 99` still mutated it
+        in place with `history_hash` unchanged, and consumption read 99.0. Records are now stored as
+        canonical JSON **strings**, so there is no nested dictionary to mutate."""
         live = hist('2026-11-04', '09:35', 0.001)
         snap = ed.build_history_snapshot([live], as_of=SESSION, config=ON)
-        h0, v0 = snap['history_hash'], snap['records'][0]['frames']['m15']['log_return']
+        h0 = snap['history_hash']
+        rows, why = ed.snapshot_rows(snap)
+        self.assertIsNone(why)
+        v0 = rows[0]['frames']['m15']['log_return']
+
+        # (a) the caller's own record is detached
         live['frames']['m15']['log_return'] = 999.0
         live['session_date'] = '1999-01-01'
-        self.assertEqual(snap['records'][0]['frames']['m15']['log_return'], v0)
-        self.assertEqual(snap['records'][0]['session_date'], '2026-11-04')
+        rows, _ = ed.snapshot_rows(snap)
+        self.assertEqual(rows[0]['frames']['m15']['log_return'], v0)
+        self.assertEqual(rows[0]['session_date'], '2026-11-04')
         self.assertEqual(snap['history_hash'], h0)
+
+        # (b) the stored representation is immutable: there is nothing to assign into
+        self.assertIsInstance(snap['records'][0], str)
+        with self.assertRaises(TypeError):
+            snap['records'][0]['frames']['m15']['log_return'] = 99
+
+        # (c) parsing a row and editing it cannot reach the snapshot either
+        rows[0]['frames']['m15']['log_return'] = 99
+        again, _ = ed.snapshot_rows(snap)
+        self.assertEqual(again[0]['frames']['m15']['log_return'], v0)
+
+    def test_substituting_the_records_tuple_is_refused_at_consumption(self):
+        """The other boundary Codex asked to be explicit about: wholesale replacement."""
+        snap = ed.build_history_snapshot([hist('2026-11-04', '10:00', 0.001)], as_of=SESSION,
+                                         config=ON)
+        self.assertEqual(ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
+                                                cfg=ed.config_with_defaults(ON),
+                                                feature_version=ed.PATH_VERSION)['values'],
+                         [0.001])
+        tampered = dict(snap)
+        tampered['records'] = (ed.canonical_json(hist('2026-11-04', '10:00', 99.0)),)
+        rows, why = ed.snapshot_rows(tampered)
+        self.assertEqual((rows, why), ([], ed.SNAPSHOT_INTEGRITY_FAILED))
+        pop = ed.eligible_population(tampered, 'NF', 'log_return', 'm15', '10:00',
+                                     cfg=ed.config_with_defaults(ON),
+                                     feature_version=ed.PATH_VERSION)
+        self.assertEqual(pop['values'], [])
+        self.assertEqual(pop['snapshot_integrity'], ed.SNAPSHOT_INTEGRITY_FAILED)
+        self.assertEqual(ed.snapshot_is_usable_for(tampered, SESSION),
+                         (False, ed.SNAPSHOT_INTEGRITY_FAILED))
 
     def test_the_cap_retains_distinct_sessions_whole_not_rows(self):
         rows = [hist('2026-11-04', '%02d:%02d' % (9 + i // 12, (i * 5) % 60), 0.001 * i)
@@ -301,7 +352,10 @@ class TestB3FrameComparability(unittest.TestCase):
         pop = ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
                                      cfg=ed.config_with_defaults(ON))
         self.assertEqual(pop['eligible_sessions'], 0)
-        self.assertEqual(pop['rejections']['horizon_mismatch'], 1)
+        # Codex R4: a MISSING horizon is now 'unknown compatibility', distinct from a horizon
+        # that is known and wrong -- 'unknown' must not be reported as a measured mismatch.
+        self.assertEqual(pop['rejections']['unknown_compatibility'], 1)
+        self.assertEqual(pop['rejections']['horizon_mismatch'], 0)
 
     def test_a_null_valued_row_cannot_win_the_duplicate_choice(self):
         """Before, finiteness was filtered AFTER the hash-based choice, so a null row could evict a
@@ -461,7 +515,7 @@ class TestB5StateAndRetention(unittest.TestCase):
             rec, st = ed.assess_poll(poll(at(9, 25), 100.0), bad, config={'enabled': False},
                                      index='NF', session_date=SESSION, decision_dt=at(9, 25))
             self.assertIn(ed.DISABLED, rec['status']['reason_codes'], repr(bad))
-            self.assertEqual(rec['operational']['state_observations'], 0, repr(bad))
+            self.assertIsNone(rec['operational']['state_observations'], repr(bad))
             self.assertIsInstance(st, dict)
 
     def test_the_fixed_reference_high_survives_buffer_trimming(self):
@@ -546,22 +600,62 @@ class TestHistoryFixtureMatchesRealFrames(unittest.TestCase):
             self.assertIn(key, real, 'real frame lost %s' % key)
             self.assertIn(key, fixture, 'fixture lacks %s' % key)
 
-    def test_a_real_frame_is_eligible_through_the_real_screen(self):
-        """End to end: a record built from genuine observer output passes eligibility."""
+    def test_real_output_to_record_to_snapshot_to_rank_round_trip(self):
+        """The adapter round trip Codex asked for: real observer output → `history_record` →
+        snapshot → eligibility → rank, with nothing hand-built along the way.
+
+        This is the test that keeps the demanded schema honest. Codex's objection was that a screen
+        could require a field location real producer frames never emit; `observed_path` stamps its
+        version at the TOP level and not per frame, which is why `history_record` carries the
+        feature version at the record level and the screen checks it there.
+        """
         st = None
         for ts, v in ((at(9, 20, day=4), 100.0), (at(9, 35, day=4), 100.4),
-                      (at(9, 50, day=4), 100.9)):
+                      (at(9, 50, day=4), 100.9), (at(10, 5, day=4), 101.2)):
             rec, st = feed(st, ts, v, session='2026-11-04')
-        frames = {k: v for k, v in rec['observed_path']['frames'].items() if v.get('available')}
-        self.assertTrue(frames, 'no available frame to build a record from')
-        key = sorted(frames)[0]
-        row = {'session_date': '2026-11-04', 'index': 'NF',
-               'slot': rec['observed_path']['spot']['source_ts'][11:16],
-               'frames': {key: frames[key]}}
+
+        row = ed.history_record(rec, index='NF', session_date='2026-11-04')
+        self.assertIsNotNone(row, 'the adapter refused real observer output')
+        self.assertEqual(row['record_version'], ed.HISTORY_RECORD_VERSION)
+        self.assertEqual(row['feature_version'], ed.PATH_VERSION)
+        self.assertEqual(row['feature_version'], rec['observed_path']['version'])
+
+        avail = [k for k, f in row['frames'].items() if f.get('available')]
+        self.assertTrue(avail, 'no available frame in real output')
+
         snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
-        pop = ed.eligible_population(snap, 'NF', 'log_return', key, row['slot'],
-                                     cfg=ed.config_with_defaults(ON))
-        self.assertEqual(pop['eligible_sessions'], 1, pop['rejections'])
+        rows, why = ed.snapshot_rows(snap)
+        self.assertIsNone(why)
+        self.assertEqual(rows[0]['record_version'], ed.HISTORY_RECORD_VERSION)
+
+        ranked = 0
+        for key in avail:
+            frame = row['frames'][key]
+            if frame.get('within_tolerance') is not True or frame.get('log_return') is None:
+                continue                       # legitimately incomparable; not this test's subject
+            pop = ed.eligible_population(snap, 'NF', 'log_return', key, row['slot'],
+                                         cfg=ed.config_with_defaults(ON),
+                                         feature_version=ed.PATH_VERSION)
+            self.assertEqual(pop['eligible_sessions'], 1, (key, pop['rejections']))
+            self.assertEqual(pop['values'], [frame['log_return']], key)
+            self.assertIsNotNone(ed.midrank(frame['log_return'], pop['values'])['rank'])
+            ranked += 1
+        self.assertGreater(ranked, 0, 'no real frame survived to a rank')
+
+    def test_the_adapter_is_the_only_way_a_record_gets_its_version(self):
+        """A record WITHOUT the adapter's stamps is refused, so eligibility cannot be satisfied by
+        hand-waving a frame into the right shape."""
+        for kw in ({'record_version': None}, {'feature_version': None},
+                   {'record_version': 'something-else'},
+                   {'feature_version': 'observed_path_v0_old'}):
+            snap = ed.build_history_snapshot([hist('2026-11-04', '10:00', 0.001, **kw)],
+                                             as_of=SESSION, config=ON)
+            pop = ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
+                                         cfg=ed.config_with_defaults(ON),
+                                         feature_version=ed.PATH_VERSION)
+            self.assertEqual(pop['values'], [], kw)
+            self.assertEqual(pop['rejections']['record_schema']
+                             + pop['rejections']['feature_version'], 1, kw)
 
 
 if __name__ == '__main__':

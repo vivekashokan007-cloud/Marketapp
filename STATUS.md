@@ -43,7 +43,7 @@ Python 3.11.18. No kotlinc / Android SDK here: **Kotlin is compile-gated by CI o
 | B — versioned input/output/state contract | implemented + tested | this branch, 48 tests |
 | C — observed path and empirical ranks | implemented + tested | this branch, 48 further tests |
 | **B1–B5 — Codex correctness blockers** | **all five reproduced, then fixed** | `test_empirical_direction_blockers_b1_b5.py`, 39 tests |
-| D — E0/E1 estimators | not started | a **price-only** arm is now unblocked by the recovered extracts; see §"Recovered offline inputs" in the Commit A branch's STATUS.md |
+| D — E0/E1 estimators | not started | a **price-only** arm is unblocked by the recovered extracts; see §"Recovered offline inputs" below |
 | E — per-poll adapter, flag, resources | not started | |
 | F — review package, option/multi-day matrix | not started | |
 
@@ -83,6 +83,33 @@ it cannot drift back — the same discipline the Kotlin fixture overclaim earned
 
 **Until Codex re-reviews these, no rank from this module may be used for model selection or any
 direction-quality claim.**
+
+---
+
+## Codex revision round R1–R5 — reproduced, then fixed
+
+Codex reviewed `de641b0` and reproduced five residual defects that survived the B1–B5 round.
+**Every one was real.** Each was reproduced here first, with the figures Codex reported, before
+anything changed. Regression coverage is `tests/test_empirical_direction_revision_r1_r5.py` —
+**37 tests, 32 of which fail against pre-fix `de641b0`** (19 failures, 13 errors). The five that pass
+pre-fix are carried-over B-round behaviour or no-regression guards, not R-fix pins.
+
+| | Defect, as reproduced | Fix |
+|---|---|---|
+| **R1** | 09:20=100 reference, then 09:25=120 then 09:25=110 → `NEW_PREFERRED`, final observation 110, retained high **120**; reverse order → `EXISTING_PREFERRED`, final observation 110, retained high **110**. Identical final observation, different path — the superseded 120 stayed folded into `path_extrema`. | The accumulator now covers only the **committed prefix**: every accepted observation except the newest, which is the only one a same-time event can still replace. A point is folded when a **strictly later** observation arrives, and the reported extrema fold the replaceable tail on top without persisting it. Tested for path-state equality across permutations, at peaks and troughs, across trimming, and across a serialise/reload restart. `processed_ids` still differs between orders — correctly, because different events were *accepted* — and a test shows both orders converge when the superseded value is re-presented. |
+| **R2a** | `session_to_date.path_efficiency` = **1.048799393197891** while still reported available and within tolerance: the net return used the frozen 100 reference, the total variation only the retained 110→108→105. | Not clipped. Coverage is computed per frame and the metric is **withheld** with `path_efficiency_reason = INCOMPLETE_FRAME_COVERAGE` when the frame's anchor is no longer in the buffer. Every frame publishes `coverage_complete` and `observations_trimmed`. A truncated **historical** frame is also excluded from a cohort (`rejections.incomplete_coverage`). |
+| **R2b** | `references.first_observed_reference` moved to **110.0 at 09:30** although the first accepted observation was 100.0 at 09:20: it read `observations[0]`, the start of the rolling buffer. | `state['first_observed']` is captured once at the first accept and never revised — except when the first observation is itself superseded by a same-time replacement, which has its own test. The buffer's start is reported separately as `buffer_start_reference` with `is_session_first` and the trim count. |
+| **R3** | From a valid one-poll state: `observations_trimmed='oops'` → ValueError; `path_extrema` without `low_ts` → KeyError; `observations=7` on the **disabled** path → TypeError. | Every field actually read is validated: all required `path_extrema` keys, post-extreme value/timestamp pairs as pairs, the ordering relationships (high ≥ low, both bracketing the reference), non-negative integer counters, and `first_observed`. Malformed state is an explicit `COLD_START` + `STATE_STRUCTURE_INVALID`. The disabled branch guards `len()` and reports `STATE_STRUCTURE_INVALID` instead of raising. A round-trip test asserts the guard does not reject what this module itself writes. |
+| **R4a** | A historical m15 frame carrying only `elapsed_min=15` and `log_return=.01` was accepted as `[.01]` with **zero rejections** — flags were checked only when exactly `False`, and a missing frame version was explicitly permitted. So unknown compatibility was implicitly accepted, the opposite of what I claimed. | A record must declare `record_version` and `feature_version`; availability and tolerance must be **positively** evidenced (`is True`, not "not False"); a missing horizon is `unknown_compatibility`, counted separately from a known-and-wrong `horizon_mismatch`. Because `observed_path` stamps its version at the **top level** and not per frame, requiring a frame-level version would demand a field no producer emits — so the new `history_record()` adapter carries it at the record level and the screen checks it there, with a **real output → record → snapshot → rank round trip** test. |
+| **R4b** | `anchor_tolerance_min=0` reported and applied **2.5**, because `value or default` replaces a valid zero; the query side used the real 0. | `_cfg_num` falls back only on a **missing or unusable** value, so a configured zero survives. Both sides now read the same setting; tested for zero, missing, malformed and negative. |
+| **R5** | `snapshot['records'][0]['frames']['m15']['log_return']=99` mutated the snapshot in place with `history_hash` unchanged, and consumption read 99.0. A tuple of copied mutable dictionaries is not immutable. | Records are stored as **canonical JSON strings**, which cannot be mutated in place, and `snapshot_rows()` **re-verifies the hash** before parsing, so wholesale substitution of the tuple or of any accounting field is refused at consumption with `SNAPSHOT_INTEGRITY_FAILED`. Both boundaries are documented and tested; reorder invariance and cap accounting are re-asserted unchanged. |
+
+**B1 follow-up.** The 2.0 s skew allowance is recorded as a **proposed data-quality setting**, not
+evidence of machine synchronisation. A tolerated-ahead observation publishes
+`source_ahead_of_decision_s`, and a test shows `clock_skew_tolerance_s=0` — what price-only
+historical replay should use — refuses any lookahead at all. Receive time stays
+`RECEIVE_TIME_UNKNOWN` when it is unknown; a tolerated stamp is never described as verified
+availability at the decision time.
 
 ---
 
@@ -259,6 +286,114 @@ history.
 
 ---
 
+## Recovered offline inputs — manifest and coverage audit
+
+Supplied as embedded appendices in the Codex Checkpoint 1 review and recreated under a **private
+offline input directory outside this repository**. The data files are deliberately **not committed**
+and nothing was uploaded to production storage; only this manifest is recorded here.
+
+All seven files verified **byte-exact** against their stated byte count and SHA-256:
+
+| file | bytes | SHA-256 (first 16) |
+|---|---|---|
+| `old/spots_enc_20260901_20261030.txt` | 34573 | `68d5146326f91ce9…` |
+| `old/chainA_window_20260901_20261030.txt` | 28413 | `e841f0756aeaed7d…` |
+| `new/spots_20261102_20261105.txt` | 7658 | `e36639a1e2965d0f…` |
+| `new/chainA_20261102_20261105.txt` | 2775 | `61765783c2245721…` |
+| `new/phone_dirs_20261105.txt` | 704 | `9446a700b0766b13…` |
+| `scripts/replay_all_e5e0fe9.py` | 3671 | `9193932a2657de15…` |
+| `scripts/recon_20261105.py` | 4235 | `6d1074cb0fbcb4d3…` |
+
+Checksums establish **these copies**, not original raw-source completeness — Codex's own caveat, and
+it stands. The supplied scripts were **read, not run**; the decoder and auditor used here were written
+separately and are recorded as adapted code.
+
+**Decode, independently validated.** The old file is `date slot:nfDelta:bnfDelta …`, 1-based slots,
+first listed slot absolute and all later ones cumulative, every value ×20. Validation: for **all 90**
+`chainA` rows the stated 09:20 spot matches the decoded value at **slot 1** exactly (1e-6), across
+both indices and both eras. Independent row count for 01 Sep–30 Oct is **2,969**, matching the count
+Codex stated without my having been told how to decode it.
+
+**Clock mapping is reconstructed, not a source fact:** slot 1 = 09:20 and slot *n* = 09:15 + 5*n* min,
+derived from that match. Recorded as derived wherever it is used.
+
+| | sessions | observed slot rows | internal gaps |
+|---|---|---|---|
+| 01 Sep – 30 Oct (old) | 41 | 2,969 | 193 |
+| 02 Nov – 05 Nov (new) | 4 | 298 | 0 |
+| **total** | **45** | **3,267** | **193** |
+
+### RETRACTED: the three-date exclusion list, and the rule that replaces it
+
+An earlier revision of this file named 2026-09-28, 2026-10-07 and 2026-10-08 as the sessions to
+exclude. Codex's objection is correct and I had not noticed it: those three are exactly what an
+**unstated** "intraday coverage below 80%" threshold removes, and no such rule had been stated or
+justified. A list of dates with no general rule behind it is an ad hoc favourable-sample filter.
+
+Two corrections came out of re-deriving it properly:
+
+- **A slot-convention bug in my own coverage figures.** The old files omit slot 0; the new ones
+  include it, so a fixed 72-slot denominator gave coverage above 1.0 for later sessions. Slot 1 =
+  09:20 (validated against all 90 chain rows) and slot *n* = 09:15 + 5*n*, so the 15:30 close is
+  **slot 75** and slots 76–77 are past it. Intraday coverage is now measured over slots 1–75 in both
+  conventions.
+- **The rule belongs per label, not per session.** What a horizon label actually needs is its two
+  endpoints, not a whole session. Measured over slots 1–75:
+
+| horizon | labels available | of possible | sessions |
+|---|---|---|---|
+| +15 min | 2,931 | 3,240 | 45 |
+| +30 min | 2,804 | 3,105 | 45 |
+| +60 min | 2,549 | 2,835 | 45 |
+
+So **~90% of all possible labels are available across all 45 sessions**, and 24 of the 45 have full
+intraday coverage. The rule is therefore: **a label is admitted only when both its endpoints are
+present within slots 1–75 of that session**, which needs no threshold and discards no session for
+being merely imperfect. Exactly **one** session-level exclusion survives, on the stated ground that
+it cannot support any label: **2026-09-28, 7 of 75 intraday slots (9.3%)**. The next lowest are
+2026-10-07 at 57.3% and 2026-10-08 at 72.0%, and both are retained, with their missing labels simply
+not admitted.
+
+Retained coverage must be reported with every comparison, counting **distinct sessions**, not rows.
+
+**5 November, explicitly.** 64 slots, ids 0–63, **zero internal gaps**, reconstructed 09:15 → 14:30.
+Slots 64–77 (14:35 onward) are **absent** — the extract stops mid-session, so no 5 Nov label with a
+horizon ending after 14:30 can be matured from it. `phone_dirs_20261105.txt` carries exactly 64
+timestamped entries over the same 09:15–14:30 range, so the two align 1:1; its codes are
+`UNUN`×3, `NENE`×29, `NEBU`×19, `BUBU`×12, `BUNE`×1 (first two letters NF, last two BNF;
+UN/NE/BU). That series is a **phone-reported direction label**, not an independent price source.
+
+**Repeated values — corrected label.** I previously called these "staleness". Codex is right that
+equal consecutive prices do **not** establish a stale feed: an index can legitimately print the same
+value twice, and nothing in this extract carries an observation time or a feed status to distinguish
+the two. They are recorded as **repeated values with unknown freshness**, kept separate from
+independently evidenced stale timestamps, of which there are none here. Legitimate unchanged prices
+are not excluded by assumption.
+
+168 repeated runs start at slot ≥ 70, a systematic tail (72–74 and 75–77 repeat in most sessions)
+consistent with a fixed pad past the reconstructed close. Only **5** repeated pairs occur
+mid-session across all 45 sessions (2026-09-17 NF 12:30–12:35, 2026-09-21 NF 09:55–10:00 and
+10:55–11:00, 2026-09-29 NF 11:40–11:45, 2026-11-03 BNF 13:00–13:05).
+
+**No close label may be matured from the tail.** The repeated tail values and the reconstructed slot
+clock do not establish the official session close, nor the original observation times. A final
+observed poll is not a verified close, and a frozen or padded tail is not a close print. Source and
+derived clocks stay distinguished throughout, including across the differing old and new slot
+conventions.
+
+**What the opening chain windows are NOT.** 90 rows, **09:20 only**, 10 legs each, fields limited to
+`strike, ceBid, ceAsk, peBid, peAsk`. No IV, no Greeks, no OI, no volume, and **no intraday series**.
+NF calendar DTE spans 0–6, BNF 0–28; 12 rows are own-expiry-day (`date == expiry`), 10 NF and 2 BNF.
+Any option-leg feature after 09:20 is **unsupported** by this evidence, and an option-based arm cannot
+be built from it.
+
+**Consequence for D.** A **price-only** E0/E1 arm is feasible on 44 usable sessions (45 recovered,
+2026-09-28 excluded on the stated ground above) / 3,267 observations with
+explicit as-of and label-maturity limits. An option-priced arm is **not**. I will not claim the
+supplied replay script reproduces phone parity without adapting and validating its clock and
+interface assumptions, and no estimator is fitted until the observer's B1–B5 causal defects are fixed.
+
+---
 ## Not claimed
 
 - No direction-quality, forecast or profitability claim anywhere in A or B.
