@@ -39,10 +39,11 @@ Python 3.11.18. No kotlinc / Android SDK here: **Kotlin is compile-gated by CI o
 | Stage | State | Evidence |
 |---|---|---|
 | 0 — capability, base SHAs, source/consumer map, coverage inventory | **done** | below |
-| A — sparse-strike repair | **implemented + tested**, awaiting Codex | PR #44, 29 tests |
-| B — versioned input/output/state contract | **implemented + tested** | this branch, 48 tests |
-| C — observed path and empirical ranks | **implemented + tested** | this branch, 48 further tests |
-| D — E0/E1 estimators | not started | E1 blocked on data, see below |
+| A — sparse-strike repair | R1+R2 corrections applied; CI green at `335c274f`; two further commits pushed | PR #44, 67 tests |
+| B — versioned input/output/state contract | implemented + tested | this branch, 48 tests |
+| C — observed path and empirical ranks | implemented + tested | this branch, 48 further tests |
+| **B1–B5 — Codex correctness blockers** | **all five reproduced, then fixed** | `test_empirical_direction_blockers_b1_b5.py`, 39 tests |
+| D — E0/E1 estimators | not started | a **price-only** arm is now unblocked by the recovered extracts; see §"Recovered offline inputs" in the Commit A branch's STATUS.md |
 | E — per-poll adapter, flag, resources | not started | |
 | F — review package, option/multi-day matrix | not started | |
 
@@ -52,6 +53,36 @@ horizon labels at +15/+30/+60 min and session close, chronological walk-forward 
 neighbour-count arms {10,20,40} selected on inner validation. **E1 is expected to report blocked on
 data** in this environment: see the coverage inventory. Commit E (per-poll adapter behind a
 default-off flag) must come after D's engine tests.
+
+---
+
+## Codex blockers B1–B5 — reproduced, then fixed
+
+Codex reviewed head `bdf201ce` and reproduced five correctness defects using the module's real
+functions. **Every one was real.** Each was reproduced here first, with the figures Codex reported,
+before anything was changed; the reproduction script and its before/after output are kept outside the
+repository. Regression coverage is `tests/test_empirical_direction_blockers_b1_b5.py` — **39 tests,
+34 of which fail against pre-fix `bdf201ce`**. The five that pass pre-fix are characterisation or
+companion-invariant tests, not fix-pins, and are labelled as such.
+
+| | Defect, as reproduced | Fix |
+|---|---|---|
+| **B1** | Only `age_s > max_source_age_s` was tested, so a **negative** age passed. NF 100 accepted at 09:20, then NF 110 stamped **10:00** with decision time **09:25** was accepted: `available=True`, observations 1→2, `last_accepted_source_ts` = 10:00. A wrong-session poll was refused only incidentally, as stale. | A clock contract ahead of any state change: `FUTURE_SOURCE_TIME`, `FUTURE_RECEIVE_TIME`, `SOURCE_AFTER_RECEIVE`, `SESSION_MISMATCH`, plus explicit `INVALID_DECISION_CLOCK` / `INVALID_RECEIVE_CLOCK` for naive or non-datetime clocks instead of raising in the arithmetic. A documented `clock_skew_tolerance_s` (proposed 2.0 s) covers machine disagreement only; sensitivity tested at the boundary. |
+| **B2.1** | A snapshot built **as-of 7 Nov** holding a 6 Nov row ranked a **5 Nov** value, rank 100.0. The cutoff was enforced only at construction. | `snapshot_is_usable_for` enforces it at **consumption** too: `SNAPSHOT_SESSION_MISMATCH` / `SNAPSHOT_NOT_STRICTLY_EARLIER`, checked per record, not just on the declared as-of. |
+| **B2.2** | Mutating the caller's record changed `snapshot['records']` while `history_hash` stayed `2afb6751a0d7dae2`. A tuple of borrowed dicts is not immutable. | Records are deep-copied through a canonical round-trip, so contents cannot move beneath the hash. |
+| **B2.3** | 78 rows from one session with `max_history_sessions=2` kept **2 rows** — the cap counted rows, discarding 76 slots and most cohorts, and over-weighting later dates through retention. | The cap now retains the most recent **distinct sessions whole**, with a separate `max_history_rows` bound. `rows`, `distinct_sessions`, `session_dates`, `excluded_capped_sessions` and `excluded_capped_rows` are all reported. Ordering is fully canonical, so the hash is invariant under input reordering — tested on a capped duplicate population too. |
+| **B3** | With observations only at 09:20 and 10:00, the requested `m15` frame had **40.0** actual minutes and `within_tolerance=False`, yet was ranked against a genuine 15.0-minute historical row: **rank 100.0**. Historical eligibility checked only that a feature key existed, and null values were filtered *after* the hash-based duplicate choice, so a null row could evict a valid one. | An out-of-tolerance query frame is kept as labelled **descriptive** evidence (`INCOMPARABLE_FRAME`, `descriptive_only`, actual vs requested minutes) and excluded from the nominal cohort. Historical rows are screened **before** deduplication on availability, tolerance status, actual horizon against the nominal window, feature version and finiteness, with each rejection counted by reason. Unknown compatibility is explicit, never inferred from the label `m15`. The eligible-session denominator and the tolerance used are published in the cohort key. |
+| **B4** | Accept 09:20 @ 100.0, resubmit 09:20 @ 102.0 with decision clock 10:20 → `NEW_PREFERRED` then `STALE_SOURCE`, and the returned state held **zero** observations where it had held one: the old observation was popped **before** freshness validation. The tie-break also compared `digest(new_full_poll)` against `digest({'spot': old_value})` — two different shapes. | Validation runs first; the candidate update is computed in isolation and committed only on acceptance, so a rejected event leaves state **byte-identical**. Both sides of a conflict now hash the same canonical triple via `_conflict_key`, and both keys are published. A same-time replacement supersedes the observation only and cannot move the frozen open reference. Arrival permutations tested. |
+| **B5.1** | `observations=[['oops']]` passed the shape check and raised `ValueError: not enough values to unpack (expected 3, got 1)`. A non-mapping state raised `AttributeError: 'list' object has no attribute 'get'` while **inferring** the index and session, before any compatibility check. | The complete stored structure is validated — every row a 3-element sequence with a parseable timestamp, finite positive spot, string-or-None field, chronologically non-decreasing — plus the reference, extrema, prior-session and contract blocks. An incompatible state is a recorded `COLD_START` + `STATE_STRUCTURE_INVALID`, never a raise. The index/session inference no longer dereferences a non-mapping state. |
+| **B5.2** | With cap 3 and causal prices 100 → 120 → 110 → 108 → 105, `extrema.high` became **110** although the real high since the reference was **120**: extrema were recomputed from the rolling buffer, so trimming erased accepted history. | `state['path_extrema']` keeps compact **persistent fixed-reference** extrema and post-extreme summaries, monotone and independent of the buffer, so a dropped observation cannot lower a high. `observations_trimmed` is counted and surfaced as `coverage_complete: false` + `TRUNCATED_COVERAGE`, so a truncated path is never advertised as session-complete. Bounded-state and restart-across-the-cap tests included. |
+
+**Root cause of B3 worth recording.** The hand-built history fixture carried only `log_return`, so
+eligibility was never asked to screen anything. The fixture now carries what `observed_path`
+actually emits, and `TestHistoryFixtureMatchesRealFrames` asserts it against real observer output so
+it cannot drift back — the same discipline the Kotlin fixture overclaim earned earlier.
+
+**Until Codex re-reviews these, no rank from this module may be used for model selection or any
+direction-quality claim.**
 
 ---
 

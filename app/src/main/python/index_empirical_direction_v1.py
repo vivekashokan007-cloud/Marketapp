@@ -33,8 +33,15 @@ OBSERVER_ONLY = True
 # ── bounds (brief: "Bound computation and storage") ────────────────────────────────────────────
 MAX_SESSION_OBSERVATIONS = 120       # a full session is ~78 five-minute polls
 MAX_PROCESSED_IDS = 256              # idempotence memory, bounded
-MAX_HISTORY_SESSIONS = 400
+MAX_HISTORY_SESSIONS = 400           # DISTINCT SESSIONS, not rows -- see build_history_snapshot
+MAX_HISTORY_ROWS = 40000             # separate row bound, so a session's slots are not silently lost
 MAX_OUTPUT_BYTES = 16384
+
+# PROPOSED clock-skew tolerance for comparing a source stamp against the trusted decision clock.
+# It exists because two machines' clocks differ by small amounts, not to admit genuinely later data:
+# a source stamped beyond this ahead of the decision time is REFUSED, never aged into acceptance.
+# In configuration rather than buried in code, and sensitivity is tested.
+CLOCK_SKEW_TOLERANCE_S = 2.0
 
 # ── Commit C: observed path and empirical ranks ────────────────────────────────────────────────
 PATH_VERSION = 'observed_path_v1_log_frames_retained_extrema'
@@ -73,6 +80,20 @@ CONTRACT_ROLLOVER = 'CONTRACT_ROLLOVER'
 NOT_IMPLEMENTED = 'NOT_IMPLEMENTED'
 MISSING_DECISION_TIME = 'MISSING_DECISION_TIME'
 MISSING_SOURCE_TIME = 'MISSING_SOURCE_TIME'
+# clock contract (Codex B1). Every one of these REFUSES the observation and leaves state untouched.
+FUTURE_SOURCE_TIME = 'FUTURE_SOURCE_TIME'
+FUTURE_RECEIVE_TIME = 'FUTURE_RECEIVE_TIME'
+SOURCE_AFTER_RECEIVE = 'SOURCE_AFTER_RECEIVE'
+SESSION_MISMATCH = 'SESSION_MISMATCH'
+INVALID_DECISION_CLOCK = 'INVALID_DECISION_CLOCK'
+INVALID_RECEIVE_CLOCK = 'INVALID_RECEIVE_CLOCK'
+# snapshot / cohort contract (Codex B2, B3)
+SNAPSHOT_SESSION_MISMATCH = 'SNAPSHOT_SESSION_MISMATCH'
+SNAPSHOT_NOT_STRICTLY_EARLIER = 'SNAPSHOT_NOT_STRICTLY_EARLIER'
+INCOMPARABLE_FRAME = 'INCOMPARABLE_FRAME'
+# state structure contract (Codex B5)
+STATE_STRUCTURE_INVALID = 'STATE_STRUCTURE_INVALID'
+TRUNCATED_COVERAGE = 'TRUNCATED_COVERAGE'
 
 # Source priority for two observations carrying the SAME source time. Documented and deterministic:
 # an explicitly keyed per-index spot outranks a generic one, because the generic field has been seen
@@ -89,8 +110,10 @@ DEFAULT_CONFIG = {
     'open_ref_late_after': list(ia.OPEN_REF_LATE_AFTER),
     'max_session_observations': MAX_SESSION_OBSERVATIONS,
     'max_history_sessions': MAX_HISTORY_SESSIONS,
+    'max_history_rows': MAX_HISTORY_ROWS,
     'frame_windows_min': list(FRAME_WINDOWS_MIN),
     'anchor_tolerance_min': ANCHOR_TOLERANCE_MIN,
+    'clock_skew_tolerance_s': CLOCK_SKEW_TOLERANCE_S,
 }
 
 
@@ -169,11 +192,75 @@ def new_state(index, session_date, config=None):
         'observations': [],          # [[iso_source_ts, spot, source_field], ...] bounded
         'open_reference': None,      # {'value','source_ts','late','source_field'}
         'extrema': None,             # Commit C owns the causal high/low tracking
+        # Codex B5: persistent fixed-reference extrema, maintained independently of the rolling
+        # observation buffer so trimming cannot erase an accepted high or low.
+        'path_extrema': None,
+        'observations_trimmed': 0,   # how many accepted observations the buffer has dropped
         'prior_session': None,       # verified prior-session references survive rollover
         'contract': None,            # {'expiry': ...} for contract-rollover detection
         'artifact_hashes': {},
         'cold_start_reason': None,
     }
+
+
+def _observations_are_well_formed(state, session_date):
+    """Codex B5: the COMPLETE stored observation structure, not merely "it is a list".
+
+    The earlier check accepted `observations=[['oops']]`, which passed and then raised
+    `ValueError: not enough values to unpack` deep inside `_series`. A shape check that only looks at
+    the outer container is not a shape check. Every row must be a 3-element sequence carrying a
+    parseable timestamp, a finite positive spot and a string-or-None source field, and the rows must
+    be chronologically non-decreasing -- the invariant the accept path maintains, so a stored state
+    that violates it was not written by this module.
+    """
+    obs = state.get('observations')
+    if not isinstance(obs, list):
+        return False
+    prev = None
+    for row in obs:
+        if isinstance(row, str) or not isinstance(row, (list, tuple)) or len(row) != 3:
+            return False
+        iso, value, field = row
+        t = ia.parse_ts(iso, session_date)
+        if t is None:
+            return False
+        if _finite(value) is None or float(value) <= 0:
+            return False
+        if field is not None and not isinstance(field, str):
+            return False
+        if prev is not None and t < prev:
+            return False
+        prev = t
+    return True
+
+
+def _references_are_well_formed(state, session_date):
+    """open_reference / extrema / prior_session / path_extrema must be absent or structurally sound."""
+    ref = state.get('open_reference')
+    if ref is not None:
+        if not isinstance(ref, dict):
+            return False
+        if ia.parse_ts(ref.get('source_ts'), session_date) is None:
+            return False
+        if _finite(ref.get('value')) is None or float(ref['value']) <= 0:
+            return False
+    for key in ('extrema', 'prior_session', 'path_extrema', 'contract', 'artifact_hashes'):
+        v = state.get(key)
+        if v is not None and not isinstance(v, dict):
+            return False
+    prior = state.get('prior_session')
+    if isinstance(prior, dict) and prior.get('last_observed_value') is not None:
+        if _finite(prior.get('last_observed_value')) is None:
+            return False
+    pe = state.get('path_extrema')
+    if isinstance(pe, dict) and pe:
+        for key in ('reference_ts', 'high_ts', 'low_ts'):
+            if pe.get(key) is not None and ia.parse_ts(pe.get(key), session_date) is None:
+                return False
+        for key in ('reference_value', 'high', 'low'):
+            if pe.get(key) is not None and _finite(pe.get(key)) is None:
+                return False
+    return True
 
 
 def state_is_compatible(state, index, session_date, config=None):
@@ -190,8 +277,17 @@ def state_is_compatible(state, index, session_date, config=None):
     for key in ('processed_ids', 'observations'):
         if not isinstance(state.get(key), list):
             return False, STATE_INCOMPATIBLE
+    if not all(x is None or isinstance(x, str) for x in state.get('processed_ids') or []):
+        return False, STATE_STRUCTURE_INVALID
+    # Session rollover is decided BEFORE the per-row timestamp checks, because those parse against
+    # the requested session and a legitimate prior session's rows would fail them. A rollover keeps
+    # only the last observation, which _roll_session validates itself.
     if state.get('session_date') != (str(session_date) if session_date else None):
         return False, SESSION_ROLLOVER
+    if not _observations_are_well_formed(state, session_date):
+        return False, STATE_STRUCTURE_INVALID
+    if not _references_are_well_formed(state, session_date):
+        return False, STATE_STRUCTURE_INVALID
     return True, None
 
 
@@ -200,11 +296,19 @@ def _roll_session(old, index, session_date, config):
     next session can measure against a real previous close rather than rediscovering it."""
     fresh = new_state(index, session_date, config)
     fresh['cold_start_reason'] = SESSION_ROLLOVER
-    if isinstance(old, dict) and old.get('observations'):
-        last = old['observations'][-1]
+    last = None
+    if isinstance(old, dict) and isinstance(old.get('observations'), list) and old['observations']:
+        cand = old['observations'][-1]
+        # Codex B5: the carried-over row is validated here rather than trusted, because the
+        # per-row checks in state_is_compatible run against the NEW session and cannot vet it.
+        if (not isinstance(cand, str) and isinstance(cand, (list, tuple)) and len(cand) == 3
+                and _finite(cand[1]) is not None and float(cand[1]) > 0
+                and ia.parse_ts(cand[0], old.get('session_date')) is not None):
+            last = cand
+    if last is not None:
         fresh['prior_session'] = {
             'session_date': old.get('session_date'),
-            'last_observed_value': last[1],
+            'last_observed_value': _finite(last[1]),
             'last_observed_source_ts': last[0],
             'provenance': 'observed',
         }
@@ -213,10 +317,29 @@ def _roll_session(old, index, session_date, config):
     return fresh
 
 
-def _bounded_append(seq, item, cap):
+def _conflict_key(iso_ts, spot, source_field):
+    """A canonical identity for ONE same-time candidate, so two candidates are comparable.
+
+    Codex B4: the earlier tie-break hashed the whole incoming poll against `{'spot': old_value}` --
+    two different shapes, so the winner depended on which side carried more fields rather than on a
+    documented stable ordering. Both sides now hash the same triple.
+    """
+    return digest({'source_ts': iso_ts, 'spot': _finite(spot), 'source_field': source_field})
+
+
+def _bounded_append(seq, item, cap, state=None):
+    """Append within a cap, and RECORD how many items the bound dropped.
+
+    Codex B5: trimming is not free. `update_reference_extrema` recomputes from this buffer, so a
+    dropped observation used to erase an accepted high or low with nothing saying so. The count is
+    surfaced as reduced coverage, and the fixed-reference extrema are maintained separately.
+    """
     seq.append(item)
     if len(seq) > cap:
-        del seq[:len(seq) - cap]
+        dropped = len(seq) - cap
+        del seq[:dropped]
+        if state is not None:
+            state['observations_trimmed'] = int(state.get('observations_trimmed') or 0) + dropped
     return seq
 
 
@@ -227,9 +350,22 @@ def build_history_snapshot(records, as_of, config=None):
     `as_of` is the causal cutoff: a record whose session is not strictly earlier than the as-of
     session is excluded, and the exclusion is counted. The current session must never enter its own
     reference population, even after partial outcomes become visible.
+
+    Codex B2 corrections, all three:
+
+    * **Immutability.** Records are deep-copied through a canonical round-trip, so mutating the
+      caller's input afterwards cannot change the snapshot's contents beneath its `history_hash`. A
+      tuple of borrowed dictionaries is not immutable, and the earlier version was exactly that.
+    * **The cap counts DISTINCT SESSIONS, not rows.** `max_history_sessions=2` against 78 slots from
+      one session previously kept 2 ROWS, discarding 76 slots and most cohorts; retention also
+      silently over-weighted later dates and indices. The most recent configured number of distinct
+      sessions is now retained whole, with a separate `max_history_rows` bound reported on its own.
+    * **Ordering determinism.** Records are sorted by a full canonical key, so the same semantic
+      contents in a different input order produce the same snapshot and the same hash.
     """
     cfg = config_with_defaults(config)
-    cap = int(cfg['max_history_sessions'])
+    cap_sessions = int(cfg['max_history_sessions'])
+    cap_rows = int(cfg.get('max_history_rows') or MAX_HISTORY_ROWS)
     as_of_session = str(as_of) if as_of else None
     kept, excluded_not_earlier, excluded_malformed = [], 0, 0
     for r in (records or []):
@@ -243,24 +379,73 @@ def build_history_snapshot(records, as_of, config=None):
         if as_of_session is not None and str(sd) >= as_of_session:
             excluded_not_earlier += 1
             continue
-        kept.append(r)
-    kept.sort(key=lambda r: str(r.get('session_date')))
-    if len(kept) > cap:
-        kept = kept[-cap:]
+        try:                                   # deep copy: no borrowed references into the snapshot
+            kept.append(json.loads(canonical_json(r)))
+        except Exception:
+            excluded_malformed += 1
+
+    def _sort_key(rec):
+        return (str(rec.get('session_date')), str(rec.get('slot') or ''),
+                str(rec.get('index') or ''), canonical_json(rec))
+
+    kept.sort(key=_sort_key)
+    sessions_present = sorted({str(r.get('session_date')) for r in kept})
+    excluded_capped_sessions, excluded_capped_rows = 0, 0
+    if len(sessions_present) > cap_sessions:
+        retained = set(sessions_present[-cap_sessions:])       # the MOST RECENT distinct sessions
+        dropped = [r for r in kept if str(r.get('session_date')) not in retained]
+        excluded_capped_sessions = len(sessions_present) - cap_sessions
+        excluded_capped_rows += len(dropped)
+        kept = [r for r in kept if str(r.get('session_date')) in retained]
+    if len(kept) > cap_rows:                   # separate, documented row bound
+        excluded_capped_rows += len(kept) - cap_rows
+        kept = kept[-cap_rows:]
     snap = {
         'schema_version': SCHEMA_VERSION,
         'as_of_session': as_of_session,
-        'sessions': len(kept),
+        'rows': len(kept),
+        'sessions': len({str(r.get('session_date')) for r in kept}),
         'distinct_sessions': len({str(r.get('session_date')) for r in kept}),
+        'session_dates': sorted({str(r.get('session_date')) for r in kept}),
         'excluded_not_strictly_earlier': excluded_not_earlier,
         'excluded_malformed': excluded_malformed,
-        'capped_at': cap,
+        'excluded_capped_sessions': excluded_capped_sessions,
+        'excluded_capped_rows': excluded_capped_rows,
+        'capped_at_sessions': cap_sessions,
+        'capped_at_rows': cap_rows,
         'records': tuple(kept),
-        'latest_information_session': (str(kept[-1].get('session_date')) if kept else None),
+        'latest_information_session': (max(str(r.get('session_date')) for r in kept)
+                                       if kept else None),
     }
     snap['history_hash'] = digest({k: v for k, v in snap.items() if k != 'records'} |
                                   {'records': [canonical_json(r) for r in kept]})
     return snap
+
+
+def snapshot_is_usable_for(snapshot, session_date):
+    """Codex B2: enforce the causal cutoff at CONSUMPTION, not only at construction.
+
+    A snapshot built as-of 7 November carries 6 November rows quite legitimately. Handing it to a
+    5 November assessment made those rows rank a 5 November value -- the snapshot's own
+    `session_date` was never checked against the assessment's. Returns (ok, reason).
+    """
+    if not isinstance(snapshot, dict):
+        return False, INSUFFICIENT_HISTORY
+    if not snapshot.get('rows') and not snapshot.get('sessions'):
+        return False, INSUFFICIENT_HISTORY
+    sd = str(session_date) if session_date else None
+    if sd is None:
+        return False, SNAPSHOT_SESSION_MISMATCH
+    as_of = snapshot.get('as_of_session')
+    if as_of is not None and str(as_of) != sd:
+        return False, SNAPSHOT_SESSION_MISMATCH
+    latest = snapshot.get('latest_information_session')
+    if latest is not None and str(latest) >= sd:
+        return False, SNAPSHOT_NOT_STRICTLY_EARLIER
+    for r in snapshot.get('records') or ():
+        if str(r.get('session_date')) >= sd:
+            return False, SNAPSHOT_NOT_STRICTLY_EARLIER
+    return True, None
 
 
 def empty_history_snapshot(as_of=None, config=None):
@@ -330,8 +515,11 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
     """
     cfg = config_with_defaults(config)
     cfg_hash = config_hash(config)
-    index = index or (previous_state or {}).get('index')
-    session_date = session_date or (previous_state or {}).get('session_date')
+    # Codex B5: a non-mapping state must not be dereferenced while INFERRING the index/session, which
+    # happens before any compatibility check. `['not','a','dict']` raised AttributeError here.
+    _prev = previous_state if isinstance(previous_state, dict) else {}
+    index = index or _prev.get('index')
+    session_date = session_date or _prev.get('session_date')
 
     env = _envelope(index, session_date, cfg, decision_dt, poll, cfg_hash)
     env['operational']['history_sessions'] = (history_snapshot or {}).get('sessions')
@@ -340,7 +528,11 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
 
     if not cfg.get('enabled', False):
         _reason(env, DISABLED)
-        env['operational']['state_observations'] = len((previous_state or {}).get('observations') or [])
+        # `_prev`, not `(previous_state or {})`: a non-mapping state is truthy, so the old form
+        # called .get on it and raised -- the same B5 defect as the index/session inference above,
+        # on the DISABLED path. Found by grep after fixing the enabled path, not by the probe,
+        # which ran with the observer enabled and never reached here.
+        env['operational']['state_observations'] = len(_prev.get('observations') or [])
         return _finish(env), (previous_state if isinstance(previous_state, dict)
                               else new_state(index, session_date, config))
 
@@ -376,6 +568,15 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
     if decision_dt is None:
         _reason(env, MISSING_DECISION_TIME)
         return _finish(env, state), state
+    # An unusable decision clock has EXPLICIT behaviour rather than raising inside the arithmetic
+    # below: a naive datetime cannot be compared with the aware source stamp at all.
+    if not isinstance(decision_dt, datetime) or decision_dt.tzinfo is None:
+        _reason(env, INVALID_DECISION_CLOCK)
+        return _finish(env, state), state
+    if receive_dt is not None and (not isinstance(receive_dt, datetime)
+                                   or receive_dt.tzinfo is None):
+        _reason(env, INVALID_RECEIVE_CLOCK)
+        return _finish(env, state), state
 
     # source time and receive time are tracked separately
     source_dt = ia.poll_time(poll, session_date)
@@ -385,6 +586,40 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
         env['provenance']['as_of_fidelity'] = 'RECEIVE_TIME_UNKNOWN'
     if source_dt is None:
         _reason(env, MISSING_SOURCE_TIME)
+        return _finish(env, state), state
+
+    # ── clock contract (Codex B1) ──────────────────────────────────────────────────────────────
+    # The earlier code tested only `age_s > max_source_age_s`, so a NEGATIVE age -- a source stamped
+    # AFTER the decision time -- passed, and the module reported available=True while appending an
+    # observation that did not exist yet at the moment being assessed. Reproduced: accept NF 100 at
+    # 09:20, then present NF 110 stamped 10:00 with decision time 09:25; it was accepted.
+    #
+    # Nothing below this block may depend on a source that was not available at the decision time.
+    # All of these refuse the observation and leave state untouched.
+    skew = float(cfg.get('clock_skew_tolerance_s') or 0.0)
+    ahead_s = (source_dt - decision_dt).total_seconds()
+    env['provenance']['source_ahead_of_decision_s'] = round(ahead_s, 3)
+    if ahead_s > skew:
+        _reason(env, FUTURE_SOURCE_TIME)
+        env['provenance']['clock_skew_tolerance_s'] = skew
+        return _finish(env, state), state
+    if receive_dt is not None:
+        if (receive_dt - decision_dt).total_seconds() > skew:
+            _reason(env, FUTURE_RECEIVE_TIME)
+            return _finish(env, state), state
+        if (source_dt - receive_dt).total_seconds() > skew:
+            # a source cannot predate its own arrival by less than zero: this is not an observation
+            _reason(env, SOURCE_AFTER_RECEIVE)
+            return _finish(env, state), state
+
+    # The source's own IST session must be the session being assessed. Without this, a poll carrying
+    # another day's date was only ever rejected incidentally, by staleness -- so a wrong-session poll
+    # stamped in the future was accepted, and one stamped in the past was refused for the wrong
+    # reason. `ia.parse_ts` honours a full ISO date, so this is a real check, not a formality.
+    src_session = source_dt.astimezone(ia.IST).strftime('%Y-%m-%d')
+    env['provenance']['source_session_date'] = src_session
+    if session_date is not None and src_session != str(session_date):
+        _reason(env, SESSION_MISMATCH)
         return _finish(env, state), state
 
     spot = _finite(ia.poll_spot(poll, index))
@@ -404,7 +639,20 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
         _reason(env, DUPLICATE_POLL)
         return _finish(env, state), state
 
-    # ordering: a later-arriving earlier observation cannot revise an already published assessment
+    # ── staleness against the trusted decision clock ───────────────────────────────────────────
+    # Codex B4: this now runs BEFORE the same-time conflict handling. Previously the conflict branch
+    # popped the existing observation and only then reached this check, so a poll that was REJECTED
+    # as stale still emptied the state: accept 09:20 @ 100.0, resubmit 09:20 @ 102.0 with a decision
+    # clock of 10:20, and the returned state held ZERO observations where it had held one. Validation
+    # comes first; the candidate update is computed in isolation and committed only on acceptance.
+    age_s = (decision_dt - source_dt).total_seconds()
+    env['provenance']['source_age_s'] = round(age_s, 3)
+    if age_s > float(cfg['max_source_age_s']):
+        _reason(env, STALE_SOURCE)
+        return _finish(env, state), state
+
+    # ── ordering: a later-arriving earlier observation cannot revise a published assessment ─────
+    replace_last = False
     last_iso = state.get('last_accepted_source_ts')
     if last_iso:
         last_dt = ia.parse_ts(last_iso, session_date)
@@ -413,28 +661,36 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
                 _reason(env, OUT_OF_ORDER_EXCLUDED)
                 return _finish(env, state), state
             if source_dt == last_dt:
-                prev_field = (state['observations'][-1][2] if state.get('observations') else None)
+                prev = (state['observations'][-1] if state.get('observations') else None)
+                prev_field = (prev[2] if prev else None)
                 _reason(env, SAME_TIME_CONFLICT)
                 keep_new = _priority_rank(source_field) < _priority_rank(prev_field)
                 if not keep_new and _priority_rank(source_field) == _priority_rank(prev_field):
-                    keep_new = digest(poll) > digest({'spot': state['observations'][-1][1]})
+                    # Codex B4: compare SYMMETRIC canonical identities. The earlier rule compared
+                    # digest(new_full_poll) against digest({'spot': old_value}) -- two different
+                    # shapes, so the winner depended on which side carried more fields, not on a
+                    # stable ordering of comparable candidates. Both sides now hash the same triple.
+                    keep_new = (_conflict_key(_iso(source_dt), spot, source_field) >
+                                _conflict_key(prev[0], prev[1], prev[2]) if prev else True)
                 env['provenance']['same_time_resolution'] = (
                     'NEW_PREFERRED' if keep_new else 'EXISTING_PREFERRED')
+                env['provenance']['same_time_candidates'] = {
+                    'new': _conflict_key(_iso(source_dt), spot, source_field),
+                    'existing': (_conflict_key(prev[0], prev[1], prev[2]) if prev else None),
+                }
                 if not keep_new:
                     return _finish(env, state), state
-                if state.get('observations'):
-                    state['observations'].pop()
+                replace_last = True
 
-    # staleness against the trusted decision clock
-    age_s = (decision_dt - source_dt).total_seconds()
-    if age_s > float(cfg['max_source_age_s']):
-        _reason(env, STALE_SOURCE)
-        env['provenance']['source_age_s'] = round(age_s, 3)
-        return _finish(env, state), state
-
-    # accept
+    # ── accept: every validation has passed, so the state may now change ───────────────────────
+    if replace_last and state.get('observations'):
+        # A same-time replacement must not revise a frozen reference or an already published record.
+        dropped = state['observations'].pop()
+        if (state.get('open_reference') or {}).get('source_ts') == dropped[0]:
+            # the reference is frozen by design; the replacement supersedes the observation only
+            env['provenance']['same_time_reference_frozen'] = True
     _bounded_append(state['observations'], [_iso(source_dt), spot, source_field],
-                    int(cfg['max_session_observations']))
+                    int(cfg['max_session_observations']), state)
     _bounded_append(state['processed_ids'], ident, MAX_PROCESSED_IDS)
     state['last_accepted_source_ts'] = _iso(source_dt)
 
@@ -556,6 +812,50 @@ def update_reference_extrema(state, session_date):
     post_peak_low = min(after_hi, key=lambda p: p[1]) if after_hi else None
     post_trough_high = max(after_lo, key=lambda p: p[1]) if after_lo else None
 
+    # ── Codex B5: fold into PERSISTENT fixed-reference extrema ─────────────────────────────────
+    # Recomputation alone reads only the rolling buffer, so trimming erased accepted history:
+    # with cap 3 and causal prices 100 -> 120 -> 110 -> 108 -> 105, `extrema.high` became 110
+    # although the real high since the reference was 120. The persistent record below is keyed by
+    # the reference's own timestamp, is monotone in the high and the low, and is never lowered by a
+    # buffer that no longer contains the extreme.
+    pe = state.get('path_extrema')
+    if not isinstance(pe, dict) or pe.get('reference_ts') != _iso(ref_ts):
+        pe = {'reference_ts': _iso(ref_ts), 'reference_value': ref_v,
+              'high': hi_v, 'high_ts': _iso(hi_t), 'low': lo_v, 'low_ts': _iso(lo_t),
+              'post_peak_low': None, 'post_peak_low_ts': None,
+              'post_trough_high': None, 'post_trough_high_ts': None,
+              'observations_folded': 0}
+    if _finite(pe.get('high')) is None or hi_v > float(pe['high']):
+        pe['high'], pe['high_ts'] = hi_v, _iso(hi_t)
+        pe['post_peak_low'], pe['post_peak_low_ts'] = None, None   # a new peak restarts its trough
+    if _finite(pe.get('low')) is None or lo_v < float(pe['low']):
+        pe['low'], pe['low_ts'] = lo_v, _iso(lo_t)
+        pe['post_trough_high'], pe['post_trough_high_ts'] = None, None
+    # post-extreme summaries fold against the PERSISTENT extreme's timestamp, so a trough is only
+    # ever recorded from observations that arrived after the peak it follows -- never backdated.
+    pe_hi_t = ia.parse_ts(pe.get('high_ts'), session_date)
+    pe_lo_t = ia.parse_ts(pe.get('low_ts'), session_date)
+    for t, v in pts:
+        if pe_hi_t is not None and t > pe_hi_t:
+            if _finite(pe.get('post_peak_low')) is None or v < float(pe['post_peak_low']):
+                pe['post_peak_low'], pe['post_peak_low_ts'] = v, _iso(t)
+        if pe_lo_t is not None and t > pe_lo_t:
+            if _finite(pe.get('post_trough_high')) is None or v > float(pe['post_trough_high']):
+                pe['post_trough_high'], pe['post_trough_high_ts'] = v, _iso(t)
+    pe['observations_folded'] = int(pe.get('observations_folded') or 0) + 1
+    state['path_extrema'] = pe
+
+    trimmed = int(state.get('observations_trimmed') or 0)
+    hi_v, hi_t_iso = float(pe['high']), pe['high_ts']
+    lo_v, lo_t_iso = float(pe['low']), pe['low_ts']
+    hi_t = ia.parse_ts(hi_t_iso, session_date) or hi_t
+    lo_t = ia.parse_ts(lo_t_iso, session_date) or lo_t
+    post_peak_low = ((ia.parse_ts(pe['post_peak_low_ts'], session_date), pe['post_peak_low'])
+                     if pe.get('post_peak_low') is not None else None)
+    post_trough_high = ((ia.parse_ts(pe['post_trough_high_ts'], session_date),
+                         pe['post_trough_high'])
+                        if pe.get('post_trough_high') is not None else None)
+
     ex = {
         'reference': 'authority_open_reference',
         'reference_value': ref_v,
@@ -569,7 +869,15 @@ def update_reference_extrema(state, session_date):
         'post_trough_high': (post_trough_high[1] if post_trough_high else None),
         'post_trough_high_ts': (_iso(post_trough_high[0]) if post_trough_high else None),
         'observations_since_reference': len(pts),
+        # Coverage is reported, not assumed. A trimmed buffer means the in-memory path is no longer
+        # the complete session, so a path-shape feature derived from it must say so; the high and the
+        # low themselves survive because they come from the persistent record above.
+        'coverage_complete': trimmed == 0,
+        'observations_trimmed': trimmed,
+        'extrema_source': 'PERSISTENT_FIXED_REFERENCE',
     }
+    if trimmed:
+        ex['coverage_reason'] = TRUNCATED_COVERAGE
     state['extrema'] = ex
     return ex
 
@@ -723,37 +1031,82 @@ def _slot_of(iso_ts):
     return (iso_ts or '')[11:16] or None
 
 
-def eligible_population(snapshot, index, feature, window_key, slot):
+def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
+                        feature_version=None):
     """One eligible observation per EARLIER SESSION per query frame, deduplicated deterministically.
 
     78 correlated polls from one session must never count as 78 independent observations.
+
+    Codex B3: eligibility is now checked on the HISTORICAL side too, and BEFORE deduplication.
+
+    The earlier version required only that a feature key exist under the window key. So a row whose
+    frame was itself out of tolerance, or carried a null value, or measured a different actual
+    horizon, counted as a comparable observation; and because the null check ran only after the
+    hash-based duplicate choice, a null-valued row could win the choice and discard a valid
+    alternative for that session. Every rejection now has its own counted reason.
     """
-    chosen, rejected_slot, rejected_index, duplicates = {}, 0, 0, 0
+    tol = float((cfg or {}).get('anchor_tolerance_min') or ANCHOR_TOLERANCE_MIN)
+    try:
+        nominal = float(str(window_key).lstrip('m'))
+    except Exception:
+        nominal = None
+    chosen = {}
+    rej = {'other_index': 0, 'slot': 0, 'frame_absent': 0, 'frame_unavailable': 0,
+           'out_of_tolerance': 0, 'horizon_mismatch': 0, 'non_finite_value': 0,
+           'feature_version': 0}
+    duplicates = 0
     for r in (snapshot or {}).get('records') or ():
         if r.get('index') != index:
-            rejected_index += 1
-            continue
-        frames = (r.get('frames') or {})
-        if window_key not in frames or feature not in (frames.get(window_key) or {}):
-            rejected_slot += 1
+            rej['other_index'] += 1
             continue
         if slot is not None and r.get('slot') != slot:
-            rejected_slot += 1
+            rej['slot'] += 1
+            continue
+        frames = (r.get('frames') or {})
+        fr = frames.get(window_key)
+        if not isinstance(fr, dict) or feature not in fr:
+            rej['frame_absent'] += 1
+            continue
+        if fr.get('available') is False:
+            rej['frame_unavailable'] += 1
+            continue
+        if fr.get('within_tolerance') is False:
+            rej['out_of_tolerance'] += 1
+            continue
+        elapsed = _finite(fr.get('elapsed_min'))
+        if nominal is not None:
+            if elapsed is None:
+                # unknown compatibility is EXPLICIT, never inferred from the label "m15"
+                rej['horizon_mismatch'] += 1
+                continue
+            if abs(elapsed - nominal) > tol:
+                rej['horizon_mismatch'] += 1
+                continue
+        if feature_version is not None and fr.get('version') not in (None, feature_version):
+            rej['feature_version'] += 1
+            continue
+        if _finite(fr.get(feature)) is None:
+            # filtered BEFORE the duplicate choice, so a null row cannot win and evict a valid one
+            rej['non_finite_value'] += 1
             continue
         sd = str(r.get('session_date'))
         if sd in chosen:
             duplicates += 1
-            # deterministic: keep the lexicographically smaller record digest
-            if digest(r) < digest(chosen[sd]):
+            if digest(r) < digest(chosen[sd]):     # deterministic under any arrival order
                 chosen[sd] = r
             continue
         chosen[sd] = r
-    values = [(_finite((chosen[sd]['frames'][window_key] or {}).get(feature)))
-              for sd in sorted(chosen)]
+    values = [_finite((chosen[sd]['frames'][window_key] or {}).get(feature)) for sd in sorted(chosen)]
     values = [v for v in values if v is not None]
     return {'values': values, 'distinct_sessions': len(chosen), 'duplicates_collapsed': duplicates,
-            'rejected_other_index': rejected_index, 'rejected_slot_or_frame': rejected_slot,
-            'cohort_key': {'index': index, 'feature': feature, 'window': window_key, 'slot': slot}}
+            'eligible_sessions': len(chosen), 'rejections': dict(rej),
+            'rejected_other_index': rej['other_index'],
+            'rejected_slot_or_frame': (rej['slot'] + rej['frame_absent']
+                                       + rej['frame_unavailable']),
+            'nominal_window_min': nominal, 'tolerance_min': tol,
+            'cohort_key': {'index': index, 'feature': feature, 'window': window_key, 'slot': slot,
+                           'nominal_window_min': nominal, 'tolerance_min': tol,
+                           'feature_version': feature_version}}
 
 
 def empirical_comparison(path, snapshot, index, session_date, cfg):
@@ -762,15 +1115,35 @@ def empirical_comparison(path, snapshot, index, session_date, cfg):
            'history_hash': (snapshot or {}).get('history_hash'),
            'latest_information_session': (snapshot or {}).get('latest_information_session'),
            'as_of_session': (snapshot or {}).get('as_of_session'), 'frames': {}}
-    if not (snapshot or {}).get('sessions'):
-        return dict(out, reason=INSUFFICIENT_HISTORY)
+    # Codex B2: the causal cutoff is enforced HERE as well as at construction. A snapshot built
+    # as-of 7 November legitimately holds 6 November rows; handing it to a 5 November assessment
+    # previously let those rows rank a 5 November value, because the snapshot's own session was
+    # never checked against the assessment's.
+    usable, why = snapshot_is_usable_for(snapshot, session_date)
+    out['snapshot_usable'] = usable
+    if not usable:
+        return dict(out, reason=why)
     slot = _slot_of((path.get('spot') or {}).get('source_ts'))
     any_ok = False
     for key, frame in (path.get('frames') or {}).items():
         if not frame.get('available') or frame.get('log_return') is None:
             out['frames'][key] = {'available': False, 'reason': frame.get('reason') or NO_ANCHOR}
             continue
-        pop = eligible_population(snapshot, index, 'log_return', key, slot)
+        # Codex B3: an out-of-tolerance measurement is kept as labelled DESCRIPTIVE evidence but is
+        # excluded from the nominal-window cohort. Reproduced: with observations only at 09:20 and
+        # 10:00 the requested m15 frame had 40.0 actual minutes and within_tolerance=False, yet it
+        # was ranked against a genuine 15.0-minute historical m15 row and returned rank 100.0.
+        if frame.get('within_tolerance') is False:
+            out['frames'][key] = {
+                'available': False, 'reason': INCOMPARABLE_FRAME,
+                'raw_value': frame['log_return'],          # retained, labelled, never ranked
+                'descriptive_only': True,
+                'requested_window_min': frame.get('window_min'),
+                'actual_elapsed_min': frame.get('elapsed_min'),
+            }
+            continue
+        pop = eligible_population(snapshot, index, 'log_return', key, slot, cfg=cfg,
+                                  feature_version=PATH_VERSION)
         signed = midrank(frame['log_return'], pop['values'])
         magnitude = midrank(abs(frame['log_return']), [abs(v) for v in pop['values']])
         ok = signed['rank'] is not None
@@ -780,11 +1153,16 @@ def empirical_comparison(path, snapshot, index, session_date, cfg):
             'reason': None if ok else (UNSUPPORTED_COHORT if pop['distinct_sessions'] == 0
                                        else INSUFFICIENT_HISTORY),
             'raw_value': frame['log_return'],
+            'actual_elapsed_min': frame.get('elapsed_min'),
+            'within_tolerance': frame.get('within_tolerance'),
             'signed': signed, 'magnitude': magnitude,
-            'support': {'distinct_sessions': pop['distinct_sessions'],
+            'support': {'eligible_sessions': pop['eligible_sessions'],
+                        'distinct_sessions': pop['distinct_sessions'],
                         'duplicates_collapsed': pop['duplicates_collapsed'],
                         'rejected_other_index': pop['rejected_other_index'],
-                        'rejected_slot_or_frame': pop['rejected_slot_or_frame']},
+                        'rejected_slot_or_frame': pop['rejected_slot_or_frame'],
+                        'rejections': pop['rejections'],
+                        'denominator': signed['n']},
             'cohort_key': pop['cohort_key'],
             'low_support': (signed['n'] is not None and signed['n'] <= 1),
         }

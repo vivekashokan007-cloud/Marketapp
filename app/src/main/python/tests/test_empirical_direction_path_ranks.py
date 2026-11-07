@@ -289,9 +289,21 @@ class TestMidrank(unittest.TestCase):
         self.assertIsNone(ed.midrank(float('nan'), [1, 2, 3])['rank'])
 
 
-def hist_record(session, slot, index, window, r, **kw):
-    d = {'session_date': session, 'slot': slot, 'index': index,
-         'frames': {window: {'log_return': r}}}
+def hist_record(session, slot, index, window, r, elapsed=None, within_tolerance=True,
+                available=True, **kw):
+    """A historical frame row carrying the fields a REAL frame carries.
+
+    This fixture previously held only `log_return`, and that was the hole behind Codex B3:
+    eligibility checked key presence alone, so a row with no horizon, no availability and no
+    tolerance status counted as a comparable observation. It now carries what `observed_path`
+    actually emits, and `TestHistoryFixtureMatchesRealFrames` asserts it keeps matching so it
+    cannot drift back.
+    """
+    nominal = float(str(window).lstrip('m'))
+    frame = {'log_return': r, 'available': available, 'window_min': nominal,
+             'elapsed_min': (nominal if elapsed is None else elapsed),
+             'within_tolerance': within_tolerance}
+    d = {'session_date': session, 'slot': slot, 'index': index, 'frames': {window: frame}}
     d.update(kw)
     return d
 
@@ -336,8 +348,13 @@ class TestEligiblePopulation(unittest.TestCase):
         snap = ed.build_history_snapshot([hist_record('2026-11-02', '10:00', 'NF', 'm30', 0.004)],
                                          SESSION)
         pop = ed.eligible_population(snap, 'NF', 'log_return', 'm30', '10:00')
+        # Codex B3: the cohort key now also publishes what made a row comparable -- the nominal
+        # window, the tolerance applied and the feature version demanded -- so a rank can be
+        # reproduced independently without guessing the eligibility rule that produced it.
         self.assertEqual(pop['cohort_key'], {'index': 'NF', 'feature': 'log_return',
-                                             'window': 'm30', 'slot': '10:00'})
+                                             'window': 'm30', 'slot': '10:00',
+                                             'nominal_window_min': 30.0, 'tolerance_min': 2.5,
+                                             'feature_version': None})
 
 
 class TestEmpiricalComparison(unittest.TestCase):

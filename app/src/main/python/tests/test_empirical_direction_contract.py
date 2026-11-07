@@ -388,7 +388,13 @@ class TestHistorySnapshot(unittest.TestCase):
                 for m in range(1, 11) for d in range(1, 29)]
         snap = ed.build_history_snapshot(many, '2026-12-01', {'max_history_sessions': 20})
         self.assertEqual(snap['sessions'], 20)
-        self.assertEqual(snap['capped_at'], 20)
+        self.assertEqual(snap['distinct_sessions'], 20)
+        self.assertEqual(snap['capped_at_sessions'], 20)
+        # Codex B2: the cap counts DISTINCT SESSIONS, so the 20 most recent are retained whole
+        # (one row each here), and sessions dropped by the cap are counted separately from rows.
+        self.assertEqual(snap['rows'], 20)
+        self.assertEqual(snap['excluded_capped_sessions'], len(many) - 20)
+        self.assertEqual(snap['latest_information_session'], '2026-10-28')
 
     def test_empty_snapshot_is_explicit(self):
         snap = ed.empty_history_snapshot(SESSION)
