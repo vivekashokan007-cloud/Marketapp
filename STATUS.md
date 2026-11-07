@@ -83,31 +83,113 @@ evidence can exclude the field instead of inheriting the fallback.
 
 **A bug I introduced and caught here:** the normaliser works in float, so the interval came back
 `100.0`, making `atm + otm_dist` a float and `str()` produce `"56200.0"` — missing a strikes dict keyed
-`"56200"` and silently reproducing the very zero-IV symptom being repaired. Integral intervals are now
-narrowed to `int`, with four tests pinning it, including an end-to-end `get_strike` resolution check.
+`"56200"`. Integral intervals are now narrowed to `int`.
+
+**Correction after Codex R1 (my earlier claim was too broad).** That type guard is **necessary but not
+sufficient**. Verified against the real producer: `OptionChainBrainFormatter` declares
+`var atmStrike = 0.0` and emits `atm` as a **Double**, while strikes are keyed
+`strike.toInt().toString()`. So `atm ± otm_dist` is a float in production, `str()` gives `"56200.0"`,
+and `get_strike` misses the integer-string key **even with an integral interval**:
+
+```
+get_strike(strikes, 56000  + 200) -> found
+get_strike(strikes, 56000.0 + 200) -> None
+```
+
+That is a **separate, pre-existing representation defect**. This commit does **not** fix it, and
+therefore the sparse-interval repair alone is **necessary but not sufficient in production** — the IV
+features can remain 0 until the ATM/key representation is addressed. Recorded here and tested as a
+documented limit; deliberately not folded into this repair.
+
+**Malformed-input scope, narrowed.** The helper normalises its own private ladder, but `chain_profile`
+keeps using the original `all_k` for zone iteration and other arithmetic, so string / `None` / `NaN`
+entries in `allStrikes` still raise `TypeError` / `ValueError` **end to end**. These are **pre-existing
+limits of the legacy profile, not regressions introduced here** — the old code was equally intolerant.
+Tested and recorded rather than widened into a rewrite of every profile calculation.
+
+### Interval contract after Codex R1 (v2)
+
+`STRIKE_INTERVAL_VERSION = strike_interval_v2_unique_repeated_mode_bound_metadata`.
+
+**`OK` now requires a UNIQUE and REPEATED modal interval.** The v1 contract returned `OK` whenever a
+single mode existed, or broke ties by preferring the tighter gap — so Codex's probes
+`[56000,56100,56300]` and `[55800,55900,56000,56200,56400]` were both labelled `OK = 100` despite
+having no unique repeated interval. A tighter-interval preference is not established geometry, and on
+another valid ladder it samples strikes that do not exist and recreates the zero features this repair
+removes. Both probes are now tests.
+
+| Evidence | Status | Reason |
+|---|---|---|
+| unique mode, count ≥ 2 | `OK` | — |
+| two or more modes tied at the same count | `AMBIGUOUS` | `TIED_MODES` (+ `tied_modes` listed) |
+| no gap repeats, several distinct | `AMBIGUOUS` | `NO_REPEATED_INTERVAL` |
+| exactly one gap observed | `AMBIGUOUS` | `SINGLE_GAP_ONLY` |
+
+`value` is populated **only** on `OK`. A best guess is retained separately as `candidate_value`, so it
+cannot be mistaken for a verified applied value. Ordering matters and is commented: when nothing
+repeats, every distinct gap is a "mode" of count 1, so a tie check placed first mislabels a
+no-repetition ladder — a flaw in my own first fix, caught by test.
+
+**Metadata must be bound, and no producer exists.** v1 accepted any finite positive number and
+labelled it `OK/METADATA`, so `strikeInterval = 1500` or `7` was applied as trusted evidence and
+reinstated the original failure. Worse, the comment called it "dated metadata" while a
+repository-wide search finds **no writer** of `strikeInterval` / `strike_interval` in Python, Kotlin or
+the PWA — only my own consumer. **The channel was invented.**
+
+`_bound_metadata_interval` now requires a mapping carrying `interval, index, expiry, as_of, source`,
+matching the index and expiry being profiled, non-stale, and **consistent with the observed ladder**
+(the stated interval must actually appear as an adjacent gap). A bare number is refused
+(`UNBOUND_BARE_VALUE`). `chain_profile` passes **no metadata at all**, so the live path cannot be
+fooled today. A test asserts no producer exists and will fail if one is added.
+
+The **±6-strike window** is a proposed geometric heuristic with a bounded purpose — the interval is
+used to sample near the money, so it is inferred there. It is not a market threshold. Boundary tests
+cover a distant density change, ATM inside a sparse region, and explicit window sizes.
 
 ### Profile-field impact map (measured, not asserted)
 
-| Fixture | legacy step | new step | source | ivSkew | ivSlope |
+| Fixture | legacy step | new step | status | ivSkew | ivSlope |
 |---|---|---|---|---|---|
-| sparse BNF monthly (brief fixture) | 1500 | **100** | `NEAR_ATM_MODAL` | 0.0 → **2.0** | 0.0 → **1.0** |
-| normal NF 50-pt | 50 | 50 | `NEAR_ATM_MODAL` | unchanged | unchanged |
-| normal BNF 100-pt | 100 | 100 | `NEAR_ATM_MODAL` | unchanged | unchanged |
+| sparse BNF monthly (brief fixture) | 1500 | **100** | `OK` (modal count 12) | 0.0 → **2.0** | 0.0 → **1.0** |
+| normal NF 50-pt | 50 | 50 | `OK` | unchanged | unchanged |
+| normal BNF 100-pt | 100 | 100 | `OK` | unchanged | unchanged |
+| `[56000,56100,56300]` | 100 | **none** | `AMBIGUOUS` | legacy fallback | legacy fallback |
+| tied-mode ladder | 100 | **none** | `AMBIGUOUS` | legacy fallback | legacy fallback |
 
-`netDelta`, `volRatio`, `avgTheta`, `avgVega`, `atmIv` do not depend on `step` and are unchanged.
-The earlier synthetic audit's 0/0 → 2/1 is **reproduced from the real function**, not hardcoded.
+**Correcting an earlier overstatement:** changes are **not** confined to a sparse ladder. Tied-mode
+ladders, no-repetition ladders and a refused metadata override are also changed paths. Three distinct
+changed paths, asserted by test.
 
-### Active-consumer map for `chain_profile`
+**Full-field parity on ordinary ladders** is now tested directly, not inferred from step equality:
+every pre-existing profile field is compared between the forced-legacy-step run and the new run on
+50-pt and 100-pt ladders, and the field set is asserted unchanged apart from the additive
+`strikeIntervalEvidence`.
 
-| Consumer | Call site | Uses |
-|---|---|---|
-| `result["bnfProfile"]` / `result["nfProfile"]` | `brain.py` ~17347–17348 | full profile dict |
-| local `bnf_profile` / `nf_profile` | `brain.py` ~17015–17020 | full profile dict |
-| `chain_profile_insights` | `brain.py` ~5364–5370 | `ivSlope` thresholds (>3 "fear skew steep", <-2 "call skew unusual") |
+`netDelta`, `volRatio`, `avgTheta`, `avgVega`, `atmIv` do not depend on `step`. The earlier synthetic
+audit's 0/0 → 2/1 is **reproduced from the real function**, not hardcoded.
 
-Only `ivSkew` and `ivSlope` change, and only on a sparse ladder. **Historical incidence is unknown**:
-counting real affected sessions needs raw `allStrikes` arrays per observation, which this environment
-does not have.
+### Active-consumer map for `chain_profile` (completed after Codex R1)
+
+| Consumer | Call site | Uses | Does a changed value reach a decision? |
+|---|---|---|---|
+| `result["bnfProfile"]` / `["nfProfile"]` | ~17347–17348 | full profile dict | persisted/displayed evidence |
+| local `bnf_profile` / `nf_profile` | ~17015–17020 | full profile dict | feeds the consumers below |
+| `chain_profile_insights` | ~5364–5370 | `ivSlope` > 3, < −2 | insight text only |
+| **`synthesize_verdict`** | def ~5597, called ~17815 | `profile.get('ivSkew')` → `skew > 3: bear += 0.2`; also `'iv_skew'` in the `_trace` block | **traced below — no** |
+
+**Traced, as required.** `synthesize_verdict` writes `result['verdict']`. `_ia_apply_cutover` then
+captures `legacy_verdict = result.get('verdict')`, copies only
+`('action','strategy','direction','confidence')` into `result['legacy_evidence']['verdict']` under the
+label *"legacy_combined_v0 recorded evidence; not used in any decision, ordering or alert"*, and
+**afterwards replaces `result['verdict']`** with the authority-derived verdict. Order asserted by test.
+
+So a changed `ivSkew` **can** alter the retained `legacy_evidence.verdict` values and the `_trace`
+block, but **cannot** move the canonical displayed verdict, candidate ranking, admission or
+notifications. I am claiming neither that the canonical authority changes nor that a profile-only
+change has no other effect.
+
+**Historical incidence is unknown**: counting real affected sessions needs raw `allStrikes` arrays per
+observation, which this environment does not have.
 
 ### Commands
 

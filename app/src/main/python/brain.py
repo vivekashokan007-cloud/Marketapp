@@ -5191,9 +5191,12 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     # while the near-ATM interval is 100, so ivSkew/ivSlope sampled at atm +/- 1500 instead of
     # +/- 200-400 and read the empty outer wings, yielding 0.0 for both. This is the same formula the
     # 2026-09-01 candidate-generation bugfix replaced; chain_profile was never migrated.
+    # metadata_step is deliberately NOT passed: no producer of bound contract interval metadata
+    # exists, and an unbound numeric override was shown to reinstate the sparse-wing failure while
+    # labelling it trusted. Index/expiry are forwarded so the contract can bind if a producer appears.
     _si = infer_strike_interval(all_k, atm=chain.get('atm'),
-                                metadata_step=(chain.get('strikeInterval')
-                                               or chain.get('strike_interval')))
+                                index=chain.get('requested_underlying_key'),
+                                expiry=chain.get('expiry'))
     if _si['status'] == 'OK' and _si['value'] and _si['value'] > 0:
         step = _si['value']
     else:
@@ -7087,7 +7090,11 @@ def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
         current += timedelta(days=1)
     return max(float(count), 1.0)
 
-STRIKE_INTERVAL_VERSION = 'strike_interval_v1_near_atm_modal'
+STRIKE_INTERVAL_VERSION = 'strike_interval_v2_unique_repeated_mode_bound_metadata'
+# Required binding for any future producer of contract interval metadata. A bare number is refused:
+# an unbound value cannot be checked against the chain it is being applied to, and Codex R1 showed an
+# unbound override silently reinstating the sparse-wing failure as "trusted" evidence.
+STRIKE_INTERVAL_METADATA_REQUIRED = ('interval', 'index', 'expiry', 'as_of', 'source')
 STRIKE_INTERVAL_ATM_WINDOW = 6          # strikes either side of ATM treated as "near the money"
 
 
@@ -7118,8 +7125,51 @@ def _normalise_strike_ladder(all_strikes):
     return sorted(out)
 
 
+def _bound_metadata_interval(meta, index=None, expiry=None, session_date=None, ladder_hint=None):
+    """Accept contract interval metadata only when it is bound to THIS chain and consistent with it.
+
+    NOTE: no producer of such metadata exists in this repository today -- a search finds no writer of
+    strikeInterval / strike_interval in Python, Kotlin or the PWA. This is the contract a future
+    producer must meet, not a claim that one exists. chain_profile passes nothing.
+
+    Required: a mapping carrying every field of STRIKE_INTERVAL_METADATA_REQUIRED. A bare number is
+    refused. The binding must match the index and expiry being profiled, and the stated interval must
+    be consistent with the observed ladder (it must actually appear as an adjacent gap), so metadata
+    contradicting the chain is flagged and excluded rather than trusted.
+    """
+    out = {'accepted': False, 'value': None, 'reason': None, 'binding': None}
+    if isinstance(meta, bool) or isinstance(meta, (int, float)) or isinstance(meta, str):
+        return dict(out, reason='UNBOUND_BARE_VALUE')
+    if not isinstance(meta, dict):
+        return dict(out, reason='NOT_A_MAPPING')
+    missing = [k for k in STRIKE_INTERVAL_METADATA_REQUIRED if meta.get(k) in (None, '')]
+    if missing:
+        return dict(out, reason='MISSING_PROVENANCE:' + ','.join(sorted(missing)))
+    try:
+        iv = float(meta['interval'])
+    except Exception:
+        return dict(out, reason='INTERVAL_NOT_NUMERIC')
+    if isinstance(meta['interval'], bool) or not math.isfinite(iv) or iv <= 0:
+        return dict(out, reason='INTERVAL_NOT_POSITIVE_FINITE')
+    if index is not None and str(meta['index']) != str(index):
+        return dict(out, reason='INDEX_MISMATCH')
+    if expiry is not None and str(meta['expiry']) != str(expiry):
+        return dict(out, reason='EXPIRY_MISMATCH')
+    if session_date is not None and str(meta['as_of']) < str(session_date):
+        return dict(out, reason='STALE_AS_OF')
+    ladder = _normalise_strike_ladder(ladder_hint)
+    if len(ladder) >= 2:
+        gaps = {ladder[i + 1] - ladder[i] for i in range(len(ladder) - 1)}
+        if iv not in gaps:
+            # metadata that contradicts the observed ladder is excluded, not applied
+            return dict(out, reason='CONTRADICTS_OBSERVED_LADDER')
+    return {'accepted': True, 'value': iv, 'reason': None,
+            'binding': {k: str(meta.get(k)) for k in STRIKE_INTERVAL_METADATA_REQUIRED}}
+
+
 def infer_strike_interval(all_strikes, atm=None, metadata_step=None,
-                          window=STRIKE_INTERVAL_ATM_WINDOW):
+                          window=STRIKE_INTERVAL_ATM_WINDOW, *, index=None, expiry=None,
+                          session_date=None):
     """Infer the LOCAL strike interval, with an explicit status instead of a guessed number.
 
     Why this exists rather than reusing `_infer_strike_step` directly: that helper returns
@@ -7144,8 +7194,9 @@ def infer_strike_interval(all_strikes, atm=None, metadata_step=None,
     Deliberately does NOT look at the spot price: spot must not be used to infer instrument identity
     or ladder geometry. A caller that needs a legacy spot-based default applies it itself, explicitly.
     """
-    out = {'value': None, 'status': 'UNAVAILABLE', 'reason': None, 'source': None,
-           'gaps_considered': 0, 'modal_count': 0, 'helper_value': None, 'helper_agrees': None,
+    out = {'value': None, 'candidate_value': None, 'status': 'UNAVAILABLE', 'reason': None,
+           'source': None, 'evidence': None, 'gaps_considered': 0, 'modal_count': 0,
+           'distinct_gaps': 0, 'helper_value': None, 'helper_agrees': None,
            'version': STRIKE_INTERVAL_VERSION}
 
     def _narrow(v):
@@ -7156,14 +7207,24 @@ def infer_strike_interval(all_strikes, atm=None, metadata_step=None,
             return None
         return int(v) if float(v).is_integer() else v
 
-    # dated contract metadata wins when the input genuinely carries it
-    if metadata_step is not None and not isinstance(metadata_step, bool):
-        try:
-            ms = float(metadata_step)
-        except Exception:
-            ms = None
-        if ms is not None and math.isfinite(ms) and ms > 0:
-            return dict(out, value=_narrow(ms), status='OK', source='METADATA')
+    # Contract metadata, only when it is actually BOUND and consistent.
+    #
+    # Codex R1 found the earlier version accepted any finite positive number and labelled it
+    # OK/METADATA, so `strikeInterval = 1500` or `7` on the sparse fixture was applied as trusted
+    # evidence and reproduced the original zero-feature failure. Worse, the comment called it "dated
+    # metadata" while NO PRODUCER EXISTS: a repository-wide search finds no writer of strikeInterval
+    # or strike_interval anywhere in Python, Kotlin or the PWA -- only this consumer. The channel was
+    # invented.
+    #
+    # It is kept as an explicit contract that a future producer must satisfy, and chain_profile passes
+    # nothing, so the live path cannot be fooled today. A bare number is refused.
+    if metadata_step is not None:
+        bound = _bound_metadata_interval(metadata_step, index=index, expiry=expiry,
+                                         session_date=session_date, ladder_hint=all_strikes)
+        if bound['accepted']:
+            return dict(out, value=_narrow(bound['value']), status='OK', source='METADATA',
+                        evidence='BOUND_METADATA', metadata_binding=bound['binding'])
+        out['metadata_rejected'] = bound['reason']
 
     ladder = _normalise_strike_ladder(all_strikes)
     if len(ladder) < 2:
@@ -7197,15 +7258,31 @@ def infer_strike_interval(all_strikes, atm=None, metadata_step=None,
     for g in gaps:
         counts[g] = counts.get(g, 0) + 1
     best = max(counts.values())
-    value = min(g for g, c in counts.items() if c == best)      # ties resolve to the tighter interval
-    value = _narrow(value)
-    out.update(value=value, source=source, gaps_considered=len(gaps), modal_count=best,
-               helper_agrees=(out['helper_value'] == value))
+    modes = sorted(g for g, c in counts.items() if c == best)
+    candidate = _narrow(modes[0])
+    # The candidate is DIAGNOSTIC and lives in its own field. `value` is populated only when the
+    # evidence actually supports it, so a caller cannot mistake a guess for established geometry.
+    out.update(candidate_value=candidate, source=source, gaps_considered=len(gaps),
+               modal_count=best, distinct_gaps=len(counts),
+               helper_agrees=(out['helper_value'] == candidate))
 
-    # no gap repeats and there are several distinct ones: the ladder has no single local interval
-    if best == 1 and len(counts) >= 3:
-        return dict(out, status='AMBIGUOUS', reason='NO_MODAL_INTERVAL')
-    return dict(out, status='OK')
+    # Codex R1: the earlier contract returned OK whenever a single mode existed OR ties were broken by
+    # preferring the tighter gap, so [56000,56100,56300] and [55800,55900,56000,56200,56400] were both
+    # labelled OK=100 despite having no unique repeated interval. A tighter-interval preference is not
+    # established geometry, and on another valid ladder it samples strikes that do not exist and
+    # recreates the zero features this repair removes. OK now requires a UNIQUE and REPEATED mode.
+    # Order matters: when nothing repeats, EVERY distinct gap is a "mode" of count 1, so a tie check
+    # placed first would mislabel a no-repetition ladder as tied modes. No repetition is the more
+    # specific condition and is reported as such; TIED_MODES means two or more intervals each repeated
+    # the same number of times.
+    if best == 1:
+        return dict(out, status='AMBIGUOUS', evidence=('SINGLE_GAP' if len(gaps) == 1
+                                                       else 'NO_REPETITION'),
+                    reason=('SINGLE_GAP_ONLY' if len(gaps) == 1 else 'NO_REPEATED_INTERVAL'))
+    if len(modes) > 1:
+        return dict(out, status='AMBIGUOUS', reason='TIED_MODES', evidence='TIED_MODES',
+                    tied_modes=[_narrow(m) for m in modes])
+    return dict(out, value=candidate, status='OK', evidence='REPEATED_UNIQUE_MODE')
 
 
 def _infer_strike_step(all_strikes, default_step):
