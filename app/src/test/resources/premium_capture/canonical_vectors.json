@@ -21,6 +21,28 @@
       "sha256": "f61e7b496b13fe20d9eb3a38b90760a54a0422e829951b43168377bb1ed8c71a"
     },
     {
+      "canonical": "{\"a\":61,\"b\":10.5,\"c\":600,\"d\":0,\"e\":0}",
+      "input": {
+        "a": 61.0,
+        "b": 10.5,
+        "c": 600.0,
+        "d": 0.0,
+        "e": -0.0
+      },
+      "name": "trailing_zero_decimal_is_not_a_distinct_value",
+      "sha256": "c8c795f0fbc9531ff1e343c65ff6eb02036adbc1da00d55d727feeac36521010"
+    },
+    {
+      "canonical": "{\"a\":0.0001,\"b\":0.00001,\"c\":0.00000015}",
+      "input": {
+        "a": 0.0001,
+        "b": 1e-05,
+        "c": 1.5e-07
+      },
+      "name": "small_magnitudes_render_in_plain_form",
+      "sha256": "de84a919aed921faee3e812458aff0820648ad373c8512090e3b25586559c284"
+    },
+    {
       "canonical": "{\"d\":-0.0375,\"iv\":0.1412}",
       "input": {
         "d": -0.0375,

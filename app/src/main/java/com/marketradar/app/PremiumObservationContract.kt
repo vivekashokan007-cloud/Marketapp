@@ -332,6 +332,36 @@ object PremiumObservationContract {
             .put("clock_basis", "LOCAL_ACQUISITION_RECEIPT")
     }
 
+    /**
+     * VALUE-canonical rendering of one number, so numerically equal values hash identically
+     * whatever Java type they were parsed into.
+     *
+     * This exists because of a real defect found by CI, not as a precaution. `org.json:json:20240303`
+     * parses a JSON decimal into a **BigDecimal**, so a fixture `61.0` arrived as
+     * `BigDecimal("61.0")` and the old generic `is Number -> o.toString()` branch rendered it
+     * `"61.0"` — while `Double` 61.0 rendered `"61"` and `Integer` 61 rendered `"61"`. Worse,
+     * `JSONObject.toString()` runs org.json's `numberToString`, which TRIMS trailing zeros, so a
+     * record written and reparsed came back as `Integer` 61. `stampHash` therefore hashed `61.0`
+     * and `verifyHash` hashed `61`, and a freshly stamped record failed its own verification.
+     *
+     * Routing every `Number` through one BigDecimal normalisation fixes it at the root: integral
+     * values render with no decimal point, fractional values render in plain (never exponent) form,
+     * and the rendering is stable across a `toString()` / reparse round trip — which
+     * `theCanonicalFormSurvivesAJsonTextRoundTrip` now asserts.
+     */
+    private fun canonicalNumber(n: Number): String {
+        val d = n.toDouble()
+        // defensive: a bare NaN/Infinity is not valid JSON and org.json refuses to hold one
+        if (d.isNaN() || d.isInfinite()) return JSONObject.quote(NON_FINITE_NAN)
+        val stripped = try {
+            java.math.BigDecimal(n.toString()).stripTrailingZeros()
+        } catch (e: NumberFormatException) {
+            return JSONObject.quote(NON_FINITE_NAN)
+        }
+        return if (stripped.scale() <= 0) stripped.toBigInteger().toString()
+        else stripped.toPlainString()
+    }
+
     /** Canonical JSON with sorted keys, compact separators, UTF-8 — the hashed representation. */
     fun canonicalJson(o: Any?): String = when (o) {
         null, JSONObject.NULL -> "null"
@@ -340,11 +370,8 @@ object PremiumObservationContract {
         }
         is JSONArray -> (0 until o.length()).joinToString(",", "[", "]") { canonicalJson(o.opt(it)) }
         is String -> JSONObject.quote(o)
-        is Boolean, is Int, is Long -> o.toString()
-        is Double -> if (o.isFinite()) {
-            if (o == Math.floor(o) && Math.abs(o) < 1e15) o.toLong().toString() else o.toString()
-        } else JSONObject.quote(NON_FINITE_NAN)      // defensive: never emit a bare NaN
-        is Number -> o.toString()
+        is Boolean -> o.toString()
+        is Number -> canonicalNumber(o)
         else -> JSONObject.quote(o.toString())
     }
 

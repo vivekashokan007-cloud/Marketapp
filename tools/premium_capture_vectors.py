@@ -26,6 +26,7 @@ Usage:
   python3 -I tools/premium_capture_vectors.py --export   # print one synthetic export
 """
 import argparse
+import decimal
 import hashlib
 import json
 import os
@@ -49,6 +50,25 @@ def _quote(s):
     return json.dumps(s, ensure_ascii=False)
 
 
+def _canonical_number(n):
+    """Mirror of PremiumObservationContract.canonicalNumber.
+
+    Integral values render with no decimal point; fractional values render in plain (never
+    exponent) form. Java reaches this via BigDecimal(n.toString()).stripTrailingZeros(); Decimal
+    normalize() is the same operation, so 61.0, BigDecimal("61.0") and 61 all render "61", and
+    1e-5 renders "0.00001" on both sides rather than Java's "1.0E-5" versus Python's "1e-05".
+    """
+    if isinstance(n, float) and (n != n or n in (float('inf'), float('-inf'))):
+        return _quote(NON_FINITE_NAN)
+    try:
+        d = decimal.Decimal(repr(n) if isinstance(n, float) else str(n)).normalize()
+    except decimal.InvalidOperation:
+        return _quote(NON_FINITE_NAN)
+    if d.as_tuple().exponent >= 0:
+        return str(int(d))
+    return format(d, 'f')
+
+
 def canonical(o):
     """Mirror of PremiumObservationContract.canonicalJson.
 
@@ -67,14 +87,8 @@ def canonical(o):
         return '[' + ','.join(canonical(v) for v in o) + ']'
     if isinstance(o, str):
         return _quote(o)
-    if isinstance(o, int):
-        return str(o)
-    if isinstance(o, float):
-        if o != o or o in (float('inf'), float('-inf')):
-            return _quote(NON_FINITE_NAN)
-        if o == int(o) and abs(o) < 1e15:
-            return str(int(o))
-        return repr(o)
+    if isinstance(o, (int, float, decimal.Decimal)):
+        return _canonical_number(o)
     return _quote(str(o))
 
 
@@ -92,6 +106,20 @@ def stamp_hash(rec):
     }
     rec[HASH_OMITTED_FIELD] = sha256_hex(canonical(rec))
     return rec
+
+
+def verify_hash(rec):
+    """Recompute and compare, mirroring PremiumObservationContract.verifyHash.
+
+    This exists because the synthetic export previously REPORTED a hash_verified count without
+    checking anything, which is how a genuinely broken verifyHash reached CI. A count that is not
+    the result of a check is not evidence.
+    """
+    claimed = rec.get(HASH_OMITTED_FIELD)
+    if not claimed:
+        return False
+    rebuilt = {k: v for k, v in rec.items() if k != HASH_OMITTED_FIELD}
+    return claimed == sha256_hex(canonical(rebuilt))
 
 
 def raw(v, status):
@@ -287,8 +315,10 @@ def synthetic_export(slots=3):
                         'envelope_carries': ['clocks', 'underlying', 'lot'],
                         'observation_carries': ['identity', 'iv', 'bbo']},
         'slot_envelopes': envs,
-        'accounting': {'records': len(recs), 'hash_verified': len(recs),
-                       'slot_envelopes': len(envs), 'envelope_hash_verified': len(envs),
+        'accounting': {'records': len(recs),
+                       'hash_verified': sum(1 for r in recs if verify_hash(r)),
+                       'slot_envelopes': len(envs),
+                       'envelope_hash_verified': sum(1 for e in envs if verify_hash(e)),
                        'conflicts_retained': 0, 'orphan_temp_files': 0},
         'records': recs,
     }
@@ -298,6 +328,14 @@ def build_vectors():
     """Vectors CI makes the real Kotlin verify. Each is {input, canonical, sha256}."""
     cases = [
         ('integral_double_renders_as_integer', {'a': 1.0, 'b': 24650.0}),
+        # THE REGRESSION CI CAUGHT. org.json:json:20240303 parses a JSON decimal as BigDecimal, so
+        # 61.0 arrived as BigDecimal("61.0") and rendered "61.0", while JSONObject.toString() trims
+        # trailing zeros and wrote 61 -- which reparsed as Integer and rendered "61". A stamped
+        # record then failed its own verifyHash. All of these must render WITHOUT a decimal point.
+        ('trailing_zero_decimal_is_not_a_distinct_value',
+         {'a': 61.0, 'b': 10.50, 'c': 600.0, 'd': 0.0, 'e': -0.0}),
+        # plain form on both sides, never exponent notation
+        ('small_magnitudes_render_in_plain_form', {'a': 0.0001, 'b': 0.00001, 'c': 1.5e-7}),
         ('fractional_double_keeps_precision', {'iv': 0.1412, 'd': -0.0375}),
         ('keys_are_sorted_not_insertion_ordered', {'z': 1, 'm': 2, 'a': 3}),
         ('json_null_is_null_not_absent', {'vendor_source_ts': None, 'present': 'x'}),

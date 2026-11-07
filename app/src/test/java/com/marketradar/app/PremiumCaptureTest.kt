@@ -41,6 +41,16 @@ class PremiumCaptureTest {
     private fun tmpStore(): PremiumCaptureStore =
         PremiumCaptureStore(Files.createTempDirectory("premcap").toFile())
 
+    /**
+     * Strip block comments, line comments and string literals before a source scan, so an
+     * assertion about what the code CALLS is not satisfied or broken by what it MENTIONS.
+     * Without this, the contract's KDoc explaining why `optionIv()` is not reused reads as a call.
+     */
+    private fun stripCommentsAndStrings(src: String): String = src
+        .replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ")
+        .replace(Regex("//[^\n]*"), " ")
+        .replace(Regex("\"(?:\\\\.|[^\"\\\\])*\""), "\"\"")
+
     private fun md(vararg kv: Pair<String, Any?>): JSONObject {
         val o = JSONObject()
         kv.forEach { (k, v) -> o.put(k, v ?: JSONObject.NULL) }
@@ -233,13 +243,31 @@ class PremiumCaptureTest {
         val bad = PremiumObservationContract.ivEvidence(leg("K", null, md("iv" to "n/a")))
         assertEquals(PremiumObservationContract.OBSERVED_MALFORMED,
             bad.getJSONObject("iv_greeks_raw").getString("status"))
-        val nan = PremiumObservationContract.rawScalar(md("iv" to Double.NaN), "iv")
-        assertEquals(PremiumObservationContract.OBSERVED_NON_FINITE, nan.status)
-        assertEquals(PremiumObservationContract.NON_FINITE_NAN, nan.raw)
-        // a JSON-safe sentinel, never a bare NaN number
-        val serialized = JSONObject().put("x", nan.json()).toString()
-        assertFalse(serialized.contains("NaN"))
-        assertFalse(serialized.contains("Infinity"))
+        // A BARE NON-FINITE JSON NUMBER CANNOT REACH THIS RECORD, which CI established rather than
+        // my reading: `md("iv" to Double.NaN)` throws JSONException, because org.json's put()
+        // runs testValidity and refuses a non-finite double — and JSON text cannot express one
+        // either. So the reachable route is a numeric STRING, which toDoubleOrNull() parses, and
+        // that is what is exercised here. The Double branch in canonicalNumber stays as defence
+        // for a JSONObject built in-process by other means; it is not a vendor-reachable path.
+        for (text in listOf("NaN", "Infinity", "-Infinity")) {
+            val s = PremiumObservationContract.rawScalar(md("iv" to text), "iv")
+            assertEquals("$text must be non-finite, not malformed and not valid",
+                PremiumObservationContract.OBSERVED_NON_FINITE, s.status)
+            // a JSON-safe sentinel, never the parsed non-finite number
+            assertTrue(s.raw == PremiumObservationContract.NON_FINITE_NAN ||
+                s.raw == PremiumObservationContract.NON_FINITE_POS_INF ||
+                s.raw == PremiumObservationContract.NON_FINITE_NEG_INF)
+            val serialized = JSONObject().put("x", s.json()).toString()
+            assertFalse("a bare NaN must never be serialized", serialized.contains("\"raw\":NaN"))
+            assertFalse("a bare Infinity must never be serialized",
+                serialized.contains("\"raw\":Infinity"))
+            // and it round trips as text, so the record stays parseable
+            assertEquals(s.raw, JSONObject(serialized).getJSONObject("x").getString("raw"))
+        }
+        // org.json genuinely refuses to hold one, which is why the above is the only live route
+        var refused = false
+        try { JSONObject().put("iv", Double.NaN) } catch (e: Exception) { refused = true }
+        assertTrue("org.json must refuse a non-finite double", refused)
     }
 
     @Test
@@ -249,9 +277,14 @@ class PremiumCaptureTest {
         assertEquals(0.0, OptionChainBrainFormatter.optionIv(JSONObject(), JSONObject()), 0.0)
         assertEquals(14.2, OptionChainBrainFormatter.optionIv(
             leg("K", null, md("iv" to 14.2)), null), 1e-9)
-        val src = File("src/main/java/com/marketradar/app/PremiumObservationContract.kt").readText()
-        assertFalse("the evidence record must not call optionIv", src.contains("optionIv("))
-        assertFalse("the evidence record must not call optionQuote", src.contains("optionQuote("))
+        // CI caught this assertion being wrong, not the code: it scanned RAW TEXT, and the
+        // contract's own KDoc names optionIv()/optionQuote() when explaining why they are not
+        // reused. Nothing called them. Comments and string literals are stripped before scanning,
+        // so the assertion now measures calls rather than mentions.
+        val src = stripCommentsAndStrings(
+            File("src/main/java/com/marketradar/app/PremiumObservationContract.kt").readText())
+        assertFalse("the evidence record must not CALL optionIv", src.contains("optionIv("))
+        assertFalse("the evidence record must not CALL optionQuote", src.contains("optionQuote("))
     }
 
     @Test
@@ -615,7 +648,15 @@ class PremiumCaptureTest {
         assertEquals(1, store.readAll("NF", "S").first().getInt("v"))
         // and the orphan is reported in the export accounting rather than hidden
         val ex = PremiumCaptureSession(store).export("NF", "S", null)
-        assertEquals(1, ex.getJSONObject("accounting").getInt("orphan_temp_files"))
+        val acc = ex.getJSONObject("accounting")
+        assertEquals(1, acc.getInt("orphan_temp_files"))
+        // hash_verified is a COUNT OF ACTUAL VERIFICATIONS, so it must equal the record count.
+        // Not asserting this is how a broken verifyHash reached CI: the synthetic export reported
+        // "18 hash_verified" while nothing had re-verified anything.
+        assertEquals("every exported record must verify", acc.getInt("records"),
+            acc.getInt("hash_verified"))
+        assertEquals("every exported envelope must verify", acc.getInt("slot_envelopes"),
+            acc.getInt("envelope_hash_verified"))
     }
 
     @Test
@@ -644,7 +685,10 @@ class PremiumCaptureTest {
             "SupabaseClient", "NotificationHelper", "OrderExecutionService",
             "SharedPreferences", "getSharedPreferences", "startService", "sendBroadcast")
         for (n in files) {
-            val src = File("src/main/java/com/marketradar/app/$n").readText()
+            // comments and string literals stripped, for the same reason as the optionIv scan:
+            // the assertion is about references, not about words appearing in prose
+            val src = stripCommentsAndStrings(
+                File("src/main/java/com/marketradar/app/$n").readText())
             for (b in banned) assertFalse("$n must not reference $b", src.contains(b))
         }
     }
@@ -841,5 +885,46 @@ class PremiumCaptureTest {
         digestStripped.remove(PremiumObservationContract.HASH_OMITTED_FIELD)
         assertFalse("a record with no digest is unverified, never verified-by-default",
             PremiumObservationContract.verifyHash(digestStripped))
+    }
+
+    /**
+     * THE INVARIANT WHOSE VIOLATION WAS THE BUG, so it cannot come back.
+     *
+     * `stampHash` hashes a live object graph; `verifyHash` hashes a text round trip. That is only
+     * sound if the canonical form is invariant under `toString()` / reparse. It was not:
+     * `org.json:json:20240303` parses a decimal as BigDecimal, so `61.0` rendered "61.0" live,
+     * while `JSONObject.toString()` trimmed it to `61`, which reparsed as Integer and rendered
+     * "61". A freshly stamped record failed its own verification.
+     */
+    @Test
+    fun theCanonicalFormSurvivesAJsonTextRoundTrip() {
+        val snap = rawFixture("mon_0920_entry_NF")
+        val raw = snap.getJSONObject("raw")
+        val session = snap.getString("session")
+        val store = tmpStore()
+        PremiumCaptureSession(store).observeSlot("NF", session, raw, "09:20", "09:20", null,
+            1000L, 1250L, claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+            lotTableRef = "lot_table@2026-10-01", mapRef = "map@2026-10-01")
+
+        // the real records, built from the real vendor payload, are the hard case: these are the
+        // numbers that actually broke it
+        val all = store.readAll("NF", session) + store.readEnvelopes("NF", session)
+        assertEquals(7, all.size)
+        for (rec in all) {
+            val live = PremiumObservationContract.canonicalJson(rec)
+            val roundTripped = PremiumObservationContract.canonicalJson(JSONObject(rec.toString()))
+            assertEquals("canonical form changed across a text round trip", live, roundTripped)
+            assertTrue("a stored record must verify", PremiumObservationContract.verifyHash(rec))
+            assertTrue("and must still verify after a round trip",
+                PremiumObservationContract.verifyHash(JSONObject(rec.toString())))
+        }
+
+        // the exact shapes, written as a JSON number rather than relied on from the fixture
+        val numbers = JSONObject("{\"a\":61.0,\"b\":10.50,\"c\":600,\"d\":0.0,\"e\":-0.0," +
+            "\"f\":0.1412,\"g\":1e-5,\"h\":24650}")
+        assertEquals("{\"a\":61,\"b\":10.5,\"c\":600,\"d\":0,\"e\":0,\"f\":0.1412," +
+            "\"g\":0.00001,\"h\":24650}", PremiumObservationContract.canonicalJson(numbers))
+        assertEquals(PremiumObservationContract.canonicalJson(numbers),
+            PremiumObservationContract.canonicalJson(JSONObject(numbers.toString())))
     }
 }
