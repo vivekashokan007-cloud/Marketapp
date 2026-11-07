@@ -5186,7 +5186,23 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     if not daily_sigma or daily_sigma <= 0:
         return None
 
-    step = (all_k[1] - all_k[0]) if len(all_k) > 1 else (100 if spot > 30000 else 50)
+    # Strike interval. The previous rule was `all_k[1] - all_k[0]`: the gap between the two LOWEST
+    # strikes, which is the sparse far wing on an NSE monthly ladder. On a BNF monthly that is ~1500
+    # while the near-ATM interval is 100, so ivSkew/ivSlope sampled at atm +/- 1500 instead of
+    # +/- 200-400 and read the empty outer wings, yielding 0.0 for both. This is the same formula the
+    # 2026-09-01 candidate-generation bugfix replaced; chain_profile was never migrated.
+    _si = infer_strike_interval(all_k, atm=chain.get('atm'),
+                                metadata_step=(chain.get('strikeInterval')
+                                               or chain.get('strike_interval')))
+    if _si['status'] == 'OK' and _si['value'] and _si['value'] > 0:
+        step = _si['value']
+    else:
+        # LEGACY COMPATIBILITY FALLBACK, deliberately isolated and reached only when the ladder
+        # yields no usable local interval. It infers geometry from the spot price, which the new
+        # evidence path must never do; it is kept here only so existing consumers of this legacy
+        # profile keep a value where they previously had one. `strikeInterval` below records that
+        # the interval was unavailable or ambiguous, so new evidence can exclude the field instead.
+        step = 100 if spot > 30000 else 50
     if step <= 0:
         step = 100 if spot > 30000 else 50
 
@@ -5338,6 +5354,10 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
 
     return {
         'ivSkew': round(p_iv - c_iv, 1),
+        # additive provenance for the interval the IV sampling distances were derived from, so a
+        # consumer can tell an observed interval from the legacy spot-based fallback
+        'strikeIntervalEvidence': dict(_si, applied=step,
+                                       legacy_fallback_used=(_si['status'] != 'OK')),
         'pcrZ1': zone_pcr(0.3, 0.5), 'pcrZ2': zone_pcr(0.5, 0.8), 'pcrZ3': zone_pcr(0.8, 1.2),
         'cwFresh': cw['fresh'], 'cwOiChg': cw['oiChg'], 'pwFresh': pw['fresh'], 'pwOiChg': pw['oiChg'],
         'atmSpread': round((atm_ce.get('ask', 0) or 0) - (atm_ce.get('bid', 0) or 0) + (atm_pe.get('ask', 0) or 0) - (atm_pe.get('bid', 0) or 0), 1),
@@ -7066,6 +7086,127 @@ def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
             count += 1
         current += timedelta(days=1)
     return max(float(count), 1.0)
+
+STRIKE_INTERVAL_VERSION = 'strike_interval_v1_near_atm_modal'
+STRIKE_INTERVAL_ATM_WINDOW = 6          # strikes either side of ATM treated as "near the money"
+
+
+def _normalise_strike_ladder(all_strikes):
+    """Finite positive numeric strikes as a sorted unique list.
+
+    Rejects booleans (bool is an int subclass, and True would otherwise become strike 1), NaN, Inf,
+    non-numeric values and non-positive strikes. Returns [] for anything unusable rather than raising,
+    so a malformed feed degrades to "interval unavailable" instead of producing a wrong number.
+    """
+    out = set()
+    for raw in (all_strikes or []):
+        if isinstance(raw, bool):
+            continue
+        v = None
+        if isinstance(raw, (int, float)):
+            v = float(raw)
+        elif isinstance(raw, str):
+            try:
+                v = float(raw.strip())
+            except Exception:
+                continue
+        else:
+            continue
+        if not math.isfinite(v) or v <= 0:
+            continue
+        out.add(v)
+    return sorted(out)
+
+
+def infer_strike_interval(all_strikes, atm=None, metadata_step=None,
+                          window=STRIKE_INTERVAL_ATM_WINDOW):
+    """Infer the LOCAL strike interval, with an explicit status instead of a guessed number.
+
+    Why this exists rather than reusing `_infer_strike_step` directly: that helper returns
+    ``min(gaps)`` over the whole ladder. Its docstring says "modal/minimum", but the code is a pure
+    minimum, so ONE anomalous narrow gap anywhere in the chain silently sets the sampling distance for
+    every feature derived from it. A minimum is also not necessarily a *local* interval. This function
+    therefore takes the modal gap among strikes NEAR THE MONEY, which is where the features that use
+    the interval actually sample, and reports whether the helper agrees so a disagreement is visible
+    rather than absorbed.
+
+    Returns a dict:
+      value            the inferred interval, or None
+      status           'OK' | 'AMBIGUOUS' | 'UNAVAILABLE'
+      reason           None, or why it is not OK
+      source           'METADATA' | 'NEAR_ATM_MODAL' | 'GLOBAL_MODAL'
+      gaps_considered  how many adjacent gaps were used
+      modal_count      how many gaps had the winning value
+      helper_value     what `_infer_strike_step` would have returned (min gap), for comparison
+      helper_agrees    whether the helper matches this result
+      version          STRIKE_INTERVAL_VERSION
+
+    Deliberately does NOT look at the spot price: spot must not be used to infer instrument identity
+    or ladder geometry. A caller that needs a legacy spot-based default applies it itself, explicitly.
+    """
+    out = {'value': None, 'status': 'UNAVAILABLE', 'reason': None, 'source': None,
+           'gaps_considered': 0, 'modal_count': 0, 'helper_value': None, 'helper_agrees': None,
+           'version': STRIKE_INTERVAL_VERSION}
+
+    def _narrow(v):
+        """Return an integral interval as int. Strike keys are looked up by str(), so a float 100.0
+        would stringify to "56200.0" and miss a dict keyed "56200" -- silently reproducing the very
+        zero-IV symptom this commit repairs. The legacy rule yielded ints; keep that."""
+        if v is None:
+            return None
+        return int(v) if float(v).is_integer() else v
+
+    # dated contract metadata wins when the input genuinely carries it
+    if metadata_step is not None and not isinstance(metadata_step, bool):
+        try:
+            ms = float(metadata_step)
+        except Exception:
+            ms = None
+        if ms is not None and math.isfinite(ms) and ms > 0:
+            return dict(out, value=_narrow(ms), status='OK', source='METADATA')
+
+    ladder = _normalise_strike_ladder(all_strikes)
+    if len(ladder) < 2:
+        return dict(out, reason='INSUFFICIENT_STRIKES')
+
+    gaps_all = [ladder[i + 1] - ladder[i] for i in range(len(ladder) - 1)]
+    gaps_all = [g for g in gaps_all if g > 0]
+    if not gaps_all:
+        return dict(out, reason='NO_POSITIVE_GAPS')
+    out['helper_value'] = _narrow(min(gaps_all))
+
+    # restrict to gaps whose BOTH endpoints sit near the money, which is where the interval is used
+    gaps = gaps_all
+    source = 'GLOBAL_MODAL'
+    atm_v = None
+    if atm is not None and not isinstance(atm, bool):
+        try:
+            a = float(atm)
+            if math.isfinite(a) and a > 0:
+                atm_v = a
+        except Exception:
+            atm_v = None
+    if atm_v is not None:
+        nearest = min(range(len(ladder)), key=lambda i: abs(ladder[i] - atm_v))
+        lo, hi = max(0, nearest - window), min(len(ladder) - 1, nearest + window)
+        near = [ladder[i + 1] - ladder[i] for i in range(lo, hi) if ladder[i + 1] - ladder[i] > 0]
+        if len(near) >= 2:
+            gaps, source = near, 'NEAR_ATM_MODAL'
+
+    counts = {}
+    for g in gaps:
+        counts[g] = counts.get(g, 0) + 1
+    best = max(counts.values())
+    value = min(g for g, c in counts.items() if c == best)      # ties resolve to the tighter interval
+    value = _narrow(value)
+    out.update(value=value, source=source, gaps_considered=len(gaps), modal_count=best,
+               helper_agrees=(out['helper_value'] == value))
+
+    # no gap repeats and there are several distinct ones: the ladder has no single local interval
+    if best == 1 and len(counts) >= 3:
+        return dict(out, status='AMBIGUOUS', reason='NO_MODAL_INTERVAL')
+    return dict(out, status='OK')
+
 
 def _infer_strike_step(all_strikes, default_step):
     """Return the true strike interval (smallest positive gap between adjacent strikes).
