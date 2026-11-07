@@ -1,6 +1,13 @@
 {
   "declared_gap": "TWO declared gaps, neither verified away. (1) org.json escapes '/' after '<' and some non-ASCII ranges as \\uXXXX where json.dumps does not, so a vendor string containing them WOULD diverge. (2) Java Double.toString only guarantees a shortest-round-trip rendering from JDK 19, so a DERIVED non-exact double (such as a raw IV difference) could render with different digits than Python repr on an older JDK. No vector depends on either: every float here is integral or a short literal, and the one derived value is exact in binary. Real records CAN contain both shapes, and for those the two implementations are untested, not proven equal.",
   "generator": "tools/premium_capture_vectors.py",
+  "mirrored_constants": {
+    "cohort_rule_version": "premium_capture_cohort_v1_three_nearest_paired_strikes",
+    "envelope_version": "mr.premium_slot_envelope.v1",
+    "hash_omitted_field": "payload_sha256",
+    "non_finite_nan": "NON_FINITE_NAN",
+    "record_version": "mr.premium_observation.v2"
+  },
   "purpose": "Cross-language parity. The Python mirror in the generator measured the record sizes and produced the synthetic export because the Kotlin cannot run in the analysis environment; these vectors let CI make the Kotlin prove the mirror right instead of being trusted.",
   "serialization": "json_sorted_keys_compact_utf8_v1",
   "vectors": [

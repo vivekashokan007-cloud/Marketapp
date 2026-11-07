@@ -39,6 +39,9 @@ ENVELOPE_VERSION = 'mr.premium_slot_envelope.v1'
 CANONICAL_SERIALIZATION = 'json_sorted_keys_compact_utf8_v1'
 HASH_OMITTED_FIELD = 'payload_sha256'
 NON_FINITE_NAN = 'NON_FINITE_NAN'
+# mirrors PremiumCaptureCohort.COHORT_RULE_VERSION; kept identical so the synthetic
+# artifact names the real rule rather than inventing a version string of its own
+COHORT_RULE_VERSION = 'premium_capture_cohort_v1_three_nearest_paired_strikes'
 
 
 def _quote(s):
@@ -234,7 +237,7 @@ def _cohort(index, session):
                        'underlying_key': 'NSE_INDEX|Nifty 50', 'index': index,
                        'expiry': '2026-11-27', 'strike': strike, 'option_type': t})
     return {'cohort_id': '%s|%s|SYNTH' % (session, index),
-            'cohort_rule_version': 'premium_cohort_v1_three_paired_strikes_per_side',
+            'cohort_rule_version': COHORT_RULE_VERSION,
             'pinned_contracts': pinned, 'is_synthetic': True}
 
 
@@ -338,6 +341,16 @@ def build_vectors():
             'JDK. No vector depends on either: every float here is integral or a short literal, '
             'and the one derived value is exact in binary. Real records CAN contain both shapes, '
             'and for those the two implementations are untested, not proven equal.'),
+        # Drift guard. The mirror restates these; the Kotlin test asserts each against the real
+        # constant, so a rename on either side fails CI instead of silently diverging. This file
+        # has drifted from the source twice before, per CLAUDE.md.
+        'mirrored_constants': {
+            'record_version': RECORD_VERSION,
+            'envelope_version': ENVELOPE_VERSION,
+            'cohort_rule_version': COHORT_RULE_VERSION,
+            'hash_omitted_field': HASH_OMITTED_FIELD,
+            'non_finite_nan': NON_FINITE_NAN,
+        },
         'vectors': out,
     }
 

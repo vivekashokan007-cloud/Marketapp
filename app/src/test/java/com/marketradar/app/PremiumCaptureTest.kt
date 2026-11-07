@@ -785,6 +785,17 @@ class PremiumCaptureTest {
         val doc = JSONObject(text)
         assertEquals(PremiumObservationContract.CANONICAL_SERIALIZATION,
             doc.getString("serialization"))
+        // drift guard: the mirror restates these constants, so a rename on either side must fail
+        // here rather than leave the generator quietly describing a contract that moved
+        val mc = doc.getJSONObject("mirrored_constants")
+        assertEquals(PremiumObservationContract.RECORD_VERSION, mc.getString("record_version"))
+        assertEquals(PremiumObservationContract.ENVELOPE_VERSION, mc.getString("envelope_version"))
+        assertEquals(PremiumCaptureCohort.COHORT_RULE_VERSION,
+            mc.getString("cohort_rule_version"))
+        assertEquals(PremiumObservationContract.HASH_OMITTED_FIELD,
+            mc.getString("hash_omitted_field"))
+        assertEquals(PremiumObservationContract.NON_FINITE_NAN, mc.getString("non_finite_nan"))
+
         val vectors = doc.getJSONArray("vectors")
         assertTrue("expected a non-trivial vector set", vectors.length() >= 13)
         for (i in 0 until vectors.length()) {
