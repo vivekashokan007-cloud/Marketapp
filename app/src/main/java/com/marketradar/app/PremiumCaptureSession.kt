@@ -222,8 +222,12 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 .put("envelope_carries", JSONArray().put("clocks").put("underlying").put("lot"))
                 .put("observation_carries", JSONArray().put("identity").put("iv").put("bbo"))
                 .put("rationale",
-                    "a flat record measured 2427 B against the 2048 B cap; the per-acquisition " +
-                        "facts are identical for all six contracts, so they are written once"))
+                    "a flat record exceeded the 2048 B per-record cap and 78 slots of them " +
+                        "exceeded the session budget; the per-acquisition facts are identical " +
+                        "for all six contracts in one acquisition, so they are written once")
+                .put("measured_by",
+                    "PremiumCaptureTest.measuredRecordSizesAgainstTheCommittedRawVendorFixture; " +
+                        "mirror figures from tools/premium_capture_vectors.py --sizes"))
             .put("accounting", JSONObject()
                 .put("records", records.size)
                 .put("hash_verified", hashOk)

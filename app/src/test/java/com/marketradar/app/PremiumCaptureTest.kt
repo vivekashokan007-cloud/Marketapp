@@ -728,8 +728,14 @@ class PremiumCaptureTest {
 
     @Test
     fun theFlatRecordThatDidNotFitIsRecordedAsTheReasonForTheSplit() {
-        // the measured 2427 B flat record is why the per-acquisition facts moved to the envelope.
-        // This pins that the split is real: a record must not carry them back inline.
+        // A flat record carrying the per-acquisition facts inline did not fit, which is why they
+        // moved to the envelope. Reproduce the figures with
+        // `python3 -I tools/premium_capture_vectors.py --sizes`: on the synthetic mirror the flat
+        // record is 2550 B against the 2048 B cap and 78 slots project to 1193400 B against a
+        // 1032192 B budget, versus 1441/1274 B and 773760 B after the split. Those are MIRROR
+        // figures; `measuredRecordSizesAgainstTheCommittedRawVendorFixture` is the authority,
+        // because it measures this Kotlin against the real vendor fixture and prints the result.
+        // This test pins only that the split is real: a record must not carry them back inline.
         val snap = rawFixture("mon_0920_entry_NF")
         val store = tmpStore()
         val s = PremiumCaptureSession(store)
@@ -760,5 +766,69 @@ class PremiumCaptureTest {
         assertTrue(iv.getJSONObject("iv_market_data_raw").isNull("raw"))
         val bbo = PremiumObservationContract.bboEvidence(ce)
         assertEquals(PremiumObservationContract.BOOK_TWO_SIDED, bbo.getString("book_status"))
+    }
+
+    /**
+     * Cross-language parity for the hashed representation.
+     *
+     * The synthetic export and the mirror byte figures were produced by
+     * `tools/premium_capture_vectors.py`, because this Kotlin cannot be compiled or run in the
+     * analysis environment. A mirror that only agrees with itself proves nothing, so this test
+     * makes the real producer verify the mirror's committed output. If they diverge, CI fails
+     * here rather than a reviewer having to take a quoted figure on trust.
+     */
+    @Test
+    fun canonicalSerializationMatchesTheCommittedPythonMirrorVectors() {
+        val text = requireNotNull(
+            javaClass.classLoader?.getResourceAsStream("premium_capture/canonical_vectors.json"))
+            .bufferedReader().readText()
+        val doc = JSONObject(text)
+        assertEquals(PremiumObservationContract.CANONICAL_SERIALIZATION,
+            doc.getString("serialization"))
+        val vectors = doc.getJSONArray("vectors")
+        assertTrue("expected a non-trivial vector set", vectors.length() >= 13)
+        for (i in 0 until vectors.length()) {
+            val v = vectors.getJSONObject(i)
+            val name = v.getString("name")
+            // reparsed from text, so the comparison runs over org.json's own number/string types
+            val input = JSONObject(v.getJSONObject("input").toString())
+            val canonical = PremiumObservationContract.canonicalJson(input)
+            assertEquals("canonical form diverged for $name", v.getString("canonical"), canonical)
+            assertEquals("sha256 diverged for $name",
+                v.getString("sha256"), PremiumObservationContract.sha256Hex(canonical))
+        }
+    }
+
+    /**
+     * The digest covers `hash_basis`, so the description of HOW a record was hashed cannot be
+     * rewritten undetected, and a mutated record fails verification rather than passing quietly.
+     */
+    @Test
+    fun aTamperedRecordFailsVerificationIncludingItsHashBasis() {
+        val snap = rawFixture("mon_0920_entry_NF")
+        val raw = snap.getJSONObject("raw")
+        val sel = PremiumCaptureCohort.select(raw, "NF", snap.getString("session"), "09:20",
+            null, null)
+        val cohort = requireNotNull(sel.cohort)
+        val pinned = PremiumCaptureCohort.pinnedList(cohort).first()
+        val loc = PremiumCaptureCohort.locate(raw, pinned)
+        val rec = PremiumObservationContract.observation(
+            pinned, cohort, snap.getString("session"), "09:20", loc.outcome, loc.row, loc.leg)
+        assertTrue(PremiumObservationContract.verifyHash(rec))
+
+        val valueTampered = JSONObject(rec.toString())
+        valueTampered.getJSONObject("iv").getJSONObject("iv_greeks_raw").put("raw", 9.99)
+        assertFalse("a changed observed value must not verify",
+            PremiumObservationContract.verifyHash(valueTampered))
+
+        val basisTampered = JSONObject(rec.toString())
+        basisTampered.getJSONObject("hash_basis").put("authenticates_vendor_truth", true)
+        assertFalse("hash_basis is inside the hashed content, so rewriting it must not verify",
+            PremiumObservationContract.verifyHash(basisTampered))
+
+        val digestStripped = JSONObject(rec.toString())
+        digestStripped.remove(PremiumObservationContract.HASH_OMITTED_FIELD)
+        assertFalse("a record with no digest is unverified, never verified-by-default",
+            PremiumObservationContract.verifyHash(digestStripped))
     }
 }

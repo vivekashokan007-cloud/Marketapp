@@ -25,19 +25,26 @@ import org.json.JSONObject
 object PremiumObservationContract {
 
     /**
-     * MEASURED, and the reason this is split in two.
+     * Why this record is split in two.
      *
-     * A single flat record carrying identity + clocks + underlying + lot + iv + bbo measured
-     * **2,427 B** against the authorised 2,048 B per-record cap, and six of them across 78 slots
-     * came to 1,135,836 B against a 1,032,192 B session budget — over on both. The redundancy was
-     * structural rather than incidental: clocks, underlying, lot and the pinned identity are
-     * IDENTICAL for all six contracts in one acquisition.
+     * A single flat record carrying identity + clocks + underlying + lot + iv + bbo did not fit the
+     * authorised 2,048 B per-record cap, and six of them across 78 slots overran the 1,032,192 B
+     * session budget — over on both. The redundancy was structural rather than incidental: clocks,
+     * underlying, lot and the pinned identity are IDENTICAL for all six contracts in one
+     * acquisition. So the per-acquisition facts are written once as a slot envelope and the
+     * per-contract records carry only what varies, joined on `(session_date, index, slot)`. That
+     * fits inside the same caps, which are NOT enlarged.
      *
-     * So the per-acquisition facts are written once as a slot envelope and the per-contract records
-     * carry only what varies, joined on `(session_date, index, slot)`. Measured after the split:
-     * envelope 1,067 B, observation 1,018 B, per slot 7,175 B, 78 slots 559,650 B — inside the same
-     * caps, which are NOT enlarged. Both figures are desktop JVM/Python measurements of the
-     * canonical encoding, not device measurements.
+     * Where the numbers come from, because they decayed once already. On the synthetic mirror
+     * (`python3 -I tools/premium_capture_vectors.py --sizes`): flat 2,550 B, 78 slots 1,193,400 B;
+     * after the split observation 1,441 B, envelope 1,274 B, per slot 9,920 B, 78 slots 773,760 B.
+     * An earlier revision of this comment quoted 2,427 / 1,067 / 1,018 / 7,175 / 559,650 B from a
+     * throwaway script that was not kept, so those figures are NOT reproducible and are retracted.
+     *
+     * The AUTHORITY is neither set: `PremiumCaptureTest.measuredRecordSizesAgainstTheCommitted` +
+     * `RawVendorFixture` measures THIS code against the real committed vendor fixture, asserts the
+     * caps and prints what it measured. All of it is desktop JVM/Python; none is a device
+     * measurement.
      */
     const val RECORD_VERSION = "mr.premium_observation.v2"
     const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v1"
@@ -226,8 +233,12 @@ object PremiumObservationContract {
             .put("pinned_expiry", pinned.expiry)
             .put("pinned_strike", pinned.strike)
             .put("pinned_option_type", pinned.optionType)
-            // `ifEmpty { JSONObject.NULL }` does not typecheck on a String: the lambda must return
-            // a CharSequence. An explicit conditional keeps "absent" as JSON null.
+            // An explicit conditional, so an absent field is JSON null rather than "".
+            // CORRECTION: an earlier version of this comment claimed `ifEmpty { JSONObject.NULL }`
+            // would not typecheck here. That was wrong. `ifEmpty` is
+            // `fun <C, R> C.ifEmpty(defaultValue: () -> R): R where C : CharSequence, C : R`, so R
+            // infers to a supertype of String (Any) and the call compiles. The conditional is kept
+            // only because it reads more plainly, not because the alternative was invalid.
             .put("observed_instrument_key", if (legKey.isEmpty()) JSONObject.NULL else legKey)
             .put("observed_underlying_key",
                 if (rowUnderlying.isEmpty()) JSONObject.NULL else rowUnderlying)
