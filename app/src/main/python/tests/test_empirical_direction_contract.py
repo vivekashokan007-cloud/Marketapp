@@ -87,11 +87,18 @@ class TestIdentityAndEnvelope(unittest.TestCase):
         self.assertNotEqual(ed.config_hash({'enabled': True}), ed.config_hash({'enabled': False}))
 
     def test_unimplemented_groups_say_so_rather_than_returning_zero(self):
+        """Commit C implemented observed_path and empirical; only forecast remains unimplemented, and
+        it must say NOT_IMPLEMENTED rather than return an empty distribution."""
         r = run(RISING)[0]['records'][-1]
-        for group in ('observed_path', 'empirical', 'forecast'):
-            self.assertFalse(r[group]['available'], group)
-            self.assertEqual(r[group]['reason'], ed.NOT_IMPLEMENTED, group)
-        self.assertEqual(set(r['status']['per_feature'].values()), {ed.NOT_IMPLEMENTED})
+        self.assertFalse(r['forecast']['available'])
+        self.assertEqual(r['forecast']['reason'], ed.NOT_IMPLEMENTED)
+        self.assertEqual(r['status']['per_feature']['forecast'], ed.NOT_IMPLEMENTED)
+        # the implemented groups report a real status, never NOT_IMPLEMENTED
+        self.assertNotEqual(r['status']['per_feature']['observed_path'], ed.NOT_IMPLEMENTED)
+        self.assertNotEqual(r['status']['per_feature']['empirical_ranks'], ed.NOT_IMPLEMENTED)
+        # with no history supplied, ranks are insufficient rather than fabricated
+        self.assertFalse(r['empirical']['available'])
+        self.assertEqual(r['empirical']['reason'], ed.INSUFFICIENT_HISTORY)
 
     def test_output_is_json_safe_with_no_nan_or_infinity(self):
         bad = [poll(9, 20, nf=float('nan')), poll(9, 25, nf=float('inf')),

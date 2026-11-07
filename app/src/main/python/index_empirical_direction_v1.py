@@ -22,12 +22,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import index_authority_v1 as ia
 
 SCHEMA_VERSION = 'mr.index_empirical_direction.v1'
-ALGO_VERSION = 'index_empirical_direction_v1_contract'
+ALGO_VERSION = 'index_empirical_direction_v1_path_ranks'
 OBSERVER_ONLY = True
 
 # ── bounds (brief: "Bound computation and storage") ────────────────────────────────────────────
@@ -35,6 +35,20 @@ MAX_SESSION_OBSERVATIONS = 120       # a full session is ~78 five-minute polls
 MAX_PROCESSED_IDS = 256              # idempotence memory, bounded
 MAX_HISTORY_SESSIONS = 400
 MAX_OUTPUT_BYTES = 16384
+
+# ── Commit C: observed path and empirical ranks ────────────────────────────────────────────────
+PATH_VERSION = 'observed_path_v1_log_frames_retained_extrema'
+RANK_VERSION = 'empirical_midrank_v1'
+# Diagnostic horizons, not proven-optimal windows and not market thresholds.
+FRAME_WINDOWS_MIN = (15.0, 30.0, 60.0)
+# PROPOSED tolerance, in configuration rather than buried in code, for how far an anchor may sit
+# before the requested anchor time and still be reported as serving that window. Outside it the frame
+# is still returned but relabelled `within_tolerance: false` with its ACTUAL elapsed minutes, because
+# a 10-minute observation must never silently stand in for a 30-minute frame. Sensitivity is tested.
+ANCHOR_TOLERANCE_MIN = 2.5
+NO_PRIOR_EXCURSION = 'NO_PRIOR_EXCURSION'
+NO_ANCHOR = 'NO_ANCHOR'
+NO_REFERENCE = 'NO_REFERENCE'
 
 # ── reason codes (brief §176) ──────────────────────────────────────────────────────────────────
 NO_VALID_SPOT = 'NO_VALID_SPOT'
@@ -75,6 +89,8 @@ DEFAULT_CONFIG = {
     'open_ref_late_after': list(ia.OPEN_REF_LATE_AFTER),
     'max_session_observations': MAX_SESSION_OBSERVATIONS,
     'max_history_sessions': MAX_HISTORY_SESSIONS,
+    'frame_windows_min': list(FRAME_WINDOWS_MIN),
+    'anchor_tolerance_min': ANCHOR_TOLERANCE_MIN,
 }
 
 
@@ -454,15 +470,325 @@ def assess_poll(poll, previous_state, history_snapshot=None, estimator_artifact=
         'source_ts': state['observations'][0][0],
     }
 
-    # Commit C/D own these; say so rather than imply emptiness means neutral
-    _reason(env, INSUFFICIENT_HISTORY if not (history_snapshot or {}).get('sessions') else UNSUPPORTED_COHORT)
+    # Commit C: observed path and empirical ranks. Commit D still owns the forecast.
+    update_reference_extrema(state, session_date)
+    path = observed_path(state, session_date, cfg)
+    env['observed_path'] = path
+    emp = empirical_comparison(path, history_snapshot, index, session_date, cfg)
+    env['empirical'] = emp
+    if not path.get('available'):
+        _reason(env, INCOMPLETE_PATH)
+    if not emp.get('available'):
+        _reason(env, emp.get('reason') or INSUFFICIENT_HISTORY)
+    for key, frame in (path.get('frames') or {}).items():
+        if frame.get('available') and frame.get('within_tolerance') is False:
+            # the frame is returned but must never be read as the window it was asked for
+            env['provenance'].setdefault('frame_tolerance_exceeded', []).append(key)
     env['status']['per_feature'] = {
-        'observed_path': NOT_IMPLEMENTED,
-        'empirical_ranks': NOT_IMPLEMENTED,
+        'observed_path': 'OK' if path.get('available') else (path.get('reason') or INCOMPLETE_PATH),
+        'empirical_ranks': 'OK' if emp.get('available') else (emp.get('reason') or INSUFFICIENT_HISTORY),
         'forecast': NOT_IMPLEMENTED,
     }
-    env['status']['available'] = True        # the contract-level record is available; features are not
+    env['status']['available'] = True        # the record is available; per-feature says what is not
     return _finish(env, state), state
+
+
+def log_return(numerator, denominator):
+    """log(numerator/denominator) for strictly positive finite prices; None otherwise."""
+    a, b = _finite(numerator), _finite(denominator)
+    if a is None or b is None or a <= 0 or b <= 0:
+        return None
+    try:
+        return math.log(a / b)
+    except (ValueError, ZeroDivisionError):
+        return None
+
+
+def _series(state, session_date):
+    """[(datetime, value), ...] of accepted observations, chronological."""
+    out = []
+    for iso, value, _field in (state.get('observations') or []):
+        t = ia.parse_ts(iso, session_date)
+        v = _finite(value)
+        if t is not None and v is not None and v > 0:
+            out.append((t, v))
+    return out
+
+
+def _minutes(a, b):
+    return (b - a).total_seconds() / 60.0
+
+
+def update_reference_extrema(state, session_date):
+    """Recompute the causal high/low since the fixed reference, from accepted observations only.
+
+    Recomputed rather than carried incrementally: the observation list is already bounded and
+    append-only, so recomputation is cheap and cannot drift the way incremental extrema can. The
+    reference itself is included, per the brief. Post-extreme swings are recorded only from
+    observations that arrived AFTER the extreme's own timestamp, so a trough's knowledge time is never
+    backdated.
+    """
+    ref = state.get('open_reference')
+    if not ref:
+        state['extrema'] = None
+        return None
+    ref_ts = ia.parse_ts(ref.get('source_ts'), session_date)
+    ref_v = _finite(ref.get('value'))
+    if ref_ts is None or ref_v is None:
+        state['extrema'] = None
+        return None
+
+    pts = [(t, v) for t, v in _series(state, session_date) if t >= ref_ts]
+    if not pts or pts[0][0] != ref_ts:
+        pts = [(ref_ts, ref_v)] + pts          # the reference is part of its own path
+
+    hi_t, hi_v = ref_ts, ref_v
+    lo_t, lo_v = ref_ts, ref_v
+    for t, v in pts:
+        if v > hi_v:
+            hi_v, hi_t = v, t
+        if v < lo_v:
+            lo_v, lo_t = v, t
+
+    # post-peak trough and post-trough peak, only from strictly later observations
+    after_hi = [(t, v) for t, v in pts if t > hi_t]
+    after_lo = [(t, v) for t, v in pts if t > lo_t]
+    post_peak_low = min(after_hi, key=lambda p: p[1]) if after_hi else None
+    post_trough_high = max(after_lo, key=lambda p: p[1]) if after_lo else None
+
+    ex = {
+        'reference': 'authority_open_reference',
+        'reference_value': ref_v,
+        'reference_ts': _iso(ref_ts),
+        'high': hi_v, 'high_ts': _iso(hi_t),
+        'low': lo_v, 'low_ts': _iso(lo_t),
+        'extreme_order': ('HIGH_FIRST' if hi_t < lo_t else
+                          'LOW_FIRST' if lo_t < hi_t else 'SAME_OBSERVATION'),
+        'post_peak_low': (post_peak_low[1] if post_peak_low else None),
+        'post_peak_low_ts': (_iso(post_peak_low[0]) if post_peak_low else None),
+        'post_trough_high': (post_trough_high[1] if post_trough_high else None),
+        'post_trough_high_ts': (_iso(post_trough_high[0]) if post_trough_high else None),
+        'observations_since_reference': len(pts),
+    }
+    state['extrema'] = ex
+    return ex
+
+
+def excursion_measures(extrema, spot_now):
+    """§8.2 in log space. Ratios are NOT clipped to [0,1]: crossing the reference can exceed 1 and
+    that is meaningful, not an error to be hidden."""
+    out = {'version': PATH_VERSION, 'available': False, 'reason': None}
+    if not extrema:
+        return dict(out, reason=NO_REFERENCE)
+    s = _finite(spot_now)
+    a, h, l = (_finite(extrema.get('reference_value')), _finite(extrema.get('high')),
+               _finite(extrema.get('low')))
+    if s is None or a is None or h is None or l is None:
+        return dict(out, reason=NO_VALID_SPOT)
+
+    up_exc = log_return(h, a)
+    down_exc = log_return(a, l)
+    dd_from_high = log_return(h, s)
+    rb_from_low = log_return(s, l)
+
+    def ratio(num, den):
+        if num is None or den is None or den <= 0:
+            return None, NO_PRIOR_EXCURSION
+        return num / den, None
+
+    up_ret, up_reason = ratio(dd_from_high, up_exc)
+    down_ret, down_reason = ratio(rb_from_low, down_exc)
+    return dict(
+        out, available=True,
+        up_excursion=up_exc, down_excursion=down_exc,
+        drawdown_from_high=dd_from_high, rebound_from_low=rb_from_low,
+        up_retracement=up_ret, up_retracement_reason=up_reason,
+        down_retracement=down_ret, down_retracement_reason=down_reason,
+        high=h, high_ts=extrema.get('high_ts'), low=l, low_ts=extrema.get('low_ts'),
+        extreme_order=extrema.get('extreme_order'),
+        post_peak_low=extrema.get('post_peak_low'),
+        post_peak_low_ts=extrema.get('post_peak_low_ts'),
+        post_trough_high=extrema.get('post_trough_high'),
+        post_trough_high_ts=extrema.get('post_trough_high_ts'),
+    )
+
+
+def _frame(pts, now_t, now_v, window_min, tolerance_min):
+    """One rolling frame. The anchor is the LATEST observation at or before the requested anchor time
+    — never a later one merely because it is closer in absolute terms."""
+    requested = now_t - timedelta(minutes=window_min)
+    candidates = [(t, v) for t, v in pts if t <= requested]
+    if not candidates:
+        return {'available': False, 'reason': NO_ANCHOR, 'window_min': window_min,
+                'requested_anchor_ts': _iso(requested)}
+    anchor_t, anchor_v = candidates[-1]
+    elapsed = _minutes(anchor_t, now_t)
+    r = log_return(now_v, anchor_v)
+    span = [(t, v) for t, v in pts if anchor_t <= t <= now_t]
+    path = sum(abs(log_return(span[i + 1][1], span[i][1]) or 0.0) for i in range(len(span) - 1))
+    net = abs(r) if r is not None else None
+    gaps = [_minutes(span[i][0], span[i + 1][0]) for i in range(len(span) - 1)]
+    return {
+        'available': r is not None,
+        'reason': None if r is not None else NO_VALID_SPOT,
+        'window_min': window_min,
+        'requested_anchor_ts': _iso(requested),
+        'anchor_ts': _iso(anchor_t),
+        'anchor_value': anchor_v,
+        'elapsed_min': round(elapsed, 4),
+        'within_tolerance': abs(elapsed - window_min) <= tolerance_min,
+        'tolerance_min': tolerance_min,
+        'log_return': r,
+        'log_return_per_min': (r / elapsed if (r is not None and elapsed > 0) else None),
+        'path_efficiency': (net / path if (net is not None and path > 0) else None),
+        'path_efficiency_reason': None if path > 0 else 'FLAT_OR_SINGLE_OBSERVATION',
+        'observations': len(span),
+        'max_gap_min': (round(max(gaps), 4) if gaps else None),
+        'window_extreme_high': max((v for _t, v in span), default=None),
+        'window_extreme_low': min((v for _t, v in span), default=None),
+    }
+
+
+def observed_path(state, session_date, cfg):
+    """§8.1 + §8.2. Price-only: computable with no option scale at all."""
+    pts = _series(state, session_date)
+    out = {'version': PATH_VERSION, 'available': False, 'frames': {}, 'reason': None}
+    if not pts:
+        return dict(out, reason=NO_VALID_SPOT)
+    now_t, now_v = pts[-1]
+    tol = float(cfg.get('anchor_tolerance_min', ANCHOR_TOLERANCE_MIN))
+
+    for w in cfg.get('frame_windows_min', FRAME_WINDOWS_MIN):
+        out['frames']['m%g' % w] = _frame(pts, now_t, now_v, float(w), tol)
+
+    # session-to-date, anchored on the fixed causal reference rather than a rolling window
+    ref = state.get('open_reference')
+    if ref and _finite(ref.get('value')) is not None:
+        ref_t = ia.parse_ts(ref.get('source_ts'), session_date)
+        elapsed = _minutes(ref_t, now_t) if ref_t else None
+        span = [(t, v) for t, v in pts if ref_t is not None and t >= ref_t]
+        path = sum(abs(log_return(span[i + 1][1], span[i][1]) or 0.0) for i in range(len(span) - 1))
+        r = log_return(now_v, ref['value'])
+        out['frames']['session_to_date'] = {
+            'available': r is not None, 'window_min': None,
+            'anchor_ts': ref.get('source_ts'), 'anchor_value': ref.get('value'),
+            'elapsed_min': (round(elapsed, 4) if elapsed is not None else None),
+            'within_tolerance': True, 'log_return': r,
+            'log_return_per_min': (r / elapsed if (r is not None and elapsed and elapsed > 0) else None),
+            'path_efficiency': (abs(r) / path if (r is not None and path > 0) else None),
+            'observations': len(span),
+            'anchor_kind': 'authority_open_reference',
+        }
+    else:
+        out['frames']['session_to_date'] = {'available': False, 'reason': NO_REFERENCE}
+
+    out['previous_close_frame'] = _previous_close_frame(state, now_v)
+    out['excursion'] = excursion_measures(state.get('extrema'), now_v)
+    out['spot'] = {'value': now_v, 'source_ts': _iso(now_t)}
+    out['available'] = any(f.get('available') for f in out['frames'].values())
+    return out
+
+
+def _previous_close_frame(state, now_v):
+    prior = state.get('prior_session') or {}
+    pv = _finite(prior.get('last_observed_value'))
+    if pv is None:
+        return {'available': False, 'reason': MISSING_PREVIOUS_CLOSE}
+    r = log_return(now_v, pv)
+    return {'available': r is not None, 'log_return': r, 'anchor_value': pv,
+            'anchor_ts': prior.get('last_observed_source_ts'),
+            'anchor_session': prior.get('session_date'),
+            'is_last_poll_proxy': True}
+
+
+# ── §8.3 empirical midrank ─────────────────────────────────────────────────────────────────────
+def midrank(value, population):
+    """rank(x) = 100 * (count(< x) + 0.5 * count(== x)) / N, exactly as specified.
+
+    N = 0 yields None. Comparisons use the stored canonical values with no rounding beforehand.
+    """
+    v = _finite(value)
+    pop = [p for p in (_finite(x) for x in (population or [])) if p is not None]
+    n = len(pop)
+    if v is None or n == 0:
+        return {'rank': None, 'n': n, 'less': None, 'equal': None, 'reason': INSUFFICIENT_HISTORY,
+                'version': RANK_VERSION}
+    less = sum(1 for p in pop if p < v)
+    equal = sum(1 for p in pop if p == v)
+    return {'rank': 100.0 * (less + 0.5 * equal) / n, 'n': n, 'less': less, 'equal': equal,
+            'reason': None, 'version': RANK_VERSION}
+
+
+def _slot_of(iso_ts):
+    return (iso_ts or '')[11:16] or None
+
+
+def eligible_population(snapshot, index, feature, window_key, slot):
+    """One eligible observation per EARLIER SESSION per query frame, deduplicated deterministically.
+
+    78 correlated polls from one session must never count as 78 independent observations.
+    """
+    chosen, rejected_slot, rejected_index, duplicates = {}, 0, 0, 0
+    for r in (snapshot or {}).get('records') or ():
+        if r.get('index') != index:
+            rejected_index += 1
+            continue
+        frames = (r.get('frames') or {})
+        if window_key not in frames or feature not in (frames.get(window_key) or {}):
+            rejected_slot += 1
+            continue
+        if slot is not None and r.get('slot') != slot:
+            rejected_slot += 1
+            continue
+        sd = str(r.get('session_date'))
+        if sd in chosen:
+            duplicates += 1
+            # deterministic: keep the lexicographically smaller record digest
+            if digest(r) < digest(chosen[sd]):
+                chosen[sd] = r
+            continue
+        chosen[sd] = r
+    values = [(_finite((chosen[sd]['frames'][window_key] or {}).get(feature)))
+              for sd in sorted(chosen)]
+    values = [v for v in values if v is not None]
+    return {'values': values, 'distinct_sessions': len(chosen), 'duplicates_collapsed': duplicates,
+            'rejected_other_index': rejected_index, 'rejected_slot_or_frame': rejected_slot,
+            'cohort_key': {'index': index, 'feature': feature, 'window': window_key, 'slot': slot}}
+
+
+def empirical_comparison(path, snapshot, index, session_date, cfg):
+    """Signed and magnitude midranks per frame, with counts, support and the history hash."""
+    out = {'version': RANK_VERSION, 'available': False, 'reason': None,
+           'history_hash': (snapshot or {}).get('history_hash'),
+           'latest_information_session': (snapshot or {}).get('latest_information_session'),
+           'as_of_session': (snapshot or {}).get('as_of_session'), 'frames': {}}
+    if not (snapshot or {}).get('sessions'):
+        return dict(out, reason=INSUFFICIENT_HISTORY)
+    slot = _slot_of((path.get('spot') or {}).get('source_ts'))
+    any_ok = False
+    for key, frame in (path.get('frames') or {}).items():
+        if not frame.get('available') or frame.get('log_return') is None:
+            out['frames'][key] = {'available': False, 'reason': frame.get('reason') or NO_ANCHOR}
+            continue
+        pop = eligible_population(snapshot, index, 'log_return', key, slot)
+        signed = midrank(frame['log_return'], pop['values'])
+        magnitude = midrank(abs(frame['log_return']), [abs(v) for v in pop['values']])
+        ok = signed['rank'] is not None
+        any_ok = any_ok or ok
+        out['frames'][key] = {
+            'available': ok,
+            'reason': None if ok else (UNSUPPORTED_COHORT if pop['distinct_sessions'] == 0
+                                       else INSUFFICIENT_HISTORY),
+            'raw_value': frame['log_return'],
+            'signed': signed, 'magnitude': magnitude,
+            'support': {'distinct_sessions': pop['distinct_sessions'],
+                        'duplicates_collapsed': pop['duplicates_collapsed'],
+                        'rejected_other_index': pop['rejected_other_index'],
+                        'rejected_slot_or_frame': pop['rejected_slot_or_frame']},
+            'cohort_key': pop['cohort_key'],
+            'low_support': (signed['n'] is not None and signed['n'] <= 1),
+        }
+    return dict(out, available=any_ok, query_slot=slot)
 
 
 def _resolve_open_reference(env, state, session_date, cfg):

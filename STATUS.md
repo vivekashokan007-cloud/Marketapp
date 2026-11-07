@@ -41,14 +41,17 @@ Python 3.11.18. No kotlinc / Android SDK here: **Kotlin is compile-gated by CI o
 | 0 — capability, base SHAs, source/consumer map, coverage inventory | **done** | below |
 | A — sparse-strike repair | **implemented + tested**, awaiting Codex | PR #44, 29 tests |
 | B — versioned input/output/state contract | **implemented + tested** | this branch, 48 tests |
-| C — observed path and empirical ranks | **not started** | envelope reports `NOT_IMPLEMENTED` |
+| C — observed path and empirical ranks | **implemented + tested** | this branch, 48 further tests |
 | D — E0/E1 estimators | not started | E1 blocked on data, see below |
 | E — per-poll adapter, flag, resources | not started | |
 | F — review package, option/multi-day matrix | not started | |
 
-**Next executable step:** Commit C — fill `observed_path` (log-return frames at 15/30/60 min and
-session-to-date, causal reference extrema, excursion/retracement per §8.2) and `empirical` (midrank per
-§8.3), with mirrored path tests. The envelope, state machine and reason codes are already in place.
+**Next executable step:** Commit D — E0 (unconditional forward-return distribution per
+index/slot/horizon) and E1 (equal-weight nearest neighbour over the fixed five-rank bundle), with
+horizon labels at +15/+30/+60 min and session close, chronological walk-forward accounting, and the
+neighbour-count arms {10,20,40} selected on inner validation. **E1 is expected to report blocked on
+data** in this environment: see the coverage inventory. Commit E (per-poll adapter behind a
+default-off flag) must come after D's engine tests.
 
 ---
 
@@ -114,6 +117,71 @@ PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/pyth
 Commit B suite **48 tests OK**; full Python suite **1954 tests OK**, 0 failures, 2 skipped.
 
 ---
+
+## Commit C — observed path and empirical ranks
+
+`observed_path` (§8.1, §8.2) and `empirical` (§8.3) are now real. `forecast` still reports
+`NOT_IMPLEMENTED`. `ALGO_VERSION` moved to `index_empirical_direction_v1_path_ranks`.
+
+### Frames
+
+Log returns only, `log(S_t/S_a)`, for strictly positive finite prices. Windows 15/30/60 minutes plus
+session-to-date, plus a separate previous-close frame. These are **diagnostic horizons, not proven
+windows and not thresholds**.
+
+The anchor is the **latest observation at or before** the requested anchor time. A later observation is
+never chosen merely because it is closer in absolute terms — a frame may not look into its own future,
+and a test pins exactly that (09:44 wins over 09:46 for a 09:45 request).
+
+`ANCHOR_TOLERANCE_MIN` is a **proposed** 2.5 minutes, in configuration rather than buried in code. A
+frame outside it is still returned but relabelled `within_tolerance: false` with its **actual**
+`elapsed_min`, and the poll records `provenance.frame_tolerance_exceeded`. So a 10-minute observation
+can never silently stand in for a 30-minute frame. Sensitivity is tested at 0.5 and 10.0 minutes
+against an anchor 22 minutes back.
+
+Each frame reports raw log return, return per minute, path efficiency (null with a reason on a flat or
+single-observation span), observation count, max gap, and its own window extremes — which are kept
+**separate** from the reference-anchored extrema.
+
+### Retained excursion and retracement
+
+Per §8.2, in log space, with the reference included in its own path. Ratios are **not clipped to
+[0,1]**: crossing back through the reference exceeds 1 and that is meaningful. A zero denominator
+yields null with `NO_PRIOR_EXCURSION`, never 0.
+
+The brief's R2 blind spot reproduces: A 100 → H 102 → now 100.3 gives an up-retracement of
+**0.848732 (84.87%)**, matching "about 84.9% in log terms". The exact **multiplicative** mirror
+(100 → 100/1.02 → 100/1.003) gives a down-retracement equal to it to 10 decimal places — a true mirror
+rather than an approximate one.
+
+Both sides are retained, extrema carry timestamps and chronological order (`HIGH_FIRST` /
+`LOW_FIRST` / `SAME_OBSERVATION`), and a post-peak trough appears **only after it is observed**, stamped
+at its own observation time and never backdated to the peak. A high alone does not declare an uptrend:
+a test asserts no directional label (`BULL`, `BEAR`, `TREND_UP`, `STRONG`, `PULLBACK`, …) appears
+anywhere in the record.
+
+### Empirical midrank
+
+`rank(x) = 100 * (count(< x) + 0.5 * count(== x)) / N`, exactly as specified, on stored canonical
+values with no prior rounding. `N = 0` yields null with `INSUFFICIENT_HISTORY`; `N = 1` yields a
+descriptive rank flagged `low_support`. Signed and magnitude ranks are computed separately.
+
+**One eligible observation per earlier session per query frame.** 78 correlated polls from one session
+collapse to 1, with `duplicates_collapsed: 77` reported; the collapse is deterministic under input
+reordering. The cohort key (index, feature, window, slot) is published, with counts for
+`rejected_other_index` and `rejected_slot_or_frame`, plus the snapshot's `history_hash` so a rank can
+be reproduced independently. A wrong-index cohort is `UNSUPPORTED_COHORT`, never borrowed.
+
+### Measured
+
+Envelope 4092 bytes on a five-poll session with excursion and frames populated; cap is 16384. Commit C
+suite **48 tests**; Commit B suite still **48 tests** (one assertion updated: it had pinned all three
+groups as `NOT_IMPLEMENTED`, which Commit C makes stale for two of them). Full Python suite
+**2002 tests OK**, 0 failures, 2 skipped.
+
+Two of my own test fixtures were wrong and the module was right: a gapped path made a 15-minute anchor
+legitimately fall back past an early spike, and a 40-minute-old anchor sat outside any plausible
+tolerance. Both were rebuilt rather than loosened.
 
 ## Source-to-consumer map — current direction authority
 
