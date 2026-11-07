@@ -233,50 +233,40 @@ class TestMalformedInput(unittest.TestCase):
         self.assertTrue(ev['legacy_fallback_used'])
         self.assertEqual(ev['applied'], 100)        # the isolated legacy spot-based default
 
-    def test_a_bare_numeric_metadata_value_is_refused(self):
-        """Codex R1: an unbound number was applied as trusted METADATA, so strikeInterval=1500 or 7
-        reinstated the sparse-wing failure and labelled it evidence. A bare value cannot be checked
-        against the chain it is applied to, so it is refused."""
-        for bare in (100, 1500, 7, 100.0, '100'):
-            ev = infer(SPARSE_LADDER, ATM, metadata_step=bare)
-            self.assertNotEqual(ev['source'], 'METADATA', repr(bare))
-            self.assertEqual(ev['metadata_rejected'], 'UNBOUND_BARE_VALUE', repr(bare))
-            self.assertEqual(ev['value'], 100, 'inference continues from the ladder')
+    def test_there_is_no_metadata_override_channel_at_all(self):
+        """Codex R2 preferred deletion over an unverifiable contract, and the interface is gone.
 
-    def test_bound_metadata_is_accepted_only_when_it_matches_this_chain(self):
-        good = {'interval': 100, 'index': 'NSE_INDEX|Nifty Bank', 'expiry': '2026-11-23',
-                'as_of': '2026-11-07', 'source': 'contract_master'}
-        ev = infer(SPARSE_LADDER, ATM, metadata_step=good, index='NSE_INDEX|Nifty Bank',
-                   expiry='2026-11-23', session_date='2026-11-07')
-        self.assertEqual((ev['value'], ev['source'], ev['status']), (100, 'METADATA', 'OK'))
-        self.assertEqual(ev['metadata_binding']['source'], 'contract_master')
+        The history: the first version accepted ANY finite positive number as trusted OK/METADATA, so
+        `strikeInterval = 1500` reinstated the exact sparse-wing failure this code removes. The
+        binding contract that replaced it could not be established either -- a caller passing
+        index/expiry/session_date=None skipped every check, a FUTURE `as_of` passed the lexical date
+        comparison, a non-empty `source` string authenticated nothing, and "appears as an adjacent gap
+        somewhere in the ladder" would still accept a sparse 1500 against a dense 100 local ladder.
 
-    def test_bound_metadata_is_rejected_on_any_binding_mismatch(self):
-        base = {'interval': 100, 'index': 'NSE_INDEX|Nifty Bank', 'expiry': '2026-11-23',
-                'as_of': '2026-11-07', 'source': 'contract_master'}
-        cases = {
-            'INDEX_MISMATCH': dict(base, index='NSE_INDEX|Nifty 50'),
-            'EXPIRY_MISMATCH': dict(base, expiry='2026-12-29'),
-            'STALE_AS_OF': dict(base, as_of='2026-11-01'),
-            'CONTRADICTS_OBSERVED_LADDER': dict(base, interval=7),
-            'INTERVAL_NOT_POSITIVE_FINITE': dict(base, interval=0),
-        }
-        for expected, meta in cases.items():
-            ev = infer(SPARSE_LADDER, ATM, metadata_step=meta, index='NSE_INDEX|Nifty Bank',
-                       expiry='2026-11-23', session_date='2026-11-07')
-            self.assertEqual(ev['metadata_rejected'], expected, expected)
-            self.assertNotEqual(ev['source'], 'METADATA', expected)
+        So nothing is carried: no parameter, no helper, no constant. This test fails if any of them
+        is reintroduced without its own review.
+        """
+        import inspect
+        params = list(inspect.signature(brain.infer_strike_interval).parameters)
+        self.assertEqual(params, ['all_strikes', 'atm', 'window'])
+        for gone in ('_bound_metadata_interval', 'STRIKE_INTERVAL_METADATA_REQUIRED'):
+            self.assertFalse(hasattr(brain, gone), gone + ' was reintroduced')
+        with self.assertRaises(TypeError):
+            brain.infer_strike_interval(SPARSE_LADDER, ATM, metadata_step=1500)
+        self.assertEqual(brain.STRIKE_INTERVAL_VERSION,
+                         'strike_interval_v3_unique_repeated_mode_ladder_only')
 
-    def test_metadata_missing_provenance_is_rejected(self):
-        for drop in ('index', 'expiry', 'as_of', 'source', 'interval'):
-            meta = {'interval': 100, 'index': 'X', 'expiry': 'Y', 'as_of': 'Z', 'source': 'S'}
-            meta.pop(drop)
-            ev = infer(SPARSE_LADDER, ATM, metadata_step=meta)
-            self.assertTrue(ev['metadata_rejected'].startswith('MISSING_PROVENANCE'), drop)
+    def test_the_interval_is_inferred_from_the_ladder_and_nothing_else(self):
+        """With no override channel, the only inputs are the ladder and the ATM."""
+        ev = infer(SPARSE_LADDER, ATM)
+        self.assertEqual((ev['value'], ev['status'], ev['source']), (100, 'OK', 'NEAR_ATM_MODAL'))
+        self.assertNotIn('metadata_rejected', ev)
+        self.assertNotIn('metadata_binding', ev)
+        self.assertNotEqual(ev['source'], 'METADATA')
 
     def test_no_producer_of_interval_metadata_exists_in_the_repository(self):
-        """Codex R1: the earlier comment called this "dated metadata" while nothing writes it. If a
-        producer is ever added, this test should fail and the claim be re-traced."""
+        """Kept after the channel's removal: if a producer is ever added, this fails, and whoever
+        adds it is pointed at the review the override interface still needs."""
         import re
         root = os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.dirname(os.path.abspath(__file__)))))
@@ -323,9 +313,6 @@ class TestIntervalNumericType(unittest.TestCase):
             ev = infer(ladder, atm)
             self.assertIsInstance(ev['value'], int, ladder[:3])
             self.assertIsInstance(ev['helper_value'], int)
-
-    def test_integral_metadata_interval_is_an_int(self):
-        self.assertIsInstance(infer(SPARSE_LADDER, ATM, metadata_step=100.0)['value'], int)
 
     def test_non_integral_interval_is_preserved(self):
         ev = infer([100.0, 100.5, 101.0, 101.5], 101.0)
