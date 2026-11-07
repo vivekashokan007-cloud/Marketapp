@@ -70,11 +70,24 @@ _RECORD_V = getattr(ed, 'HISTORY_RECORD_VERSION', '<HISTORY_RECORD_VERSION absen
 
 
 def hist(session, slot, r, window='m15', index='NF', elapsed=None, within=True, available=True,
-         coverage=True, record_version=_RECORD_V, feature_version=ed.PATH_VERSION):
-    nominal = float(window.lstrip('m'))
+         coverage=True, record_version=_RECORD_V, feature_version=ed.PATH_VERSION,
+         path_efficiency=0.5, anchor_kind=None):
+    # a non-nominal window key (session_to_date) has no nominal duration at all
+    try:
+        nominal = float(window.lstrip('m'))
+    except ValueError:
+        nominal = None
+    # `path_efficiency` is carried so a test of the COVERAGE gate actually reaches it. Without the
+    # key the row is rejected earlier as `frame_absent` and the gate never runs -- which is how my
+    # first three attempts at these tests passed for the wrong reason.
     frame = {'log_return': r, 'available': available, 'window_min': nominal,
              'elapsed_min': (nominal if elapsed is None else elapsed),
-             'within_tolerance': within, 'coverage_complete': coverage}
+             'within_tolerance': within, 'coverage_complete': coverage,
+             'path_efficiency': path_efficiency}
+    if nominal is None and elapsed is None:
+        frame['elapsed_min'] = None
+    if anchor_kind is not None:
+        frame['anchor_kind'] = anchor_kind
     rec = {'session_date': session, 'slot': slot, 'index': index, 'frames': {window: frame}}
     if record_version is not None:
         rec['record_version'] = record_version
@@ -249,15 +262,53 @@ class TestR2CoverageAndFirstObserved(unittest.TestCase):
         self.assertIsNone(std['path_efficiency'])
         self.assertEqual(std['path_efficiency_reason'], getattr(ed, 'INCOMPLETE_FRAME_COVERAGE', 'INCOMPLETE_FRAME_COVERAGE'))
 
-    def test_a_truncated_historical_frame_is_excluded_from_a_cohort(self):
-        snap = ed.build_history_snapshot([hist('2026-11-04', '10:00', 0.002, coverage=False),
-                                          hist('2026-11-03', '10:00', 0.001, coverage=True)],
-                                         as_of=SESSION, config=ON)
-        pop = ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
+    def test_coverage_is_required_per_feature_not_per_frame(self):
+        """CORRECTED. An earlier version of this test asserted that a truncated historical frame is
+        excluded from a `log_return` cohort, and that was my mistake: it encoded one coverage rule
+        for the whole frame. Codex's follow-up is right that an **endpoint** return is perfectly
+        valid with interior observations missing, while a **path-shape** measure is not, so the
+        requirement belongs to the feature — and the same rule must apply to the query and the
+        history, which it previously did not."""
+        rows = [hist('2026-11-04', '10:00', 0.002, coverage=False),
+                hist('2026-11-03', '10:00', 0.001, coverage=True)]
+        snap = ed.build_history_snapshot(rows, as_of=SESSION, config=ON)
+
+        endpoint = ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
+                                          cfg=ed.config_with_defaults(ON),
+                                          feature_version=ed.PATH_VERSION)
+        self.assertEqual(sorted(endpoint['values']), [0.001, 0.002])   # BOTH admitted
+        self.assertEqual(endpoint['rejections']['incomplete_coverage'], 0)
+        self.assertIs(endpoint['requires_interior_coverage'], False)
+
+        shape = ed.eligible_population(snap, 'NF', 'path_efficiency', 'm15', '10:00',
+                                       cfg=ed.config_with_defaults(ON),
+                                       feature_version=ed.PATH_VERSION)
+        self.assertIs(shape['requires_interior_coverage'], True)
+        self.assertEqual(shape['rejections']['incomplete_coverage'], 1)
+
+    def test_an_unlisted_feature_fails_closed_and_demands_coverage(self):
+        row = hist('2026-11-04', '10:00', 0.002, coverage=False)
+        row['frames']['m15']['some_future_feature'] = 0.7     # present, so the coverage gate runs
+        snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
+        pop = ed.eligible_population(snap, 'NF', 'some_future_feature', 'm15', '10:00',
                                      cfg=ed.config_with_defaults(ON),
                                      feature_version=ed.PATH_VERSION)
-        self.assertEqual(pop['values'], [0.001])
+        self.assertIs(pop['requires_interior_coverage'], True)
         self.assertEqual(pop['rejections']['incomplete_coverage'], 1)
+
+    def test_unknown_coverage_is_not_treated_as_complete(self):
+        row = hist('2026-11-04', '10:00', 0.002)
+        del row['frames']['m15']['coverage_complete']
+        snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
+        self.assertEqual(ed.eligible_population(snap, 'NF', 'path_efficiency', 'm15', '10:00',
+                                                cfg=ed.config_with_defaults(ON),
+                                                feature_version=ed.PATH_VERSION
+                                                )['rejections']['unknown_compatibility'], 1)
+        # but the endpoint feature does not need it at all
+        self.assertEqual(ed.eligible_population(snap, 'NF', 'log_return', 'm15', '10:00',
+                                                cfg=ed.config_with_defaults(ON),
+                                                feature_version=ed.PATH_VERSION)['values'],
+                         [0.002])
 
 
 # ───────────── R3: validate the state fields that are actually read ─────────────
@@ -535,6 +586,139 @@ class TestB1ToleratedAheadIsLabelled(unittest.TestCase):
         rec, _ = feed(None, at(9, 20), 100.0)
         self.assertIsNone(rec['identity']['receive_ts'])
         self.assertEqual(rec['provenance']['as_of_fidelity'], 'RECEIVE_TIME_UNKNOWN')
+
+
+# ───────── S1/S2: comparable session-to-date frames (Codex §5 follow-up) ─────────
+class TestSessionFrameComparability(unittest.TestCase):
+    """`session_to_date` carries `nominal=None`, so the rolling-window duration check never applied
+    to it and two different anchor horizons stayed pooled. Codex reproduced it from real output:
+
+      history 4 Nov, reference 09:20, through 09:40 -> session_to_date elapsed **20 min**
+      query   5 Nov, reference 09:25, through 09:40 -> session_to_date elapsed **15 min**
+      same index, same 09:40 slot -> the history was accepted and the rank reported available
+
+    Comparability for a non-nominal frame is now established from the ACTUAL elapsed duration and
+    the reference kind, by the same rule on both sides, or the rank is withheld with a reason.
+    Nothing here invents a forecast or a bullish threshold.
+    """
+
+    def _session(self, day, series, cfg=None):
+        st = rec = None
+        sd = '2026-11-%02d' % day
+        for h, m, v in series:
+            rec, st = ed.assess_poll(poll(at(h, m, day), v), st, config=cfg or ON, index='NF',
+                                     session_date=sd, decision_dt=at(h, m, day))
+        return rec
+
+    HIST_20MIN = [(9, 20, 100.0), (9, 30, 102.0), (9, 40, 105.0)]     # reference 09:20 -> 20 min
+    QUERY_15MIN = [(9, 25, 100.0), (9, 35, 103.0), (9, 40, 105.0)]    # reference 09:25 -> 15 min
+
+    def _ranked(self, hist_series, query_series, cfg=None):
+        h = self._session(4, hist_series)
+        q = self._session(5, query_series, cfg=cfg)
+        row = ed.history_record(h, index='NF', session_date='2026-11-04')
+        snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
+        emp = ed.empirical_comparison(q['observed_path'], snap, 'NF', SESSION,
+                                      ed.config_with_defaults(ON))
+        return (h['observed_path']['frames']['session_to_date'],
+                q['observed_path']['frames']['session_to_date'],
+                (emp.get('frames') or {}).get('session_to_date') or {})
+
+    def test_the_two_real_output_elapsed_durations_are_what_codex_reported(self):
+        hs, qs, _ = self._ranked(self.HIST_20MIN, self.QUERY_15MIN)
+        self.assertEqual(hs['elapsed_min'], 20.0)
+        self.assertEqual(qs['elapsed_min'], 15.0)
+        self.assertEqual(hs['anchor_ts'][11:16], '09:20')
+        self.assertEqual(qs['anchor_ts'][11:16], '09:25')
+
+    def test_incompatible_session_horizons_are_no_longer_pooled(self):
+        _, _, f = self._ranked(self.HIST_20MIN, self.QUERY_15MIN)
+        self.assertFalse(f['available'])                       # was True, rank 50.0
+        self.assertEqual(f['reason'], ed.INCOMPARABLE_SESSION_FRAME)
+        self.assertEqual(f['support']['rejections']['horizon_mismatch'], 1)
+        self.assertEqual(f['comparability_basis'], 'ACTUAL_ELAPSED')
+        self.assertEqual(f['target_elapsed_min'], 15.0)
+        self.assertEqual(f['session_frame_contract'], ed.SESSION_FRAME_COMPARISON_VERSION)
+        self.assertIsNotNone(f['raw_value'])                   # retained as evidence, not ranked
+
+    def test_a_compatible_session_frame_still_ranks(self):
+        """The compatible case Codex asked for: same reference offset, so same actual elapsed."""
+        hs, qs, f = self._ranked([(9, 25, 100.0), (9, 30, 101.0), (9, 40, 104.0)],
+                                 self.QUERY_15MIN)
+        self.assertEqual(hs['elapsed_min'], qs['elapsed_min'])
+        self.assertTrue(f['available'], f.get('support'))
+        self.assertIsNotNone(f['signed']['rank'])
+        self.assertEqual(f['support']['eligible_sessions'], 1)
+        self.assertEqual(f['comparability_basis'], 'ACTUAL_ELAPSED')
+
+    def test_the_rolling_frames_still_use_the_nominal_window(self):
+        q = self._session(5, [(9, 20, 100.0), (9, 35, 101.0), (9, 50, 102.0)])
+        h = self._session(4, [(9, 20, 100.0), (9, 35, 100.5), (9, 50, 101.0)])
+        row = ed.history_record(h, index='NF', session_date='2026-11-04')
+        snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
+        emp = ed.empirical_comparison(q['observed_path'], snap, 'NF', SESSION,
+                                      ed.config_with_defaults(ON))
+        m15 = (emp.get('frames') or {}).get('m15') or {}
+        if m15.get('available'):
+            self.assertEqual(m15['comparability_basis'], 'NOMINAL_WINDOW')
+            self.assertEqual(m15['target_elapsed_min'], 15.0)
+
+    def test_a_different_reference_kind_is_not_borrowed(self):
+        rows = [hist('2026-11-04', '09:40', 0.01, window='session_to_date', elapsed=15.0,
+                     anchor_kind='something_else')]
+        snap = ed.build_history_snapshot(rows, as_of=SESSION, config=ON)
+        pop = ed.eligible_population(snap, 'NF', 'log_return', 'session_to_date', '09:40',
+                                     cfg=ed.config_with_defaults(ON),
+                                     feature_version=ed.PATH_VERSION, query_elapsed_min=15.0,
+                                     require_anchor_kind='authority_open_reference')
+        self.assertEqual(pop['values'], [])
+        self.assertEqual(pop['rejections']['anchor_kind'], 1)
+
+    def test_with_no_elapsed_reading_the_session_rank_is_withheld_explicitly(self):
+        q = self._session(5, self.QUERY_15MIN)
+        path = json.loads(json.dumps(q['observed_path']))
+        path['frames']['session_to_date']['elapsed_min'] = None
+        snap = ed.build_history_snapshot([hist('2026-11-04', '09:40', 0.01,
+                                               window='session_to_date', elapsed=15.0)],
+                                         as_of=SESSION, config=ON)
+        emp = ed.empirical_comparison(path, snap, 'NF', SESSION, ed.config_with_defaults(ON))
+        f = emp['frames']['session_to_date']
+        self.assertFalse(f['available'])
+        self.assertEqual(f['reason'], ed.SESSION_FRAME_BASIS_UNKNOWN)
+        self.assertTrue(f['descriptive_only'])
+
+    def test_a_truncated_query_keeps_its_endpoint_rank_but_not_a_path_metric(self):
+        """The symmetry Codex asked for: coverage is per feature, and the SAME rule applies to the
+        query and to the history. A valid endpoint return is not discarded."""
+        cfg = dict(ON, max_session_observations=3)
+        q = self._session(5, [(9, 20, 100.0), (9, 25, 120.0), (9, 30, 110.0), (9, 35, 108.0),
+                              (9, 40, 105.0)], cfg=cfg)
+        qs = q['observed_path']['frames']['session_to_date']
+        self.assertIs(qs['coverage_complete'], False)
+        self.assertIsNone(qs['path_efficiency'])          # path metric withheld
+        self.assertIsNotNone(qs['log_return'])            # endpoint return still measured
+
+        h = self._session(4, self.HIST_20MIN)
+        row = ed.history_record(h, index='NF', session_date='2026-11-04')
+        hs = row['frames']['session_to_date']
+        hs['elapsed_min'] = qs['elapsed_min']             # make it comparable
+        hs['coverage_complete'] = False                   # and equally incomplete
+        snap = ed.build_history_snapshot([row], as_of=SESSION, config=ON)
+        emp = ed.empirical_comparison(q['observed_path'], snap, 'NF', SESSION,
+                                      ed.config_with_defaults(ON))
+        f = emp['frames']['session_to_date']
+        self.assertTrue(f['available'], f.get('support'))
+        self.assertEqual(f['support']['eligible_sessions'], 1)
+        self.assertIs(f['requires_interior_coverage'], False)
+        # the same row is refused for a path-shape feature
+        shape = ed.eligible_population(snap, 'NF', 'path_efficiency', 'session_to_date',
+                                       f['cohort_key']['slot'],
+                                       cfg=ed.config_with_defaults(ON),
+                                       feature_version=ed.PATH_VERSION,
+                                       query_elapsed_min=qs['elapsed_min'],
+                                       require_anchor_kind=qs.get('anchor_kind'))
+        self.assertIs(shape['requires_interior_coverage'], True)
+        self.assertEqual(shape['rejections']['incomplete_coverage'], 1)
 
 
 if __name__ == '__main__':

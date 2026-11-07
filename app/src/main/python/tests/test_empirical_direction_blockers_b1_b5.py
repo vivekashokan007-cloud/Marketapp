@@ -633,9 +633,15 @@ class TestHistoryFixtureMatchesRealFrames(unittest.TestCase):
             frame = row['frames'][key]
             if frame.get('within_tolerance') is not True or frame.get('log_return') is None:
                 continue                       # legitimately incomparable; not this test's subject
-            pop = ed.eligible_population(snap, 'NF', 'log_return', key, row['slot'],
-                                         cfg=ed.config_with_defaults(ON),
-                                         feature_version=ed.PATH_VERSION)
+            # A frame with no nominal duration (session_to_date) is compared on its ACTUAL elapsed
+            # duration and reference kind, so the caller must supply them -- exactly as
+            # `empirical_comparison` does. Without them there is no comparability basis at all.
+            nominal_key = key.startswith('m') and key[1:].replace('.', '', 1).isdigit()
+            pop = ed.eligible_population(
+                snap, 'NF', 'log_return', key, row['slot'],
+                cfg=ed.config_with_defaults(ON), feature_version=ed.PATH_VERSION,
+                query_elapsed_min=(None if nominal_key else frame.get('elapsed_min')),
+                require_anchor_kind=(None if nominal_key else frame.get('anchor_kind')))
             self.assertEqual(pop['eligible_sessions'], 1, (key, pop['rejections']))
             self.assertEqual(pop['values'], [frame['log_return']], key)
             self.assertIsNotNone(ed.midrank(frame['log_return'], pop['values'])['rank'])

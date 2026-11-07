@@ -113,6 +113,60 @@ availability at the decision time.
 
 ---
 
+## Session-frame comparability + feature-specific coverage (Codex §5 follow-up)
+
+Two defects Codex reproduced from real observer output at `2da6079`, both confirmed here first.
+
+**S1 — `session_to_date` pooled incompatible anchor horizons.** It carries `nominal=None`, so the
+rolling-window duration check never applied to it. Reproduced exactly: a 4 Nov history with
+reference 09:20 (session elapsed **20 min**) ranked a 5 Nov query with reference 09:25 (elapsed
+**15 min**) at the same 09:40 slot — `available=True`, **rank 50.0**.
+
+Comparability for a non-nominal frame is now established from the **actual elapsed duration** and
+the **reference kind**, by the same rule on both sides:
+`SESSION_FRAME_COMPARISON_VERSION = session_frame_comparability_v1_anchor_kind_and_actual_elapsed`.
+A rolling frame keeps `comparability_basis: NOMINAL_WINDOW`; a session frame gets `ACTUAL_ELAPSED`
+with the query's own elapsed as the target. An incompatible pairing is withheld as
+`INCOMPARABLE_SESSION_FRAME` with the measurement retained as labelled evidence; with no elapsed
+reading at all the rank is withheld as `SESSION_FRAME_BASIS_UNKNOWN` rather than pooled. A
+mismatched `anchor_kind` is never borrowed. No forecast or directional threshold was invented to do
+this.
+
+**S2 — coverage policy was one rule per frame, applied asymmetrically.** A historical row with
+`coverage_complete=False` was discarded outright while the query kept its own endpoint-return rank.
+That discards valid endpoint returns: an **endpoint** return needs only its two endpoints and is
+valid with interior observations missing; a **path-shape** measure is not, because its denominator
+sums the observations actually present.
+
+The requirement now belongs to the **feature**
+(`FEATURE_EVIDENCE_VERSION = feature_evidence_v1_endpoint_vs_path_coverage`) and the same rule is
+applied to query and history:
+
+| feature | interior coverage required |
+|---|---|
+| `log_return`, `log_return_per_min` | no — endpoints suffice |
+| `path_efficiency` | yes |
+| anything unlisted | yes (fails closed) |
+
+Unknown coverage is not treated as complete. The cohort key publishes
+`comparability_basis`, `target_elapsed_min`, `anchor_kind`, `requires_interior_coverage` and both
+contract versions, so a rank is reproducible without guessing the rule.
+
+**One of my own tests encoded the wrong policy.** `test_a_truncated_historical_frame_is_excluded_from_a_cohort`
+asserted that a truncated historical frame is excluded from a `log_return` cohort — the very
+behaviour Codex corrected. It is replaced by `test_coverage_is_required_per_feature_not_per_frame`,
+which asserts both halves. Three of my first attempts at these tests also passed for the wrong
+reason: the fixture frame carried no `path_efficiency` key, so rows were rejected earlier as
+`frame_absent` and the coverage gate never ran.
+
+Tests: `test_empirical_direction_revision_r1_r5.py` grew to **46**, of which **9 fail against
+pre-fix `2da6079`** (5 failures, 4 errors) — the three coverage-policy tests and six session-frame
+tests. The tenth, `test_the_two_real_output_elapsed_durations_are_what_codex_reported`, passes
+pre-fix because it characterises the condition rather than pinning the fix. All observer suites
+**184 OK**.
+
+---
+
 ## Commit B — what was built
 
 `app/src/main/python/index_empirical_direction_v1.py`. Pure: no network, no wall clock, no database,
@@ -323,38 +377,59 @@ derived from that match. Recorded as derived wherever it is used.
 | 02 Nov – 05 Nov (new) | 4 | 298 | 0 |
 | **total** | **45** | **3,267** | **193** |
 
-### RETRACTED: the three-date exclusion list, and the rule that replaces it
+### Label inventory — corrected twice, and what it does and does not establish
 
-An earlier revision of this file named 2026-09-28, 2026-10-07 and 2026-10-08 as the sessions to
-exclude. Codex's objection is correct and I had not noticed it: those three are exactly what an
-**unstated** "intraday coverage below 80%" threshold removes, and no such rule had been stated or
-justified. A list of dates with no general rule behind it is an ad hoc favourable-sample filter.
+**First retraction (mine, caught by Codex).** An earlier revision named 2026-09-28, 2026-10-07 and
+2026-10-08 as the sessions to exclude. Those three are exactly what an **unstated** "intraday
+coverage below 80%" threshold removes, and no such rule had been stated — an ad hoc
+favourable-sample filter. Re-deriving it also exposed a slot-convention bug of mine: the old files
+omit slot 0 and the new ones include it, so a fixed 72-slot denominator gave coverage above 1.0 for
+later sessions.
 
-Two corrections came out of re-deriving it properly:
+**Second retraction (also mine, also caught by Codex).** Having replaced the threshold with a
+per-label rule, I then claimed 2026-09-28 "can support no label" and kept it as the one session-level
+exclusion. **That is false.** Its observed slots are `1, 5, 10, 20, 26, 46, 67`, and slots
+**20 → 26 are a valid +30-minute endpoint pair** (10:55 → 11:25). It has no +15 and no +60 pair, but
+it does have that one. **There is therefore no session-level exclusion at all** under the endpoint
+rule: 09-28 is retained for the horizon it supports, and its missing +15/+60 labels are reported as
+missing.
 
-- **A slot-convention bug in my own coverage figures.** The old files omit slot 0; the new ones
-  include it, so a fixed 72-slot denominator gave coverage above 1.0 for later sessions. Slot 1 =
-  09:20 (validated against all 90 chain rows) and slot *n* = 09:15 + 5*n*, so the 15:30 close is
-  **slot 75** and slots 76–77 are past it. Intraday coverage is now measured over slots 1–75 in both
-  conventions.
-- **The rule belongs per label, not per session.** What a horizon label actually needs is its two
-  endpoints, not a whole session. Measured over slots 1–75:
+**The rule.** A label at horizon *h* from entry slot *s* is admitted only when **both** endpoints
+*s* and *s + h/5* are observed in that session, inside the declared nominal research window slots
+1–75. No forward fill, no fabricated price, no neighbouring-slot substitution.
 
-| horizon | labels available | of possible | sessions |
-|---|---|---|---|
-| +15 min | 2,931 | 3,240 | 45 |
-| +30 min | 2,804 | 3,105 | 45 |
-| +60 min | 2,549 | 2,835 | 45 |
+| horizon | admitted pairs | nominal grid | sessions contributing | missing entry | missing exit | missing both | extract-end censored |
+|---|---|---|---|---|---|---|---|
+| +15 min | 2,931 | 3,240 | **44** | 100 | 104 | 93 | 12 |
+| +30 min | 2,804 | 3,105 | **45** | 98 | 102 | 89 | 12 |
+| +60 min | 2,549 | 2,835 | **44** | 96 | 100 | 78 | 12 |
 
-So **~90% of all possible labels are available across all 45 sessions**, and 24 of the 45 have full
-intraday coverage. The rule is therefore: **a label is admitted only when both its endpoints are
-present within slots 1–75 of that session**, which needs no threshold and discards no session for
-being merely imperfect. Exactly **one** session-level exclusion survives, on the stated ground that
-it cannot support any label: **2026-09-28, 7 of 75 intraday slots (9.3%)**. The next lowest are
-2026-10-07 at 57.3% and 2026-10-08 at 72.0%, and both are retained, with their missing labels simply
-not admitted.
+The `nominal grid` column is the **full nominal slot grid**, including unobserved and truncated
+opportunities. It is not an achievable target count. The session column counts sessions contributing
+to **that horizon**, not all dates in the input — 09-28 is the only session absent from +15 and +60.
 
-Retained coverage must be reported with every comparison, counting **distinct sessions**, not rows.
+**What this does NOT establish**, per Codex, and worth stating because an endpoint rule is easy to
+over-read: it establishes a fixed-horizon **underlying return** only. It says nothing about
+intervening path coverage, so excursions, realised variance, barriers and managed exits each need
+their own feature and label eligibility before any of them is computed.
+
+**Index separation.** The spot extracts carry NF and BNF on **one shared slot grid**, so a slot pair
+is counted once per session. These are not per-index session counts; NF and BNF values and all
+downstream results stay separate, and the two are never added as independent sessions.
+
+**Repeated values — corrected label.** I previously called these "staleness". Equal consecutive
+prices do **not** establish a stale feed, and nothing in this extract carries an observation time or
+feed status to distinguish the two. They are **repeated values with unknown freshness**, kept
+separate from independently evidenced stale timestamps, of which there are none here. Legitimate
+unchanged prices are not excluded by assumption. 168 repeated runs start at slot ≥ 70; **5** pairs
+occur mid-session across all 45 sessions (2026-09-17 NF 12:30–12:35, 2026-09-21 NF 09:55–10:00 and
+10:55–11:00, 2026-09-29 NF 11:40–11:45, 2026-11-03 BNF 13:00–13:05).
+
+**No verified close.** The reconstructed slot clock and the padded tail do not establish the official
+session close, nor the original observation times. Slots 1–75 are a **declared nominal research
+window**, not proof of an exchange timestamp, and a final observed poll is not a verified close. No
+session-close target is produced from this convention alone. Source and derived clocks stay
+distinguished, including across the differing old and new slot conventions.
 
 **5 November, explicitly.** 64 slots, ids 0–63, **zero internal gaps**, reconstructed 09:15 → 14:30.
 Slots 64–77 (14:35 onward) are **absent** — the extract stops mid-session, so no 5 Nov label with a
@@ -387,8 +462,9 @@ NF calendar DTE spans 0–6, BNF 0–28; 12 rows are own-expiry-day (`date == ex
 Any option-leg feature after 09:20 is **unsupported** by this evidence, and an option-based arm cannot
 be built from it.
 
-**Consequence for D.** A **price-only** E0/E1 arm is feasible on 44 usable sessions (45 recovered,
-2026-09-28 excluded on the stated ground above) / 3,267 observations with
+**Consequence for D.** A **price-only** E0/E1 arm is feasible on **all 45** recovered sessions with
+no session-level exclusion (per-horizon contributing counts 44 / 45 / 44 above) / 3,267 observations,
+with
 explicit as-of and label-maturity limits. An option-priced arm is **not**. I will not claim the
 supplied replay script reproduces phone parity without adapting and validating its clock and
 interface assumptions, and no estimator is fitted until the observer's B1–B5 causal defects are fixed.

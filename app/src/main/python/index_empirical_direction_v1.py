@@ -101,6 +101,33 @@ INCOMPLETE_FRAME_COVERAGE = 'INCOMPLETE_FRAME_COVERAGE'
 # is refused, not assumed from a window label.
 HISTORY_RECORD_VERSION = 'mr.index_empirical_direction.history_record.v1'
 UNKNOWN_FRAME_COMPATIBILITY = 'UNKNOWN_FRAME_COMPATIBILITY'
+
+# ── feature-specific evidence (Codex §5, second part) ──────────────────────────────────────────
+# Coverage policy was previously one rule for a whole frame, applied asymmetrically: a historical
+# row with coverage_complete=False was discarded outright, while the query kept its own
+# endpoint-return rank. That discards valid endpoint returns.
+#
+# An ENDPOINT return needs only its two endpoints, and is perfectly valid with interior
+# observations missing. A PATH-SHAPE measure needs the interior, because its denominator is the sum
+# over observations actually present. So the requirement belongs to the FEATURE, and the same rule
+# is applied to the query side and the historical side.
+#
+# Unlisted features fail closed: interior coverage is required unless a feature is known to need
+# only its endpoints.
+FEATURE_EVIDENCE_VERSION = 'feature_evidence_v1_endpoint_vs_path_coverage'
+FEATURE_REQUIRES_INTERIOR_COVERAGE = {
+    'log_return': False,
+    'log_return_per_min': False,
+    'path_efficiency': True,
+}
+# ── session-frame comparability (Codex §5, first part) ─────────────────────────────────────────
+# `session_to_date` carries nominal=None, so the rolling-window duration check did not apply to it
+# and two different anchor horizons stayed pooled: a 20-minute history ranked a 15-minute query.
+# Comparability for a non-nominal frame is therefore established from the ACTUAL elapsed duration
+# and the reference kind, by the same rule on both sides -- or the rank is withheld.
+SESSION_FRAME_COMPARISON_VERSION = 'session_frame_comparability_v1_anchor_kind_and_actual_elapsed'
+INCOMPARABLE_SESSION_FRAME = 'INCOMPARABLE_SESSION_FRAME'
+SESSION_FRAME_BASIS_UNKNOWN = 'SESSION_FRAME_BASIS_UNKNOWN'
 # state structure contract (Codex B5)
 STATE_STRUCTURE_INVALID = 'STATE_STRUCTURE_INVALID'
 TRUNCATED_COVERAGE = 'TRUNCATED_COVERAGE'
@@ -1254,7 +1281,7 @@ def _slot_of(iso_ts):
 
 
 def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
-                        feature_version=None):
+                        feature_version=None, query_elapsed_min=None, require_anchor_kind=None):
     """One eligible observation per EARLIER SESSION per query frame, deduplicated deterministically.
 
     78 correlated polls from one session must never count as 78 independent observations.
@@ -1272,11 +1299,19 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
         nominal = float(str(window_key).lstrip('m'))
     except Exception:
         nominal = None
+    # Codex §5: a frame with no nominal duration (session_to_date) is compared on its ACTUAL
+    # elapsed duration instead. With neither, comparability cannot be established at all and the
+    # whole cohort is withheld rather than pooled.
+    target_elapsed = nominal if nominal is not None else _finite(query_elapsed_min)
+    basis = ('NOMINAL_WINDOW' if nominal is not None
+             else ('ACTUAL_ELAPSED' if target_elapsed is not None else None))
+    requires_coverage = FEATURE_REQUIRES_INTERIOR_COVERAGE.get(feature, True)
     chosen = {}
     rej = {'other_index': 0, 'slot': 0, 'frame_absent': 0, 'frame_unavailable': 0,
            'out_of_tolerance': 0, 'horizon_mismatch': 0, 'non_finite_value': 0,
            'feature_version': 0, 'record_schema': 0, 'unknown_compatibility': 0,
-           'incomplete_coverage': 0, 'snapshot_integrity': 0}
+           'incomplete_coverage': 0, 'snapshot_integrity': 0, 'anchor_kind': 0,
+           'comparability_basis_unknown': 0}
     duplicates = 0
     rows, integrity = snapshot_rows(snapshot)          # Codex R5
     if integrity:
@@ -1313,14 +1348,28 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
             rej['out_of_tolerance' if fr.get('within_tolerance') is False
                 else 'unknown_compatibility'] += 1
             continue
-        if fr.get('coverage_complete') is False:      # Codex R2: truncated frames are not comparable
-            rej['incomplete_coverage'] += 1
+        # Codex §5: coverage is required FEATURE BY FEATURE, and by the same rule on both sides.
+        # An endpoint return survives missing interior observations; a path-shape measure does not.
+        if requires_coverage:
+            if fr.get('coverage_complete') is False:
+                rej['incomplete_coverage'] += 1
+                continue
+            if fr.get('coverage_complete') is not True:
+                rej['unknown_compatibility'] += 1       # unknown coverage is not complete coverage
+                continue
+        # reference kind must match for a non-nominal frame, so a session-to-date measured from the
+        # authority's open reference is never ranked against one measured from something else
+        if require_anchor_kind is not None and fr.get('anchor_kind') != require_anchor_kind:
+            rej['anchor_kind'] += 1
             continue
         elapsed = _finite(fr.get('elapsed_min'))
         if elapsed is None:
             rej['unknown_compatibility'] += 1
             continue
-        if nominal is not None and abs(elapsed - nominal) > tol:
+        if basis is None:
+            rej['comparability_basis_unknown'] += 1
+            continue
+        if abs(elapsed - target_elapsed) > tol:
             rej['horizon_mismatch'] += 1
             continue
         if _finite(fr.get(feature)) is None:
@@ -1343,8 +1392,16 @@ def eligible_population(snapshot, index, feature, window_key, slot, cfg=None,
                                        + rej['frame_unavailable']),
             'nominal_window_min': nominal, 'tolerance_min': tol,
             'snapshot_integrity': integrity,
+            'comparability_basis': basis,
+            'target_elapsed_min': target_elapsed,
+            'requires_interior_coverage': requires_coverage,
             'cohort_key': {'index': index, 'feature': feature, 'window': window_key, 'slot': slot,
                            'nominal_window_min': nominal, 'tolerance_min': tol,
+                           'comparability_basis': basis, 'target_elapsed_min': target_elapsed,
+                           'anchor_kind': require_anchor_kind,
+                           'requires_interior_coverage': requires_coverage,
+                           'feature_evidence_version': FEATURE_EVIDENCE_VERSION,
+                           'session_frame_contract': SESSION_FRAME_COMPARISON_VERSION,
                            'feature_version': feature_version,
                            'record_version': HISTORY_RECORD_VERSION}}
 
@@ -1416,19 +1473,42 @@ def empirical_comparison(path, snapshot, index, session_date, cfg):
                 'actual_elapsed_min': frame.get('elapsed_min'),
             }
             continue
+        # Codex §5: a frame with no nominal duration is compared on its ACTUAL elapsed duration and
+        # its reference kind. Without an elapsed reading there is no basis at all, so the rank is
+        # WITHHELD with an explicit reason rather than pooled across incompatible horizons.
+        has_nominal = str(key).startswith('m') and str(key)[1:].replace('.', '', 1).isdigit()
+        q_elapsed = _finite(frame.get('elapsed_min'))
+        if not has_nominal and q_elapsed is None:
+            out['frames'][key] = {'available': False, 'reason': SESSION_FRAME_BASIS_UNKNOWN,
+                                  'raw_value': frame['log_return'], 'descriptive_only': True,
+                                  'session_frame_contract': SESSION_FRAME_COMPARISON_VERSION}
+            continue
         pop = eligible_population(snapshot, index, 'log_return', key, slot, cfg=cfg,
-                                  feature_version=PATH_VERSION)
+                                  feature_version=PATH_VERSION,
+                                  query_elapsed_min=(None if has_nominal else q_elapsed),
+                                  require_anchor_kind=(None if has_nominal
+                                                       else frame.get('anchor_kind')))
         signed = midrank(frame['log_return'], pop['values'])
         magnitude = midrank(abs(frame['log_return']), [abs(v) for v in pop['values']])
         ok = signed['rank'] is not None
         any_ok = any_ok or ok
         out['frames'][key] = {
             'available': ok,
-            'reason': None if ok else (UNSUPPORTED_COHORT if pop['distinct_sessions'] == 0
-                                       else INSUFFICIENT_HISTORY),
+            'reason': None if ok else (
+                INCOMPARABLE_SESSION_FRAME
+                if (pop['distinct_sessions'] == 0 and not has_nominal
+                    and (pop['rejections'].get('horizon_mismatch')
+                         or pop['rejections'].get('anchor_kind')))
+                else (UNSUPPORTED_COHORT if pop['distinct_sessions'] == 0
+                      else INSUFFICIENT_HISTORY)),
             'raw_value': frame['log_return'],
             'actual_elapsed_min': frame.get('elapsed_min'),
             'within_tolerance': frame.get('within_tolerance'),
+            'comparability_basis': pop['comparability_basis'],
+            'target_elapsed_min': pop['target_elapsed_min'],
+            'anchor_kind': frame.get('anchor_kind'),
+            'requires_interior_coverage': pop['requires_interior_coverage'],
+            'session_frame_contract': SESSION_FRAME_COMPARISON_VERSION,
             'signed': signed, 'magnitude': magnitude,
             'support': {'eligible_sessions': pop['eligible_sessions'],
                         'distinct_sessions': pop['distinct_sessions'],

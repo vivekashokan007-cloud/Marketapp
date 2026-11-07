@@ -355,11 +355,17 @@ class TestEligiblePopulation(unittest.TestCase):
         # Codex B3: the cohort key now also publishes what made a row comparable -- the nominal
         # window, the tolerance applied and the feature version demanded -- so a rank can be
         # reproduced independently without guessing the eligibility rule that produced it.
-        self.assertEqual(pop['cohort_key'], {'index': 'NF', 'feature': 'log_return',
-                                             'window': 'm30', 'slot': '10:00',
-                                             'nominal_window_min': 30.0, 'tolerance_min': 2.5,
-                                             'feature_version': None,
-                                             'record_version': ed.HISTORY_RECORD_VERSION})
+        # The cohort key publishes everything that made a row comparable, so a rank is reproducible
+        # without guessing the eligibility rule: the comparability basis and target duration, the
+        # required reference kind, and whether interior coverage was demanded for this feature.
+        self.assertEqual(pop['cohort_key'], {
+            'index': 'NF', 'feature': 'log_return', 'window': 'm30', 'slot': '10:00',
+            'nominal_window_min': 30.0, 'tolerance_min': 2.5,
+            'comparability_basis': 'NOMINAL_WINDOW', 'target_elapsed_min': 30.0,
+            'anchor_kind': None, 'requires_interior_coverage': False,
+            'feature_evidence_version': ed.FEATURE_EVIDENCE_VERSION,
+            'session_frame_contract': ed.SESSION_FRAME_COMPARISON_VERSION,
+            'feature_version': None, 'record_version': ed.HISTORY_RECORD_VERSION})
 
 
 class TestEmpiricalComparison(unittest.TestCase):
