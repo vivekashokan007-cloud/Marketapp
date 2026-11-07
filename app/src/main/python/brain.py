@@ -5164,11 +5164,103 @@ def get_session_trajectory(history):
         'alignment': 'Institutional accumulation pressure — 4+ signals rising' if up_c >= 4 else 'Institutional selling pressure — 4+ signals falling' if dn_c >= 4 else None
     }
 
-def get_strike(strikes_dict, k):
+GET_STRIKE_LOOKUP_VERSION = 'get_strike_v2_numeric_identity_total'
 
-    """Helper for Phase C: handle both string and numeric strike keys."""
-    if not strikes_dict: return None
-    return strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k))) or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None)
+
+def _strike_key_candidates(k):
+    """Spellings of ONE requested strike that denote the SAME contract, in lookup priority order.
+
+    Returns ``(candidates, reason)``. ``reason`` is None when the request is usable; otherwise it
+    names why not and ``candidates`` is empty, so the caller returns None instead of raising.
+
+    Equivalence here is exact, never approximate:
+
+    * An integral request yields its int, integer-string, float and float-string spellings, because
+      all four name one strike.
+    * A genuinely fractional request (56250.5) yields only fractional spellings. It is NEVER
+      truncated onto 56250, which is a DIFFERENT contract.
+    * No epsilon tolerance is used. Integral values below 2**53 are exact in binary floating point
+      and the arithmetic that builds these requests (``atm +/- n*step``) is exact for them, so a
+      tolerance could only ever match a strike that was not asked for.
+    """
+    if isinstance(k, bool):                      # bool is an int subclass; True is not strike 1
+        return [], 'BOOLEAN_NOT_A_STRIKE'
+    if isinstance(k, (int, float)):
+        raw = k
+    elif isinstance(k, str):
+        try:
+            raw = float(k.strip())
+        except Exception:
+            return [], 'NOT_NUMERIC'
+    else:
+        return [], 'UNSUPPORTED_TYPE'
+    try:
+        f = float(raw)
+    except Exception:
+        return [], 'NOT_NUMERIC'
+    if not math.isfinite(f):
+        return [], 'NOT_FINITE'
+
+    spellings = [k]
+    if f.is_integer():
+        i = int(f)
+        spellings += [i, str(i), f, str(f)]
+    else:
+        spellings += [f, str(f)]
+    out = []
+    for c in spellings:                          # de-duplicate, preserving priority order
+        if not any(type(c) is type(p) and c == p for p in out):
+            out.append(c)
+    return out, None
+
+
+def get_strike(strikes_dict, k):
+    """Resolve one strike row across the spellings a strike key can take.
+
+    Why this is not a plain ``strikes_dict.get(k)``: a chain's keys and the requested strike need not
+    share a type. The live producer (``OptionChainBrainFormatter``) keys strikes as
+    ``strike.toInt().toString()`` while holding ``atm`` and ``allStrikes`` as Doubles, and the
+    PWA-supplied rich chain arrives as JSON too, so an integer-string key with a numeric request is
+    the normal case.
+
+    In the SHIPPED path the two do agree, and this function changes nothing there. The context
+    crosses into Python as JSON text (``MarketWatchService`` passes ``ctxObj.toString()`` to
+    ``brain.analyze``, which does ``json.loads``), and both org.json implementations in use render an
+    integral double as an integer literal. The committed golden formatter output
+    ``app/src/test/resources/contracts/x1_upstox_formatted_golden.json`` shows ``"atm":24650`` and
+    ``"allStrikes":[24250,...]``, i.e. ints after parsing. See the four-way matrix in
+    ``tests/test_chain_profile_strike_interval.py``, which pins that production profiles are
+    byte-identical before and after this change.
+
+    It is therefore hardening, not a live-behaviour fix: it exists so that an un-collapsed Double
+    payload, a non-integral interval, or a NaN inside ``allStrikes`` degrades to "row not found"
+    rather than silently zeroing every chain feature or raising out of the profile.
+
+    The previous body was::
+
+        return (strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k)))
+                or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None))
+
+    It had no ``str(int(k))`` spelling, so a float request missed an integer-string key, and
+    ``int(k)`` raised on a NaN request. That raise is reachable today: ``allStrikes`` entries are
+    handed to this function unfiltered, and a NaN there aborts ``chain_profile`` with
+    ``ValueError: cannot convert float NaN to integer``.
+
+    Selection is deliberately unchanged: the FIRST candidate whose value is truthy wins, and None is
+    returned when none is. A present-but-falsy row therefore still reads as absent, exactly as
+    before; every call site applies ``or {}`` to the result, so the distinction is inert here, and
+    changing it would be a separate decision rather than a side effect of this repair. Where a dict
+    carries two spellings of one strike with different rows, the order above decides: the request's
+    own spelling first, then int, integer-string, float, float-string.
+    """
+    if not strikes_dict:
+        return None
+    candidates, _reason = _strike_key_candidates(k)
+    for key in candidates:
+        v = strikes_dict.get(key)
+        if v:
+            return v
+    return None
 
 def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     """Phase C: 30-feature chain profile builder.

@@ -434,10 +434,17 @@ class TestEndToEndLimitsOfThisRepair(unittest.TestCase):
         with self.assertRaises(TypeError):
             brain.chain_profile(self._chain_with([56000, 56100, None, 56200]), 56000.0, {}, vix=20)
 
-    def test_nan_in_the_ladder_still_raises(self):
-        with self.assertRaises(ValueError):
-            brain.chain_profile(self._chain_with([56000, 56100, float('nan'), 56200]),
+    def test_nan_in_the_ladder_no_longer_aborts_the_profile(self):
+        """This one WAS a raise out of get_strike (`int(nan)` -> ValueError) and is now contained.
+
+        It is the one malformed-input case that belonged to the lookup rather than to the surrounding
+        legacy arithmetic: a NaN survives `abs(nan - atm)` and every comparison, so it reached
+        `get_strike` and aborted the whole profile. It now resolves to "row not found" and the profile
+        builds, degraded, from the strikes that are real."""
+        p = brain.chain_profile(self._chain_with([56000, 56100, float('nan'), 56200]),
                                 56000.0, {}, vix=20)
+        self.assertIsNotNone(p)
+        self.assertIn('ivSkew', p)
 
     def test_the_helper_itself_tolerates_all_three(self):
         """The boundary is exactly here: inference is safe, the surrounding legacy profile is not."""
@@ -446,26 +453,296 @@ class TestEndToEndLimitsOfThisRepair(unittest.TestCase):
             ev = infer(bad, 56100)
             self.assertIn(ev['status'], ('OK', 'AMBIGUOUS'), repr(bad))
 
-    def test_a_float_atm_defeats_the_strike_lookup_regardless_of_the_interval(self):
-        """Codex R1 correction 3b, confirmed against the real producer: OptionChainBrainFormatter
-        declares `var atmStrike = 0.0` and emits atm as a Double, while strikes are keyed
-        `strike.toInt().toString()`. So atm +- otm_dist is a float, str() gives "56200.0", and
-        get_strike misses the integer-string key -- even with an integral interval.
 
-        This is a SEPARATE pre-existing representation defect. This commit does not fix it, and the
-        sparse-interval repair alone is therefore necessary but NOT sufficient in production."""
-        strikes = {'56000': {'CE': {'iv': 20}}, '56200': {'CE': {'iv': 20}}}
-        self.assertIsNotNone(brain.get_strike(strikes, 56000 + 200))      # int ATM resolves
-        self.assertIsNone(brain.get_strike(strikes, 56000.0 + 200))       # float ATM does not
-        self.assertIsNone(brain.get_strike(strikes, 56200.0))
+class TestProducerStrikeRepresentation(unittest.TestCase):
+    """RETRACTION, with the evidence that corrects it.
 
-    def test_the_producer_really_emits_a_double_atm_and_integer_string_keys(self):
+    I previously told the reviewer -- and the reviewer authorised a repair commit on the strength of
+    it -- that `chain_profile` sees a FLOAT atm in production, because
+    `OptionChainBrainFormatter` declares `var atmStrike = 0.0` and keys strikes as
+    `strike.toInt().toString()`; and therefore that the sparse-interval repair might be inert in
+    production. **That conclusion was wrong.** The Kotlin types are as described, but I stopped at the
+    producer and never followed the payload across the language boundary.
+
+    The boundary normalises it. `MarketWatchService` hands the brain `ctxObj.toString()` and
+    `brain.analyze` does `json.loads`, so every number is re-rendered as JSON text first -- and both
+    org.json implementations in use print an integral double as an integer literal. The committed
+    golden formatter output proves it directly, and these tests read that file rather than restating
+    the claim.
+
+    Commit A's interval repair therefore DOES take effect on production input, and the
+    representation hardening is hardening, not a prerequisite. See TestFourWayMatrix.
+    """
+
+    # tests/ -> python/ -> main/ -> src/, then src/test/resources/...
+    GOLDEN = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))), 'test', 'resources', 'contracts',
+        'x1_upstox_formatted_golden.json')
+
+    def _golden_chains(self):
+        import json
+        with open(self.GOLDEN, encoding='utf-8') as fh:
+            doc = json.load(fh)
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if 'allStrikes' in node and 'atm' in node and 'strikes' in node:
+                    found.append(node)
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+        walk(doc)
+        return found
+
+    def test_the_producer_kotlin_really_does_hold_doubles(self):
+        """The half of the original claim that was true, kept so the retraction is checkable."""
         base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__)))), 'java', 'com', 'marketradar', 'app')
         src = open(os.path.join(base, 'OptionChainBrainFormatter.kt'), encoding='utf-8').read()
         self.assertIn('var atmStrike = 0.0', src)
         self.assertIn('result.put("atm", atmStrike)', src)
         self.assertIn('strikesObj.put(strike.toInt().toString(), strikeObj)', src)
+
+    def test_the_context_crosses_into_python_as_json_text(self):
+        """The step the original claim skipped: there is a serialisation boundary in between."""
+        base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), 'java', 'com', 'marketradar', 'app')
+        src = open(os.path.join(base, 'MarketWatchService.kt'), encoding='utf-8').read()
+        self.assertIn('ctxObj.toString()', src)
+        brain_src = open(os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'brain.py'), encoding='utf-8').read()
+        self.assertIn("ctx = json.loads(context_json) if context_json else {}", brain_src)
+
+    def test_the_golden_formatter_output_carries_integers_not_floats(self):
+        """Decisive: real captured formatter output, after serialisation. atm and every strike in
+        allStrikes parse as int, and no strike key carries a decimal point."""
+        chains = self._golden_chains()
+        self.assertGreaterEqual(len(chains), 1, 'golden fixture shape changed')
+        for ch in chains:
+            self.assertIsInstance(ch['atm'], int)
+            self.assertFalse(isinstance(ch['atm'], bool))
+            for k in ch['allStrikes']:
+                self.assertIsInstance(k, int, repr(k))
+            for key in ch['strikes']:
+                self.assertNotIn('.', str(key), key)
+
+    def test_the_lookup_resolves_the_golden_payload_as_the_live_path_would(self):
+        """End to end on real captured input: atm +- a modal-interval multiple resolves."""
+        for ch in self._golden_chains():
+            ev = infer(ch['allStrikes'], ch['atm'])
+            if ev['status'] != 'OK':
+                continue
+            step = ev['value']
+            for d in (0, step, 2 * step):
+                for k in (ch['atm'] + d, ch['atm'] - d):
+                    if str(int(k)) in ch['strikes']:
+                        self.assertIsNotNone(brain.get_strike(ch['strikes'], k), k)
+
+
+class TestStrikeKeyRepresentation(unittest.TestCase):
+    """The representation hardening in `get_strike` / `_strike_key_candidates`.
+
+    The previous body had no `str(int(k))` spelling, so a float request missed an integer-string key,
+    and `int(k)` raised on NaN. Production is unaffected (above), so this is containment for an
+    un-collapsed payload, a non-integral interval, or a bad entry in `allStrikes`.
+    """
+
+    STRIKES = {'56000': {'CE': {'iv': 20}}, '56200': {'CE': {'iv': 21}},
+               '56250': {'CE': {'iv': 22}}}
+
+    def test_equivalent_integral_spellings_all_resolve_to_one_row(self):
+        rows = [brain.get_strike(self.STRIKES, k) for k in (56200, 56200.0, '56200', '56200.0')]
+        for r in rows:
+            self.assertIsNotNone(r)
+        self.assertEqual([r['CE']['iv'] for r in rows], [21, 21, 21, 21])
+
+    def test_float_atm_plus_integral_offset_now_resolves(self):
+        """The exact case the earlier test asserted as broken; it is now contained."""
+        self.assertIsNotNone(brain.get_strike(self.STRIKES, 56000.0 + 200))
+        self.assertIsNotNone(brain.get_strike(self.STRIKES, 56200.0))
+
+    def test_numeric_keys_still_work(self):
+        """Existing numeric-dictionary behaviour is preserved, both int- and float-keyed."""
+        self.assertIsNotNone(brain.get_strike({56200: {'CE': {}}, 'x': 1}, 56200))
+        self.assertIsNotNone(brain.get_strike({56200: {'CE': {}}}, 56200.0))
+        self.assertIsNotNone(brain.get_strike({56200.0: {'CE': {}}}, 56200))
+        self.assertIsNotNone(brain.get_strike({56200.0: {'CE': {}}}, '56200'))
+
+    def test_a_genuinely_fractional_strike_is_never_truncated(self):
+        """56250.5 is NOT 56250. Truncating would silently read a different contract."""
+        self.assertIsNone(brain.get_strike(self.STRIKES, 56250.5))
+        self.assertIsNone(brain.get_strike(self.STRIKES, '56250.5'))
+        frac = {'56250.5': {'CE': {'iv': 30}}, '56250': {'CE': {'iv': 22}}}
+        self.assertEqual(brain.get_strike(frac, 56250.5)['CE']['iv'], 30)
+        self.assertEqual(brain.get_strike(frac, 56250)['CE']['iv'], 22)
+
+    def test_a_fractional_request_resolves_a_float_key(self):
+        self.assertIsNotNone(brain.get_strike({56250.5: {'CE': {}}}, 56250.5))
+        self.assertIsNotNone(brain.get_strike({56250.5: {'CE': {}}}, '56250.5'))
+
+    def test_absent_strike_is_none_not_an_error(self):
+        self.assertIsNone(brain.get_strike(self.STRIKES, 99999))
+        self.assertIsNone(brain.get_strike({}, 56200))
+        self.assertIsNone(brain.get_strike(None, 56200))
+
+    def test_invalid_and_nonfinite_requests_return_none_instead_of_raising(self):
+        """The previous body raised on NaN via int(nan), out of the middle of chain_profile."""
+        for bad in (float('nan'), float('inf'), float('-inf'), 'abc', '', None, True, False,
+                    [56200], {'k': 1}, object()):
+            self.assertIsNone(brain.get_strike(self.STRIKES, bad), repr(bad))
+
+    def test_candidate_spellings_and_their_refusal_reasons(self):
+        cands, reason = brain._strike_key_candidates(56200.0)
+        self.assertIsNone(reason)
+        self.assertEqual(cands, [56200.0, 56200, '56200', '56200.0'])
+        cands, reason = brain._strike_key_candidates(56250.5)
+        self.assertIsNone(reason)
+        self.assertEqual(cands, [56250.5, '56250.5'])
+        self.assertNotIn(56250, cands)
+        self.assertNotIn('56250', cands)
+        for bad, expected in ((True, 'BOOLEAN_NOT_A_STRIKE'), ('abc', 'NOT_NUMERIC'),
+                              (float('nan'), 'NOT_FINITE'), (None, 'UNSUPPORTED_TYPE')):
+            cands, reason = brain._strike_key_candidates(bad)
+            self.assertEqual((cands, reason), ([], expected), repr(bad))
+
+    def test_no_epsilon_tolerance_is_applied(self):
+        """A near-miss must not resolve: it names a strike that was not asked for."""
+        self.assertIsNone(brain.get_strike(self.STRIKES, 56200.0001))
+        self.assertIsNone(brain.get_strike(self.STRIKES, 56199.9999))
+
+    def test_conflicting_spellings_resolve_in_documented_priority_order(self):
+        """Request's own spelling first, then int, integer-string, float, float-string."""
+        d = {56200: {'CE': {'iv': 1}}, '56200': {'CE': {'iv': 2}}, '56200.0': {'CE': {'iv': 3}}}
+        self.assertEqual(brain.get_strike(d, '56200')['CE']['iv'], 2)
+        self.assertEqual(brain.get_strike(d, '56200.0')['CE']['iv'], 3)
+        self.assertEqual(brain.get_strike(d, 56200)['CE']['iv'], 1)
+
+    def test_present_but_falsy_rows_still_read_as_absent(self):
+        """Unchanged on purpose. Every call site applies `or {}`, so this is inert; changing it is a
+        separate decision rather than a side effect of this repair."""
+        self.assertIsNone(brain.get_strike({'56200': {}}, 56200))
+        self.assertIsNone(brain.get_strike({'56200': None}, 56200))
+        self.assertEqual(brain.get_strike({'56200': {}, 56200.0: {'CE': {'iv': 9}}},
+                                          56200)['CE']['iv'], 9)
+
+
+class TestFourWayMatrix(unittest.TestCase):
+    """{old, new} interval x {old, fixed} lookup, on the real serialised payload shape AND on the
+    hypothetical un-serialised Double shape. This is what separates the sparse-wing defect from the
+    representation defect -- and it shows the representation fix changes nothing in production.
+    """
+
+    FIELDS = ('ivSkew', 'ivSlope', 'netDelta', 'volRatio', 'avgTheta', 'avgVega', 'pcrOi')
+
+    @staticmethod
+    def _greek_leg(iv):
+        """This class needs its own leg builder: the shared `leg()` carries no greeks, so netDelta /
+        avgTheta / avgVega would read 0.0 for a FIXTURE reason and could not evidence anything about
+        the lookup. (An earlier version of this test asserted on them anyway and was wrong.)"""
+        d = {'oi': 1000, 'volume': 10, 'prev_oi': 900, 'ltp': 50.0, 'bid': 49.0, 'ask': 51.0,
+             'delta': 0.5, 'theta': -3.0, 'vega': 8.0}
+        if iv is not None:
+            d['iv'] = iv
+        return d
+
+    @staticmethod
+    def _old_get_strike(strikes_dict, k):
+        """The pre-repair body, verbatim."""
+        if not strikes_dict:
+            return None
+        return (strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k)))
+                or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None))
+
+    @staticmethod
+    def _old_interval(all_strikes, atm=None, **kw):
+        """The pre-repair step: all_k[1] - all_k[0], i.e. the sparse far wing."""
+        ladder = list(all_strikes or [])
+        v = (ladder[1] - ladder[0]) if len(ladder) > 1 else None
+        if not v or v <= 0:
+            return {'value': None, 'status': 'UNAVAILABLE', 'reason': 'FORCED', 'source': None,
+                    'candidate_value': None, 'evidence': None, 'gaps_considered': 0,
+                    'modal_count': 0, 'distinct_gaps': 0, 'helper_value': None,
+                    'helper_agrees': None, 'version': 'forced-legacy-wing-gap'}
+        return {'value': int(v) if float(v).is_integer() else v, 'status': 'OK', 'reason': None,
+                'source': 'FORCED_LEGACY_WING_GAP', 'candidate_value': v, 'evidence': 'FORCED',
+                'gaps_considered': 0, 'modal_count': 0, 'distinct_gaps': 0, 'helper_value': v,
+                'helper_agrees': True, 'version': 'forced-legacy-wing-gap'}
+
+    def _chain(self, floaty):
+        """The brief's sparse fixture, keyed exactly as the producer keys it (`str(int(strike))`)."""
+        strikes = {}
+        for k in SPARSE_LADDER:
+            near = abs(k - ATM) <= NEAR_IV_WINDOW
+            strikes[str(int(k))] = {'CE': self._greek_leg(20 if near else None),
+                                    'PE': self._greek_leg(22 if near else None)}
+        cast = float if floaty else int
+        return {'strikes': strikes, 'allStrikes': [cast(k) for k in SPARSE_LADDER],
+                'atm': cast(ATM), 'dailySigma': DAILY_SIGMA, 'callWallStrike': 57000,
+                'putWallStrike': 55000, 'expiry': '2026-11-23',
+                'requested_underlying_key': 'NSE_INDEX|Nifty Bank'}
+
+    def _cell(self, interval_fn, lookup_fn, floaty):
+        real_i, real_g = brain.infer_strike_interval, brain.get_strike
+        brain.infer_strike_interval, brain.get_strike = interval_fn, lookup_fn
+        try:
+            p = brain.chain_profile(self._chain(floaty), float(ATM),
+                                    {'open': ATM, 'high': ATM, 'low': ATM}, vix=12.0) or {}
+        finally:
+            brain.infer_strike_interval, brain.get_strike = real_i, real_g
+        return {f: p.get(f) for f in self.FIELDS}
+
+    def _matrix(self, floaty):
+        return {
+            'old_interval_old_lookup': self._cell(self._old_interval, self._old_get_strike, floaty),
+            'new_interval_old_lookup': self._cell(brain.infer_strike_interval,
+                                                  self._old_get_strike, floaty),
+            'old_interval_new_lookup': self._cell(self._old_interval, brain.get_strike, floaty),
+            'new_interval_new_lookup': self._cell(brain.infer_strike_interval,
+                                                  brain.get_strike, floaty),
+        }
+
+    def test_on_the_real_payload_the_interval_is_what_matters_and_the_lookup_is_inert(self):
+        m = self._matrix(floaty=False)
+        # the interval repair is what moves the features
+        self.assertEqual((m['old_interval_old_lookup']['ivSkew'],
+                          m['old_interval_old_lookup']['ivSlope']), (0, 0.0))
+        self.assertEqual((m['new_interval_new_lookup']['ivSkew'],
+                          m['new_interval_new_lookup']['ivSlope']), (2, 1.0))
+        # and the lookup change is inert: the two lookups agree in BOTH interval columns
+        self.assertEqual(m['old_interval_old_lookup'], m['old_interval_new_lookup'])
+        self.assertEqual(m['new_interval_old_lookup'], m['new_interval_new_lookup'])
+
+    def test_the_real_payload_profile_is_unchanged_field_for_field_by_the_lookup_repair(self):
+        """Full-field, not just the matrix columns: no production field moves."""
+        ch = self._chain(floaty=False)
+        real_g = brain.get_strike
+        brain.get_strike = self._old_get_strike
+        try:
+            before = brain.chain_profile(ch, float(ATM), {}, vix=12.0)
+        finally:
+            brain.get_strike = real_g
+        after = brain.chain_profile(ch, float(ATM), {}, vix=12.0)
+        self.assertEqual(set(before), set(after))
+        for k in before:
+            self.assertEqual(before[k], after[k], k)
+
+    def test_on_an_unserialised_double_payload_the_lookup_repair_is_what_matters(self):
+        """The shape the retracted claim described. It does not occur in production, but if it ever
+        did, EVERY get_strike-derived feature would be degenerate until the lookup is fixed."""
+        m = self._matrix(floaty=True)
+        for cell in ('old_interval_old_lookup', 'new_interval_old_lookup'):
+            self.assertEqual(m[cell]['ivSkew'], 0, cell)
+            self.assertEqual(m[cell]['netDelta'], 0.0, cell)
+            self.assertEqual(m[cell]['avgVega'], 0.0, cell)
+        self.assertEqual(m['new_interval_new_lookup']['ivSkew'], 2)
+        self.assertEqual(m['new_interval_new_lookup']['ivSlope'], 1.0)
+        self.assertNotEqual(m['new_interval_new_lookup']['netDelta'], 0.0)
+        # both repairs are needed on that shape: neither alone recovers the features
+        self.assertNotEqual(m['new_interval_old_lookup'], m['new_interval_new_lookup'])
+        self.assertNotEqual(m['old_interval_new_lookup'], m['new_interval_new_lookup'])
 
 
 class TestOrdinaryLadderFullFieldParity(unittest.TestCase):

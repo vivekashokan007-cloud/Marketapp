@@ -29,16 +29,22 @@ Python 3.11.18. No kotlinc / Android SDK in this environment: **Kotlin is compil
 
 | Stage | State | Evidence |
 |---|---|---|
-| 0 — capability, base SHAs, source/consumer map | **done for direction; coverage inventory partial** | §"Source-to-consumer" below |
-| A — sparse-strike repair | **implemented + tested; awaiting Codex review** | this branch |
-| B–C — observer, schema, causal path/ranks | not started | to be a separate branch `review/claude-empirical-direction-20261107` off verified main |
-| D — E0/E1 estimators | not started | |
-| E — per-poll adapter, flag, resources | not started | |
+| 0 — capability, base SHAs, source/consumer map | **done for direction**; coverage inventory now extended by the recovered extracts | §"Source-to-consumer", §"Recovered offline inputs" |
+| A — sparse-strike repair | **implemented + tested; R1 and R2 corrections applied; PR #44, CI green at `335c274f`** | this branch |
+| A′ — metadata channel removal | **done** | commit `89e70d6` |
+| A″ — strike-representation hardening | **done, separable; premise retracted** (see the RETRACTED section) | this commit |
+| B–C — observer, schema, causal path/ranks | **pushed; PR #45 (draft); five Codex blockers B1–B5 open** | branch `review/claude-empirical-direction-20261107` @ `bdf201ce` |
+| D — E0/E1 estimators | not started; **unblocked on price-only data** by the recovered extracts | §"Recovered offline inputs" |
+| E — per-poll adapter, flag, resources | not started; needs D's engine tests **and** admission/ranking/notification/display tracing | only the verdict path is traced so far |
 | F — review package, option/multi-day matrix | not started | |
 
-**Next executable step:** open the Commit A PR, then start B–C on a *separate* branch based on
-`755b127a…` (verified main), not on this unapproved repair. A price-only path must remain able to
-proceed without Commit A.
+**Next executable step:** fix observer blockers B1–B5 on the B+C branch, in that order, each
+reproduced as a failing test before the fix. B1 (future / session-mismatched observations) is first
+because B2's causal-cutoff enforcement depends on the same clock contract. No estimator fitting and
+no direction-quality claim until those land — Codex's instruction, and the ranks are wrong until then.
+
+Commit A's branch is **not** an ancestor of the direction branch, so the price-only path proceeds
+whether or not the repair is approved (`git merge-base --is-ancestor` verified).
 
 ---
 
@@ -59,7 +65,7 @@ bugfix replaced via `_infer_strike_step`; `chain_profile` was never migrated.
 **Reproduced before editing.** `legacy_step(SPARSE_LADDER, 56000) == 1500`, and the strikes at
 `atm ± 1500` carry no `iv` key at all in the fixture.
 
-**Repair.** New `infer_strike_interval(all_strikes, atm, metadata_step)` plus
+**Repair.** New `infer_strike_interval(all_strikes, atm)` plus
 `_normalise_strike_ladder`. `_infer_strike_step` is **unchanged** — candidate generation and the
 teaching band call it, and altering it here would mix two changes.
 
@@ -70,10 +76,10 @@ interval. `infer_strike_interval` instead takes the **modal gap near the money**
 ATM, where these features actually sample), returns an explicit status, and records
 `helper_value` / `helper_agrees` so a disagreement is visible rather than absorbed.
 
-Rule order: valid dated `strikeInterval` metadata → near-ATM modal gap → global modal gap.
-Ties resolve to the tighter interval. A ladder with no repeating gap and ≥3 distinct gaps returns
-`AMBIGUOUS` / `NO_MODAL_INTERVAL` rather than inventing a number. It takes **no spot argument** —
-spot must not infer ladder geometry.
+Rule order (v3): near-ATM modal gap → global modal gap when ATM is unknown. There is no metadata
+override — see the v3 contract below. A ladder with no unique repeated gap returns `AMBIGUOUS` with a
+specific reason rather than inventing a number. It takes **no spot argument** — spot must not infer
+ladder geometry.
 
 `chain_profile` keeps an **explicitly isolated legacy fallback** (`100 if spot > 30000 else 50`),
 reached only when the interval is unavailable or ambiguous, so existing consumers still get a value
@@ -85,21 +91,59 @@ evidence can exclude the field instead of inheriting the fallback.
 `100.0`, making `atm + otm_dist` a float and `str()` produce `"56200.0"` — missing a strikes dict keyed
 `"56200"`. Integral intervals are now narrowed to `int`.
 
-**Correction after Codex R1 (my earlier claim was too broad).** That type guard is **necessary but not
-sufficient**. Verified against the real producer: `OptionChainBrainFormatter` declares
-`var atmStrike = 0.0` and emits `atm` as a **Double**, while strikes are keyed
-`strike.toInt().toString()`. So `atm ± otm_dist` is a float in production, `str()` gives `"56200.0"`,
-and `get_strike` misses the integer-string key **even with an integral interval**:
+### RETRACTED: the float-ATM claim, and what actually happens
 
-```
-get_strike(strikes, 56000  + 200) -> found
-get_strike(strikes, 56000.0 + 200) -> None
-```
+An earlier revision of this file, and the Checkpoint 1 handoff built on it, said that `atm` reaches
+`chain_profile` as a **float** in production — because `OptionChainBrainFormatter` declares
+`var atmStrike = 0.0` and keys strikes `strike.toInt().toString()` — and therefore that **Commit A
+might be inert in production**. I raised that as the most important open decision, and Codex
+authorised a repair commit on the strength of it.
 
-That is a **separate, pre-existing representation defect**. This commit does **not** fix it, and
-therefore the sparse-interval repair alone is **necessary but not sufficient in production** — the IV
-features can remain 0 until the ATM/key representation is addressed. Recorded here and tested as a
-documented limit; deliberately not folded into this repair.
+**That conclusion was wrong.** The Kotlin types are as described, but I stopped at the producer and
+never followed the payload across the language boundary. The boundary normalises it:
+
+- `MarketWatchService` passes `ctxObj.toString()` to `brain.analyze`, which does
+  `ctx = json.loads(context_json)`. Every number is re-rendered as JSON **text** first.
+- Both org.json implementations in use print an integral double as an integer literal.
+- The committed golden formatter output,
+  `app/src/test/resources/contracts/x1_upstox_formatted_golden.json`, shows `"atm":24650` and
+  `"allStrikes":[24250,24300,…]`. After `json.loads` these are Python **ints**, and no strike key
+  contains a decimal point.
+
+So the live request is `int + int`, `str()` of it matches the integer-string key, and **the interval
+repair does take effect on production input.** Measured four-way matrix on the brief's sparse fixture,
+keyed exactly as the producer keys it:
+
+| payload | lookup | `ivSkew` | `ivSlope` | `netDelta` | `avgTheta` | `avgVega` |
+|---|---|---|---|---|---|---|
+| real (int), old interval | old | 0 | 0.0 | 0.11 | 6.0 | 16.0 |
+| real (int), **new interval** | old | **2** | **1.0** | 0.11 | 6.0 | 16.0 |
+| real (int), old interval | new | 0 | 0.0 | 0.11 | 6.0 | 16.0 |
+| real (int), **new interval** | new | **2** | **1.0** | 0.11 | 6.0 | 16.0 |
+| hypothetical Double, old interval | old | 0 | 0.0 | **0.0** | **0.0** | **0.0** |
+| hypothetical Double, new interval | old | 0 | 0.0 | **0.0** | **0.0** | **0.0** |
+| hypothetical Double, old interval | **new** | 0 | 0.0 | 0.11 | 6.0 | 16.0 |
+| hypothetical Double, **new interval** | **new** | **2** | **1.0** | 0.11 | 6.0 | 16.0 |
+
+On the real payload the two lookups agree in both interval columns, and a full-field comparison of
+every pre-existing profile field is identical — **the lookup repair changes nothing in production.**
+Only on the un-serialised Double shape does it matter, and there both repairs are needed: neither
+alone recovers the features.
+
+**Consequence for the representation repair.** It is **hardening, not a prerequisite**, and it is in
+its own commit so it can be rejected without touching the interval repair. It still fixes one real
+reachable defect: `get_strike` called `int(k)`, which **raised** on a NaN, and `allStrikes` entries
+are handed to it unfiltered — so a NaN in the ladder aborted the whole profile with
+`ValueError: cannot convert float NaN to integer`. That now degrades to "row not found" and the
+profile builds from the strikes that are real.
+
+What the repair does: `_strike_key_candidates` enumerates the spellings of one strike (int,
+integer-string, float, float-string) in a documented priority order; a **genuinely fractional** strike
+is never truncated onto a neighbouring integer contract; no epsilon tolerance is used, because
+integral values below 2⁵³ are exact and the `atm ± n·step` arithmetic is exact for them, so a
+tolerance could only match a strike that was not asked for; invalid, non-finite and non-numeric
+requests return `None` instead of raising. Truthiness-based selection is deliberately **unchanged**,
+so a present-but-falsy row still reads as absent exactly as before.
 
 **Malformed-input scope, narrowed.** The helper normalises its own private ladder, but `chain_profile`
 keeps using the original `all_k` for zone iteration and other arithmetic, so string / `None` / `NaN`
@@ -107,9 +151,9 @@ entries in `allStrikes` still raise `TypeError` / `ValueError` **end to end**. T
 limits of the legacy profile, not regressions introduced here** — the old code was equally intolerant.
 Tested and recorded rather than widened into a rewrite of every profile calculation.
 
-### Interval contract after Codex R1 (v2)
+### Interval contract after Codex R1/R2 (v3)
 
-`STRIKE_INTERVAL_VERSION = strike_interval_v2_unique_repeated_mode_bound_metadata`.
+`STRIKE_INTERVAL_VERSION = strike_interval_v3_unique_repeated_mode_ladder_only`.
 
 **`OK` now requires a UNIQUE and REPEATED modal interval.** The v1 contract returned `OK` whenever a
 single mode existed, or broke ties by preferring the tighter gap — so Codex's probes
@@ -130,17 +174,23 @@ cannot be mistaken for a verified applied value. Ordering matters and is comment
 repeats, every distinct gap is a "mode" of count 1, so a tie check placed first mislabels a
 no-repetition ladder — a flaw in my own first fix, caught by test.
 
-**Metadata must be bound, and no producer exists.** v1 accepted any finite positive number and
+**The metadata override channel is DELETED (v3).** v1 accepted any finite positive number and
 labelled it `OK/METADATA`, so `strikeInterval = 1500` or `7` was applied as trusted evidence and
-reinstated the original failure. Worse, the comment called it "dated metadata" while a
-repository-wide search finds **no writer** of `strikeInterval` / `strike_interval` in Python, Kotlin or
-the PWA — only my own consumer. **The channel was invented.**
+reinstated the original failure. The comment also called it "dated metadata" while a repository-wide
+search finds **no writer** of `strikeInterval` / `strike_interval` in Python, Kotlin or the PWA —
+only my own consumer. **The channel was invented.**
 
-`_bound_metadata_interval` now requires a mapping carrying `interval, index, expiry, as_of, source`,
-matching the index and expiry being profiled, non-stale, and **consistent with the observed ladder**
-(the stated interval must actually appear as an adjacent gap). A bare number is refused
-(`UNBOUND_BARE_VALUE`). `chain_profile` passes **no metadata at all**, so the live path cannot be
-fooled today. A test asserts no producer exists and will fail if one is added.
+The v2 binding contract that replaced it could not be established either, and Codex enumerated why: a
+caller passing `index/expiry/session_date=None` skipped every binding check (and `chain_profile` was
+such a caller for two of the three), a **future** `as_of` passed the lexical staleness comparison, a
+non-empty `source` string authenticated nothing, and "appears as an adjacent gap somewhere in the
+ladder" would still accept a sparse 1500 against a dense 100 **local** ladder.
+
+So in v3 there is no parameter, no helper and no constant — the interval comes from the observed
+ladder only. The contract a real producer must meet is recorded as a comment, not as live code:
+parsed dates with explicit as-of semantics, trusted and complete binding context, **local**
+applicability rather than any-gap matching, and contradiction tests. Two tests assert the channel is
+gone; the no-producer scan is kept, so adding a producer fails the suite and points at that review.
 
 The **±6-strike window** is a proposed geometric heuristic with a bounded purpose — the interval is
 used to sample near the money, so it is inferred there. It is not a market threshold. Boundary tests
@@ -157,8 +207,8 @@ cover a distant density change, ATM inside a sparse region, and explicit window 
 | tied-mode ladder | 100 | **none** | `AMBIGUOUS` | legacy fallback | legacy fallback |
 
 **Correcting an earlier overstatement:** changes are **not** confined to a sparse ladder. Tied-mode
-ladders, no-repetition ladders and a refused metadata override are also changed paths. Three distinct
-changed paths, asserted by test.
+ladders and no-repetition ladders are also changed paths, asserted by test. (The third path cited
+earlier was a refused metadata override; that channel no longer exists in v3, so there are two.)
 
 **Full-field parity on ordinary ladders** is now tested directly, not inferred from step equality:
 every pre-existing profile field is compared between the forced-legacy-step run and the new run on
@@ -198,8 +248,10 @@ PYTHONPATH=app/src/main/python python3 app/src/main/python/tests/test_chain_prof
 PYTHONPATH=app/src/main/python python3 -m unittest discover -s app/src/main/python/tests -p 'test_*.py'
 ```
 
-Results: Commit A suite **29 tests OK**; full Python suite **1935 tests OK**, 0 failures, 2 skipped.
-`python3 -m py_compile` clean; `git diff --check` clean.
+Results at this head: Commit A suite **67 tests OK** (29 → 54 after R1 → 67 after R2); full Python
+suite **1973 tests OK**, 0 failures, 2 skipped. `python3 -m py_compile` clean; `git diff --check`
+clean. GitHub review validation was **green at `335c274f`** (run 42359069861, all 28 steps); this head
+adds two commits and needs its own CI run.
 
 ---
 
@@ -248,6 +300,79 @@ fields/dates rather than fitted on manufactured history.
 
 ---
 
+## Recovered offline inputs — manifest and coverage audit
+
+Supplied as embedded appendices in the Codex Checkpoint 1 review and recreated under a **private
+offline input directory outside this repository**. The data files are deliberately **not committed**
+and nothing was uploaded to production storage; only this manifest is recorded here.
+
+All seven files verified **byte-exact** against their stated byte count and SHA-256:
+
+| file | bytes | SHA-256 (first 16) |
+|---|---|---|
+| `old/spots_enc_20260901_20261030.txt` | 34573 | `68d5146326f91ce9…` |
+| `old/chainA_window_20260901_20261030.txt` | 28413 | `e841f0756aeaed7d…` |
+| `new/spots_20261102_20261105.txt` | 7658 | `e36639a1e2965d0f…` |
+| `new/chainA_20261102_20261105.txt` | 2775 | `61765783c2245721…` |
+| `new/phone_dirs_20261105.txt` | 704 | `9446a700b0766b13…` |
+| `scripts/replay_all_e5e0fe9.py` | 3671 | `9193932a2657de15…` |
+| `scripts/recon_20261105.py` | 4235 | `6d1074cb0fbcb4d3…` |
+
+Checksums establish **these copies**, not original raw-source completeness — Codex's own caveat, and
+it stands. The supplied scripts were **read, not run**; the decoder and auditor used here were written
+separately and are recorded as adapted code.
+
+**Decode, independently validated.** The old file is `date slot:nfDelta:bnfDelta …`, 1-based slots,
+first listed slot absolute and all later ones cumulative, every value ×20. Validation: for **all 90**
+`chainA` rows the stated 09:20 spot matches the decoded value at **slot 1** exactly (1e-6), across
+both indices and both eras. Independent row count for 01 Sep–30 Oct is **2,969**, matching the count
+Codex stated without my having been told how to decode it.
+
+**Clock mapping is reconstructed, not a source fact:** slot 1 = 09:20 and slot *n* = 09:15 + 5*n* min,
+derived from that match. Recorded as derived wherever it is used.
+
+| | sessions | observed slot rows | internal gaps |
+|---|---|---|---|
+| 01 Sep – 30 Oct (old) | 41 | 2,969 | 193 |
+| 02 Nov – 05 Nov (new) | 4 | 298 | 0 |
+| **total** | **45** | **3,267** | **193** |
+
+Sessions unusable or degraded, which must be excluded or flagged rather than averaged over:
+
+| session | slots | gaps | note |
+|---|---|---|---|
+| 2026-09-28 | 7 of 77 | 60 | near-total outage; ends 14:50 |
+| 2026-10-07 | 46 | 32 | |
+| 2026-10-08 | 56 | 21 | ends 15:35 |
+| 2026-09-30 | 65 | 13 | |
+| 2026-10-01 | 67 | 11 | |
+| 2026-10-19 | 69 | 9 | |
+
+**5 November, explicitly.** 64 slots, ids 0–63, **zero internal gaps**, reconstructed 09:15 → 14:30.
+Slots 64–77 (14:35 onward) are **absent** — the extract stops mid-session, so no 5 Nov label with a
+horizon ending after 14:30 can be matured from it. `phone_dirs_20261105.txt` carries exactly 64
+timestamped entries over the same 09:15–14:30 range, so the two align 1:1; its codes are
+`UNUN`×3, `NENE`×29, `NEBU`×19, `BUBU`×12, `BUNE`×1 (first two letters NF, last two BNF;
+UN/NE/BU). That series is a **phone-reported direction label**, not an independent price source.
+
+**Staleness.** 168 repeated-value runs start at slot ≥ 70 — a systematic post-close tail (slots
+72–74 and 75–77 repeat in most sessions), consistent with a fixed 78-slot pad past the 15:30 close.
+Only **5** repeated pairs occur mid-session across all 45 sessions (2026-09-17 NF 12:30–12:35,
+2026-09-21 NF 09:55–10:00 and 10:55–11:00, 2026-09-29 NF 11:40–11:45, 2026-11-03 BNF 13:00–13:05).
+Negligible in volume, but flagged rather than consumed as fresh observations.
+
+**What the opening chain windows are NOT.** 90 rows, **09:20 only**, 10 legs each, fields limited to
+`strike, ceBid, ceAsk, peBid, peAsk`. No IV, no Greeks, no OI, no volume, and **no intraday series**.
+NF calendar DTE spans 0–6, BNF 0–28; 12 rows are own-expiry-day (`date == expiry`), 10 NF and 2 BNF.
+Any option-leg feature after 09:20 is **unsupported** by this evidence, and an option-based arm cannot
+be built from it.
+
+**Consequence for D.** A **price-only** E0/E1 arm is feasible on 45 sessions / 3,267 observations with
+explicit as-of and label-maturity limits. An option-priced arm is **not**. I will not claim the
+supplied replay script reproduces phone parity without adapting and validating its clock and
+interface assumptions, and no estimator is fitted until the observer's B1–B5 causal defects are fixed.
+
+---
 ## Not claimed
 
 - No direction-quality, forecast or profitability claim anywhere in Commit A.
