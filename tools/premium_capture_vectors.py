@@ -44,8 +44,8 @@ VECTORS_PATH = 'app/src/test/resources/premium_capture/canonical_vectors.json'
 
 # mirrors PremiumObservationContract; the Kotlin test asserts each of these against the real
 # constant, so a rename on either side fails CI rather than drifting silently
-RECORD_VERSION = 'mr.premium_observation.v3'
-ENVELOPE_VERSION = 'mr.premium_slot_envelope.v2'
+RECORD_VERSION = 'mr.premium_observation.v4'
+ENVELOPE_VERSION = 'mr.premium_slot_envelope.v3'
 COHORT_RULE_VERSION = 'premium_capture_cohort_v2_three_paired_strikes_validated'
 CANONICAL_SERIALIZATION = 'json_sorted_keys_compact_utf8_v1'
 HASH_OMITTED_FIELD = 'payload_sha256'

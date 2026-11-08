@@ -38,8 +38,8 @@ import org.json.JSONObject
 class PremiumCaptureSession(private val store: PremiumCaptureStore) {
 
     companion object {
-        const val SESSION_VERSION = "premium_capture_session_v2_acquisition_bound"
-        const val EXPORT_VERSION = "premium_capture_export_v2_linked_and_accounted"
+        const val SESSION_VERSION = "premium_capture_session_v3_response_evidence_bound"
+        const val EXPORT_VERSION = "premium_capture_export_v3_verified_and_resolved"
 
         // slot-level refusals, all fail-closed: nothing is written
         const val NO_SLOT_IDENTITY = "NO_SLOT_IDENTITY"
@@ -171,8 +171,24 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             anyRow, separateSpot, separateSpotSourceField, separateSpotSourceTs,
             separateSpotReceiptMs)
 
+        // R2-1: the complete batch evidence is prepared BEFORE anything is persisted, and the
+        // acquisition identity covers its digest. A quote-only change therefore cannot resume a
+        // partially written batch under the earlier identity.
+        val prepared = located.map { (p, loc) ->
+            PremiumObservationContract.observationEvidence(p, loc.outcome, loc.row, loc.leg)
+        }
+        val batchRef = PremiumObservationContract.batchEvidenceRef(prepared)
+        val requestOutcome = if (rawChain == null) PremiumObservationContract.REQUEST_FAILED
+        else PremiumObservationContract.REQUEST_RESPONSE_PRESENT
+        // Explicit attempt policy: with no clock and no vendor timestamp, two attempts carrying
+        // identical evidence are INDISTINGUISHABLE and collapse to one idempotent acquisition.
+        // That is recorded rather than hidden, because for a failed request the evidence is
+        // identical by construction and the attempt count is genuinely not recoverable.
+        val distinguishable = requestStartedMs != null || responseReceivedMs != null ||
+            !vendorSourceTs.isNullOrBlank()
         val env = PremiumObservationContract.slotEnvelope(
-            index.uppercase(), sessionDate, slotId.slot, cohort, clocks, underlying, lot)
+            index.uppercase(), sessionDate, slotId.slot, cohort, clocks, underlying, lot,
+            batchRef, requestOutcome, distinguishable)
         val acqId = env.optString("acquisition_id")
         // P2: the envelope key includes the acquisition id, so a same-slot retry with different
         // evidence becomes a DISTINCT acquisition instead of a conflict against the first one
@@ -191,9 +207,10 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         val outcomes = LinkedHashMap<String, String>()
         val deltas = HashMap<String, Long>()
         // every pinned contract gets an outcome, observed or not
-        for ((p, loc) in located) {
+        for ((i, pair) in located.withIndex()) {
+            val (p, loc) = pair
             val rec = PremiumObservationContract.observation(
-                p, cohort, sessionDate, slotId.slot, loc.outcome, loc.row, loc.leg, env)
+                prepared[i], cohort, sessionDate, index.uppercase(), slotId.slot, env)
             val key = "$sessionDate|${index.uppercase()}|${slotId.slot}|$acqId|${p.instrumentKey}"
             val r = store.put(index, sessionDate, key, rec)
             outcomes[p.instrumentKey] = loc.outcome
@@ -217,13 +234,61 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
     }
 
     /**
+     * Where an export's evidence actually came from. **Required, with no default**, so no caller
+     * can inherit a flattering claim by omission.
+     *
+     * R2-2/labelling (Codex): `export()` hardcoded `is_synthetic: false`, while the acceptance run
+     * was a transformed fixture replay — historical vendor quotes with GENERATED receipt times,
+     * MANUALLY ASSIGNED scheduler slots and a CONSTRUCTED lot table. Whatever the provenance of
+     * the quote numbers, the acquisition metadata was invented, and the export said otherwise.
+     * A future device export must obtain this from the real capture boundary.
+     */
+    data class EvidenceContext(
+        val sourceKind: String,            // LIVE_DEVICE_CAPTURE | TRANSFORMED_FIXTURE_REPLAY
+        val quoteProvenance: String,
+        val clockProvenance: String,
+        val slotProvenance: String,
+        val lotTableProvenance: String,
+        val deviceEvidence: Boolean,
+        val syntheticFields: List<String>,
+        val note: String? = null,
+    ) {
+        fun json(): JSONObject = JSONObject()
+            .put("source_kind", sourceKind)
+            .put("quote_provenance", quoteProvenance)
+            .put("clock_provenance", clockProvenance)
+            .put("slot_provenance", slotProvenance)
+            .put("lot_table_provenance", lotTableProvenance)
+            .put("device_evidence", deviceEvidence)
+            .put("synthetic_fields", JSONArray().also { a -> syntheticFields.forEach { a.put(it) } })
+            .put("note", note ?: JSONObject.NULL)
+
+        companion object {
+            /** The acceptance replay: real historical quotes, invented timing and metadata. */
+            fun transformedFixtureReplay(fixture: String, note: String? = null) = EvidenceContext(
+                sourceKind = "TRANSFORMED_FIXTURE_REPLAY",
+                quoteProvenance = "HISTORICAL_VENDOR_FIXTURE:$fixture",
+                clockProvenance = "SYNTHETIC_GENERATED_IN_TEST",
+                slotProvenance = "MANUALLY_ASSIGNED_IN_TEST",
+                lotTableProvenance = "CONSTRUCTED_TEST_TABLE",
+                deviceEvidence = false,
+                syntheticFields = listOf("clocks.acquisition_request_ms",
+                    "clocks.acquisition_response_ms", "clocks.slot_basis", "slot",
+                    "lot.contract_lot_table_ref", "lot.map_ref", "lot.lot_claimed_raw"),
+                note = note,
+            )
+        }
+    }
+
+    /**
      * Export for offline audit.
      *
-     * `lotTableObject` / `mapObject` are the ACTUAL dated metadata. When they are absent the export
-     * says `UNRESOLVED_REFERENCE` and claims no offline resolution for them (P4): a retained
-     * reference string is a name, not the data it names.
+     * `lotTableObject` / `mapObject` are the ACTUAL dated metadata. When absent, or when the
+     * resolver cannot validate them, the export says so per reference and per acquisition and
+     * claims no offline resolution: a retained reference string is a name, not the data it names.
      */
     fun export(index: String, sessionDate: String, captureStartedSlot: String?,
+               context: EvidenceContext,
                schedulerSkippedSlots: List<String> = emptyList(),
                lotTableObject: JSONObject? = null,
                mapObject: JSONObject? = null): JSONObject {
@@ -236,32 +301,88 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         // ── acquisition linkage, which is the point of the P2 fix ──────────────────────────────
         val byAcq = recRead.rows.groupBy { it.optString("acquisition_id") }
         val envByAcq = envRead.rows.associateBy { it.optString("acquisition_id") }
+        // R2-3: PHYSICAL completeness and VERIFIED usability are separate verdicts. The previous
+        // predicate counted six parsed records with matching envelope references and called that
+        // COMPLETE — it checked no record hash, no envelope hash, not the expected pinned-key set
+        // and no join dimension, so a parseable record edited on disk kept its envelope reference
+        // and still counted as complete while its own hash failed.
+        val expectedKeys = PremiumCaptureCohort.pinnedList(loaded.cohort)
+            .map { it.instrumentKey }.toSet()
+        val cohortRef = loaded.cohort?.let {
+            PremiumObservationContract.ref(PremiumObservationContract.contentHash(it)) }
         val acqRows = JSONArray()
-        var complete = 0; var partial = 0
+        val hashFailures = JSONArray()
+        var structuralComplete = 0; var partial = 0; var verified = 0
         for (e in envRead.rows) {
             val id = e.optString("acquisition_id")
             val recs = byAcq[id] ?: emptyList()
             val expectedRef = PremiumObservationContract.ref(
                 PremiumObservationContract.contentHash(e))
             val linked = recs.count { it.optString("envelope_ref") == expectedRef }
-            val state = when {
+            val keys = recs.map { it.optString("instrument_key") }.toSet()
+            val structural = when {
                 recs.size == PremiumCaptureCohort.CONTRACTS_PER_COHORT &&
-                    linked == recs.size -> "COMPLETE"
+                    linked == recs.size -> "COMPLETE_STRUCTURAL"
                 recs.isEmpty() -> "NO_OBSERVATIONS"
                 else -> "PARTIAL"
             }
-            if (state == "COMPLETE") complete++ else partial++
+            if (structural == "COMPLETE_STRUCTURAL") structuralComplete++ else partial++
+
+            // integrity, which is what makes a group USABLE as evidence
+            val why = JSONArray()
+            val envOk = PremiumObservationContract.verifyHash(e)
+            if (!envOk) why.put("envelope_hash_invalid")
+            val badHashes = recs.filter { !PremiumObservationContract.verifyHash(it) }
+            badHashes.forEach { r ->
+                why.put("record_hash_invalid")
+                val ident = JSONObject()
+                    .put("acquisition_id", id)
+                    .put("slot", r.optString("slot"))
+                    .put("instrument_key", r.optString("instrument_key"))
+                    .put("claimed_payload_sha256",
+                        r.optString(PremiumObservationContract.HASH_OMITTED_FIELD))
+                hashFailures.put(ident)
+            }
+            if (structural != "COMPLETE_STRUCTURAL") why.put("batch_not_structurally_complete")
+            if (expectedKeys.isEmpty()) why.put("cohort_unavailable_for_key_check")
+            else if (keys != expectedKeys) why.put("pinned_key_set_mismatch")
+            if (recs.size != keys.size) why.put("duplicate_instrument_keys")
+            // every join dimension must agree with the envelope and the cohort
+            if (recs.any { it.optString("session_date") != e.optString("session_date") })
+                why.put("session_date_mismatch")
+            if (recs.any { it.optString("index") != e.optString("index") })
+                why.put("index_mismatch")
+            if (recs.any { it.optString("slot") != e.optString("slot") })
+                why.put("slot_mismatch")
+            if (cohortRef == null) why.put("cohort_ref_unavailable")
+            else {
+                if (e.optString("cohort_ref") != cohortRef) why.put("envelope_cohort_ref_mismatch")
+                if (recs.any { it.optString("cohort_ref") != cohortRef })
+                    why.put("record_cohort_ref_mismatch")
+            }
+            if (recs.any { it.optString("acquisition_id") != id })
+                why.put("acquisition_id_mismatch")
+            val isVerified = why.length() == 0
+            if (isVerified) verified++
+
             acqRows.put(JSONObject()
                 .put("acquisition_id", id)
                 .put("slot", e.optString("slot"))
                 .put("envelope_ref", expectedRef)
-                .put("envelope_hash_verified", PremiumObservationContract.verifyHash(e))
+                .put("batch_evidence_ref", e.opt("batch_evidence_ref") ?: JSONObject.NULL)
+                .put("request_outcome", e.opt("request_outcome") ?: JSONObject.NULL)
+                .put("attempt_distinguishable",
+                    e.opt("attempt_distinguishable") ?: JSONObject.NULL)
+                .put("envelope_hash_verified", envOk)
                 .put("observations", recs.size)
                 .put("observations_expected", PremiumCaptureCohort.CONTRACTS_PER_COHORT)
                 .put("observations_linked_to_this_envelope", linked)
-                .put("unique_instrument_keys", recs.map { it.optString("instrument_key") }
-                    .toSet().size)
-                .put("batch_state", state))
+                .put("unique_instrument_keys", keys.size)
+                .put("records_with_invalid_hash", badHashes.size)
+                // the two verdicts, deliberately not collapsed into one word
+                .put("structural_state", structural)
+                .put("verified_state", if (isVerified) "VERIFIED" else "UNVERIFIED")
+                .put("integrity_reasons", why))
         }
         // a record whose acquisition has no envelope is UNRESOLVED and must be visible as such
         val orphanRecords = JSONArray()
@@ -310,17 +431,41 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         val mapRefs = envRead.rows.mapNotNull {
             it.optJSONObject("lot")?.optString("map_ref")?.takeIf { s -> s.isNotEmpty() }
         }.toSet()
-        val lotAuthoritative = envRead.rows.any {
-            it.optJSONObject("lot")?.optBoolean("lot_authoritative_resolved", false) == true
+        // R2-2: resolution is per acquisition and comes from an actual resolver run against the
+        // supplied table — never from `obj != null`, and never from `any { claims authority }`.
+        val underlying = loaded.cohort?.optString("underlying_key") ?: ""
+        val lotResolutions = JSONArray()
+        var lotResolved = 0; var lotConflicting = 0; var lotUnresolved = 0
+        for (e in envRead.rows) {
+            val envRef = e.optJSONObject("lot")?.optString("contract_lot_table_ref")
+            val v = PremiumObservationContract.resolveLotFromTable(
+                lotTableObject, envRef, underlying, sessionDate,
+                e.optJSONObject("lot")?.optJSONObject("lot_claimed_raw")?.opt("raw"))
+            when (v.optString("lot_resolution")) {
+                PremiumObservationContract.LOT_RESOLVED -> lotResolved++
+                PremiumObservationContract.LOT_CONFLICTS_WITH_CLAIM -> lotConflicting++
+                else -> lotUnresolved++
+            }
+            lotResolutions.put(JSONObject(v.toString())
+                .put("acquisition_id", e.optString("acquisition_id")))
         }
-        fun refBlock(names: Set<String>, obj: JSONObject?): JSONObject = JSONObject()
-            .put("referenced_names", JSONArray().also { a -> names.forEach { n -> a.put(n) } })
-            .put("resolution", if (obj != null) "RESOLVED_FROM_SUPPLIED_METADATA"
-                else if (names.isEmpty()) "NO_REFERENCE_RECORDED" else "UNRESOLVED_REFERENCE")
-            .put("metadata", obj ?: JSONObject.NULL)
-            .put("metadata_ref", if (obj != null)
-                PremiumObservationContract.ref(PremiumObservationContract.contentHash(obj))
-            else JSONObject.NULL)
+        val allLotResolved = envRead.rows.isNotEmpty() && lotResolved == envRead.rows.size
+
+        /**
+         * Metadata PRESENCE is not reference resolution. A supplied object is only ever reported
+         * as present-but-unvalidated unless a resolver actually checked it.
+         */
+        fun refBlock(names: Set<String>, obj: JSONObject?, resolution: String): JSONObject =
+            JSONObject()
+                .put("referenced_names", JSONArray().also { a -> names.forEach { n -> a.put(n) } })
+                .put("metadata_present", obj != null)
+                .put("metadata_provenance",
+                    obj?.optString("provenance")?.ifEmpty { "UNDECLARED" } ?: JSONObject.NULL)
+                .put("resolution", resolution)
+                .put("metadata", obj ?: JSONObject.NULL)
+                .put("metadata_ref", if (obj != null)
+                    PremiumObservationContract.ref(PremiumObservationContract.contentHash(obj))
+                else JSONObject.NULL)
 
         val cohortObj = loaded.cohort
         return JSONObject()
@@ -328,16 +473,18 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             .put("session_version", SESSION_VERSION)
             .put("index", idx)
             .put("session_date", sessionDate)
-            .put("is_synthetic", false)
-            .put("device_evidence", false)
+            // the caller must STATE the provenance; nothing about it is hardcoded here
+            .put("evidence_context", context.json())
+            .put("is_synthetic", context.syntheticFields.isNotEmpty())
+            .put("device_evidence", context.deviceEvidence)
             .put("claims", JSONObject()
                 .put("synchronised_exchange_quotes", false)
                 .put("executable_fills", false)
                 .put("forecast_of_future_inputs", false)
-                // P4: stated per reference rather than as a blanket claim
-                .put("offline_resolution_of_lot_table", lotTableObject != null)
-                .put("offline_resolution_of_instrument_map", mapObject != null)
-                .put("authoritative_lot_resolved", lotAuthoritative)
+                // R2-2: resolution claimed only when the resolver resolved EVERY acquisition
+                .put("offline_resolution_of_lot_table", allLotResolved)
+                .put("offline_resolution_of_instrument_map", false)
+                .put("authoritative_lot_resolved", allLotResolved)
                 .put("purpose", "EVIDENCE_PREPARATION_FOR_FUTURE_IV_FORECASTING"))
             .put("caps", store.capsJson())
             .put("cohort", cohortObj ?: JSONObject.NULL)
@@ -352,14 +499,31 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                     PremiumObservationContract.verifyHash(cohortObj))
                 .put("reselection_on_invalid", false))
             .put("references", JSONObject()
-                .put("contract_lot_table", refBlock(lotRefs, lotTableObject))
-                .put("instrument_map", refBlock(mapRefs, mapObject))
+                .put("contract_lot_table", refBlock(lotRefs, lotTableObject,
+                    if (lotTableObject == null)
+                        (if (lotRefs.isEmpty()) "NO_REFERENCE_RECORDED" else "UNRESOLVED_REFERENCE")
+                    else if (allLotResolved) "RESOLVED_FOR_EVERY_ACQUISITION"
+                    else "PARTIALLY_RESOLVED_SEE_COVERAGE")
+                    .put("resolution_coverage", JSONObject()
+                        .put("acquisitions", envRead.rows.size)
+                        .put("resolved", lotResolved)
+                        .put("conflicting_with_claim", lotConflicting)
+                        .put("unresolved", lotUnresolved))
+                    .put("per_acquisition", lotResolutions))
+                // no schema is validated for the instrument map, so presence is all that is
+                // claimed for it — a named reference is not the data it names
+                .put("instrument_map", refBlock(mapRefs, mapObject,
+                    if (mapObject != null) "UNVALIDATED_METADATA_PRESENT"
+                    else if (mapRefs.isEmpty()) "NO_REFERENCE_RECORDED" else "UNRESOLVED_REFERENCE"))
                 .put("pinned_contracts", cohortObj?.optJSONArray("pinned_contracts") ?: JSONArray())
                 .put("read_from", "SLOT_ENVELOPES"))
             .put("acquisitions", JSONObject()
                 .put("rows", acqRows)
-                .put("complete_batches", complete)
+                .put("structurally_complete_batches", structuralComplete)
+                .put("verified_batches", verified)
+                .put("usable_evidence_acquisitions", verified)
                 .put("partial_or_empty_batches", partial)
+                .put("hash_failure_identifiers", hashFailures)
                 .put("unresolved_record_groups", orphanRecords))
             .put("slot_manifest", JSONObject()
                 .put("expected_slots", expected.size)
@@ -368,16 +532,21 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 .put("rows", slotRows))
             .put("record_join", JSONObject()
                 .put("keys", "session_date+index+slot+acquisition_id")
-                .put("envelope_carries", JSONArray().put("clocks").put("underlying").put("lot"))
+                .put("envelope_carries", JSONArray().put("clocks").put("underlying").put("lot")
+                    .put("batch_evidence_ref").put("request_outcome")
+                    .put("attempt_distinguishable"))
                 .put("observation_carries", JSONArray().put("identity").put("iv").put("bbo")
                     .put("acquisition_id").put("envelope_ref").put("cohort_ref"))
+                .put("acquisition_identity_covers", JSONArray().put("session_date").put("index")
+                    .put("slot").put("cohort_ref").put("clocks").put("underlying").put("lot")
+                    .put("batch_evidence_ref").put("request_outcome"))
                 .put("rationale",
                     "a flat record exceeded the 2048 B per-record cap and 78 slots of them " +
                         "exceeded the session budget; the per-acquisition facts are identical " +
                         "for all six contracts in one acquisition, so they are written once")
                 .put("measured_by",
-                    "PremiumCaptureTest.measuredRecordSizesAgainstTheCommittedRawVendorFixture; " +
-                        "mirror figures from tools/premium_capture_vectors.py --sizes"))
+                    "PremiumCaptureTest.measuredRecordSizesAgainstTheCommittedRawVendorFixture " +
+                        "(the Kotlin producer; the Python mirror no longer measures sizes)"))
             .put("integrity", JSONObject()
                 .put("corrupt_record_files", JSONArray().also { a ->
                     recRead.corrupt.forEach { a.put(it) } })

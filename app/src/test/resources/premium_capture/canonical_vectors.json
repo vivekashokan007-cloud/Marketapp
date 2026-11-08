@@ -3,10 +3,10 @@
   "generator": "tools/premium_capture_vectors.py",
   "mirrored_constants": {
     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
-    "envelope_version": "mr.premium_slot_envelope.v2",
+    "envelope_version": "mr.premium_slot_envelope.v3",
     "hash_omitted_field": "payload_sha256",
     "non_finite_nan": "NON_FINITE_NAN",
-    "record_version": "mr.premium_observation.v3",
+    "record_version": "mr.premium_observation.v4",
     "ref_hex_len": 32
   },
   "purpose": "An INDEPENDENT implementation of the canonical encoding, so the Kotlin is checked against something other than itself. This mirror does NOT model the record shape and does NOT produce the acceptance export: both come from the real Kotlin classes in CI.",

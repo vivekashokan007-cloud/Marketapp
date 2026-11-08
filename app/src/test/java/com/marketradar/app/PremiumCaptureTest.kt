@@ -92,6 +92,11 @@ class PremiumCaptureTest {
         return out.toString()
     }
 
+    /** The provenance every test export must state: real quotes, invented timing/metadata. */
+    private fun replayContext() = PremiumCaptureSession.EvidenceContext.transformedFixtureReplay(
+        "contracts/x1_upstox_raw_chains.json",
+        "generated receipt clocks, manually assigned scheduler slots, constructed lot table")
+
     private fun md(vararg kv: Pair<String, Any?>): JSONObject {
         val o = JSONObject()
         kv.forEach { (k, v) -> o.put(k, v ?: JSONObject.NULL) }
@@ -347,7 +352,7 @@ class PremiumCaptureTest {
         assertEquals(12, store.outcomeCount("NF", session))
         assertEquals(0, store.conflictCount("NF", session))
 
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val rows = ex.getJSONObject("acquisitions").getJSONArray("rows")
         assertEquals(2, rows.length())
         for (i in 0 until rows.length()) {
@@ -357,7 +362,8 @@ class PremiumCaptureTest {
             assertEquals("and every one must link to THIS envelope",
                 6, r.getInt("observations_linked_to_this_envelope"))
             assertEquals(6, r.getInt("unique_instrument_keys"))
-            assertEquals("COMPLETE", r.getString("batch_state"))
+            assertEquals("COMPLETE_STRUCTURAL", r.getString("structural_state"))
+            assertEquals("VERIFIED", r.getString("verified_state"))
         }
         // no record may carry an envelope reference belonging to the other acquisition
         val envByAcq = HashMap<String, String>()
@@ -369,6 +375,131 @@ class PremiumCaptureTest {
             assertEquals("record bound to the wrong envelope",
                 envByAcq[it.getString("acquisition_id")], it.getString("envelope_ref"))
         }
+    }
+
+    /**
+     * THE R2-1 CASE, and it FAILS BEFORE THAT FIX — this is the hole my R1 test missed because it
+     * varied the receipt clocks.
+     *
+     * Same slot, same spot, same lot, **null clocks**, CHANGED QUOTES. The old acquisition id
+     * hashed only session/index/slot/cohort/clocks/underlying/lot, so both responses produced the
+     * same id and a byte-identical envelope: the envelope write was a duplicate no-op, B wrote
+     * under A's identity, A's surviving records became conflicts and A's missing keys took B's
+     * quotes — a primary group combining two responses, reportable as complete.
+     *
+     * Interruption after each observation write is exercised, so recovery is covered too.
+     */
+    @Test
+    fun aQuoteOnlyChangeWithNullClocksCannotResumeTheEarlierAcquisition() {
+        val snap = rawFixture("mon_0920_entry_NF")
+        val session = snap.getString("session")
+        val rawA = snap.getJSONObject("raw")
+        // same identity and same spot, DIFFERENT quotes: edit only market_data on the legs
+        val rawB = JSONObject(rawA.toString())
+        for (i in 0 until rawB.getJSONArray("data").length()) {
+            val row = rawB.getJSONArray("data").getJSONObject(i)
+            for (side in listOf("call_options", "put_options")) {
+                val mdB = row.optJSONObject(side)?.optJSONObject("market_data") ?: continue
+                mdB.put("bid_price", mdB.optDouble("bid_price", 1.0) + 7.25)
+                mdB.put("ask_price", mdB.optDouble("ask_price", 1.0) + 7.25)
+            }
+        }
+        assertEquals("the spot must be unchanged for this case to mean anything",
+            rawA.getJSONArray("data").getJSONObject(0).getDouble("underlying_spot_price"),
+            rawB.getJSONArray("data").getJSONObject(0).getDouble("underlying_spot_price"), 0.0)
+
+        // interrupt A after each possible number of writes, then let B retry the same slot
+        for (survivors in 0..5) {
+            val store = tmpStore()
+            val s = PremiumCaptureSession(store)
+            val a = s.observeSlot("NF", session, rawA, null, "09:20", null, null, null,
+                claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+                lotTableRef = "contract_lot_table/NSE/2026-10-01")
+            assertEquals(PremiumCaptureSession.OBSERVED, a.status)
+            assertEquals(6, a.written)
+            // simulate the interruption: only `survivors` of A's six records persisted
+            val dir = File(store.root, "$session/NF/records")
+            dir.listFiles()!!.filter { it.name.endsWith(".json") }.sortedBy { it.name }
+                .drop(survivors).forEach { assertTrue(it.delete()) }
+            assertEquals(survivors, store.outcomeCount("NF", session))
+
+            val b = s.observeSlot("NF", session, rawB, null, "09:20", null, null, null,
+                claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+                lotTableRef = "contract_lot_table/NSE/2026-10-01")
+            assertEquals(PremiumCaptureSession.OBSERVED, b.status)
+            assertNotEquals("survivors=$survivors: a quote-only change must be a NEW acquisition",
+                a.acquisitionId, b.acquisitionId)
+            // B's six records are its own; A's survivors keep A's identity
+            assertEquals(survivors + 6, store.outcomeCount("NF", session))
+            assertEquals("no record may be a conflict: the identities are distinct",
+                0, store.conflictCount("NF", session))
+            val byAcq = store.readAll("NF", session).groupBy { it.getString("acquisition_id") }
+            assertEquals(6, byAcq[b.acquisitionId]!!.size)
+            if (survivors > 0) assertEquals(survivors, byAcq[a.acquisitionId]!!.size)
+            // every record resolves to the envelope of its OWN acquisition
+            val envRef = store.readEnvelopes("NF", session).associate {
+                it.getString("acquisition_id") to PremiumObservationContract.ref(
+                    PremiumObservationContract.contentHash(it)) }
+            store.readAll("NF", session).forEach {
+                assertEquals("survivors=$survivors: record bound to the wrong envelope",
+                    envRef[it.getString("acquisition_id")], it.getString("envelope_ref")) }
+            // and A's partial group is never reported as usable evidence
+            val ex = s.export("NF", session, "09:20", replayContext())
+            val rows = ex.getJSONObject("acquisitions").getJSONArray("rows")
+            for (i in 0 until rows.length()) {
+                val r = rows.getJSONObject(i)
+                if (r.getString("acquisition_id") == a.acquisitionId && survivors < 6) {
+                    assertNotEquals("COMPLETE_STRUCTURAL", r.getString("structural_state"))
+                    assertEquals("UNVERIFIED", r.getString("verified_state"))
+                }
+            }
+            assertEquals(1, ex.getJSONObject("acquisitions").getInt("verified_batches"))
+        }
+    }
+
+    /** Byte-identical evidence re-presented is still idempotent: a retry is not a new batch. */
+    @Test
+    fun anIdenticalResponseRepresentedIsIdempotent() {
+        val store = tmpStore()
+        val snap = rawFixture("mon_0920_entry_NF")
+        val session = snap.getString("session")
+        val s = PremiumCaptureSession(store)
+        fun once() = s.observeSlot("NF", session, snap.getJSONObject("raw"), null, "09:20",
+            null, null, null, claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+            lotTableRef = "contract_lot_table/NSE/2026-10-01")
+        val a = once(); val b = once()
+        assertEquals(a.acquisitionId, b.acquisitionId)
+        assertEquals(6, a.written)
+        assertEquals("the second pass writes nothing new", 0, b.written)
+        assertEquals(6, b.duplicates)
+        assertEquals(1, store.envelopeCount("NF", session))
+        assertEquals(6, store.outcomeCount("NF", session))
+        assertEquals(0, store.conflictCount("NF", session))
+    }
+
+    /** A failed request carries an explicit attempt policy rather than an invented distinction. */
+    @Test
+    fun aFailedRequestStatesWhetherItsAttemptsAreDistinguishable() {
+        val store = tmpStore()
+        val snap = rawFixture("mon_0920_entry_NF")
+        val session = snap.getString("session")
+        val s = PremiumCaptureSession(store)
+        observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        // no clocks at all: two failed attempts in one slot are genuinely indistinguishable
+        val f1 = s.observeSlot("NF", session, null, null, "09:25", null, null, null)
+        val f2 = s.observeSlot("NF", session, null, null, "09:25", null, null, null)
+        assertEquals(f1.acquisitionId, f2.acquisitionId)
+        assertEquals(6, f1.written); assertEquals(0, f2.written)
+        val env = store.readEnvelopes("NF", session).first { it.getString("slot") == "09:25" }
+        assertEquals(PremiumObservationContract.REQUEST_FAILED, env.getString("request_outcome"))
+        assertFalse("with no clock, attempts are not distinguishable",
+            env.getBoolean("attempt_distinguishable"))
+        // with a clock, two failed attempts ARE distinct and both are recorded
+        val g1 = s.observeSlot("NF", session, null, null, "09:30", null, 1L, 2L)
+        val g2 = s.observeSlot("NF", session, null, null, "09:30", null, 50L, 60L)
+        assertNotEquals(g1.acquisitionId, g2.acquisitionId)
+        val envG = store.readEnvelopes("NF", session).first { it.getString("slot") == "09:30" }
+        assertTrue(envG.getBoolean("attempt_distinguishable"))
     }
 
     /**
@@ -407,12 +538,13 @@ class PremiumCaptureTest {
         val recs = File(store.root, "$session/NF/records").listFiles()!!
             .filter { it.name.endsWith(".json") }.sortedBy { it.name }
         recs.take(2).forEach { assertTrue(it.delete()) }
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val row = ex.getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
-        assertEquals("PARTIAL", row.getString("batch_state"))
+        assertEquals("PARTIAL", row.getString("structural_state"))
+        assertEquals("UNVERIFIED", row.getString("verified_state"))
         assertEquals(4, row.getInt("observations"))
         assertEquals(6, row.getInt("observations_expected"))
-        assertEquals(0, ex.getJSONObject("acquisitions").getInt("complete_batches"))
+        assertEquals(0, ex.getJSONObject("acquisitions").getInt("structurally_complete_batches"))
         assertEquals(1, ex.getJSONObject("acquisitions").getInt("partial_or_empty_batches"))
         // the slot still says OBSERVED, but completeness is reported separately and explicitly
         assertEquals("OBSERVED", ex.getJSONObject("slot_manifest").getJSONArray("rows")
@@ -425,7 +557,7 @@ class PremiumCaptureTest {
         val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
         val session = snap.getString("session")
         File(store.root, "$session/NF/envelopes").listFiles()!!.forEach { it.delete() }
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val unresolved = ex.getJSONObject("acquisitions").getJSONArray("unresolved_record_groups")
         assertEquals(1, unresolved.length())
         assertEquals("UNRESOLVED_NO_ENVELOPE", unresolved.getJSONObject(0).getString("state"))
@@ -512,7 +644,7 @@ class PremiumCaptureTest {
         assertEquals("the corrupt cohort must not be overwritten by a reselection",
             "{\"cohort_id\": truncated", cohortFile.readText())
         assertNotEquals(before, cohortFile.readText())
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         assertEquals("INVALID", ex.getJSONObject("cohort_state").getString("state"))
         assertFalse(ex.getJSONObject("cohort_state").getBoolean("reselection_on_invalid"))
     }
@@ -547,7 +679,7 @@ class PremiumCaptureTest {
         val rr = store.readRecords("NF", session)
         assertEquals(6, rr.rows.size)
         assertEquals(listOf("zz_broken.json"), rr.corrupt)
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val integ = ex.getJSONObject("integrity")
         assertEquals(1, integ.getJSONArray("corrupt_record_files").length())
         assertEquals(1, integ.getJSONArray("corrupt_envelope_files").length())
@@ -563,7 +695,7 @@ class PremiumCaptureTest {
         val keyHash = PremiumObservationContract.sha256Hex("deliberate-conflict-key")
         store.put("NF", session, "deliberate-conflict-key", JSONObject().put("v", 1))
         store.put("NF", session, "deliberate-conflict-key", JSONObject().put("v", 2))
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val conflicts = ex.getJSONObject("conflicts")
         assertEquals(1, conflicts.getInt("retained"))
         val ev = conflicts.getJSONArray("evidence").getJSONObject(0)
@@ -571,6 +703,121 @@ class PremiumCaptureTest {
         assertEquals("FIRST_WRITE_WINS_CONFLICT_ARCHIVED",
             ev.getString("retained_evidence_policy"))
         assertEquals(JSONObject().put("v", 2).toString(), ev.getString("payload"))
+    }
+
+    /**
+     * THE R2-3 CASE, and it FAILS BEFORE THAT FIX. The old COMPLETE predicate counted six parsed
+     * records with matching envelope references; it checked no record hash, no envelope hash, not
+     * the expected pinned-key set and no join dimension. So a parseable record edited on disk kept
+     * its envelope reference and still counted as complete while its own hash failed.
+     */
+    @Test
+    fun aTamperedButParseableRecordIsStructurallyCompleteYetNeverVerified() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        val dir = File(store.root, "$session/NF/records")
+        val victim = dir.listFiles()!!.first { it.name.endsWith(".json") }
+        val rec = JSONObject(victim.readText())
+        // a value change that leaves the file parseable and the envelope reference intact
+        rec.getJSONObject("identity").getJSONObject("observed_strike_raw").put("raw", 1.0)
+        victim.writeText(rec.toString())
+        assertFalse("the premise: the record no longer verifies",
+            PremiumObservationContract.verifyHash(JSONObject(victim.readText())))
+
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
+        val row = ex.getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+        assertEquals("physical counts are retained",
+            "COMPLETE_STRUCTURAL", row.getString("structural_state"))
+        assertEquals("but it is not usable evidence", "UNVERIFIED", row.getString("verified_state"))
+        assertEquals(1, row.getInt("records_with_invalid_hash"))
+        assertTrue(row.getJSONArray("integrity_reasons").toString()
+            .contains("record_hash_invalid"))
+        assertEquals(1, ex.getJSONObject("acquisitions").getInt("structurally_complete_batches"))
+        assertEquals(0, ex.getJSONObject("acquisitions").getInt("verified_batches"))
+        assertEquals(0, ex.getJSONObject("acquisitions").getInt("usable_evidence_acquisitions"))
+        // the failing record is IDENTIFIED, not silently dropped
+        val ids = ex.getJSONObject("acquisitions").getJSONArray("hash_failure_identifiers")
+        assertEquals(1, ids.length())
+        assertEquals(rec.getString("instrument_key"),
+            ids.getJSONObject(0).getString("instrument_key"))
+        assertEquals(6, ex.getJSONObject("accounting").getInt("records"))
+        assertEquals("the record is still exported", 6, ex.getJSONArray("records").length())
+    }
+
+    /** Envelope tampering, duplicate/missing keys and a foreign cohort each block verification. */
+    @Test
+    fun envelopeTamperingKeySetFaultsAndForeignBindingsAllBlockVerification() {
+        val session = rawFixture("mon_0920_entry_NF").getString("session")
+
+        // (a) envelope tampered
+        run {
+            val store = tmpStore()
+            observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+            val f = File(store.root, "$session/NF/envelopes").listFiles()!!
+                .first { it.name.endsWith(".json") }
+            val env = JSONObject(f.readText())
+            env.getJSONObject("underlying").getJSONObject("spot_raw").put("raw", 1.0)
+            f.writeText(env.toString())
+            val row = PremiumCaptureSession(store)
+                .export("NF", session, "09:20", replayContext())
+                .getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+            assertFalse(row.getBoolean("envelope_hash_verified"))
+            assertEquals("UNVERIFIED", row.getString("verified_state"))
+            assertTrue(row.getJSONArray("integrity_reasons").toString()
+                .contains("envelope_hash_invalid"))
+        }
+        // (b) a missing pinned key: six records are expected, five present
+        run {
+            val store = tmpStore()
+            observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+            val dir = File(store.root, "$session/NF/records")
+            assertTrue(dir.listFiles()!!.first { it.name.endsWith(".json") }.delete())
+            val row = PremiumCaptureSession(store)
+                .export("NF", session, "09:20", replayContext())
+                .getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+            assertEquals("PARTIAL", row.getString("structural_state"))
+            assertEquals("UNVERIFIED", row.getString("verified_state"))
+            assertTrue(row.getJSONArray("integrity_reasons").toString()
+                .contains("pinned_key_set_mismatch"))
+        }
+        // (c) a foreign cohort binding: the records name a cohort that is no longer pinned
+        run {
+            val store = tmpStore()
+            observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+            val cf = File(store.root, "$session/NF/cohort.json")
+            val foreign = PremiumCaptureCohort.select(
+                rawFixture("mon_0925_control_NF").getJSONObject("raw"), "NF", session, "09:25",
+                null).cohort!!
+            cf.writeText(foreign.toString())
+            val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
+            val row = ex.getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+            assertEquals("UNVERIFIED", row.getString("verified_state"))
+            val why = row.getJSONArray("integrity_reasons").toString()
+            assertTrue("expected a cohort-ref mismatch, got $why",
+                why.contains("cohort_ref_mismatch"))
+        }
+    }
+
+    /** A missing quote is a valid explicit outcome, never an integrity failure. */
+    @Test
+    fun missingQuotesStayDistinctFromIntegrityFailure() {
+        val store = tmpStore()
+        val snap = rawFixture("mon_0920_entry_NF")
+        val session = snap.getString("session")
+        observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        // a failed acquisition: six complete records, all MISSING_REQUEST_FAILED
+        PremiumCaptureSession(store).observeSlot("NF", session, null, null, "09:25", null, 9L, 10L)
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
+        val rows = ex.getJSONObject("acquisitions").getJSONArray("rows")
+        assertEquals(2, rows.length())
+        for (i in 0 until rows.length()) {
+            val r = rows.getJSONObject(i)
+            assertEquals("a missing quote is not an integrity fault: ${r.getJSONArray(
+                "integrity_reasons")}", "VERIFIED", r.getString("verified_state"))
+            assertEquals("COMPLETE_STRUCTURAL", r.getString("structural_state"))
+        }
+        assertEquals(2, ex.getJSONObject("acquisitions").getInt("verified_batches"))
     }
 
     // ═════════════════ P4 — references, lot authority and cohort identity ═════════════════════
@@ -585,7 +832,7 @@ class PremiumCaptureTest {
         val store = tmpStore()
         val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
         val session = snap.getString("session")
-        val refs = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val refs = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
             .getJSONObject("references")
         assertEquals("SLOT_ENVELOPES", refs.getString("read_from"))
         val lotNames = refs.getJSONObject("contract_lot_table").getJSONArray("referenced_names")
@@ -604,63 +851,173 @@ class PremiumCaptureTest {
         val store = tmpStore()
         val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
         val session = snap.getString("session")
-        val ex = PremiumCaptureSession(store).export("NF", session, "09:20")
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
         val lot = ex.getJSONObject("references").getJSONObject("contract_lot_table")
         assertEquals("UNRESOLVED_REFERENCE", lot.getString("resolution"))
         assertTrue(lot.isNull("metadata"))
         assertFalse(ex.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
         assertFalse(ex.getJSONObject("claims").getBoolean("offline_resolution_of_instrument_map"))
 
-        // supplied metadata resolves, and is pinned by content
-        val table = JSONObject().put("NSE", JSONObject().put("NIFTY", 75))
-        val ex2 = PremiumCaptureSession(store).export("NF", session, "09:20",
-            lotTableObject = table)
+        // R2-2: a supplied object is NOT resolution. An unrelated table is present-but-unresolved.
+        val unrelated = JSONObject().put("NSE", JSONObject().put("NIFTY", 75))
+        val ex2 = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext(),
+            lotTableObject = unrelated)
         val lot2 = ex2.getJSONObject("references").getJSONObject("contract_lot_table")
-        assertEquals("RESOLVED_FROM_SUPPLIED_METADATA", lot2.getString("resolution"))
+        assertTrue("presence is reported", lot2.getBoolean("metadata_present"))
+        assertNotEquals("presence must not be called resolution",
+            "RESOLVED_FOR_EVERY_ACQUISITION", lot2.getString("resolution"))
         assertEquals(PremiumObservationContract.ref(
-            PremiumObservationContract.contentHash(table)), lot2.getString("metadata_ref"))
-        assertTrue(ex2.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
+            PremiumObservationContract.contentHash(unrelated)), lot2.getString("metadata_ref"))
+        assertFalse(ex2.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
+        assertFalse(ex2.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
+        assertEquals(0, lot2.getJSONObject("resolution_coverage").getInt("resolved"))
     }
 
     /**
-     * FAILS BEFORE THE FIX: authority came from the caller's string alone, so
-     * `claimedLotSource = "CONTRACT_LOT_TABLE"` with no dated evidence and even a FRACTIONAL lot
-     * was reported as `RESOLVED_FROM_DATED_SOURCE`.
+     * FAILS BEFORE THE FIX, twice over. `lotEvidence` set
+     * `lot_authoritative_resolved = true` from an allowed caller source string, a positive integer
+     * and a DATE-SHAPED reference — and the shape test was `Regex(".*\\d{4}-\\d{2}-\\d{2}.*")`,
+     * which accepts `9999-99-99`, `0000-00-00` and `junk-1234-56-78`. None of that resolves a
+     * table row or verifies an effective date.
      */
     @Test
-    fun lotAuthorityRequiresAnAcceptedSourceADatedReferenceAndAnIntegerLot() {
-        fun lot(v: Any?, src: String?, ref: String?) =
-            PremiumObservationContract.lotEvidence(v, src, ref, null)
+    fun aLotClaimNeverConfersAuthorityAndTheDateMustBeARealDate() {
+        val claim = PremiumObservationContract.lotEvidence(
+            75, "CONTRACT_LOT_TABLE", "contract_lot_table/NSE/2026-11-07", null)
+        assertFalse("a claim is never authority",
+            claim.getBoolean("lot_authoritative_resolved"))
+        assertEquals("PRODUCER_CLAIM_UNRESOLVED", claim.getString("lot_status"))
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_METADATA,
+            claim.getString("lot_resolution"))
+        // the shape checks are published, as necessary-but-not-sufficient
+        assertTrue(claim.getBoolean("claimed_source_in_accepted_set"))
+        assertTrue(claim.getBoolean("claimed_lot_positive_integer"))
+        assertTrue(claim.getBoolean("reference_carries_real_date"))
+        assertEquals("2026-11-07", claim.getString("reference_date"))
 
-        val ok = lot(75, "CONTRACT_LOT_TABLE", "contract_lot_table/NSE/2026-11-07")
-        assertTrue(ok.getBoolean("lot_authoritative_resolved"))
-        assertEquals("RESOLVED_FROM_DATED_SOURCE", ok.getString("lot_status"))
-        assertEquals(0, ok.getJSONArray("lot_unverified_reasons").length())
+        // impossible and date-SHAPED-but-not-real references are rejected
+        for (bad in listOf("9999-99-99", "0000-00-00", "junk-1234-56-78",
+            "contract_lot_table/NSE/2026-02-30", "contract_lot_table/NSE/current")) {
+            val e = PremiumObservationContract.lotEvidence(75, "CONTRACT_LOT_TABLE", bad, null)
+            assertFalse("'$bad' must not count as a real date",
+                e.getBoolean("reference_carries_real_date"))
+            assertFalse(e.getBoolean("lot_authoritative_resolved"))
+        }
+        assertFalse(PremiumObservationContract.isCalendarDate("2026-02-30"))
+        assertFalse(PremiumObservationContract.isCalendarDate("9999-99-99"))
+        assertTrue(PremiumObservationContract.isCalendarDate("2026-02-28"))
+        assertTrue(PremiumObservationContract.isCalendarDate("2024-02-29"))   // a real leap day
+        assertFalse(PremiumObservationContract.isCalendarDate("2026-2-8"))
+        assertFalse(PremiumObservationContract.isCalendarDate("x2026-02-08"))
 
-        val noRef = lot(75, "CONTRACT_LOT_TABLE", null)
-        assertFalse(noRef.getBoolean("lot_authoritative_resolved"))
-        assertTrue(noRef.getJSONArray("lot_unverified_reasons").toString()
-            .contains("no_dated_reference_supplied"))
+        val fractional = PremiumObservationContract.lotEvidence(
+            75.5, "CONTRACT_LOT_TABLE", "contract_lot_table/NSE/2026-11-07", null)
+        assertFalse(fractional.getBoolean("claimed_lot_positive_integer"))
+        val constant = PremiumObservationContract.lotEvidence(
+            75, "CONSTANT", "contract_lot_table/NSE/2026-11-07", null)
+        assertFalse(constant.getBoolean("claimed_source_in_accepted_set"))
+    }
 
-        val undated = lot(75, "CONTRACT_LOT_TABLE", "contract_lot_table/NSE/current")
-        assertFalse(undated.getBoolean("lot_authoritative_resolved"))
+    /**
+     * R2-2: authority comes from a resolver that validates the named reference, the underlying's
+     * applicability, an integral positive lot and an effective date — and a conflicting table does
+     * NOT silently win.
+     */
+    @Test
+    fun theLotResolverValidatesReferenceUnderlyingEffectiveDateAndValue() {
+        val ref = "contract_lot_table/NSE/2026-10-01"
+        val nf = "NSE_INDEX|Nifty 50"
+        fun table(rows: JSONArray, r: String = ref) = JSONObject()
+            .put("ref", r).put("provenance", "CONSTRUCTED_TEST_TABLE").put("rows", rows)
+        fun row(u: String, lot: Any?, from: String, to: Any? = JSONObject.NULL) = JSONObject()
+            .put("underlying_key", u).put("lot", lot)
+            .put("effective_from", from).put("effective_to", to)
+        fun resolve(t: JSONObject?, r: String? = ref, u: String = nf,
+                    asOf: String = "2026-10-19", claimed: Any? = 75) =
+            PremiumObservationContract.resolveLotFromTable(t, r, u, asOf, claimed)
 
-        val fractional = lot(75.5, "CONTRACT_LOT_TABLE", "contract_lot_table/NSE/2026-11-07")
-        assertFalse("a fractional lot is not a contract size",
-            fractional.getBoolean("lot_authoritative_resolved"))
-        assertTrue(fractional.getJSONArray("lot_unverified_reasons").toString()
-            .contains("lot_value_not_a_positive_integer"))
+        // the one genuinely matching dated test table
+        val good = resolve(table(JSONArray().put(row(nf, 75, "2026-10-01"))))
+        assertEquals(PremiumObservationContract.LOT_RESOLVED, good.getString("lot_resolution"))
+        assertTrue(good.getBoolean("lot_authoritative_resolved"))
+        assertEquals(75, good.getInt("resolved_lot"))
+        assertEquals("CONSTRUCTED_TEST_TABLE", good.getString("supplied_table_provenance"))
 
-        val constant = lot(75, "CONSTANT", "contract_lot_table/NSE/2026-11-07")
-        assertFalse("a hardcoded constant is never authoritative",
-            constant.getBoolean("lot_authoritative_resolved"))
-        assertTrue(constant.getJSONArray("lot_unverified_reasons").toString()
-            .contains("lot_source_not_accepted"))
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_METADATA,
+            resolve(null).getString("lot_resolution"))
+        assertEquals("an empty object resolves nothing",
+            PremiumObservationContract.LOT_UNRESOLVED_REF_MISMATCH,
+            resolve(JSONObject()).getString("lot_resolution"))
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_REF_MISMATCH,
+            resolve(table(JSONArray().put(row(nf, 75, "2026-10-01")),
+                "contract_lot_table/NSE/2026-09-01")).getString("lot_resolution"))
+        // a BNF-only table supplied for NF
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_ROW,
+            resolve(table(JSONArray().put(row("NSE_INDEX|Nifty Bank", 15, "2026-10-01"))))
+                .getString("lot_resolution"))
+        // not yet effective, and already expired
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_ROW,
+            resolve(table(JSONArray().put(row(nf, 75, "2026-11-01")))).getString("lot_resolution"))
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_ROW,
+            resolve(table(JSONArray().put(row(nf, 75, "2026-09-01", "2026-10-10"))))
+                .getString("lot_resolution"))
+        // an impossible effective date is not effective
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_NO_ROW,
+            resolve(table(JSONArray().put(row(nf, 75, "2026-02-30")))).getString("lot_resolution"))
+        // an invalid row value
+        for (bad in listOf<Any?>(0, -5, 75.5, "x", JSONObject.NULL)) {
+            assertEquals("row lot $bad must not resolve",
+                PremiumObservationContract.LOT_UNRESOLVED_INVALID_ROW,
+                resolve(table(JSONArray().put(row(nf, bad, "2026-10-01"))))
+                    .getString("lot_resolution"))
+        }
+        // a conflicting value is reported as a conflict and grants NO authority
+        val conflict = resolve(table(JSONArray().put(row(nf, 50, "2026-10-01"))), claimed = 75)
+        assertEquals(PremiumObservationContract.LOT_CONFLICTS_WITH_CLAIM,
+            conflict.getString("lot_resolution"))
+        assertFalse(conflict.getBoolean("lot_authoritative_resolved"))
+        assertEquals(50, conflict.getInt("resolved_lot"))
+        assertEquals(75, conflict.getInt("producer_claimed_lot"))
+        // a reference carrying no real date cannot be resolved against anything
+        assertEquals(PremiumObservationContract.LOT_UNRESOLVED_BAD_REFERENCE,
+            resolve(table(JSONArray().put(row(nf, 75, "2026-10-01"))), r = "lot_table/current")
+                .getString("lot_resolution"))
+    }
 
-        val zero = lot(0, "CHAIN_METADATA", "chain/2026-11-07")
-        assertFalse(zero.getBoolean("lot_authoritative_resolved"))
-        assertEquals(PremiumObservationContract.OBSERVED_ZERO,
-            zero.getJSONObject("lot_claimed_raw").getString("status"))
+    /** With a genuinely matching dated test table, the export resolves every acquisition. */
+    @Test
+    fun aMatchingDatedTestTableResolvesEveryAcquisitionAndSaysSo() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        val table = JSONObject()
+            .put("ref", "contract_lot_table/NSE/2026-10-01")
+            .put("provenance", "CONSTRUCTED_TEST_TABLE")
+            .put("rows", JSONArray().put(JSONObject()
+                .put("underlying_key", "NSE_INDEX|Nifty 50").put("lot", 75)
+                .put("effective_from", "2026-10-01").put("effective_to", JSONObject.NULL)))
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext(),
+            lotTableObject = table)
+        val lot = ex.getJSONObject("references").getJSONObject("contract_lot_table")
+        assertEquals("RESOLVED_FOR_EVERY_ACQUISITION", lot.getString("resolution"))
+        val cov = lot.getJSONObject("resolution_coverage")
+        assertEquals(1, cov.getInt("acquisitions"))
+        assertEquals(1, cov.getInt("resolved"))
+        assertEquals(0, cov.getInt("conflicting_with_claim"))
+        assertEquals(0, cov.getInt("unresolved"))
+        assertEquals(1, lot.getJSONArray("per_acquisition").length())
+        assertTrue(ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
+
+        // a MIXED session must not be a blanket success: one acquisition resolves, one conflicts
+        val conflicting = JSONObject(table.toString())
+        conflicting.getJSONArray("rows").getJSONObject(0).put("lot", 50)
+        val mixed = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext(),
+            lotTableObject = conflicting)
+        val lotM = mixed.getJSONObject("references").getJSONObject("contract_lot_table")
+        assertEquals("PARTIALLY_RESOLVED_SEE_COVERAGE", lotM.getString("resolution"))
+        assertEquals(1, lotM.getJSONObject("resolution_coverage")
+            .getInt("conflicting_with_claim"))
+        assertFalse(mixed.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
     }
 
     /**
@@ -906,9 +1263,14 @@ class PremiumCaptureTest {
             assertTrue(r.batchComplete)
             t += 300_000L
         }
-        val table = JSONObject().put("ref", "contract_lot_table/NSE/2026-10-01")
-            .put("NIFTY", 75)
-        val ex = s.export("NF", session, "09:20", lotTableObject = table)
+        // a genuinely matching dated TEST table, labelled as test evidence
+        val table = JSONObject()
+            .put("ref", "contract_lot_table/NSE/2026-10-01")
+            .put("provenance", "CONSTRUCTED_TEST_TABLE")
+            .put("rows", JSONArray().put(JSONObject()
+                .put("underlying_key", "NSE_INDEX|Nifty 50").put("lot", 75)
+                .put("effective_from", "2026-10-01").put("effective_to", JSONObject.NULL)))
+        val ex = s.export("NF", session, "09:20", replayContext(), lotTableObject = table)
 
         // three paired strikes, six unique contracts
         val pinned = PremiumCaptureCohort.pinnedList(ex.getJSONObject("cohort"))
@@ -930,12 +1292,13 @@ class PremiumCaptureTest {
         assertEquals(0, acc.getInt("orphan_temp_files"))
         val rows = ex.getJSONObject("acquisitions").getJSONArray("rows")
         assertEquals(3, rows.length())
-        assertEquals(3, ex.getJSONObject("acquisitions").getInt("complete_batches"))
+        assertEquals(3, ex.getJSONObject("acquisitions").getInt("structurally_complete_batches"))
         assertEquals(0, ex.getJSONObject("acquisitions")
             .getJSONArray("unresolved_record_groups").length())
         for (i in 0 until rows.length()) {
             val r = rows.getJSONObject(i)
-            assertEquals("COMPLETE", r.getString("batch_state"))
+            assertEquals("COMPLETE_STRUCTURAL", r.getString("structural_state"))
+            assertEquals("VERIFIED", r.getString("verified_state"))
             assertEquals(6, r.getInt("observations_linked_to_this_envelope"))
             assertEquals(6, r.getInt("unique_instrument_keys"))
             assertTrue(r.getBoolean("envelope_hash_verified"))
@@ -953,11 +1316,11 @@ class PremiumCaptureTest {
         }
         assertEquals(3, observed)
 
-        // offline reference resolution, claimed only where it is true
-        assertEquals("RESOLVED_FROM_SUPPLIED_METADATA", ex.getJSONObject("references")
-            .getJSONObject("contract_lot_table").getString("resolution"))
+        // offline reference resolution, claimed only where it is true. The instrument map has no
+        // validated schema here, so no resolution is claimed for it even though it is named.
         assertEquals("UNRESOLVED_REFERENCE", ex.getJSONObject("references")
             .getJSONObject("instrument_map").getString("resolution"))
+        assertFalse(ex.getJSONObject("claims").getBoolean("offline_resolution_of_instrument_map"))
         assertTrue(ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
         assertFalse(ex.getJSONObject("claims").getBoolean("synchronised_exchange_quotes"))
         assertFalse(ex.getBoolean("device_evidence"))
@@ -968,6 +1331,41 @@ class PremiumCaptureTest {
         val counters = ex.getJSONObject("durable_counters")
         assertEquals(3L, counters.getLong("batches_attempted"))
         assertEquals(3L, counters.getLong("batches_complete"))
+
+        // LABELLING: this is a transformed fixture replay with synthetic acquisition metadata,
+        // and the export must say so rather than hardcoding is_synthetic=false (Codex R2).
+        val ctx = ex.getJSONObject("evidence_context")
+        assertEquals("TRANSFORMED_FIXTURE_REPLAY", ctx.getString("source_kind"))
+        assertEquals("HISTORICAL_VENDOR_FIXTURE:contracts/x1_upstox_raw_chains.json",
+            ctx.getString("quote_provenance"))
+        assertEquals("SYNTHETIC_GENERATED_IN_TEST", ctx.getString("clock_provenance"))
+        assertEquals("MANUALLY_ASSIGNED_IN_TEST", ctx.getString("slot_provenance"))
+        assertEquals("CONSTRUCTED_TEST_TABLE", ctx.getString("lot_table_provenance"))
+        assertFalse(ctx.getBoolean("device_evidence"))
+        assertTrue(ctx.getJSONArray("synthetic_fields").length() > 0)
+        assertTrue("the replay carries synthetic fields, so is_synthetic must be true",
+            ex.getBoolean("is_synthetic"))
+        assertFalse(ex.getBoolean("device_evidence"))
+
+        // every acquisition is VERIFIED, not merely structurally complete
+        assertEquals(3, ex.getJSONObject("acquisitions").getInt("verified_batches"))
+        assertEquals(3, ex.getJSONObject("acquisitions").getInt("usable_evidence_acquisitions"))
+        assertEquals(0, ex.getJSONObject("acquisitions")
+            .getJSONArray("hash_failure_identifiers").length())
+        // the lot resolver ran against the supplied dated table, per acquisition
+        val lotRef = ex.getJSONObject("references").getJSONObject("contract_lot_table")
+        assertEquals("RESOLVED_FOR_EVERY_ACQUISITION", lotRef.getString("resolution"))
+        assertEquals("CONSTRUCTED_TEST_TABLE", lotRef.getString("metadata_provenance"))
+        assertEquals(3, lotRef.getJSONObject("resolution_coverage").getInt("resolved"))
+        assertEquals(3, lotRef.getJSONArray("per_acquisition").length())
+        // the acquisition identity covers this batch's own quote evidence
+        for (e in store.readEnvelopes("NF", session)) {
+            assertEquals(PremiumObservationContract.REQUEST_RESPONSE_PRESENT,
+                e.getString("request_outcome"))
+            assertTrue(e.getBoolean("attempt_distinguishable"))
+            assertEquals(PremiumObservationContract.REF_HEX_LEN,
+                e.getString("batch_evidence_ref").length)
+        }
 
         // Written to a FILE rather than printed. CI established that Gradle captures test stdout
         // and does not surface it, so the println markers this previously used never reached the
@@ -1006,8 +1404,8 @@ class PremiumCaptureTest {
             JSONObject(store.readCohortText("BNF", session)!!).getString("underlying_key"))
         // and each index's acquisitions resolve only against its own envelopes
         for (idx in listOf("NF", "BNF")) {
-            val ex = PremiumCaptureSession(store).export(idx, session, "09:20")
-            assertEquals(1, ex.getJSONObject("acquisitions").getInt("complete_batches"))
+            val ex = PremiumCaptureSession(store).export(idx, session, "09:20", replayContext())
+            assertEquals(1, ex.getJSONObject("acquisitions").getInt("structurally_complete_batches"))
             assertEquals(0, ex.getJSONObject("acquisitions")
                 .getJSONArray("unresolved_record_groups").length())
         }

@@ -46,8 +46,8 @@ object PremiumObservationContract {
      * caps and prints what it measured. All of it is desktop JVM/Python; none is a device
      * measurement.
      */
-    const val RECORD_VERSION = "mr.premium_observation.v3"
-    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v2"
+    const val RECORD_VERSION = "mr.premium_observation.v4"
+    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v3"
     const val CANONICAL_SERIALIZATION = "json_sorted_keys_compact_utf8_v1"
 
     /**
@@ -277,38 +277,141 @@ object PremiumObservationContract {
      * authoritative lot is left unresolved. Dated map/table references are retained so the actual
      * data resolves offline in the export.
      */
-    /** A dated reference carries an ISO date, e.g. `contract_lot_table/NSE/2026-11-07`. */
-    private val DATED = Regex(".*\\d{4}-\\d{2}-\\d{2}.*")
+    /**
+     * A REAL calendar date in `YYYY-MM-DD`, not merely a date-SHAPED substring.
+     *
+     * R2-2 (Codex): the previous check was `Regex(".*\\d{4}-\\d{2}-\\d{2}.*")`, which accepts
+     * `9999-99-99`, `0000-00-00` and `junk-1234-56-78`. A matching substring was then treated as
+     * dated evidence and promoted to authority.
+     */
+    fun isCalendarDate(s: String?): Boolean {
+        val t = (s ?: "").trim()
+        if (!Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(t)) return false
+        return runCatching { java.time.LocalDate.parse(t) }.isSuccess
+    }
 
+    /** The last `YYYY-MM-DD` inside a reference name, if it is a real date. */
+    fun dateInReference(ref: String?): String? {
+        val m = Regex("\\d{4}-\\d{2}-\\d{2}").findAll(ref ?: "").lastOrNull()?.value
+        return m?.takeIf { isCalendarDate(it) }
+    }
+
+    // lot resolution verdicts. Presence, reference resolution and AUTHORITY are three things.
+    const val LOT_UNRESOLVED_NO_METADATA = "UNRESOLVED_NO_METADATA_SUPPLIED"
+    const val LOT_UNRESOLVED_REF_MISMATCH = "UNRESOLVED_TABLE_REFERENCE_MISMATCH"
+    const val LOT_UNRESOLVED_NO_ROW = "UNRESOLVED_NO_ROW_FOR_UNDERLYING"
+    const val LOT_UNRESOLVED_NOT_EFFECTIVE = "UNRESOLVED_NOT_EFFECTIVE_AT_SESSION"
+    const val LOT_UNRESOLVED_INVALID_ROW = "UNRESOLVED_TABLE_ROW_LOT_INVALID"
+    const val LOT_UNRESOLVED_BAD_REFERENCE = "UNRESOLVED_REFERENCE_NOT_DATED"
+    const val LOT_CONFLICTS_WITH_CLAIM = "RESOLVED_BUT_CONFLICTS_WITH_PRODUCER_CLAIM"
+    const val LOT_RESOLVED = "RESOLVED_FROM_DATED_TABLE_ROW"
+
+    /**
+     * The RAW lot claim and its references. **This never confers authority.**
+     *
+     * R2-2: the previous version set `lot_authoritative_resolved = true` from an allowed caller
+     * source string, a positive integer and a date-shaped reference — none of which resolves a
+     * table row or verifies an effective date. Authority now requires `resolveLotFromTable` to
+     * validate the named reference, the underlying's applicability, an integral positive lot and
+     * an effective/as-of date, and that happens where the actual metadata exists (at export).
+     * Here the claim is recorded as a claim, with the shape checks published separately so a
+     * reader can see exactly what was and was not established.
+     */
     fun lotEvidence(claimedLot: Any?, claimedSource: String?, tableRef: String?,
                     mapRef: String?): JSONObject {
         val src = (claimedSource ?: "").trim().uppercase()
         val lot = rawScalar(JSONObject().put("v", claimedLot ?: JSONObject.NULL), "v")
         val value = usable(lot)
-        // Codex P4: authority cannot come from a caller string. Each requirement is recorded
-        // separately so a refusal says WHICH one failed rather than just "unverified".
-        val sourceAccepted = src == "CHAIN_METADATA" || src == "CONTRACT_LOT_TABLE"
         val integral = value != null && value == Math.floor(value) && value >= 1.0
         val ref = (tableRef ?: "").trim()
-        val datedEvidence = ref.isNotEmpty() && DATED.matches(ref)
-        val reasons = JSONArray()
-        if (!sourceAccepted) reasons.put(if (src.isEmpty()) "lot_source_absent" else "lot_source_not_accepted")
-        if (lot.status != PRESENT_VALID) reasons.put("lot_value_not_present_valid")
-        // a fractional or sub-one lot is not a tradeable contract size, whatever the source says
-        else if (!integral) reasons.put("lot_value_not_a_positive_integer")
-        if (!datedEvidence) reasons.put("no_dated_reference_supplied")
-        val authoritative = reasons.length() == 0
+        val refDate = dateInReference(ref)
         return JSONObject()
             .put("lot_claimed_raw", lot.json())
             .put("lot_claimed_source", if (src.isEmpty()) JSONObject.NULL else src)
-            .put("lot_status", if (authoritative) "RESOLVED_FROM_DATED_SOURCE"
-                else "UNVERIFIED_PRODUCER_CLAIM")
-            .put("lot_authoritative_resolved", authoritative)
-            .put("lot_unverified_reasons", reasons)
+            // shape checks on the CLAIM, which are necessary but never sufficient
+            .put("claimed_source_in_accepted_set",
+                src == "CHAIN_METADATA" || src == "CONTRACT_LOT_TABLE")
+            .put("claimed_lot_positive_integer", integral)
+            .put("reference_carries_real_date", refDate != null)
+            .put("reference_date", refDate ?: JSONObject.NULL)
+            // authority is NOT decided here, and is never decided from a caller label
+            .put("lot_status", "PRODUCER_CLAIM_UNRESOLVED")
+            .put("lot_authoritative_resolved", false)
+            .put("lot_resolution", LOT_UNRESOLVED_NO_METADATA)
             .put("lot_authority_requires",
-                "ACCEPTED_SOURCE_AND_POSITIVE_INTEGER_VALUE_AND_DATED_REFERENCE")
+                "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE")
             .put("contract_lot_table_ref", if (ref.isEmpty()) JSONObject.NULL else ref)
             .put("map_ref", mapRef ?: JSONObject.NULL)
+    }
+
+    /**
+     * Resolve a lot against an ACTUAL dated table, for one underlying as of one session.
+     *
+     * Expected bounded table shape, which the accepted fixture must label as test evidence:
+     * ```
+     * {"ref":"contract_lot_table/NSE/2026-10-01","provenance":"CONSTRUCTED_TEST_TABLE",
+     *  "rows":[{"underlying_key":"NSE_INDEX|Nifty 50","lot":75,
+     *           "effective_from":"2026-10-01","effective_to":null}]}
+     * ```
+     * A conflicting table value does NOT silently win and does not grant authority: both values
+     * are published and the verdict says they disagree.
+     */
+    fun resolveLotFromTable(table: JSONObject?, expectedRef: String?, underlyingKey: String,
+                            asOfSession: String, claimedLot: Any?): JSONObject {
+        val out = JSONObject()
+            .put("expected_table_ref", expectedRef ?: JSONObject.NULL)
+            .put("underlying_key", underlyingKey)
+            .put("as_of_session", asOfSession)
+        fun verdict(v: String, extra: String? = null): JSONObject = out
+            .put("lot_resolution", v)
+            .put("lot_authoritative_resolved", v == LOT_RESOLVED)
+            .put("resolved_lot", out.opt("resolved_lot") ?: JSONObject.NULL)
+            .put("detail", extra ?: JSONObject.NULL)
+        if (table == null) return verdict(LOT_UNRESOLVED_NO_METADATA)
+        if (!isCalendarDate(asOfSession))
+            return verdict(LOT_UNRESOLVED_NOT_EFFECTIVE, "as-of session '$asOfSession' is not a date")
+        val want = (expectedRef ?: "").trim()
+        if (want.isEmpty() || dateInReference(want) == null)
+            return verdict(LOT_UNRESOLVED_BAD_REFERENCE,
+                "the envelope's table reference carries no real date")
+        val have = table.optString("ref", "").trim()
+        out.put("supplied_table_ref", if (have.isEmpty()) JSONObject.NULL else have)
+            .put("supplied_table_provenance",
+                table.optString("provenance", "").ifEmpty { "UNDECLARED" })
+        if (have != want) return verdict(LOT_UNRESOLVED_REF_MISMATCH,
+            "supplied table is '$have', the records name '$want'")
+        val rows = table.optJSONArray("rows") ?: JSONArray()
+        val asOf = java.time.LocalDate.parse(asOfSession)
+        var matched: JSONObject? = null
+        for (i in 0 until rows.length()) {
+            val r = rows.optJSONObject(i) ?: continue
+            if (r.optString("underlying_key").trim() != underlyingKey) continue
+            val from = r.optString("effective_from", "").trim()
+            val to = r.optString("effective_to", "").trim()
+            if (!isCalendarDate(from)) continue
+            if (java.time.LocalDate.parse(from).isAfter(asOf)) continue
+            if (to.isNotEmpty()) {
+                if (!isCalendarDate(to)) continue
+                if (java.time.LocalDate.parse(to).isBefore(asOf)) continue
+            }
+            matched = r
+            break
+        }
+        val row = matched ?: return verdict(LOT_UNRESOLVED_NO_ROW,
+            "no row for '$underlyingKey' effective at $asOfSession among ${rows.length()} row(s)")
+        val tableLot = rawScalar(row, "lot")
+        val tv = usable(tableLot)
+        if (tv == null || tv != Math.floor(tv) || tv < 1.0)
+            return verdict(LOT_UNRESOLVED_INVALID_ROW, "table row lot is not a positive integer")
+        out.put("resolved_lot", tableLot.raw)
+            .put("effective_from", row.optString("effective_from"))
+            .put("effective_to", row.opt("effective_to") ?: JSONObject.NULL)
+        val claim = usable(rawScalar(JSONObject().put("v", claimedLot ?: JSONObject.NULL), "v"))
+        out.put("producer_claimed_lot", claimedLot ?: JSONObject.NULL)
+        if (claim != null && claim != tv)
+            return verdict(LOT_CONFLICTS_WITH_CLAIM,
+                "table says $tv, the producer claimed $claim")
+        return verdict(LOT_RESOLVED)
     }
 
     /**
@@ -465,7 +568,9 @@ object PremiumObservationContract {
      * this on `(session_date, index, slot)`.
      */
     fun slotEnvelope(index: String, sessionDate: String, slot: String, cohort: JSONObject,
-                     clocks: JSONObject, underlying: JSONObject, lot: JSONObject): JSONObject {
+                     clocks: JSONObject, underlying: JSONObject, lot: JSONObject,
+                     batchEvidenceRef: String, requestOutcome: String,
+                     attemptDistinguishable: Boolean): JSONObject {
         val body = JSONObject()
             .put("record_version", ENVELOPE_VERSION)
             .put("session_date", sessionDate)
@@ -476,19 +581,36 @@ object PremiumObservationContract {
             .put("clocks", clocks)
             .put("underlying", underlying)
             .put("lot", lot)
-        // derived from the acquisition's OWN evidence, so two acquisitions in one slot that differ
-        // in receipt time, spot, lot or cohort get different identities and cannot be conflated
+            // the QUOTE-BEARING evidence of this acquisition, by content
+            .put("batch_evidence_ref", batchEvidenceRef)
+            .put("request_outcome", requestOutcome)
+            .put("attempt_distinguishable", attemptDistinguishable)
         return stampHash(body.put("acquisition_id", acquisitionId(body)))
     }
+
+    const val REQUEST_RESPONSE_PRESENT = "RESPONSE_PRESENT"
+    const val REQUEST_FAILED = "REQUEST_FAILED"
 
     /**
      * Identity of ONE acquisition, derived from its own evidence rather than assigned.
      *
-     * Codex P2: the join was `session_date + index + slot`, so acquisition A's envelope could be
-     * joined to acquisition B's quotes — a retry in the same slot with a different receipt time and
-     * a different spot produced records that each hashed correctly and were still wrong together.
-     * Every observation now carries this id and the envelope's own content reference, so a record
-     * resolves to exactly one acquisition.
+     * R2-1 (Codex): the first version hashed session, index, slot, cohort ref, clocks, underlying
+     * and lot — **but not the response, and not the quotes**. Since `observeSlot` accepts null
+     * request/response timestamps and a scheduler-only slot, two DIFFERENT responses for one slot
+     * with an unchanged spot, an unchanged lot and absent clocks produced the SAME acquisition id
+     * and a byte-identical envelope. The envelope write was then a duplicate no-op, response B
+     * wrote under A's identity, A's differing records became conflicts, and A's missing keys
+     * received B's quotes — so the primary group combined two responses and could still be
+     * reported complete. My R1 test changed the receipt clocks, so it never exercised this.
+     *
+     * `batch_evidence_ref` closes it: the identity now covers a digest of the complete prepared
+     * six-contract evidence (each contract's identity, IV and book), computed BEFORE anything is
+     * persisted. A quote-only change therefore yields a different acquisition, never a resumption
+     * of the old one. The chain is non-circular — evidence digest, then acquisition id, then
+     * envelope, then the records that reference it — so no hash depends on its own output.
+     *
+     * Idempotence is preserved: byte-identical evidence re-presented gives the same id and a
+     * duplicate no-op, which is the correct outcome for a genuine retry of the same response.
      */
     fun acquisitionId(envelopeBody: JSONObject): String {
         val basis = JSONObject()
@@ -499,7 +621,34 @@ object PremiumObservationContract {
             .put("clocks", envelopeBody.opt("clocks"))
             .put("underlying", envelopeBody.opt("underlying"))
             .put("lot", envelopeBody.opt("lot"))
+            .put("batch_evidence_ref", envelopeBody.opt("batch_evidence_ref"))
+            .put("request_outcome", envelopeBody.opt("request_outcome"))
         return ref(sha256Hex(canonicalJson(basis)))
+    }
+
+    /**
+     * One contract's quote-bearing evidence, with NO linkage fields — the unit the acquisition
+     * digest is taken over, and the body an observation record is built from.
+     */
+    fun observationEvidence(pinned: PremiumCaptureCohort.PinnedContract, outcome: String,
+                            row: JSONObject?, leg: JSONObject?): JSONObject {
+        val e = JSONObject()
+            .put("instrument_key", pinned.instrumentKey)
+            .put("outcome", outcome)
+            .put("identity", identityEvidence(pinned, row, leg, lean = true))
+        return if (outcome == OUTCOME_OBSERVED)
+            e.put("iv", ivEvidence(leg)).put("bbo", bboEvidence(leg))
+        else e.put("iv", JSONObject.NULL).put("bbo", JSONObject.NULL)
+    }
+
+    /**
+     * Digest of the COMPLETE prepared batch, in pinned order. Taken before persistence, so a
+     * partially written batch cannot be completed from a different response under the same id.
+     */
+    fun batchEvidenceRef(evidence: List<JSONObject>): String {
+        val arr = JSONArray()
+        evidence.forEach { arr.put(it) }
+        return ref(sha256Hex(canonicalJson(arr)))
     }
 
     /**
@@ -518,29 +667,26 @@ object PremiumObservationContract {
      * between the six. A complete record is produced for every pinned contract, observed or not:
      * absence is evidence, and a shorter file is not.
      */
-    fun observation(pinned: PremiumCaptureCohort.PinnedContract, cohort: JSONObject,
-                    sessionDate: String, slot: String, outcome: String,
-                    row: JSONObject?, leg: JSONObject?, envelope: JSONObject): JSONObject {
+    fun observation(evidence: JSONObject, cohort: JSONObject, sessionDate: String, index: String,
+                    slot: String, envelope: JSONObject): JSONObject {
         val rec = JSONObject()
             .put("record_version", RECORD_VERSION)
             .put("session_date", sessionDate)
-            .put("index", pinned.index)
+            .put("index", index)
             .put("slot", slot)
-            .put("instrument_key", pinned.instrumentKey)
-            .put("outcome", outcome)
-            .put("identity", identityEvidence(pinned, row, leg, lean = true))
-            // P2: bound to ONE acquisition by its identity and the envelope's own content, not to
-            // whatever envelope happens to share this slot. P4: and to the cohort BY CONTENT, so
-            // altering the cohort cannot silently reinterpret which contract this record is about.
+            .put("instrument_key", evidence.optString("instrument_key"))
+            .put("outcome", evidence.optString("outcome"))
+            .put("identity", evidence.opt("identity"))
+            .put("iv", evidence.opt("iv"))
+            .put("bbo", evidence.opt("bbo"))
+            // P2/R2-1: bound to ONE acquisition, whose identity covers this batch's own quote
+            // evidence, and to the envelope's content — not to whatever envelope shares the slot.
+            // P4: and to the cohort BY CONTENT, so altering the cohort cannot silently reinterpret
+            // which contract this record is about.
             .put("acquisition_id", envelope.optString("acquisition_id"))
             .put("envelope_ref", ref(contentHash(envelope)))
             .put("cohort_ref", ref(contentHash(cohort)))
             .put("envelope_join", "session_date+index+slot+acquisition_id")
-        if (outcome == OUTCOME_OBSERVED) {
-            rec.put("iv", ivEvidence(leg)).put("bbo", bboEvidence(leg))
-        } else {
-            rec.put("iv", JSONObject.NULL).put("bbo", JSONObject.NULL)
-        }
         return stampHash(rec)
     }
 }
