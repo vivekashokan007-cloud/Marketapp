@@ -141,7 +141,10 @@ object PremiumCaptureCoordinator {
      * **without touching the filesystem** — no directory, no evidence preparation, no work.
      */
     fun onChainsAcquired(filesDir: File, sessionDate: String?, declaredSchedulerSlot: String?,
-                         acquisitions: List<ChainAcquisition>): JSONObject {
+                         acquisitions: List<ChainAcquisition>,
+                         // injectable only so the budget-exceeded branch can be EXERCISED rather
+                         // than asserted to exist; production callers use the constant
+                         budgetMs: Long = CAPTURE_BUDGET_MS_PER_POLL): JSONObject {
         val started = System.currentTimeMillis()
         val out = JSONObject()
             .put("coordinator_version", COORDINATOR_VERSION)
@@ -163,7 +166,7 @@ object PremiumCaptureCoordinator {
             var budgetHit = false
             // a fixed order, so persistence is serialized and reproducible
             for (acq in acquisitions.sortedBy { it.index }) {
-                if (System.currentTimeMillis() - started > CAPTURE_BUDGET_MS_PER_POLL) {
+                if (System.currentTimeMillis() - started >= budgetMs) {
                     budgetHit = true
                     rows.put(JSONObject().put("index", acq.index).put("status", BUDGET_EXCEEDED))
                     continue
@@ -223,7 +226,7 @@ object PremiumCaptureCoordinator {
             out.put("status", if (budgetHit) BUDGET_EXCEEDED else RAN)
                 .put("indices", rows)
                 .put("total_elapsed_ms", System.currentTimeMillis() - started)
-                .put("budget_ms", CAPTURE_BUDGET_MS_PER_POLL)
+                .put("budget_ms", budgetMs)
                 .put("queued_work", "NONE_SYNCHRONOUS_NO_PENDING_QUEUE")
                 .put("summary_write", JSONObject()
                     .put("status", counterWrite.status)

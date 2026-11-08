@@ -2217,6 +2217,35 @@ class PremiumCaptureTest {
     }
 
     /** Capture failure is always a status; it can never propagate to the caller. */
+    /**
+     * The poll budget stops capture rather than delaying a poll. Exercised, not merely asserted
+     * to exist: with a zero budget the very first index is skipped and reported, and nothing is
+     * written. There is no queue, so there is no pending work to drop and nothing to overflow.
+     */
+    @Test
+    fun theCaptureBudgetStopsWorkRatherThanDelayingThePoll() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+            listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")),
+            budgetMs = 0L)
+        assertEquals(PremiumCaptureCoordinator.BUDGET_EXCEEDED, r.getString("status"))
+        assertEquals(0L, r.getLong("budget_ms"))
+        val rows = r.getJSONArray("indices")
+        assertEquals("both indices must be reported, not silently skipped", 2, rows.length())
+        for (i in 0 until rows.length()) {
+            assertEquals(PremiumCaptureCoordinator.BUDGET_EXCEEDED,
+                rows.getJSONObject(i).getString("status"))
+        }
+        // nothing was written, and the refusal is visible rather than implicit
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertEquals(0, store.outcomeCount("NF", "2026-10-19"))
+        assertEquals(0, store.envelopeCount("NF", "2026-10-19"))
+        assertEquals("NONE_SYNCHRONOUS_NO_PENDING_QUEUE", r.getString("queued_work"))
+        // and the production default is the constant, not the injected value
+        assertEquals(2_000L, PremiumCaptureCoordinator.CAPTURE_BUDGET_MS_PER_POLL)
+    }
+
     @Test
     fun coordinatorFailureIsAlwaysAStatusNeverAnException() {
         // an unwritable files dir
