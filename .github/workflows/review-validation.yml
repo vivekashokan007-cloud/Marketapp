@@ -102,6 +102,14 @@ jobs:
           echo "70274ccdab7aa1bdedaf50955a1f94552089238d95c46ad405725779fcefdec9  tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json" | sha256sum -c
           python3 -I tools/research_m0_freeze/freeze_inputs/verify_freeze_record_20261023.py tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_PROTOCOL_V1_20261023.md tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json
 
+      # Additive validation only; changes no gate, protection or permission. These 22 tests guard the candidate
+      # packaging (committed PWA pin, staging determinism, the candidate workflow's own protections, and that every
+      # hardcoded copy of the accepted pin agrees). They previously ran ONLY in the manually dispatched candidate
+      # workflow, so a pin expectation left at a superseded commit stayed green here for weeks. Packaging guards
+      # belong in the run that sees every push.
+      - name: Candidate packaging guards (committed PWA pin, staging, pin-copy agreement)
+        run: python3 -m unittest discover -s tools/candidate_pwa -p 'test_*.py' -v
+
       - name: Run complete Python safety suite
         run: |
           python3 -m compileall -q app/src/main/python tools

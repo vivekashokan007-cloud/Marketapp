@@ -168,6 +168,53 @@ class CommittedPinTests(unittest.TestCase):
         self.assertEqual(m["pwa_identity"]["build"], int(code.group(1)))
         self.assertEqual(m["pwa_identity"]["app_js_v"], m["pwa_identity"]["index_app_js_v"])
 
+    def test_every_hardcoded_copy_of_the_pin_agrees(self):
+        """The guard that was missing, and the reason this drifted at all.
+
+        Two tripwires are kept on purpose - this one, and the Kotlin literals in
+        B515CandidatePwaTest, which run in every unit-test variant on every push. Hardcoding is
+        what makes each a tripwire, but nothing previously asserted that the copies AGREED, so
+        they diverged to four values across seven places and only the push-checked ones were ever
+        noticed. Duplication is acceptable here only because this test binds the duplicates
+        together: edit one and this fails until the other matches.
+        """
+        kt = (ROOT / "app/src/test/java/com/marketradar/app/B515CandidatePwaTest.kt").read_text()
+
+        def kotlin_literal(name, pattern=r'"([^"]+)"'):
+            m = re.search(r"val\s+%s\s*=\s*%s" % (re.escape(name), pattern), kt)
+            self.assertIsNotNone(m, "%s not found in B515CandidatePwaTest.kt" % name)
+            return m.group(1)
+
+        self.assertEqual(kotlin_literal("acceptedMarketViviSha"), self.ACCEPTED_MARKETVIVI_SHA)
+        self.assertEqual(kotlin_literal("acceptedAppJsSha256"), self.ACCEPTED_APP_JS_SHA256)
+
+        # And no stale copy of a superseded identity may survive anywhere in the tracked tree.
+        superseded = ("877b02fd6d703ca43148a0f119b60216d9b509ce",
+                      "7005a751b166666c1f4e22f5d3e4607390b904e4")
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
+                                 capture_output=True, text=True, check=True).stdout.split("\0")
+        offenders = {}
+        for rel in filter(None, tracked):
+            p = ROOT / rel
+            if not p.is_file() or p.suffix.lower() in (".png", ".jpg", ".webp", ".jar", ".keystore"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            # Prose that documents the drift is allowed to name the old values; code and data are not.
+            if p.suffix in (".md", ".txt"):
+                continue
+            hits = [s for s in superseded if s in text]
+            if hits:
+                # This test file and the Kotlin tripwire explain the history in comments.
+                if rel in ("tools/candidate_pwa/test_stage_candidate_pwa.py",
+                           "app/src/test/java/com/marketradar/app/B515CandidatePwaTest.kt",
+                           "app/src/testCandidate/java/com/marketradar/app/B515CandidateVariantTest.kt"):
+                    continue
+                offenders[rel] = hits
+        self.assertEqual(offenders, {}, "superseded pin SHAs still present: %s" % offenders)
+
 
 class WorkflowContractTests(unittest.TestCase):
     """The artifact-only workflow: manual trigger only, read-only token, no release/tag/Pages/push, pinned actions."""
@@ -215,7 +262,12 @@ class WorkflowContractTests(unittest.TestCase):
         tpl = json.loads((root / "tools/candidate_pwa/BUILD_AUTHORIZATION.template.json").read_text())
         self.assertEqual(tpl["schema"], "marketradar.candidate_build_authorization.v1")
         self.assertIs(tpl["artifact_only"], True)
-        self.assertEqual(tpl["approved_by"], "")
+        # Every value the filler must supply stays blank. pwa_sha/version_code/version_name were
+        # prefilled with 877b02fd/517/2.6.86 under a note saying to fill only the EMPTY fields,
+        # which read as an instruction to keep three stale values.
+        for k in ("native_sha", "pwa_sha", "version_code", "version_name", "cert_sha256",
+                  "approved_by", "approval_reference", "codex_final_check_reference"):
+            self.assertEqual(tpl[k], "", "template field %s must ship blank" % k)
 
     def test_permissions_read_only(self):
         if self.y is not None:
