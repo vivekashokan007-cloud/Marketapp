@@ -2216,13 +2216,220 @@ class PremiumCaptureTest {
         assertTrue(out.isFile && out.length() > 0L)
     }
 
+    // ═════════════════ Commit 3 — the premium section on the existing export ═════════════════
+
+    /** Capture `slots` slots for both indices into a fresh filesDir, and return it. */
+    private fun capturedFilesDir(slots: List<String>, date: String = "2026-10-19"): File {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        for ((i, slot) in slots.withIndex()) {
+            PremiumCaptureCoordinator.onChainsAcquired(fd, date, slot,
+                listOf(acq("NF", "mon_0920_entry_NF", receipt = slot,
+                    start = 1_000L + i * 300_000L, end = 1_300L + i * 300_000L),
+                    acq("BNF", "mon_0920_entry_BNF", receipt = slot,
+                        start = 1_000L + i * 300_000L, end = 1_320L + i * 300_000L)))
+        }
+        return fd
+    }
+
+    @Test
+    fun theSectionCarriesNfAndBnfSeparatelyForTheRequestedDateOnly() {
+        val fd = capturedFilesDir(listOf("09:20", "09:25"))
+        val sec = PremiumExportSection.build(fd, "2026-10-19")
+        assertEquals("PRESENT", sec.getString("state"))
+        assertTrue(sec.getBoolean("has_data"))
+        assertEquals("2026-10-19", sec.getString("requested_session_date"))
+        assertEquals("NEVER_ONLY_THE_REQUESTED_DATE", sec.getString("session_date_substitution"))
+        val idx = sec.getJSONObject("indices")
+        for (i in listOf("NF", "BNF")) {
+            val one = idx.getJSONObject(i)
+            assertEquals(i, one.getString("index"))
+            assertEquals("2026-10-19", one.getString("session_date"))
+            assertEquals(12, one.getJSONObject("accounting").getInt("records"))
+            assertEquals(2, one.getJSONObject("acquisitions").getInt("verified_batches"))
+            assertTrue(one.getBoolean("view_consistent"))
+        }
+        // a different retained date is NEVER substituted for the requested one
+        val other = PremiumExportSection.build(fd, "2026-10-16")
+        assertEquals("NO_PREMIUM_DATA", other.getString("state"))
+        assertFalse(other.getBoolean("has_data"))
+        assertEquals("2026-10-16", other.getString("requested_session_date"))
+        // and an invalid requested date is its own state, not today's data
+        assertEquals("REQUESTED_DATE_INVALID",
+            PremiumExportSection.build(fd, "not-a-date").getString("state"))
+    }
+
+    @Test
+    fun noPremiumDataIsADeliberateStateNotAnError() {
+        // never captured at all: the directory does not even exist
+        val fresh = tmpFilesDir()
+        val sec = PremiumExportSection.build(fresh, "2026-10-19")
+        assertEquals("NO_PREMIUM_DATA", sec.getString("state"))
+        assertFalse(sec.getBoolean("has_data"))
+        assertFalse(sec.getBoolean("capture_enabled"))
+        // one index captured, the other not: each state is explicit
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+            listOf(acq("NF", "mon_0920_entry_NF")))
+        val one = PremiumExportSection.build(fd, "2026-10-19")
+        assertEquals("PRESENT", one.getString("state"))
+        assertEquals("NO_PREMIUM_DATA_FOR_THIS_INDEX",
+            one.getJSONObject("indices").getJSONObject("BNF").getString("state"))
+        assertEquals(6, one.getJSONObject("indices").getJSONObject("NF")
+            .getJSONObject("accounting").getInt("records"))
+    }
+
+    @Test
+    fun partialCaptureIsCarriedWithItsVerifiedUsability() {
+        val fd = capturedFilesDir(listOf("09:20"))
+        // lose two records, as an interrupted write would
+        val recs = File(PremiumCaptureControl.root(fd), "2026-10-19/NF/records")
+            .listFiles()!!.filter { it.name.endsWith(".json") }.sortedBy { it.name }
+        recs.take(2).forEach { assertTrue(it.delete()) }
+        val nf = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF")
+        val row = nf.getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+        assertEquals("PARTIAL", row.getString("structural_state"))
+        assertEquals("UNVERIFIED", row.getString("verified_state"))
+        assertEquals(0, nf.getJSONObject("acquisitions").getInt("usable_evidence_acquisitions"))
+        // the evidence is still carried, with the missing outcomes visible
+        assertEquals(4, nf.getJSONObject("accounting").getInt("records"))
+    }
+
+    /** A new top-level key only: every existing part of the bundle survives byte-for-byte. */
+    @Test
+    fun theSpliceAddsOnlyANewTopLevelKeyAndChangesNoExistingPart() {
+        val bundle = JSONObject().put("manifest", JSONObject().put("status", "OK")
+            .put("session_date_used", "2026-10-19"))
+            .put("trades", JSONArray().put(JSONObject().put("id", 1).put("pnl", 12.5)))
+            .put("labels", JSONObject().put("n", 3)).toString()
+        val sec = JSONObject().put("state", "PRESENT").put("has_data", true)
+        val merged = PremiumExportSection.splice(bundle, sec)
+        assertNotNull(merged)
+        val before = JSONObject(bundle)
+        val after = JSONObject(merged!!)
+        assertEquals("PRESENT", after.getJSONObject("premium").getString("state"))
+        for (k in before.keys()) {
+            assertEquals("existing part '$k' must be unchanged",
+                before.get(k).toString(), after.get(k).toString())
+        }
+        // an empty bundle object must still yield valid JSON
+        val emptyMerged = PremiumExportSection.splice("{}", sec)
+        assertNotNull(emptyMerged)
+        assertTrue(JSONObject(emptyMerged!!).has("premium"))
+        assertEquals(1, JSONObject(emptyMerged).length())
+        // a non-object bundle is refused rather than corrupted
+        assertNull(PremiumExportSection.splice("[1,2,3]", sec))
+        assertNull(PremiumExportSection.splice("not json", sec))
+    }
+
+    /**
+     * The combined limit is enforced on the FINAL bytes. The old limit is not raised and old parts
+     * are never truncated: the premium section is reduced in declared stages, and if it still will
+     * not fit the export is refused.
+     */
+    @Test
+    fun theCombinedCapIsEnforcedByDeclaredStagedReductionThenRefusal() {
+        val fd = capturedFilesDir(listOf("09:20", "09:25", "09:30", "09:35"))
+        val sec = PremiumExportSection.build(fd, "2026-10-19")
+        val secBytes = sec.toString().toByteArray(Charsets.UTF_8).size
+        assertTrue("the section must be substantial for this case to mean anything", secBytes > 50_000)
+
+        // (a) a bundle that leaves room only after records are dropped
+        val roomy = "{\"filler\":\"" + "x".repeat(
+            PremiumExportSection.COMBINED_CAP_BYTES - secBytes / 2) + "\"}"
+        val fitA = PremiumExportSection.mergeWithinCap(
+            roomy, roomy.toByteArray(Charsets.UTF_8), sec)
+        assertTrue("it must have reduced rather than refused", fitA.stage >= 1)
+        assertFalse(fitA.overCap)
+        assertTrue(fitA.bytes.size <= PremiumExportSection.COMBINED_CAP_BYTES)
+        // the reduction is declared, and nothing is cut mid-value
+        val mergedA = JSONObject(String(fitA.bytes, Charsets.UTF_8)).getJSONObject("premium")
+        assertEquals(fitA.stage, mergedA.getInt("reduction_stage"))
+        assertTrue(mergedA.getJSONArray("reduced_fields").toString().contains("records"))
+        assertFalse("records were dropped wholesale, not truncated",
+            mergedA.getJSONObject("indices").getJSONObject("NF").has("records"))
+        // the parts that remain are still intact and parseable
+        assertEquals(12, mergedA.getJSONObject("indices").getJSONObject("NF")
+            .getJSONObject("accounting").getInt("records"))
+
+        // (b) a bundle already at the limit: no reduction can help, so it must REFUSE
+        val full = "{\"filler\":\"" + "x".repeat(
+            PremiumExportSection.COMBINED_CAP_BYTES - 200) + "\"}"
+        val fitB = PremiumExportSection.mergeWithinCap(
+            full, full.toByteArray(Charsets.UTF_8), sec)
+        assertTrue("it must refuse rather than raise the limit or truncate", fitB.overCap)
+        assertEquals(3, fitB.stage)
+    }
+
+    /** A device export states what device evidence does NOT mean. */
+    @Test
+    fun aDeviceExportDoesNotClaimSynchronisedTicksOrExecutableFills() {
+        val ctx = PremiumExportSection.deviceContext().json()
+        assertEquals("LIVE_DEVICE_CAPTURE", ctx.getString("source_kind"))
+        assertTrue(ctx.getBoolean("device_evidence"))
+        assertEquals(0, ctx.getJSONArray("synthetic_fields").length())
+        assertTrue("the clock provenance must say the exchange semantics are unverified",
+            ctx.getString("clock_provenance").contains("EXCHANGE_EVENT_SEMANTICS_UNVERIFIED"))
+        assertTrue(ctx.getString("note").contains("does not mean synchronised exchange ticks"))
+        assertTrue(ctx.getString("lot_table_provenance").contains(ContractLotTable.VERSION_ID))
+
+        val fd = capturedFilesDir(listOf("09:20"))
+        val nf = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF")
+        assertTrue(nf.getBoolean("device_evidence"))
+        assertFalse("a device export is still not a synchronised tick",
+            nf.getJSONObject("claims").getBoolean("synchronised_exchange_quotes"))
+        assertFalse(nf.getJSONObject("claims").getBoolean("executable_fills"))
+        assertFalse(nf.getJSONObject("claims").getBoolean("forecast_of_future_inputs"))
+        assertFalse("a real device capture is not synthetic", nf.getBoolean("is_synthetic"))
+    }
+
+    /** The premium-only payload names the requested date and substitutes no other. */
+    @Test
+    fun aPremiumOnlyPayloadIsForExactlyTheRequestedDate() {
+        val fd = capturedFilesDir(listOf("09:20"))
+        val sec = PremiumExportSection.build(fd, "2026-10-19")
+        val bytes = PremiumExportSection.premiumOnlyBytes("2026-10-19", sec)
+        val o = JSONObject(String(bytes, Charsets.UTF_8))
+        assertEquals("2026-10-19", o.getString("session_date"))
+        assertEquals(1, o.getJSONArray("parts_present").length())
+        assertEquals("premium", o.getJSONArray("parts_present").getString(0))
+        assertTrue(o.getString("note").contains("substitutes no other day"))
+        assertTrue(o.getJSONObject("premium").getBoolean("has_data"))
+    }
+
+    /** The bridge is a thin adapter: the assembly lives where it can be tested. */
+    @Test
+    fun theBridgeDelegatesTheExportAssemblyAndGuardsItWithThrowable() {
+        val src = stripComments(
+            File("src/main/java/com/marketradar/app/NativeBridge.kt").readText())
+        assertTrue("the bridge must delegate the section build",
+            src.contains("PremiumExportSection.build(context.filesDir, date)"))
+        assertTrue("and the cap enforcement", src.contains("PremiumExportSection.mergeWithinCap("))
+        assertTrue("and must not re-implement the section itself",
+            !src.contains("fun premiumSectionFor("))
+        // the two new control methods exist and are JS-exposed
+        assertTrue(src.contains("fun getPremiumCaptureStatus()"))
+        assertTrue(src.contains("fun setPremiumCapture(enabled: Boolean)"))
+        // each new bridge method catches Throwable: an OOM here aborted the whole calling JS
+        // function once already (CLAUDE.md, b321)
+        val status = src.substringAfter("fun getPremiumCaptureStatus()").substringBefore("fun ")
+        val control = src.substringAfter("fun setPremiumCapture(enabled: Boolean)")
+            .substringBefore("private fun")
+        assertTrue("getPremiumCaptureStatus must catch Throwable",
+            status.contains("catch (t: Throwable)"))
+        assertTrue("setPremiumCapture must catch Throwable", control.contains("catch (t: Throwable)"))
+    }
+
     // ═════════════════ nothing is wired, nothing reaches the trading path ═════════════════════
 
     @Test
     fun theCaptureSourcesTouchNoNetworkSchedulerOrTradingSurface() {
         val files = listOf("PremiumObservationContract.kt", "PremiumCaptureCohort.kt",
             "PremiumCaptureStore.kt", "PremiumCaptureSession.kt", "PremiumCaptureControl.kt",
-            "PremiumCaptureCoordinator.kt")
+            "PremiumCaptureCoordinator.kt", "PremiumExportSection.kt")
         val banned = listOf("OkHttp", "HttpURLConnection", "Request.Builder", "AlarmManager",
             "setExact", "WorkManager", "JobScheduler", "Timer(",
             "SupabaseClient", "NotificationHelper", "OrderExecutionService",
@@ -2247,11 +2454,13 @@ class PremiumCaptureTest {
             "PremiumObservationContract.kt", "PremiumCaptureCohort.kt", "PremiumCaptureStore.kt",
             "PremiumCaptureSession.kt", "PremiumCaptureControl.kt",
             // the one coordinator
-            "PremiumCaptureCoordinator.kt",
+            "PremiumCaptureCoordinator.kt", "PremiumExportSection.kt",
             // the existing acquisition path
             "MarketWatchService.kt",
             // the existing export/control bridge
             "NativeBridge.kt",
+            // the native operator control in the existing settings dialog
+            "MainActivity.kt",
         )
         val dir = File("src/main/java/com/marketradar/app")
         val referrers = (dir.listFiles() ?: emptyArray()).filter { f ->

@@ -984,8 +984,33 @@ class MainActivity : AppCompatActivity() {
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }
+            // The premium-capture operator control, so capture can be turned on and off ON THE
+            // DEVICE without any PWA change. It is a temporary DATA-COLLECTION switch: not a
+            // trading mode, it does not touch the Paper/Real lock and it changes no authority.
+            // Default OFF; the label always shows the current state before the action.
+            .setNegativeButton(premiumCaptureButtonLabel()) { dialog, _ ->
+                val target = !PremiumCaptureControl.isEnabled(filesDir)
+                val r = PremiumCaptureControl.setEnabled(filesDir, target)
+                Toast.makeText(
+                    this,
+                    if (r.ok) "Premium capture ${if (r.enabled) "ON" else "OFF"}" +
+                        " (evidence collection only; not a trading mode)." +
+                        " Takes effect next poll."
+                    else "Premium capture unchanged: ${r.detail ?: "control not writable"}",
+                    Toast.LENGTH_LONG,
+                ).show()
+                dialog.dismiss()
+            }
             .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
             .show()
+    }
+
+    /** Shows the CURRENT capture state and the action, so the button cannot be misread. */
+    private fun premiumCaptureButtonLabel(): String = try {
+        if (PremiumCaptureControl.isEnabled(filesDir)) "Capture: ON \u2192 turn OFF"
+        else "Capture: OFF \u2192 turn ON"
+    } catch (t: Throwable) {
+        "Capture: unavailable"
     }
 
     private fun checkForUpdates(isManual: Boolean) {
