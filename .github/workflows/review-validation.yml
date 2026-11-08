@@ -252,6 +252,18 @@ jobs:
           cat "$out/PROVENANCE.txt"
           echo "--- digests, computed by CI on the producer's own files ---"
           cat "$out/SHA256SUMS" || true
+          # The two SMALL measurement files are also echoed, with their digests above, so the
+          # numbers can be read and quoted without downloading anything — and the digest lets a
+          # reader confirm the printed text matches the file. The large acceptance JSON is
+          # DELIBERATELY not echoed: reconstructing it from timestamp-prefixed log lines is what
+          # made the previous handover unsound, and it belongs in the artifact only.
+          for f in premium_capture_measurements.txt premium_capture_resource_cost.txt; do
+            if [ -f "$out/$f" ]; then
+              echo "--- BEGIN $f (digest above) ---"
+              cat "$out/$f"
+              echo "--- END $f ---"
+            fi
+          done
 
       - name: Upload premium capture evidence
         if: always()
