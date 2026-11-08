@@ -969,11 +969,14 @@ class PremiumCaptureTest {
         assertEquals(3L, counters.getLong("batches_attempted"))
         assertEquals(3L, counters.getLong("batches_complete"))
 
-        println("PREMIUM_ACCEPTANCE_EXPORT_BEGIN")
-        println(ex.toString())
-        println("PREMIUM_ACCEPTANCE_EXPORT_END")
-        println("PREMIUM_ACCEPTANCE_EXPORT_BYTES=" +
-            ex.toString().toByteArray(Charsets.UTF_8).size)
+        // Written to a FILE rather than printed. CI established that Gradle captures test stdout
+        // and does not surface it, so the println markers this previously used never reached the
+        // log at all and the artifact could not be collected. The workflow cats this file.
+        val artifact = File("build/premium_capture_acceptance_export.json")
+        artifact.parentFile?.mkdirs()
+        artifact.writeText(ex.toString(2))
+        assertTrue("the acceptance artifact must be written for the review to collect it",
+            artifact.isFile && artifact.length() > 0L)
     }
 
     /** NF and BNF share a store and must not contaminate each other. */
@@ -1300,11 +1303,26 @@ class PremiumCaptureTest {
                 .toString().toByteArray(Charsets.UTF_8).size
         }
         val flatPerSlot = flat.sum()
-        println("MEASURED(desktop JVM, real vendor fixture): records=$recSizes envelope=$envSize " +
-            "perSlot=$perSlot projected78=${perSlot * 78L} budget=$budget " +
-            "flatRecords=$flat flatPerSlot=$flatPerSlot projected78Flat=${flatPerSlot * 78L} " +
-            "perRecordCap=${PremiumCaptureStore.MAX_BYTES_PER_RECORD}")
         assertTrue("the split must actually save bytes", flatPerSlot > perSlot)
+        // to a FILE, for the same reason as the acceptance export: Gradle captures test stdout, so
+        // a println of these numbers is invisible and the measurement cannot be quoted as evidence
+        val out = File("build/premium_capture_measurements.txt")
+        out.parentFile?.mkdirs()
+        out.writeText(
+            "source=THIS Kotlin against app/src/test/resources/contracts/x1_upstox_raw_chains.json\n" +
+                "desktop JVM, not a device measurement\n" +
+                "observation_bytes=$recSizes\n" +
+                "envelope_bytes=$envSize\n" +
+                "per_slot_bytes=$perSlot\n" +
+                "projected_78_slots=${perSlot * 78L}\n" +
+                "session_budget=$budget\n" +
+                "headroom=${budget - perSlot * 78L}\n" +
+                "flat_record_bytes=$flat\n" +
+                "flat_per_slot_bytes=$flatPerSlot\n" +
+                "projected_78_slots_flat=${flatPerSlot * 78L}\n" +
+                "per_record_cap=${PremiumCaptureStore.MAX_BYTES_PER_RECORD}\n" +
+                "bytes_saved_by_split_over_78_slots=${(flatPerSlot - perSlot) * 78L}\n")
+        assertTrue(out.isFile && out.length() > 0L)
     }
 
     // ═════════════════ nothing is wired, nothing reaches the trading path ═════════════════════

@@ -190,6 +190,25 @@ jobs:
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
+      # REVIEW-BRANCH STEP, not intended for main. Gradle captures test stdout, so the
+      # premium-capture acceptance artifact and its byte measurements are written to files by
+      # PremiumCaptureTest and printed here; otherwise they cannot be collected and quoted as
+      # review evidence. Reads build output only: it publishes nothing and asserts nothing.
+      # Remove this step when the capture review closes.
+      - name: Premium capture acceptance artifact (review evidence only)
+        if: always()
+        run: |
+          for f in app/build/premium_capture_measurements.txt \
+                   app/build/premium_capture_acceptance_export.json; do
+            if [ -f "$f" ]; then
+              echo "===== BEGIN $f ====="
+              cat "$f"
+              echo "===== END $f ====="
+            else
+              echo "absent: $f"
+            fi
+          done
+
       - name: DB-1 migration suite and end-to-end parity audit (scratch PostgreSQL 17)
         env:
           PGHOST: localhost
