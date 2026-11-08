@@ -206,12 +206,9 @@ class CommittedPinTests(unittest.TestCase):
             if p.suffix in (".md", ".txt"):
                 continue
             hits = [s for s in superseded if s in text]
-            if hits:
-                # This test file and the Kotlin tripwire explain the history in comments.
-                if rel in ("tools/candidate_pwa/test_stage_candidate_pwa.py",
-                           "app/src/test/java/com/marketradar/app/B515CandidatePwaTest.kt",
-                           "app/src/testCandidate/java/com/marketradar/app/B515CandidateVariantTest.kt"):
-                    continue
+            # Only this file is exempt, because it must contain the values it searches for. Keeping the exemption
+            # list to the guard itself is deliberate: a broad exemption would hide exactly what this looks for.
+            if hits and rel != "tools/candidate_pwa/test_stage_candidate_pwa.py":
                 offenders[rel] = hits
         self.assertEqual(offenders, {}, "superseded pin SHAs still present: %s" % offenders)
 

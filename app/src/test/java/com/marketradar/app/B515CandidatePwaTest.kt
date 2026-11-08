@@ -298,7 +298,10 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "7005a751b166666c1f4e22f5d3e4607390b904e4"
+        // Obviously-synthetic fixture SHAs, matching NATIVE's style. PWA used to be the real 7005a751 pin, which
+        // made a fixture indistinguishable from the accepted identity at a glance - the exact confusion that let the
+        // pin drift. Nothing depends on its value: every digest below is computed from the FAKE bytes at runtime.
+        const val PWA = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)
