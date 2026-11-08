@@ -128,12 +128,45 @@ class StageTests(unittest.TestCase):
 
 
 class CommittedPinTests(unittest.TestCase):
+    """The committed pin must name the REVIEWED MarketVivi commit.
+
+    Deliberately hardcoded rather than derived from the manifest: this is a tripwire, so that the
+    bundled runtime cannot be re-pointed without someone editing this expectation and having that
+    edit reviewed. Reading the value out of the manifest would make the assertion vacuous.
+
+    Updated for the 2.6.95 paired candidate. It had been left at 877b02fd while the committed
+    manifest said 7005a751, so this test was ALREADY FAILING at the accepted implementation head
+    b9aa75de — it runs only in the manually dispatched candidate workflow, never in the
+    review-validation run, which is why a green review never caught it.
+    """
+
+    ACCEPTED_MARKETVIVI_SHA = "3f3f46ad01cee8dd5fcdb04817472d15968b53bc"
+    ACCEPTED_APP_JS_SHA256 = \
+        "e150f09ffef2c47dbed1bd00f4fae48c107b17583c6d524fe7996a03b4c12597"
+
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
-        self.assertEqual(m["marketvivi_sha"], "877b02fd6d703ca43148a0f119b60216d9b509ce")
+        self.assertEqual(m["marketvivi_sha"], self.ACCEPTED_MARKETVIVI_SHA)
         self.assertEqual(sorted(m["files"]), sorted(S.RUNTIME_FILES))
-        self.assertEqual(m["files"]["app.js"]["sha256"], "004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230")
+        self.assertEqual(m["files"]["app.js"]["sha256"], self.ACCEPTED_APP_JS_SHA256)
         self.assertEqual(m["document_base"], S.DOCUMENT_BASE)
+
+    def test_the_pin_identity_is_the_paired_native_release(self):
+        """The bundled runtime must be the PAIRED interface, not an older one.
+
+        The packaging issue this candidate exists to fix: the pin named 2.6.92/523 while the
+        native source is 2.6.95/526, so a candidate built unchanged would have bundled the older
+        interface against the newer native code.
+        """
+        m = json.loads(PIN.read_text())
+        gradle = (ROOT / "app/build.gradle.kts").read_text()
+        name = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+        code = re.search(r"versionCode\s*=\s*(\d+)", gradle)
+        self.assertIsNotNone(name)
+        self.assertIsNotNone(code)
+        self.assertEqual(m["pwa_identity"]["version"], name.group(1))
+        self.assertEqual(m["pwa_identity"]["build"], int(code.group(1)))
+        self.assertEqual(m["pwa_identity"]["app_js_v"], m["pwa_identity"]["index_app_js_v"])
 
 
 class WorkflowContractTests(unittest.TestCase):
