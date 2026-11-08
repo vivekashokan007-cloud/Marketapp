@@ -170,8 +170,34 @@ object PremiumCaptureCoordinator {
      *
      * Exposed internally so a test can drive exactly what the worker runs.
      */
+    /**
+     * The immutable, metadata-only description a queued job carries.
+     *
+     * A waiting job used to capture the whole `ChainAcquisition`, whose `rawChain` still points at
+     * the original mutable `JSONObject`. Persistence reads only the frozen text, so that was not a
+     * mixed-response correctness bug — but it kept the entire original response graph reachable
+     * from the queue, outside the prepared-payload bytes that are actually measured and bounded.
+     * This value carries scalars only, so what a waiting job retains is the frozen text plus these
+     * fields and nothing else.
+     */
+    data class PreparedMeta(
+        val index: String,
+        val requestStartedMs: Long?,
+        val responseReceivedMs: Long?,
+        val requestedUnderlyingKey: String?,
+        val expiry: String?,
+        val receiptHhmm: String?,
+        val vendorSourceTs: String?,
+    ) {
+        companion object {
+            fun from(a: ChainAcquisition) = PreparedMeta(
+                a.index, a.requestStartedMs, a.responseReceivedMs, a.requestedUnderlyingKey,
+                a.expiry, a.receiptHhmm, a.vendorSourceTs)
+        }
+    }
+
     internal fun persistOne(filesDir: File, index: String, sessionDate: String,
-                            chainText: String?, acq: ChainAcquisition,
+                            chainText: String?, acq: PreparedMeta,
                             declaredSchedulerSlot: String?): JSONObject {
         val row = JSONObject().put("index", index)
         val startedNs = System.nanoTime()
@@ -208,8 +234,10 @@ object PremiumCaptureCoordinator {
                 mapRef = null,
                 productionLotAuthorityRef = authorityRef,
             )
-            // THIS index's own summary write, reported from its own attempt. One unrelated counter
-            // verdict for a single index must never stand in for both indices.
+            // This coordinator's OWN extra counter. It is named separately and must never be
+            // reported as the capture summary's outcome: that one carries the batch, write and
+            // refusal deltas, and a transient failure of it followed by a success here would
+            // otherwise read as `durably_recorded: true` while the counters that matter were lost.
             val counterWrite = store.bumpCounters(index, sessionDate,
                 mapOf("coordinator_runs" to 1L))
             row.put("status", r.status)
@@ -219,7 +247,15 @@ object PremiumCaptureCoordinator {
                 .put("batch_complete", r.batchComplete)
                 .put("chain_present", chain != null)
                 .put("detail", r.detail ?: JSONObject.NULL)
+                // THE CAPTURE SUMMARY: this attempt's own batch/write/refusal counters
                 .put("summary_write", JSONObject()
+                    .put("kind", "CAPTURE_BATCH_WRITE_AND_REFUSAL_COUNTERS")
+                    .put("status", r.summaryWrite?.status ?: "NOT_ATTEMPTED")
+                    .put("durably_recorded", r.summaryWrite?.persisted ?: false)
+                    .put("detail", r.summaryWrite?.detail ?: JSONObject.NULL))
+                // the coordinator's separate run counter, reported under its own name
+                .put("coordinator_counter_write", JSONObject()
+                    .put("kind", "COORDINATOR_RUN_COUNT_ONLY_NOT_THE_CAPTURE_SUMMARY")
                     .put("status", counterWrite.status)
                     .put("durably_recorded", counterWrite.persisted)
                     .put("detail", counterWrite.detail ?: JSONObject.NULL))
@@ -275,10 +311,13 @@ object PremiumCaptureCoordinator {
                     val chainText = acq.rawChain?.toString()
                     val bytes = chainText?.toByteArray(Charsets.UTF_8)?.size ?: 0
                     row.put("prepared_bytes", bytes)
+                    // scalars only: the closure must not keep the original mutable response graph
+                    // reachable from the queue
+                    val meta = PreparedMeta.from(acq)
                     val submission = PremiumCaptureWorker.submit(PremiumCaptureWorker.Job(
-                        index = acq.index, sessionDate = sessionDate, preparedBytes = bytes,
+                        index = meta.index, sessionDate = sessionDate, preparedBytes = bytes,
                         persist = {
-                            val r = persistOne(filesDir, acq.index, sessionDate, chainText, acq,
+                            val r = persistOne(filesDir, meta.index, sessionDate, chainText, meta,
                                 declaredSchedulerSlot)
                             // the status file is written HERE, on the worker, not on the poll
                             // thread, and through the accounted control path

@@ -2644,6 +2644,134 @@ class PremiumCaptureTest {
     }
 
     /**
+     * A WRITER PAUSED AFTER RENAME, BEFORE THE REVISION IS PUBLISHED, MUST NOT YIELD A STABLE VIEW.
+     *
+     * This is the interleaving a post-write counter could not detect, and it is forced
+     * deterministically rather than raced: the real store's real write is paused at a real phase
+     * hook immediately after `renameTo` makes the new bytes visible, while the export runs.
+     *
+     *   1. writer replaces a file; the rename is visible
+     *   2. writer is paused before publishing its completed revision
+     *   3. export reads parts that already include the change
+     *   4. under the old protocol it would sample the same counter twice and declare the mixed
+     *      view consistent
+     *
+     * With odd/even it cannot: the revision is odd throughout the paused window, so the reader
+     * refuses rather than reporting a stable view.
+     */
+    @Test
+    fun aWriterPausedAfterRenameCannotProduceAStableView() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertTrue("the store must be quiescent before the test begins", store.quiescent())
+        assertEquals("a quiescent revision must be even", 0L, store.generation() % 2L)
+
+        val paused = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        PremiumCaptureStore.mutationPhaseHookForTest = { phase ->
+            if (phase == "after_rename") {
+                paused.countDown()
+                release.await()
+            }
+        }
+        val writer = Thread {
+            // a real write through the real store: the summary replacement
+            store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
+        }
+        writer.isDaemon = true
+        try {
+            writer.start()
+            assertTrue("the writer must reach the post-rename pause",
+                paused.await(15, java.util.concurrent.TimeUnit.SECONDS))
+
+            // the bytes are visible but the revision is NOT published
+            assertFalse("a paused mutation must leave the revision odd", store.quiescent())
+            assertEquals(1L, store.generation() % 2L)
+
+            val nf = PremiumExportSection.build(fd, "2026-10-19")
+                .getJSONObject("indices").getJSONObject("NF")
+            assertFalse("a read spanning an unpublished write must NOT be called consistent",
+                nf.getBoolean("view_consistent"))
+            assertEquals("CONCURRENT_CAPTURE_WRITE_NOT_A_STABLE_VIEW", nf.getString("view_state"))
+            assertEquals(PremiumExportSection.CONSISTENCY_ATTEMPTS, nf.getInt("view_attempts"))
+        } finally {
+            release.countDown()
+            writer.join(15_000L)
+            PremiumCaptureStore.mutationPhaseHookForTest = null
+        }
+
+        // once published, the same read is consistent again — so the refusal above was the
+        // protocol working, not the export being permanently unable to produce a stable view
+        assertTrue("the revision must be published after the writer completes", store.quiescent())
+        val after = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF")
+        assertTrue("a quiescent store must read consistently", after.getBoolean("view_consistent"))
+    }
+
+    /**
+     * TEMP-FILE ACCOUNTING CHANGES BEFORE ANY RENAME, and must also be covered.
+     *
+     * A write creates a temp file in the destination directory before renaming it, which already
+     * changes directory bytes and the orphan-temp enumeration — and on a short write or a refused
+     * replace no rename ever completes. So the window after the temp exists must also be odd, not
+     * just the window after a successful rename. Paused there, the revision must be odd; after the
+     * write finishes it must be even again, whatever the outcome.
+     */
+    @Test
+    fun theRevisionIsAlreadyOddWhileOnlyATempFileExists() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertTrue(store.quiescent())
+        val paused = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        PremiumCaptureStore.mutationPhaseHookForTest = { phase ->
+            if (phase == "after_temp_write") { paused.countDown(); release.await() }
+        }
+        val writer = Thread {
+            store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
+        }
+        writer.isDaemon = true
+        try {
+            writer.start()
+            assertTrue("the writer must reach the post-temp-write pause",
+                paused.await(15, java.util.concurrent.TimeUnit.SECONDS))
+            assertFalse("a temp file already changes accounting, so the revision must be odd",
+                store.quiescent())
+            // and a reader must refuse this window too, not only the post-rename one
+            val nf = PremiumExportSection.build(fd, "2026-10-19")
+                .getJSONObject("indices").getJSONObject("NF")
+            assertFalse("a read spanning a temp-only mutation must not be called consistent",
+                nf.getBoolean("view_consistent"))
+        } finally {
+            release.countDown()
+            writer.join(15_000L)
+            PremiumCaptureStore.mutationPhaseHookForTest = null
+        }
+        assertTrue("the revision must be published once the write finishes", store.quiescent())
+    }
+
+    /**
+     * A write refused BEFORE it mutates anything must not move the revision at all — otherwise
+     * every rejected oversize payload would look like a change to a reader.
+     */
+    @Test
+    fun aWriteRefusedBeforeMutatingAnythingDoesNotMoveTheRevision() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val before = store.generation()
+        assertTrue(store.quiescent())
+        // over the per-control-file bound, so it is refused before any temp is created
+        val r = store.putControlFile("probe.json",
+            JSONObject().put("blob", "x".repeat(8192)))
+        assertFalse(r.persisted)
+        assertEquals(PremiumCaptureStore.REFUSED_RECORD_TOO_LARGE, r.status)
+        assertEquals("a refusal that touched nothing must not look like a write",
+            before, store.generation())
+        assertTrue(store.quiescent())
+    }
+
+    /**
      * A writer that keeps mutating during assembly must yield an explicitly INCONSISTENT view
      * rather than a consistent-looking one, and must not be labelled consistent after the
      * bounded attempts are used up.
@@ -2765,6 +2893,230 @@ class PremiumCaptureTest {
         // the premise: the slice must actually contain the hook, or this proves nothing
         assertTrue("the slice must contain the capture call",
             block.contains("PremiumCaptureCoordinator.onChainsAcquired("))
+    }
+
+    // ═════════ R2: the operator control must not block, and must tell the truth ═════════
+
+    /**
+     * THE CONTROL MUST RETURN WHILE THE CAPTURE LOCK IS HELD.
+     *
+     * `setEnabled` writes through the store and therefore waits on the same root lock a blocked
+     * persistence write holds. On the Android UI thread that can freeze the app and make Paper
+     * unusable — and worker submission being non-blocking says nothing about this path. The
+     * production handler the dialog calls is `requestEnabled`, and it must come back promptly with
+     * the effective state already changed while the lock is held by someone else.
+     */
+    @Test
+    fun theOperatorControlReturnsPromptlyWhileTheCaptureLockIsHeld() {
+        val fd = tmpFilesDir()
+        assertTrue(PremiumCaptureControl.setEnabled(fd, true).ok)
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val holder = Thread { store.withRootLockForTest { holding.countDown(); release.await() } }
+        holder.isDaemon = true
+        holder.start()
+        try {
+            assertTrue(holding.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            val t0 = System.nanoTime()
+            val r = PremiumCaptureControl.requestEnabled(fd, false)
+            val ms = (System.nanoTime() - t0) / 1_000_000L
+            assertTrue("the UI-facing control must not wait on the capture lock: took $ms ms",
+                ms < 1_000L)
+            assertTrue(r.getBoolean("accepted"))
+            assertFalse(r.getBoolean("effective_enabled"))
+            assertTrue(r.getBoolean("effective_immediately"))
+            // OFF gates admission AT ONCE, without waiting for the file write
+            assertFalse("OFF must stop admitting capture immediately",
+                PremiumCaptureControl.isEnabled(fd))
+            // and persistence is reported as pending, not acknowledged as durable
+            assertEquals("PENDING", r.getString("persistence"))
+            assertEquals("PENDING",
+                PremiumCaptureControl.statusFast().getJSONObject("persistence").getString("state"))
+            // the honest statement about what OFF cannot do
+            assertTrue(r.getString("note").contains("cannot be cancelled"))
+        } finally {
+            release.countDown()
+            holder.join(10_000L)
+        }
+        // once the lock is free the write settles, and the state is distinguishable from pending
+        val deadline = System.nanoTime() + 10_000_000_000L
+        var state = ""
+        while (System.nanoTime() < deadline) {
+            state = PremiumCaptureControl.statusFast()
+                .getJSONObject("persistence").optString("state")
+            if (state != "PENDING") break
+            Thread.sleep(25)
+        }
+        assertEquals("the durable outcome must become visible, not stay PENDING forever",
+            "PERSISTED", state)
+    }
+
+    /**
+     * The collection state must reflect what capture is actually doing, including the case a
+     * successful `last_run` would otherwise mask: a refused job never runs its closure, so it
+     * records nothing, and the operator would keep seeing the old success.
+     */
+    @Test
+    fun theCollectionStateDistinguishesOffFullRefusingAndCollecting() {
+        val cap = PremiumCaptureStore.MAX_BYTES_GLOBAL
+        val collecting = JSONObject().put("status", "OBSERVED").put("written", 6)
+            .put("recorded_at_ms", 1_000L)
+        assertEquals("OFF", PremiumCaptureControl.collectionState(false, 0L, collecting))
+        assertEquals("ON_COLLECTING", PremiumCaptureControl.collectionState(true, 0L, collecting))
+        assertEquals("ON_BUT_STOPPED_STORE_FULL",
+            PremiumCaptureControl.collectionState(true, cap, collecting))
+        assertEquals("ON_NO_RUN_RECORDED_YET",
+            PremiumCaptureControl.collectionState(true, 0L, null))
+        assertEquals("ON_LAST_RUN_ERRORED", PremiumCaptureControl.collectionState(true, 0L,
+            JSONObject().put("status", "CAPTURE_ERROR")))
+        // an unknown byte total must not be read as an empty store
+        assertEquals("ON_COLLECTING", PremiumCaptureControl.collectionState(true, -1L, collecting))
+
+        // A REFUSAL NEWER THAN THE LAST RUN WINS over a stale success.
+        val refusing = JSONObject()
+            .put("last_refusal_at_ms", 2_000L)
+            .put("last_refusal_reason", PremiumCaptureWorker.REFUSED_BUSY)
+        assertEquals("ON_BUT_REFUSING_" + PremiumCaptureWorker.REFUSED_BUSY,
+            PremiumCaptureControl.collectionState(true, 0L, collecting, refusing))
+        // an OLDER refusal does not override a newer successful run
+        val staleRefusal = JSONObject().put("last_refusal_at_ms", 500L)
+            .put("last_refusal_reason", PremiumCaptureWorker.REFUSED_BUSY)
+        assertEquals("ON_COLLECTING",
+            PremiumCaptureControl.collectionState(true, 0L, collecting, staleRefusal))
+        // saturation is visible even with no refusal yet
+        val saturated = JSONObject().put("running", true).put("waiting", true)
+        assertEquals("ON_WORKER_SATURATED",
+            PremiumCaptureControl.collectionState(true, 0L, collecting, saturated))
+    }
+
+    /** Worker refusals are counted and the latest reason is reported, with its durability stated. */
+    @Test
+    fun workerRefusalsAreCountedAndReportedWithoutATouchOfDisk() {
+        PremiumCaptureWorker.resetForTest()
+        assertEquals(0L, PremiumCaptureWorker.stats().getLong("refused_total"))
+        val s = PremiumCaptureWorker.submit(PremiumCaptureWorker.Job(
+            index = "NF", sessionDate = "2026-10-19",
+            preparedBytes = PremiumCaptureWorker.MAX_PREPARED_BYTES_PER_JOB + 1,
+            persist = { JSONObject().put("status", "SHOULD_NOT_RUN") }))
+        assertEquals(PremiumCaptureWorker.REFUSED_TOO_LARGE, s)
+        val st = PremiumCaptureWorker.stats()
+        assertEquals("a refused job records nothing on disk, so this counter is its only trace",
+            1L, st.getLong("refused_total"))
+        assertEquals(PremiumCaptureWorker.REFUSED_TOO_LARGE, st.getString("last_refusal_reason"))
+        assertEquals(1L, st.getJSONObject("refused_by_reason")
+            .getLong(PremiumCaptureWorker.REFUSED_TOO_LARGE))
+        assertTrue(st.getLong("last_refusal_at_ms") > 0L)
+        assertEquals("IN_MEMORY_ONLY_NOT_DURABLE", st.getString("refusals_are_recorded"))
+    }
+
+    /** The fast status touches no files, so the dialog cannot block behind a stuck write. */
+    @Test
+    fun theFastStatusTouchesNoFilesAndNamesWhatItDoesNotKnow() {
+        PremiumCaptureWorker.resetForTest()
+        val fd = tmpFilesDir()
+        val before = PremiumCaptureControl.root(fd).exists()
+        val s = PremiumCaptureControl.statusFast()
+        assertEquals("IN_MEMORY_NO_FILESYSTEM_IO", s.getString("source"))
+        assertEquals("a status read must not create the capture directory",
+            before, PremiumCaptureControl.root(fd).exists())
+        assertFalse(s.getBoolean("is_trading_mode"))
+        assertFalse(s.getBoolean("changes_paper_authority"))
+        assertTrue(s.getBoolean("in_flight_cannot_be_cancelled"))
+        assertTrue(s.has("worker"))
+    }
+
+    /** The native dialog must RENDER the state, not merely compute it. */
+    @Test
+    fun theNativeDialogRendersTheCaptureStateAndUsesTheNonBlockingControl() {
+        val src = stripComments(
+            File("src/main/java/com/marketradar/app/MainActivity.kt").readText())
+        assertTrue("the dialog must render the capture status",
+            src.contains("premiumCaptureStatusText()"))
+        assertTrue("and that text must come from the non-blocking status",
+            src.contains("PremiumCaptureControl.statusFast()"))
+        val dialog = src.substringAfter("private fun showVersionDialog()")
+            .substringBefore("private fun premiumCaptureStatusText()")
+        assertTrue("the toggle must use the non-blocking request",
+            dialog.contains("PremiumCaptureControl.requestEnabled("))
+        assertFalse("the UI thread must not call the store-writing setEnabled",
+            dialog.contains("PremiumCaptureControl.setEnabled("))
+        // the rendered text must carry the operational facts, not just ON/OFF
+        val render = src.substringAfter("private fun premiumCaptureStatusText()")
+            .substringBefore("private fun premiumCaptureButtonLabel()")
+        for (field in listOf("collection_state", "evidence_bytes_remaining", "refused_total",
+            "last_refusal_reason", "persistence", "last_run")) {
+            assertTrue("the dialog must show $field", render.contains(field))
+        }
+    }
+
+    // ═════════ R3: the capture summary's own write outcome ═════════
+
+    /**
+     * The CAPTURE summary and the coordinator's own counter are reported separately, and the
+     * coordinator's success cannot stand in for the capture summary's failure.
+     */
+    @Test
+    fun theCaptureSummaryWriteIsReportedSeparatelyFromTheCoordinatorCounter() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val r = coordinate(fd, "2026-10-19", "09:20", listOf(acq("NF", "mon_0920_entry_NF")))
+        val row = r.getJSONArray("indices").getJSONObject(0)
+
+        val summary = row.getJSONObject("summary_write")
+        assertEquals("CAPTURE_BATCH_WRITE_AND_REFUSAL_COUNTERS", summary.getString("kind"))
+        assertTrue("the capture summary must be durably recorded on a healthy store",
+            summary.getBoolean("durably_recorded"))
+
+        val counter = row.getJSONObject("coordinator_counter_write")
+        assertEquals("COORDINATOR_RUN_COUNT_ONLY_NOT_THE_CAPTURE_SUMMARY",
+            counter.getString("kind"))
+        assertNotEquals("the two must be distinguishable, not one field reused",
+            summary.toString(), counter.toString())
+    }
+
+    /**
+     * A FAILED capture summary must not be masked by a later successful coordinator counter.
+     *
+     * The capture summary and the coordinator counter write to the SAME summary file, so a store
+     * that refuses the first and accepts the second is the exact masking case. Forced by letting
+     * the batch summary exceed the per-record reserve, which the later tiny counter write does not.
+     */
+    @Test
+    fun aFailedCaptureSummaryIsNeverMaskedByTheCoordinatorCounter() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        // the observeSlot path must still report ITS OWN summary outcome
+        val session = PremiumCaptureSession(store)
+        // observe once so a cohort exists and the batch path is reached
+        val first = session.observeSlot(
+            index = "NF", sessionDate = "2026-10-19",
+            rawChain = rawFixture("mon_0920_entry_NF").getJSONObject("raw"),
+            acquisitionHhmm = "09:20", schedulerSlot = null, declaredSchedulerSlot = null,
+            requestedUnderlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING["NF"],
+            requestStartedMs = 1_000L, responseReceivedMs = 1_300L, vendorSourceTs = null,
+            claimedLot = null, claimedLotSource = null, lotTableRef = null, mapRef = null)
+        assertEquals(PremiumCaptureSession.OBSERVED, first.status)
+        assertNotNull("the batch path must return its OWN summary write outcome",
+            first.summaryWrite)
+        assertTrue(first.summaryWrite!!.persisted)
+
+        // now fill the root so the NEXT attempt's summary is refused, and check the refusal is
+        // reported rather than replaced by an unrelated success
+        File(PremiumCaptureControl.root(fd), "filler.bin").writeBytes(
+            ByteArray((PremiumCaptureStore.MAX_BYTES_GLOBAL).toInt()))
+        val refused = session.observeSlot(
+            index = "NF", sessionDate = "2026-10-19",
+            rawChain = rawFixture("mon_0920_entry_NF").getJSONObject("raw"),
+            acquisitionHhmm = "09:25", schedulerSlot = null, declaredSchedulerSlot = null,
+            requestedUnderlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING["NF"],
+            requestStartedMs = 2_000L, responseReceivedMs = 2_300L, vendorSourceTs = null,
+            claimedLot = null, claimedLotSource = null, lotTableRef = null, mapRef = null)
+        assertNotNull("even a refused attempt must report its own summary outcome",
+            refused.summaryWrite)
+        assertFalse("a full store cannot durably record the counters it just refused",
+            refused.summaryWrite!!.persisted)
     }
 
     // ═════════ Production lot authority: coverage must be COMPLETE and in context ═════════

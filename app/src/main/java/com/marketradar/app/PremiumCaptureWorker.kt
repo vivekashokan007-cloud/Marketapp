@@ -47,7 +47,11 @@ object PremiumCaptureWorker {
     /** At most one job may wait behind the running one. */
     const val MAX_WAITING = 1
 
-    /** A single prepared payload. Larger than any real NF/BNF chain, small enough to bound heap. */
+    /**
+     * The PREPARED-PAYLOAD limit for one job — the frozen response text it carries. Larger than
+     * any real NF/BNF chain. It bounds what the queue retains, NOT total JVM heap usage, and an
+     * oversize preparation is refused rather than trimmed.
+     */
     const val MAX_PREPARED_BYTES_PER_JOB = 1024 * 1024
 
     /** Running plus waiting, together. */
@@ -84,15 +88,43 @@ object PremiumCaptureWorker {
     private val lastByIndex = HashMap<String, JSONObject>()
     private var completed: Long = 0L
     private var failed: Long = 0L
+    /**
+     * Bounded in-memory refusal accounting.
+     *
+     * A refused job never runs its closure, so it never records a status file — which means a
+     * previously successful `last_run` could keep an operator seeing an old success while every
+     * later poll was being turned away. These counters are the only record such a poll leaves, so
+     * they are kept here and reported by [stats]; nothing is written to disk to log a blocked
+     * worker, because the disk is exactly what may be blocked.
+     */
+    private var refusedTotal: Long = 0L
+    private val refusedByReason = HashMap<String, Long>()
+    private var lastRefusalReason: String? = null
+    private var lastRefusalAtMs: Long = 0L
+
+    /** Records a refusal. Callers hold [lock]; `submit` records before returning any refusal. */
+    private fun noteRefusalLocked(reason: String) {
+        refusedTotal++
+        refusedByReason[reason] = (refusedByReason[reason] ?: 0L) + 1L
+        lastRefusalReason = reason
+        lastRefusalAtMs = System.currentTimeMillis()
+    }
 
     /**
      * Hand a prepared job to the worker. Returns a status immediately and NEVER waits for IO.
      */
     fun submit(job: Job): String {
-        if (job.preparedBytes > MAX_PREPARED_BYTES_PER_JOB) return REFUSED_TOO_LARGE
+        if (job.preparedBytes > MAX_PREPARED_BYTES_PER_JOB) {
+            synchronized(lock) { noteRefusalLocked(REFUSED_TOO_LARGE) }
+            return REFUSED_TOO_LARGE
+        }
         synchronized(lock) {
-            if (running != null && waiting != null) return REFUSED_BUSY
-            if (pendingBytes + job.preparedBytes > MAX_PENDING_BYTES) return REFUSED_BYTES
+            if (running != null && waiting != null) {
+                noteRefusalLocked(REFUSED_BUSY); return REFUSED_BUSY
+            }
+            if (pendingBytes + job.preparedBytes > MAX_PENDING_BYTES) {
+                noteRefusalLocked(REFUSED_BYTES); return REFUSED_BYTES
+            }
             val status: String
             if (running == null) {
                 running = job
@@ -189,6 +221,13 @@ object PremiumCaptureWorker {
             .put("max_waiting", MAX_WAITING)
             .put("completed", completed)
             .put("failed", failed)
+            // refusals, so a stale successful last_run cannot hide later rejected polls
+            .put("refused_total", refusedTotal)
+            .put("refused_by_reason", JSONObject().also { o ->
+                refusedByReason.forEach { (k, v) -> o.put(k, v) } })
+            .put("last_refusal_reason", lastRefusalReason ?: JSONObject.NULL)
+            .put("last_refusal_at_ms", lastRefusalAtMs)
+            .put("refusals_are_recorded", "IN_MEMORY_ONLY_NOT_DURABLE")
             .put("last_result", lastResult ?: JSONObject.NULL)
             .put("in_flight_io_is_not_cancellable", true)
     }
@@ -205,6 +244,10 @@ object PremiumCaptureWorker {
             lastByIndex.clear()
             completed = 0L
             failed = 0L
+            refusedTotal = 0L
+            refusedByReason.clear()
+            lastRefusalReason = null
+            lastRefusalAtMs = 0L
             if (pendingBytes < 0) pendingBytes = 0
         }
     }

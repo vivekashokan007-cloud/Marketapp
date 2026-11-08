@@ -83,6 +83,15 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         val outcomes: Map<String, String>,
         val batchComplete: Boolean = false,
         val detail: String? = null,
+        /**
+         * The write outcome of THIS attempt's own summary — the one carrying the batch, write and
+         * refusal deltas. Previously each `bumpCounters` result here was discarded and the
+         * coordinator's separate `coordinator_runs` increment was reported in its place, so a
+         * transient failure of the summary that matters could be masked by a later success of an
+         * unrelated counter. A failed disk cannot durably record its own failure; the returned
+         * result must still identify that failure accurately.
+         */
+        val summaryWrite: PremiumCaptureStore.WriteResult? = null,
     )
 
     /**
@@ -128,8 +137,9 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         declaredSchedulerSlot: String? = null,
     ): SlotResult {
         fun refuse(status: String, detail: String?, counter: String): SlotResult {
-            store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
-            return SlotResult(status, null, null, 0, 0, 0, 0, emptyMap(), detail = detail)
+            val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
+            return SlotResult(status, null, null, 0, 0, 0, 0, emptyMap(), detail = detail,
+                summaryWrite = sw)
         }
 
         val slotId = PremiumCaptureCohort.slotIdentity(schedulerSlot, acquisitionHhmm)
@@ -217,10 +227,11 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         if (!er.persisted) {
             // FAIL CLOSED: with no envelope there is nothing for an observation to resolve
             // against, so no observation is written. The old code wrote all six anyway.
-            store.bumpCounters(index, sessionDate,
+            val sw = store.bumpCounters(index, sessionDate,
                 mapOf("refused_envelope_not_persisted" to 1L, "batches_refused" to 1L))
             return SlotResult(ENVELOPE_NOT_PERSISTED, cohort.optString("cohort_id"), acqId,
-                0, 1, 0, 0, emptyMap(), detail = "${er.status}: ${er.detail}")
+                0, 1, 0, 0, emptyMap(), detail = "${er.status}: ${er.detail}",
+                summaryWrite = sw)
         }
 
         var written = 0; var refused = 0; var dupes = 0; var conflicts = 0
@@ -246,11 +257,13 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         deltas["batches_attempted"] = 1L
         deltas[if (complete) "batches_complete" else "batches_partial"] = 1L
         deltas["envelope_${er.status.lowercase()}"] = 1L
-        store.bumpCounters(index, sessionDate, deltas)
+        // the summary that carries the batch/write/refusal deltas: its own outcome is returned,
+        // not replaced by a later unrelated counter increment
+        val summaryWrite = store.bumpCounters(index, sessionDate, deltas)
 
         return SlotResult(OBSERVED, cohort.optString("cohort_id"), acqId,
             written, refused, dupes, conflicts, outcomes, batchComplete = complete,
-            detail = "envelope=${er.status}")
+            detail = "envelope=${er.status}", summaryWrite = summaryWrite)
     }
 
     /**

@@ -98,14 +98,24 @@ object PremiumExportSection {
                 while (attempts < CONSISTENCY_ATTEMPTS) {
                     attempts++
                     val before = store.generation()
+                    // EVEN means quiescent. A write in progress is odd, so a read that starts or
+                    // ends inside one is refused outright: the previous version compared a
+                    // post-write counter, which a writer descheduled between making its bytes
+                    // visible and incrementing could leave unchanged across a read that had
+                    // already observed the change.
+                    if (before % 2L != 0L) continue
                     val built = session.export(idx, date, null, deviceContext())
-                    if (store.generation() == before) { ex = built; consistent = true; break }
+                    val after = store.generation()
+                    if (after == before && after % 2L == 0L) {
+                        ex = built; consistent = true; break
+                    }
                     ex = built
                 }
                 val out = ex ?: JSONObject().put("state", "PREMIUM_SECTION_ERROR")
                 if (!consistent) torn = true
                 out.put("view_consistent", consistent)
-                    .put("view_consistency_basis", "STORE_WRITE_GENERATION_UNCHANGED_ACROSS_READ")
+                    .put("view_consistency_basis",
+                        "STORE_REVISION_EVEN_AND_UNCHANGED_ACROSS_READ_ODD_MEANS_WRITE_IN_PROGRESS")
                     .put("view_attempts", attempts)
                 if (!consistent) out.put("view_state", "CONCURRENT_CAPTURE_WRITE_NOT_A_STABLE_VIEW")
                 section.getJSONObject("indices").put(idx, out)

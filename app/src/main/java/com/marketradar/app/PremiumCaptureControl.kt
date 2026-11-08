@@ -36,11 +36,89 @@ object PremiumCaptureControl {
         return runCatching { JSONObject(f.readText()) }.getOrElse { JSONObject() }
     }
 
+    /*
+     * IN-MEMORY EFFECTIVE STATE.
+     *
+     * `intent` is the authoritative admission gate once anyone has asked for a change in this
+     * process. It is set synchronously and without IO, so pressing OFF stops admitting capture
+     * AT ONCE — it does not wait for the control file to be written, and it does not depend on
+     * that write succeeding. An accepted persistence job already inside a blocking call cannot be
+     * cancelled, so OFF stops new admission and the remaining in-flight work is reported as
+     * draining rather than described as stopped.
+     *
+     * `cachedFile` avoids re-reading the control file on the poll thread every poll. The file is
+     * read once per process (or after a change) and then cached; a hand edit of the file while the
+     * process is running is therefore not noticed, which is a deliberate trade for keeping
+     * filesystem IO off the hot path.
+     */
+    @Volatile private var intent: Boolean? = null
+    @Volatile private var cachedFile: Boolean? = null
+    @Volatile private var lastPersist: JSONObject? = null
+    @Volatile private var lastRunSnapshot: JSONObject? = null
+    @Volatile private var globalBytesSnapshot: Long = -1L
+
+    private val controlExec: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "premium-capture-control").apply { isDaemon = true }
+        }
+
     /**
      * **Default false.** An unreadable or malformed control file is OFF, never ON: a capture that
      * cannot read its own switch must not run.
+     *
+     * Answers from memory where possible, so neither the poll thread nor the UI thread pays a file
+     * read for it.
      */
-    fun isEnabled(filesDir: File): Boolean = read(filesDir).optBoolean("enabled", false)
+    fun isEnabled(filesDir: File): Boolean {
+        intent?.let { return it }
+        cachedFile?.let { return it }
+        val v = read(filesDir).optBoolean("enabled", false)
+        cachedFile = v
+        return v
+    }
+
+    /**
+     * Ask for a change without blocking the caller on capture IO or its lock.
+     *
+     * The previous `setEnabled` ran `putControlFile` synchronously, which waits on the same root
+     * lock a blocked persistence write holds — so pressing the native control could freeze the UI
+     * even though worker submission is non-blocking. Submission being non-blocking says nothing
+     * about this path, and it was wrong to treat the two as equivalent.
+     *
+     * Returns at once, with the effective state already changed and persistence reported as
+     * PENDING. The durable outcome arrives later in [statusFast]'s `persistence` block, so a
+     * failed write is visible instead of being falsely acknowledged.
+     */
+    fun requestEnabled(filesDir: File, on: Boolean): JSONObject {
+        intent = on
+        val pending = JSONObject()
+            .put("state", "PENDING")
+            .put("requested", on)
+            .put("requested_at_ms", System.currentTimeMillis())
+        lastPersist = pending
+        val submitted = runCatching {
+            // explicit Runnable: `submit { }` with a Unit-returning lambda is ambiguous between
+            // submit(Runnable) and submit(Callable<T>)
+            controlExec.submit(Runnable {
+                val r = runCatching { setEnabled(filesDir, on) }
+                    .getOrElse { SetResult(false, on, it.javaClass.simpleName) }
+                lastPersist = JSONObject()
+                    .put("state", if (r.ok) "PERSISTED" else "FAILED")
+                    .put("requested", on)
+                    .put("settled_at_ms", System.currentTimeMillis())
+                    .put("detail", r.detail ?: JSONObject.NULL)
+            })
+            true
+        }.getOrElse { false }
+        return JSONObject()
+            .put("accepted", true)
+            .put("effective_enabled", on)
+            .put("effective_immediately", true)
+            .put("persistence", if (submitted) "PENDING" else "NOT_SUBMITTED")
+            .put("note", if (on) "capture may be admitted from the next poll"
+                else "no further capture is admitted; work already accepted drains and " +
+                    "cannot be cancelled")
+    }
 
     /** True when the control file exists but could not be parsed — reported, not silently OFF. */
     fun controlUnreadable(filesDir: File): Boolean {
@@ -80,8 +158,11 @@ object PremiumCaptureControl {
             val w = PremiumCaptureStore(root(filesDir))
                 .putControlFile(META, o, allowAtCapacity = !on)
             // `persisted` already covers DUPLICATE_NO_OP and REPLACED
-            if (w.persisted) SetResult(true, on)
-            else SetResult(false, isEnabled(filesDir), "${w.status}: ${w.detail ?: ""}")
+            if (w.persisted) {
+                cachedFile = on
+                intent = on
+                SetResult(true, on)
+            } else SetResult(false, isEnabled(filesDir), "${w.status}: ${w.detail ?: ""}")
         }.getOrElse { SetResult(false, isEnabled(filesDir), it.javaClass.simpleName) }
     }
 
@@ -122,7 +203,14 @@ object PremiumCaptureControl {
                     summary?.optBoolean("durably_recorded", false) ?: false)
                 .put("summary_status", cap(summary?.optString("status"), 48) ?: JSONObject.NULL)
                 .put("projection", "BOUNDED_STRUCTURED_FIELDS_NEVER_TRUNCATED_TEXT")
-            PremiumCaptureStore(root(filesDir)).putControlFile(LAST_RUN, o)
+            val store = PremiumCaptureStore(root(filesDir))
+            val w = store.putControlFile(LAST_RUN, o)
+            // snapshot for the non-blocking status surface, so neither the UI nor a hot path has
+            // to walk the store to answer "what is it doing and how much room is left"
+            lastRunSnapshot = JSONObject(o.toString())
+                .put("durably_recorded", w.persisted)
+                .put("write_status", w.status)
+            globalBytesSnapshot = runCatching { store.globalBytes() }.getOrElse { -1L }
         }
     }
 
@@ -144,11 +232,26 @@ object PremiumCaptureControl {
      * One honest word for what capture is actually doing, derived from the evidence budget and the
      * last recorded run rather than from the switch alone.
      */
-    internal fun collectionState(enabled: Boolean, globalBytes: Long, last: JSONObject?): String {
+    internal fun collectionState(enabled: Boolean, globalBytes: Long, last: JSONObject?,
+                                 worker: JSONObject? = null): String {
         if (!enabled) return "OFF"
-        val remaining = PremiumCaptureStore.MAX_BYTES_GLOBAL -
-            PremiumCaptureStore.CONTROL_RESERVE_BYTES - globalBytes
-        if (remaining <= 0L) return "ON_BUT_STOPPED_STORE_FULL"
+        if (globalBytes >= 0L) {
+            val remaining = PremiumCaptureStore.MAX_BYTES_GLOBAL -
+                PremiumCaptureStore.CONTROL_RESERVE_BYTES - globalBytes
+            if (remaining <= 0L) return "ON_BUT_STOPPED_STORE_FULL"
+        }
+        // A REFUSED job never runs its closure, so it never records a run. Without this, a
+        // successful last_run could keep showing ON_COLLECTING while every later poll was turned
+        // away — the operator would see the last success, not the current state. A refusal newer
+        // than the last recorded run therefore wins.
+        if (worker != null) {
+            val refusedAt = worker.optLong("last_refusal_at_ms", 0L)
+            val lastRunAt = last?.optLong("recorded_at_ms", 0L) ?: 0L
+            if (refusedAt > 0L && refusedAt >= lastRunAt)
+                return "ON_BUT_REFUSING_" + worker.optString("last_refusal_reason", "UNKNOWN")
+            if (worker.optBoolean("running", false) && worker.optBoolean("waiting", false))
+                return "ON_WORKER_SATURATED"
+        }
         val s = last?.optString("status") ?: return "ON_NO_RUN_RECORDED_YET"
         return when {
             s == "CAPTURE_ERROR" -> "ON_LAST_RUN_ERRORED"
@@ -156,6 +259,42 @@ object PremiumCaptureControl {
             last.optInt("written", -1) > 0 -> "ON_COLLECTING"
             else -> "ON_LAST_RUN_WROTE_NOTHING"
         }
+    }
+
+    /**
+     * Operator status with **no filesystem IO and no lock wait**, for the native dialog.
+     *
+     * [status] walks the store to total its bytes and so can block behind a stuck capture write.
+     * That is acceptable off the main thread but not on it, so the UI reads this instead: effective
+     * state from memory, capacity from the snapshot the last run recorded, and worker occupancy and
+     * refusals from the worker's in-memory counters.
+     *
+     * `global_bytes` is `-1` when nothing has been recorded yet in this process. That is reported
+     * as unknown rather than as zero, because an unknown total is not an empty store.
+     */
+    fun statusFast(): JSONObject {
+        val worker = PremiumCaptureWorker.stats()
+        val enabled = intent ?: cachedFile ?: false
+        val bytes = globalBytesSnapshot
+        val remaining = if (bytes < 0) -1L
+        else (PremiumCaptureStore.MAX_BYTES_GLOBAL -
+            PremiumCaptureStore.CONTROL_RESERVE_BYTES - bytes).coerceAtLeast(0L)
+        return JSONObject()
+            .put("control_version", CONTROL_VERSION)
+            .put("source", "IN_MEMORY_NO_FILESYSTEM_IO")
+            .put("enabled", enabled)
+            .put("enabled_is_effective_now", true)
+            .put("is_trading_mode", false)
+            .put("changes_paper_authority", false)
+            .put("collection_state", collectionState(enabled, bytes, lastRunSnapshot, worker))
+            .put("global_bytes", bytes)
+            .put("global_bytes_known", bytes >= 0)
+            .put("evidence_bytes_remaining", remaining)
+            .put("control_reserve_bytes", PremiumCaptureStore.CONTROL_RESERVE_BYTES)
+            .put("persistence", lastPersist ?: JSONObject.NULL)
+            .put("last_run", lastRunSnapshot ?: JSONObject.NULL)
+            .put("worker", worker)
+            .put("in_flight_cannot_be_cancelled", true)
     }
 
     fun status(filesDir: File): JSONObject {
@@ -178,7 +317,8 @@ object PremiumCaptureControl {
             // The operational state an operator actually needs. An ON flag alone does not show
             // that a full store has STOPPED collecting, which is exactly the case where someone
             // would be looking at this.
-            .put("collection_state", collectionState(enabled, global, lastRun(filesDir)))
+            .put("collection_state",
+                collectionState(enabled, global, lastRun(filesDir), PremiumCaptureWorker.stats()))
             .put("control_bytes", if (root(filesDir).exists()) store.controlBytes() else 0L)
             .put("control_reserve_bytes", PremiumCaptureStore.CONTROL_RESERVE_BYTES)
             .put("evidence_bytes_remaining",

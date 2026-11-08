@@ -979,8 +979,12 @@ class MainActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Market Radar")
             .setMessage("Build Version: ${BuildConfig.VERSION_NAME}\nEngine: v3 (Chaquopy)\nInfrastructure: Phase 4 (Unified)" +
-                if (BuildConfig.PWA_CANDIDATE) "\n\nCANDIDATE build (bundled PWA, not a release)\nnative ${BuildConfig.SOURCE_HEAD}\n" +
-                    "pwa ${BuildConfig.PWA_SOURCE_HEAD}\nbundle ${if (candidatePwa?.verified == true) "verified" else "FAILED"}" else "")
+                // PARENTHESISED deliberately: without the brackets the trailing concatenation
+                // binds into the `else` branch, so the capture status would silently disappear on
+                // a CANDIDATE build and appear only on debug/release.
+                (if (BuildConfig.PWA_CANDIDATE) "\n\nCANDIDATE build (bundled PWA, not a release)\nnative ${BuildConfig.SOURCE_HEAD}\n" +
+                    "pwa ${BuildConfig.PWA_SOURCE_HEAD}\nbundle ${if (candidatePwa?.verified == true) "verified" else "FAILED"}" else "") +
+                premiumCaptureStatusText())
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }
@@ -989,20 +993,76 @@ class MainActivity : AppCompatActivity() {
             // trading mode, it does not touch the Paper/Real lock and it changes no authority.
             // Default OFF; the label always shows the current state before the action.
             .setNegativeButton(premiumCaptureButtonLabel()) { dialog, _ ->
-                val target = !PremiumCaptureControl.isEnabled(filesDir)
-                val r = PremiumCaptureControl.setEnabled(filesDir, target)
+                // requestEnabled, NOT setEnabled. setEnabled writes through the store and so
+                // waits on the same root lock a blocked persistence write holds — on the UI
+                // thread that can freeze the app and make Paper unusable. Worker submission being
+                // non-blocking says nothing about this path. This returns at once with the
+                // effective state already changed; the durable outcome shows up in the dialog's
+                // status text as PENDING, PERSISTED or FAILED rather than being acknowledged here.
+                val r = try {
+                    val target = !PremiumCaptureControl.isEnabled(filesDir)
+                    PremiumCaptureControl.requestEnabled(filesDir, target)
+                } catch (t: Throwable) {
+                    org.json.JSONObject().put("accepted", false)
+                        .put("note", t.javaClass.simpleName)
+                }
                 Toast.makeText(
                     this,
-                    if (r.ok) "Premium capture ${if (r.enabled) "ON" else "OFF"}" +
-                        " (evidence collection only; not a trading mode)." +
-                        " Takes effect next poll."
-                    else "Premium capture unchanged: ${r.detail ?: "control not writable"}",
+                    if (r.optBoolean("accepted"))
+                        "Premium capture ${if (r.optBoolean("effective_enabled")) "ON" else "OFF"}" +
+                            " now (evidence collection only; not a trading mode). " +
+                            r.optString("note") + " Saving: ${r.optString("persistence")}."
+                    else "Premium capture unchanged: ${r.optString("note")}",
                     Toast.LENGTH_LONG,
                 ).show()
                 dialog.dismiss()
             }
             .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
             .show()
+    }
+
+    /**
+     * The capture operational state, rendered IN the dialog.
+     *
+     * The previous revision computed all of this and displayed none of it — the dialog showed only
+     * build text and the ON/OFF button, while the handoff claimed the state was visible. An ON
+     * button on its own cannot show that a full store has stopped collecting, that the worker is
+     * refusing, or that the last toggle never reached disk.
+     *
+     * Reads [PremiumCaptureControl.statusFast], which touches no files and waits on no lock, so
+     * opening this dialog cannot block behind a stuck capture write.
+     */
+    private fun premiumCaptureStatusText(): String = try {
+        val s = PremiumCaptureControl.statusFast()
+        val w = s.optJSONObject("worker")
+        val lr = s.optJSONObject("last_run")
+        val p = s.optJSONObject("persistence")
+        val remaining = s.optLong("evidence_bytes_remaining", -1L)
+        buildString {
+            append("\n\nCapture: ").append(s.optString("collection_state"))
+            append(" (evidence only; not a trading mode)")
+            append("\nroom left: ").append(
+                if (s.optBoolean("global_bytes_known") && remaining >= 0)
+                    "${remaining / 1024} KiB" else "unknown until the first run")
+            if (w != null) {
+                append("\nworker: running=").append(w.optBoolean("running"))
+                    .append(" waiting=").append(w.optBoolean("waiting"))
+                    .append(" done=").append(w.optLong("completed"))
+                    .append(" refused=").append(w.optLong("refused_total"))
+                val reason = w.optString("last_refusal_reason")
+                if (reason.isNotEmpty() && reason != "null") append("\nlast refusal: ").append(reason)
+            }
+            if (lr != null) {
+                append("\nlast run: ").append(lr.optString("index")).append(" ")
+                    .append(lr.optString("status"))
+                    .append(" written=").append(lr.optInt("written", -1))
+                    .append(" summary_durable=").append(lr.optBoolean("summary_durably_recorded"))
+            }
+            if (p != null) append("\ntoggle save: ").append(p.optString("state"))
+            append("\nin-flight work cannot be cancelled")
+        }
+    } catch (t: Throwable) {
+        "\n\nCapture: status unavailable (${t.javaClass.simpleName})"
     }
 
     /** Shows the CURRENT capture state and the action, so the button cannot be misread. */

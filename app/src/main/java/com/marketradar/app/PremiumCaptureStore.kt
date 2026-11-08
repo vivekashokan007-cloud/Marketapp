@@ -98,21 +98,67 @@ class PremiumCaptureStore(val root: File) {
         private val LOCKS = HashMap<String, Any>()
 
         /**
-         * A monotonic write generation per canonical root, shared by every store instance over
-         * that root exactly as [LOCKS] is.
+         * A write REVISION per canonical root, shared by every store instance over that root
+         * exactly as [LOCKS] is. **Even means quiescent; odd means a mutation is in progress.**
          *
-         * Why a counter and not a size/count comparison: a reader that compares session bytes and
+         * Why a revision and not a size/count comparison: a reader comparing session bytes and
          * record counts before and after assembly cannot see an equal-size replacement, so it
-         * could report a consistent view across a concurrent write that changed content without
-         * changing either number. Every mutation bumps this, so any interleaved write is visible
-         * whatever it did to the totals.
+         * could call a view consistent across a write that changed content without changing
+         * either number.
+         *
+         * Why odd/even rather than a single post-write increment: incrementing only after a
+         * successful `renameTo` is not a write-in-progress protocol. A writer descheduled between
+         * making the new bytes visible and incrementing lets a reader sample the same value on
+         * both sides of a read that already observed the change, and call a mixed view stable.
+         * Temp creation, a short write and cleanup also change directory bytes and orphan-temp
+         * accounting without ever reaching a completed rename. So the revision is marked odd
+         * BEFORE the first observable filesystem mutation and published even in `finally`,
+         * including on failure, and a reader accepts only equal EVEN revisions.
          */
         private val GENERATIONS = HashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+        /** Re-entrancy depth per root, so a nested write does not publish an even revision early. */
+        private val MUTATION_DEPTH = HashMap<String, Int>()
+
+        /**
+         * Test-only seam: invoked inside a mutation at named phases, so a test can pause a REAL
+         * writer at a real interleaving instead of relying on timing. Phases:
+         * `after_temp_write`, `after_rename`.
+         */
+        @Volatile
+        internal var mutationPhaseHookForTest: ((String) -> Unit)? = null
 
         private fun generationFor(root: File): java.util.concurrent.atomic.AtomicLong {
             val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
             return synchronized(GENERATIONS) {
                 GENERATIONS.getOrPut(key) { java.util.concurrent.atomic.AtomicLong(0L) }
+            }
+        }
+
+        private fun rootKey(root: File) =
+            runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+
+        /** Mark the root as being mutated (odd revision) before any observable change. */
+        private fun beginMutation(root: File) {
+            val key = rootKey(root)
+            synchronized(GENERATIONS) {
+                val d = (MUTATION_DEPTH[key] ?: 0) + 1
+                MUTATION_DEPTH[key] = d
+                if (d == 1) generationFor(root).incrementAndGet()   // -> odd
+            }
+        }
+
+        /** Publish a completed revision (even), whether the mutation succeeded or failed. */
+        private fun endMutation(root: File) {
+            val key = rootKey(root)
+            synchronized(GENERATIONS) {
+                val d = (MUTATION_DEPTH[key] ?: 1) - 1
+                if (d <= 0) {
+                    MUTATION_DEPTH.remove(key)
+                    generationFor(root).incrementAndGet()            // -> even
+                } else {
+                    MUTATION_DEPTH[key] = d
+                }
             }
         }
 
@@ -415,11 +461,14 @@ class PremiumCaptureStore(val root: File) {
      */
     private fun atomicWriteLocked(dir: File, dest: File, payload: String, size: Long,
                                   replace: Boolean): WriteResult {
+        // odd BEFORE the first observable change, even in `finally` even on failure
+        beginMutation(root)
         return try {
             if (!dir.exists() && !dir.mkdirs() && !dir.exists())
                 return WriteResult(REFUSED_IO, size, "cannot create ${dir.name}")
             val tmp = File(dir, dest.name + ".tmp")
             tmp.writeText(payload)
+            mutationPhaseHookForTest?.invoke("after_temp_write")
             if (tmp.length() != size) {
                 tmp.delete()
                 return WriteResult(REFUSED_IO, size, "short write (disk full?)")
@@ -434,21 +483,31 @@ class PremiumCaptureStore(val root: File) {
                         "destination holds different content and replace is not permitted")
                 }
                 if (!tmp.renameTo(dest)) { tmp.delete(); return WriteResult(REFUSED_IO, size, "replace failed") }
-                generationFor(root).incrementAndGet()
+                mutationPhaseHookForTest?.invoke("after_rename")
                 return WriteResult(REPLACED, size)
             }
             if (!tmp.renameTo(dest)) {
                 tmp.delete()
                 return WriteResult(REFUSED_IO, size, "rename failed")
             }
-            generationFor(root).incrementAndGet()
+            mutationPhaseHookForTest?.invoke("after_rename")
             WriteResult(WRITTEN, size)
         } catch (e: SecurityException) {
             WriteResult(REFUSED_IO, size, "permission: ${e.javaClass.simpleName}")
         } catch (e: Exception) {
             WriteResult(REFUSED_IO, size, "${e.javaClass.simpleName}")
+        } finally {
+            // Publishes the completed (even) revision on EVERY exit — the early returns above, a
+            // short write, a refused replace, and a thrown failure alike. A failed write still
+            // created and removed a temp file and so still changed directory and orphan-temp
+            // accounting; it must register as a completed mutation rather than leave the root
+            // permanently marked in progress.
+            endMutation(root)
         }
     }
+
+    /** True when no mutation is in progress for this root: odd revisions are in-progress. */
+    fun quiescent(): Boolean = generation() % 2L == 0L
 
     /**
      * Orphaned temp files a crash can leave behind — now including the SESSION directory itself,
