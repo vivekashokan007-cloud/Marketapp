@@ -2111,12 +2111,36 @@ class PremiumCaptureTest {
         assertEquals(0, r.getJSONArray("indices").length())
         assertFalse("OFF must not create the capture directory",
             PremiumCaptureControl.root(fd).exists())
-        // an unreadable control is also not ON
+        // AN UNREADABLE CONTROL IS NOT ON -- EVEN AFTER AN EXPLICIT IN-PROCESS ON.
+        //
+        // Two steps are required and both are deliberate. The explicit refresh is the documented
+        // policy: an external edit mid-process is not observed, because the control is answered
+        // from memory to keep IO off the poll path. CI caught this test asserting the old
+        // per-poll-re-read behaviour, which the design no longer has.
+        //
+        // The refusal then overrides the in-process ON, which is the arguable part: a damaged
+        // control file means the subsystem cannot confirm or persist its own switch, so it stops,
+        // consistent with this project's rule that corruption is never treated as safety.
         PremiumCaptureControl.setEnabled(fd, true)
+        assertTrue("the premise: it really is ON before the file is damaged",
+            PremiumCaptureControl.isEnabled(fd))
         File(PremiumCaptureControl.root(fd), "control.json").writeText("{broken")
+        PremiumCaptureControl.refresh(fd)
+        val adm = PremiumCaptureControl.admission(fd)
+        assertFalse(adm.getBoolean("admit"))
+        assertTrue("the override of a live in-process ON must be reported, not silent",
+            adm.getBoolean("overrides_in_process_intent"))
         assertEquals(PremiumCaptureCoordinator.CONTROL_UNREADABLE,
             coordinate(fd, "2026-10-19", "09:20",
                 listOf(acq("NF", "mon_0920_entry_NF"))).getString("status"))
+
+        // ...and it is not a trap: writing a valid control again recovers, so a corrupt file
+        // cannot permanently disable capture
+        assertTrue(PremiumCaptureControl.setEnabled(fd, true).ok)
+        assertEquals(PremiumCaptureControl.INIT_READY,
+            PremiumCaptureControl.statusFast(fd).getString("control_init"))
+        assertTrue("pressing the control again must recover",
+            PremiumCaptureControl.isEnabled(fd))
     }
 
     /** CONTROL ON: the already-fetched chain reaches persisted evidence, per index. */

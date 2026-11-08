@@ -169,6 +169,22 @@ object PremiumCaptureControl {
         }
     }
 
+    /**
+     * Records that a valid control file with this value is now on disk.
+     *
+     * Takes the state rather than the directory: callers already hold `st`, and resolving it again
+     * would acquire the STATES monitor while holding `st` — a nested order that nothing else in
+     * this object uses and that there is no reason to introduce.
+     *
+     * Clears an INIT_ERROR, because the file we just wrote parses by construction — so a corrupt
+     * control cannot permanently disable capture: pressing the control republishes a good file.
+     */
+    private fun markPersistedValueLocked(st: MemState, on: Boolean) {
+        st.cachedFile = on
+        st.initDetail = null
+        st.initState = INIT_READY
+    }
+
     /** Reads and validates the persisted control. Never touches `intent`. */
     private fun loadPersisted(filesDir: File) {
         val st = stateFor(filesDir)
@@ -232,6 +248,26 @@ object PremiumCaptureControl {
     fun admission(filesDir: File): JSONObject {
         ensureInitStarted(filesDir)
         val st = stateFor(filesDir)
+        /*
+         * AN UNREADABLE PERSISTED CONTROL FAILS CLOSED, EVEN AGAINST AN IN-PROCESS ON.
+         *
+         * This is a deliberate decision and it is arguable, so it is stated rather than buried.
+         * Two readings were available when the persisted file is corrupt while someone has
+         * explicitly asked for ON in this process: honour the explicit request, since the
+         * operator's intent is known and only the stored copy is damaged; or refuse, on the
+         * principle that a capture which cannot read its own switch must not run.
+         *
+         * Refusing wins, for consistency with the rule this project already applies to evidence:
+         * absence or corruption is never treated as safety. A damaged control file means the
+         * subsystem cannot confirm or persist its own switch, so it stops.
+         *
+         * It is not a trap. A successful durable write republishes a valid file and clears the
+         * error, so pressing the control again recovers — see `markPersistedValueLocked`.
+         */
+        if (st.initState == INIT_ERROR)
+            return JSONObject().put("admit", false).put("reason", ADMIT_UNREADABLE)
+                .put("source", "PERSISTED_CONTROL")
+                .put("overrides_in_process_intent", st.intent != null)
         val i = st.intent
         if (i != null) return JSONObject().put("admit", i)
             .put("reason", if (i) ADMIT_INTENT_ON else ADMIT_INTENT_OFF)
@@ -316,7 +352,7 @@ object PremiumCaptureControl {
             val r = runCatching { persistDurable(filesDir, d) }
                 .getOrElse { SetResult(false, d, it.javaClass.simpleName) }
             synchronized(st) {
-                if (r.ok) st.cachedFile = d
+                if (r.ok) markPersistedValueLocked(st, d)
                 st.lastDurable = JSONObject()
                     .put("value", d).put("ok", r.ok).put("seq", ds)
                     .put("settled_at_ms", System.currentTimeMillis())
@@ -400,7 +436,7 @@ object PremiumCaptureControl {
         val r = runCatching { persistDurable(filesDir, on) }
             .getOrElse { SetResult(false, on, it.javaClass.simpleName) }
         synchronized(st) {
-            if (r.ok) st.cachedFile = on
+            if (r.ok) markPersistedValueLocked(st, on)
             st.lastDurable = JSONObject()
                 .put("value", on).put("ok", r.ok).put("seq", my)
                 .put("settled_at_ms", System.currentTimeMillis())
