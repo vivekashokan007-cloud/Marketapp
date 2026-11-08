@@ -2459,9 +2459,20 @@ class PremiumCaptureTest {
         assertTrue(mergedA.getJSONArray("reduced_fields").toString().contains("records"))
         assertFalse("records were dropped wholesale, not truncated",
             mergedA.getJSONObject("indices").getJSONObject("NF").has("records"))
-        // the parts that remain are still intact and parseable
-        assertEquals(12, mergedA.getJSONObject("indices").getJSONObject("NF")
+        // The parts that remain are intact, and the ACCOUNTING is deliberately NOT reduced with
+        // the records: it still reports the true count, so a reader can tell that evidence was
+        // dropped to fit rather than never collected.
+        //
+        // Derived from the slot list and the cohort size rather than written as a literal. The
+        // literal that was here was the 2-slot figure from the test above, copied into this
+        // 4-slot case; CI caught it as expected:<12> but was:<24> and the production count was
+        // the correct one. `reduce` deep-copies its input, so `sec` is still unreduced here.
+        val trueRecords = 4 * PremiumCaptureCohort.CONTRACTS_PER_COHORT
+        assertEquals(trueRecords, sec.getJSONObject("indices").getJSONObject("NF")
             .getJSONObject("accounting").getInt("records"))
+        assertEquals("the accounting must survive the reduction unchanged",
+            trueRecords, mergedA.getJSONObject("indices").getJSONObject("NF")
+                .getJSONObject("accounting").getInt("records"))
 
         // (b) a bundle already at the limit: no reduction can help, so it must REFUSE
         val full = "{\"filler\":\"" + "x".repeat(
