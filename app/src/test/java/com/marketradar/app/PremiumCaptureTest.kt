@@ -2129,7 +2129,9 @@ class PremiumCaptureTest {
                 PremiumCaptureSession.OBSERVED, row.getString("status"))
             assertEquals(6, row.getInt("written"))
             assertTrue(row.getBoolean("batch_complete"))
-            assertTrue(row.has("elapsed_ms"))
+            // renamed with the move off the poll thread: this is the WORKER's persist time, not
+            // time the poll paid, and the field name now says so
+            assertTrue(row.has("persist_elapsed_ms"))
         }
         // NF and BNF are isolated: separate cohorts, separate contracts, no cross-index fallback
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
@@ -2252,6 +2254,11 @@ class PremiumCaptureTest {
         root.mkdirs()
         File(root, "filler.bin").writeBytes(
             ByteArray(PremiumCaptureStore.MAX_BYTES_GLOBAL.toInt()))
+        // measured BEFORE the run: this root is deliberately filled past the cap by the test
+        // itself, so the property to assert is that capture adds NOTHING, not that the total
+        // happens to sit under the limit. CI rejected the absolute form and was right to:
+        // 4194304 B of filler plus the control file written above is already over.
+        val rootBytesBefore = PremiumCaptureStore(PremiumCaptureControl.root(fd)).globalBytes()
         val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         val row = r.getJSONArray("indices").getJSONObject(0)
@@ -2267,14 +2274,13 @@ class PremiumCaptureTest {
             sw.getBoolean("durably_recorded"))
         assertEquals(PremiumCaptureStore.REFUSED_GLOBAL_BYTES, sw.getString("status"))
 
-        // AND THE ROOT MUST NOT HAVE GROWN PAST THE CAP. control.json/last_run.json and their
-        // temps used to be written straight to this root, outside admission and outside the
-        // store's lock, so the status file could add bytes to a root that had just refused the
-        // records it describes. Asserted on final occupancy, not only on record counts.
+        // AND THE ROOT MUST NOT HAVE GROWN AT ALL. control.json/last_run.json and their temps
+        // used to be written straight to this root, outside admission and outside the store's
+        // lock, so the status file could add bytes to a root that had just refused the records it
+        // describes. Asserted on final occupancy, not only on record counts.
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
-        assertTrue("control/status writes must not take the root past the global cap: " +
-            "${store.globalBytes()} B",
-            store.globalBytes() <= PremiumCaptureStore.MAX_BYTES_GLOBAL)
+        assertEquals("a full root must not grow by writing about its own refusal",
+            rootBytesBefore, store.globalBytes())
 
         // ...and turning capture OFF must still be possible at capacity. Refusing the stop action
         // because the store is full would be the worst available failure mode.
@@ -2742,13 +2748,23 @@ class PremiumCaptureTest {
         // the hook must also not assign to any poll variable the brain path later reads
         val src = stripComments(
             File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText())
+        // sliced to the quotes abort CONDITION, not to its log message: ending at the message
+        // left `if (quotesJson == null)` inside the slice
         val block = src.substringAfter("premiumCaptureSafely {")
-            .substringBefore("POLL_FAIL: Quotes fetch returned null")
-        for (owned in listOf("quotesJson =", "bnfChainJson =", "nfChainJson =",
-            "bnfStocksJson =", "nf50Breadth =", "spotProvenance =", "x1NfChainFetchedAtMs =",
-            "x1BnfChainFetchedAtMs =", "evNfChainFetchedAtMs =")) {
-            assertFalse("the capture hook must not assign $owned", block.contains(owned))
+            .substringBefore("if (quotesJson == null)")
+        for (owned in listOf("quotesJson", "bnfChainJson", "nfChainJson",
+            "bnfStocksJson", "nf50Breadth", "spotProvenance", "x1NfChainFetchedAtMs",
+            "x1BnfChainFetchedAtMs", "evNfChainFetchedAtMs")) {
+            // ASSIGNMENT only: `=` not followed by `=`. The first version banned the bare string
+            // "quotesJson =", which also matches the comparison `quotesJson == null` — so the
+            // test failed on code that reads a variable without writing it. Reading an input is
+            // exactly what the hook is supposed to do; writing one is what it must never do.
+            val assigns = Regex("""\b${Regex.escape(owned)}\s*=(?!=)""").containsMatchIn(block)
+            assertFalse("the capture hook must not assign $owned", assigns)
         }
+        // the premise: the slice must actually contain the hook, or this proves nothing
+        assertTrue("the slice must contain the capture call",
+            block.contains("PremiumCaptureCoordinator.onChainsAcquired("))
     }
 
     // ═════════ Production lot authority: coverage must be COMPLETE and in context ═════════
@@ -3299,8 +3315,19 @@ class PremiumCaptureTest {
             .substringBefore("fun setIndexSelector(")
         assertTrue("exportSessionEvidence must catch Throwable, not Exception",
             export.contains("catch (t: Throwable)"))
-        assertFalse("and must no longer end at catch (e: Exception)",
-            export.contains("catch (e: Exception)"))
+        // The OUTERMOST guard is what matters, and it is the LAST catch in the method. The first
+        // version of this assertion banned `catch (e: Exception)` anywhere in the body, which CI
+        // rejected — correctly: the method has legitimate inner catches around sub-steps, and
+        // forbidding them would force every nested failure to be handled by the outer guard
+        // instead of locally. What must not happen is the method ENDING on an Exception catch.
+        val catches = Regex("""catch \((\w+): (\w+)\)""").findAll(export)
+            .map { it.groupValues[2] }.toList()
+        assertTrue("the method must have a catch at all", catches.isNotEmpty())
+        assertEquals("the outermost guard must be Throwable; catches found in order: $catches",
+            "Throwable", catches.last())
+        // the allocation-light fallback is itself Throwable-guarded, so the last TWO are both
+        assertTrue("the error response must itself be guarded",
+            catches.size >= 2 && catches.takeLast(2).all { it == "Throwable" })
         // the error response must be allocation-light: no echo of the payload or of the sizes
         // that just failed to fit, and a constant-string fallback if even that allocation fails
         assertTrue("there must be a constant-string fallback response",
@@ -3416,9 +3443,11 @@ class PremiumCaptureTest {
             .substringBefore("private fun istHhmmOrNull")
         assertTrue("the guard must catch Throwable, not Exception, got: $guard",
             guard.contains("catch (t: Throwable)"))
-        // the premium block itself must contain no request and no scheduling
+        // the premium block itself must contain no request and no scheduling. Sliced to the
+        // quotes abort CONDITION rather than its log message, so the abort's own code is not
+        // inside the slice being judged.
         val block = src.substringAfter("premiumCaptureSafely {")
-            .substringBefore("POLL_FAIL: Quotes fetch returned null")
+            .substringBefore("if (quotesJson == null)")
         for (banned in listOf("fetchSync(", "async(", "SupabaseClient", "AlarmManager",
             "WorkManager", "startService", "Thread(")) {
             assertFalse("the premium capture block must not contain $banned", block.contains(banned))
