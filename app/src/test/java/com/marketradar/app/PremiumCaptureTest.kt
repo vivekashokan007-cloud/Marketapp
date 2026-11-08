@@ -47,13 +47,19 @@ class PremiumCaptureTest {
      * Strip COMMENTS ONLY before a source scan, so an assertion about what the code references is
      * not tripped by what the prose mentions.
      *
-     * Hand-rolled and linear, for two reasons CI established. A regex version
-     * (`"(?:\\.|[^"\\])*"` and `/\*.*?\*/`) overflowed the stack inside `java.util.regex` on the
-     * larger files in this package — `StackOverflowError at Pattern.java`. And it stripped string
-     * literals too, which is a FALSE-NEGATIVE risk for a "must not reference" assertion: a
-     * reference inside a string template would have been erased rather than caught. String
-     * literals are therefore copied through verbatim, and only `"` is tracked so that a `//`
-     * inside a string is not mistaken for a comment.
+     * Hand-rolled and linear, for two reasons CI established. The previous regex version — a
+     * quoted-string pattern with an escape alternation, plus a lazy block-comment pattern —
+     * overflowed the stack inside `java.util.regex` on the larger files in this package
+     * (`StackOverflowError at Pattern.java`), because that engine recurses on an alternation
+     * inside a repetition. It also stripped string literals, which is a FALSE-NEGATIVE risk for a
+     * "must not reference" assertion: a reference inside a string template would have been erased
+     * rather than caught. String literals are therefore copied through verbatim, and only the
+     * quote character is tracked, so that a line-comment marker inside a string is not mistaken
+     * for a comment.
+     *
+     * The regex patterns are described rather than quoted here on purpose: writing a block-comment
+     * terminator inside a KDoc block ENDS THE COMMENT at that point, which is what the earlier
+     * draft of this very comment did.
      */
     private fun stripComments(src: String): String {
         val out = StringBuilder(src.length)
