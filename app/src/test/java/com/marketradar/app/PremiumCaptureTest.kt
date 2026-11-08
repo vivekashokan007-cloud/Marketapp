@@ -2636,7 +2636,8 @@ class PremiumCaptureTest {
         // and a build that races a write reports an honest, non-consistent view
         val section = PremiumExportSection.build(fd, "2026-10-19")
         val nf = section.getJSONObject("indices").getJSONObject("NF")
-        assertEquals("STORE_WRITE_GENERATION_UNCHANGED_ACROSS_READ",
+        assertEquals("the basis must name the odd/even protocol, not the old counter compare",
+            "STORE_REVISION_EVEN_AND_UNCHANGED_ACROSS_READ_ODD_MEANS_WRITE_IN_PROGRESS",
             nf.getString("view_consistency_basis"))
         // with no concurrent writer, a quiet read IS consistent
         assertTrue("a quiet read must still be consistent", nf.getBoolean("view_consistent"))
@@ -2931,8 +2932,8 @@ class PremiumCaptureTest {
                 PremiumCaptureControl.isEnabled(fd))
             // and persistence is reported as pending, not acknowledged as durable
             assertEquals("PENDING", r.getString("persistence"))
-            assertEquals("PENDING",
-                PremiumCaptureControl.statusFast().getJSONObject("persistence").getString("state"))
+            assertEquals("PENDING", PremiumCaptureControl.statusFast(fd)
+                .getJSONObject("persistence").getString("state"))
             // the honest statement about what OFF cannot do
             assertTrue(r.getString("note").contains("cannot be cancelled"))
         } finally {
@@ -2943,7 +2944,7 @@ class PremiumCaptureTest {
         val deadline = System.nanoTime() + 10_000_000_000L
         var state = ""
         while (System.nanoTime() < deadline) {
-            state = PremiumCaptureControl.statusFast()
+            state = PremiumCaptureControl.statusFast(fd)
                 .getJSONObject("persistence").optString("state")
             if (state != "PENDING") break
             Thread.sleep(25)
@@ -3010,13 +3011,48 @@ class PremiumCaptureTest {
         assertEquals("IN_MEMORY_ONLY_NOT_DURABLE", st.getString("refusals_are_recorded"))
     }
 
+    /**
+     * THE IN-MEMORY CONTROL STATE IS PER CAPTURE ROOT, not per process.
+     *
+     * The first version of the non-blocking control held `intent`/`cachedFile` in process-global
+     * fields. A real app has exactly one `filesDir`, so production would have behaved correctly —
+     * but the abstraction was wrong: `isEnabled(someOtherDir)` answered from whichever directory
+     * had last been touched. CI caught it across five tests at once; this pins it so the same
+     * shortcut cannot return unnoticed.
+     */
+    @Test
+    fun theInMemoryControlStateIsKeyedByCaptureRootNotProcessGlobal() {
+        val a = tmpFilesDir()
+        val b = tmpFilesDir()
+        assertFalse("both must start OFF", PremiumCaptureControl.isEnabled(a))
+        assertFalse(PremiumCaptureControl.isEnabled(b))
+
+        // turn A on through the non-blocking path, which sets the in-memory admission gate
+        assertTrue(PremiumCaptureControl.requestEnabled(a, true).getBoolean("accepted"))
+        assertTrue(PremiumCaptureControl.isEnabled(a))
+        assertFalse("enabling one directory must not enable another",
+            PremiumCaptureControl.isEnabled(b))
+
+        // the status surfaces must not bleed either
+        assertTrue(PremiumCaptureControl.statusFast(a).getBoolean("enabled"))
+        assertFalse(PremiumCaptureControl.statusFast(b).getBoolean("enabled"))
+        assertEquals("OFF", PremiumCaptureControl.statusFast(b).getString("collection_state"))
+
+        // and the coordinator must honour the per-root answer
+        val r = PremiumCaptureCoordinator.onChainsAcquired(b, "2026-10-19", "09:20",
+            listOf(acq("NF", "mon_0920_entry_NF")))
+        assertEquals(PremiumCaptureCoordinator.DISABLED, r.getString("status"))
+        assertFalse("a disabled directory must stay untouched",
+            PremiumCaptureControl.root(b).exists())
+    }
+
     /** The fast status touches no files, so the dialog cannot block behind a stuck write. */
     @Test
     fun theFastStatusTouchesNoFilesAndNamesWhatItDoesNotKnow() {
         PremiumCaptureWorker.resetForTest()
         val fd = tmpFilesDir()
         val before = PremiumCaptureControl.root(fd).exists()
-        val s = PremiumCaptureControl.statusFast()
+        val s = PremiumCaptureControl.statusFast(fd)
         assertEquals("IN_MEMORY_NO_FILESYSTEM_IO", s.getString("source"))
         assertEquals("a status read must not create the capture directory",
             before, PremiumCaptureControl.root(fd).exists())
@@ -3034,7 +3070,7 @@ class PremiumCaptureTest {
         assertTrue("the dialog must render the capture status",
             src.contains("premiumCaptureStatusText()"))
         assertTrue("and that text must come from the non-blocking status",
-            src.contains("PremiumCaptureControl.statusFast()"))
+            src.contains("PremiumCaptureControl.statusFast("))
         val dialog = src.substringAfter("private fun showVersionDialog()")
             .substringBefore("private fun premiumCaptureStatusText()")
         assertTrue("the toggle must use the non-blocking request",

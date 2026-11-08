@@ -1033,7 +1033,7 @@ class MainActivity : AppCompatActivity() {
      * opening this dialog cannot block behind a stuck capture write.
      */
     private fun premiumCaptureStatusText(): String = try {
-        val s = PremiumCaptureControl.statusFast()
+        val s = PremiumCaptureControl.statusFast(filesDir)
         val w = s.optJSONObject("worker")
         val lr = s.optJSONObject("last_run")
         val p = s.optJSONObject("persistence")

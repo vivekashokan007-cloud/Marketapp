@@ -51,11 +51,32 @@ object PremiumCaptureControl {
      * process is running is therefore not noticed, which is a deliberate trade for keeping
      * filesystem IO off the hot path.
      */
-    @Volatile private var intent: Boolean? = null
-    @Volatile private var cachedFile: Boolean? = null
-    @Volatile private var lastPersist: JSONObject? = null
-    @Volatile private var lastRunSnapshot: JSONObject? = null
-    @Volatile private var globalBytesSnapshot: Long = -1L
+    private class MemState {
+        @Volatile var intent: Boolean? = null
+        @Volatile var cachedFile: Boolean? = null
+        @Volatile var lastPersist: JSONObject? = null
+        @Volatile var lastRunSnapshot: JSONObject? = null
+        @Volatile var globalBytesSnapshot: Long = -1L
+    }
+
+    /**
+     * KEYED BY CAPTURE ROOT, exactly as the store keys its locks and revisions.
+     *
+     * The first version held this state in process-global fields. A real app has exactly one
+     * `filesDir`, so it would have behaved correctly in production — but the abstraction was
+     * wrong: `isEnabled(someOtherDir)` answered from whatever directory had last been touched,
+     * ignoring the one it was asked about. CI caught it immediately, across five tests.
+     *
+     * `absolutePath`, not `canonicalPath`: canonicalisation can touch the filesystem, and the
+     * whole point of this state is to answer without IO. Keys only have to distinguish
+     * directories within one process, which string paths already do.
+     */
+    private val STATES = HashMap<String, MemState>()
+
+    private fun stateFor(filesDir: File): MemState {
+        val key = File(filesDir, DIR_NAME).absolutePath
+        return synchronized(STATES) { STATES.getOrPut(key) { MemState() } }
+    }
 
     private val controlExec: java.util.concurrent.ExecutorService =
         java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -70,10 +91,11 @@ object PremiumCaptureControl {
      * read for it.
      */
     fun isEnabled(filesDir: File): Boolean {
-        intent?.let { return it }
-        cachedFile?.let { return it }
+        val st = stateFor(filesDir)
+        st.intent?.let { return it }
+        st.cachedFile?.let { return it }
         val v = read(filesDir).optBoolean("enabled", false)
-        cachedFile = v
+        st.cachedFile = v
         return v
     }
 
@@ -90,19 +112,19 @@ object PremiumCaptureControl {
      * failed write is visible instead of being falsely acknowledged.
      */
     fun requestEnabled(filesDir: File, on: Boolean): JSONObject {
-        intent = on
-        val pending = JSONObject()
+        val st = stateFor(filesDir)
+        st.intent = on
+        st.lastPersist = JSONObject()
             .put("state", "PENDING")
             .put("requested", on)
             .put("requested_at_ms", System.currentTimeMillis())
-        lastPersist = pending
         val submitted = runCatching {
             // explicit Runnable: `submit { }` with a Unit-returning lambda is ambiguous between
             // submit(Runnable) and submit(Callable<T>)
             controlExec.submit(Runnable {
                 val r = runCatching { setEnabled(filesDir, on) }
                     .getOrElse { SetResult(false, on, it.javaClass.simpleName) }
-                lastPersist = JSONObject()
+                st.lastPersist = JSONObject()
                     .put("state", if (r.ok) "PERSISTED" else "FAILED")
                     .put("requested", on)
                     .put("settled_at_ms", System.currentTimeMillis())
@@ -159,8 +181,9 @@ object PremiumCaptureControl {
                 .putControlFile(META, o, allowAtCapacity = !on)
             // `persisted` already covers DUPLICATE_NO_OP and REPLACED
             if (w.persisted) {
-                cachedFile = on
-                intent = on
+                val st = stateFor(filesDir)
+                st.cachedFile = on
+                st.intent = on
                 SetResult(true, on)
             } else SetResult(false, isEnabled(filesDir), "${w.status}: ${w.detail ?: ""}")
         }.getOrElse { SetResult(false, isEnabled(filesDir), it.javaClass.simpleName) }
@@ -207,10 +230,11 @@ object PremiumCaptureControl {
             val w = store.putControlFile(LAST_RUN, o)
             // snapshot for the non-blocking status surface, so neither the UI nor a hot path has
             // to walk the store to answer "what is it doing and how much room is left"
-            lastRunSnapshot = JSONObject(o.toString())
+            val st = stateFor(filesDir)
+            st.lastRunSnapshot = JSONObject(o.toString())
                 .put("durably_recorded", w.persisted)
                 .put("write_status", w.status)
-            globalBytesSnapshot = runCatching { store.globalBytes() }.getOrElse { -1L }
+            st.globalBytesSnapshot = runCatching { store.globalBytes() }.getOrElse { -1L }
         }
     }
 
@@ -272,10 +296,11 @@ object PremiumCaptureControl {
      * `global_bytes` is `-1` when nothing has been recorded yet in this process. That is reported
      * as unknown rather than as zero, because an unknown total is not an empty store.
      */
-    fun statusFast(): JSONObject {
+    fun statusFast(filesDir: File): JSONObject {
+        val st = stateFor(filesDir)
         val worker = PremiumCaptureWorker.stats()
-        val enabled = intent ?: cachedFile ?: false
-        val bytes = globalBytesSnapshot
+        val enabled = st.intent ?: st.cachedFile ?: false
+        val bytes = st.globalBytesSnapshot
         val remaining = if (bytes < 0) -1L
         else (PremiumCaptureStore.MAX_BYTES_GLOBAL -
             PremiumCaptureStore.CONTROL_RESERVE_BYTES - bytes).coerceAtLeast(0L)
@@ -286,13 +311,13 @@ object PremiumCaptureControl {
             .put("enabled_is_effective_now", true)
             .put("is_trading_mode", false)
             .put("changes_paper_authority", false)
-            .put("collection_state", collectionState(enabled, bytes, lastRunSnapshot, worker))
+            .put("collection_state", collectionState(enabled, bytes, st.lastRunSnapshot, worker))
             .put("global_bytes", bytes)
             .put("global_bytes_known", bytes >= 0)
             .put("evidence_bytes_remaining", remaining)
             .put("control_reserve_bytes", PremiumCaptureStore.CONTROL_RESERVE_BYTES)
-            .put("persistence", lastPersist ?: JSONObject.NULL)
-            .put("last_run", lastRunSnapshot ?: JSONObject.NULL)
+            .put("persistence", st.lastPersist ?: JSONObject.NULL)
+            .put("last_run", st.lastRunSnapshot ?: JSONObject.NULL)
             .put("worker", worker)
             .put("in_flight_cannot_be_cancelled", true)
     }
