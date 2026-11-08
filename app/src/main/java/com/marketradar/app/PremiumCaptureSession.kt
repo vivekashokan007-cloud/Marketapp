@@ -514,6 +514,42 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         }
         val allLotResolved = envRead.rows.isNotEmpty() && lotResolved == envRead.rows.size
 
+        /*
+         * AUTHORITY IS THE PRODUCTION TABLE'S VERDICT ONLY, computed once here and used both for
+         * the `claims` block and for `references.production_lot_authority`, so the two can never
+         * disagree.
+         *
+         * Self-correction, found by reading the green acceptance artifact rather than the code:
+         * `claims.authoritative_lot_resolved` was `allLotResolved`, which is true whenever a
+         * SUPPLIED OFFLINE table resolves every acquisition -- including the constructed table
+         * the tests supply. The artifact therefore claimed `authoritative_lot_resolved: true`
+         * while `references.production_lot_authority` in the same document said
+         * `authoritative: false, resolved: false, recorded: false`, and while the verified
+         * contract listed `authoritative_lot_resolution` under `verified_does_not_mean`. That is
+         * the overclaim R2-2 was about, surviving at the top level after being fixed at the
+         * record level: a test-constructed table could name itself authoritative.
+         *
+         * Resolving a reference and holding authority are different things. `offline_resolution_
+         * of_lot_table` keeps the former; authority now requires the application's own
+         * ContractLotTable to have been recorded, resolved, marked authoritative, AND referenced
+         * by content from every envelope that carries a reference.
+         */
+        val prodAuthRec = store.readLotAuthority(index, sessionDate)
+        val prodAuthRefs = envRead.rows.mapNotNull {
+            it.optJSONObject("lot")?.optString("production_authority_ref")
+                ?.takeIf { r -> r.isNotEmpty() }
+        }.toSet()
+        val prodAuthActual = prodAuthRec?.let {
+            PremiumObservationContract.ref(PremiumObservationContract.contentHash(it))
+        }
+        val prodAuthRefMatches =
+            prodAuthActual != null && prodAuthRefs.isNotEmpty() &&
+                prodAuthRefs.all { it == prodAuthActual }
+        val productionLotAuthoritative = prodAuthRec != null &&
+            prodAuthRec.optBoolean("resolved", false) &&
+            prodAuthRec.optBoolean("authoritative", false) &&
+            prodAuthRefMatches
+
         /**
          * Metadata PRESENCE is not reference resolution. A supplied object is only ever reported
          * as present-but-unvalidated unless a resolver actually checked it.
@@ -547,7 +583,11 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 // R2-2: resolution claimed only when the resolver resolved EVERY acquisition
                 .put("offline_resolution_of_lot_table", allLotResolved)
                 .put("offline_resolution_of_instrument_map", false)
-                .put("authoritative_lot_resolved", allLotResolved)
+                // resolving a reference is NOT holding authority: see the note above
+                .put("authoritative_lot_resolved", productionLotAuthoritative)
+                .put("lot_authority_basis",
+                    "PRODUCTION_CONTRACT_LOT_TABLE_RECORDED_RESOLVED_AND_REFERENCED_BY_CONTENT")
+                .put("a_supplied_offline_table_can_confer_authority", false)
                 .put("purpose", "EVIDENCE_PREPARATION_FOR_FUTURE_IV_FORECASTING"))
             .put("caps", store.capsJson())
             .put("cohort", cohortObj ?: JSONObject.NULL)
@@ -579,22 +619,18 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 // record the envelopes reference by content. Separate from the generic
                 // supplied-table resolver above, which is a TEST path and must never stand in
                 // for it.
+                // the SAME verdict the `claims` block used, not a second computation that could
+                // drift away from it
                 .put("production_lot_authority", JSONObject().also { pa ->
-                    val rec = store.readLotAuthority(index, sessionDate)
-                    val refs = envRead.rows.mapNotNull {
-                        it.optJSONObject("lot")?.optString("production_authority_ref")
-                            ?.takeIf { r -> r.isNotEmpty() } }.toSet()
-                    val actual = rec?.let {
-                        PremiumObservationContract.ref(
-                            PremiumObservationContract.contentHash(it)) }
-                    pa.put("recorded", rec != null)
-                        .put("authority", rec ?: JSONObject.NULL)
+                    pa.put("recorded", prodAuthRec != null)
+                        .put("authority", prodAuthRec ?: JSONObject.NULL)
                         .put("referenced_by_envelopes", JSONArray().also { a ->
-                            refs.forEach { r -> a.put(r) } })
-                        .put("reference_matches_record",
-                            actual != null && refs.isNotEmpty() && refs.all { it == actual })
-                        .put("resolved", rec?.optBoolean("resolved", false) ?: false)
-                        .put("authoritative", rec?.optBoolean("authoritative", false) ?: false)
+                            prodAuthRefs.forEach { r -> a.put(r) } })
+                        .put("reference_matches_record", prodAuthRefMatches)
+                        .put("resolved", prodAuthRec?.optBoolean("resolved", false) ?: false)
+                        .put("authoritative",
+                            prodAuthRec?.optBoolean("authoritative", false) ?: false)
+                        .put("authority_holds", productionLotAuthoritative)
                         .put("is_the_applications_own_contract_table", true)
                         .put("generic_supplied_table_substituted", false)
                 })

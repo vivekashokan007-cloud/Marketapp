@@ -1204,7 +1204,17 @@ class PremiumCaptureTest {
         assertEquals(0, cov.getInt("conflicting_with_claim"))
         assertEquals(0, cov.getInt("unresolved"))
         assertEquals(1, lot.getJSONArray("per_acquisition").length())
-        assertTrue(ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
+        // The supplied table RESOLVED every acquisition -- that is what this test is about.
+        assertTrue(ex.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
+        // ...and resolving a reference is still NOT holding authority. This assertion used to
+        // read the authority claim as a proxy for resolution, which let a table constructed
+        // inside this very test mark itself authoritative.
+        assertFalse("a supplied offline table must never confer authority",
+            ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
+        assertFalse(ex.getJSONObject("claims")
+            .getBoolean("a_supplied_offline_table_can_confer_authority"))
+        assertFalse(ex.getJSONObject("references").getJSONObject("production_lot_authority")
+            .getBoolean("authority_holds"))
 
         // a MIXED session must not be a blanket success: one acquisition resolves, one conflicts
         val conflicting = JSONObject(table.toString())
@@ -1215,6 +1225,11 @@ class PremiumCaptureTest {
         assertEquals("PARTIALLY_RESOLVED_SEE_COVERAGE", lotM.getString("resolution"))
         assertEquals(1, lotM.getJSONObject("resolution_coverage")
             .getInt("conflicting_with_claim"))
+        // The point of the mixed case: a partial resolution must not be reported as resolution.
+        // Asserting the AUTHORITY claim here would now pass vacuously, since authority is always
+        // false without the production table, so it asserts the resolution claim instead.
+        assertFalse("a partially resolved session must not claim offline resolution",
+            mixed.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
         assertFalse(mixed.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
     }
 
@@ -1519,7 +1534,12 @@ class PremiumCaptureTest {
         assertEquals("UNRESOLVED_REFERENCE", ex.getJSONObject("references")
             .getJSONObject("instrument_map").getString("resolution"))
         assertFalse(ex.getJSONObject("claims").getBoolean("offline_resolution_of_instrument_map"))
-        assertTrue(ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
+        assertTrue(ex.getJSONObject("claims").getBoolean("offline_resolution_of_lot_table"))
+        // The acceptance export is built with a CONSTRUCTED test table, so it must not claim
+        // authoritative lot resolution -- which is also what its own verified contract says
+        // under `verified_does_not_mean`. Those two disagreed before this fix.
+        assertFalse("the acceptance artifact must not claim authority from a test table",
+            ex.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
         assertFalse(ex.getJSONObject("claims").getBoolean("synchronised_exchange_quotes"))
         assertFalse(ex.getBoolean("device_evidence"))
         assertEquals("VALID", ex.getJSONObject("cohort_state").getString("state"))
@@ -2012,6 +2032,35 @@ class PremiumCaptureTest {
         assertFalse(auth.getBoolean("flattened_to_one_lot_per_underlying"))
         // the claim is only authoritative if the table itself said so
         assertEquals(auth.optBoolean("authoritative", false), pa.getBoolean("authoritative"))
+
+        // THE INVARIANT, pinned here because the two disagreed in a shipped green artifact:
+        // the top-level authority CLAIM must equal the production authority verdict in the same
+        // document. Asserted as agreement rather than as a fixed outcome, so this holds whichever
+        // way ContractLotTable rules on this expiry and cannot rot if the table changes.
+        val nf = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF")
+        val claims = nf.getJSONObject("claims")
+        val expectedAuthority = pa.getBoolean("recorded") && pa.getBoolean("resolved") &&
+            pa.getBoolean("authoritative") && pa.getBoolean("reference_matches_record")
+        assertEquals("the authority claim must agree with the production authority block",
+            expectedAuthority, claims.getBoolean("authoritative_lot_resolved"))
+        assertEquals(expectedAuthority, nf.getJSONObject("references")
+            .getJSONObject("production_lot_authority").getBoolean("authority_holds"))
+        assertFalse(claims.getBoolean("a_supplied_offline_table_can_confer_authority"))
+        assertEquals("PRODUCTION_CONTRACT_LOT_TABLE_RECORDED_RESOLVED_AND_REFERENCED_BY_CONTENT",
+            claims.getString("lot_authority_basis"))
+
+        // And supplying an offline table cannot raise the verdict: the same session exported with
+        // a supplied table object reports the same authority as without one. (The table here is
+        // deliberately empty — the claim must not move merely because a table was passed.)
+        val table = JSONObject().put("version", "test_lot_table_v1")
+            .put("provenance", "CONSTRUCTED_IN_TEST")
+            .put("rows", JSONArray())
+        val withTable = PremiumCaptureSession(PremiumCaptureStore(PremiumCaptureControl.root(fd)))
+            .export("NF", "2026-10-19", "09:20", replayContext(), lotTableObject = table)
+        assertEquals("a supplied table must not change the authority verdict",
+            expectedAuthority,
+            withTable.getJSONObject("claims").getBoolean("authoritative_lot_resolved"))
     }
 
     @Test
