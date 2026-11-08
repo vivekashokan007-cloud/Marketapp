@@ -128,6 +128,19 @@ class PremiumCaptureStore(val root: File) {
         @Volatile
         internal var mutationPhaseHookForTest: ((String) -> Unit)? = null
 
+        /**
+         * Test-only seam: forces the next matching write to be REFUSED without touching the disk.
+         *
+         * Called with the write kind; returning a non-null string refuses the write with that
+         * detail. It exists so a MIXED-OUTCOME sequence can be executed rather than described —
+         * the capture batch summary failing while the coordinator's separate counter succeeds,
+         * and the reverse — which is the case that proves one cannot mask the other. The previous
+         * test only covered a healthy store and a wholly full one, neither of which forces that
+         * interleaving.
+         */
+        @Volatile
+        internal var writeRefusalInjectorForTest: ((String) -> String?)? = null
+
         private fun generationFor(root: File): java.util.concurrent.atomic.AtomicLong {
             val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
             return synchronized(GENERATIONS) {
@@ -572,6 +585,9 @@ class PremiumCaptureStore(val root: File) {
                 .put("updates", (existing?.optLong("updates", 0L) ?: 0L) + 1L)
             val payload = summary.toString()
             val size = bytesOfText(payload)
+            writeRefusalInjectorForTest?.invoke(KIND_SUMMARY)?.let {
+                return WriteResult(REFUSED_IO, size, "injected: $it")
+            }
             admit(KIND_SUMMARY, index, session, size)?.let { return it }
             atomicWriteLocked(sessionDir(index, session), summaryFile(index, session),
                 payload, size, replace = true)

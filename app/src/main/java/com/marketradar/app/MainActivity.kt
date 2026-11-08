@@ -1052,13 +1052,30 @@ class MainActivity : AppCompatActivity() {
                 val reason = w.optString("last_refusal_reason")
                 if (reason.isNotEmpty() && reason != "null") append("\nlast refusal: ").append(reason)
             }
+            // PER INDEX, from the worker's own bounded projection. The single `last_run`
+            // snapshot below is whichever index finished last, so it is labelled as that rather
+            // than presented as results for both.
+            val byIdx = w?.optJSONObject("last_by_index")
+            if (byIdx != null && byIdx.length() > 0) {
+                for (k in byIdx.keys()) {
+                    val e = byIdx.optJSONObject(k) ?: continue
+                    append("\n").append(k).append(": ").append(e.optString("status"))
+                        .append(" written=").append(e.optInt("written", -1))
+                        .append(" summary_durable=")
+                        .append(e.optBoolean("summary_durably_recorded"))
+                }
+            }
             if (lr != null) {
-                append("\nlast run: ").append(lr.optString("index")).append(" ")
+                append("\nlatest single run (").append(lr.optString("index")).append("): ")
                     .append(lr.optString("status"))
                     .append(" written=").append(lr.optInt("written", -1))
                     .append(" summary_durable=").append(lr.optBoolean("summary_durably_recorded"))
             }
             if (p != null) append("\ntoggle save: ").append(p.optString("state"))
+                .append(" seq=").append(p.optLong("seq", -1L))
+            append("\ncontrol: ").append(s.optString("control_init"))
+                .append(" effective=").append(s.opt("effective_intent"))
+                .append(" durable=").append(s.opt("durable_value"))
             append("\nin-flight work cannot be cancelled")
         }
     } catch (t: Throwable) {

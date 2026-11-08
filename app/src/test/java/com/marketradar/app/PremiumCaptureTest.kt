@@ -2078,8 +2078,14 @@ class PremiumCaptureTest {
         assertTrue(PremiumCaptureControl.setEnabled(fd, false).ok)
         assertFalse(PremiumCaptureControl.isEnabled(fd))
 
-        // a malformed control file is OFF, and the fact is reported rather than hidden
+        // A malformed control file is OFF, and the fact is reported rather than hidden.
+        //
+        // The explicit refresh is required, and that IS the documented policy: a hand edit of the
+        // file mid-process is deliberately not observed, because the control is read once and
+        // then answered from memory to keep filesystem IO off the poll and UI paths. Without the
+        // refresh this test would assert a behaviour the design states it does not have.
         File(PremiumCaptureControl.root(fd), "control.json").writeText("{not json")
+        PremiumCaptureControl.refresh(fd)
         assertFalse("a capture that cannot read its own switch must not run",
             PremiumCaptureControl.isEnabled(fd))
         assertTrue(PremiumCaptureControl.controlUnreadable(fd))
@@ -2096,6 +2102,9 @@ class PremiumCaptureTest {
     @Test
     fun whenOffTheCoordinatorTouchesNothingAtAll() {
         val fd = tmpFilesDir()
+        // the persisted control is loaded ASYNCHRONOUSLY and admission is conservative
+        // until it settles, so DISABLED is only the honest answer once it has
+        assertTrue(PremiumCaptureControl.awaitInitialized(fd, 10_000L))
         val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")))
         assertEquals(PremiumCaptureCoordinator.DISABLED, r.getString("status"))
@@ -2505,8 +2514,10 @@ class PremiumCaptureTest {
     @Test
     fun coordinatorFailureIsAlwaysAStatusNeverAnException() {
         // an unwritable files dir
+        val missing = File("/proc/nonexistent-premium-files")
+        assertTrue(PremiumCaptureControl.awaitInitialized(missing, 10_000L))
         val r = coordinate(
-            File("/proc/nonexistent-premium-files"), "2026-10-19", "09:20",
+            missing, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         assertEquals("no control file is readable there, so it must be OFF",
             PremiumCaptureCoordinator.DISABLED, r.getString("status"))
@@ -2837,6 +2848,7 @@ class PremiumCaptureTest {
 
         // (1) capture OFF: the control is absent, so nothing may happen at all
         val off = tmpFilesDir()
+        assertTrue(PremiumCaptureControl.awaitInitialized(off, 10_000L))
         val offResult = PremiumCaptureCoordinator.onChainsAcquired(off, "2026-10-19", "09:20",
             PremiumCapturePollAdapter.acquisitions(listOf(
                 PremiumCapturePollAdapter.IndexResult("NF", nfChain, 1_000L,
@@ -3012,6 +3024,196 @@ class PremiumCaptureTest {
     }
 
     /**
+     * AN OLDER ON COMPLETING MUST NOT REACTIVATE CAPTURE AFTER A NEWER OFF.
+     *
+     * The defect: a successful disk write re-assigned effective intent, so
+     *   1. ON is requested and its save blocks on the store lock
+     *   2. OFF is requested; effective intent becomes false
+     *   3. the ON save completes and set intent back to TRUE
+     *   4. capture could be admitted again despite the newer explicit OFF
+     *
+     * Forced deterministically by holding the real store root lock so the ON save cannot finish
+     * until OFF has been requested.
+     */
+    @Test
+    fun anOlderOnCompletingCannotReactivateCaptureAfterANewerOff() {
+        val fd = tmpFilesDir()
+        assertTrue(PremiumCaptureControl.awaitInitialized(fd, 10_000L))
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val holder = Thread { store.withRootLockForTest { holding.countDown(); release.await() } }
+        holder.isDaemon = true
+        holder.start()
+        try {
+            assertTrue(holding.await(10, java.util.concurrent.TimeUnit.SECONDS))
+
+            // (1) ON requested; its save is now stuck behind the held lock
+            val on = PremiumCaptureControl.requestEnabled(fd, true)
+            assertTrue(PremiumCaptureControl.isEnabled(fd))
+
+            // (2) OFF requested while the ON save is still blocked
+            val off = PremiumCaptureControl.requestEnabled(fd, false)
+            assertTrue("the newer request must carry a higher sequence",
+                off.getLong("seq") > on.getLong("seq"))
+            assertFalse("OFF must take effect immediately",
+                PremiumCaptureControl.isEnabled(fd))
+        } finally {
+            release.countDown()
+            holder.join(10_000L)
+        }
+
+        // (3) the ON save is now free to complete. Effective admission must STAY OFF.
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            assertFalse("no completed save may re-enable capture after a newer OFF",
+                PremiumCaptureControl.isEnabled(fd))
+            val st = PremiumCaptureControl.statusFast(fd)
+            val latest = st.optJSONObject("latest_request")
+            if (latest != null && latest.optString("state") != "PENDING" &&
+                latest.optBoolean("requested") == false) break
+            Thread.sleep(20)
+        }
+        assertFalse("still OFF after everything settled", PremiumCaptureControl.isEnabled(fd))
+
+        val st = PremiumCaptureControl.statusFast(fd)
+        // the displayed latest-request state belongs to the OFF request, not the older ON
+        val latest = st.getJSONObject("latest_request")
+        assertFalse("the latest request shown must be the OFF one", latest.getBoolean("requested"))
+        assertEquals(false, st.get("effective_intent"))
+        // the durable value is reported separately rather than conflated with intent
+        assertTrue(st.has("durable_value"))
+        assertTrue(st.has("last_durable_write"))
+    }
+
+    /** ON/OFF/ON ordering: the last request wins and is the one displayed. */
+    @Test
+    fun theLastControlRequestWinsAcrossRepeatedToggles() {
+        val fd = tmpFilesDir()
+        assertTrue(PremiumCaptureControl.awaitInitialized(fd, 10_000L))
+        PremiumCaptureControl.requestEnabled(fd, true)
+        PremiumCaptureControl.requestEnabled(fd, false)
+        val last = PremiumCaptureControl.requestEnabled(fd, true)
+        assertTrue(PremiumCaptureControl.isEnabled(fd))
+        val deadline = System.nanoTime() + 10_000_000_000L
+        while (System.nanoTime() < deadline) {
+            val l = PremiumCaptureControl.statusFast(fd).optJSONObject("latest_request")
+            if (l != null && l.optString("state") == "PERSISTED") break
+            Thread.sleep(20)
+        }
+        val st = PremiumCaptureControl.statusFast(fd)
+        val latest = st.getJSONObject("latest_request")
+        assertEquals("the final request's sequence must be the one displayed",
+            last.getLong("seq"), latest.getLong("seq"))
+        assertTrue(latest.getBoolean("requested"))
+        assertTrue(PremiumCaptureControl.isEnabled(fd))
+        assertEquals(true, st.get("durable_value"))
+    }
+
+    /**
+     * THE CONTROL PERSISTENCE QUEUE IS BOUNDED: one running save plus one coalesced latest
+     * desired state, however many toggles arrive.
+     *
+     * `newSingleThreadExecutor` has an unbounded queue, so every toggle behind a blocked write
+     * used to retain another obsolete Runnable. Many alternating requests are issued while the
+     * real root lock is held, finishing on OFF.
+     */
+    @Test
+    fun repeatedTogglesUnderAHeldLockStayBoundedAndSettleOnTheLastOne() {
+        val fd = tmpFilesDir()
+        assertTrue(PremiumCaptureControl.awaitInitialized(fd, 10_000L))
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val holder = Thread { store.withRootLockForTest { holding.countDown(); release.await() } }
+        holder.isDaemon = true
+        holder.start()
+        try {
+            assertTrue(holding.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            var slowest = 0L
+            for (i in 0 until 40) {
+                val t0 = System.nanoTime()
+                PremiumCaptureControl.requestEnabled(fd, i % 2 == 0)
+                slowest = maxOf(slowest, (System.nanoTime() - t0) / 1_000_000L)
+            }
+            // finish on OFF
+            PremiumCaptureControl.requestEnabled(fd, false)
+            assertTrue("every UI-facing call must stay prompt: slowest $slowest ms",
+                slowest < 1_000L)
+            assertFalse("OFF must hold in memory even with persistence busy",
+                PremiumCaptureControl.isEnabled(fd))
+            val q = PremiumCaptureControl.statusFast(fd).getJSONObject("control_queue")
+            assertEquals("at most one coalesced pending state may be retained",
+                1, q.getInt("max_coalesced_pending"))
+            assertEquals("ONE_RUNNING_SAVE_PLUS_ONE_COALESCED_LATEST_DESIRED_STATE",
+                q.getString("policy"))
+            assertTrue(q.getLong("latest_seq") >= 41L)
+        } finally {
+            release.countDown()
+            holder.join(10_000L)
+        }
+        // the LATEST state eventually persists, and nothing re-enabled capture on the way
+        val deadline = System.nanoTime() + 15_000_000_000L
+        while (System.nanoTime() < deadline) {
+            assertFalse("no stale completion may override the final OFF",
+                PremiumCaptureControl.isEnabled(fd))
+            if (PremiumCaptureControl.statusFast(fd).getJSONObject("control_queue")
+                    .getBoolean("saving").not()) break
+            Thread.sleep(20)
+        }
+        assertFalse(PremiumCaptureControl.isEnabled(fd))
+        assertEquals(false, PremiumCaptureControl.statusFast(fd).get("durable_value"))
+    }
+
+    /**
+     * COLD START IS HONEST: admission is conservative until the persisted control has loaded, an
+     * existing ON is picked up, a malformed file is an ERROR that reads as OFF, and a request made
+     * during initialization is not overwritten by the load completing.
+     */
+    @Test
+    fun coldStartLoadsThePersistedControlWithoutLyingAboutIt() {
+        // (a) an existing ON control at cold start
+        val on = tmpFilesDir()
+        PremiumCaptureControl.root(on).mkdirs()
+        File(PremiumCaptureControl.root(on), "control.json")
+            .writeText(JSONObject().put("enabled", true).toString())
+        // before the load settles, admission must NOT claim a confirmed OFF
+        val early = PremiumCaptureControl.statusFast(on)
+        if (!early.getBoolean("enabled_known")) {
+            assertEquals(PremiumCaptureControl.ADMIT_INITIALIZING,
+                early.getJSONObject("admission").getString("reason"))
+            assertFalse("conservative until loaded", early.getBoolean("enabled"))
+        }
+        assertTrue(PremiumCaptureControl.awaitInitialized(on, 10_000L))
+        assertEquals(PremiumCaptureControl.INIT_READY,
+            PremiumCaptureControl.statusFast(on).getString("control_init"))
+        assertTrue("an existing ON control must be picked up",
+            PremiumCaptureControl.isEnabled(on))
+
+        // (b) a malformed control is ERROR and reads as OFF
+        val bad = tmpFilesDir()
+        PremiumCaptureControl.root(bad).mkdirs()
+        File(PremiumCaptureControl.root(bad), "control.json").writeText("{not json")
+        assertTrue(PremiumCaptureControl.awaitInitialized(bad, 10_000L))
+        assertEquals(PremiumCaptureControl.INIT_ERROR,
+            PremiumCaptureControl.statusFast(bad).getString("control_init"))
+        assertFalse("a capture that cannot read its own switch must not run",
+            PremiumCaptureControl.isEnabled(bad))
+        assertTrue(PremiumCaptureControl.controlUnreadable(bad))
+
+        // (c) a request made during initialization must win over the load
+        val racing = tmpFilesDir()
+        PremiumCaptureControl.root(racing).mkdirs()
+        File(PremiumCaptureControl.root(racing), "control.json")
+            .writeText(JSONObject().put("enabled", true).toString())
+        PremiumCaptureControl.requestEnabled(racing, false)   // explicit OFF before/while loading
+        assertTrue(PremiumCaptureControl.awaitInitialized(racing, 10_000L))
+        assertFalse("initialization must not overwrite a newer explicit request",
+            PremiumCaptureControl.isEnabled(racing))
+        assertEquals(false, PremiumCaptureControl.statusFast(racing).get("effective_intent"))
+    }
+
+    /**
      * THE IN-MEMORY CONTROL STATE IS PER CAPTURE ROOT, not per process.
      *
      * The first version of the non-blocking control held `intent`/`cachedFile` in process-global
@@ -3039,6 +3241,7 @@ class PremiumCaptureTest {
         assertEquals("OFF", PremiumCaptureControl.statusFast(b).getString("collection_state"))
 
         // and the coordinator must honour the per-root answer
+        assertTrue(PremiumCaptureControl.awaitInitialized(b, 10_000L))
         val r = PremiumCaptureCoordinator.onChainsAcquired(b, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         assertEquals(PremiumCaptureCoordinator.DISABLED, r.getString("status"))
@@ -3112,11 +3315,60 @@ class PremiumCaptureTest {
     }
 
     /**
-     * A FAILED capture summary must not be masked by a later successful coordinator counter.
+     * THE MIXED OUTCOME, EXECUTED: capture summary FAILS, coordinator counter SUCCEEDS — and the
+     * reverse.
      *
-     * The capture summary and the coordinator counter write to the SAME summary file, so a store
-     * that refuses the first and accepts the second is the exact masking case. Forced by letting
-     * the batch summary exceed the per-record reserve, which the later tiny counter write does not.
+     * This is the case that proves one cannot mask the other, and my earlier version of this test
+     * did not run it: it checked a healthy session and then a wholly full root, neither of which
+     * forces the two writes to disagree. Forced here by refusing exactly the FIRST summary write
+     * of the pair through the store's injector, then exactly the SECOND.
+     */
+    @Test
+    fun aFailingCaptureSummaryAndASucceedingCoordinatorCounterStayDistinguishable() {
+        for (failFirst in listOf(true, false)) {
+            val fd = tmpFilesDir()
+            PremiumCaptureControl.setEnabled(fd, true)
+            val seen = java.util.concurrent.atomic.AtomicInteger(0)
+            PremiumCaptureStore.writeRefusalInjectorForTest = { kind ->
+                if (kind != PremiumCaptureStore.KIND_SUMMARY) null
+                else {
+                    val n = seen.incrementAndGet()
+                    if ((failFirst && n == 1) || (!failFirst && n == 2))
+                        "forced summary failure #$n" else null
+                }
+            }
+            val row = try {
+                coordinate(fd, "2026-10-19", "09:20",
+                    listOf(acq("NF", "mon_0920_entry_NF")))
+                    .getJSONArray("indices").getJSONObject(0)
+            } finally {
+                PremiumCaptureStore.writeRefusalInjectorForTest = null
+            }
+            val capture = row.getJSONObject("summary_write")
+            val counter = row.getJSONObject("coordinator_counter_write")
+            assertEquals("CAPTURE_BATCH_WRITE_AND_REFUSAL_COUNTERS", capture.getString("kind"))
+            assertEquals("COORDINATOR_RUN_COUNT_ONLY_NOT_THE_CAPTURE_SUMMARY",
+                counter.getString("kind"))
+            assertEquals("exactly two summary writes must have been attempted", 2, seen.get())
+            if (failFirst) {
+                assertFalse("the CAPTURE summary failed and must be reported as failed",
+                    capture.getBoolean("durably_recorded"))
+                assertTrue("the coordinator counter succeeded and says so, separately",
+                    counter.getBoolean("durably_recorded"))
+            } else {
+                assertTrue("the capture summary succeeded",
+                    capture.getBoolean("durably_recorded"))
+                assertFalse("the coordinator counter failed, and that is not the capture summary",
+                    counter.getBoolean("durably_recorded"))
+            }
+        }
+    }
+
+    /**
+     * A healthy session returns a persisted capture summary; a full root returns a refused one.
+     *
+     * Kept as the coarse case. The mixed-outcome case above is what establishes that the two
+     * cannot mask each other, which this one does not force.
      */
     @Test
     fun aFailedCaptureSummaryIsNeverMaskedByTheCoordinatorCounter() {

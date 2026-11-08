@@ -229,6 +229,19 @@ object PremiumCaptureWorker {
             .put("last_refusal_at_ms", lastRefusalAtMs)
             .put("refusals_are_recorded", "IN_MEMORY_ONLY_NOT_DURABLE")
             .put("last_result", lastResult ?: JSONObject.NULL)
+            // A bounded per-index projection, so a caller can show BOTH indices instead of one
+            // latest-run snapshot that happens to be whichever finished last.
+            .put("last_by_index", JSONObject().also { o ->
+                lastByIndex.forEach { (idx, r) ->
+                    o.put(idx, JSONObject()
+                        .put("status", r.optString("status"))
+                        .put("written", r.optInt("written", -1))
+                        .put("batch_complete", r.optBoolean("batch_complete", false))
+                        .put("summary_durably_recorded",
+                            r.optJSONObject("summary_write")
+                                ?.optBoolean("durably_recorded", false) ?: false))
+                }
+            })
             .put("in_flight_io_is_not_cancellable", true)
     }
 

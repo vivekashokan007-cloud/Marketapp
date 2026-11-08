@@ -64,6 +64,15 @@ object PremiumCaptureCoordinator {
 
     const val DISABLED = "DISABLED"
     const val CONTROL_UNREADABLE = "CONTROL_UNREADABLE_TREATED_AS_OFF"
+
+    /**
+     * The persisted control has not finished loading, so capture is NOT admitted.
+     *
+     * Deliberately conservative: a poll that cannot yet know whether capture was enabled must not
+     * capture. In practice this can only affect polls before the one-off asynchronous load
+     * settles.
+     */
+    const val CONTROL_INITIALIZING = "CONTROL_INITIALIZING_NOT_ADMITTED"
     const val NO_SESSION = "NO_SESSION_DATE"
     const val PREPARE_BUDGET_EXCEEDED = "PREPARE_BUDGET_EXCEEDED"
     const val SUBMITTED = "SUBMITTED"
@@ -286,10 +295,20 @@ object PremiumCaptureCoordinator {
             .put("persistence", "OFF_POLL_BOUNDED_WORKER")
             .put("status_describes", "SUBMISSION_NOT_PERSISTENCE")
         return try {
-            if (PremiumCaptureControl.controlUnreadable(filesDir))
-                return out.put("status", CONTROL_UNREADABLE).put("indices", JSONArray())
-            if (!PremiumCaptureControl.isEnabled(filesDir))
-                return out.put("status", DISABLED).put("indices", JSONArray())
+            // ONE memory-only admission decision. The previous version called
+            // controlUnreadable(), which read and PARSED the control file, on EVERY poll even
+            // once the enabled flag was cached — so per-poll control IO survived the caching and
+            // the claim that it had been removed was incomplete.
+            val adm = PremiumCaptureControl.admission(filesDir)
+            out.put("admission", adm)
+            if (!adm.optBoolean("admit", false)) {
+                val status = when (adm.optString("reason")) {
+                    PremiumCaptureControl.ADMIT_UNREADABLE -> CONTROL_UNREADABLE
+                    PremiumCaptureControl.ADMIT_INITIALIZING -> CONTROL_INITIALIZING
+                    else -> DISABLED
+                }
+                return out.put("status", status).put("indices", JSONArray())
+            }
             if (sessionDate.isNullOrBlank() ||
                 !PremiumObservationContract.isCalendarDate(sessionDate))
                 return out.put("status", NO_SESSION).put("indices", JSONArray())
