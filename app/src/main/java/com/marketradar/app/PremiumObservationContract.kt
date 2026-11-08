@@ -627,6 +627,33 @@ object PremiumObservationContract {
     }
 
     /**
+     * The versions the current VERIFIED contract covers. Anything else is retained and exported,
+     * but reported as legacy/unverified rather than silently accepted.
+     *
+     * Codex replayed the previous verification predicate against the earlier acceptance artifact
+     * and all three of its groups satisfied it, although they carry observation v3 / envelope v2
+     * and **no `batch_evidence_ref` at all**. So bumping the version labelled the rows but the
+     * verifier never looked at it — my claim that the bump let the verifier distinguish the
+     * identity contracts was not supported by the exporter. These sets are what make it true.
+     */
+    val SUPPORTED_RECORD_VERSIONS = setOf(RECORD_VERSION)
+    val SUPPORTED_ENVELOPE_VERSIONS = setOf(ENVELOPE_VERSION)
+
+    /** The five evidence fields, lifted back out of a stored record for re-digesting. */
+    val EVIDENCE_FIELDS = listOf("instrument_key", "outcome", "identity", "iv", "bbo")
+
+    /**
+     * Reconstruct one contract's evidence body from a stored record, so the batch digest can be
+     * RECOMPUTED at verification time instead of trusted. Linkage, version and hash fields are
+     * excluded, exactly as when the record was built.
+     */
+    fun evidenceFromRecord(record: JSONObject): JSONObject {
+        val e = JSONObject()
+        for (k in EVIDENCE_FIELDS) e.put(k, record.opt(k) ?: JSONObject.NULL)
+        return e
+    }
+
+    /**
      * One contract's quote-bearing evidence, with NO linkage fields — the unit the acquisition
      * digest is taken over, and the body an observation record is built from.
      */

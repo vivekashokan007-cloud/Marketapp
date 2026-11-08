@@ -300,6 +300,10 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
 
         // ── acquisition linkage, which is the point of the P2 fix ──────────────────────────────
         val byAcq = recRead.rows.groupBy { it.optString("acquisition_id") }
+        // `associateBy` would silently keep the last of a duplicated key, so duplicates are
+        // detected and reported instead of being trusted away by a map overwrite (Codex, 4).
+        val duplicateAcqIds = envRead.rows.map { it.optString("acquisition_id") }
+            .groupingBy { it }.eachCount().filterValues { it > 1 }.keys
         val envByAcq = envRead.rows.associateBy { it.optString("acquisition_id") }
         // R2-3: PHYSICAL completeness and VERIFIED usability are separate verdicts. The previous
         // predicate counted six parsed records with matching envelope references and called that
@@ -332,6 +336,45 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             val why = JSONArray()
             val envOk = PremiumObservationContract.verifyHash(e)
             if (!envOk) why.put("envelope_hash_invalid")
+
+            // (1) the VERSIONS this verified contract covers. Older evidence is retained and
+            // exported, never rewritten as current, and never silently verified.
+            val envVer = e.optString("record_version")
+            if (envVer !in PremiumObservationContract.SUPPORTED_ENVELOPE_VERSIONS)
+                why.put("unsupported_envelope_version:$envVer")
+            val recVersions = recs.map { it.optString("record_version") }.toSet()
+            recVersions.filter { it !in PremiumObservationContract.SUPPORTED_RECORD_VERSIONS }
+                .forEach { why.put("unsupported_record_version:$it") }
+
+            // (2) RECOMPUTE the batch digest from the records, in pinned-cohort order, and
+            // compare it with the envelope's. A partial group cannot satisfy a complete-batch
+            // binding, so it is reported as unverifiable for that reason rather than by omission.
+            val storedBatchRef = e.optString("batch_evidence_ref")
+            if (storedBatchRef.isEmpty()) why.put("envelope_carries_no_batch_evidence_ref")
+            else if (expectedKeys.isEmpty()) why.put("cohort_unavailable_for_batch_recomputation")
+            else {
+                val byKey = recs.associateBy { it.optString("instrument_key") }
+                val ordered = PremiumCaptureCohort.pinnedList(loaded.cohort)
+                    .map { byKey[it.instrumentKey] }
+                if (ordered.any { it == null }) why.put("batch_incomplete_cannot_bind")
+                else {
+                    val recomputed = PremiumObservationContract.batchEvidenceRef(
+                        ordered.map { PremiumObservationContract.evidenceFromRecord(it!!) })
+                    if (recomputed != storedBatchRef) why.put("batch_evidence_ref_mismatch")
+                }
+            }
+
+            // (3) RECOMPUTE the acquisition id from the envelope's declared basis. Non-circular:
+            // the basis excludes the id and both hash fields.
+            val recomputedAcq = PremiumObservationContract.acquisitionId(e)
+            if (recomputedAcq != id) why.put("acquisition_id_not_derived_from_its_own_basis")
+
+            // (4) the envelope itself must belong to the session and index being exported, and to
+            // the validated cohort — not merely agree with the records that point at it
+            if (e.optString("session_date") != sessionDate) why.put("envelope_session_foreign")
+            if (e.optString("index") != idx) why.put("envelope_index_foreign")
+            if (loaded.state != "VALID") why.put("cohort_not_valid_for_verification")
+            if (duplicateAcqIds.contains(id)) why.put("duplicate_envelope_acquisition_id")
             val badHashes = recs.filter { !PremiumObservationContract.verifyHash(it) }
             badHashes.forEach { r ->
                 why.put("record_hash_invalid")
@@ -523,8 +566,32 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 .put("verified_batches", verified)
                 .put("usable_evidence_acquisitions", verified)
                 .put("partial_or_empty_batches", partial)
+                .put("duplicate_acquisition_ids", JSONArray().also { a ->
+                    duplicateAcqIds.forEach { a.put(it) } })
                 .put("hash_failure_identifiers", hashFailures)
-                .put("unresolved_record_groups", orphanRecords))
+                .put("unresolved_record_groups", orphanRecords)
+                // what VERIFIED does and does not mean, stated in the artifact itself
+                .put("verified_contract", JSONObject()
+                    .put("supported_record_versions", JSONArray().also { a ->
+                        PremiumObservationContract.SUPPORTED_RECORD_VERSIONS.forEach { a.put(it) } })
+                    .put("supported_envelope_versions", JSONArray().also { a ->
+                        PremiumObservationContract.SUPPORTED_ENVELOPE_VERSIONS.forEach { a.put(it) } })
+                    .put("verified_means",
+                        "INTEGRITY_AND_LINKAGE_UNDER_THIS_CONTRACT_ONLY")
+                    .put("verified_does_not_mean", JSONArray()
+                        .put("valid_or_executable_quotes")
+                        .put("a_usable_forecast_label")
+                        .put("authoritative_lot_resolution")
+                        .put("a_tradeable_contract"))
+                    .put("checks", JSONArray()
+                        .put("record_and_envelope_payload_hashes")
+                        .put("supported_record_and_envelope_versions")
+                        .put("batch_evidence_ref_recomputed_from_records_in_pinned_order")
+                        .put("acquisition_id_recomputed_from_the_envelope_basis")
+                        .put("expected_pinned_key_set_and_no_duplicate_keys")
+                        .put("envelope_session_index_against_the_requested_export")
+                        .put("record_to_envelope_and_cohort_joins")
+                        .put("no_duplicate_envelope_acquisition_ids"))))
             .put("slot_manifest", JSONObject()
                 .put("expected_slots", expected.size)
                 .put("observed_slots", observedSlots.size)

@@ -799,6 +799,204 @@ class PremiumCaptureTest {
         }
     }
 
+    // ───── Commit 1: the verifier recomputes the bindings instead of trusting them ─────
+
+    /** Rewrite a stored file and RE-STAMP it, so its own payload hash is valid again. */
+    private fun rewriteStamped(f: File, mutate: (JSONObject) -> Unit) {
+        val o = JSONObject(f.readText())
+        o.remove(PremiumObservationContract.HASH_OMITTED_FIELD)
+        o.remove("hash_basis")
+        mutate(o)
+        f.writeText(PremiumObservationContract.stampHash(o).toString())
+        assertTrue("the premise: the rewritten object must itself verify",
+            PremiumObservationContract.verifyHash(JSONObject(f.readText())))
+    }
+
+    private fun recordFiles(store: PremiumCaptureStore, session: String, index: String = "NF") =
+        File(store.root, "$session/$index/records").listFiles()!!
+            .filter { it.name.endsWith(".json") }.sortedBy { it.name }
+
+    private fun envelopeFile(store: PremiumCaptureStore, session: String, index: String = "NF") =
+        File(store.root, "$session/$index/envelopes").listFiles()!!
+            .first { it.name.endsWith(".json") }
+
+    private fun firstAcqRow(store: PremiumCaptureStore, session: String, index: String = "NF") =
+        PremiumCaptureSession(store).export(index, session, "09:20", replayContext())
+            .getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+
+    /**
+     * FAILS BEFORE THIS FIX, and Codex demonstrated it by replaying the predicate against my own
+     * previous acceptance artifact: all three of its groups satisfied the old verification
+     * predicate although they carry observation v3 / envelope v2 and **no `batch_evidence_ref`
+     * at all**. The version bump labelled the rows; the verifier never read it. So my claim that
+     * the bump let the verifier distinguish the identity contracts was not supported by the
+     * exporter. Every object here is individually hash-valid.
+     */
+    @Test
+    fun legacyVersionedEvidenceIsRetainedAndIdentifiedButNeverVerified() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        // make the group look exactly like the pre-fix format
+        rewriteStamped(envelopeFile(store, session)) {
+            it.put("record_version", "mr.premium_slot_envelope.v2")
+            it.remove("batch_evidence_ref")
+            it.remove("request_outcome")
+            it.remove("attempt_distinguishable")
+        }
+        recordFiles(store, session).forEach { f ->
+            rewriteStamped(f) { it.put("record_version", "mr.premium_observation.v3") }
+        }
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
+        val row = ex.getJSONObject("acquisitions").getJSONArray("rows").getJSONObject(0)
+        val why = row.getJSONArray("integrity_reasons").toString()
+        assertEquals("UNVERIFIED", row.getString("verified_state"))
+        assertTrue("expected the envelope version to be rejected, got $why",
+            why.contains("unsupported_envelope_version:mr.premium_slot_envelope.v2"))
+        assertTrue("expected the record version to be rejected, got $why",
+            why.contains("unsupported_record_version:mr.premium_observation.v3"))
+        assertTrue("a v2 envelope carries no batch binding, got $why",
+            why.contains("envelope_carries_no_batch_evidence_ref"))
+        assertEquals(0, ex.getJSONObject("acquisitions").getInt("verified_batches"))
+        // retained, not rewritten and not discarded
+        assertEquals(6, ex.getJSONArray("records").length())
+        assertEquals("mr.premium_observation.v3",
+            ex.getJSONArray("records").getJSONObject(0).getString("record_version"))
+        assertEquals(6, ex.getJSONObject("accounting").getInt("records"))
+        assertEquals("the files still verify individually, which is the point",
+            6, ex.getJSONObject("accounting").getInt("hash_verified"))
+        // and the contract the export is verifying against is published
+        val vc = ex.getJSONObject("acquisitions").getJSONObject("verified_contract")
+        assertEquals("INTEGRITY_AND_LINKAGE_UNDER_THIS_CONTRACT_ONLY",
+            vc.getString("verified_means"))
+        assertTrue(vc.getJSONArray("supported_record_versions").toString()
+            .contains(PremiumObservationContract.RECORD_VERSION))
+    }
+
+    /**
+     * A record whose evidence was edited and RE-STAMPED is individually hash-valid and keeps every
+     * join, so only the recomputed batch digest can catch it. Before this fix nothing did.
+     */
+    @Test
+    fun aReStampedRecordWhoseEvidenceChangedBreaksTheRecomputedBatchDigest() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        val victim = recordFiles(store, session).first {
+            JSONObject(it.readText()).optString("outcome") ==
+                PremiumObservationContract.OUTCOME_OBSERVED
+        }
+        rewriteStamped(victim) {
+            it.getJSONObject("iv").getJSONObject("iv_greeks_raw").put("raw", 99.0)
+        }
+        val row = firstAcqRow(store, session)
+        val why = row.getJSONArray("integrity_reasons").toString()
+        assertEquals("UNVERIFIED", row.getString("verified_state"))
+        assertTrue("expected the recomputed batch digest to disagree, got $why",
+            why.contains("batch_evidence_ref_mismatch"))
+        // the stale-hash check cannot be what caught it
+        assertEquals(0, row.getInt("records_with_invalid_hash"))
+        assertEquals("COMPLETE_STRUCTURAL", row.getString("structural_state"))
+    }
+
+    /** A partial group cannot satisfy a COMPLETE-batch binding, and says so explicitly. */
+    @Test
+    fun aPartialGroupCannotBindTheCompleteBatchDigest() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        assertTrue(recordFiles(store, session).first().delete())
+        val why = firstAcqRow(store, session).getJSONArray("integrity_reasons").toString()
+        assertTrue("expected an explicit cannot-bind reason, got $why",
+            why.contains("batch_incomplete_cannot_bind"))
+    }
+
+    /**
+     * An acquisition id that is not derived from its own declared basis. The envelope and all six
+     * records are re-stamped and fully consistent with each other, so only recomputation catches
+     * it.
+     */
+    @Test
+    fun anAcquisitionIdNotDerivedFromItsOwnBasisIsRejected() {
+        val store = tmpStore()
+        val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        val forged = "f".repeat(PremiumObservationContract.REF_HEX_LEN)
+        val envF = envelopeFile(store, session)
+        rewriteStamped(envF) { it.put("acquisition_id", forged) }
+        val newEnvRef = PremiumObservationContract.ref(
+            PremiumObservationContract.contentHash(JSONObject(envF.readText())))
+        recordFiles(store, session).forEach { f ->
+            rewriteStamped(f) {
+                it.put("acquisition_id", forged); it.put("envelope_ref", newEnvRef)
+            }
+        }
+        val row = firstAcqRow(store, session)
+        val why = row.getJSONArray("integrity_reasons").toString()
+        assertEquals(forged, row.getString("acquisition_id"))
+        assertEquals("UNVERIFIED", row.getString("verified_state"))
+        assertTrue("expected the recomputed acquisition id to disagree, got $why",
+            why.contains("acquisition_id_not_derived_from_its_own_basis"))
+        // every join and every individual hash is intact: only recomputation finds this
+        assertEquals("COMPLETE_STRUCTURAL", row.getString("structural_state"))
+        assertEquals(0, row.getInt("records_with_invalid_hash"))
+        assertTrue(row.getBoolean("envelope_hash_verified"))
+        assertEquals(6, row.getInt("observations_linked_to_this_envelope"))
+    }
+
+    /** An envelope must belong to the session and index being exported, not merely to its records. */
+    @Test
+    fun anEnvelopeForeignToTheRequestedSessionOrIndexIsRejected() {
+        for (field in listOf("session_date", "index")) {
+            val store = tmpStore()
+            val (_, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+            val session = snap.getString("session")
+            val foreign = if (field == "session_date") "1999-01-01" else "BNF"
+            rewriteStamped(envelopeFile(store, session)) { it.put(field, foreign) }
+            // the records are rewritten to AGREE with the envelope, so the record-to-envelope
+            // joins all pass and only the envelope-to-request check can catch it
+            val envRef = PremiumObservationContract.ref(PremiumObservationContract.contentHash(
+                JSONObject(envelopeFile(store, session).readText())))
+            recordFiles(store, session).forEach { f ->
+                rewriteStamped(f) { it.put(field, foreign); it.put("envelope_ref", envRef) }
+            }
+            val row = firstAcqRow(store, session)
+            val why = row.getJSONArray("integrity_reasons").toString()
+            assertEquals("UNVERIFIED", row.getString("verified_state"))
+            val expected = if (field == "session_date") "envelope_session_foreign"
+            else "envelope_index_foreign"
+            assertTrue("expected $expected, got $why", why.contains(expected))
+            assertTrue(row.getBoolean("envelope_hash_verified"))
+        }
+    }
+
+    /** Two envelopes claiming one acquisition id are reported, not resolved by map overwrite. */
+    @Test
+    fun duplicateEnvelopeAcquisitionIdsAreReportedRatherThanOverwritten() {
+        val store = tmpStore()
+        val (a, snap) = observeFixture(store, "mon_0920_entry_NF", "NF", "09:20")
+        val session = snap.getString("session")
+        // a second envelope file under a different key, claiming the SAME acquisition id
+        val clone = JSONObject(envelopeFile(store, session).readText())
+        clone.remove(PremiumObservationContract.HASH_OMITTED_FIELD)
+        clone.remove("hash_basis")
+        clone.put("slot", "09:25")
+        assertEquals(PremiumCaptureStore.WRITTEN, store.putEnvelope("NF", session,
+            "forged-duplicate", PremiumObservationContract.stampHash(clone)).status)
+        val ex = PremiumCaptureSession(store).export("NF", session, "09:20", replayContext())
+        val dupes = ex.getJSONObject("acquisitions").getJSONArray("duplicate_acquisition_ids")
+        assertEquals(1, dupes.length())
+        assertEquals(a.acquisitionId, dupes.getString(0))
+        val rows = ex.getJSONObject("acquisitions").getJSONArray("rows")
+        assertEquals("both envelopes must appear", 2, rows.length())
+        for (i in 0 until rows.length()) {
+            assertEquals("UNVERIFIED", rows.getJSONObject(i).getString("verified_state"))
+            assertTrue(rows.getJSONObject(i).getJSONArray("integrity_reasons").toString()
+                .contains("duplicate_envelope_acquisition_id"))
+        }
+        assertEquals(0, ex.getJSONObject("acquisitions").getInt("verified_batches"))
+    }
+
     /** A missing quote is a valid explicit outcome, never an integrity failure. */
     @Test
     fun missingQuotesStayDistinctFromIntegrityFailure() {
