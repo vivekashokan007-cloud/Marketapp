@@ -535,20 +535,83 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          * by content from every envelope that carries a reference.
          */
         val prodAuthRec = store.readLotAuthority(index, sessionDate)
-        val prodAuthRefs = envRead.rows.mapNotNull {
-            it.optJSONObject("lot")?.optString("production_authority_ref")
-                ?.takeIf { r -> r.isNotEmpty() }
-        }.toSet()
         val prodAuthActual = prodAuthRec?.let {
             PremiumObservationContract.ref(PremiumObservationContract.contentHash(it))
         }
-        val prodAuthRefMatches =
-            prodAuthActual != null && prodAuthRefs.isNotEmpty() &&
-                prodAuthRefs.all { it == prodAuthActual }
+        /*
+         * COVERAGE IS PER ACQUISITION AND MUST BE COMPLETE.
+         *
+         * The previous version did `mapNotNull { ... production_authority_ref }` and then asked
+         * whether all REMAINING DISTINCT references matched. An envelope carrying no reference at
+         * all was silently dropped from the set, so one referenced envelope plus one unreferenced
+         * envelope satisfied a whole-session authority claim. Partial coverage is now visible and
+         * disqualifying: every envelope is examined, and a missing reference is a reported gap
+         * rather than an omission.
+         */
+        val prodAuthCoverage = JSONArray()
+        var prodAuthMatched = 0
+        var prodAuthMissingRef = 0
+        var prodAuthMismatched = 0
+        val prodAuthRefs = LinkedHashSet<String>()
+        for (e in envRead.rows) {
+            val ref = e.optJSONObject("lot")?.optString("production_authority_ref")
+                ?.takeIf { r -> r.isNotEmpty() }
+            val state = when {
+                ref == null -> { prodAuthMissingRef++; "NO_AUTHORITY_REFERENCE_RECORDED" }
+                prodAuthActual == null -> { prodAuthMissingRef++; "NO_AUTHORITY_RECORD_TO_MATCH" }
+                ref == prodAuthActual -> { prodAuthMatched++; prodAuthRefs.add(ref); "MATCHED" }
+                else -> { prodAuthMismatched++; prodAuthRefs.add(ref); "REFERENCE_DOES_NOT_MATCH" }
+            }
+            prodAuthCoverage.put(JSONObject()
+                .put("acquisition_id", e.optString("acquisition_id"))
+                .put("slot", e.optString("slot"))
+                .put("production_authority_ref", ref ?: JSONObject.NULL)
+                .put("state", state))
+        }
+        val prodAuthRefMatches = envRead.rows.isNotEmpty() &&
+            prodAuthMatched == envRead.rows.size &&
+            prodAuthMissingRef == 0 && prodAuthMismatched == 0
+
+        /*
+         * AND THE RECORD MUST BELONG TO THIS PINNED CONTEXT.
+         *
+         * The authority is resolved from the REQUEST's expiry, before a cohort is selected or
+         * loaded, and it is first-write-wins. So a record written for one expiry must not grant
+         * authority to a cohort that pinned a different one. The requested context is carried on
+         * the record for exactly this check; if it is absent (an older record) the context cannot
+         * be confirmed and authority does not hold.
+         */
+        val pinnedExpiry = loaded.cohort?.optString("expiry")?.takeIf { it.isNotEmpty() }
+        val authCtxIndex = prodAuthRec?.optString("requested_index")?.takeIf { it.isNotEmpty() }
+        val authCtxSession = prodAuthRec?.optString("requested_session_date")
+            ?.takeIf { it.isNotEmpty() }
+        val authCtxExpiry = prodAuthRec?.optString("requested_expiry")?.takeIf { it.isNotEmpty() }
+        val authCtxReasons = JSONArray()
+        if (prodAuthRec != null) {
+            if (authCtxIndex == null || authCtxSession == null)
+                authCtxReasons.put("authority_record_states_no_requested_context")
+            else {
+                if (authCtxIndex != index) authCtxReasons.put("authority_index_differs")
+                if (authCtxSession != sessionDate) authCtxReasons.put("authority_session_differs")
+            }
+            if (pinnedExpiry != null && authCtxExpiry != null && authCtxExpiry != pinnedExpiry)
+                authCtxReasons.put("authority_expiry_differs_from_pinned_cohort")
+            if (pinnedExpiry != null && authCtxExpiry == null)
+                authCtxReasons.put("authority_record_states_no_expiry_to_compare")
+            if (prodAuthRec.optBoolean("lot_conflict", false))
+                authCtxReasons.put("authority_record_reports_lot_conflict")
+            val tv = prodAuthRec.optString("lot_table_version")
+            if (tv.isEmpty()) authCtxReasons.put("authority_record_states_no_table_version")
+            else if (tv != ContractLotTable.VERSION_ID)
+                authCtxReasons.put("authority_table_version_differs_from_current")
+        }
+        val prodAuthContextAgrees = prodAuthRec != null && authCtxReasons.length() == 0
+
         val productionLotAuthoritative = prodAuthRec != null &&
             prodAuthRec.optBoolean("resolved", false) &&
             prodAuthRec.optBoolean("authoritative", false) &&
-            prodAuthRefMatches
+            !prodAuthRec.optBoolean("lot_conflict", false) &&
+            prodAuthRefMatches && prodAuthContextAgrees
 
         /**
          * Metadata PRESENCE is not reference resolution. A supplied object is only ever reported
@@ -630,8 +693,36 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                         .put("resolved", prodAuthRec?.optBoolean("resolved", false) ?: false)
                         .put("authoritative",
                             prodAuthRec?.optBoolean("authoritative", false) ?: false)
+                        .put("lot_conflict", prodAuthRec?.optBoolean("lot_conflict", false)
+                            ?: false)
                         .put("authority_holds", productionLotAuthoritative)
-                        .put("is_the_applications_own_contract_table", true)
+                        // per-acquisition coverage, including the gaps. A whole-session claim
+                        // requires EVERY envelope to be covered; a missing reference is reported
+                        // rather than dropped from the comparison.
+                        .put("coverage", JSONObject()
+                            .put("envelopes", envRead.rows.size)
+                            .put("matched", prodAuthMatched)
+                            .put("missing_reference", prodAuthMissingRef)
+                            .put("reference_mismatched", prodAuthMismatched)
+                            .put("complete", prodAuthRefMatches)
+                            .put("per_acquisition", prodAuthCoverage))
+                        // the pinned context this authority was checked against
+                        .put("pinned_context", JSONObject()
+                            .put("pinned_expiry", pinnedExpiry ?: JSONObject.NULL)
+                            .put("authority_requested_index", authCtxIndex ?: JSONObject.NULL)
+                            .put("authority_requested_session_date",
+                                authCtxSession ?: JSONObject.NULL)
+                            .put("authority_requested_expiry", authCtxExpiry ?: JSONObject.NULL)
+                            .put("current_table_version", ContractLotTable.VERSION_ID)
+                            .put("agrees", prodAuthContextAgrees)
+                            .put("reasons", authCtxReasons))
+                        // A neutral block-kind label when there is no record: a constant `true`
+                        // here asserted a property of something absent.
+                        .put("block_kind", if (prodAuthRec != null)
+                            "THE_APPLICATIONS_OWN_CONTRACT_LOT_TABLE"
+                        else "NO_AUTHORITY_RECORD_PRESENT")
+                        .put("is_the_applications_own_contract_table",
+                            if (prodAuthRec != null) true else JSONObject.NULL)
                         .put("generic_supplied_table_substituted", false)
                 })
                 .put("instrument_map", refBlock(mapRefs, mapObject,

@@ -70,19 +70,45 @@ object PremiumExportSection {
             var any = false
             var torn = false
             for (idx in listOf("NF", "BNF")) {
-                val beforeBytes = store.sessionBytes(idx, date)
-                val beforeCount = store.outcomeCount(idx, date)
-                if (store.readCohortText(idx, date) == null && beforeCount == 0) {
+                if (store.readCohortText(idx, date) == null &&
+                    store.outcomeCount(idx, date) == 0) {
                     section.getJSONObject("indices").put(idx,
                         JSONObject().put("state", "NO_PREMIUM_DATA_FOR_THIS_INDEX"))
                     continue
                 }
-                val ex = session.export(idx, date, null, deviceContext())
-                val consistent = store.sessionBytes(idx, date) == beforeBytes &&
-                    store.outcomeCount(idx, date) == beforeCount
+                /*
+                 * A MONOTONIC GENERATION, not a size/count comparison.
+                 *
+                 * The old check compared session bytes and record counts before and after
+                 * assembly, which cannot see an equal-size summary replacement or any content
+                 * replacement that leaves both numbers unchanged — so `view_consistent=true` was
+                 * a stronger claim than the evidence supported. The store now bumps a generation
+                 * on EVERY mutation, so any interleaved write is visible whatever it did to the
+                 * totals.
+                 *
+                 * Bounded retry, and no lock: the reader never holds the store's write lock
+                 * across assembly, so a long export cannot block a capture write and therefore
+                 * cannot reach the poll thread through it. If a consistent view cannot be
+                 * obtained within the attempts allowed, the result SAYS so instead of being
+                 * labelled consistent.
+                 */
+                var ex: JSONObject? = null
+                var consistent = false
+                var attempts = 0
+                while (attempts < CONSISTENCY_ATTEMPTS) {
+                    attempts++
+                    val before = store.generation()
+                    val built = session.export(idx, date, null, deviceContext())
+                    if (store.generation() == before) { ex = built; consistent = true; break }
+                    ex = built
+                }
+                val out = ex ?: JSONObject().put("state", "PREMIUM_SECTION_ERROR")
                 if (!consistent) torn = true
-                ex.put("view_consistent", consistent)
-                section.getJSONObject("indices").put(idx, ex)
+                out.put("view_consistent", consistent)
+                    .put("view_consistency_basis", "STORE_WRITE_GENERATION_UNCHANGED_ACROSS_READ")
+                    .put("view_attempts", attempts)
+                if (!consistent) out.put("view_state", "CONCURRENT_CAPTURE_WRITE_NOT_A_STABLE_VIEW")
+                section.getJSONObject("indices").put(idx, out)
                 any = true
             }
             section.put("state", if (any) "PRESENT" else "NO_PREMIUM_DATA")
@@ -96,9 +122,16 @@ object PremiumExportSection {
         }
     }
 
+    const val CONSISTENCY_ATTEMPTS = 3
+
     /**
      * Reduce the section in DECLARED stages, dropping whole fields, so nothing is truncated
      * mid-value and nothing is dropped silently.
+     *
+     * NO LONGER USED BY [mergeWithinCap], which now preserves the section whole or refuses. Kept
+     * only as the mechanism a future, explicitly-typed summary-only output would build on; it is
+     * not a path any current export takes, and nothing calls it to make an over-cap export look
+     * like a normal one.
      */
     fun reduce(section: JSONObject, stage: Int): JSONObject {
         val reduced = JSONObject(section.toString())
@@ -142,18 +175,26 @@ object PremiumExportSection {
      * Merge and fit. Returns the final bytes to save, the declared reduction stage reached, and
      * whether it is still over the cap — in which case the caller must refuse rather than save.
      */
+    /**
+     * Splice within the already-authorised combined limit, **preserving the premium section whole
+     * or refusing**.
+     *
+     * This used to reduce in stages — dropping records, then envelopes, then
+     * cohort/references/conflicts — while leaving the verified/usable counts and the
+     * `PRESENT`/`has_data` claims untouched. The reduction was declared inside the JSON, but the
+     * bridge still reported ordinary success, so a caller could receive what looked like a full
+     * export whose removed groups could no longer be verified offline while the document still
+     * counted them as usable. Dropping evidence to fit and then describing the result as a normal
+     * export is the kind of quiet downgrade this whole contract exists to prevent.
+     *
+     * So there is no reduction here. Either the complete section fits under the existing limit, or
+     * `overCap` is true and the caller refuses. The limit is NOT raised and old parts are never
+     * truncated. `stage` remains 0 and is kept only so the result shape is stable for callers.
+     */
     fun mergeWithinCap(bundle: String, bundleBytes: ByteArray, section: JSONObject): Merged {
-        var use = section
-        var merged = splice(bundle, use)
-        var bytes = merged?.toByteArray(Charsets.UTF_8) ?: bundleBytes
-        var stage = 0
-        while (merged != null && bytes.size > COMBINED_CAP_BYTES && stage < 3) {
-            stage++
-            use = reduce(section, stage)
-            merged = splice(bundle, use)
-            bytes = merged?.toByteArray(Charsets.UTF_8) ?: bundleBytes
-        }
-        return Merged(bytes, stage, merged != null, bytes.size > COMBINED_CAP_BYTES)
+        val merged = splice(bundle, section)
+        val bytes = merged?.toByteArray(Charsets.UTF_8) ?: bundleBytes
+        return Merged(bytes, 0, merged != null, bytes.size > COMBINED_CAP_BYTES)
     }
 
     /** The premium-only payload, for a date the brain bundle has nothing for. */

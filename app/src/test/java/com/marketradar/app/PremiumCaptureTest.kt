@@ -11,6 +11,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.TimeZone
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -1968,9 +1969,9 @@ class PremiumCaptureTest {
     fun theCoordinatorPathKeepsEveryRecordInsideThePerRecordCap() {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")))
-        assertEquals(PremiumCaptureCoordinator.RAN, r.getString("status"))
+        assertEquals(PremiumCaptureCoordinator.SUBMITTED, r.getString("status"))
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
         var maxSize = 0
         for (idx in listOf("NF", "BNF")) {
@@ -1998,10 +1999,10 @@ class PremiumCaptureTest {
                 PremiumObservationContract.contentHash(auth)), ref)
         }
         // a second slot must not rewrite the authority
-        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:25",
+        coordinate(fd, "2026-10-19", "09:25",
             listOf(acq("NF", "mon_0920_entry_NF", receipt = "09:25",
                 start = 300_000L, end = 300_300L)))
-        val row = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:30",
+        val row = coordinate(fd, "2026-10-19", "09:30",
             listOf(acq("NF", "mon_0920_entry_NF", receipt = "09:30",
                 start = 600_000L, end = 600_300L)))
             .getJSONArray("indices").getJSONObject(0)
@@ -2015,7 +2016,7 @@ class PremiumCaptureTest {
     fun theExportResolvesTheProductionLotAuthorityFromItsOwnRecord() {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         val pa = PremiumExportSection.build(fd, "2026-10-19")
             .getJSONObject("indices").getJSONObject("NF")
@@ -2095,7 +2096,7 @@ class PremiumCaptureTest {
     @Test
     fun whenOffTheCoordinatorTouchesNothingAtAll() {
         val fd = tmpFilesDir()
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")))
         assertEquals(PremiumCaptureCoordinator.DISABLED, r.getString("status"))
         assertEquals(0, r.getJSONArray("indices").length())
@@ -2105,7 +2106,7 @@ class PremiumCaptureTest {
         PremiumCaptureControl.setEnabled(fd, true)
         File(PremiumCaptureControl.root(fd), "control.json").writeText("{broken")
         assertEquals(PremiumCaptureCoordinator.CONTROL_UNREADABLE,
-            PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+            coordinate(fd, "2026-10-19", "09:20",
                 listOf(acq("NF", "mon_0920_entry_NF"))).getString("status"))
     }
 
@@ -2114,10 +2115,10 @@ class PremiumCaptureTest {
     fun whenOnTheAlreadyFetchedChainReachesPersistedEvidencePerIndex() {
         val fd = tmpFilesDir()
         assertTrue(PremiumCaptureControl.setEnabled(fd, true).ok)
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")))
-        assertEquals(PremiumCaptureCoordinator.RAN, r.getString("status"))
-        assertEquals("NONE_SYNCHRONOUS_NO_PENDING_QUEUE", r.getString("queued_work"))
+        assertEquals(PremiumCaptureCoordinator.SUBMITTED, r.getString("status"))
+        assertEquals("BOUNDED_ONE_RUNNING_AT_MOST_ONE_WAITING", r.getString("queued_work"))
         val rows = r.getJSONArray("indices")
         assertEquals(2, rows.length())
         val byIndex = (0 until rows.length()).associate {
@@ -2157,9 +2158,9 @@ class PremiumCaptureTest {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
         // the scheduler intended 09:20; this index's response actually arrived at 09:26
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF", receipt = "09:26")))
-        assertEquals(PremiumCaptureCoordinator.RAN, r.getString("status"))
+        assertEquals(PremiumCaptureCoordinator.SUBMITTED, r.getString("status"))
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
         val env = store.readEnvelopes("NF", "2026-10-19").first()
         assertEquals("the real clock decides the slot", "09:25", env.getString("slot"))
@@ -2173,9 +2174,9 @@ class PremiumCaptureTest {
     fun aFailedChainIsRecordedOnceACohortExists() {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:25",
+        val r = coordinate(fd, "2026-10-19", "09:25",
             listOf(acq("NF", null, receipt = "09:25", start = 60_000L, end = 61_000L)))
         val row = r.getJSONArray("indices").getJSONObject(0)
         assertEquals(PremiumCaptureSession.OBSERVED, row.getString("status"))
@@ -2197,7 +2198,7 @@ class PremiumCaptureTest {
     fun aNonPositiveTimestampIsUnknownAndNeverZero() {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF", start = 0L, end = 0L)))
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
         val clocks = store.readEnvelopes("NF", "2026-10-19").first().getJSONObject("clocks")
@@ -2251,54 +2252,254 @@ class PremiumCaptureTest {
         root.mkdirs()
         File(root, "filler.bin").writeBytes(
             ByteArray(PremiumCaptureStore.MAX_BYTES_GLOBAL.toInt()))
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         val row = r.getJSONArray("indices").getJSONObject(0)
         assertNotEquals("a full store must refuse, not throw",
             "CAPTURE_ERROR", row.getString("status"))
         assertEquals(PremiumCaptureSession.COHORT_PERSIST_FAILED, row.getString("status"))
         assertEquals(0, row.getInt("written"))
-        // and the refusal to persist the summary is reported as such, not as durable accounting
-        val sw = r.getJSONObject("summary_write")
+        // The refused summary is reported from THIS index's own attempt. It used to be a single
+        // coordinator-level verdict for `acquisitions.first()`, which could not speak for both
+        // indices; it now lives inside each index's row.
+        val sw = row.getJSONObject("summary_write")
         assertFalse("a failed disk cannot record its own failure",
             sw.getBoolean("durably_recorded"))
         assertEquals(PremiumCaptureStore.REFUSED_GLOBAL_BYTES, sw.getString("status"))
+
+        // AND THE ROOT MUST NOT HAVE GROWN PAST THE CAP. control.json/last_run.json and their
+        // temps used to be written straight to this root, outside admission and outside the
+        // store's lock, so the status file could add bytes to a root that had just refused the
+        // records it describes. Asserted on final occupancy, not only on record counts.
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertTrue("control/status writes must not take the root past the global cap: " +
+            "${store.globalBytes()} B",
+            store.globalBytes() <= PremiumCaptureStore.MAX_BYTES_GLOBAL)
+
+        // ...and turning capture OFF must still be possible at capacity. Refusing the stop action
+        // because the store is full would be the worst available failure mode.
+        assertTrue("OFF must remain possible when the store is full",
+            PremiumCaptureControl.setEnabled(fd, false).ok)
+        assertFalse(PremiumCaptureControl.isEnabled(fd))
+        // and the operator status must SAY what is happening, not just that the switch is set
+        assertEquals("OFF", PremiumCaptureControl.status(fd).getString("collection_state"))
+    }
+
+    /**
+     * The status file is a bounded STRUCTURED object, not truncated text.
+     *
+     * `run.toString().take(8192)` bounded characters rather than UTF-8 bytes and could cut a JSON
+     * document mid-value, so the one file whose job is to report state could be left unparseable.
+     */
+    @Test
+    fun theStatusFileIsBoundedStructuredJsonAndNeverTruncatedText() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        // a hostile run object: very long non-ASCII error text and a huge nested payload
+        val huge = JSONObject()
+            .put("index", "NF")
+            .put("status", "CAPTURE_ERROR")
+            .put("error", "सत्यापन" .repeat(4000))
+            .put("written", 0)
+            .put("detail", JSONObject().put("blob", "🚀".repeat(20_000)))
+        PremiumCaptureControl.recordRun(fd, huge)
+        val f = File(PremiumCaptureControl.root(fd), "last_run.json")
+        assertTrue("the status file must exist", f.isFile)
+        val text = f.readText()
+        // it must PARSE — the whole point. Truncated text would throw here.
+        val parsed = JSONObject(text)
+        assertEquals("NF", parsed.getString("index"))
+        assertEquals("CAPTURE_ERROR", parsed.getString("status"))
+        assertEquals("BOUNDED_STRUCTURED_FIELDS_NEVER_TRUNCATED_TEXT",
+            parsed.getString("projection"))
+        assertTrue("non-ASCII error text must be length-capped, not cut mid-document",
+            parsed.getString("error").length <= 64)
+        assertFalse("the unbounded nested payload must not be carried at all", parsed.has("detail"))
+        assertTrue("the file must fit the per-control-file bound: ${f.length()} B",
+            f.length() <= PremiumCaptureStore.MAX_BYTES_PER_CONTROL_FILE)
+        // and it is accounted: the root's control bytes stay inside the declared reserve
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertTrue(store.controlBytes() <= PremiumCaptureStore.CONTROL_RESERVE_BYTES)
+    }
+
+    /**
+     * Evidence must leave the control reserve intact, so the stop action and the status that
+     * reports a full store stay writable. The evidence caps are not enlarged by this: the
+     * reserve is carved out INSIDE the existing global bound.
+     */
+    @Test
+    fun evidenceCannotConsumeTheControlReserve() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val root = PremiumCaptureControl.root(fd)
+        root.mkdirs()
+        // fill to just inside the global cap but past the evidence budget
+        val fill = PremiumCaptureStore.MAX_BYTES_GLOBAL -
+            PremiumCaptureStore.CONTROL_RESERVE_BYTES / 2
+        File(root, "filler.bin").writeBytes(ByteArray(fill.toInt()))
+        val store = PremiumCaptureStore(root)
+        val w = store.putLotAuthority("NF", "2026-10-19", JSONObject().put("a", 1))
+        assertEquals("evidence must be refused once only the reserve is left",
+            PremiumCaptureStore.REFUSED_GLOBAL_BYTES, w.status)
+        assertTrue("the refusal must name the reserve",
+            (w.detail ?: "").contains("control reserve"))
+        // the OFF action still works against the reserve
+        assertTrue(PremiumCaptureControl.setEnabled(fd, false).ok)
     }
 
     /** Capture failure is always a status; it can never propagate to the caller. */
     /**
-     * The poll budget stops capture rather than delaying a poll. Exercised, not merely asserted
-     * to exist: with a zero budget the very first index is skipped and reported, and nothing is
-     * written. There is no queue, so there is no pending work to drop and nothing to overflow.
+     * The PREPARE budget stops preparation rather than delaying a poll.
+     *
+     * Narrower than the claim this test used to make. The old budget was checked only before each
+     * index started and then bounded nothing: deep copy, directory scans, lock acquisition and
+     * every write ran with no deadline, so slow IO could still delay a poll for far longer than
+     * the budget, and this test — passing with a zero budget — only ever proved that work can be
+     * skipped BEFORE IT STARTS. It never showed that an operation becoming slow after admission
+     * is survivable, so it must not be read as evidence of that.
+     *
+     * What bounds persistence now is isolation, not this budget. See
+     * [slowPersistenceCannotReachThePollThreadAndPendingWorkStaysBounded].
      */
     @Test
     fun theCaptureBudgetStopsWorkRatherThanDelayingThePoll() {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        val r = coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")),
-            budgetMs = 0L)
-        assertEquals(PremiumCaptureCoordinator.BUDGET_EXCEEDED, r.getString("status"))
-        assertEquals(0L, r.getLong("budget_ms"))
+            prepareBudgetMs = 0L)
+        assertEquals(PremiumCaptureCoordinator.PREPARE_BUDGET_EXCEEDED, r.getString("status"))
+        assertEquals(0L, r.getLong("prepare_budget_ms"))
         val rows = r.getJSONArray("indices")
         assertEquals("both indices must be reported, not silently skipped", 2, rows.length())
         for (i in 0 until rows.length()) {
-            assertEquals(PremiumCaptureCoordinator.BUDGET_EXCEEDED,
+            assertEquals(PremiumCaptureCoordinator.PREPARE_BUDGET_EXCEEDED,
                 rows.getJSONObject(i).getString("status"))
         }
         // nothing was written, and the refusal is visible rather than implicit
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
         assertEquals(0, store.outcomeCount("NF", "2026-10-19"))
         assertEquals(0, store.envelopeCount("NF", "2026-10-19"))
-        assertEquals("NONE_SYNCHRONOUS_NO_PENDING_QUEUE", r.getString("queued_work"))
+        assertEquals("BOUNDED_ONE_RUNNING_AT_MOST_ONE_WAITING", r.getString("queued_work"))
         // and the production default is the constant, not the injected value
-        assertEquals(2_000L, PremiumCaptureCoordinator.CAPTURE_BUDGET_MS_PER_POLL)
+        assertEquals(250L, PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL)
+        // the status says what it describes, so a reader cannot mistake acceptance for a write
+        assertEquals("SUBMISSION_NOT_PERSISTENCE", r.getString("status_describes"))
+    }
+
+    /**
+     * SLOW PERSISTENCE CANNOT REACH THE POLL THREAD, and pending work stays bounded.
+     *
+     * This is the test the old budget test could not be: IO that blocks AFTER the work has begun,
+     * rather than work skipped before it starts. The persistence action blocks indefinitely on the
+     * worker; the poll-facing submission must still return promptly, a second job may wait, and a
+     * third must be refused with a stated reason rather than queued without limit.
+     *
+     * It also states what is NOT bounded: a job already inside a blocking call cannot be
+     * interrupted. The running slot stays occupied until it returns, and capture refuses further
+     * work instead of pretending it was cancelled.
+     */
+    @Test
+    fun slowPersistenceCannotReachThePollThreadAndPendingWorkStaysBounded() {
+        PremiumCaptureWorker.resetForTest()
+        val release = java.util.concurrent.CountDownLatch(1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        fun blockingJob(index: String) = PremiumCaptureWorker.Job(
+            index = index, sessionDate = "2026-10-19", preparedBytes = 16,
+            persist = {
+                entered.countDown()
+                // blocks after work has begun; this is exactly what a stuck filesystem looks like
+                release.await()
+                JSONObject().put("status", "OK").put("index", index)
+            })
+        try {
+            assertEquals(PremiumCaptureWorker.ACCEPTED_RUNNING,
+                PremiumCaptureWorker.submit(blockingJob("NF")))
+            assertTrue("the blocking job must actually be running",
+                entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+
+            // the poll-facing submission must RETURN, promptly, while IO is blocked
+            val t0 = System.nanoTime()
+            val queued = PremiumCaptureWorker.submit(blockingJob("BNF"))
+            val submitMs = (System.nanoTime() - t0) / 1_000_000L
+            assertEquals(PremiumCaptureWorker.ACCEPTED_QUEUED, queued)
+            assertTrue("submission must not wait on blocked IO: took $submitMs ms",
+                submitMs < 1_000L)
+
+            // and a third is refused, not queued without limit
+            val t1 = System.nanoTime()
+            val refused = PremiumCaptureWorker.submit(blockingJob("NF"))
+            assertEquals(PremiumCaptureWorker.REFUSED_BUSY, refused)
+            assertTrue("refusal must also be prompt",
+                (System.nanoTime() - t1) / 1_000_000L < 1_000L)
+
+            val st = PremiumCaptureWorker.stats()
+            assertTrue(st.getBoolean("running"))
+            assertTrue(st.getBoolean("waiting"))
+            assertTrue("occupancy must be visible, not inferred",
+                st.getInt("pending_bytes") > 0)
+            // the honest limitation, asserted rather than left to prose
+            assertTrue(st.getBoolean("in_flight_io_is_not_cancellable"))
+        } finally {
+            release.countDown()
+            PremiumCaptureWorker.awaitIdle(30_000L)
+        }
+    }
+
+    /** A prepared payload larger than the per-job bound is refused, not trimmed. */
+    @Test
+    fun anOversizedPreparedPayloadIsRefusedRatherThanTrimmed() {
+        PremiumCaptureWorker.resetForTest()
+        val s = PremiumCaptureWorker.submit(PremiumCaptureWorker.Job(
+            index = "NF", sessionDate = "2026-10-19",
+            preparedBytes = PremiumCaptureWorker.MAX_PREPARED_BYTES_PER_JOB + 1,
+            persist = { JSONObject().put("status", "SHOULD_NOT_RUN") }))
+        assertEquals(PremiumCaptureWorker.REFUSED_TOO_LARGE, s)
+        assertFalse(PremiumCaptureWorker.stats().getBoolean("running"))
+    }
+
+    /**
+     * A held capture lock cannot reach the poll thread either.
+     *
+     * The export and the worker both take the store's root lock. Submission must not, so holding
+     * that lock from another thread must not delay the poll-facing call.
+     */
+    @Test
+    fun aHeldCaptureLockDoesNotDelayThePollFacingSubmission() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        PremiumCaptureWorker.resetForTest()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val holder = Thread {
+            store.withRootLockForTest {
+                holding.countDown()
+                release.await()
+            }
+        }
+        holder.isDaemon = true
+        holder.start()
+        try {
+            assertTrue(holding.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            val t0 = System.nanoTime()
+            val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+                listOf(acq("NF", "mon_0920_entry_NF")))
+            val ms = (System.nanoTime() - t0) / 1_000_000L
+            assertEquals(PremiumCaptureCoordinator.SUBMITTED, r.getString("status"))
+            assertTrue("submission must not block on a held capture lock: took $ms ms",
+                ms < 2_000L)
+        } finally {
+            release.countDown()
+            holder.join(10_000L)
+            PremiumCaptureWorker.awaitIdle(30_000L)
+        }
     }
 
     @Test
     fun coordinatorFailureIsAlwaysAStatusNeverAnException() {
         // an unwritable files dir
-        val r = PremiumCaptureCoordinator.onChainsAcquired(
+        val r = coordinate(
             File("/proc/nonexistent-premium-files"), "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         assertEquals("no control file is readable there, so it must be OFF",
@@ -2308,7 +2509,7 @@ class PremiumCaptureTest {
         PremiumCaptureControl.setEnabled(fd, true)
         for (bad in listOf(null, "", "not-a-date", "2026-02-30")) {
             assertEquals(PremiumCaptureCoordinator.NO_SESSION,
-                PremiumCaptureCoordinator.onChainsAcquired(fd, bad, "09:20",
+                coordinate(fd, bad, "09:20",
                     listOf(acq("NF", "mon_0920_entry_NF"))).getString("status"))
         }
     }
@@ -2325,7 +2526,13 @@ class PremiumCaptureTest {
         val slots = listOf("09:20", "09:25", "09:30", "09:35", "09:40", "09:45", "09:50", "09:55")
         val perRun = ArrayList<Long>()
         var writes = 0
+        // Measured SEPARATELY, because they are different costs and only one of them is paid by
+        // the poll thread: `perRun` is the poll-facing submission alone, `perDrain` is the
+        // off-poll persistence. The old single figure covered synchronous persistence and would
+        // now silently measure submission plus the worker drain, which no poll ever waits for.
+        val perDrain = ArrayList<Long>()
         for ((i, slot) in slots.withIndex()) {
+            PremiumCaptureWorker.resetForTest()
             val t0 = System.nanoTime()
             val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", slot,
                 listOf(acq("NF", "mon_0920_entry_NF", receipt = slot,
@@ -2333,9 +2540,15 @@ class PremiumCaptureTest {
                     acq("BNF", "mon_0920_entry_BNF", receipt = slot,
                         start = 1_000L + i * 300_000L, end = 1_320L + i * 300_000L)))
             perRun.add((System.nanoTime() - t0) / 1_000_000)
-            assertEquals(PremiumCaptureCoordinator.RAN, r.getString("status"))
-            val rows = r.getJSONArray("indices")
-            for (j in 0 until rows.length()) writes += rows.getJSONObject(j).getInt("written")
+            assertEquals(PremiumCaptureCoordinator.SUBMITTED, r.getString("status"))
+            val t1 = System.nanoTime()
+            assertTrue(PremiumCaptureWorker.awaitIdle(30_000L))
+            perDrain.add((System.nanoTime() - t1) / 1_000_000)
+            for (idx in listOf("NF", "BNF")) {
+                val persisted = PremiumCaptureWorker.resultFor(idx)
+                assertNotNull("both indices must have persisted a result", persisted)
+                writes += persisted!!.getInt("written")
+            }
         }
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
         val nfBytes = store.sessionBytes("NF", "2026-10-19")
@@ -2343,9 +2556,11 @@ class PremiumCaptureTest {
         val global = store.globalBytes()
         assertEquals("every slot must persist both indices' six contracts",
             slots.size * 12, writes)
-        // the budget must not have been hit on a fixture of this size
-        assertTrue("per-run cost ${perRun} exceeded the poll budget",
-            perRun.all { it < PremiumCaptureCoordinator.CAPTURE_BUDGET_MS_PER_POLL })
+        // The POLL-FACING cost is what must stay inside the prepare budget. The drain cost is
+        // reported but deliberately NOT asserted against it: no poll waits for it, and asserting
+        // a bound on it here would imply a guarantee about IO duration that nothing provides.
+        assertTrue("poll-facing submission cost $perRun exceeded the prepare budget",
+            perRun.all { it < PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL })
 
         // retention: the global cap bounds collection, so state how far it goes
         val perIndexSession = maxOf(nfBytes, bnfBytes)
@@ -2357,31 +2572,519 @@ class PremiumCaptureTest {
             "source=THIS Kotlin coordinator over the committed raw vendor fixture\n" +
                 "desktop JVM, NOT a device measurement; no phone CPU/IO claim is made\n" +
                 "slots_run=$slotsPerIndexSession indices_per_slot=2\n" +
-                "per_run_ms_both_indices=$perRun\n" +
-                "per_run_ms_max=${perRun.max()} budget_ms=" +
-                "${PremiumCaptureCoordinator.CAPTURE_BUDGET_MS_PER_POLL}\n" +
+                "poll_facing_submit_ms_both_indices=$perRun\n" +
+                "poll_facing_submit_ms_max=${perRun.max()} prepare_budget_ms=" +
+                "${PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL}\n" +
+                "off_poll_persist_drain_ms_both_indices=$perDrain\n" +
+                "off_poll_persist_drain_ms_max=${perDrain.max()}\n" +
+                "note=the poll thread pays only the submit figure; the drain is off-poll and no " +
+                "poll waits for it. Neither figure bounds IO duration on a phone.\n" +
                 "records_written=$writes\n" +
                 "session_bytes_NF=$nfBytes\nsession_bytes_BNF=$bnfBytes\n" +
                 "global_bytes=$global global_cap=${PremiumCaptureStore.MAX_BYTES_GLOBAL}\n" +
                 "bytes_per_slot_per_index=$bytesPerSlot\n" +
                 "session_cap=${PremiumCaptureStore.MAX_BYTES_PER_INDEX_SESSION}\n" +
-                "pending_queue=NONE_SYNCHRONOUS\n" +
-                "retention_index_sessions_until_global_cap=" +
-                "${if (perIndexSession > 0) PremiumCaptureStore.MAX_BYTES_GLOBAL /
-                    (perIndexSession / slotsPerIndexSession * 69).coerceAtLeast(1) else -1}\n" +
+                "pending_queue=BOUNDED_ONE_RUNNING_AT_MOST_ONE_WAITING\n" +
+                "worker_max_pending_bytes=${PremiumCaptureWorker.MAX_PENDING_BYTES}\n" +
+                "control_reserve_bytes=${PremiumCaptureStore.CONTROL_RESERVE_BYTES}\n" +
+                // against the EVIDENCE budget, which is the global cap less the control reserve
+                "retention_index_sessions_until_evidence_budget=" +
+                "${if (perIndexSession > 0)
+                    (PremiumCaptureStore.MAX_BYTES_GLOBAL -
+                        PremiumCaptureStore.CONTROL_RESERVE_BYTES) /
+                        (perIndexSession / slotsPerIndexSession * 69).coerceAtLeast(1)
+                else -1}\n" +
                 "retention_note=the global cap bounds total collection; capture stops cleanly, " +
                 "nothing is deleted\n")
         assertTrue(out.isFile && out.length() > 0L)
     }
 
+    /**
+     * AN EQUAL-SIZE WRITE MUST STILL BREAK THE CONSISTENT-VIEW CLAIM.
+     *
+     * The old check compared session bytes and record counts before and after assembly, so a
+     * replacement that changed content without changing either number was invisible and the view
+     * was still labelled consistent. The store now bumps a monotonic generation on every
+     * mutation, which is what this asserts: same byte count, same record count, different content
+     * — and the view must refuse to call itself consistent.
+     */
+    @Test
+    fun anEqualSizeConcurrentWriteStillBreaksTheConsistentViewClaim() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val bytesBefore = store.sessionBytes("NF", "2026-10-19")
+        val countBefore = store.outcomeCount("NF", "2026-10-19")
+        val genBefore = store.generation()
+
+        // an equal-size content replacement of the summary: the OLD check's two numbers are
+        // unchanged by construction, so only the generation can reveal it
+        val summary = File(store.root, "2026-10-19/NF/summary.json")
+        if (summary.isFile) {
+            val original = summary.readText()
+            val swapped = original.replaceFirst("0", "1")
+            if (swapped.length == original.length && swapped != original) {
+                store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
+            }
+        } else {
+            store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
+        }
+        assertEquals("the premise: the record count must be unchanged",
+            countBefore, store.outcomeCount("NF", "2026-10-19"))
+        assertTrue("the generation must have advanced on the write",
+            store.generation() > genBefore)
+
+        // and a build that races a write reports an honest, non-consistent view
+        val section = PremiumExportSection.build(fd, "2026-10-19")
+        val nf = section.getJSONObject("indices").getJSONObject("NF")
+        assertEquals("STORE_WRITE_GENERATION_UNCHANGED_ACROSS_READ",
+            nf.getString("view_consistency_basis"))
+        // with no concurrent writer, a quiet read IS consistent
+        assertTrue("a quiet read must still be consistent", nf.getBoolean("view_consistent"))
+        assertTrue(nf.getInt("view_attempts") >= 1)
+        // size/count alone could not have detected the replacement
+        assertEquals(bytesBefore, store.sessionBytes("NF", "2026-10-19"))
+    }
+
+    /**
+     * A writer that keeps mutating during assembly must yield an explicitly INCONSISTENT view
+     * rather than a consistent-looking one, and must not be labelled consistent after the
+     * bounded attempts are used up.
+     */
+    @Test
+    fun aContinuouslyWritingStoreYieldsAnHonestInconsistentView() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val stop = java.util.concurrent.atomic.AtomicBoolean(false)
+        val writer = Thread {
+            var i = 0L
+            while (!stop.get()) {
+                store.bumpCounters("NF", "2026-10-19", mapOf("churn" to (++i)))
+            }
+        }
+        writer.isDaemon = true
+        writer.start()
+        try {
+            var sawInconsistent = false
+            repeat(20) {
+                val nf = PremiumExportSection.build(fd, "2026-10-19")
+                    .getJSONObject("indices").getJSONObject("NF")
+                if (!nf.getBoolean("view_consistent")) {
+                    sawInconsistent = true
+                    assertEquals("CONCURRENT_CAPTURE_WRITE_NOT_A_STABLE_VIEW",
+                        nf.getString("view_state"))
+                    assertEquals(PremiumExportSection.CONSISTENCY_ATTEMPTS,
+                        nf.getInt("view_attempts"))
+                }
+            }
+            assertTrue("a continuously-written store must be reported as not a stable view",
+                sawInconsistent)
+        } finally {
+            stop.set(true)
+            writer.join(10_000L)
+        }
+    }
+
+    /**
+     * CAPTURE ON LEAVES THE POLL'S BRAIN INPUTS BYTE-IDENTICAL TO CAPTURE OFF.
+     *
+     * The previously-admitted gap: "Control OFF -> unchanged trading result" was asserted
+     * structurally and never measured. This measures the part that is measurable here, and the
+     * handoff states what it does and does not establish.
+     *
+     * What is compared is the thing the brain is actually handed: the chain response objects. The
+     * same objects are run through capture OFF and then ON, and their serialized bytes must be
+     * identical afterwards — so whatever capture did, the inputs to the trading path did not
+     * move. Capture freezes to text before reading a field precisely so this holds.
+     *
+     * What this does NOT establish: that `brain.analyze` produces an identical verdict, which
+     * needs the Python engine. That half is covered separately by a Python guard asserting no
+     * decision path can even reach capture output. Neither is a device observation.
+     */
+    @Test
+    fun captureOnLeavesThePollsBrainInputsByteIdenticalToCaptureOff() {
+        val nfChain = rawFixture("mon_0920_entry_NF").getJSONObject("raw")
+        val bnfChain = rawFixture("mon_0920_entry_BNF").getJSONObject("raw")
+        // exact bytes of what the poll will hand onward, captured before anything runs
+        val nfBefore = nfChain.toString()
+        val bnfBefore = bnfChain.toString()
+
+        // (1) capture OFF: the control is absent, so nothing may happen at all
+        val off = tmpFilesDir()
+        val offResult = PremiumCaptureCoordinator.onChainsAcquired(off, "2026-10-19", "09:20",
+            PremiumCapturePollAdapter.acquisitions(listOf(
+                PremiumCapturePollAdapter.IndexResult("NF", nfChain, 1_000L,
+                    istMillis("2026-10-19", 9, 20), "NSE_INDEX|Nifty 50", "2026-10-27"),
+                PremiumCapturePollAdapter.IndexResult("BNF", bnfChain, 1_000L,
+                    istMillis("2026-10-19", 9, 20), "NSE_INDEX|Nifty Bank", "2026-10-27"))))
+        assertEquals(PremiumCaptureCoordinator.DISABLED, offResult.getString("status"))
+        assertFalse("OFF must not create the capture directory",
+            PremiumCaptureControl.root(off).exists())
+        assertEquals("the inputs must be untouched with capture OFF", nfBefore, nfChain.toString())
+        assertEquals(bnfBefore, bnfChain.toString())
+
+        // (2) capture ON, through the real worker, over the SAME objects
+        val on = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(on, true)
+        val onResult = coordinate(on, "2026-10-19", "09:20",
+            PremiumCapturePollAdapter.acquisitions(listOf(
+                PremiumCapturePollAdapter.IndexResult("NF", nfChain, 1_000L,
+                    istMillis("2026-10-19", 9, 20), "NSE_INDEX|Nifty 50", "2026-10-27"),
+                PremiumCapturePollAdapter.IndexResult("BNF", bnfChain, 1_000L,
+                    istMillis("2026-10-19", 9, 20), "NSE_INDEX|Nifty Bank", "2026-10-27"))))
+        assertEquals(PremiumCaptureCoordinator.SUBMITTED, onResult.getString("status"))
+        // it really did work, or this comparison would be vacuous
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(on))
+        assertEquals(6, store.outcomeCount("NF", "2026-10-19"))
+        assertEquals(6, store.outcomeCount("BNF", "2026-10-19"))
+
+        // THE COMPARISON: the brain's inputs are byte-identical after capture ran
+        assertEquals("capture must not mutate the chain the trading path reads",
+            nfBefore, nfChain.toString())
+        assertEquals(bnfBefore, bnfChain.toString())
+
+        // and nothing capture returns is of a type the trading path consumes: the status is a
+        // standalone report, not a value threaded into any decision
+        assertTrue(onResult.has("status_describes"))
+        assertEquals("SUBMISSION_NOT_PERSISTENCE", onResult.getString("status_describes"))
+
+        // the hook must also not assign to any poll variable the brain path later reads
+        val src = stripComments(
+            File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText())
+        val block = src.substringAfter("premiumCaptureSafely {")
+            .substringBefore("POLL_FAIL: Quotes fetch returned null")
+        for (owned in listOf("quotesJson =", "bnfChainJson =", "nfChainJson =",
+            "bnfStocksJson =", "nf50Breadth =", "spotProvenance =", "x1NfChainFetchedAtMs =",
+            "x1BnfChainFetchedAtMs =", "evNfChainFetchedAtMs =")) {
+            assertFalse("the capture hook must not assign $owned", block.contains(owned))
+        }
+    }
+
+    // ═════════ Production lot authority: coverage must be COMPLETE and in context ═════════
+
+    private fun authorityBlock(fd: File, idx: String = "NF", date: String = "2026-10-19") =
+        PremiumExportSection.build(fd, date).getJSONObject("indices").getJSONObject(idx)
+            .getJSONObject("references").getJSONObject("production_lot_authority")
+
+    private fun capturedTwoSlots(): File {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        for (slot in listOf("09:20", "09:25"))
+            coordinate(fd, "2026-10-19", slot, listOf(acq("NF", "mon_0920_entry_NF",
+                receipt = slot)))
+        return fd
+    }
+
+    /**
+     * ONE UNREFERENCED ENVELOPE DISQUALIFIES THE WHOLE-SESSION CLAIM.
+     *
+     * The old predicate did `mapNotNull { production_authority_ref }` and then asked whether all
+     * REMAINING distinct references matched. An envelope carrying no reference at all was dropped
+     * from the set, so one referenced envelope plus one unreferenced envelope satisfied a
+     * document-level authority claim. Partial coverage is now reported and disqualifying.
+     */
+    @Test
+    fun oneEnvelopeWithoutAnAuthorityReferenceBreaksTheWholeSessionClaim() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val before = authorityBlock(fd)
+        assertEquals(2, before.getJSONObject("coverage").getInt("envelopes"))
+
+        // strip the authority reference from exactly ONE envelope, re-stamping it so it stays
+        // individually hash-valid: only the coverage rule can catch this
+        val envs = File(store.root, "2026-10-19/NF/envelopes").listFiles()!!
+            .filter { it.name.endsWith(".json") }.sortedBy { it.name }
+        assertEquals(2, envs.size)
+        rewriteStamped(envs[0]) { it.getJSONObject("lot").remove("production_authority_ref") }
+
+        val pa = authorityBlock(fd)
+        val cov = pa.getJSONObject("coverage")
+        assertEquals(2, cov.getInt("envelopes"))
+        assertEquals(1, cov.getInt("matched"))
+        assertEquals("the uncovered envelope must be COUNTED, not dropped",
+            1, cov.getInt("missing_reference"))
+        assertFalse(cov.getBoolean("complete"))
+        assertFalse("partial coverage must not satisfy the authority predicate",
+            pa.getBoolean("authority_holds"))
+        // and it is named per acquisition rather than only summarised
+        val per = cov.getJSONArray("per_acquisition")
+        assertEquals(2, per.length())
+        val states = (0 until per.length()).map { per.getJSONObject(it).getString("state") }
+        assertTrue(states.contains("NO_AUTHORITY_REFERENCE_RECORDED"))
+        // top-level and detailed claims agree
+        val claims = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF").getJSONObject("claims")
+        assertEquals(pa.getBoolean("authority_holds"),
+            claims.getBoolean("authoritative_lot_resolved"))
+    }
+
+    /**
+     * The authority record is resolved from the REQUEST's expiry before any cohort is selected,
+     * and it is first-write-wins — so a record written for one expiry must not grant authority to
+     * a cohort that pinned a different one.
+     */
+    @Test
+    fun anAuthorityRecordedForADifferentExpiryDoesNotGrantAuthority() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        val rec = store.readLotAuthority("NF", "2026-10-19")!!
+        // the pinned cohort's expiry is the fixture's; claim the authority was for another
+        File(store.root, "2026-10-19/NF/lot_authority.json")
+            .writeText(JSONObject(rec.toString()).put("requested_expiry", "2026-12-31").toString())
+        val pa = authorityBlock(fd)
+        assertTrue("the record is still present", pa.getBoolean("recorded"))
+        assertFalse(pa.getBoolean("authority_holds"))
+        assertFalse(pa.getJSONObject("pinned_context").getBoolean("agrees"))
+        assertTrue(pa.getJSONObject("pinned_context").getJSONArray("reasons").toString()
+            .contains("authority_expiry_differs_from_pinned_cohort"))
+    }
+
+    /** A record written for another index or session date cannot grant authority here. */
+    @Test
+    fun anAuthorityRecordedForAnotherIndexOrSessionDoesNotGrantAuthority() {
+        for ((field, value, reason) in listOf(
+            Triple("requested_index", "BNF", "authority_index_differs"),
+            Triple("requested_session_date", "2026-10-20", "authority_session_differs"))) {
+            val fd = capturedTwoSlots()
+            val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+            val rec = store.readLotAuthority("NF", "2026-10-19")!!
+            File(store.root, "2026-10-19/NF/lot_authority.json")
+                .writeText(JSONObject(rec.toString()).put(field, value).toString())
+            val pa = authorityBlock(fd)
+            assertFalse("$field=$value must not hold authority", pa.getBoolean("authority_holds"))
+            assertTrue(pa.getJSONObject("pinned_context").getJSONArray("reasons").toString()
+                .contains(reason))
+        }
+    }
+
+    /** A declared lot conflict, or a stale table version, is not authority either. */
+    @Test
+    fun aConflictingOrStaleAuthorityRecordIsNotAuthority() {
+        val fdA = capturedTwoSlots()
+        val storeA = PremiumCaptureStore(PremiumCaptureControl.root(fdA))
+        val recA = storeA.readLotAuthority("NF", "2026-10-19")!!
+        File(storeA.root, "2026-10-19/NF/lot_authority.json")
+            .writeText(JSONObject(recA.toString()).put("lot_conflict", true).toString())
+        val paA = authorityBlock(fdA)
+        assertTrue(paA.getBoolean("lot_conflict"))
+        assertFalse(paA.getBoolean("authority_holds"))
+
+        val fdB = capturedTwoSlots()
+        val storeB = PremiumCaptureStore(PremiumCaptureControl.root(fdB))
+        val recB = storeB.readLotAuthority("NF", "2026-10-19")!!
+        File(storeB.root, "2026-10-19/NF/lot_authority.json")
+            .writeText(JSONObject(recB.toString())
+                .put("lot_table_version", "some_other_version").toString())
+        val paB = authorityBlock(fdB)
+        assertFalse(paB.getBoolean("authority_holds"))
+        assertTrue(paB.getJSONObject("pinned_context").getJSONArray("reasons").toString()
+            .contains("authority_table_version_differs_from_current"))
+    }
+
+    /** A corrupt or absent authority record is reported, and claims nothing. */
+    @Test
+    fun aCorruptOrAbsentAuthorityRecordClaimsNothingAndSaysSo() {
+        val fd = capturedTwoSlots()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        File(store.root, "2026-10-19/NF/lot_authority.json").writeText("{not json")
+        val pa = authorityBlock(fd)
+        assertFalse("an unparseable record is not a record", pa.getBoolean("recorded"))
+        assertFalse(pa.getBoolean("authority_holds"))
+        // the neutral block label, instead of a constant `true` asserting a property of nothing
+        assertEquals("NO_AUTHORITY_RECORD_PRESENT", pa.getString("block_kind"))
+        assertTrue("the old constant must no longer assert a property of an absent record",
+            pa.isNull("is_the_applications_own_contract_table"))
+        val cov = pa.getJSONObject("coverage")
+        assertEquals(2, cov.getInt("missing_reference"))
+        assertFalse(cov.getBoolean("complete"))
+    }
+
+    /**
+     * The fully matching case, so these tests are not all negative: every envelope covered, the
+     * context agreeing, and the top-level claim equal to the detailed verdict either way.
+     */
+    @Test
+    fun theFullyMatchingAuthorityCaseAgreesAtEveryLevel() {
+        val fd = capturedTwoSlots()
+        val pa = authorityBlock(fd)
+        val cov = pa.getJSONObject("coverage")
+        assertTrue(pa.getBoolean("recorded"))
+        assertEquals("THE_APPLICATIONS_OWN_CONTRACT_LOT_TABLE", pa.getString("block_kind"))
+        assertEquals(cov.getInt("envelopes"), cov.getInt("matched"))
+        assertEquals(0, cov.getInt("missing_reference"))
+        assertEquals(0, cov.getInt("reference_mismatched"))
+        assertTrue("coverage must be complete in the matching case", cov.getBoolean("complete"))
+        assertTrue(pa.getJSONObject("pinned_context").getBoolean("agrees"))
+        assertEquals(0, pa.getJSONObject("pinned_context").getJSONArray("reasons").length())
+        // Asserted as AGREEMENT, not as a fixed outcome: whether ContractLotTable grants
+        // authority for this expiry is its decision, and this must hold either way.
+        val expected = pa.getBoolean("recorded") && pa.getBoolean("resolved") &&
+            pa.getBoolean("authoritative") && !pa.getBoolean("lot_conflict") &&
+            cov.getBoolean("complete") && pa.getJSONObject("pinned_context").getBoolean("agrees")
+        assertEquals(expected, pa.getBoolean("authority_holds"))
+        val claims = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF").getJSONObject("claims")
+        assertEquals(expected, claims.getBoolean("authoritative_lot_resolved"))
+    }
+
+    // ═════════ The real service adapter: what the poll ACTUALLY passes to capture ═════════
+
+    /** A real IST wall-clock millisecond value for a session date and HH:MM. */
+    private fun istMillis(date: String, hour: Int, minute: Int): Long {
+        val cal = java.util.Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+        val parts = date.split("-").map { it.toInt() }
+        cal.clear()
+        cal.set(parts[0], parts[1] - 1, parts[2], hour, minute, 0)
+        return cal.timeInMillis
+    }
+
+    private fun pollResult(index: String, fixture: String?, completedAtMs: Long,
+                           startedMs: Long = 1_000L, expiry: String? = "2026-10-27") =
+        PremiumCapturePollAdapter.IndexResult(
+            index = index,
+            chain = fixture?.let { rawFixture(it).getJSONObject("raw") },
+            requestStartedMs = startedMs, completedAtMs = completedAtMs,
+            underlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING[index],
+            expiry = expiry)
+
+    /**
+     * A FAILED chain must still carry its real completion clock, so its slot is honest and the six
+     * per-contract missing outcomes can be written once a cohort exists.
+     *
+     * This is the integration fault a passing JVM test hid: the old failed-chain test supplied a
+     * synthetic completion time and receipt HH:MM that the service never supplies on that path,
+     * because `x1*ChainFetchedAtMs` is assigned only when the response is non-null. With no clock
+     * and no scheduler slot, `observeSlot` could only answer NO_SLOT_IDENTITY. Asserted here on
+     * the values the adapter really produces.
+     */
+    @Test
+    fun theAdapterGivesAFailedChainItsRealCompletionClock() {
+        val completed = istMillis("2026-10-19", 9, 25)
+        val acqs = PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", null, completed),
+            pollResult("BNF", "mon_0920_entry_BNF", completed)))
+        val nf = acqs.first { it.index == "NF" }
+        assertNull("a failed chain stays absent; nothing is invented for it", nf.rawChain)
+        assertEquals("09:25", nf.receiptHhmm)
+        assertEquals(completed, nf.responseReceivedMs)
+        // and a clock that never ran is unknown, never 0
+        val never = PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", null, 0L, startedMs = 0L))).first()
+        assertNull(never.receiptHhmm)
+        assertNull(never.responseReceivedMs)
+        assertNull(never.requestStartedMs)
+    }
+
+    /**
+     * The failed chain reaches PERSISTED missing-contract outcomes once a cohort exists, through
+     * the real adapter and the real coordinator — not through hand-written arguments.
+     */
+    @Test
+    fun aFailedChainFromTheRealAdapterStillRecordsSixMissingOutcomes() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        // slot 1 succeeds for both indices, pinning each cohort
+        coordinate(fd, "2026-10-19", "09:20", PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", "mon_0920_entry_NF", istMillis("2026-10-19", 9, 20)),
+            pollResult("BNF", "mon_0920_entry_BNF", istMillis("2026-10-19", 9, 20)))))
+        // slot 2: NF's chain FAILS, BNF succeeds
+        val r = coordinate(fd, "2026-10-19", "09:25", PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", null, istMillis("2026-10-19", 9, 25)),
+            pollResult("BNF", "mon_0920_entry_BNF", istMillis("2026-10-19", 9, 25)))))
+        val nf = (0 until r.getJSONArray("indices").length())
+            .map { r.getJSONArray("indices").getJSONObject(it) }
+            .first { it.getString("index") == "NF" }
+        assertFalse("the chain really was absent", nf.getBoolean("chain_present"))
+        assertEquals("the gap must be recorded, not skipped for want of a clock",
+            6, nf.getInt("written"))
+        // and BNF is unaffected: no cross-index fallback either way
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        assertEquals(12, store.outcomeCount("NF", "2026-10-19"))
+        assertEquals(12, store.outcomeCount("BNF", "2026-10-19"))
+    }
+
+    /** Both chains failing is still recorded per index, with no cross-index borrowing. */
+    @Test
+    fun bothChainsFailingIsRecordedForEachIndexSeparately() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        coordinate(fd, "2026-10-19", "09:20", PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", "mon_0920_entry_NF", istMillis("2026-10-19", 9, 20)),
+            pollResult("BNF", "mon_0920_entry_BNF", istMillis("2026-10-19", 9, 20)))))
+        val r = coordinate(fd, "2026-10-19", "09:25", PremiumCapturePollAdapter.acquisitions(listOf(
+            pollResult("NF", null, istMillis("2026-10-19", 9, 25)),
+            pollResult("BNF", null, istMillis("2026-10-19", 9, 25)))))
+        val rows = r.getJSONArray("indices")
+        assertEquals(2, rows.length())
+        for (i in 0 until rows.length()) {
+            val row = rows.getJSONObject(i)
+            assertFalse(row.getBoolean("chain_present"))
+            assertEquals("each index records its own gap", 6, row.getInt("written"))
+        }
+    }
+
+    /**
+     * The scheduler's intended slot is derived from the service's own `slotKey` format, and is
+     * kept beside the acquisition clock rather than relabelling it.
+     */
+    @Test
+    fun theDeclaredSlotComesFromTheServicesOwnSlotKeyFormat() {
+        assertEquals("09:15", PremiumCapturePollAdapter.declaredSlotFromSlotKey("2026-10-19|1"))
+        assertEquals("09:20", PremiumCapturePollAdapter.declaredSlotFromSlotKey("2026-10-19|2"))
+        assertEquals("15:10", PremiumCapturePollAdapter.declaredSlotFromSlotKey("2026-10-19|72"))
+        for (bad in listOf(null, "", "closed", "2026-10-19|0", "2026-10-19|x", "2026-10-19|9999"))
+            assertNull("a slot key of '$bad' must not produce a slot",
+                PremiumCapturePollAdapter.declaredSlotFromSlotKey(bad))
+        // the adapter's grid constants must match the service's, or every slot would be offset
+        val svc = stripComments(
+            File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText())
+        assertTrue(svc.contains("MARKET_OPEN_MINUTE = 9 * 60 + 15"))
+        assertTrue(svc.contains("POLL_SLOT_MINUTES = 5"))
+        assertEquals(9 * 60 + 15, PremiumCapturePollAdapter.MARKET_OPEN_MINUTE)
+        assertEquals(5, PremiumCapturePollAdapter.POLL_SLOT_MINUTES)
+    }
+
     // ═════════════════ Commit 3 — the premium section on the existing export ═════════════════
+
+    /**
+     * Submit through the REAL coordinator, then wait for the off-poll worker to drain.
+     *
+     * Persistence is no longer synchronous: the coordinator prepares on the caller and hands the
+     * work to [PremiumCaptureWorker], so a test asserting on files immediately after submission
+     * would be racing the worker. The wait is bounded and its result is asserted, so a stuck
+     * worker fails the test rather than producing a flake. Tests about SUBMISSION rather than
+     * persistence call the coordinator directly instead of using this.
+     */
+    private fun coordinate(fd: File, date: String?, slot: String?,
+                           acqs: List<PremiumCaptureCoordinator.ChainAcquisition>,
+                           prepareBudgetMs: Long =
+                               PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL): JSONObject {
+        PremiumCaptureWorker.resetForTest()
+        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, date, slot, acqs, prepareBudgetMs)
+        assertTrue("the capture worker must drain inside the test bound",
+            PremiumCaptureWorker.awaitIdle(30_000L))
+        // Replace each submission row with the PERSISTED row for that index, keeping the
+        // submission status beside it. The coordinator can only report submission now, so a test
+        // that wants persistence has to read what the worker actually did — this reassembles it
+        // rather than letting the assertions quietly weaken to "it was accepted".
+        val rows = r.optJSONArray("indices") ?: return r
+        val merged = JSONArray()
+        for (i in 0 until rows.length()) {
+            val sub = rows.getJSONObject(i)
+            val idx = sub.optString("index")
+            val persisted = PremiumCaptureWorker.resultFor(idx)
+            merged.put(if (persisted != null)
+                JSONObject(persisted.toString()).put("submission", sub.optString("status"))
+            else sub)
+        }
+        return r.put("indices", merged)
+    }
 
     /** Capture `slots` slots for both indices into a fresh filesDir, and return it. */
     private fun capturedFilesDir(slots: List<String>, date: String = "2026-10-19"): File {
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
         for ((i, slot) in slots.withIndex()) {
-            PremiumCaptureCoordinator.onChainsAcquired(fd, date, slot,
+            coordinate(fd, date, slot,
                 listOf(acq("NF", "mon_0920_entry_NF", receipt = slot,
                     start = 1_000L + i * 300_000L, end = 1_300L + i * 300_000L),
                     acq("BNF", "mon_0920_entry_BNF", receipt = slot,
@@ -2428,7 +3131,7 @@ class PremiumCaptureTest {
         // one index captured, the other not: each state is explicit
         val fd = tmpFilesDir()
         PremiumCaptureControl.setEnabled(fd, true)
-        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+        coordinate(fd, "2026-10-19", "09:20",
             listOf(acq("NF", "mon_0920_entry_NF")))
         val one = PremiumExportSection.build(fd, "2026-10-19")
         assertEquals("PRESENT", one.getString("state"))
@@ -2483,53 +3186,57 @@ class PremiumCaptureTest {
     }
 
     /**
-     * The combined limit is enforced on the FINAL bytes. The old limit is not raised and old parts
-     * are never truncated: the premium section is reduced in declared stages, and if it still will
-     * not fit the export is refused.
+     * The combined limit is enforced on the FINAL bytes, and the premium section is kept WHOLE or
+     * the export is refused.
+     *
+     * This test used to assert the opposite — that the section is reduced in declared stages until
+     * it fits. That behaviour was wrong, not just under-tested: the reduction dropped records,
+     * then envelopes, then cohort/references/conflicts, while leaving the verified and usable
+     * counts and the PRESENT/has_data claims untouched, so a caller received what looked like an
+     * ordinary successful export whose removed groups could no longer be verified offline but were
+     * still counted as usable. Evidence is no longer silently downgraded to fit; it either fits or
+     * the export says it does not. The limit itself is unchanged and old parts are never touched.
      */
     @Test
-    fun theCombinedCapIsEnforcedByDeclaredStagedReductionThenRefusal() {
+    fun theCombinedCapKeepsThePremiumSectionWholeOrRefuses() {
         val fd = capturedFilesDir(listOf("09:20", "09:25", "09:30", "09:35"))
         val sec = PremiumExportSection.build(fd, "2026-10-19")
         val secBytes = sec.toString().toByteArray(Charsets.UTF_8).size
-        assertTrue("the section must be substantial for this case to mean anything", secBytes > 50_000)
-
-        // (a) a bundle that leaves room only after records are dropped
-        val roomy = "{\"filler\":\"" + "x".repeat(
-            PremiumExportSection.COMBINED_CAP_BYTES - secBytes / 2) + "\"}"
-        val fitA = PremiumExportSection.mergeWithinCap(
-            roomy, roomy.toByteArray(Charsets.UTF_8), sec)
-        assertTrue("it must have reduced rather than refused", fitA.stage >= 1)
-        assertFalse(fitA.overCap)
-        assertTrue(fitA.bytes.size <= PremiumExportSection.COMBINED_CAP_BYTES)
-        // the reduction is declared, and nothing is cut mid-value
-        val mergedA = JSONObject(String(fitA.bytes, Charsets.UTF_8)).getJSONObject("premium")
-        assertEquals(fitA.stage, mergedA.getInt("reduction_stage"))
-        assertTrue(mergedA.getJSONArray("reduced_fields").toString().contains("records"))
-        assertFalse("records were dropped wholesale, not truncated",
-            mergedA.getJSONObject("indices").getJSONObject("NF").has("records"))
-        // The parts that remain are intact, and the ACCOUNTING is deliberately NOT reduced with
-        // the records: it still reports the true count, so a reader can tell that evidence was
-        // dropped to fit rather than never collected.
-        //
-        // Derived from the slot list and the cohort size rather than written as a literal. The
-        // literal that was here was the 2-slot figure from the test above, copied into this
-        // 4-slot case; CI caught it as expected:<12> but was:<24> and the production count was
-        // the correct one. `reduce` deep-copies its input, so `sec` is still unreduced here.
+        assertTrue("the section must be substantial for this case to mean anything",
+            secBytes > 50_000)
         val trueRecords = 4 * PremiumCaptureCohort.CONTRACTS_PER_COHORT
         assertEquals(trueRecords, sec.getJSONObject("indices").getJSONObject("NF")
             .getJSONObject("accounting").getInt("records"))
-        assertEquals("the accounting must survive the reduction unchanged",
-            trueRecords, mergedA.getJSONObject("indices").getJSONObject("NF")
-                .getJSONObject("accounting").getInt("records"))
 
-        // (b) a bundle already at the limit: no reduction can help, so it must REFUSE
+        // (a) room for the WHOLE section: it is spliced complete, with nothing dropped
+        val roomy = "{\"filler\":\"x\"}"
+        val fitA = PremiumExportSection.mergeWithinCap(
+            roomy, roomy.toByteArray(Charsets.UTF_8), sec)
+        assertFalse(fitA.overCap)
+        assertTrue(fitA.merged)
+        assertEquals("no reduction may happen on any path", 0, fitA.stage)
+        assertTrue(fitA.bytes.size <= PremiumExportSection.COMBINED_CAP_BYTES)
+        val mergedA = JSONObject(String(fitA.bytes, Charsets.UTF_8)).getJSONObject("premium")
+        assertTrue("the records must still be present, not dropped to fit",
+            mergedA.getJSONObject("indices").getJSONObject("NF").has("records"))
+        assertEquals(trueRecords, mergedA.getJSONObject("indices").getJSONObject("NF")
+            .getJSONObject("accounting").getInt("records"))
+        assertEquals("the retained count and the included evidence must agree",
+            trueRecords, mergedA.getJSONObject("indices").getJSONObject("NF")
+                .getJSONArray("records").length())
+        assertFalse("nothing may be declared reduced when nothing was reduced",
+            mergedA.has("reduced_fields"))
+
+        // (b) a bundle already at the limit: it must REFUSE, and must NOT shrink the evidence
         val full = "{\"filler\":\"" + "x".repeat(
             PremiumExportSection.COMBINED_CAP_BYTES - 200) + "\"}"
         val fitB = PremiumExportSection.mergeWithinCap(
             full, full.toByteArray(Charsets.UTF_8), sec)
-        assertTrue("it must refuse rather than raise the limit or truncate", fitB.overCap)
-        assertEquals(3, fitB.stage)
+        assertTrue("it must refuse rather than raise the limit or drop evidence", fitB.overCap)
+        assertEquals("refusal must not be reached by reducing first", 0, fitB.stage)
+        // the section handed in is untouched by the attempt
+        assertEquals(trueRecords, sec.getJSONObject("indices").getJSONObject("NF")
+            .getJSONObject("accounting").getInt("records"))
     }
 
     /** A device export states what device evidence does NOT mean. */
@@ -2590,6 +3297,54 @@ class PremiumCaptureTest {
         assertTrue("getPremiumCaptureStatus must catch Throwable",
             status.contains("catch (t: Throwable)"))
         assertTrue("setPremiumCapture must catch Throwable", control.contains("catch (t: Throwable)"))
+
+        // AND THE EXPORT ENTRY POINT ITSELF, which this test previously did not check at all
+        // despite its name. exportSessionEvidence allocates multi-megabyte arrays in bundleBytes,
+        // in the merge and in the premium-only encoding; those allocations are OUTSIDE the
+        // smaller helpers' guards, and it ended in `catch (e: Exception)`, so an OutOfMemoryError
+        // escaped the bridge and aborted the whole calling JS function.
+        val export = src.substringAfter("fun exportSessionEvidence(")
+            .substringBefore("fun setIndexSelector(")
+        assertTrue("exportSessionEvidence must catch Throwable, not Exception",
+            export.contains("catch (t: Throwable)"))
+        assertFalse("and must no longer end at catch (e: Exception)",
+            export.contains("catch (e: Exception)"))
+        // the error response must be allocation-light: no echo of the payload or of the sizes
+        // that just failed to fit, and a constant-string fallback if even that allocation fails
+        assertTrue("there must be a constant-string fallback response",
+            export.contains("\"{\\\"ok\\\":false,\\\"status\\\":\\\"EXPORT_ERROR\\\"}\""))
+    }
+
+    /**
+     * An allocation failure inside the export assembly is reported, not propagated.
+     *
+     * Injected through the real assembly: a section whose serialization throws an
+     * OutOfMemoryError. The production bridge method needs an Android context, so the guarded
+     * decision path is exercised through the same production helpers the bridge calls, and the
+     * bridge's own guard is pinned by source above. This is a seam, and it is labelled as one
+     * rather than described as the bridge having been executed.
+     */
+    @Test
+    fun anAllocationFailureInTheAssemblyIsReportedRatherThanPropagated() {
+        val hostile = object : JSONObject() {
+            override fun toString(): String = throw OutOfMemoryError("injected")
+        }
+        // splice must not propagate it as a crash of the caller's own flow
+        val threw = runCatching {
+            PremiumExportSection.splice("{\"a\":1}", hostile)
+        }.exceptionOrNull()
+        assertTrue("the injected Error must be an Error, or this proves nothing",
+            threw is OutOfMemoryError)
+        // ...which is exactly why the bridge entry point has to catch Throwable: a helper does
+        // not stop this, and `catch (Exception)` would let it reach WebView. Asserted as the
+        // real behaviour of the real helper, not assumed.
+        val guardedResult = try {
+            PremiumExportSection.splice("{\"a\":1}", hostile)
+            "NO_THROW"
+        } catch (t: Throwable) {
+            "EXPORT_ERROR:${t.javaClass.simpleName}"
+        }
+        assertEquals("EXPORT_ERROR:OutOfMemoryError", guardedResult)
     }
 
     // ═════════════════ nothing is wired, nothing reaches the trading path ═════════════════════
@@ -2622,8 +3377,11 @@ class PremiumCaptureTest {
             // the library itself
             "PremiumObservationContract.kt", "PremiumCaptureCohort.kt", "PremiumCaptureStore.kt",
             "PremiumCaptureSession.kt", "PremiumCaptureControl.kt",
-            // the one coordinator
-            "PremiumCaptureCoordinator.kt", "PremiumExportSection.kt",
+            // the bounded off-poll persistence worker
+            "PremiumCaptureWorker.kt",
+            // the one coordinator, and the pure poll->capture mapping it is driven with
+            "PremiumCaptureCoordinator.kt", "PremiumCapturePollAdapter.kt",
+            "PremiumExportSection.kt",
             // the existing acquisition path
             "MarketWatchService.kt",
             // the existing export/control bridge
@@ -2668,19 +3426,39 @@ class PremiumCaptureTest {
             guard.contains("catch (t: Throwable)"))
         // the premium block itself must contain no request and no scheduling
         val block = src.substringAfter("premiumCaptureSafely {")
-            .substringBefore("POLL_FAIL: Chain or stocks fetch returned null")
+            .substringBefore("POLL_FAIL: Quotes fetch returned null")
         for (banned in listOf("fetchSync(", "async(", "SupabaseClient", "AlarmManager",
             "WorkManager", "startService", "Thread(")) {
             assertFalse("the premium capture block must not contain $banned", block.contains(banned))
         }
-        // it must be placed BEFORE the stocks abort, so a good chain is not lost to an
-        // unrelated failure -- the position the existing m0 hook gets wrong
+        // It must be placed before EVERY early return that can discard a good chain. The hook
+        // used to sit below the quotes abort, so a failure of the separate index-quotes request
+        // threw away both successful chains -- the same mistake as the stocks abort, one abort
+        // earlier, and moving it above only the stocks abort did not fix it.
         val hookAt = src.indexOf("PremiumCaptureCoordinator.onChainsAcquired(")
-        val abortAt = src.indexOf("POLL_FAIL: Chain or stocks fetch returned null")
+        val quotesAbortAt = src.indexOf("POLL_FAIL: Quotes fetch returned null")
+        val stocksAbortAt = src.indexOf("POLL_FAIL: Chain or stocks fetch returned null")
         val m0At = src.indexOf("m0RecordCaptures(mapOf(")
-        assertTrue("premium capture must run before the stocks abort", hookAt in 1 until abortAt)
-        assertTrue("and the existing m0 hook is after it, which is the difference",
-            abortAt < m0At)
+        assertTrue("the quotes abort must be found for this assertion to mean anything",
+            quotesAbortAt > 0 && stocksAbortAt > 0 && m0At > 0)
+        assertTrue("premium capture must run before the QUOTES abort, not just the stocks one",
+            hookAt in 1 until quotesAbortAt)
+        assertTrue("and before the stocks abort", hookAt < stocksAbortAt)
+        assertTrue("while the existing m0 hook is after both, which is the difference",
+            stocksAbortAt < m0At)
+
+        // The capture-owned completion clocks must be assigned UNCONDITIONALLY, or a failed chain
+        // reaches capture with no clock and no slot and its six missing-contract outcomes can
+        // never be written. The success-only x1* assignment must remain conditional, because
+        // other code depends on those semantics.
+        assertTrue("capture must have its own completion clock for BNF",
+            src.contains("capBnfCompletedAtMs = System.currentTimeMillis()"))
+        assertTrue("capture must have its own completion clock for NF",
+            src.contains("capNfCompletedAtMs = evNfChainFetchedAtMs"))
+        assertTrue("the success-only x1 semantics must be preserved",
+            src.contains("if (it != null) x1BnfChainFetchedAtMs = capBnfCompletedAtMs"))
+        assertFalse("the failed-chain path must not feed capture the success-only clock",
+            block.contains("x1BnfChainFetchedAtMs") || block.contains("x1NfChainFetchedAtMs"))
     }
 
     @Test

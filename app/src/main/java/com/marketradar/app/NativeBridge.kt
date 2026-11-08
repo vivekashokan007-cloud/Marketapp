@@ -1794,8 +1794,24 @@ class NativeBridge(private val context: Context) {
                     .put("bundle_bytes", bundleBytes.size)
                     .put("combined_bytes", bytes.size))
                 .put("fileName", saved.optString("fileName")).toString()
-        } catch (e: Exception) {
-            JSONObject().put("ok", false).put("status", "EXPORT_ERROR").put("error", e.javaClass.simpleName).toString()
+        } catch (t: Throwable) {
+            // Throwable, not Exception. This method allocates multi-megabyte byte arrays — in
+            // bundleBytes, in the merge, and in the premium-only encoding — and an
+            // OutOfMemoryError is an Error, so `catch (Exception)` let it escape the bridge.
+            // WebView then reports "Java exception was raised during method invocation" and the
+            // ENTIRE calling JS function aborts, which this project has already shipped once as a
+            // blank-tab outage. A helper's own guard does not cover these later allocations.
+            //
+            // The response is built allocation-light on purpose: short fixed literals and one
+            // class name, with no payload echo and no formatting of the sizes that just failed to
+            // fit, so reporting the failure cannot need the memory whose absence caused it. The
+            // fallback is a constant string for the case where even that is too much.
+            try {
+                JSONObject().put("ok", false).put("status", "EXPORT_ERROR")
+                    .put("error", t.javaClass.simpleName).toString()
+            } catch (t2: Throwable) {
+                "{\"ok\":false,\"status\":\"EXPORT_ERROR\"}"
+            }
         }
     }
 

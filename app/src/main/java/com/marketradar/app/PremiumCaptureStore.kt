@@ -57,6 +57,14 @@ class PremiumCaptureStore(val root: File) {
         const val MAX_BYTES_PER_INDEX_SESSION = 1L * 1024 * 1024          // 1 MiB
         /** Held back INSIDE the per-session cap so a final/refusal summary can always be written. */
         const val SUMMARY_RESERVE_BYTES = 16L * 1024                      // 16 KiB
+        /**
+         * Carved out INSIDE [MAX_BYTES_GLOBAL] for control/status files at the capture root,
+         * which previously wrote around admission entirely. Evidence must leave it intact;
+         * control files may use only it. This does not enlarge any evidence cap -- it reduces
+         * the bytes evidence may claim, by the amount the status surface actually needs.
+         */
+        const val CONTROL_RESERVE_BYTES = 16L * 1024                     // 16 KiB
+        const val MAX_BYTES_PER_CONTROL_FILE = 4L * 1024                 //  4 KiB
         const val MAX_BYTES_GLOBAL = 4L * 1024 * 1024                     // 4 MiB
         const val MAX_BYTES_PER_RECORD = 2L * 1024                        // 2 KiB
 
@@ -88,6 +96,25 @@ class PremiumCaptureStore(val root: File) {
          * Keyed by canonical path, so `./x` and an absolute path to the same directory share it.
          */
         private val LOCKS = HashMap<String, Any>()
+
+        /**
+         * A monotonic write generation per canonical root, shared by every store instance over
+         * that root exactly as [LOCKS] is.
+         *
+         * Why a counter and not a size/count comparison: a reader that compares session bytes and
+         * record counts before and after assembly cannot see an equal-size replacement, so it
+         * could report a consistent view across a concurrent write that changed content without
+         * changing either number. Every mutation bumps this, so any interleaved write is visible
+         * whatever it did to the totals.
+         */
+        private val GENERATIONS = HashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+        private fun generationFor(root: File): java.util.concurrent.atomic.AtomicLong {
+            val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+            return synchronized(GENERATIONS) {
+                GENERATIONS.getOrPut(key) { java.util.concurrent.atomic.AtomicLong(0L) }
+            }
+        }
 
         private fun lockFor(root: File): Any {
             val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
@@ -134,6 +161,19 @@ class PremiumCaptureStore(val root: File) {
 
     fun sessionBytes(index: String, session: String) = bytesOf(sessionDir(index, session))
     fun globalBytes() = bytesOf(root)
+
+    /** The current write generation for this root. Changes on every mutation, never decreases. */
+    fun generation(): Long = generationFor(root).get()
+
+    /**
+     * Run `block` while holding this root's write lock.
+     *
+     * Exists so a test can hold the real lock from another thread and prove the poll-facing
+     * submission does not wait on it. This is the same lock every write takes — not a stand-in
+     * for the production lock, but the production lock itself.
+     */
+    internal fun <T> withRootLockForTest(block: () -> T): T = synchronized(lock) { block() }
+
     fun outcomeCount(index: String, session: String) = countJson(recordsDir(index, session))
     fun conflictCount(index: String, session: String) = countJson(conflictsDir(index, session))
     fun envelopeCount(index: String, session: String) = countJson(envelopesDir(index, session))
@@ -172,11 +212,15 @@ class PremiumCaptureStore(val root: File) {
             return WriteResult(REFUSED_SESSION_BYTES, finalBytes,
                 "$kind would take the session to ${session0 + finalBytes} B against $budget B " +
                     "(cap $MAX_BYTES_PER_INDEX_SESSION B less $SUMMARY_RESERVE_BYTES B reserve)")
+        // evidence must leave the control/status reserve intact, so the stop action and the
+        // status that reports a full store remain writable at capacity
+        val globalBudget = MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES
         val global0 = globalBytes()
-        if (global0 + finalBytes > MAX_BYTES_GLOBAL)
+        if (global0 + finalBytes > globalBudget)
             return WriteResult(REFUSED_GLOBAL_BYTES, finalBytes,
                 "$kind would take the store to ${global0 + finalBytes} B against " +
-                    "$MAX_BYTES_GLOBAL B; nothing is deleted to make room")
+                    "$globalBudget B (cap $MAX_BYTES_GLOBAL B less $CONTROL_RESERVE_BYTES B " +
+                    "control reserve); nothing is deleted to make room")
         return null
     }
 
@@ -279,6 +323,53 @@ class PremiumCaptureStore(val root: File) {
         }
     }
 
+    /**
+     * Write one bounded control/status file at the capture ROOT, inside the declared storage
+     * policy instead of around it.
+     *
+     * Previously `PremiumCaptureControl` wrote `control.json`, `last_run.json` and their temps
+     * straight to this root — outside [admit] and outside this lock — so those bytes could take
+     * the store past the global limit that every evidence write respects, and the status file was
+     * written even after a full root had refused the records it described. The caps are NOT
+     * enlarged to fix that: [CONTROL_RESERVE_BYTES] is carved out *inside* the existing global
+     * bound, evidence must leave it intact, and control files may use only it.
+     *
+     * `allowAtCapacity` exists for exactly one case: turning capture **OFF** must stay possible
+     * when the store is full, because refusing the stop action at capacity would be the worst
+     * possible failure mode. It replaces one small existing file and never grows the store beyond
+     * the reserve.
+     */
+    fun putControlFile(name: String, obj: JSONObject, allowAtCapacity: Boolean = false):
+        WriteResult = synchronized(lock) {
+        val payload = obj.toString()
+        val size = bytesOfText(payload)
+        if (size > MAX_BYTES_PER_CONTROL_FILE)
+            return WriteResult(REFUSED_RECORD_TOO_LARGE, size,
+                "control $name $size B exceeds $MAX_BYTES_PER_CONTROL_FILE B; " +
+                    "status must be a bounded structured object, never truncated text")
+        val dest = File(root, name)
+        val existing = if (dest.isFile) runCatching { dest.readText() }.getOrNull() else null
+        if (existing == payload) return WriteResult(DUPLICATE_NO_OP, size)
+        val replacing = if (dest.isFile) bytesOfText(existing ?: "") else 0L
+        if (!allowAtCapacity) {
+            val control0 = controlBytes()
+            if (control0 - replacing + size > CONTROL_RESERVE_BYTES)
+                return WriteResult(REFUSED_GLOBAL_BYTES, size,
+                    "control files would take ${control0 - replacing + size} B against the " +
+                        "$CONTROL_RESERVE_BYTES B reserve; nothing is deleted to make room")
+            val global0 = globalBytes()
+            if (global0 - replacing + size > MAX_BYTES_GLOBAL)
+                return WriteResult(REFUSED_GLOBAL_BYTES, size,
+                    "control $name would take the store to ${global0 - replacing + size} B " +
+                        "against $MAX_BYTES_GLOBAL B")
+        }
+        atomicWriteLocked(root, dest, payload, size, replace = true)
+    }
+
+    /** Bytes currently held by control/status files at the root (not inside any session). */
+    fun controlBytes(): Long =
+        (root.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L)
+
     fun readLotAuthority(index: String, session: String): JSONObject? {
         val f = lotAuthorityFile(index, session)
         if (!f.isFile) return null
@@ -343,12 +434,14 @@ class PremiumCaptureStore(val root: File) {
                         "destination holds different content and replace is not permitted")
                 }
                 if (!tmp.renameTo(dest)) { tmp.delete(); return WriteResult(REFUSED_IO, size, "replace failed") }
+                generationFor(root).incrementAndGet()
                 return WriteResult(REPLACED, size)
             }
             if (!tmp.renameTo(dest)) {
                 tmp.delete()
                 return WriteResult(REFUSED_IO, size, "rename failed")
             }
+            generationFor(root).incrementAndGet()
             WriteResult(WRITTEN, size)
         } catch (e: SecurityException) {
             WriteResult(REFUSED_IO, size, "permission: ${e.javaClass.simpleName}")
