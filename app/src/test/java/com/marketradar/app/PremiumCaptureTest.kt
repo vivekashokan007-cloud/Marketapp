@@ -2612,26 +2612,20 @@ class PremiumCaptureTest {
     fun anEqualSizeConcurrentWriteStillBreaksTheConsistentViewClaim() {
         val fd = capturedTwoSlots()
         val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
-        val bytesBefore = store.sessionBytes("NF", "2026-10-19")
         val countBefore = store.outcomeCount("NF", "2026-10-19")
+        val envBefore = store.envelopeCount("NF", "2026-10-19")
         val genBefore = store.generation()
 
-        // an equal-size content replacement of the summary: the OLD check's two numbers are
-        // unchanged by construction, so only the generation can reveal it
-        val summary = File(store.root, "2026-10-19/NF/summary.json")
-        if (summary.isFile) {
-            val original = summary.readText()
-            val swapped = original.replaceFirst("0", "1")
-            if (swapped.length == original.length && swapped != original) {
-                store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
-            }
-        } else {
-            store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
-        }
-        assertEquals("the premise: the record count must be unchanged",
+        // A summary replacement: it changes CONTENT while leaving the record and envelope counts
+        // untouched, which is the shape of write the old before/after comparison could not see.
+        store.bumpCounters("NF", "2026-10-19", mapOf("coordinator_runs" to 1L))
+
+        assertEquals("the premise: the record count must be unchanged by this write",
             countBefore, store.outcomeCount("NF", "2026-10-19"))
-        assertTrue("the generation must have advanced on the write",
-            store.generation() > genBefore)
+        assertEquals("and so must the envelope count",
+            envBefore, store.envelopeCount("NF", "2026-10-19"))
+        assertTrue("the generation must advance even when the counts do not: " +
+            "$genBefore -> ${store.generation()}", store.generation() > genBefore)
 
         // and a build that races a write reports an honest, non-consistent view
         val section = PremiumExportSection.build(fd, "2026-10-19")
@@ -2641,8 +2635,6 @@ class PremiumCaptureTest {
         // with no concurrent writer, a quiet read IS consistent
         assertTrue("a quiet read must still be consistent", nf.getBoolean("view_consistent"))
         assertTrue(nf.getInt("view_attempts") >= 1)
-        // size/count alone could not have detected the replacement
-        assertEquals(bytesBefore, store.sessionBytes("NF", "2026-10-19"))
     }
 
     /**

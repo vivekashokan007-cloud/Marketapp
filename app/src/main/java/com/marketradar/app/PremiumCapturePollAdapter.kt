@@ -46,7 +46,9 @@ object PremiumCapturePollAdapter {
         val chain: JSONObject?,
         val requestStartedMs: Long,
         val completedAtMs: Long,
-        val underlyingKey: String,
+        /** Nullable to match `ChainAcquisition.requestedUnderlyingKey`: an unknown index key is
+         *  carried as absent rather than as a guess. */
+        val underlyingKey: String?,
         val expiry: String?,
         val vendorSourceTs: String? = null,
     )

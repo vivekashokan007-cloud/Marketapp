@@ -190,14 +190,11 @@ jobs:
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
-      # REVIEW-BRANCH STEP, not intended for main. Gradle captures test stdout, so the
-      # premium-capture acceptance artifact and its byte measurements are written to files by
-      # PremiumCaptureTest and printed here; otherwise they cannot be collected and quoted as
-      # review evidence. Reads build output only: it publishes nothing and asserts nothing.
-      # Remove this step when the capture review closes.
       # Gradle prints only the exception class for a failed test, which makes a remote-only
-      # diagnosis a guessing game. The XML reports carry the actual assertion messages, so they
-      # are surfaced here on failure. Review-branch step; remove with the one below.
+      # diagnosis a guessing game — one failure cost several CI rounds of elimination before this
+      # existed. The XML reports carry the actual assertion messages, so they are surfaced on
+      # failure. This one prints diagnostics for a FAILED run rather than handing over evidence,
+      # so it stays; the evidence files are collected as a proper artifact below.
       - name: Premium capture failing-test messages (review diagnostics)
         if: failure()
         run: |
@@ -218,20 +215,43 @@ jobs:
           PY
           done
 
-      - name: Premium capture acceptance artifact (review evidence only)
+      # Intentional artifact collection, replacing the review-only `cat` of these files into the
+      # job log. The log dump was never a sound way to hand over evidence: a reviewer had to
+      # reconstruct the JSON from timestamp-prefixed log lines and could then only state a digest
+      # of their own reconstruction, with an explicit caveat about the original file's trailing
+      # whitespace. CI now computes the digests on the real files and uploads the files
+      # themselves, so the bytes a reviewer verifies are the bytes the producer wrote.
+      - name: Premium capture evidence manifest
         if: always()
         run: |
+          set -u
+          out=app/build/premium_capture_evidence
+          mkdir -p "$out"
           for f in app/build/premium_capture_measurements.txt \
                    app/build/premium_capture_resource_cost.txt \
                    app/build/premium_capture_acceptance_export.json; do
             if [ -f "$f" ]; then
-              echo "===== BEGIN $f ====="
-              cat "$f"
-              echo "===== END $f ====="
+              cp "$f" "$out/"
             else
-              echo "absent: $f"
+              echo "absent: $f" >> "$out/ABSENT.txt"
             fi
           done
+          ( cd "$out" && sha256sum ./* > SHA256SUMS 2>/dev/null || true )
+          { echo "head: ${GITHUB_SHA}";
+            echo "run: ${GITHUB_RUN_ID}";
+            echo "produced_by: PremiumCaptureTest against the committed raw vendor fixture";
+            echo "not_a_device_measurement: true"; } > "$out/PROVENANCE.txt"
+          echo "--- digests, computed by CI on the producer's own files ---"
+          cat "$out/SHA256SUMS" || true
+
+      - name: Upload premium capture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
+        with:
+          name: premium-capture-evidence-${{ github.sha }}
+          path: app/build/premium_capture_evidence
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: DB-1 migration suite and end-to-end parity audit (scratch PostgreSQL 17)
         env:
