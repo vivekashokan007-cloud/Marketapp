@@ -136,7 +136,11 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 "cohort_invalid")
         var cohort = loaded.cohort
         if (cohort == null) {
-            val sel = PremiumCaptureCohort.select(rawChain, index, sessionDate, acquisitionHhmm,
+            // the RESOLVED clock, not the raw one. CI caught this: `select` enforces the window on
+            // the clock it is handed, so passing `acquisitionHhmm` straight through meant an
+            // acquisition identified only by a scheduler slot — a legitimate case, with no
+            // acquisition clock at all — was refused OUTSIDE_WINDOW and could never pin a cohort.
+            val sel = PremiumCaptureCohort.select(rawChain, index, sessionDate, windowClock,
                 requestedUnderlyingKey, null)
             if (sel.status != PremiumCaptureCohort.SELECTED || sel.cohort == null)
                 return refuse(sel.status, sel.reason, "cohort_not_selected")

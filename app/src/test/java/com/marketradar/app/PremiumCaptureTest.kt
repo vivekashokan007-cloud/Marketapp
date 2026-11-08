@@ -44,13 +44,47 @@ class PremiumCaptureTest {
         PremiumCaptureStore(Files.createTempDirectory("premcap").toFile())
 
     /**
-     * Strip block comments, line comments and string literals before a source scan, so an
-     * assertion about what the code CALLS is not satisfied or broken by what it MENTIONS.
+     * Strip COMMENTS ONLY before a source scan, so an assertion about what the code references is
+     * not tripped by what the prose mentions.
+     *
+     * Hand-rolled and linear, for two reasons CI established. A regex version
+     * (`"(?:\\.|[^"\\])*"` and `/\*.*?\*/`) overflowed the stack inside `java.util.regex` on the
+     * larger files in this package — `StackOverflowError at Pattern.java`. And it stripped string
+     * literals too, which is a FALSE-NEGATIVE risk for a "must not reference" assertion: a
+     * reference inside a string template would have been erased rather than caught. String
+     * literals are therefore copied through verbatim, and only `"` is tracked so that a `//`
+     * inside a string is not mistaken for a comment.
      */
-    private fun stripCommentsAndStrings(src: String): String = src
-        .replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), " ")
-        .replace(Regex("//[^\n]*"), " ")
-        .replace(Regex("\"(?:\\\\.|[^\"\\\\])*\""), "\"\"")
+    private fun stripComments(src: String): String {
+        val out = StringBuilder(src.length)
+        var i = 0
+        val n = src.length
+        while (i < n) {
+            val c = src[i]
+            if (c == '/' && i + 1 < n && src[i + 1] == '/') {
+                while (i < n && src[i] != '\n') i++
+            } else if (c == '/' && i + 1 < n && src[i + 1] == '*') {
+                i += 2
+                while (i + 1 < n && !(src[i] == '*' && src[i + 1] == '/')) i++
+                i = minOf(i + 2, n)
+            } else if (c == '"' && i + 2 < n && src[i + 1] == '"' && src[i + 2] == '"') {
+                val start = i
+                i += 3
+                while (i + 2 < n && !(src[i] == '"' && src[i + 1] == '"' && src[i + 2] == '"')) i++
+                i = minOf(i + 3, n)
+                out.append(src, start, i)          // raw string kept, not erased
+            } else if (c == '"') {
+                val start = i
+                i++
+                while (i < n && src[i] != '"') { if (src[i] == '\\') i++; i++ }
+                i = minOf(i + 1, n)
+                out.append(src, start, i)          // string literal kept, not erased
+            } else {
+                out.append(c); i++
+            }
+        }
+        return out.toString()
+    }
 
     private fun md(vararg kv: Pair<String, Any?>): JSONObject {
         val o = JSONObject()
@@ -1279,7 +1313,7 @@ class PremiumCaptureTest {
             "SharedPreferences", "getSharedPreferences", "startService", "sendBroadcast")
         for (n in files) {
             // comments and string literals stripped: the assertion is about references, not prose
-            val src = stripCommentsAndStrings(
+            val src = stripComments(
                 File("src/main/java/com/marketradar/app/$n").readText())
             for (b in banned) assertFalse("$n must not reference $b", src.contains(b))
         }
@@ -1290,7 +1324,7 @@ class PremiumCaptureTest {
         val dir = File("src/main/java/com/marketradar/app")
         val referrers = (dir.listFiles() ?: emptyArray()).filter { f ->
             f.isFile && f.name.endsWith(".kt") && !f.name.startsWith("Premium") &&
-                stripCommentsAndStrings(f.readText()).contains("PremiumCapture")
+                stripComments(f.readText()).contains("PremiumCapture")
         }.map { it.name }
         assertEquals("no shipped source may reference the capture yet",
             emptyList<String>(), referrers)
@@ -1304,7 +1338,7 @@ class PremiumCaptureTest {
         assertEquals(14.2, OptionChainBrainFormatter.optionIv(
             leg("K", null, md("iv" to 14.2)), null), 1e-9)
         assertNull(OptionChainBrainFormatter.optionQuote(md("bid_price" to 0.0), "bid_price"))
-        val src = stripCommentsAndStrings(
+        val src = stripComments(
             File("src/main/java/com/marketradar/app/PremiumObservationContract.kt").readText())
         assertFalse("the evidence record must not CALL optionIv", src.contains("optionIv("))
         assertFalse("the evidence record must not CALL optionQuote", src.contains("optionQuote("))
