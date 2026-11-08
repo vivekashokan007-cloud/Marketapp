@@ -1729,7 +1729,7 @@ class NativeBridge(private val context: Context) {
                 fut.cancel(false)
                 return JSONObject().put("ok", false).put("status", "TIMEOUT").toString()
             }
-            val bytes = out.toByteArray(Charsets.UTF_8)
+            val bundleBytes = out.toByteArray(Charsets.UTF_8)
             val man = try { JSONObject(out).optJSONObject("manifest") } catch (e: Exception) { null }
             val status = man?.optString("status", "UNKNOWN") ?: "UNPARSABLE"
             val used = man?.optString("session_date_used", "")?.takeIf { it.length == 10 } ?: date
@@ -1763,22 +1763,25 @@ class NativeBridge(private val context: Context) {
             // Combined limit, enforced on the FINAL bytes including the premium section. The old
             // limit is not raised and old parts are never truncated: the premium section is
             // reduced in declared stages, and if it still will not fit the export is refused.
-            val fit = PremiumExportSection.mergeWithinCap(out, bytes, premium)
-            val finalBytes = fit.bytes
+            val fit = PremiumExportSection.mergeWithinCap(out, bundleBytes, premium)
+            // the FINAL payload actually saved. Named `bytes` deliberately: the pre-existing
+            // G0/PM1 guards pin the save call text, and that contract is about WHICH bytes are
+            // written for the exact session, so the final payload keeps the name.
+            val bytes = fit.bytes
             val stage = fit.stage
             if (fit.overCap) {
                 return JSONObject().put("ok", false).put("status", "OVER_CAP")
-                    .put("bytes", finalBytes.size)
+                    .put("bytes", bytes.size)
                     .put("cap", PremiumExportSection.COMBINED_CAP_BYTES)
-                    .put("bundle_bytes", bytes.size)
+                    .put("bundle_bytes", bundleBytes.size)
                     .put("premium_reduction_stage", stage)
                     .put("note", "old parts were not truncated and the limit was not raised")
                     .toString()
             }
-            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(finalBytes).joinToString("") { "%02x".format(it) }
-            val saved = saveExportBytes("mr_session_evidence_$used.json", "application/json", finalBytes)
+            val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            val saved = saveExportBytes("mr_session_evidence_$used.json", "application/json", bytes)
             JSONObject().put("ok", status == "OK" && saved.optBoolean("ok")).put("status", status)
-                .put("bytes", finalBytes.size).put("sha256", sha).put("session_date_used", used)
+                .put("bytes", bytes.size).put("sha256", sha).put("session_date_used", used)
                 .put("session_date_requested", date).put("parts", man?.optJSONObject("parts") ?: JSONObject())
                 // reported separately rather than folded into the existing parts object
                 .put("premium", JSONObject()
@@ -1788,8 +1791,8 @@ class NativeBridge(private val context: Context) {
                     .put("reduction_stage", stage)
                     .put("concurrent_capture_write_detected",
                         premium.optBoolean("concurrent_capture_write_detected", false))
-                    .put("bundle_bytes", bytes.size)
-                    .put("combined_bytes", finalBytes.size))
+                    .put("bundle_bytes", bundleBytes.size)
+                    .put("combined_bytes", bytes.size))
                 .put("fileName", saved.optString("fileName")).toString()
         } catch (e: Exception) {
             JSONObject().put("ok", false).put("status", "EXPORT_ERROR").put("error", e.javaClass.simpleName).toString()
