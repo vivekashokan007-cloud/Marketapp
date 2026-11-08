@@ -1934,6 +1934,86 @@ class PremiumCaptureTest {
             requestedUnderlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING[index],
             expiry = "2026-10-27", receiptHhmm = receipt)
 
+    /**
+     * THE CASE THAT WAS MISSING, and CI found its absence the expensive way.
+     *
+     * My size test measured records built by `observeFixture`, which passes no lot authority — so
+     * it never covered the path that actually grew the envelope. Attaching the ContractLotTable
+     * verdict inline pushed the envelope past the 2 KiB per-record cap, `putEnvelope` was refused,
+     * and every observation in the coordinator path was silently dropped with
+     * ENVELOPE_NOT_PERSISTED. The cap was not enlarged: the authority is now recorded once per
+     * index/session and referenced by content. This asserts the cap on the REAL coordinator path.
+     */
+    @Test
+    fun theCoordinatorPathKeepsEveryRecordInsideThePerRecordCap() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        val r = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+            listOf(acq("NF", "mon_0920_entry_NF"), acq("BNF", "mon_0920_entry_BNF")))
+        assertEquals(PremiumCaptureCoordinator.RAN, r.getString("status"))
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(fd))
+        var maxSize = 0
+        for (idx in listOf("NF", "BNF")) {
+            val envs = store.readEnvelopes(idx, "2026-10-19")
+            val recs = store.readAll(idx, "2026-10-19")
+            assertEquals("$idx must have persisted its envelope", 1, envs.size)
+            assertEquals("$idx must have persisted all six observations", 6, recs.size)
+            for (o in envs + recs) {
+                val n = o.toString().toByteArray(Charsets.UTF_8).size
+                maxSize = maxOf(maxSize, n)
+                assertTrue("$idx: a ${n} B record exceeds the unchanged " +
+                    "${PremiumCaptureStore.MAX_BYTES_PER_RECORD} B cap",
+                    n <= PremiumCaptureStore.MAX_BYTES_PER_RECORD)
+            }
+            // the authority is recorded ONCE per index/session, not per slot
+            val auth = store.readLotAuthority(idx, "2026-10-19")
+            assertNotNull("$idx: the lot authority must be recorded", auth)
+            assertEquals("CONTRACT_LOT_TABLE", auth!!.getString("authority"))
+            // and each envelope references it by content rather than carrying it
+            val env = envs.first()
+            assertFalse("the authority must not be inlined per slot",
+                env.getJSONObject("lot").has("production_authority"))
+            val ref = env.getJSONObject("lot").getString("production_authority_ref")
+            assertEquals(PremiumObservationContract.ref(
+                PremiumObservationContract.contentHash(auth)), ref)
+        }
+        // a second slot must not rewrite the authority
+        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:25",
+            listOf(acq("NF", "mon_0920_entry_NF", receipt = "09:25",
+                start = 300_000L, end = 300_300L)))
+        val row = PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:30",
+            listOf(acq("NF", "mon_0920_entry_NF", receipt = "09:30",
+                start = 600_000L, end = 600_300L)))
+            .getJSONArray("indices").getJSONObject(0)
+        assertEquals(PremiumCaptureStore.DUPLICATE_NO_OP, row.getString("lot_authority_write"))
+        println("COORDINATOR_MAX_RECORD_BYTES=$maxSize cap=" +
+            "${PremiumCaptureStore.MAX_BYTES_PER_RECORD}")
+    }
+
+    /** The authority is exported from the per-index/session record the envelopes reference. */
+    @Test
+    fun theExportResolvesTheProductionLotAuthorityFromItsOwnRecord() {
+        val fd = tmpFilesDir()
+        PremiumCaptureControl.setEnabled(fd, true)
+        PremiumCaptureCoordinator.onChainsAcquired(fd, "2026-10-19", "09:20",
+            listOf(acq("NF", "mon_0920_entry_NF")))
+        val pa = PremiumExportSection.build(fd, "2026-10-19")
+            .getJSONObject("indices").getJSONObject("NF")
+            .getJSONObject("references").getJSONObject("production_lot_authority")
+        assertTrue(pa.getBoolean("recorded"))
+        assertTrue("the envelopes' reference must match the recorded authority",
+            pa.getBoolean("reference_matches_record"))
+        assertTrue(pa.getBoolean("is_the_applications_own_contract_table"))
+        assertFalse("the generic test resolver must never stand in for it",
+            pa.getBoolean("generic_supplied_table_substituted"))
+        val auth = pa.getJSONObject("authority")
+        assertEquals(ContractLotTable.VERSION_ID, auth.getString("lot_table_version"))
+        assertFalse(auth.getBoolean("operational_current_allowed"))
+        assertFalse(auth.getBoolean("flattened_to_one_lot_per_underlying"))
+        // the claim is only authoritative if the table itself said so
+        assertEquals(auth.optBoolean("authoritative", false), pa.getBoolean("authoritative"))
+    }
+
     @Test
     fun theControlIsOffByDefaultAndAnUnreadableControlIsOffNotOn() {
         val fd = tmpFilesDir()
@@ -2490,8 +2570,11 @@ class PremiumCaptureTest {
             src.contains("premiumCaptureSafely {"))
         // the guard itself must catch Throwable: an OutOfMemoryError from a large chain snapshot
         // is an Error and would otherwise escape. Checked on the declaration, not on the file.
+        // sliced to the next declaration, NOT to the first "}": the body contains
+        // `try { block() }`, so substringBefore("}") cut the slice before the catch and the
+        // assertion could never see it. That was a bug in this test, found by CI.
         val guard = src.substringAfter("private inline fun premiumCaptureSafely(")
-            .substringBefore("}")
+            .substringBefore("private fun istHhmmOrNull")
         assertTrue("the guard must catch Throwable, not Exception, got: $guard",
             guard.contains("catch (t: Throwable)"))
         // the premium block itself must contain no request and no scheduling

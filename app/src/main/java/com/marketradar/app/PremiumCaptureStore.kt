@@ -119,6 +119,8 @@ class PremiumCaptureStore(val root: File) {
         File(sessionDir(index, session), "cohort.json")
     private fun summaryFile(index: String, session: String) =
         File(sessionDir(index, session), "summary.json")
+    private fun lotAuthorityFile(index: String, session: String) =
+        File(sessionDir(index, session), "lot_authority.json")
 
     private fun bytesOf(dir: File): Long {
         if (!dir.exists()) return 0
@@ -250,6 +252,37 @@ class PremiumCaptureStore(val root: File) {
             admit(KIND_COHORT, index, session, size)?.let { return it }
             atomicWriteLocked(sessionDir(index, session), dest, payload, size, replace = false)
         }
+    }
+
+    /**
+     * The production lot authority for one index/session, written ONCE.
+     *
+     * It lives here rather than inside each slot envelope because it is a per-index/session fact —
+     * the cohort pins the expiry, so the ContractLotTable verdict is constant across that
+     * session's slots — and because repeating it per slot pushed the envelope past the 2 KiB
+     * per-record cap. CI caught exactly that: every observation was refused with
+     * ENVELOPE_NOT_PERSISTED. The cap is not enlarged; the redundancy is removed.
+     */
+    fun putLotAuthority(index: String, session: String, authority: JSONObject): WriteResult {
+        return synchronized(lock) {
+            val payload = authority.toString()
+            val size = bytesOfText(payload)
+            val dest = lotAuthorityFile(index, session)
+            if (dest.isFile) {
+                val existing = runCatching { dest.readText() }.getOrNull()
+                if (existing == payload) return WriteResult(DUPLICATE_NO_OP, size)
+                return WriteResult(REFUSED_COHORT_CAP, size,
+                    "a different lot authority is already recorded for $index/$session")
+            }
+            admit(KIND_COHORT, index, session, size)?.let { return it }
+            atomicWriteLocked(sessionDir(index, session), dest, payload, size, replace = false)
+        }
+    }
+
+    fun readLotAuthority(index: String, session: String): JSONObject? {
+        val f = lotAuthorityFile(index, session)
+        if (!f.isFile) return null
+        return runCatching { JSONObject(f.readText()) }.getOrNull()
     }
 
     /** The pinned cohort as stored bytes, or null. Parse failure is the caller's to classify. */

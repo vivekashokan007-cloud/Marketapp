@@ -319,7 +319,7 @@ object PremiumObservationContract {
      * reader can see exactly what was and was not established.
      */
     fun lotEvidence(claimedLot: Any?, claimedSource: String?, tableRef: String?,
-                    mapRef: String?, productionAuthority: JSONObject? = null): JSONObject {
+                    mapRef: String?, productionAuthorityRef: String? = null): JSONObject {
         val src = (claimedSource ?: "").trim().uppercase()
         val lot = rawScalar(JSONObject().put("v", claimedLot ?: JSONObject.NULL), "v")
         val value = usable(lot)
@@ -344,17 +344,20 @@ object PremiumObservationContract {
             .put("contract_lot_table_ref", if (ref.isEmpty()) JSONObject.NULL else ref)
             .put("map_ref", mapRef ?: JSONObject.NULL)
             /*
-             * The application's OWN contract authority (`ContractLotTable`), carried faithfully
-             * when it resolved and left null when it did not.
+             * A CONTENT REFERENCE to the application's own contract authority
+             * (`ContractLotTable`), recorded once per index/session and resolved from the export.
              *
              * Codex: that table resolves by index, expiry, cycle and observation date because
              * different contracts coexist, so the generic underlying+session resolver below must
              * NOT be substituted for it, and its result must not be flattened into one number per
-             * underlying. This channel keeps its version, source, matched rule and as-of date, and
-             * is the only path to a PRODUCTION lot authority claim. The generic resolver stays
-             * what it is: a supplied-table path used with constructed test evidence.
+             * underlying. The authority itself keeps its version, source, matched rule and as-of
+             * date, and is the only path to a PRODUCTION lot authority claim.
+             *
+             * It is a reference rather than the object because the object is a per-index/session
+             * fact and inlining it per slot pushed the envelope past the 2 KiB per-record cap —
+             * CI caught that as every observation being refused. The cap was not enlarged.
              */
-            .put("production_authority", productionAuthority ?: JSONObject.NULL)
+            .put("production_authority_ref", productionAuthorityRef ?: JSONObject.NULL)
     }
 
     /**

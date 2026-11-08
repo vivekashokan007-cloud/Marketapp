@@ -195,6 +195,29 @@ jobs:
       # PremiumCaptureTest and printed here; otherwise they cannot be collected and quoted as
       # review evidence. Reads build output only: it publishes nothing and asserts nothing.
       # Remove this step when the capture review closes.
+      # Gradle prints only the exception class for a failed test, which makes a remote-only
+      # diagnosis a guessing game. The XML reports carry the actual assertion messages, so they
+      # are surfaced here on failure. Review-branch step; remove with the one below.
+      - name: Premium capture failing-test messages (review diagnostics)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for x in app/build/test-results/testDebugUnitTest/*.xml; do
+            python3 - "$x" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          t = ET.parse(sys.argv[1]).getroot()
+          for tc in t.iter('testcase'):
+              for bad in list(tc.findall('failure')) + list(tc.findall('error')):
+                  print('FAILED %s.%s' % (tc.get('classname'), tc.get('name')))
+                  msg = (bad.get('message') or '').strip()
+                  print('  message: %s' % msg[:2000])
+                  body = (bad.text or '').strip().splitlines()
+                  for line in body[:6]:
+                      print('  %s' % line[:300])
+                  print()
+          PY
+          done
+
       - name: Premium capture acceptance artifact (review evidence only)
         if: always()
         run: |

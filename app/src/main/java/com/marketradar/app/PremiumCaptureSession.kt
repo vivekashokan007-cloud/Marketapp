@@ -110,8 +110,9 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         claimedLotSource: String? = null,
         lotTableRef: String? = null,
         mapRef: String? = null,
-        // the application's own contract authority, carried faithfully when it resolved
-        productionLotAuthority: JSONObject? = null,
+        // a content reference to the application's own contract authority, recorded once per
+        // index/session by the caller and resolved from the export
+        productionLotAuthorityRef: String? = null,
         /*
          * The scheduler's INTENDED slot, recorded as evidence beside the slot actually derived
          * from the acquisition clock.
@@ -174,7 +175,7 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 if (declaredSchedulerSlot.isNullOrBlank()) JSONObject.NULL
                 else declaredSchedulerSlot == slotId.slot)
         val lot = PremiumObservationContract.lotEvidence(
-            claimedLot, claimedLotSource, lotTableRef, mapRef, productionLotAuthority)
+            claimedLot, claimedLotSource, lotTableRef, mapRef, productionLotAuthorityRef)
 
         val pinned = PremiumCaptureCohort.pinnedList(cohort)
         // locate first, so the envelope's underlying comes from the SAME acquisition row the
@@ -574,6 +575,29 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                     .put("per_acquisition", lotResolutions))
                 // no schema is validated for the instrument map, so presence is all that is
                 // claimed for it — a named reference is not the data it names
+                // the application's own contract authority, resolved from the per-index/session
+                // record the envelopes reference by content. Separate from the generic
+                // supplied-table resolver above, which is a TEST path and must never stand in
+                // for it.
+                .put("production_lot_authority", JSONObject().also { pa ->
+                    val rec = store.readLotAuthority(index, sessionDate)
+                    val refs = envRead.rows.mapNotNull {
+                        it.optJSONObject("lot")?.optString("production_authority_ref")
+                            ?.takeIf { r -> r.isNotEmpty() } }.toSet()
+                    val actual = rec?.let {
+                        PremiumObservationContract.ref(
+                            PremiumObservationContract.contentHash(it)) }
+                    pa.put("recorded", rec != null)
+                        .put("authority", rec ?: JSONObject.NULL)
+                        .put("referenced_by_envelopes", JSONArray().also { a ->
+                            refs.forEach { r -> a.put(r) } })
+                        .put("reference_matches_record",
+                            actual != null && refs.isNotEmpty() && refs.all { it == actual })
+                        .put("resolved", rec?.optBoolean("resolved", false) ?: false)
+                        .put("authoritative", rec?.optBoolean("authoritative", false) ?: false)
+                        .put("is_the_applications_own_contract_table", true)
+                        .put("generic_supplied_table_substituted", false)
+                })
                 .put("instrument_map", refBlock(mapRefs, mapObject,
                     if (mapObject != null) "UNVALIDATED_METADATA_PRESENT"
                     else if (mapRefs.isEmpty()) "NO_REFERENCE_RECORDED" else "UNRESOLVED_REFERENCE"))

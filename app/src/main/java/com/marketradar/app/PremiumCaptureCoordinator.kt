@@ -175,6 +175,14 @@ object PremiumCaptureCoordinator {
                     // live formatter cannot mutate what capture digests and persists
                     val frozen = acq.rawChain?.let { JSONObject(it.toString()) }
                     val lot = lotClaimFromContractAuthority(acq.index, sessionDate, acq.expiry)
+                    // the authority is a per-index/session fact: recorded ONCE and referenced by
+                    // content from each slot, so the per-slot envelope stays inside the 2 KiB cap
+                    val authority = lot.getJSONObject("production_authority")
+                    val authorityWrite = store.putLotAuthority(acq.index, sessionDate, authority)
+                    val authorityRef = if (authorityWrite.persisted)
+                        PremiumObservationContract.ref(
+                            PremiumObservationContract.contentHash(authority)) else null
+                    row.put("lot_authority_write", authorityWrite.status)
                     val r = session.observeSlot(
                         index = acq.index,
                         sessionDate = sessionDate,
@@ -192,7 +200,7 @@ object PremiumCaptureCoordinator {
                         claimedLotSource = lot.optString("claimed_source").ifEmpty { null },
                         lotTableRef = lot.optString("table_ref").ifEmpty { null },
                         mapRef = null,
-                        productionLotAuthority = lot.optJSONObject("production_authority"),
+                        productionLotAuthorityRef = authorityRef,
                     )
                     row.put("status", r.status)
                         .put("acquisition_id", r.acquisitionId ?: JSONObject.NULL)
