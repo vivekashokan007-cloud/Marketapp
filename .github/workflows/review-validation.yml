@@ -199,6 +199,7 @@ jobs:
         if: always()
         run: |
           for f in app/build/premium_capture_measurements.txt \
+                   app/build/premium_capture_resource_cost.txt \
                    app/build/premium_capture_acceptance_export.json; do
             if [ -f "$f" ]; then
               echo "===== BEGIN $f ====="

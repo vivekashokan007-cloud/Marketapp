@@ -1232,6 +1232,47 @@ class MarketWatchService : Service() {
                 LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
             }
 
+            // Premium evidence capture, DEFAULT OFF. Placed deliberately BEFORE the abort below.
+            //
+            // That abort fires when the separate breadth/stocks request returns null, even when
+            // both option chains succeeded — and the existing m0RecordCaptures hook sits after it,
+            // so M0 already loses good chains to an unrelated failure. Premium capture must not
+            // repeat that, so it runs here, where a successful chain is still in hand. It makes no
+            // request of its own, reuses each chain exactly once, is wrapped so a capture failure
+            // cannot fail or stall this poll, and returns a status only. Nothing it writes is read
+            // by admission, ranking, sizing, exits, notifications or the Paper/Real lock.
+            premiumCaptureSafely {
+                val ordinal = slotKey?.substringAfter('|')?.toIntOrNull()
+                val declaredSlot = ordinal?.let {
+                    val m = MARKET_OPEN_MINUTE + (it - 1) * POLL_SLOT_MINUTES
+                    "%02d:%02d".format(m / 60, m % 60)
+                }
+                val status = PremiumCaptureCoordinator.onChainsAcquired(
+                    filesDir, today, declaredSlot,
+                    listOf(
+                        PremiumCaptureCoordinator.ChainAcquisition(
+                            index = "BNF", rawChain = bnfChainJson,
+                            requestStartedMs = m0BnfFetchStartMs,
+                            responseReceivedMs = x1BnfChainFetchedAtMs,
+                            requestedUnderlyingKey = "NSE_INDEX|Nifty Bank",
+                            expiry = bnfExpiry,
+                            receiptHhmm = istHhmmOrNull(x1BnfChainFetchedAtMs),
+                        ),
+                        PremiumCaptureCoordinator.ChainAcquisition(
+                            index = "NF", rawChain = nfChainJson,
+                            requestStartedMs = m0NfFetchStartMs,
+                            responseReceivedMs = x1NfChainFetchedAtMs,
+                            requestedUnderlyingKey = "NSE_INDEX|Nifty 50",
+                            expiry = nfExpiry,
+                            receiptHhmm = istHhmmOrNull(x1NfChainFetchedAtMs),
+                        ),
+                    ))
+                if (status.optString("status") != PremiumCaptureCoordinator.DISABLED)
+                    LogBuffer.add('I', TAG, "PREMIUM_CAPTURE: ${status.optString("status")}" +
+                        " elapsed=${status.optLong("total_elapsed_ms")}ms" +
+                        " indices=${status.optJSONArray("indices")}")
+            }
+
             if (bnfChainJson == null || bnfStocksJson == null || nfChainJson == null) {
                 Log.e(TAG, "POLL_FAIL: Chain or stocks fetch returned null")
                 return
@@ -1338,6 +1379,25 @@ class MarketWatchService : Service() {
     // ---------------------------------------------------------------- M0 research collector (collection only)
     @Volatile private var m0Attempts: Map<String, ResearchCollector.Begin.Started> = emptyMap()
     private fun m0Dir(): File = File(filesDir, ResearchCollector.DIR)
+    /**
+     * Premium capture can never fail a poll. Catches `Throwable`, not `Exception`, because an
+     * `OutOfMemoryError` from a large chain snapshot is an `Error` and would otherwise escape.
+     * Mirrors `m0Safely` below; kept separate so the two capture paths cannot mask each other.
+     */
+    private inline fun premiumCaptureSafely(block: () -> Unit) {
+        try { block() } catch (t: Throwable) {
+            LogBuffer.add('W', TAG, "PREMIUM_CAPTURE_FAIL: ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** IST HH:MM for a device-local epoch stamp, or null when the stamp is not a real time. */
+    private fun istHhmmOrNull(ms: Long): String? {
+        if (ms <= 0L) return null
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+            .apply { timeInMillis = ms }
+        return "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+    }
+
     private inline fun <T> m0Safely(where: String, fallback: T, block: () -> T): T = try { block() } catch (t: Throwable) {
         ResearchCollector.recordFailure(m0Dir(), where, t)
         LogBuffer.add('W', TAG, "M0_COLLECTOR_FAIL[$where]: ${t.javaClass.simpleName}")

@@ -110,6 +110,21 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         claimedLotSource: String? = null,
         lotTableRef: String? = null,
         mapRef: String? = null,
+        // the application's own contract authority, carried faithfully when it resolved
+        productionLotAuthority: JSONObject? = null,
+        /*
+         * The scheduler's INTENDED slot, recorded as evidence beside the slot actually derived
+         * from the acquisition clock.
+         *
+         * This is separate from `schedulerSlot` on purpose. Passing the scheduler's slot as
+         * authoritative would relabel a response that arrived just after a five-minute boundary —
+         * the poll grid starts at 09:15 and a chain fetch completing at 09:25:01 for a poll that
+         * began at 09:24:58 is an ordinary case, not a late response. Codex requires that a
+         * disagreement be REPORTED rather than used to relabel, so the real clock decides the slot
+         * and the scheduler's intent is carried here with an agreement flag. A caller that does
+         * supply a conflicting `schedulerSlot` is still refused, which is the accepted behaviour.
+         */
+        declaredSchedulerSlot: String? = null,
     ): SlotResult {
         fun refuse(status: String, detail: String?, counter: String): SlotResult {
             store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
@@ -154,8 +169,12 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             requestStartedMs, responseReceivedMs, vendorSourceTs)
             .put("slot_basis", slotId.basis)
             .put("actual_acquisition_clock", slotId.actualClock ?: JSONObject.NULL)
+            .put("scheduler_slot_declared", declaredSchedulerSlot ?: JSONObject.NULL)
+            .put("scheduler_slot_agrees_with_clock",
+                if (declaredSchedulerSlot.isNullOrBlank()) JSONObject.NULL
+                else declaredSchedulerSlot == slotId.slot)
         val lot = PremiumObservationContract.lotEvidence(
-            claimedLot, claimedLotSource, lotTableRef, mapRef)
+            claimedLot, claimedLotSource, lotTableRef, mapRef, productionLotAuthority)
 
         val pinned = PremiumCaptureCohort.pinnedList(cohort)
         // locate first, so the envelope's underlying comes from the SAME acquisition row the

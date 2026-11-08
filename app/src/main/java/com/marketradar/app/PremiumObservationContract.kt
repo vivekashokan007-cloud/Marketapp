@@ -302,6 +302,7 @@ object PremiumObservationContract {
     const val LOT_UNRESOLVED_NO_ROW = "UNRESOLVED_NO_ROW_FOR_UNDERLYING"
     const val LOT_UNRESOLVED_NOT_EFFECTIVE = "UNRESOLVED_NOT_EFFECTIVE_AT_SESSION"
     const val LOT_UNRESOLVED_INVALID_ROW = "UNRESOLVED_TABLE_ROW_LOT_INVALID"
+    const val LOT_UNRESOLVED_AMBIGUOUS_ROWS = "UNRESOLVED_AMBIGUOUS_OVERLAPPING_ROWS"
     const val LOT_UNRESOLVED_BAD_REFERENCE = "UNRESOLVED_REFERENCE_NOT_DATED"
     const val LOT_CONFLICTS_WITH_CLAIM = "RESOLVED_BUT_CONFLICTS_WITH_PRODUCER_CLAIM"
     const val LOT_RESOLVED = "RESOLVED_FROM_DATED_TABLE_ROW"
@@ -318,7 +319,7 @@ object PremiumObservationContract {
      * reader can see exactly what was and was not established.
      */
     fun lotEvidence(claimedLot: Any?, claimedSource: String?, tableRef: String?,
-                    mapRef: String?): JSONObject {
+                    mapRef: String?, productionAuthority: JSONObject? = null): JSONObject {
         val src = (claimedSource ?: "").trim().uppercase()
         val lot = rawScalar(JSONObject().put("v", claimedLot ?: JSONObject.NULL), "v")
         val value = usable(lot)
@@ -342,6 +343,18 @@ object PremiumObservationContract {
                 "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE")
             .put("contract_lot_table_ref", if (ref.isEmpty()) JSONObject.NULL else ref)
             .put("map_ref", mapRef ?: JSONObject.NULL)
+            /*
+             * The application's OWN contract authority (`ContractLotTable`), carried faithfully
+             * when it resolved and left null when it did not.
+             *
+             * Codex: that table resolves by index, expiry, cycle and observation date because
+             * different contracts coexist, so the generic underlying+session resolver below must
+             * NOT be substituted for it, and its result must not be flattened into one number per
+             * underlying. This channel keeps its version, source, matched rule and as-of date, and
+             * is the only path to a PRODUCTION lot authority claim. The generic resolver stays
+             * what it is: a supplied-table path used with constructed test evidence.
+             */
+            .put("production_authority", productionAuthority ?: JSONObject.NULL)
     }
 
     /**
@@ -382,7 +395,9 @@ object PremiumObservationContract {
             "supplied table is '$have', the records name '$want'")
         val rows = table.optJSONArray("rows") ?: JSONArray()
         val asOf = java.time.LocalDate.parse(asOfSession)
-        var matched: JSONObject? = null
+        // ALL effective rows are collected, not the first match: Codex requires ambiguous
+        // overlapping rows to be rejected rather than silently resolved by document order.
+        val effective = ArrayList<JSONObject>()
         for (i in 0 until rows.length()) {
             val r = rows.optJSONObject(i) ?: continue
             if (r.optString("underlying_key").trim() != underlyingKey) continue
@@ -394,10 +409,15 @@ object PremiumObservationContract {
                 if (!isCalendarDate(to)) continue
                 if (java.time.LocalDate.parse(to).isBefore(asOf)) continue
             }
-            matched = r
-            break
+            effective.add(r)
         }
-        val row = matched ?: return verdict(LOT_UNRESOLVED_NO_ROW,
+        if (effective.size > 1) {
+            val distinct = effective.map { it.opt("lot")?.toString() }.toSet()
+            out.put("overlapping_effective_rows", effective.size)
+            if (distinct.size > 1) return verdict(LOT_UNRESOLVED_AMBIGUOUS_ROWS,
+                "${effective.size} overlapping effective rows disagree: $distinct")
+        }
+        val row = effective.firstOrNull() ?: return verdict(LOT_UNRESOLVED_NO_ROW,
             "no row for '$underlyingKey' effective at $asOfSession among ${rows.length()} row(s)")
         val tableLot = rawScalar(row, "lot")
         val tv = usable(tableLot)
