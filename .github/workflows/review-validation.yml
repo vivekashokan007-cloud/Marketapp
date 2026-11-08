@@ -223,6 +223,8 @@ jobs:
       # themselves, so the bytes a reviewer verifies are the bytes the producer wrote.
       - name: Premium capture evidence manifest
         if: always()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -u
           out=app/build/premium_capture_evidence
@@ -237,10 +239,17 @@ jobs:
             fi
           done
           ( cd "$out" && sha256sum ./* > SHA256SUMS 2>/dev/null || true )
-          { echo "head: ${GITHUB_SHA}";
+          # The HEAD sha, not GITHUB_SHA. On a pull_request event GITHUB_SHA is the ephemeral
+          # merge commit, which is not the head anyone reviews — labelling evidence with it
+          # misattributes which commit produced it. Both are recorded so the distinction is
+          # visible rather than implied.
+          { echo "head: ${HEAD_SHA}";
+            echo "github_sha_merge_ref: ${GITHUB_SHA}";
             echo "run: ${GITHUB_RUN_ID}";
             echo "produced_by: PremiumCaptureTest against the committed raw vendor fixture";
+            echo "fixture: app/src/test/resources/contracts/x1_upstox_raw_chains.json";
             echo "not_a_device_measurement: true"; } > "$out/PROVENANCE.txt"
+          cat "$out/PROVENANCE.txt"
           echo "--- digests, computed by CI on the producer's own files ---"
           cat "$out/SHA256SUMS" || true
 
@@ -248,7 +257,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
         with:
-          name: premium-capture-evidence-${{ github.sha }}
+          name: premium-capture-evidence-${{ github.event.pull_request.head.sha || github.sha }}
           path: app/build/premium_capture_evidence
           if-no-files-found: warn
           retention-days: 14
