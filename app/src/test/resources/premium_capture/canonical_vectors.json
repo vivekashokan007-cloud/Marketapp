@@ -1,14 +1,16 @@
 {
-  "declared_gap": "TWO declared gaps, neither verified away. (1) org.json escapes '/' after '<' and some non-ASCII ranges as \\uXXXX where json.dumps does not, so a vendor string containing them WOULD diverge. (2) Java Double.toString only guarantees a shortest-round-trip rendering from JDK 19, so a DERIVED non-exact double (such as a raw IV difference) could render with different digits than Python repr on an older JDK. No vector depends on either: every float here is integral or a short literal, and the one derived value is exact in binary. Real records CAN contain both shapes, and for those the two implementations are untested, not proven equal.",
+  "closed_gaps": "org.json's '/'-after-'<' rule and its U+0080-U+009F / U+2000-U+20FF escaping are now implemented here and asserted as exact vectors, rather than declared as untested divergences.",
   "generator": "tools/premium_capture_vectors.py",
   "mirrored_constants": {
-    "cohort_rule_version": "premium_capture_cohort_v1_three_nearest_paired_strikes",
-    "envelope_version": "mr.premium_slot_envelope.v1",
+    "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
+    "envelope_version": "mr.premium_slot_envelope.v2",
     "hash_omitted_field": "payload_sha256",
     "non_finite_nan": "NON_FINITE_NAN",
-    "record_version": "mr.premium_observation.v2"
+    "record_version": "mr.premium_observation.v3",
+    "ref_hex_len": 32
   },
-  "purpose": "Cross-language parity. The Python mirror in the generator measured the record sizes and produced the synthetic export because the Kotlin cannot run in the analysis environment; these vectors let CI make the Kotlin prove the mirror right instead of being trusted.",
+  "purpose": "An INDEPENDENT implementation of the canonical encoding, so the Kotlin is checked against something other than itself. This mirror does NOT model the record shape and does NOT produce the acceptance export: both come from the real Kotlin classes in CI.",
+  "remaining_limit": "Java's Double.toString only guarantees shortest-round-trip rendering from JDK 19 and CI runs JDK 17, so a DERIVED non-exact double is carried as a round_trip vector: the Kotlin asserts stability under a text round trip and value preservation, not a cross-runtime digit string. Nothing here claims that equivalence.",
   "serialization": "json_sorted_keys_compact_utf8_v1",
   "vectors": [
     {
@@ -17,6 +19,7 @@
         "a": 1.0,
         "b": 24650.0
       },
+      "mode": "exact",
       "name": "integral_double_renders_as_integer",
       "sha256": "f61e7b496b13fe20d9eb3a38b90760a54a0422e829951b43168377bb1ed8c71a"
     },
@@ -29,6 +32,7 @@
         "d": 0.0,
         "e": -0.0
       },
+      "mode": "exact",
       "name": "trailing_zero_decimal_is_not_a_distinct_value",
       "sha256": "c8c795f0fbc9531ff1e343c65ff6eb02036adbc1da00d55d727feeac36521010"
     },
@@ -39,6 +43,7 @@
         "b": 1e-05,
         "c": 1.5e-07
       },
+      "mode": "exact",
       "name": "small_magnitudes_render_in_plain_form",
       "sha256": "de84a919aed921faee3e812458aff0820648ad373c8512090e3b25586559c284"
     },
@@ -48,6 +53,7 @@
         "d": -0.0375,
         "iv": 0.1412
       },
+      "mode": "exact",
       "name": "fractional_double_keeps_precision",
       "sha256": "a2e758a26e95b3ef41177782b4d8b716f5c0f091fc54ba7d50af10e400183d7c"
     },
@@ -58,6 +64,7 @@
         "m": 2,
         "z": 1
       },
+      "mode": "exact",
       "name": "keys_are_sorted_not_insertion_ordered",
       "sha256": "81cc7e2ddc2a93f4d3b929147f8528fea9204808c12db95eac32c33147ddaf6c"
     },
@@ -67,6 +74,7 @@
         "present": "x",
         "vendor_source_ts": null
       },
+      "mode": "exact",
       "name": "json_null_is_null_not_absent",
       "sha256": "6d595c1a7e4060eae638b7e1f297a1612bd153a414a94a22b4c47f954b2f16e8"
     },
@@ -76,6 +84,7 @@
         "f": false,
         "t": true
       },
+      "mode": "exact",
       "name": "booleans_are_bare",
       "sha256": "c22848c47426fcf4d27e55573c22f1d23546315c251e8e4bc384820ba5fae568"
     },
@@ -93,6 +102,7 @@
           "b": 2
         }
       },
+      "mode": "exact",
       "name": "nested_object_and_array",
       "sha256": "e193376f81896a4b9365ac766e7a3e5325e47472454c90d1f33042f0e6351393"
     },
@@ -102,6 +112,7 @@
         "l": [],
         "o": {}
       },
+      "mode": "exact",
       "name": "empty_containers",
       "sha256": "111c683c055d4f0a50ce55366e2dfc66644f79266248039a271dd7e25cd5b104"
     },
@@ -110,8 +121,52 @@
       "input": {
         "s": "a\"b\\c\nd\te"
       },
+      "mode": "exact",
       "name": "escapes_quote_backslash_newline_tab",
       "sha256": "3fe8db26dc2df0fc1e6cea51d173b76578b486002a00307b508f9fa116c30a36"
+    },
+    {
+      "canonical": "{\"s\":\"\\u0001\\u001f\\b\\f\\r\"}",
+      "input": {
+        "s": "\u0001\u001f\b\f\r"
+      },
+      "mode": "exact",
+      "name": "control_characters_are_escaped",
+      "sha256": "0252d28d8e35cf87464c5c845bf15416970a802ee44fedff26e8619a8ba4e615"
+    },
+    {
+      "canonical": "{\"a\":\"<\\/script>\",\"b\":\"a/b\",\"c\":\"http://x/y\",\"d\":\"<<\\//\"}",
+      "input": {
+        "a": "</script>",
+        "b": "a/b",
+        "c": "http://x/y",
+        "d": "<<//"
+      },
+      "mode": "exact",
+      "name": "slash_escaped_only_after_angle_bracket",
+      "sha256": "3ccee918228b239d84908b1623aacdbb9d1d98d55ec7fd24855de36b9a8d2c37"
+    },
+    {
+      "canonical": "{\"c1\":\"\\u0080\\u009f\",\"literal\":\" é中℀\",\"punct\":\"\\u2000\\u2019\\u20ac\\u20ff\"}",
+      "input": {
+        "c1": "",
+        "literal": " é中℀",
+        "punct": " ’€⃿"
+      },
+      "mode": "exact",
+      "name": "non_ascii_escaped_ranges_only",
+      "sha256": "e13e3ffac4c879b816ba850466a521152c222d21c4e083419c27656589eee9d4"
+    },
+    {
+      "canonical": "{\"note\":\"n\\u2019a\",\"raw\":\"<\\/n/a>\",\"status\":\"OBSERVED_MALFORMED\"}",
+      "input": {
+        "note": "n’a",
+        "raw": "</n/a>",
+        "status": "OBSERVED_MALFORMED"
+      },
+      "mode": "exact",
+      "name": "malformed_vendor_string_shapes",
+      "sha256": "91778d78c9e53c121623f65821fbba3c98a3e6e73e4fb071e0307aba4b4f0fc7"
     },
     {
       "canonical": "{\"raw\":\"61.250\",\"status\":\"PRESENT_VALID\"}",
@@ -119,6 +174,7 @@
         "raw": "61.250",
         "status": "PRESENT_VALID"
       },
+      "mode": "exact",
       "name": "numeric_string_is_not_reformatted",
       "sha256": "ac826d9502c79af271ee8da8204d36cdc14d4538850b6021ba2a44f2277427ac"
     },
@@ -128,169 +184,38 @@
         "instrument_key": "NSE_FO|12345",
         "underlying_key": "NSE_INDEX|Nifty Bank"
       },
+      "mode": "exact",
       "name": "pipe_and_space_in_identity_strings",
       "sha256": "911ebbf75b6d16e7761e29d06d2f53b989afa2af1337a84d5ea96117d387a687"
     },
     {
-      "canonical": "{\"bbo\":{\"ask_qty_raw\":{\"raw\":900,\"status\":\"PRESENT_VALID\"},\"ask_raw\":{\"raw\":62,\"status\":\"PRESENT_VALID\"},\"bid_qty_raw\":{\"raw\":1200,\"status\":\"PRESENT_VALID\"},\"bid_raw\":{\"raw\":61.25,\"status\":\"PRESENT_VALID\"},\"book_status\":\"TWO_SIDED\",\"executable_mid_computed\":false,\"ltp_raw\":{\"raw\":61.6,\"status\":\"PRESENT_VALID\"},\"ltp_used_as_quote_fallback\":false,\"quantity_unit_status\":\"UNKNOWN\"},\"envelope_join\":\"session_date+index+slot\",\"hash_basis\":{\"authenticates\":\"RECORDED_BYTES_AND_IDENTITY_ONLY\",\"authenticates_vendor_truth\":false,\"omitted_field\":\"payload_sha256\",\"serialization\":\"json_sorted_keys_compact_utf8_v1\"},\"identity\":{\"identity_disagreements\":[],\"identity_verified\":true,\"observed_strike_raw\":{\"raw\":24650,\"status\":\"PRESENT_VALID\"},\"pinned_resolves_via\":\"cohort.pinned_contracts[instrument_key]\"},\"index\":\"NF\",\"instrument_key\":\"NSE_FO|SYNTH24650CE\",\"iv\":{\"iv_authoritative_resolved\":false,\"iv_greeks_raw\":{\"raw\":0.125,\"status\":\"PRESENT_VALID\"},\"iv_market_data_raw\":{\"raw\":0.0625,\"status\":\"PRESENT_VALID\"},\"iv_raw_field_comparison\":{\"basis\":\"RAW_FIELD_DIFFERENCE_UNITS_UNVERIFIED\",\"economically_meaningful\":false,\"greeks_minus_market_data\":0.0625},\"iv_source\":\"BOTH_PRESENT\",\"iv_unit_status\":\"UNKNOWN\",\"iv_unit_verification\":null},\"outcome\":\"OBSERVED\",\"payload_sha256\":\"0646a948a3949c3227b0171f6b2948526130e9a26a78f890128b3ef0acee06c7\",\"record_version\":\"mr.premium_observation.v2\",\"session_date\":\"2026-11-07\",\"slot\":\"09:20\"}",
+      "canonical": "{\"d\":0.0013999999999999846}",
       "input": {
-        "bbo": {
-          "ask_qty_raw": {
-            "raw": 900,
-            "status": "PRESENT_VALID"
-          },
-          "ask_raw": {
-            "raw": 62.0,
-            "status": "PRESENT_VALID"
-          },
-          "bid_qty_raw": {
-            "raw": 1200,
-            "status": "PRESENT_VALID"
-          },
-          "bid_raw": {
-            "raw": 61.25,
-            "status": "PRESENT_VALID"
-          },
-          "book_status": "TWO_SIDED",
-          "executable_mid_computed": false,
-          "ltp_raw": {
-            "raw": 61.6,
-            "status": "PRESENT_VALID"
-          },
-          "ltp_used_as_quote_fallback": false,
-          "quantity_unit_status": "UNKNOWN"
-        },
-        "envelope_join": "session_date+index+slot",
-        "hash_basis": {
-          "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
-          "authenticates_vendor_truth": false,
-          "omitted_field": "payload_sha256",
-          "serialization": "json_sorted_keys_compact_utf8_v1"
-        },
-        "identity": {
-          "identity_disagreements": [],
-          "identity_verified": true,
-          "observed_strike_raw": {
-            "raw": 24650,
-            "status": "PRESENT_VALID"
-          },
-          "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
-        },
-        "index": "NF",
-        "instrument_key": "NSE_FO|SYNTH24650CE",
-        "iv": {
-          "iv_authoritative_resolved": false,
-          "iv_greeks_raw": {
-            "raw": 0.125,
-            "status": "PRESENT_VALID"
-          },
-          "iv_market_data_raw": {
-            "raw": 0.0625,
-            "status": "PRESENT_VALID"
-          },
-          "iv_raw_field_comparison": {
-            "basis": "RAW_FIELD_DIFFERENCE_UNITS_UNVERIFIED",
-            "economically_meaningful": false,
-            "greeks_minus_market_data": 0.0625
-          },
-          "iv_source": "BOTH_PRESENT",
-          "iv_unit_status": "UNKNOWN",
-          "iv_unit_verification": null
-        },
-        "outcome": "OBSERVED",
-        "payload_sha256": "0646a948a3949c3227b0171f6b2948526130e9a26a78f890128b3ef0acee06c7",
-        "record_version": "mr.premium_observation.v2",
-        "session_date": "2026-11-07",
-        "slot": "09:20"
+        "d": 0.0013999999999999846
       },
-      "name": "observation_record_shape",
-      "sha256": "93e8f6c1bc5b8ffa7aeb922bf62ab22f5d854adc929bf164ab6a77dba4d2b64b"
+      "mode": "round_trip",
+      "name": "derived_decimal_iv_difference",
+      "note": "canonical string is NOT asserted across runtimes; the Kotlin asserts round-trip stability and value preservation"
     },
     {
-      "canonical": "{\"bbo\":null,\"envelope_join\":\"session_date+index+slot\",\"hash_basis\":{\"authenticates\":\"RECORDED_BYTES_AND_IDENTITY_ONLY\",\"authenticates_vendor_truth\":false,\"omitted_field\":\"payload_sha256\",\"serialization\":\"json_sorted_keys_compact_utf8_v1\"},\"identity\":{\"identity_disagreements\":[],\"identity_verified\":true,\"observed_strike_raw\":{\"raw\":24750,\"status\":\"PRESENT_VALID\"},\"pinned_resolves_via\":\"cohort.pinned_contracts[instrument_key]\"},\"index\":\"NF\",\"instrument_key\":\"NSE_FO|SYNTH24750CE\",\"iv\":null,\"outcome\":\"MISSING_NOT_IN_RESPONSE\",\"payload_sha256\":\"3c53c97fa5544797e3d2ab0c1bcb1841e7c90dd62f012730aead282a44ee7ec6\",\"record_version\":\"mr.premium_observation.v2\",\"session_date\":\"2026-11-07\",\"slot\":\"09:25\"}",
+      "canonical": "{\"d\":0.3333333333333333,\"e\":0.6666666666666666}",
       "input": {
-        "bbo": null,
-        "envelope_join": "session_date+index+slot",
-        "hash_basis": {
-          "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
-          "authenticates_vendor_truth": false,
-          "omitted_field": "payload_sha256",
-          "serialization": "json_sorted_keys_compact_utf8_v1"
-        },
-        "identity": {
-          "identity_disagreements": [],
-          "identity_verified": true,
-          "observed_strike_raw": {
-            "raw": 24750,
-            "status": "PRESENT_VALID"
-          },
-          "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
-        },
-        "index": "NF",
-        "instrument_key": "NSE_FO|SYNTH24750CE",
-        "iv": null,
-        "outcome": "MISSING_NOT_IN_RESPONSE",
-        "payload_sha256": "3c53c97fa5544797e3d2ab0c1bcb1841e7c90dd62f012730aead282a44ee7ec6",
-        "record_version": "mr.premium_observation.v2",
-        "session_date": "2026-11-07",
-        "slot": "09:25"
+        "d": 0.3333333333333333,
+        "e": 0.6666666666666666
       },
-      "name": "non_observation_keeps_null_iv_and_bbo",
-      "sha256": "eab66131bb9927b1f90c2248df55d072276b0049b32c1f15461cc43f5537de8c"
+      "mode": "round_trip",
+      "name": "derived_decimal_division",
+      "note": "canonical string is NOT asserted across runtimes; the Kotlin asserts round-trip stability and value preservation"
     },
     {
-      "canonical": "{\"clocks\":{\"acquisition_elapsed_ms\":412,\"acquisition_request_ms\":1762500000000,\"acquisition_response_ms\":1762500000412,\"actual_acquisition_clock\":\"09:20\",\"clock_basis\":\"LOCAL_ACQUISITION_RECEIPT\",\"quote_event_clock_verified\":false,\"slot_basis\":\"SCHEDULER_SLOT\",\"vendor_event_semantics\":\"UNVERIFIED\",\"vendor_source_ts\":null,\"vendor_ts_status\":\"VENDOR_TS_ABSENT\"},\"cohort_id\":\"2026-11-07|NF|SYNTH\",\"hash_basis\":{\"authenticates\":\"RECORDED_BYTES_AND_IDENTITY_ONLY\",\"authenticates_vendor_truth\":false,\"omitted_field\":\"payload_sha256\",\"serialization\":\"json_sorted_keys_compact_utf8_v1\"},\"index\":\"NF\",\"lot\":{\"contract_lot_table_ref\":\"contract_lot_table/NSE/2026-11\",\"lot_authoritative_resolved\":true,\"lot_claimed_raw\":{\"raw\":75,\"status\":\"PRESENT_VALID\"},\"lot_claimed_source\":\"CHAIN_METADATA\",\"lot_status\":\"RESOLVED_FROM_DATED_SOURCE\",\"map_ref\":\"instrument_map/2026-11-07\"},\"payload_sha256\":\"f188e04f1b2e33012357c9aaa8dafd61a05436652cb91e29b39c7ef0a792be08\",\"record_version\":\"mr.premium_slot_envelope.v1\",\"session_date\":\"2026-11-07\",\"slot\":\"09:20\",\"underlying\":{\"basis\":\"SAME_ACQUISITION\",\"carried_by_chain_response\":true,\"skew_ms\":null,\"source_field\":\"underlying_spot_price\",\"spot_raw\":{\"raw\":24653.4,\"status\":\"PRESENT_VALID\"},\"synchronisation_with_quote\":\"SAME_RESPONSE_PAYLOAD\"}}",
+      "canonical": "{\"d\":0.30000000000000004}",
       "input": {
-        "clocks": {
-          "acquisition_elapsed_ms": 412,
-          "acquisition_request_ms": 1762500000000,
-          "acquisition_response_ms": 1762500000412,
-          "actual_acquisition_clock": "09:20",
-          "clock_basis": "LOCAL_ACQUISITION_RECEIPT",
-          "quote_event_clock_verified": false,
-          "slot_basis": "SCHEDULER_SLOT",
-          "vendor_event_semantics": "UNVERIFIED",
-          "vendor_source_ts": null,
-          "vendor_ts_status": "VENDOR_TS_ABSENT"
-        },
-        "cohort_id": "2026-11-07|NF|SYNTH",
-        "hash_basis": {
-          "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
-          "authenticates_vendor_truth": false,
-          "omitted_field": "payload_sha256",
-          "serialization": "json_sorted_keys_compact_utf8_v1"
-        },
-        "index": "NF",
-        "lot": {
-          "contract_lot_table_ref": "contract_lot_table/NSE/2026-11",
-          "lot_authoritative_resolved": true,
-          "lot_claimed_raw": {
-            "raw": 75,
-            "status": "PRESENT_VALID"
-          },
-          "lot_claimed_source": "CHAIN_METADATA",
-          "lot_status": "RESOLVED_FROM_DATED_SOURCE",
-          "map_ref": "instrument_map/2026-11-07"
-        },
-        "payload_sha256": "f188e04f1b2e33012357c9aaa8dafd61a05436652cb91e29b39c7ef0a792be08",
-        "record_version": "mr.premium_slot_envelope.v1",
-        "session_date": "2026-11-07",
-        "slot": "09:20",
-        "underlying": {
-          "basis": "SAME_ACQUISITION",
-          "carried_by_chain_response": true,
-          "skew_ms": null,
-          "source_field": "underlying_spot_price",
-          "spot_raw": {
-            "raw": 24653.4,
-            "status": "PRESENT_VALID"
-          },
-          "synchronisation_with_quote": "SAME_RESPONSE_PAYLOAD"
-        }
+        "d": 0.30000000000000004
       },
-      "name": "slot_envelope_shape",
-      "sha256": "ff8ca9389ed50bf3a1ab0d6cea07f85c82ecc631b31028cac9089f50905f4f5f"
+      "mode": "round_trip",
+      "name": "derived_decimal_accumulation",
+      "note": "canonical string is NOT asserted across runtimes; the Kotlin asserts round-trip stability and value preservation"
     }
   ],
-  "vectors_version": "premium_capture_canonical_vectors_v1"
+  "vectors_version": "premium_capture_canonical_vectors_v2"
 }

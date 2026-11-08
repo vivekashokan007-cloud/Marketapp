@@ -46,9 +46,17 @@ object PremiumObservationContract {
      * caps and prints what it measured. All of it is desktop JVM/Python; none is a device
      * measurement.
      */
-    const val RECORD_VERSION = "mr.premium_observation.v2"
-    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v1"
+    const val RECORD_VERSION = "mr.premium_observation.v3"
+    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v2"
     const val CANONICAL_SERIALIZATION = "json_sorted_keys_compact_utf8_v1"
+
+    /**
+     * Linkage reference length. A binding reference is the first 32 hex characters (128 bits) of a
+     * SHA-256, which is ample to bind a record to one acquisition and keeps the record inside the
+     * unchanged 2 KiB cap. `payload_sha256` is never truncated.
+     */
+    const val REF_HEX_LEN = 32
+    fun ref(hex: String): String = hex.take(REF_HEX_LEN)
     /** `payload_sha256` is computed over the record WITHOUT this field, and excludes itself. */
     const val HASH_OMITTED_FIELD = "payload_sha256"
 
@@ -219,14 +227,29 @@ object PremiumObservationContract {
         if (rowExpiry.isNotEmpty() && rowExpiry != pinned.expiry) disagreements.put("expiry")
         val rsv = usable(rowStrike)
         if (rsv != null && rsv != pinned.strike) disagreements.put("strike_price")
+
+        // POSITIVE EVIDENCE, not absence of contradiction. Codex P5: `identity_verified` was true
+        // whenever nothing contradicted the pinned tuple, so a response that carried no
+        // underlying_key, no expiry and no strike_price "verified" on the leg key alone. Each
+        // field must now be PRESENT AND EQUAL, and anything absent is named rather than excused.
+        val missing = JSONArray()
+        if (legKey.isEmpty()) missing.put("instrument_key")
+        if (rowUnderlying.isEmpty()) missing.put("underlying_key")
+        if (rowExpiry.isEmpty()) missing.put("expiry")
+        if (rsv == null) missing.put("strike_price")
+        val verified = disagreements.length() == 0 && missing.length() == 0
+
         // The lean form omits the pinned tuple, which is byte-identical to the cohort entry this
-        // record already names; the cohort travels in the export, so it still resolves offline.
+        // record already names. The record carries `cohort_ref` so the cohort it resolves through
+        // is pinned by content, not merely named.
         if (lean) return JSONObject()
             .put("observed_strike_raw", rowStrike.json())
             .put("identity_disagreements", disagreements)
-            .put("identity_verified", disagreements.length() == 0 && legKey.isNotEmpty())
+            .put("identity_evidence_missing", missing)
+            .put("identity_verified", verified)
             .put("pinned_resolves_via", "cohort.pinned_contracts[instrument_key]")
         return JSONObject()
+            .put("identity_evidence_missing", missing)
             .put("pinned_instrument_key", pinned.instrumentKey)
             .put("pinned_underlying_key", pinned.underlyingKey)
             .put("pinned_index", pinned.index)
@@ -245,7 +268,7 @@ object PremiumObservationContract {
             .put("observed_expiry", if (rowExpiry.isEmpty()) JSONObject.NULL else rowExpiry)
             .put("observed_strike_raw", rowStrike.json())
             .put("identity_disagreements", disagreements)
-            .put("identity_verified", disagreements.length() == 0 && legKey.isNotEmpty())
+            .put("identity_verified", verified)
     }
 
     /**
@@ -254,18 +277,37 @@ object PremiumObservationContract {
      * authoritative lot is left unresolved. Dated map/table references are retained so the actual
      * data resolves offline in the export.
      */
+    /** A dated reference carries an ISO date, e.g. `contract_lot_table/NSE/2026-11-07`. */
+    private val DATED = Regex(".*\\d{4}-\\d{2}-\\d{2}.*")
+
     fun lotEvidence(claimedLot: Any?, claimedSource: String?, tableRef: String?,
                     mapRef: String?): JSONObject {
         val src = (claimedSource ?: "").trim().uppercase()
-        val authoritative = src == "CHAIN_METADATA" || src == "CONTRACT_LOT_TABLE"
         val lot = rawScalar(JSONObject().put("v", claimedLot ?: JSONObject.NULL), "v")
+        val value = usable(lot)
+        // Codex P4: authority cannot come from a caller string. Each requirement is recorded
+        // separately so a refusal says WHICH one failed rather than just "unverified".
+        val sourceAccepted = src == "CHAIN_METADATA" || src == "CONTRACT_LOT_TABLE"
+        val integral = value != null && value == Math.floor(value) && value >= 1.0
+        val ref = (tableRef ?: "").trim()
+        val datedEvidence = ref.isNotEmpty() && DATED.matches(ref)
+        val reasons = JSONArray()
+        if (!sourceAccepted) reasons.put(if (src.isEmpty()) "lot_source_absent" else "lot_source_not_accepted")
+        if (lot.status != PRESENT_VALID) reasons.put("lot_value_not_present_valid")
+        // a fractional or sub-one lot is not a tradeable contract size, whatever the source says
+        else if (!integral) reasons.put("lot_value_not_a_positive_integer")
+        if (!datedEvidence) reasons.put("no_dated_reference_supplied")
+        val authoritative = reasons.length() == 0
         return JSONObject()
             .put("lot_claimed_raw", lot.json())
             .put("lot_claimed_source", if (src.isEmpty()) JSONObject.NULL else src)
-            .put("lot_status", if (authoritative && lot.status == PRESENT_VALID)
-                "RESOLVED_FROM_DATED_SOURCE" else "UNVERIFIED_PRODUCER_CLAIM")
-            .put("lot_authoritative_resolved", authoritative && lot.status == PRESENT_VALID)
-            .put("contract_lot_table_ref", tableRef ?: JSONObject.NULL)
+            .put("lot_status", if (authoritative) "RESOLVED_FROM_DATED_SOURCE"
+                else "UNVERIFIED_PRODUCER_CLAIM")
+            .put("lot_authoritative_resolved", authoritative)
+            .put("lot_unverified_reasons", reasons)
+            .put("lot_authority_requires",
+                "ACCEPTED_SOURCE_AND_POSITIVE_INTEGER_VALUE_AND_DATED_REFERENCE")
+            .put("contract_lot_table_ref", if (ref.isEmpty()) JSONObject.NULL else ref)
             .put("map_ref", mapRef ?: JSONObject.NULL)
     }
 
@@ -423,16 +465,53 @@ object PremiumObservationContract {
      * this on `(session_date, index, slot)`.
      */
     fun slotEnvelope(index: String, sessionDate: String, slot: String, cohort: JSONObject,
-                     clocks: JSONObject, underlying: JSONObject, lot: JSONObject): JSONObject =
-        stampHash(JSONObject()
+                     clocks: JSONObject, underlying: JSONObject, lot: JSONObject): JSONObject {
+        val body = JSONObject()
             .put("record_version", ENVELOPE_VERSION)
             .put("session_date", sessionDate)
             .put("index", index)
             .put("slot", slot)
             .put("cohort_id", cohort.optString("cohort_id"))
+            .put("cohort_ref", ref(contentHash(cohort)))
             .put("clocks", clocks)
             .put("underlying", underlying)
-            .put("lot", lot))
+            .put("lot", lot)
+        // derived from the acquisition's OWN evidence, so two acquisitions in one slot that differ
+        // in receipt time, spot, lot or cohort get different identities and cannot be conflated
+        return stampHash(body.put("acquisition_id", acquisitionId(body)))
+    }
+
+    /**
+     * Identity of ONE acquisition, derived from its own evidence rather than assigned.
+     *
+     * Codex P2: the join was `session_date + index + slot`, so acquisition A's envelope could be
+     * joined to acquisition B's quotes — a retry in the same slot with a different receipt time and
+     * a different spot produced records that each hashed correctly and were still wrong together.
+     * Every observation now carries this id and the envelope's own content reference, so a record
+     * resolves to exactly one acquisition.
+     */
+    fun acquisitionId(envelopeBody: JSONObject): String {
+        val basis = JSONObject()
+            .put("session_date", envelopeBody.opt("session_date"))
+            .put("index", envelopeBody.opt("index"))
+            .put("slot", envelopeBody.opt("slot"))
+            .put("cohort_ref", envelopeBody.opt("cohort_ref"))
+            .put("clocks", envelopeBody.opt("clocks"))
+            .put("underlying", envelopeBody.opt("underlying"))
+            .put("lot", envelopeBody.opt("lot"))
+        return ref(sha256Hex(canonicalJson(basis)))
+    }
+
+    /**
+     * Content hash of an object, ignoring any digest/basis fields it already carries, so a stamped
+     * and an unstamped copy of the same content hash identically.
+     */
+    fun contentHash(o: JSONObject): String {
+        val body = JSONObject(o.toString())
+        body.remove(HASH_OMITTED_FIELD)
+        body.remove("hash_basis")
+        return sha256Hex(canonicalJson(body))
+    }
 
     /**
      * One observation record for one pinned contract at one slot, carrying only what varies
@@ -441,7 +520,7 @@ object PremiumObservationContract {
      */
     fun observation(pinned: PremiumCaptureCohort.PinnedContract, cohort: JSONObject,
                     sessionDate: String, slot: String, outcome: String,
-                    row: JSONObject?, leg: JSONObject?): JSONObject {
+                    row: JSONObject?, leg: JSONObject?, envelope: JSONObject): JSONObject {
         val rec = JSONObject()
             .put("record_version", RECORD_VERSION)
             .put("session_date", sessionDate)
@@ -450,8 +529,13 @@ object PremiumObservationContract {
             .put("instrument_key", pinned.instrumentKey)
             .put("outcome", outcome)
             .put("identity", identityEvidence(pinned, row, leg, lean = true))
-            // the per-acquisition facts live in the slot envelope this joins to
-            .put("envelope_join", "session_date+index+slot")
+            // P2: bound to ONE acquisition by its identity and the envelope's own content, not to
+            // whatever envelope happens to share this slot. P4: and to the cohort BY CONTENT, so
+            // altering the cohort cannot silently reinterpret which contract this record is about.
+            .put("acquisition_id", envelope.optString("acquisition_id"))
+            .put("envelope_ref", ref(contentHash(envelope)))
+            .put("cohort_ref", ref(contentHash(cohort)))
+            .put("envelope_join", "session_date+index+slot+acquisition_id")
         if (outcome == OUTCOME_OBSERVED) {
             rec.put("iv", ivEvidence(leg)).put("bbo", bboEvidence(leg))
         } else {
