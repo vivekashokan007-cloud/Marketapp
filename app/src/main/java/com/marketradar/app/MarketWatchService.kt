@@ -3344,6 +3344,12 @@ class MarketWatchService : Service() {
                     } catch (e: Exception) {
                         LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_CTX_FAIL: ${e.javaClass.simpleName}")
                     }
+                    // C1 capture pilot: opt-in research capture (default OFF); never admits or writes single_leg_v1
+                    try {
+                        C1PilotIo.offer(filesDir, prefs, finalBrainString)
+                    } catch (e: Exception) {
+                        LogBuffer.add('W', TAG, "C1_PILOT_CTX_FAIL: ${e.javaClass.simpleName}")
+                    }
                 }
                 if (sideEffects) IndexAuthorityIo.maybeRunDailyReview(filesDir, prefs, System.currentTimeMillis())
                 if (outcome == AnalysisAuthority.Outcome.SUPERSEDED_INPUT && !isRefresh) analysisAuthority.requestRefresh()

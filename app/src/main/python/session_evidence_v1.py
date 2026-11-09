@@ -308,6 +308,16 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
     st, capture = _json_part(_contained(os.path.join(files_dir, 'learning_ledger_v1'), 'capture_status.json'), 256 * 1024)
     parts['learning_ledger_status'] = capture
     entries['learning_ledger_status'] = _part_entry(st, capture)
+    # C1 capture pilot (opt-in research): present ONLY when its directory exists, so a build that never enabled
+    # the pilot exports exactly what the released build exported.
+    try:
+        import c1_capture_pilot_v1 as _c1
+        c1 = _c1.export_part(files_dir, sess)
+    except Exception as exc:
+        c1 = {'status': 'UNREADABLE', 'reason': type(exc).__name__}
+    if c1 is not None:
+        parts['c1_capture'] = c1
+        entries['c1_capture'] = _part_entry('UNREADABLE' if c1.get('status') == 'UNREADABLE' else 'PRESENT', c1)
     man['status'] = 'OK'
     man['parts'] = entries
 
@@ -320,6 +330,10 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
     while len(raw) > MAX_BUNDLE_BYTES and parts.get('logs'):
         parts['logs'] = parts['logs'][len(parts['logs']) // 2 + 1:] if len(parts['logs']) > 1 else []
         entries['logs'] = _part_entry('TRUNCATED', parts['logs'], {**info, 'reduced_for_cap': True})
+        raw = assemble()
+    if len(raw) > MAX_BUNDLE_BYTES and isinstance(parts.get('c1_capture'), dict) and parts['c1_capture'].get('docs'):
+        parts['c1_capture'] = dict(parts['c1_capture'], docs={}, docs_omitted_for_cap=True)   # scorecard kept
+        entries['c1_capture'] = _part_entry('TRUNCATED', parts['c1_capture'])
         raw = assemble()
     if len(raw) > MAX_BUNDLE_BYTES and (sl.get('snapshots')):
         sl['snapshots'] = {}

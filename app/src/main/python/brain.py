@@ -28206,6 +28206,37 @@ def single_leg_monitor(sl_dir, ia_state_dir, session_date, spots_json='{}'):
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 
 
+# ═══ C1 exact-contract Paper capture pilot (opt-in research; never admits, never writes single_leg_v1) ═══
+def c1_capture_plan(c1_dir, result_json='null', now_ms=None, enabled=False, sl_dir=None):
+    """Register eligible proposals (denominator) and return the bounded fetch plan.  enabled=False -> no I/O."""
+    try:
+        import c1_capture_pilot_v1 as _c1
+        if not enabled:
+            return json.dumps({'status': 'DISABLED', 'fetches': []})
+        res = json.loads(result_json or 'null') or {}
+        return json.dumps(_c1.plan(c1_dir, res, now_ms, enabled=True, sl_dir=sl_dir))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'fetches': []})
+
+
+def c1_capture_record(c1_dir, fetch_id, index, session_date, call_json):
+    try:
+        import c1_capture_pilot_v1 as _c1
+        return json.dumps(_c1.record(c1_dir, fetch_id, index, session_date, json.loads(call_json or '{}')))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def c1_capture_scorecard(files_dir, session_date):
+    try:
+        import c1_capture_pilot_v1 as _c1
+        part = _c1.export_part(files_dir, str(session_date)[:10])
+        return json.dumps({'status': 'NO_PILOT_DATA'} if part is None else
+                          {'status': 'OK', 'scorecard': part['scorecard'], 'linked_positions': part['linked_positions']})
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
 def single_leg_read(sl_dir):
     import single_leg_store_v1 as _sls
     try:
