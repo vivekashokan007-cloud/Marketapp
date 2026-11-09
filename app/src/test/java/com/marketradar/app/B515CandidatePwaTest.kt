@@ -19,15 +19,16 @@ class B515CandidatePwaTest {
      * as a literal in this repository. Everything else derives from the committed pin or app/build.gradle.kts.
      *
      * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
-     * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone).
+     * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);
+     * 3f3f46ad/526/2.6.95 is itself now superseded by the 2.6.96 pair, which is why these live in one place.
      * Two of them were in *this file* and disagreed with each other, and only the ones reached by the push-triggered
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "3f3f46ad01cee8dd5fcdb04817472d15968b53bc"
-    private val acceptedAppJsSha256 = "e150f09ffef2c47dbed1bd00f4fae48c107b17583c6d524fe7996a03b4c12597"
-    private val acceptedVersionName = "2.6.95"
-    private val acceptedVersionCode = 526
+    private val acceptedMarketViviSha = "12a1920e3ac7a11ab89207f71523ed38964a1efd"
+    private val acceptedAppJsSha256 = "8694cc38ede1b179ac2ca92de3301d7c6337baebd529f3e789f96b38633bd668"
+    private val acceptedVersionName = "2.6.96"
+    private val acceptedVersionCode = 527
 
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()
@@ -185,7 +186,7 @@ class B515CandidatePwaTest {
         assertEquals(acceptedAppJsSha256, pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
         assertEquals(acceptedVersionName, id.getString("version")); assertEquals(acceptedVersionCode, id.getInt("build"))
-        assertEquals(1390, id.getInt("app_js_v"))
+        assertEquals(1391, id.getInt("app_js_v"))
         // index.html must reference the same app.js revision that is bundled, or the pin describes a mismatched pair.
         assertEquals(id.getInt("app_js_v"), id.getInt("index_app_js_v"))
         // The pin identity must be the PAIRED native release: read gradle, do not type the version a second time.
