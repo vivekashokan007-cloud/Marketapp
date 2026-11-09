@@ -13,6 +13,23 @@ import java.io.File
  */
 class B515CandidatePwaTest {
     private val base = "https://vivekashokan007-cloud.github.io/MarketVivi/"
+
+    /**
+     * THE single typed copy of the accepted candidate identity, and the only place any of these four values appears
+     * as a literal in this repository. Everything else derives from the committed pin or app/build.gradle.kts.
+     *
+     * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
+     * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);
+     * 3f3f46ad/526/2.6.95 is itself now superseded by the 2.6.96 pair, which is why these live in one place.
+     * Two of them were in *this file* and disagreed with each other, and only the ones reached by the push-triggered
+     * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
+     * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
+     */
+    private val acceptedMarketViviSha = "12a1920e3ac7a11ab89207f71523ed38964a1efd"
+    private val acceptedAppJsSha256 = "8694cc38ede1b179ac2ca92de3301d7c6337baebd529f3e789f96b38633bd668"
+    private val acceptedVersionName = "2.6.96"
+    private val acceptedVersionCode = 527
+
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()
     private fun serve(url: String, method: String = "GET") = CandidatePwaRoute.decide(method, url)
@@ -162,14 +179,20 @@ class B515CandidatePwaTest {
 
     @Test fun committedPinIsTheAcceptedMarketViviCommitAndRuntimeAllowlist() {
         val pin = JSONObject(file("src/candidate/pwa_expected_manifest.json").readText())
-        assertEquals("7005a751b166666c1f4e22f5d3e4607390b904e4", pin.getString("marketvivi_sha"))
+        assertEquals(acceptedMarketViviSha, pin.getString("marketvivi_sha"))
         assertEquals(CandidatePwaManifest.SCHEMA, pin.getString("schema"))
         assertEquals(base, pin.getString("document_base"))
         assertEquals(CandidatePwaRoute.RUNTIME_FILES.toSortedSet(), pin.getJSONObject("files").keys().asSequence().toSortedSet())
-        assertEquals("1d83267c21bddade204099baa3d14b359460b3ce063f3b330c8a56a5bcb02d23",
-            pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
+        assertEquals(acceptedAppJsSha256, pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
-        assertEquals("2.6.92", id.getString("version")); assertEquals(523, id.getInt("build")); assertEquals(1387, id.getInt("app_js_v"))
+        assertEquals(acceptedVersionName, id.getString("version")); assertEquals(acceptedVersionCode, id.getInt("build"))
+        assertEquals(1391, id.getInt("app_js_v"))
+        // index.html must reference the same app.js revision that is bundled, or the pin describes a mismatched pair.
+        assertEquals(id.getInt("app_js_v"), id.getInt("index_app_js_v"))
+        // The pin identity must be the PAIRED native release: read gradle, do not type the version a second time.
+        val gradle = file("build.gradle.kts").readText()
+        assertEquals(acceptedVersionName, Regex("versionName\\s*=\\s*\"([^\"]+)\"").find(gradle)!!.groupValues[1])
+        assertEquals(acceptedVersionCode, Regex("versionCode\\s*=\\s*(\\d+)").find(gradle)!!.groupValues[1].toInt())
         // When a MarketVivi checkout at the pinned commit is available (local review), its real bytes verify too.
         val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
             ?: return println("SKIPPED real-bytes pin check: MARKETVIVI_DIR not set")
@@ -185,7 +208,10 @@ class B515CandidatePwaTest {
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
         assertTrue(g.contains("applicationId = \"com.marketradar.app\""))
-        assertTrue(g.contains("versionCode = 526")); assertTrue(g.contains("versionName = \"2.6.95\""))
+        // Derived from the single typed copy above; this used to restate 526/"2.6.95" and drifted out of step with
+        // the pin assertion in the very same file.
+        assertTrue(g.contains("versionCode = $acceptedVersionCode"))
+        assertTrue(g.contains("versionName = \"$acceptedVersionName\""))
         for (bad in listOf("applicationIdSuffix", "versionNameSuffix", "isDebuggable = true", "debuggable true", "setDataDirectorySuffix"))
             assertFalse(bad, g.contains(bad))
         val cand = g.substring(g.indexOf("create(\"candidate\") {")).let { it.substring(0, it.indexOf("\n        }\n")) }
@@ -273,7 +299,10 @@ class B515CandidatePwaTest {
     }
 
     companion object {
-        const val PWA = "7005a751b166666c1f4e22f5d3e4607390b904e4"
+        // Obviously-synthetic fixture SHAs, matching NATIVE's style. PWA used to be the real 7005a751 pin, which
+        // made a fixture indistinguishable from the accepted identity at a glance - the exact confusion that let the
+        // pin drift. Nothing depends on its value: every digest below is computed from the FAKE bytes at runtime.
+        const val PWA = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeef"
         const val NATIVE = "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
         val FAKE: Map<String, ByteArray> = CandidatePwaRoute.RUNTIME_FILES.associateWith { "/* bundled $it */\n".toByteArray() }
         fun sha(b: ByteArray) = CandidatePwaManifest.sha256Hex(b)

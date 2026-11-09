@@ -128,12 +128,90 @@ class StageTests(unittest.TestCase):
 
 
 class CommittedPinTests(unittest.TestCase):
+    """The committed pin must name the REVIEWED MarketVivi commit.
+
+    Deliberately hardcoded rather than derived from the manifest: this is a tripwire, so that the
+    bundled runtime cannot be re-pointed without someone editing this expectation and having that
+    edit reviewed. Reading the value out of the manifest would make the assertion vacuous.
+
+    Updated for the 2.6.95 paired candidate. It had been left at 877b02fd while the committed
+    manifest said 7005a751, so this test was ALREADY FAILING at the accepted implementation head
+    b9aa75de — it runs only in the manually dispatched candidate workflow, never in the
+    review-validation run, which is why a green review never caught it.
+    """
+
+    ACCEPTED_MARKETVIVI_SHA = "12a1920e3ac7a11ab89207f71523ed38964a1efd"
+    ACCEPTED_APP_JS_SHA256 = \
+        "8694cc38ede1b179ac2ca92de3301d7c6337baebd529f3e789f96b38633bd668"
+
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
-        self.assertEqual(m["marketvivi_sha"], "877b02fd6d703ca43148a0f119b60216d9b509ce")
+        self.assertEqual(m["marketvivi_sha"], self.ACCEPTED_MARKETVIVI_SHA)
         self.assertEqual(sorted(m["files"]), sorted(S.RUNTIME_FILES))
-        self.assertEqual(m["files"]["app.js"]["sha256"], "004a9b9de17455165d79e53c8b2e70a92797f798d15c3226c0172d2c92a25230")
+        self.assertEqual(m["files"]["app.js"]["sha256"], self.ACCEPTED_APP_JS_SHA256)
         self.assertEqual(m["document_base"], S.DOCUMENT_BASE)
+
+    def test_the_pin_identity_is_the_paired_native_release(self):
+        """The bundled runtime must be the PAIRED interface, not an older one.
+
+        The packaging issue this candidate exists to fix: the pin named 2.6.92/523 while the
+        native source is 2.6.95/526, so a candidate built unchanged would have bundled the older
+        interface against the newer native code.
+        """
+        m = json.loads(PIN.read_text())
+        gradle = (ROOT / "app/build.gradle.kts").read_text()
+        name = re.search(r'versionName\s*=\s*"([^"]+)"', gradle)
+        code = re.search(r"versionCode\s*=\s*(\d+)", gradle)
+        self.assertIsNotNone(name)
+        self.assertIsNotNone(code)
+        self.assertEqual(m["pwa_identity"]["version"], name.group(1))
+        self.assertEqual(m["pwa_identity"]["build"], int(code.group(1)))
+        self.assertEqual(m["pwa_identity"]["app_js_v"], m["pwa_identity"]["index_app_js_v"])
+
+    def test_every_hardcoded_copy_of_the_pin_agrees(self):
+        """The guard that was missing, and the reason this drifted at all.
+
+        Two tripwires are kept on purpose - this one, and the Kotlin literals in
+        B515CandidatePwaTest, which run in every unit-test variant on every push. Hardcoding is
+        what makes each a tripwire, but nothing previously asserted that the copies AGREED, so
+        they diverged to four values across seven places and only the push-checked ones were ever
+        noticed. Duplication is acceptable here only because this test binds the duplicates
+        together: edit one and this fails until the other matches.
+        """
+        kt = (ROOT / "app/src/test/java/com/marketradar/app/B515CandidatePwaTest.kt").read_text()
+
+        def kotlin_literal(name, pattern=r'"([^"]+)"'):
+            m = re.search(r"val\s+%s\s*=\s*%s" % (re.escape(name), pattern), kt)
+            self.assertIsNotNone(m, "%s not found in B515CandidatePwaTest.kt" % name)
+            return m.group(1)
+
+        self.assertEqual(kotlin_literal("acceptedMarketViviSha"), self.ACCEPTED_MARKETVIVI_SHA)
+        self.assertEqual(kotlin_literal("acceptedAppJsSha256"), self.ACCEPTED_APP_JS_SHA256)
+
+        # And no stale copy of a superseded identity may survive anywhere in the tracked tree.
+        superseded = ("877b02fd6d703ca43148a0f119b60216d9b509ce",
+                      "7005a751b166666c1f4e22f5d3e4607390b904e4",
+                      "3f3f46ad01cee8dd5fcdb04817472d15968b53bc")
+        tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
+                                 capture_output=True, text=True, check=True).stdout.split("\0")
+        offenders = {}
+        for rel in filter(None, tracked):
+            p = ROOT / rel
+            if not p.is_file() or p.suffix.lower() in (".png", ".jpg", ".webp", ".jar", ".keystore"):
+                continue
+            try:
+                text = p.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            # Prose that documents the drift is allowed to name the old values; code and data are not.
+            if p.suffix in (".md", ".txt"):
+                continue
+            hits = [s for s in superseded if s in text]
+            # Only this file is exempt, because it must contain the values it searches for. Keeping the exemption
+            # list to the guard itself is deliberate: a broad exemption would hide exactly what this looks for.
+            if hits and rel != "tools/candidate_pwa/test_stage_candidate_pwa.py":
+                offenders[rel] = hits
+        self.assertEqual(offenders, {}, "superseded pin SHAs still present: %s" % offenders)
 
 
 class WorkflowContractTests(unittest.TestCase):
@@ -182,7 +260,12 @@ class WorkflowContractTests(unittest.TestCase):
         tpl = json.loads((root / "tools/candidate_pwa/BUILD_AUTHORIZATION.template.json").read_text())
         self.assertEqual(tpl["schema"], "marketradar.candidate_build_authorization.v1")
         self.assertIs(tpl["artifact_only"], True)
-        self.assertEqual(tpl["approved_by"], "")
+        # Every value the filler must supply stays blank. pwa_sha/version_code/version_name were
+        # prefilled with 877b02fd/517/2.6.86 under a note saying to fill only the EMPTY fields,
+        # which read as an instruction to keep three stale values.
+        for k in ("native_sha", "pwa_sha", "version_code", "version_name", "cert_sha256",
+                  "approved_by", "approval_reference", "codex_final_check_reference"):
+            self.assertEqual(tpl[k], "", "template field %s must ship blank" % k)
 
     def test_permissions_read_only(self):
         if self.y is not None:

@@ -102,6 +102,14 @@ jobs:
           echo "70274ccdab7aa1bdedaf50955a1f94552089238d95c46ad405725779fcefdec9  tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json" | sha256sum -c
           python3 -I tools/research_m0_freeze/freeze_inputs/verify_freeze_record_20261023.py tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_PROTOCOL_V1_20261023.md tools/research_m0_freeze/freeze_inputs/SPECIAL_SESSION_DECISION_RECORD_APPROVED_20261023.json
 
+      # Additive validation only; changes no gate, protection or permission. These 22 tests guard the candidate
+      # packaging (committed PWA pin, staging determinism, the candidate workflow's own protections, and that every
+      # hardcoded copy of the accepted pin agrees). They previously ran ONLY in the manually dispatched candidate
+      # workflow, so a pin expectation left at a superseded commit stayed green here for weeks. Packaging guards
+      # belong in the run that sees every push.
+      - name: Candidate packaging guards (committed PWA pin, staging, pin-copy agreement)
+        run: python3 -m unittest discover -s tools/candidate_pwa -p 'test_*.py' -v
+
       - name: Run complete Python safety suite
         run: |
           python3 -m compileall -q app/src/main/python tools
@@ -189,6 +197,126 @@ jobs:
 
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
+
+      # The candidate source set was never compiled by any push-triggered run: the only workflow
+      # that builds it is the manually dispatched candidate build, which has never run. That is
+      # exactly why B515CandidateVariantTest sat two identity generations stale without failing
+      # anything. This is test-only - no signing key, no APK, no release - and it pins the bundle
+      # to the COMMITTED pin rather than a branch head, so it stays correct after the paired web
+      # branch merges and main's SHA no longer equals the pinned commit.
+      - name: Resolve the committed candidate PWA pin
+        id: pin
+        run: |
+          sha=$(python3 -c 'import json; print(json.load(open("app/src/candidate/pwa_expected_manifest.json"))["marketvivi_sha"])')
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "committed candidate PWA pin: $sha"
+
+      - name: Checkout MarketVivi at the committed pin (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: vivekashokan007-cloud/MarketVivi
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _marketvivi_pin
+          # Full history: the pinned commit may live on a review branch rather than main, and a
+          # shallow fetch of a commit unreachable from the default branch fails.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Candidate-variant JVM suite against the pinned bundle
+        env:
+          BUNDLE_DIR: app/build/generated/candidatePwa/assets/pwa_candidate
+        run: |
+          python3 tools/candidate_pwa/stage_candidate_pwa.py \
+            --marketvivi-dir _marketvivi_pin --out "$BUNDLE_DIR" \
+            --expect-sha "${{ steps.pin.outputs.sha }}"
+          ls -la "$BUNDLE_DIR"
+          # MARKETVIVI_DIR also switches B515CandidatePwaTest's real-bytes pin check from skipped
+          # to executed, so the committed manifest is verified against the actual web bytes.
+          MARKETVIVI_DIR="$PWD/_marketvivi_pin" ./gradlew :app:testCandidateUnitTest --stacktrace
+
+      # Gradle prints only the exception class for a failed test, which makes a remote-only
+      # diagnosis a guessing game — one failure cost several CI rounds of elimination before this
+      # existed. The XML reports carry the actual assertion messages, so they are surfaced on
+      # failure. This one prints diagnostics for a FAILED run rather than handing over evidence,
+      # so it stays; the evidence files are collected as a proper artifact below.
+      - name: Premium capture failing-test messages (review diagnostics)
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for x in app/build/test-results/testDebugUnitTest/*.xml; do
+            python3 - "$x" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          t = ET.parse(sys.argv[1]).getroot()
+          for tc in t.iter('testcase'):
+              for bad in list(tc.findall('failure')) + list(tc.findall('error')):
+                  print('FAILED %s.%s' % (tc.get('classname'), tc.get('name')))
+                  msg = (bad.get('message') or '').strip()
+                  print('  message: %s' % msg[:2000])
+                  body = (bad.text or '').strip().splitlines()
+                  for line in body[:6]:
+                      print('  %s' % line[:300])
+                  print()
+          PY
+          done
+
+      # Intentional artifact collection, replacing the review-only `cat` of these files into the
+      # job log. The log dump was never a sound way to hand over evidence: a reviewer had to
+      # reconstruct the JSON from timestamp-prefixed log lines and could then only state a digest
+      # of their own reconstruction, with an explicit caveat about the original file's trailing
+      # whitespace. CI now computes the digests on the real files and uploads the files
+      # themselves, so the bytes a reviewer verifies are the bytes the producer wrote.
+      - name: Premium capture evidence manifest
+        if: always()
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -u
+          out=app/build/premium_capture_evidence
+          mkdir -p "$out"
+          for f in app/build/premium_capture_measurements.txt \
+                   app/build/premium_capture_resource_cost.txt \
+                   app/build/premium_capture_acceptance_export.json; do
+            if [ -f "$f" ]; then
+              cp "$f" "$out/"
+            else
+              echo "absent: $f" >> "$out/ABSENT.txt"
+            fi
+          done
+          ( cd "$out" && sha256sum ./* > SHA256SUMS 2>/dev/null || true )
+          # The HEAD sha, not GITHUB_SHA. On a pull_request event GITHUB_SHA is the ephemeral
+          # merge commit, which is not the head anyone reviews — labelling evidence with it
+          # misattributes which commit produced it. Both are recorded so the distinction is
+          # visible rather than implied.
+          { echo "head: ${HEAD_SHA}";
+            echo "github_sha_merge_ref: ${GITHUB_SHA}";
+            echo "run: ${GITHUB_RUN_ID}";
+            echo "produced_by: PremiumCaptureTest against the committed raw vendor fixture";
+            echo "fixture: app/src/test/resources/contracts/x1_upstox_raw_chains.json";
+            echo "not_a_device_measurement: true"; } > "$out/PROVENANCE.txt"
+          cat "$out/PROVENANCE.txt"
+          echo "--- digests, computed by CI on the producer's own files ---"
+          cat "$out/SHA256SUMS" || true
+          # The two SMALL measurement files are also echoed, with their digests above, so the
+          # numbers can be read and quoted without downloading anything — and the digest lets a
+          # reader confirm the printed text matches the file. The large acceptance JSON is
+          # DELIBERATELY not echoed: reconstructing it from timestamp-prefixed log lines is what
+          # made the previous handover unsound, and it belongs in the artifact only.
+          for f in premium_capture_measurements.txt premium_capture_resource_cost.txt; do
+            if [ -f "$out/$f" ]; then
+              echo "--- BEGIN $f (digest above) ---"
+              cat "$out/$f"
+              echo "--- END $f ---"
+            fi
+          done
+
+      - name: Upload premium capture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02   # v4
+        with:
+          name: premium-capture-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          path: app/build/premium_capture_evidence
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: DB-1 migration suite and end-to-end parity audit (scratch PostgreSQL 17)
         env:

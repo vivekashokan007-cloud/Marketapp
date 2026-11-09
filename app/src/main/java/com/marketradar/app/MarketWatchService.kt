@@ -1151,6 +1151,15 @@ class MarketWatchService : Service() {
             x1BnfChainFetchedAtMs = 0L
             var m0BnfFetchStartMs = 0L
             var m0NfFetchStartMs = 0L
+            // Capture-owned request-completion clocks, set on SUCCESS AND FAILURE.
+            //
+            // Deliberately separate from x1*ChainFetchedAtMs, whose success-only semantics other
+            // code depends on and which are NOT changed here. Without these, a failed chain
+            // reached capture with no clock and no slot, so the six per-contract
+            // MISSING_REQUEST_FAILED records could never be written — the gap capture exists to
+            // record was itself unrecordable. This is a completion time, not a vendor quote time.
+            var capBnfCompletedAtMs = 0L
+            var capNfCompletedAtMs = 0L
             val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
                 listOf(
                     async(Dispatchers.IO) { fetchNf50Breadth(token) },
@@ -1158,10 +1167,14 @@ class MarketWatchService : Service() {
                         quotesFetchStartedAtMs = System.currentTimeMillis()
                         fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
                     },
-                    async(Dispatchers.IO) { m0BnfFetchStartMs = System.currentTimeMillis(); fetchSync(bnfUrl, token).also { if (it != null) x1BnfChainFetchedAtMs = System.currentTimeMillis() } },
+                    async(Dispatchers.IO) { m0BnfFetchStartMs = System.currentTimeMillis(); fetchSync(bnfUrl, token).also {
+                        capBnfCompletedAtMs = System.currentTimeMillis()
+                        if (it != null) x1BnfChainFetchedAtMs = capBnfCompletedAtMs
+                    } },
                     async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
                     async(Dispatchers.IO) { m0NfFetchStartMs = System.currentTimeMillis(); fetchSync(nfUrl, token).also {
                         evNfChainFetchedAtMs = System.currentTimeMillis()
+                        capNfCompletedAtMs = evNfChainFetchedAtMs
                         if (it != null) x1NfChainFetchedAtMs = evNfChainFetchedAtMs
                     } }
                 ).map { it.await() }
@@ -1177,6 +1190,43 @@ class MarketWatchService : Service() {
             val bnfChainJson = parallel[2]
             val bnfStocksJson = parallel[3]
             val nfChainJson = parallel[4]
+
+            // Premium evidence capture, DEFAULT OFF. Placed deliberately here: immediately after
+            // the already-fetched chain results are available, and BEFORE every early return
+            // below.
+            //
+            // Two aborts follow — the quotes failure directly below, and the chain/stocks failure
+            // further down — and BOTH fire on conditions unrelated to whether a chain succeeded.
+            // The existing m0RecordCaptures hook sits after both, so M0 already loses good chains
+            // to an unrelated failure. Capture must not repeat that: a quotes or breadth failure
+            // with two good chains in hand would otherwise discard both.
+            //
+            // It makes no request of its own, reuses each chain exactly once, hands persistence to
+            // a bounded off-poll worker, is wrapped so a capture failure cannot fail or stall this
+            // poll, and returns a status only. Nothing it writes is read by admission, ranking,
+            // sizing, exits, notifications or the Paper/Real lock. The live poll's own failure
+            // decisions below are unchanged.
+            premiumCaptureSafely {
+                val status = PremiumCaptureCoordinator.onChainsAcquired(
+                    filesDir, today,
+                    PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
+                    PremiumCapturePollAdapter.acquisitions(listOf(
+                        PremiumCapturePollAdapter.IndexResult(
+                            index = "BNF", chain = bnfChainJson,
+                            requestStartedMs = m0BnfFetchStartMs,
+                            completedAtMs = capBnfCompletedAtMs,
+                            underlyingKey = "NSE_INDEX|Nifty Bank", expiry = bnfExpiry),
+                        PremiumCapturePollAdapter.IndexResult(
+                            index = "NF", chain = nfChainJson,
+                            requestStartedMs = m0NfFetchStartMs,
+                            completedAtMs = capNfCompletedAtMs,
+                            underlyingKey = "NSE_INDEX|Nifty 50", expiry = nfExpiry),
+                    )))
+                if (status.optString("status") != PremiumCaptureCoordinator.DISABLED)
+                    LogBuffer.add('I', TAG, "PREMIUM_CAPTURE: ${status.optString("status")}" +
+                        " prepare=${status.optLong("prepare_elapsed_ms")}ms" +
+                        " indices=${status.optJSONArray("indices")}")
+            }
 
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
@@ -1338,6 +1388,25 @@ class MarketWatchService : Service() {
     // ---------------------------------------------------------------- M0 research collector (collection only)
     @Volatile private var m0Attempts: Map<String, ResearchCollector.Begin.Started> = emptyMap()
     private fun m0Dir(): File = File(filesDir, ResearchCollector.DIR)
+    /**
+     * Premium capture can never fail a poll. Catches `Throwable`, not `Exception`, because an
+     * `OutOfMemoryError` from a large chain snapshot is an `Error` and would otherwise escape.
+     * Mirrors `m0Safely` below; kept separate so the two capture paths cannot mask each other.
+     */
+    private inline fun premiumCaptureSafely(block: () -> Unit) {
+        try { block() } catch (t: Throwable) {
+            LogBuffer.add('W', TAG, "PREMIUM_CAPTURE_FAIL: ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** IST HH:MM for a device-local epoch stamp, or null when the stamp is not a real time. */
+    private fun istHhmmOrNull(ms: Long): String? {
+        if (ms <= 0L) return null
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+            .apply { timeInMillis = ms }
+        return "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+    }
+
     private inline fun <T> m0Safely(where: String, fallback: T, block: () -> T): T = try { block() } catch (t: Throwable) {
         ResearchCollector.recordFailure(m0Dir(), where, t)
         LogBuffer.add('W', TAG, "M0_COLLECTOR_FAIL[$where]: ${t.javaClass.simpleName}")

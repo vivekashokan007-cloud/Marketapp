@@ -1678,6 +1678,38 @@ class NativeBridge(private val context: Context) {
      * existing Downloads routine.  Reads only prefs.closed_trades (via reviewTrades) -- never another preference
      * and never a token.  Returns {ok, status, bytes, sha256, session_date_used, fileName}.
      */
+    // ── premium evidence capture: control, status and the export section ──────────────────────
+    //
+    // These are the only approved bridge entry points to the capture library. Each catches
+    // Throwable rather than Exception: an OutOfMemoryError is an Error, and CLAUDE.md records a
+    // shipped outage (b321) where one escaped a bridge method and aborted the whole calling JS
+    // function. The export section can allocate a large payload, so that is a live risk here.
+
+    @JavascriptInterface
+    fun getPremiumCaptureStatus(): String = try {
+        PremiumCaptureControl.status(context.filesDir).toString()
+    } catch (t: Throwable) {
+        JSONObject().put("enabled", false).put("status", "STATUS_ERROR")
+            .put("error", t.javaClass.simpleName).toString()
+    }
+
+    /**
+     * The explicit operator control. A temporary data-collection switch only: it is not a trading
+     * mode, does not touch the Paper/Real lock and changes no authority.
+     */
+    @JavascriptInterface
+    fun setPremiumCapture(enabled: Boolean): String = try {
+        val r = PremiumCaptureControl.setEnabled(context.filesDir, enabled)
+        LogBuffer.add('I', "NativeBridge", "PREMIUM_CAPTURE_CONTROL: requested=$enabled ok=${r.ok}")
+        JSONObject().put("ok", r.ok).put("enabled", r.enabled)
+            .put("detail", r.detail ?: JSONObject.NULL)
+            .put("is_trading_mode", false).put("changes_paper_authority", false)
+            .put("takes_effect", "NEXT_POLL").toString()
+    } catch (t: Throwable) {
+        JSONObject().put("ok", false).put("status", "CONTROL_ERROR")
+            .put("error", t.javaClass.simpleName).toString()
+    }
+
     @JavascriptInterface
     fun exportSessionEvidence(sessionDate: String, pwaVersion: String): String {
         return try {
@@ -1697,26 +1729,89 @@ class NativeBridge(private val context: Context) {
                 fut.cancel(false)
                 return JSONObject().put("ok", false).put("status", "TIMEOUT").toString()
             }
-            val bytes = out.toByteArray(Charsets.UTF_8)
+            val bundleBytes = out.toByteArray(Charsets.UTF_8)
             val man = try { JSONObject(out).optJSONObject("manifest") } catch (e: Exception) { null }
             val status = man?.optString("status", "UNKNOWN") ?: "UNPARSABLE"
             val used = man?.optString("session_date_used", "")?.takeIf { it.length == 10 } ?: date
+            // The premium section is assembled from LOCAL evidence for exactly the requested date,
+            // before any save, so one valid evidence part is never discarded because another is
+            // absent. It is a NEW top-level key: no existing part's meaning changes.
+            val premium = PremiumExportSection.build(context.filesDir, date)
+            val premiumHasData = premium.optBoolean("has_data", false)
+
             // G0: a user-selected session is exact.  Never save another day's evidence as the requested session.
             if (used != date || status == "SESSION_DATE_MISMATCH" || status == "SESSION_DATE_MISSING") {
-                return JSONObject().put("ok", false).put("status", if (status.startsWith("SESSION_DATE_")) status else "SESSION_DATE_MISMATCH")
-                    .put("session_date_requested", date).put("session_date_used", man?.optString("session_date_used", "") ?: "").toString()
+                val base = JSONObject().put("status", if (status.startsWith("SESSION_DATE_")) status else "SESSION_DATE_MISMATCH")
+                    .put("session_date_requested", date).put("session_date_used", man?.optString("session_date_used", "") ?: "")
+                    .put("premium_state", premium.optString("state"))
+                // PREMIUM_ONLY: the brain bundle has nothing for this date but premium evidence
+                // for exactly this date exists. Saving it substitutes no other day, and refusing
+                // to save it would discard a valid part because another is missing.
+                if (!premiumHasData) return base.put("ok", false).toString()
+                val onlyBytes = PremiumExportSection.premiumOnlyBytes(date, premium)
+                if (onlyBytes.size > PremiumExportSection.COMBINED_CAP_BYTES)
+                    return base.put("ok", false).put("status", "OVER_CAP")
+                        .put("premium_bytes", onlyBytes.size).toString()
+                val savedOnly = saveExportBytes("mr_session_evidence_$date.json", "application/json", onlyBytes)
+                val shaOnly = java.security.MessageDigest.getInstance("SHA-256").digest(onlyBytes).joinToString("") { "%02x".format(it) }
+                return base.put("ok", savedOnly.optBoolean("ok")).put("status", "PREMIUM_ONLY")
+                    .put("bytes", onlyBytes.size).put("sha256", shaOnly)
+                    .put("session_date_used", date)
+                    .put("fileName", savedOnly.optString("fileName")).toString()
             }
-            if (bytes.size > 4 * 1024 * 1024 + 65536) {
-                return JSONObject().put("ok", false).put("status", "OVER_CAP").put("bytes", bytes.size).toString()
+
+            // Combined limit, enforced on the FINAL bytes including the premium section. The old
+            // limit is not raised and old parts are never truncated: the premium section is
+            // reduced in declared stages, and if it still will not fit the export is refused.
+            val fit = PremiumExportSection.mergeWithinCap(out, bundleBytes, premium)
+            // the FINAL payload actually saved. Named `bytes` deliberately: the pre-existing
+            // G0/PM1 guards pin the save call text, and that contract is about WHICH bytes are
+            // written for the exact session, so the final payload keeps the name.
+            val bytes = fit.bytes
+            val stage = fit.stage
+            if (fit.overCap) {
+                return JSONObject().put("ok", false).put("status", "OVER_CAP")
+                    .put("bytes", bytes.size)
+                    .put("cap", PremiumExportSection.COMBINED_CAP_BYTES)
+                    .put("bundle_bytes", bundleBytes.size)
+                    .put("premium_reduction_stage", stage)
+                    .put("note", "old parts were not truncated and the limit was not raised")
+                    .toString()
             }
             val sha = java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
             val saved = saveExportBytes("mr_session_evidence_$used.json", "application/json", bytes)
             JSONObject().put("ok", status == "OK" && saved.optBoolean("ok")).put("status", status)
                 .put("bytes", bytes.size).put("sha256", sha).put("session_date_used", used)
                 .put("session_date_requested", date).put("parts", man?.optJSONObject("parts") ?: JSONObject())
+                // reported separately rather than folded into the existing parts object
+                .put("premium", JSONObject()
+                    .put("state", premium.optString("state"))
+                    .put("has_data", premiumHasData)
+                    .put("merged", fit.merged)
+                    .put("reduction_stage", stage)
+                    .put("concurrent_capture_write_detected",
+                        premium.optBoolean("concurrent_capture_write_detected", false))
+                    .put("bundle_bytes", bundleBytes.size)
+                    .put("combined_bytes", bytes.size))
                 .put("fileName", saved.optString("fileName")).toString()
-        } catch (e: Exception) {
-            JSONObject().put("ok", false).put("status", "EXPORT_ERROR").put("error", e.javaClass.simpleName).toString()
+        } catch (t: Throwable) {
+            // Throwable, not Exception. This method allocates multi-megabyte byte arrays — in
+            // bundleBytes, in the merge, and in the premium-only encoding — and an
+            // OutOfMemoryError is an Error, so `catch (Exception)` let it escape the bridge.
+            // WebView then reports "Java exception was raised during method invocation" and the
+            // ENTIRE calling JS function aborts, which this project has already shipped once as a
+            // blank-tab outage. A helper's own guard does not cover these later allocations.
+            //
+            // The response is built allocation-light on purpose: short fixed literals and one
+            // class name, with no payload echo and no formatting of the sizes that just failed to
+            // fit, so reporting the failure cannot need the memory whose absence caused it. The
+            // fallback is a constant string for the case where even that is too much.
+            try {
+                JSONObject().put("ok", false).put("status", "EXPORT_ERROR")
+                    .put("error", t.javaClass.simpleName).toString()
+            } catch (t2: Throwable) {
+                "{\"ok\":false,\"status\":\"EXPORT_ERROR\"}"
+            }
         }
     }
 
