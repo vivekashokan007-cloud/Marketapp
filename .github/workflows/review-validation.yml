@@ -198,6 +198,42 @@ jobs:
       - name: Run complete Android unit suite
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
+      # The candidate source set was never compiled by any push-triggered run: the only workflow
+      # that builds it is the manually dispatched candidate build, which has never run. That is
+      # exactly why B515CandidateVariantTest sat two identity generations stale without failing
+      # anything. This is test-only - no signing key, no APK, no release - and it pins the bundle
+      # to the COMMITTED pin rather than a branch head, so it stays correct after the paired web
+      # branch merges and main's SHA no longer equals the pinned commit.
+      - name: Resolve the committed candidate PWA pin
+        id: pin
+        run: |
+          sha=$(python3 -c 'import json; print(json.load(open("app/src/candidate/pwa_expected_manifest.json"))["marketvivi_sha"])')
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "committed candidate PWA pin: $sha"
+
+      - name: Checkout MarketVivi at the committed pin (read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: vivekashokan007-cloud/MarketVivi
+          ref: ${{ steps.pin.outputs.sha }}
+          path: _marketvivi_pin
+          # Full history: the pinned commit may live on a review branch rather than main, and a
+          # shallow fetch of a commit unreachable from the default branch fails.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Candidate-variant JVM suite against the pinned bundle
+        env:
+          BUNDLE_DIR: app/build/generated/candidatePwa/assets/pwa_candidate
+        run: |
+          python3 tools/candidate_pwa/stage_candidate_pwa.py \
+            --marketvivi-dir _marketvivi_pin --out "$BUNDLE_DIR" \
+            --expect-sha "${{ steps.pin.outputs.sha }}"
+          ls -la "$BUNDLE_DIR"
+          # MARKETVIVI_DIR also switches B515CandidatePwaTest's real-bytes pin check from skipped
+          # to executed, so the committed manifest is verified against the actual web bytes.
+          MARKETVIVI_DIR="$PWD/_marketvivi_pin" ./gradlew :app:testCandidateUnitTest --stacktrace
+
       # Gradle prints only the exception class for a failed test, which makes a remote-only
       # diagnosis a guessing game — one failure cost several CI rounds of elimination before this
       # existed. The XML reports carry the actual assertion messages, so they are surfaced on
