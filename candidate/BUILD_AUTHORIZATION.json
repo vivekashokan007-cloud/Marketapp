@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "artifact_only": true,
+  "native_sha": "368b770104e474710c21102bd802190076482b47",
+  "pwa_sha": "3f3f46ad01cee8dd5fcdb04817472d15968b53bc",
+  "version_code": "526",
+  "version_name": "2.6.95",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "approved_by": "Vivek (vivekashokan007-cloud, repository owner)",
+  "approval_reference": "Owner instruction in Claude Code session 01PVnWQNREGsRgRz4JDCRbTN, 9 November 2026 IST (https://claude.ai/code/session_01PVnWQNREGsRgRz4JDCRbTN). Asked directly to supply approved_by and approval_reference for the artifact-only candidate at 368b7701 and to confirm the candidate-apk environment protections, the owner replied: 'Do it'. Scope: this artifact-only candidate build only. NOT approval to merge, tag, create a release, publish Pages or promote Latest. The owner did not separately restate the candidate-apk environment settings, and the agent has no read access to them (environments API 403 unauthenticated, no MCP tool); this record therefore does not assert them.",
+  "codex_final_check_reference": "CODEX_ACCEPTANCE_CANDIDATE_PACKAGING_20261108.md (Codex -> Claude Code, 8 November 2026): technical acceptance of the artifact-only candidate from 368b770104e474710c21102bd802190076482b47 paired with MarketVivi 3f3f46ad01cee8dd5fcdb04817472d15968b53bc; CI run 42502616458 success at that exact SHA. Reaffirmed as the final-check reference for this b526 build by CODEX_ACCEPTANCE_MARKET_RADAR_2.6.96_STAGE1_20261109.md, item 1."
+}
