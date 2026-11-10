@@ -1382,6 +1382,9 @@ print('NOT_KILLED')
 """
 
 
+PY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # app/src/main/python, independent of cwd
+
+
 def kill_child_mid_write(py, d, sl, row, now_ms):
     """Run a REAL child process that registers BNF[row] and is SIGKILLed between temp flush and os.replace."""
     import subprocess, sys as _sys
@@ -1420,7 +1423,7 @@ class R4InterruptedAtomicWrite(Base):
         return open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), open(c1._lg_path(self.d, S, 'BNF'), 'rb').read()
 
     def _kill(self, row=2):
-        rc, out = kill_child_mid_write(os.getcwd(), self.d, self.sl, row,
+        rc, out = kill_child_mid_write(PY_DIR, self.d, self.sl, row,
                                        ms(pts(BNF[row]['published_at']) + timedelta(milliseconds=500)))
         self.assertEqual((rc, out), (-9, ''))
         self.assertEqual(len(tmp_files(self.d)), 1)          # abandoned temp file left on disk
@@ -1495,7 +1498,7 @@ class R4InterruptedAtomicWrite(Base):
         import subprocess, sys as _sys
         child = _CHILD.replace("c1.plan(d, T.result_for(T.BNF[row]), now, enabled=True, sl_dir=sl)",
                                "c1.write_marker(d, '2026-11-10', 'NF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES')")
-        r = subprocess.run([_sys.executable, '-c', child, os.getcwd(), self.d, self.sl, '0', '0'], capture_output=True)
+        r = subprocess.run([_sys.executable, '-c', child, PY_DIR, self.d, self.sl, '0', '0'], capture_output=True)
         self.assertEqual(r.returncode, -9)
         self.assertEqual(open(os.path.join(self.d, c1.STATUS_NAME), 'rb').read(), st0)   # prior status intact
         self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), ev0)
