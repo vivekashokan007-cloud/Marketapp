@@ -109,7 +109,19 @@ class Base(unittest.TestCase):
         return c1.record(self.d, f['fetch_id'], f['index'], S, call)
 
     def doc(self, ix='BNF'):
-        return json.load(open(c1._path(self.d, S, ix)))
+        return json.load(open(c1._ev_path(self.d, S, ix)))
+
+    def lg(self, ix='BNF'):
+        return json.load(open(c1._lg_path(self.d, S, ix)))
+
+    def ids(self, ix='BNF'):
+        return list(self.lg(ix)['ids'].values())
+
+    def sc(self, positions=None):
+        return {(c['index'], c['side']): c for c in c1.scorecard({S: c1.read_session(self.d, S)}, positions)}
+
+    def attrib(self, ix='BNF'):
+        return {a['pid']: a for a in self.doc(ix)['exit_attribution']}
 
     def obs(self, ix='BNF', kind='QUOTE'):
         return [o for o in self.doc(ix)['observations'] if o['kind'] == kind]
@@ -142,9 +154,10 @@ class DenominatorAndDedup(Base):
         row = BNF[0]
         out = self.plan(result_for(row), pts(row['published_at']))
         self.assertEqual(len(out['fetches']), 1)
-        t = next(iter(self.doc()['targets'].values()))
-        self.assertEqual((t['state'], t['outcome'], t['purpose'], t['side']), ('REQUESTED', None, 'ENTRY', 'SELL'))
-        sc = {(c['index'], c['side']): c for c in c1.scorecard({S: c1.read_session(self.d, S)})}
+        t = self.ids()[0]
+        self.assertEqual((t['o'], t['s']), ('REQUESTED', 'SELL'))
+        self.assertEqual([f['state'] for f in self.lg()['fetches'].values()], ['REQUESTED'])
+        sc = self.sc()
         self.assertEqual(sc[('BNF', 'SELL')]['eligible_proposals'], 1)          # counted before any fetch outcome
         self.assertEqual(sc[('BNF', 'SELL')]['valid_entry_snapshots'], 0)
 
@@ -161,7 +174,8 @@ class DenominatorAndDedup(Base):
         a = self.plan(result_for(row), now)
         b = self.plan(result_for(row), now + timedelta(seconds=2))
         self.assertEqual((len(a['fetches']), len(b['fetches'])), (1, 0))
-        self.assertEqual(self.doc()['stats']['duplicate_notifications'], 1)
+        self.assertEqual(self.lg()['stats']['duplicate_notifications'], 1)
+        self.assertEqual(len(self.ids()), 1)
         r1 = self.rec(a['fetches'][0], now + timedelta(seconds=1))
         r2 = self.rec(a['fetches'][0], now + timedelta(seconds=1))
         self.assertEqual((r1['status'], r2['status']), ('RECORDED', 'ALREADY_RECORDED'))
@@ -175,7 +189,8 @@ class DenominatorAndDedup(Base):
         a = self.plan(result_for(r0), pts(r0['published_at']))
         b = self.plan(result_for(r1), pts(r1['published_at']))
         self.assertEqual((len(a['fetches']), len(b['fetches'])), (1, 0))
-        self.assertEqual(self.doc()['stats']['coalesced'], 1)
+        self.assertEqual(self.lg()['stats']['coalesced'], 1)
+        self.assertEqual(len(self.ids()), 2)
         self.rec(a['fetches'][0], pts(r1['published_at']) + timedelta(seconds=1))
         q = self.obs()
         self.assertEqual(len(q), 2)
@@ -186,8 +201,8 @@ class DenominatorAndDedup(Base):
         row = BNF[0]
         out = self.plan(result_for(row), pts(row['analysis_ts']) + timedelta(seconds=c1.ENTRY_MAX_LAG_S + 1))
         self.assertEqual(out['fetches'], [])
-        t = next(iter(self.doc()['targets'].values()))
-        self.assertEqual(t['outcome'], 'PROPOSAL_NOT_CURRENT_AT_PLAN')
+        self.assertEqual(self.ids()[0]['o'], 'PROPOSAL_NOT_CURRENT_AT_PLAN')
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['eligible_proposals'], 1)      # still in the denominator
 
 
 class QuoteValidity(Base):
@@ -332,64 +347,72 @@ class TimeExitBoundary(Base):
         self.assertEqual(sorted(f['keys']), sorted({r['instrument_key'] for r in BNF}))
         self.rec(f, ist('15:05:04'))
         ex = [o for o in self.obs() if o['purpose'] == 'TIME_EXIT']
-        self.assertEqual(len(ex), 4)
-        self.assertTrue(all(o['valid'] and o['hypothetical'] for o in ex), [o['reason'] for o in ex])
+        self.assertEqual(len(ex), 4)                                 # one observation per instrument
+        at = self.attrib()
+        self.assertEqual(len(at), 9)                                 # ... validated once per proposal
+        self.assertTrue(all(a['valid'] and a['hypothetical'] and a['prompt_90s'] for a in at.values()),
+                        [a['reason'] for a in at.values()])
         self.assertEqual(self.plan({}, ist('15:10:03'))['fetches'], [])        # once per instrument
 
     def test_quote_before_1505_never_stands_in(self):
         self._session_entries()
         f = self.plan({}, ist('15:05:01'))['fetches'][0]
         self.rec(f, ist('15:05:02'), gen=ist('15:04:59'))          # validator-valid age, but before the boundary
-        ex = [o for o in self.obs() if o['purpose'] == 'TIME_EXIT']
-        self.assertEqual({o['reason'] for o in ex}, {'EXIT_QUOTE_BEFORE_1505'})
-        self.assertFalse(any(o['valid'] for o in ex))
+        at = self.attrib()
+        self.assertEqual({a['reason'] for a in at.values()}, {'EXIT_QUOTE_BEFORE_1505'})
+        self.assertFalse(any(a['valid'] for a in at.values()))
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['hypothetical_exit_valid_window_300s'], 0)
 
     def test_late_and_missed_exit_stay_missing(self):
         self._session_entries()
         out = self.plan({}, ist('15:10:01'))
         self.assertEqual(out['fetches'], [])
-        xs = [t for t in self.doc()['targets'].values() if t['purpose'] == 'TIME_EXIT']
-        self.assertEqual({t['outcome'] for t in xs}, {'EXIT_WINDOW_MISSED'})
-        sc = {(c['index'], c['side']): c for c in c1.scorecard({S: c1.read_session(self.d, S)})}
-        self.assertEqual(sc[('BNF', 'SELL')]['valid_1505_exit_observations'], 0)
-        self.assertEqual(sc[('BNF', 'SELL')]['time_exit_coverage'], 0.0)
+        self.assertEqual({t['xo'] for t in self.ids()}, {'EXIT_WINDOW_MISSED'})
+        sc = self.sc()
+        self.assertEqual(sc[('BNF', 'SELL')]['hypothetical_exit_valid_window_300s'], 0)
+        self.assertEqual(sc[('BNF', 'SELL')]['hypothetical_exit_coverage_window_300s'], 0.0)
+        self.assertEqual(sc[('BNF', 'SELL')]['exclusions']['EXIT:EXIT_WINDOW_MISSED'], 8)
         self.assertEqual(sc[('BNF', 'SELL')]['entry_snapshot_coverage'], 1.0)    # entry success cannot hide exit gap
 
     def test_exit_closing_side_size(self):
         self._session_entries()
         f = self.plan({}, ist('15:05:01'))['fetches'][0]
         self.rec(f, ist('15:05:02'), body=v3(f['keys'], ist('15:05:01.800'), ask_qty=5))
-        ex = {o['instrument_key']: o for o in self.obs() if o['purpose'] == 'TIME_EXIT'}
-        sells = {r['instrument_key'] for r in BNF if r['action'].startswith('SELL')}
-        for k, o in ex.items():
-            self.assertEqual(o['reason'], 'QUANTITY_SHORTFALL' if k in sells else None, k)
+        for a in self.attrib().values():                            # closing a SELL buys at the ask
+            self.assertEqual(a['reason'], 'QUANTITY_SHORTFALL' if a['action'].startswith('SELL') else None, a)
 
     def test_admitted_position_links_production_exit_and_exit_pending(self):
         self._session_entries()
         os.makedirs(self.sl)
         k_pending, k_closed = BNF[0]['instrument_key'], BNF[1]['instrument_key']
         doc = {'schema': 'mr.single_leg_store.v1', 'history': [], 'closed': [], 'positions': [
-            {'index': 'BNF', 'action': 'SELL_PE', 'instrument_key': k_pending, 'session_date': S,
+            {'index': 'BNF', 'action': 'SELL_PE', 'instrument_key': k_pending, 'session_date': S, 'position_id': 'p1',
              'entry_decision_id': BNF[0]['decision_id'], 'status': 'EXIT_PENDING', 'exit_reason': 'TIME_EXIT',
              'exit_pending_reason': 'QUANTITY_SHORTFALL'},
-            {'index': 'BNF', 'action': 'BUY_CE', 'instrument_key': k_closed, 'session_date': S,
+            {'index': 'BNF', 'action': 'BUY_CE', 'instrument_key': k_closed, 'session_date': S, 'position_id': 'p2',
              'entry_decision_id': BNF[1]['decision_id'], 'status': 'CLOSED', 'exit_reason': 'TIME_EXIT',
              'exit_quote': {'basis': 'BROKER_SNAPSHOT', 'ts': ist('15:05:01').isoformat()}}]}
         with open(os.path.join(self.sl, 'positions.json'), 'w') as fh:
             json.dump(doc, fh)
         before = open(os.path.join(self.sl, 'positions.json'), 'rb').read()
         f = self.plan({}, ist('15:05:01'))['fetches'][0]
-        self.assertNotIn(k_pending, f['keys'])
+        # R1: the admitted proposal's contract is STILL fetched for the 5 other (unadmitted) 59400PE proposals;
+        # the only proposal on 59500CE is admitted, so that contract is not fetched
+        self.assertIn(k_pending, f['keys'])
         self.assertNotIn(k_closed, f['keys'])
-        linked = {t['instrument_key']: t['outcome'] for t in self.doc()['targets'].values() if t['purpose'] == 'TIME_EXIT'}
-        self.assertEqual(linked[k_pending], 'ADMITTED_POSITION_PRODUCTION_EXIT_LINKED')
+        xo = {r['d']: r['xo'] for r in self.ids()}
+        self.assertEqual(xo[BNF[0]['decision_id']], 'PRODUCTION_LINKED')
+        self.assertEqual(xo[BNF[2]['decision_id']], 'REQUESTED')
         part = c1.export_part(self.files, S)
-        lp = {p['entry_decision_id']: p for p in part['linked_positions']}
-        self.assertEqual(lp[BNF[0]['decision_id']]['exit_pending_reason'], 'QUANTITY_SHORTFALL')
-        self.assertTrue(lp[BNF[1]['decision_id']]['time_exit_quote_at_or_after_1505'])
+        lp = {p['decision_id']: p for p in part['linked_positions']}
+        self.assertEqual(lp[BNF[0]['decision_id']]['production_exit'], 'PRODUCTION_EXIT_PENDING:QUANTITY_SHORTFALL')
+        self.assertEqual(lp[BNF[1]['decision_id']]['production_exit'], 'PRODUCTION_TIME_EXIT_VALID')
+        self.assertEqual(lp[BNF[1]['decision_id']]['position_id'], 'p2')
         sc = {(c['index'], c['side']): c for c in part['scorecard']}
-        self.assertEqual((sc[('BNF', 'SELL')]['user_admissions'], sc[('BNF', 'SELL')]['observed_paper_exits']), (1, 0))
-        self.assertEqual((sc[('BNF', 'BUY')]['user_admissions'], sc[('BNF', 'BUY')]['observed_paper_exits']), (1, 1))
+        self.assertEqual((sc[('BNF', 'SELL')]['user_admissions'], sc[('BNF', 'SELL')]['observed_paper_exits'],
+                          sc[('BNF', 'SELL')]['production_exit_pending']), (1, 0, 1))
+        self.assertEqual((sc[('BNF', 'BUY')]['user_admissions'], sc[('BNF', 'BUY')]['observed_paper_exits'],
+                          sc[('BNF', 'BUY')]['production_time_exit_valid']), (1, 1, 1))
         self.assertEqual(open(os.path.join(self.sl, 'positions.json'), 'rb').read(), before)   # read-only
 
 
@@ -401,11 +424,14 @@ class RestartAndCacheProvenance(Base):
         importlib.reload(c1)                                          # process restart: state is on disk only
         out = self.plan(result_for(row), now + timedelta(seconds=c1.IN_FLIGHT_TTL_S + 1))
         self.assertEqual(out['fetches'], [])
-        t = next(iter(self.doc()['targets'].values()))
-        self.assertEqual(t['outcome'], 'FETCH_LOST_IN_FLIGHT')
+        self.assertEqual(self.ids()[0]['o'], 'FETCH_LOST_IN_FLIGHT')
+        lf = list(self.lg()['fetches'].values())[0]
+        self.assertEqual((lf['state'], lf['used'], lf['used_basis']), ('LOST', 4, 'UPPER_BOUND_UNKNOWN_AFTER_RESTART'))
         late = self.rec(f, now + timedelta(seconds=70))
         self.assertEqual(late, {'status': 'REJECTED', 'reason': 'FETCH_NOT_IN_FLIGHT:LOST'})
-        self.assertEqual(self.doc()['stats']['lost_in_flight'], 1)
+        self.assertEqual(self.lg()['stats']['lost_in_flight'], 1)
+        self.assertEqual(self.lg()['stats']['late_records_refused'], 1)
+        self.assertEqual(self.lg()['budget']['requests_used_upper_bound'], 4)
         self.assertEqual(self.obs(), [])
 
     def test_never_writes_or_reads_executable_cache(self):
@@ -444,18 +470,18 @@ class Budgets(Base):
                 out = self.plan(result_for(row), now)
                 for f in out['fetches']:
                     self.rec(f, now + timedelta(seconds=1))
-            doc = self.doc()
-            self.assertIn('BUDGET_EXHAUSTED:REQUESTS', doc['budget']['exhausted'])
-            outcomes = [t['outcome'] for t in doc['targets'].values()]
-            self.assertIn('BUDGET_EXHAUSTED:REQUESTS', outcomes)
-            self.assertEqual(len(doc['targets']), 9)                 # denominator intact
-            self.assertLessEqual(doc['budget']['requests_used'], 12 - c1.EXIT_RESERVED_REQUESTS)
+            lg = self.lg()
+            self.assertIn('BUDGET_EXHAUSTED:REQUESTS', lg['budget']['exhausted'])
+            self.assertIn('CAPPED:REQUESTS', [t['o'] for t in lg['ids'].values()])
+            self.assertEqual(len(lg['ids']), 9)                    # denominator intact
+            self.assertLessEqual(lg['budget']['requests_used'], 12 - c1.EXIT_RESERVED_REQUESTS)
             ex = self.plan({}, ist('15:05:02'))
-            self.assertEqual(len(ex['fetches']), 1)                   # reserve still funds the time exit
-            self.assertLessEqual(doc['budget']['requests_used'] + 2, 12)
+            self.assertEqual(len(ex['fetches']), 1)                 # reserve still funds the time exit
+            self.assertLessEqual(self.lg()['budget']['requests_reserved'], 12)
+            self.assertEqual(self.sc()[('BNF', 'SELL')]['coverage_kind'], 'PARTIAL')
 
     def test_byte_budget_keeps_denominator_count(self):
-        with mock.patch.object(c1, 'MAX_BYTES_PER_INDEX_SESSION', 9000):
+        with mock.patch.object(c1, 'MAX_EVIDENCE_BYTES_PER_INDEX_SESSION', c1.EXIT_EVIDENCE_RESERVE_BYTES + 5000):
             got = []
             for i in range(len(BNF)):
                 row = BNF[i]
@@ -464,15 +490,14 @@ class Budgets(Base):
                 got += [e['reason'] for e in out['budget_exhausted']]
                 for f in out['fetches']:
                     r = self.rec(f, now + timedelta(seconds=1))
-                    if r['status'] == 'BUDGET_EXHAUSTED':
-                        got.append(r['reason'])
-            self.assertIn('BUDGET_EXHAUSTED:INDEX_SESSION_BYTES', got)
-            self.assertLessEqual(os.path.getsize(c1._path(self.d, S, 'BNF')), 9000)
-            doc = self.doc()
-            self.assertIn('BUDGET_EXHAUSTED:INDEX_SESSION_BYTES', doc['budget']['exhausted'])
-            sc = {(c['index'], c['side']): c for c in c1.scorecard({S: c1.read_session(self.d, S)})}
+                    self.assertIn(r['status'], ('RECORDED', 'RECORDED_CAPPED'))
+            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', got)
+            self.assertLessEqual(os.path.getsize(c1._ev_path(self.d, S, 'BNF')), 5000)
+            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', self.lg()['budget']['exhausted'])
+            sc = self.sc()
             total = sc[('BNF', 'SELL')]['eligible_proposals'] + sc[('BNF', 'BUY')]['eligible_proposals']
             self.assertEqual(total, 9)                                # never shrinks when bytes run out
+            self.assertTrue(all(f['state'] in ('RECORDED', 'RECORDED_CAPPED') for f in self.lg()['fetches'].values()))
 
     def test_global_bytes_no_deletion(self):
         os.makedirs(self.d)
@@ -482,14 +507,23 @@ class Budgets(Base):
         row = BNF[0]
         out = self.plan(result_for(row), pts(row['published_at']))
         self.assertEqual(out['fetches'], [])
-        self.assertIn({'index': 'BNF', 'reason': 'BUDGET_EXHAUSTED:GLOBAL_BYTES'}, out['budget_exhausted'])
+        self.assertIn('BUDGET_EXHAUSTED:GLOBAL_BYTES', [e['reason'] for e in out['budget_exhausted'] if e['index'] == 'BNF'])
         self.assertTrue(os.path.exists(filler))                       # retention: nothing deleted
 
     def test_target_cap(self):
+        """Codex R1: 3 proposals with a 2-target cap -> denominator 3, one CAPPED:TARGETS, coverage PARTIAL."""
         with mock.patch.object(c1, 'MAX_TARGETS_PER_INDEX_SESSION', 2):
             for i in range(3):
                 out = self.plan(result_for(BNF[i]), pts(BNF[i]['published_at']))
             self.assertIn({'index': 'BNF', 'reason': 'BUDGET_EXHAUSTED:TARGETS'}, out['budget_exhausted'])
+            self.assertEqual(len(self.ids()), 3)
+            # the two earlier fetches were never recorded in this test -> fenced LOST after the TTL (not re-armed)
+            self.assertEqual(sorted(str(r['o']) for r in self.ids()),
+                             ['CAPPED:TARGETS', 'FETCH_LOST_IN_FLIGHT', 'FETCH_LOST_IN_FLIGHT'])
+            sc = self.sc()
+            self.assertEqual(sc[('BNF', 'SELL')]['eligible_proposals'] + sc[('BNF', 'BUY')]['eligible_proposals'], 3)
+            self.assertEqual(sc[('BNF', 'SELL')]['coverage_kind'], 'PARTIAL')
+            self.assertEqual(sc[('BNF', 'SELL')]['exclusions'].get('ENTRY:CAPPED:TARGETS'), 1)
 
 
 class AdmissionIsolation(Base):
@@ -546,22 +580,35 @@ class FullSessionFixtureTrace(Base):
         for f in out['fetches']:
             self.rec(f, ist('15:05:02.700'))
         doc = self.doc()
-        size = os.path.getsize(c1._path(self.d, S, 'BNF'))
-        self.assertFalse(os.path.exists(c1._path(self.d, S, 'NF')))
-        sc = {(c['index'], c['side']): c for c in c1.scorecard({S: c1.read_session(self.d, S)})}
+        lg = self.lg()
+        size_ev = os.path.getsize(c1._ev_path(self.d, S, 'BNF'))
+        size_lg = os.path.getsize(c1._lg_path(self.d, S, 'BNF'))
+        size = size_ev + size_lg
+        self.assertFalse(os.path.exists(c1._ev_path(self.d, S, 'NF')))
+        self.assertFalse(os.path.exists(c1._lg_path(self.d, S, 'NF')))
+        sc = self.sc()
         self.assertEqual((sc[('BNF', 'BUY')]['eligible_proposals'], sc[('BNF', 'SELL')]['eligible_proposals']), (1, 8))
         self.assertEqual((sc[('BNF', 'BUY')]['valid_entry_snapshots'], sc[('BNF', 'SELL')]['valid_entry_snapshots']), (1, 8))
         self.assertEqual(sc[('BNF', 'SELL')]['margin_complete_sells'], 8)
-        self.assertEqual(sc[('BNF', 'SELL')]['valid_1505_exit_observations'], 8)
+        self.assertEqual(sc[('BNF', 'SELL')]['hypothetical_exit_valid_window_300s'], 8)
+        self.assertEqual(sc[('BNF', 'SELL')]['hypothetical_exit_valid_prompt_90s'], 8)
+        self.assertEqual(sc[('BNF', 'SELL')]['resolved_entries'], 8)
+        self.assertEqual((sc[('BNF', 'SELL')]['n_eligible_sessions'], sc[('BNF', 'SELL')]['n_resolved_sessions']), (1, 1))
         self.assertEqual(sc[('BNF', 'SELL')]['economic_checkpoint'], 'COVERAGE_ONLY_LIFT_UNSCORED')
-        self.assertEqual(doc['budget']['requests_used'], 9 + 8 + 1)
-        self.assertLess(size, c1.MAX_BYTES_PER_INDEX_SESSION)
+        self.assertEqual(sc[('BNF', 'SELL')]['completeness'], 'COMPLETE')
+        self.assertTrue(sc[('BNF', 'SELL')]['entry_target_met_80pct'])
+        # coalescing: 59400PE proposals 15 min apart are not in flight together -> one fetch each
+        self.assertEqual(lg['budget']['requests_used'], 9 + 8 + 1)
+        self.assertEqual(lg['budget']['requests_used_upper_bound'], 0)
+        self.assertLess(size_lg, c1.MAX_LEDGER_BYTES_PER_INDEX_SESSION)
+        self.assertLess(size_ev, c1.MAX_EVIDENCE_BYTES_PER_INDEX_SESSION)
         trace_out = os.environ.get('C1_TRACE_OUT')
         if trace_out:
             with open(trace_out, 'w') as fh:
                 json.dump({'evidence_class': 'FIXTURE (synthetic broker bodies; proposals sanitized from 9 Nov export)',
-                           'doc': doc, 'scorecard': list(sc.values()), 'bytes_bnf_session': size,
-                           'requests_used': doc['budget']['requests_used']}, fh, indent=1, sort_keys=True, default=str)
+                           'revision': c1.REVISION, 'ledger': lg, 'evidence': doc, 'scorecard': list(sc.values()),
+                           'bytes_bnf_session': size, 'bytes_bnf_ledger': size_lg, 'bytes_bnf_evidence': size_ev,
+                           'requests_used': lg['budget']['requests_used']}, fh, indent=1, sort_keys=True, default=str)
         # export integration (bounded part present only because the pilot dir exists)
         os.makedirs(os.path.join(self.files, 'index_authority_v1'))
         with open(os.path.join(self.files, 'index_authority_v1', S + '.json'), 'w') as fh:
@@ -570,13 +617,10 @@ class FullSessionFixtureTrace(Base):
         self.assertEqual(bundle['manifest']['status'], 'OK')
         part = bundle['parts']['c1_capture']
         self.assertEqual(bundle['manifest']['parts']['c1_capture']['status'], 'PRESENT')
-        self.assertEqual(part['docs']['BNF']['budget']['requests_used'], 18)
-        self.assertIsNone(part['docs']['NF'])
-        self.assertLess(len(json.dumps(part)), 2 * c1.MAX_BYTES_PER_INDEX_SESSION)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        self.assertEqual(part['level'], 'full')
+        self.assertEqual(part['ledgers']['BNF']['budget']['requests_used'], 18)
+        self.assertIsNone(part['ledgers']['NF'])
+        self.assertLess(len(json.dumps(part)), 2 * (c1.MAX_LEDGER_BYTES_PER_INDEX_SESSION + c1.MAX_EVIDENCE_BYTES_PER_INDEX_SESSION))
 
 
 class NoTransportAccounting(Base):
@@ -587,8 +631,8 @@ class NoTransportAccounting(Base):
         r = c1.record(self.d, f['fetch_id'], 'BNF', S, {'attempts': 0, 'requested': f['keys'], 'quote_failure': 'NO_TRANSPORT',
                       'margins': [{'target_id': f['margins'][0]['target_id'], 'attempts': 0, 'failure': 'NO_TRANSPORT'}]})
         self.assertEqual(r['status'], 'RECORDED')
-        doc = self.doc()
-        self.assertEqual((doc['budget']['requests_used'], doc['budget']['requests_reserved']), (0, 0))
+        lg = self.lg()
+        self.assertEqual((lg['budget']['requests_used'], lg['budget']['requests_reserved']), (0, 0))
         self.assertEqual(self.obs()[0]['reason'], 'NO_TRANSPORT')
         self.assertEqual(self.obs(kind='MARGIN')[0]['reason'], 'MARGIN_FETCH_FAILED:NO_TRANSPORT')
 
@@ -598,3 +642,394 @@ class NoTransportAccounting(Base):
         self.assertEqual(c1.record(self.d, 'nope', 'BNF', S, {})['reason'], 'UNKNOWN_FETCH')
         with self.assertRaises(ValueError):
             c1.plan('/tmp/not_the_pilot_dir', {}, ms(ist('10:00:00')), enabled=True)
+
+
+# ═══ R1 regressions (Codex C1 R1 corrections).  FIXTURE / unit results only. ═══════════════════════════
+
+def variant(row, n, **kw):
+    """A distinct proposal (new decision id) n*5 s after `row`, same exact contract unless overridden."""
+    at = pts(row['analysis_ts']) + timedelta(seconds=5 * n)
+    pub = pts(row['published_at']) + timedelta(seconds=5 * n)
+    return dict(row, decision_id='%s_v%d' % (row['decision_id'], n), analysis_ts=at.isoformat(),
+                published_at=pub.isoformat(), **kw)
+
+
+def slice_for(row, ix='BNF'):
+    r = result_for(row, ix)
+    r['published_ms'] = ms(pts(row['published_at']))
+    return r
+
+
+def position(row, pid, status='CLOSED', exit_reason='TIME_EXIT', exit_ts=None, pending=None, ix='BNF'):
+    p = {'index': ix, 'action': row['action'], 'instrument_key': row['instrument_key'], 'session_date': S,
+         'position_id': pid, 'entry_decision_id': row['decision_id'], 'status': status, 'exit_reason': exit_reason}
+    if exit_ts is not None:
+        p['exit_quote'] = {'basis': 'BROKER_SNAPSHOT', 'ts': exit_ts.isoformat()}
+    if pending:
+        p['exit_pending_reason'] = pending
+    return p
+
+
+class R1Denominator(Base):
+    def test_three_publications_before_worker_runs_three_identities(self):
+        rows = [BNF[0], variant(BNF[0], 1), variant(BNF[0], 2)]
+        now = pts(rows[-1]['published_at']) + timedelta(milliseconds=500)
+        out = self.plan([slice_for(r) for r in rows], now)          # native FIFO hands all three in one run
+        self.assertEqual(out['registered']['BNF'], 3)
+        self.assertEqual(len(self.ids()), 3)
+        self.assertEqual(len(out['fetches']), 1)                    # coalesced only AFTER identities registered
+        self.assertEqual(self.lg()['stats']['coalesced'], 2)
+        self.assertEqual({r['pub'] for r in self.ids()}, {_dt(r['published_at']) for r in rows})
+        self.rec(out['fetches'][0], now + timedelta(seconds=1))
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['eligible_proposals'], 3)
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['valid_entry_snapshots'], 3)
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['margin_complete_sells'], 3)
+
+    def test_one_proposal_offered_three_times_after_byte_cap_counts_once(self):
+        with mock.patch.object(c1, 'MAX_EVIDENCE_BYTES_PER_INDEX_SESSION', c1.EXIT_EVIDENCE_RESERVE_BYTES + 10):
+            now = pts(BNF[0]['published_at'])
+            for k in range(3):
+                out = self.plan(slice_for(BNF[0]), now + timedelta(seconds=k))
+                self.assertEqual(out['fetches'], [])
+            self.assertEqual(len(self.ids()), 1)
+            self.assertEqual(self.ids()[0]['o'], 'CAPPED:BYTES')
+            self.assertEqual(self.lg()['stats']['duplicate_notifications'], 2)
+            sc = self.sc()[('BNF', 'SELL')]
+            self.assertEqual((sc['eligible_proposals'], sc['coverage_kind']), (1, 'PARTIAL'))
+            self.assertEqual(sc['exclusions'], {'ENTRY:CAPPED:BYTES': 1, 'MARGIN:NOT_RECORDED': 1, 'EXIT:NOT_RECORDED': 1})
+
+    def test_capped_completion_is_durable_counted_and_idempotent(self):
+        """R0 bug: evidence write failed at record time -> fetch stayed REQUESTED with 0 used."""
+        row = BNF[0]
+        now = pts(row['published_at']) + timedelta(milliseconds=500)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        with mock.patch.object(c1, '_write_evidence', return_value=(False, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES')):
+            r = self.rec(f, now + timedelta(seconds=1))
+        self.assertEqual((r['status'], r['used'], r['used_basis']), ('RECORDED_CAPPED', 2, 'COUNTED'))
+        lf = self.lg()['fetches'][f['fetch_id']]
+        self.assertEqual((lf['state'], lf['used'], lf['evidence_stored']), ('RECORDED_CAPPED', 2, False))
+        self.assertEqual((self.ids()[0]['o'], self.ids()[0]['mo']), ('VALID', 'VALID'))   # compact verdicts kept
+        self.assertEqual(self.lg()['budget']['requests_used'], 2)
+        again = self.rec(f, now + timedelta(seconds=2))                                   # replay / late callback
+        self.assertEqual(again['status'], 'ALREADY_RECORDED')
+        self.assertEqual(self.lg()['budget']['requests_used'], 2)
+        self.assertEqual(self.obs(), [])
+        importlib.reload(c1)
+        self.assertEqual(self.plan({}, now + timedelta(seconds=200))['fetches'], [])     # never re-armed
+        self.assertEqual(self.lg()['fetches'][f['fetch_id']]['state'], 'RECORDED_CAPPED')
+
+    def test_ledger_at_cap_still_makes_fetch_terminal(self):
+        row = BNF[0]
+        now = pts(row['published_at']) + timedelta(milliseconds=500)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        l0 = os.path.getsize(c1._lg_path(self.d, S, 'BNF'))
+        with mock.patch.object(c1, 'MAX_LEDGER_BYTES_PER_INDEX_SESSION', l0 + c1.STATUS_RESERVE_BYTES + 20):
+            r = self.rec(f, now + timedelta(seconds=1))
+        self.assertEqual(r['status'], 'LEDGER_BUDGET_EXHAUSTED')
+        lg = self.lg()
+        lf = lg['fetches'][f['fetch_id']]
+        self.assertEqual((lf['state'], lf['used'], lf['used_basis'], lf['verdicts_stored']),
+                         ('RECORDED_CAPPED', 2, 'COUNTED', False))
+        self.assertIn('LEDGER_WRITE_FAILED', lg['completeness_flags'])
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['completeness'], 'INCOMPLETE')
+
+    def test_restart_without_record_is_upper_bound(self):
+        row = BNF[1]
+        now = pts(row['published_at'])
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        importlib.reload(c1)
+        self.plan({}, now + timedelta(seconds=c1.IN_FLIGHT_TTL_S + 1))
+        lf = self.lg()['fetches'][f['fetch_id']]
+        self.assertEqual((lf['state'], lf['used'], lf['used_basis']), ('LOST', 2, 'UPPER_BOUND_UNKNOWN_AFTER_RESTART'))
+        self.assertEqual(self.rec(f, now + timedelta(seconds=90))['reason'], 'FETCH_NOT_IN_FLIGHT:LOST')
+
+    def test_unaccounted_identities_mark_incomplete_and_suppress_80pct(self):
+        f = self.plan(slice_for(BNF[1]), pts(BNF[1]['published_at']))['fetches'][0]
+        self.rec(f, pts(BNF[1]['published_at']) + timedelta(seconds=1))
+        self.assertTrue(self.sc()[('BNF', 'BUY')]['entry_target_met_80pct'])
+        self.assertEqual(self.sc()[('BNF', 'BUY')]['completeness'], 'COMPLETE')
+        c1.plan(self.d, {}, ms(pts(BNF[1]['published_at']) + timedelta(seconds=5)), enabled=True, sl_dir=self.sl,
+                native_dropped=2)
+        sc = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((sc['completeness'], sc['entry_target_met_80pct'], sc['entry_snapshot_coverage']),
+                         ('INCOMPLETE', None, 1.0))
+        self.assertIn('NATIVE_QUEUE_OVERFLOW', sc['completeness_flags'])
+
+    def test_identity_cap_counts_overflow(self):
+        with mock.patch.object(c1, 'MAX_IDS_PER_INDEX_SESSION', 2):
+            rows = [BNF[0], variant(BNF[0], 1), variant(BNF[0], 2)]
+            self.plan([slice_for(r) for r in rows], pts(rows[-1]['published_at']))
+            self.assertEqual(len(self.ids()), 2)
+            self.assertEqual(self.lg()['stats']['identities_overflow'], 1)
+            self.assertEqual(self.sc()[('BNF', 'SELL')]['completeness'], 'INCOMPLETE')
+
+    def test_corrupt_ledger_is_unknown_not_overwritten(self):
+        os.makedirs(self.d)
+        with open(c1._lg_path(self.d, S, 'BNF'), 'w') as fh:
+            fh.write('{broken')
+        out = self.plan(slice_for(BNF[0]), pts(BNF[0]['published_at']))
+        self.assertEqual(out['fetches'], [])
+        self.assertEqual(open(c1._lg_path(self.d, S, 'BNF')).read(), '{broken')
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['completeness'], 'UNKNOWN')
+
+    def test_publication_to_capture_lag_recorded(self):
+        row = BNF[1]
+        now = pts(row['published_at']) + timedelta(seconds=3)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        self.rec(f, now + timedelta(milliseconds=700))
+        o = self.obs()[0]
+        self.assertEqual(o['publication_to_capture_lag_s'], 3.7)
+        self.assertIsNotNone(o['publication_to_capture_lag_s'])
+        self.assertGreater(o['publication_to_capture_lag_s'], 0)
+        self.assertEqual((o['ts_basis'], o['exchange_quote_age']), ('BROKER_SNAPSHOT', 'UNKNOWN'))
+
+
+def _dt(s):
+    return pts(s).isoformat() if s else None
+
+
+class R1ExitAttribution(Base):
+    def _two_on_one_contract(self):
+        a, b = BNF[0], variant(BNF[0], 1)          # same exact 59400PE contract, different decisions
+        for row in (a, b):
+            now = pts(row['published_at']) + timedelta(milliseconds=500)
+            for f in self.plan(slice_for(row), now)['fetches']:
+                self.rec(f, now + timedelta(seconds=1))
+        return a, b
+
+    def test_admitted_valid_exit_and_unadmitted_hypothetical_same_contract(self):
+        """R0 bug: 0/2 valid exits and no hypothetical fetch."""
+        a, b = self._two_on_one_contract()
+        poss = [position(a, 'p1', exit_ts=ist('15:05:01'))]
+        os.makedirs(self.sl)
+        with open(os.path.join(self.sl, 'positions.json'), 'w') as fh:
+            json.dump({'schema': 'mr.single_leg_store.v1', 'positions': poss}, fh)
+        out = self.plan({}, ist('15:05:02'))
+        self.assertEqual(len(out['fetches']), 1)
+        self.assertEqual(out['fetches'][0]['keys'], [a['instrument_key']])
+        self.rec(out['fetches'][0], ist('15:05:03'))
+        at = self.attrib()
+        self.assertEqual([x['decision_id'] for x in at.values()], [b['decision_id']])     # never stands in for a
+        sc = self.sc(poss)[('BNF', 'SELL')]
+        self.assertEqual((sc['production_time_exit_valid'], sc['hypothetical_exit_valid_window_300s']), (1, 1))
+        self.assertEqual((sc['resolved_entries'], sc['resolved_observed_paper'], sc['resolved_hypothetical']), (2, 1, 1))
+
+    def test_production_categories_kept_distinct(self):
+        rows = [BNF[0], BNF[2], BNF[3], BNF[5]]
+        for row in rows:
+            now = pts(row['published_at']) + timedelta(milliseconds=500)
+            for f in self.plan(slice_for(row), now)['fetches']:
+                self.rec(f, now + timedelta(seconds=1))
+        poss = [position(rows[0], 'p1', exit_ts=ist('15:05:00')),
+                position(rows[1], 'p2', exit_reason='STOP_PLANNED', exit_ts=ist('13:00:00')),
+                position(rows[2], 'p3', exit_ts=ist('15:04:59')),
+                position(rows[3], 'p4', status='EXIT_PENDING', pending='SNAPSHOT_STALE')]
+        sc = self.sc(poss)[('BNF', 'SELL')]
+        self.assertEqual((sc['production_time_exit_valid'], sc['production_earlier_exit'],
+                          sc['production_pre_boundary_quote'], sc['production_exit_pending']), (1, 1, 1, 1))
+        self.assertEqual(sc['exclusions']['EXIT:PRODUCTION_TIME_EXIT_PRE_BOUNDARY_QUOTE'], 1)
+        self.assertEqual(sc['exclusions']['EXIT:PRODUCTION_EXIT_PENDING:SNAPSHOT_STALE'], 1)
+        self.assertEqual(sc['resolved_observed_paper'], 1)
+
+    def test_mixed_closing_sides_on_one_contract(self):
+        buy = BNF[1]
+        sell = variant(buy, 1, action='SELL_CE')                  # same 59500CE contract, opposite side
+        for row in (buy, sell):
+            now = pts(row['published_at']) + timedelta(milliseconds=500)
+            for f in self.plan(slice_for(row), now)['fetches']:
+                self.rec(f, now + timedelta(seconds=1))
+        f = self.plan({}, ist('15:05:01'))['fetches'][0]
+        self.assertEqual(f['keys'], [buy['instrument_key']])        # one fetch per instrument
+        self.rec(f, ist('15:05:02'), body=v3(f['keys'], ist('15:05:01.800'), ask_qty=5))
+        at = {x['action']: x for x in self.attrib().values()}
+        self.assertEqual((at['BUY_CE']['closing_side'], at['BUY_CE']['valid']), ('SELL', True))
+        self.assertEqual((at['SELL_CE']['closing_side'], at['SELL_CE']['reason']), ('BUY', 'QUANTITY_SHORTFALL'))
+
+    def test_prompt_vs_window_and_delay_disclosed(self):
+        self.entry(1)
+        f = self.plan({}, ist('15:05:01'))['fetches'][0]
+        self.rec(f, ist('15:07:00.400'), gen=ist('15:07:00'))
+        a = list(self.attrib().values())[0]
+        self.assertEqual((a['valid'], a['prompt_90s'], a['delay_after_cutoff_s']), (True, False, 120.0))
+        sc = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((sc['hypothetical_exit_valid_window_300s'], sc['hypothetical_exit_valid_prompt_90s'],
+                          sc['hypothetical_exit_delay_s_max']), (1, 0, 120.0))
+
+    def test_byte_pressure_before_exit_window_keeps_exit_capacity(self):
+        with mock.patch.object(c1, 'MAX_EVIDENCE_BYTES_PER_INDEX_SESSION', c1.EXIT_EVIDENCE_RESERVE_BYTES + 6000):
+            for i in range(len(BNF)):
+                row = BNF[i]
+                now = pts(row['published_at']) + timedelta(milliseconds=500)
+                for f in self.plan(slice_for(row), now)['fetches']:
+                    self.rec(f, now + timedelta(seconds=1))
+            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', self.lg()['budget']['exhausted'])
+            out = self.plan({}, ist('15:05:01'))
+            self.assertEqual(len(out['fetches']), 1)                 # exits still requested (request reserve)
+            r = self.rec(out['fetches'][0], ist('15:05:02'))
+            self.assertIn(r['status'], ('RECORDED', 'RECORDED_CAPPED'))
+            self.assertEqual(r['status'], 'RECORDED')                # exit evidence fits the byte reserve
+            xo = [x['xo'] for x in self.ids()]
+            self.assertEqual(xo.count('VALID'), 9)                   # failed entries stay in the denominator
+
+    def test_viable_pairs_get_exit_priority_and_capped_reason(self):
+        with mock.patch.object(c1, 'MAX_EXIT_INSTRUMENTS_PER_INDEX_SESSION', 1):
+            f, _ = self.entry(1, failure='TIMEOUT')                  # BUY 59500CE entry failed
+            f, _ = self.entry(4)                                     # SELL 59300PE entry + margin valid
+            out = self.plan({}, ist('15:05:01'))
+            self.assertEqual(out['fetches'][0]['keys'], [BNF[4]['instrument_key']])
+            xo = {r['k']: r['xo'] for r in self.ids()}
+            self.assertEqual(xo[BNF[1]['instrument_key']], 'CAPPED:EXIT_INSTRUMENTS_ENTRY_NOT_VIABLE')
+            self.assertEqual(self.sc()[('BNF', 'BUY')]['eligible_proposals'], 1)     # failed entry still counted
+
+
+def _ledger_docs(session, rows):
+    """Synthetic ledger (scorecard input) for the economic-gate regressions."""
+    lg = c1._empty_ledger(session, 'BNF')
+    for i, (side, o, mo, xo) in enumerate(rows):
+        pid = 'p_%s_%d' % (session, i)
+        lg['ids'][pid] = {'pid': pid, 'd': 'd%d' % i, 'k': 'K', 'a': side + '_PE', 's': side, 'lot': 30,
+                          'an': None, 'pub': None, 'o': o, 'mo': mo, 'xo': xo, 'xp': True, 'xd': 1.0}
+    return {'BNF': {'ledger': lg, 'evidence': None, 'ledger_status': 'PRESENT'},
+            'NF': {'ledger': None, 'evidence': None, 'ledger_status': 'MISSING'}}
+
+
+class R1EconomicGate(unittest.TestCase):
+    OK = ('SELL', 'VALID', 'VALID', 'VALID')
+    EMPTY = ('SELL', 'TIMEOUT', 'MARGIN_FETCH_FAILED:TIMEOUT', 'EXIT_WINDOW_MISSED')
+
+    def cell(self, docs):
+        return {(c['index'], c['side']): c for c in c1.scorecard(docs)}[('BNF', 'SELL')]
+
+    def test_ten_resolved_one_session_plus_two_empty_sessions(self):
+        docs = {'2026-11-09': _ledger_docs('2026-11-09', [self.OK] * 10),
+                '2026-11-10': _ledger_docs('2026-11-10', [self.EMPTY]),
+                '2026-11-11': _ledger_docs('2026-11-11', [self.EMPTY])}
+        c = self.cell(docs)
+        self.assertEqual((c['resolved_entries'], c['n_eligible_sessions'], c['n_resolved_sessions']), (10, 3, 1))
+        self.assertEqual(c['economic_checkpoint'], 'COVERAGE_ONLY_LIFT_UNSCORED')
+
+    def test_ten_across_three_sessions_clears_count_gate_only(self):
+        docs = {'2026-11-09': _ledger_docs('2026-11-09', [self.OK] * 4),
+                '2026-11-10': _ledger_docs('2026-11-10', [self.OK] * 3),
+                '2026-11-11': _ledger_docs('2026-11-11', [self.OK] * 3)}
+        c = self.cell(docs)
+        self.assertEqual((c['resolved_entries'], c['n_resolved_sessions']), (10, 3))
+        self.assertEqual((c['evidence_count_gate'], c['economic_checkpoint'], c['economic_lift']),
+                         ('MET', 'EVIDENCE_COUNT_GATE_MET_LIFT_UNSCORED', 'UNSCORED'))
+        self.assertEqual(c['economics_inputs']['fees']['2026-11-09'], 'FEE_CONTRACT_DATED_OK')
+        self.assertIn('DECLARED_ASSUMPTION', c['economics_inputs']['brokerage'])
+
+    def test_sell_without_valid_margin_is_not_resolved_and_sides_never_pool(self):
+        docs = {'2026-11-09': _ledger_docs('2026-11-09', [('SELL', 'VALID', 'MARGIN_STALE', 'VALID')] * 4 +
+                                           [('BUY', 'VALID', None, 'VALID')] * 4),
+                '2026-11-10': _ledger_docs('2026-11-10', [('BUY', 'VALID', None, 'VALID')] * 3),
+                '2026-11-11': _ledger_docs('2026-11-11', [('BUY', 'VALID', None, 'VALID')] * 3)}
+        cells = {(c['index'], c['side']): c for c in c1.scorecard(docs)}
+        self.assertEqual(cells[('BNF', 'SELL')]['resolved_entries'], 0)
+        self.assertEqual(cells[('BNF', 'BUY')]['economic_checkpoint'], 'EVIDENCE_COUNT_GATE_MET_LIFT_UNSCORED')
+        self.assertEqual(cells[('BNF', 'SELL')]['economic_checkpoint'], 'COVERAGE_ONLY_LIFT_UNSCORED')
+        self.assertEqual(cells[('NF', 'SELL')]['economic_checkpoint'], 'ASSESS_SEPARATELY_NON_EXPIRY_DAYS')
+
+    def test_fixture_tick_is_not_evidenced(self):
+        files = tempfile.mkdtemp()
+        try:
+            d = os.path.join(files, c1.DIR_NAME)
+            row = BNF[1]
+            now = pts(row['published_at'])
+            f = c1.plan(d, slice_for(row), ms(now), enabled=True)['fetches'][0]
+            Base.rec(type('X', (), {'d': d})(), f, now + timedelta(seconds=1))
+            c = {(x['index'], x['side']): x for x in c1.scorecard({S: c1.read_session(d, S)})}[('BNF', 'BUY')]
+            self.assertEqual(c['economics_inputs']['tick'], 'NOT_EVIDENCED')
+        finally:
+            shutil.rmtree(files, ignore_errors=True)
+
+
+class R1GateSkippedOutcomes(Base):
+    def test_skipped_before_quote(self):
+        row = BNF[0]
+        now = pts(row['published_at'])
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        r = c1.record(self.d, f['fetch_id'], 'BNF', S, {'attempts': 0, 'requested': f['keys'],
+                      'quote_failure': 'SKIPPED:PILOT_DISABLED',
+                      'margins': [{'target_id': f['margins'][0]['target_id'], 'attempts': 0,
+                                   'failure': 'SKIPPED:PILOT_DISABLED'}]})
+        self.assertEqual((r['status'], r['used']), ('RECORDED', 0))
+        self.assertEqual((self.ids()[0]['o'], self.ids()[0]['mo']), ('SKIPPED:PILOT_DISABLED', 'SKIPPED:PILOT_DISABLED'))
+        self.assertEqual(self.sc()[('BNF', 'SELL')]['exclusions']['ENTRY:SKIPPED:PILOT_DISABLED'], 1)
+
+    def test_left_paper_between_quote_and_margin(self):
+        row = BNF[0]
+        now = pts(row['published_at']) + timedelta(milliseconds=500)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        rc = now + timedelta(seconds=1)
+        call = {'attempts': 1, 'requested': f['keys'], 'quote_failure': None,
+                'quote': {'body': v3(f['keys'], rc - timedelta(milliseconds=150)), 'request_start_ms': ms(rc) - 300,
+                          'receipt_ms': ms(rc), 'receipt_mono_ms': 1},
+                'margins': [{'target_id': f['margins'][0]['target_id'], 'attempts': 0, 'failure': 'SKIPPED:NOT_PAPER_MODE'}]}
+        r = c1.record(self.d, f['fetch_id'], 'BNF', S, call)
+        self.assertEqual(r['used'], 1)                                # in-flight quote accounted, margin not sent
+        self.assertEqual((self.ids()[0]['o'], self.ids()[0]['mo']), ('VALID', 'SKIPPED:NOT_PAPER_MODE'))
+        self.assertEqual(self.obs()[0]['receipt_ms'], ms(rc))         # original timestamps kept
+
+
+class R1ExportCap(Base):
+    """Export near the cap, with vs without C1: released parts must be byte-identical (C1 degrades first)."""
+    def _files(self):
+        os.makedirs(os.path.join(self.files, 'index_authority_v1'))
+        with open(os.path.join(self.files, 'index_authority_v1', S + '.json'), 'w') as fh:
+            json.dump({'session_date': S, 'history': {}}, fh)
+        os.makedirs(os.path.join(self.files, 'forensics'))
+        with open(os.path.join(self.files, 'forensics', 'logbuffer.jsonl'), 'w') as fh:
+            for i in range(400):
+                fh.write(json.dumps({'ts': ms(ist('10:%02d:%02d' % (i // 60, i % 60))), 'level': 'I',
+                                     'tag': 'IndexAuthority', 'msg': 'line %d ' % i + 'y' * 200}) + '\n')
+
+    def _bundle(self, cap):
+        import session_evidence_v1 as se
+        with mock.patch.object(se, 'MAX_BUNDLE_BYTES', cap):
+            return json.loads(brain.session_evidence_bundle(self.files, S, None, '{}', True))
+
+    def test_near_cap_with_and_without_c1(self):
+        self._files()
+        base = self._bundle(4 * 1024 * 1024)
+        size = len(json.dumps(base, sort_keys=True, separators=(',', ':')))
+        for i in range(len(BNF)):
+            row = BNF[i]
+            now = pts(row['published_at']) + timedelta(milliseconds=500)
+            for f in self.plan(slice_for(row), now)['fetches']:
+                self.rec(f, now + timedelta(seconds=1))
+        out = {}
+        for cap in (size + 200 * 1024, size + 6000, size + 200, size + 20):
+            b = self._bundle(cap)
+            nb = self._without_c1(cap)
+            self.assertEqual(b['manifest']['parts']['logs']['status'], nb['manifest']['parts']['logs']['status'], cap)
+            for k, v in nb['parts'].items():
+                self.assertEqual(json.dumps(b['parts'][k], sort_keys=True), json.dumps(v, sort_keys=True), k)
+            for k, v in nb['manifest']['parts'].items():
+                self.assertEqual(b['manifest']['parts'][k], v, k)
+            out[cap - size] = (b['manifest']['parts'].get('c1_capture') or {}).get('status'), \
+                (b['parts'].get('c1_capture') or {}).get('level')
+        self.assertEqual(out[200 * 1024], ('PRESENT', 'full'))
+        self.assertIn(out[6000][1], ('ledger', 'scorecard'))
+        self.assertEqual(out[200], ('OMITTED_FOR_CAP', None))         # manifest stub only
+        self.assertEqual(out[20], (None, None))                       # not even a stub fits: C1 absent
+        self.assertEqual(base['manifest']['parts']['logs']['status'], 'PRESENT')
+        self.assertEqual(len(base['parts']['logs']), 400)              # baseline evidence really present
+        for cap in (size + 6000, size + 20):
+            self.assertEqual(len(self._bundle(cap)['parts']['logs']), 400)   # never truncated because of C1
+        if os.environ.get('C1_EXPORT_OUT'):
+            with open(os.environ['C1_EXPORT_OUT'], 'w') as fh:
+                json.dump({'evidence_class': 'FIXTURE', 'baseline_bytes': size, 'baseline_log_lines': 400,
+                           'c1_by_headroom_bytes': {str(k): v for k, v in out.items()}}, fh, indent=1, sort_keys=True)
+
+    def _without_c1(self, cap):
+        hidden = self.d + '_hidden'
+        os.rename(self.d, hidden)
+        try:
+            return self._bundle(cap)
+        finally:
+            os.rename(hidden, self.d)
+
+
+if __name__ == '__main__':
+    unittest.main()

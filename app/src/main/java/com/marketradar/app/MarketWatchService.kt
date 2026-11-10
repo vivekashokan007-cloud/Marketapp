@@ -3346,7 +3346,7 @@ class MarketWatchService : Service() {
                     }
                     // C1 capture pilot: opt-in research capture (default OFF); never admits or writes single_leg_v1
                     try {
-                        C1PilotIo.offer(filesDir, prefs, finalBrainString)
+                        C1PilotIo.offer(filesDir, prefs, resultObj, System.currentTimeMillis())
                     } catch (e: Exception) {
                         LogBuffer.add('W', TAG, "C1_PILOT_CTX_FAIL: ${e.javaClass.simpleName}")
                     }

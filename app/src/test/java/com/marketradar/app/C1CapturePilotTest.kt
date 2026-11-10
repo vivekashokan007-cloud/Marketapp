@@ -49,10 +49,15 @@ class C1CapturePilotTest {
         else ManagedReadAdapters.Response(200, "{\"status\":\"success\",\"data\":{\"required_margin\":1}}")
     }
 
+    private val calls = ArrayList<IntArray>()       // (dropped, discarded) per plan call
     private fun pilot(enabled: Boolean, tr: ManagedReadAdapters.Transport?, plans: MutableList<String>,
+                      records: MutableList<JSONObject>, q: Queue, planOut: () -> String) =
+        gated({ if (enabled) null else "PILOT_DISABLED" }, tr, plans, records, q, planOut)
+
+    private fun gated(gate: () -> String?, tr: ManagedReadAdapters.Transport?, plans: MutableList<String>,
                       records: MutableList<JSONObject>, q: Queue, planOut: () -> String) = C1CapturePilot(
-        enabled = { enabled }, transport = { tr }, clocks = clocks,
-        plan = { r, _ -> plans.add(r); planOut() },
+        gate = gate, transport = { tr }, clocks = clocks,
+        plan = { r, _, dropped, discarded -> plans.add(r); calls.add(intArrayOf(dropped, discarded)); planOut() },
         record = { id, ix, s, c -> records.add(JSONObject(c).put("_id", id).put("_ix", ix).put("_s", s)); "{\"status\":\"RECORDED\"}" },
         executor = q)
 
@@ -66,16 +71,19 @@ class C1CapturePilotTest {
         val src = File("src/main/java/com/marketradar/app/C1CapturePilot.kt").readText()
         assertTrue(src.contains("prefs.getBoolean(PREF_ENABLED, false)"))
         val nb = File("src/main/java/com/marketradar/app/NativeBridge.kt").readText()
-        assertTrue(nb.contains("fun getC1CapturePilotEnabled(): Boolean = prefs.getBoolean(C1PilotIo.PREF_ENABLED, false)"))
+        assertTrue(nb.contains("fun getC1CapturePilotEnabled(): Boolean = BuildConfig.PWA_CANDIDATE && prefs.getBoolean(C1PilotIo.PREF_ENABLED, false)"))
+        assertTrue(nb.contains("if (!BuildConfig.PWA_CANDIDATE) return\n        prefs.edit().putBoolean(C1PilotIo.PREF_ENABLED, enabled).apply()"))
     }
 
-    @Test fun queued_offers_coalesce_to_latest_result() {
+    @Test fun queued_offers_all_reach_plan_in_order() {
+        // R1: three distinct publications before the worker runs -> all three slices registered (no latest-wins)
         val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
         val p = pilot(true, FakeTransport(mutableListOf(ok)), plans, recs, q) { planJson() }
         assertTrue(p.offer("{\"poll\":1}")); assertTrue(p.offer("{\"poll\":2}")); assertTrue(p.offer("{\"poll\":3}"))
         assertEquals(1, q.tasks.size)
         q.drain()
-        assertEquals(listOf("{\"poll\":3}"), plans)
+        assertEquals(listOf("[{\"poll\":1},{\"poll\":2},{\"poll\":3}]"), plans)
+        assertEquals(listOf(0, 0), calls.single().toList())
     }
 
     @Test fun exact_read_only_requests_and_raw_bodies_forwarded() {
@@ -184,5 +192,103 @@ class C1CapturePilotTest {
         val svc = File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText()
         assertEquals(1, Regex("C1PilotIo\\.offer\\(").findAll(svc).count())
         assertNull(Regex("C1PilotIo").find(File("src/main/java/com/marketradar/app/SingleLegAdmissionCoordinator.kt").readText()))
+    }
+
+    // ── R1 regressions ─────────────────────────────────────────────────────────────────────────────────
+
+    @Test fun queue_overflow_is_counted_not_silent() {
+        val q = Queue(); val plans = ArrayList<String>()
+        val p = pilot(true, FakeTransport(mutableListOf(ok)), plans, ArrayList(), q) { planJson() }
+        for (i in 1..(C1CapturePilot.MAX_QUEUE + 2)) p.offer("{\"poll\":$i}")
+        q.drain()
+        assertEquals(C1CapturePilot.MAX_QUEUE, JSONArray(plans.single()).length())
+        assertEquals(listOf(2, 0), calls.single().toList())           // Python marks the slice INCOMPLETE
+    }
+
+    @Test fun gate_reasons_non_candidate_default_off_non_paper() {
+        assertEquals("NOT_CANDIDATE_BUILD", C1PilotIo.gateReason(false, true, "paper"))
+        assertEquals("PILOT_DISABLED", C1PilotIo.gateReason(true, false, "paper"))
+        assertEquals("NOT_PAPER_MODE", C1PilotIo.gateReason(true, true, "real"))
+        assertEquals("NOT_PAPER_MODE", C1PilotIo.gateReason(true, true, null))
+        assertNull(C1PilotIo.gateReason(true, true, "paper"))
+        for (reason in listOf("NOT_CANDIDATE_BUILD", "PILOT_DISABLED", "NOT_PAPER_MODE")) {
+            val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
+            val tr = FakeTransport(mutableListOf(ok))
+            assertFalse(gated({ reason }, tr, plans, recs, q) { planJson(entrySell()) }.offer("{}"))
+            q.drain()
+            assertTrue(plans.isEmpty()); assertTrue(recs.isEmpty()); assertTrue(tr.calls.isEmpty())
+        }
+        val src = File("src/main/java/com/marketradar/app/C1CapturePilot.kt").readText()
+        assertTrue(src.contains("gateReason(BuildConfig.PWA_CANDIDATE,"))
+        assertTrue(src.contains("EvAcceptance.executionMode(prefs)"))
+    }
+
+    @Test fun toggle_off_during_queued_run_discards_and_reenable_starts_fresh() {
+        val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
+        var g: String? = null
+        val tr = FakeTransport(mutableListOf(ok))
+        val p = gated({ g }, tr, plans, recs, q) { planJson(entrySell()) }
+        assertTrue(p.offer("{\"poll\":1}"))
+        g = "PILOT_DISABLED"                                           // user turns it off while queued
+        q.drain()
+        assertTrue(plans.isEmpty()); assertTrue(tr.calls.isEmpty()); assertEquals(0, p.queued())
+        g = null
+        assertTrue(p.offer("{\"poll\":2}"))
+        q.drain()
+        assertEquals(listOf("[{\"poll\":2}]"), plans)                 // stale slice never runs
+        assertEquals(listOf(0, 1), calls.single().toList())            // discarded count reported
+    }
+
+    @Test fun leaving_paper_between_quote_and_margin_skips_margin() {
+        val q = Queue(); val recs = ArrayList<JSONObject>()
+        var g: String? = null
+        val tr = FakeTransport(mutableListOf({ m, u, b -> val r = ok(m, u, b); g = "NOT_PAPER_MODE"; r }))
+        gated({ g }, tr, ArrayList(), recs, q) { planJson(entrySell()) }.offer("{}"); q.drain()
+        assertEquals(1, tr.calls.size)                                 // GET only, no margin POST
+        val c = recs.single()
+        assertEquals(1, c.getInt("attempts"))
+        assertTrue(c.has("quote"))                                     // in-flight response kept, own timestamps
+        assertTrue(c.getJSONObject("quote").getLong("receipt_ms") > 0)
+        val m = c.getJSONArray("margins").getJSONObject(0)
+        assertEquals(Pair(0, "SKIPPED:NOT_PAPER_MODE"), Pair(m.getInt("attempts"), m.getString("failure")))
+    }
+
+    @Test fun disabled_before_retry_skips_retry_with_counted_attempts() {
+        val q = Queue(); val recs = ArrayList<JSONObject>()
+        var g: String? = null
+        val tr = FakeTransport(mutableListOf({ _, _, _ -> g = "PILOT_DISABLED"; ManagedReadAdapters.Response(503, "x") }))
+        gated({ g }, tr, ArrayList(), recs, q) { planJson(entrySell()) }.offer("{}"); q.drain()
+        assertEquals(1, tr.calls.size)
+        val c = recs.single()
+        assertEquals(Pair(1, "SKIPPED:PILOT_DISABLED"), Pair(c.getInt("attempts"), c.getString("quote_failure")))
+        val m = c.getJSONArray("margins").getJSONObject(0)
+        assertEquals(Pair(0, "SKIPPED:PILOT_DISABLED"), Pair(m.getInt("attempts"), m.getString("failure")))
+    }
+
+    @Test fun gate_closing_mid_plan_skips_remaining_fetches_explicitly() {
+        val q = Queue(); val recs = ArrayList<JSONObject>()
+        var g: String? = null
+        val tr = FakeTransport(mutableListOf({ m, u, b -> val r = ok(m, u, b); g = "NOT_PAPER_MODE"; r }))
+        gated({ g }, tr, ArrayList(), recs, q) {
+            planJson(entrySell("f1").put("margins", JSONArray()), entrySell("f2"))
+        }.offer("{}"); q.drain()
+        assertEquals(1, tr.calls.size)
+        assertEquals(2, recs.size)
+        assertEquals(Pair(0, "SKIPPED:NOT_PAPER_MODE"), Pair(recs[1].getInt("attempts"), recs[1].getString("quote_failure")))
+        assertEquals("SKIPPED:NOT_PAPER_MODE", recs[1].getJSONArray("margins").getJSONObject(0).getString("failure"))
+    }
+
+    @Test fun publication_slice_is_compact_and_cpu_only() {
+        val res = JSONObject().put("single_leg_by_index", JSONObject().put("BNF", JSONObject().put("status", "ADMISSIBLE")))
+            .put("by_index", JSONObject().put("BNF", JSONObject().put("decision_id", "d1").put("analysis_ts", "t")
+                .put("decision_poll_ts", "p").put("big", "x".repeat(5000))))
+            .put("other", "y".repeat(5000))
+        val s = JSONObject(C1PilotIo.slice(res, 123L))
+        assertEquals(123L, s.getLong("published_ms"))
+        assertEquals("d1", s.getJSONObject("by_index").getJSONObject("BNF").getString("decision_id"))
+        assertFalse(s.getJSONObject("by_index").getJSONObject("BNF").has("big"))
+        assertFalse(s.has("other"))
+        val svc = File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText()
+        assertTrue(svc.contains("C1PilotIo.offer(filesDir, prefs, resultObj, System.currentTimeMillis())"))
     }
 }

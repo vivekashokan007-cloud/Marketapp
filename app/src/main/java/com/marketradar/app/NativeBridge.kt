@@ -1958,15 +1958,17 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getSingleLegPaperEnabled(): Boolean = prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
 
-    /** C1 capture pilot (research evidence only; default OFF).  Independent of single-leg admission: it does not
-     *  bump the single-leg config revision and never enables or admits anything. */
+    /** C1 capture pilot (research evidence only; default OFF; candidate builds only; captures only in Paper mode).
+     *  Independent of single-leg admission: it does not bump the single-leg config revision and never enables or
+     *  admits anything.  On a non-candidate build the setter writes nothing and the getter is always false. */
     @JavascriptInterface
     fun setC1CapturePilotEnabled(enabled: Boolean) {
+        if (!BuildConfig.PWA_CANDIDATE) return
         prefs.edit().putBoolean(C1PilotIo.PREF_ENABLED, enabled).apply()
     }
 
     @JavascriptInterface
-    fun getC1CapturePilotEnabled(): Boolean = prefs.getBoolean(C1PilotIo.PREF_ENABLED, false)
+    fun getC1CapturePilotEnabled(): Boolean = BuildConfig.PWA_CANDIDATE && prefs.getBoolean(C1PilotIo.PREF_ENABLED, false)
 
     @JavascriptInterface
     fun singleLegRead(): String {
