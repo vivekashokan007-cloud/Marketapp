@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "artifact_only": true,
+  "native_sha": "6eca48bb6e39390274f9f25c68e3a34702ab24be",
+  "pwa_sha": "524caa77f9548e9911bc41d0dd3a06a03cfc74af",
+  "version_code": "528",
+  "version_name": "2.6.97",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "approved_by": "vivekashokan007-cloud (Vivek Ashokan P)",
+  "approval_reference": "Grok Bot chat 2026-11-10 13:27 IST, Vivek reply to question t202s2305: \"Yes, I approve pushing MarketVivi 524caa77 to candidate/c1-smoke-2.6.97-b528 and Marketapp 6eca48bb plus the authorization commit to candidate-build/2.6.97-b528-c1-smoke to start the candidate build.\"",
+  "codex_final_check_reference": "Codex handoff CODEX_b528_PHONE_UPDATE_AND_PREMIUM_FORECAST_20261110.md (content sha256 1a72d1118bb72db5741115611c0f2d8e966e14b558615fa2d74b50e24902d6be): 'Codex source review cleared this pair for the candidate workflow' (Marketapp 6eca48bb6e39390274f9f25c68e3a34702ab24be + MarketVivi 524caa77f9548e9911bc41d0dd3a06a03cfc74af, 2.6.97 / 528)"
+}
