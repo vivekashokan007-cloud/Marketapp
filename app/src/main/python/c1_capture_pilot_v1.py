@@ -50,11 +50,12 @@ import paper_broker_snapshot_v1 as _pbs
 from local_lock_v1 import FileLock
 
 PILOT_ID = 'c1_exact_contract_capture_v1'
-REVISION = 'R1'
+REVISION = 'R2'
 SCHEMA = 'mr.c1_capture.v1'
 LEDGER_SCHEMA = 'mr.c1_capture.ledger.v1'
 DIR_NAME = 'c1_capture_v1'
-GLOBAL_MARKER = 'global_exhausted.json'
+GLOBAL_MARKER = 'global_exhausted.json'      # R1 single marker (still honoured for its session/index)
+MARKER_FMT = 'exhausted_%s_%s.json'           # R2: one marker per session x index, never overwritten by another
 IST = timezone(timedelta(hours=5, minutes=30))
 INDICES = ('NF', 'BNF')
 ELIGIBLE = ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT')
@@ -179,7 +180,7 @@ def _read_ledger(d, session, ix):
 
 def _read_evidence(d, session, ix):
     ev = _read_json(_ev_path(d, session, ix), SCHEMA, lambda: _empty_evidence(session, ix))
-    if ev is not None and ev.get('revision') != REVISION:
+    if ev is not None and ev.get('revision') not in ('R1', 'R2'):
         return None                                # pre-R1 layout: never mixed into R1 evidence (fail closed)
     return ev
 
@@ -234,12 +235,36 @@ def _write_ledger(d, lg, fallback=None):
     if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= MAX_BYTES_GLOBAL:
         _atomic(p, raw)
     else:
-        try:
-            _atomic(os.path.join(d, GLOBAL_MARKER), _canon({'reason': reason, 'session_date': lg['session_date'],
-                                                             'index': lg['index']}).encode())
-        except Exception:
-            pass
+        write_marker(d, lg['session_date'], lg['index'], reason)
     return False, reason
+
+
+def _marker_path(d, session, ix):
+    return os.path.join(d, MARKER_FMT % (session, ix))
+
+
+def write_marker(d, session, ix, reason):
+    """Tiny per session x index marker: proposal accounting for this slice can no longer be trusted."""
+    try:
+        p = _marker_path(d, session, ix)
+        if not os.path.exists(p):
+            _atomic(p, _canon({'reason': reason, 'session_date': session, 'index': ix}).encode())
+    except Exception:
+        pass
+
+
+def read_marker(d, session, ix):
+    for p in (_marker_path(d, session, ix), os.path.join(d, GLOBAL_MARKER)):
+        try:
+            with open(p, 'rb') as f:
+                m = json.loads(f.read().decode())
+        except FileNotFoundError:
+            continue
+        except Exception:
+            return 'MARKER_UNREADABLE'
+        if isinstance(m, dict) and m.get('session_date') == session and m.get('index') == ix:
+            return str(m.get('reason') or 'EXHAUSTED')
+    return None
 
 
 def _write_evidence(d, ev, *, exit_phase=False):
@@ -545,6 +570,45 @@ def plan(d, results, now_ms, *, enabled=False, sl_dir=None, native_dropped=0, di
     return out
 
 
+def note_discarded(d, results, now_ms, reason, native_dropped=0):
+    """Gate closed (disabled / left Paper / not candidate) with work already offered while enabled: register
+    the lost proposal identities with an explicit DISCARDED outcome and mark the slice INCOMPLETE, immediately
+    and durably.  Status work only: called from the C1 worker (never the publication thread), sends nothing,
+    plans nothing, and never re-arms anything."""
+    check_dir(d)
+    now_dt = _dt_ms(now_ms)
+    if now_dt is None:
+        return {'status': 'CLOCK_UNAVAILABLE'}
+    session = now_dt.date().isoformat()
+    items = results if isinstance(results, list) else [results]
+    why = 'DISCARDED_ON_GATE_CLOSE:' + str(reason or 'UNKNOWN')
+    out = {'status': 'OK', 'session_date': session, 'discarded': {}, 'slices': len(items)}
+    with _lock(d):
+        for ix in INDICES:
+            lg = _read_ledger(d, session, ix)
+            if lg is None:
+                write_marker(d, session, ix, 'C1_LEDGER_CORRUPT_AT_DISCARD')
+                continue
+            new = _register(lg, ix, items, session, now_dt)
+            if not new and not native_dropped:
+                continue                                    # nothing of this index was lost
+            for row, _ in new:
+                row['o'] = why
+            if native_dropped:                              # overflowed slices: index unknown -> both slices
+                lg['stats']['native_dropped'] += int(native_dropped)
+                _flag(lg, 'NATIVE_QUEUE_OVERFLOW')
+            if new:
+                lg['stats']['discarded_on_disable'] += len(new)
+                _flag(lg, 'QUEUED_DISCARDED_ON_GATE_CLOSE')
+            ok, err = _write_ledger(d, lg, fallback=lambda prev, n=len(new): (
+                prev['stats'].__setitem__('discarded_on_disable', prev['stats']['discarded_on_disable'] + n),
+                _flag(prev, 'QUEUED_DISCARDED_ON_GATE_CLOSE')))
+            out['discarded'][ix] = len(new)
+            if not ok:
+                out.setdefault('budget_exhausted', []).append({'index': ix, 'reason': err})
+    return out
+
+
 # ── validation ─────────────────────────────────────────────────────────────────────────────────────────
 
 def _entry_validity(t, snap, receipt_dt):
@@ -790,11 +854,70 @@ def production_exit(pos, session):
     xts = _ia.parse_ts(xq.get('ts'))
     if why != 'TIME_EXIT':
         return 'PRODUCTION_EARLIER_EXIT:' + str(why)
-    if xq.get('basis') != TS_BASIS or xts is None:
+    if xq.get('basis') != TS_BASIS or xts is None or \
+            (xq.get('instrument_key') is not None and xq.get('instrument_key') != pos.get('instrument_key')):
         return 'PRODUCTION_TIME_EXIT_QUOTE_UNEVIDENCED'
     if b is not None and xts < b:
         return 'PRODUCTION_TIME_EXIT_PRE_BOUNDARY_QUOTE'
     return 'PRODUCTION_TIME_EXIT_VALID'
+
+
+def production_admission_evidence(pos, side):
+    """Observed-Paper entry evidence: the persisted ACTUAL admission quote (and, for SELL, the admission margin
+    identity).  A C1 research snapshot never substitutes.  Returns (ok, reason)."""
+    q = pos.get('entry_quote') if isinstance(pos.get('entry_quote'), dict) else None
+    if q is None:
+        return False, 'ADMISSION_QUOTE_NOT_PERSISTED'
+    if q.get('basis') != TS_BASIS or _ia.parse_ts(q.get('ts')) is None or _num(q.get('bid')) is None \
+            or _num(q.get('ask')) is None:
+        return False, 'ADMISSION_QUOTE_UNEVIDENCED'
+    if q.get('instrument_key') is not None and q.get('instrument_key') != pos.get('instrument_key'):
+        return False, 'ADMISSION_QUOTE_CONTRACT_MISMATCH'
+    if side == 'SELL':
+        m = pos.get('margin_identity') if isinstance(pos.get('margin_identity'), dict) else None
+        if m is None:
+            return False, 'ADMISSION_MARGIN_NOT_PERSISTED'
+        rm = _num(m.get('required_margin'))
+        if m.get('instrument_key') != pos.get('instrument_key') or m.get('side') != 'SELL' or rm is None or rm <= 0:
+            return False, 'ADMISSION_MARGIN_UNEVIDENCED'
+    return True, None
+
+
+def _evidence_index(ev):
+    obs = (ev or {}).get('observations') or []
+    entry = {}
+    margins = {}
+    exit_obs = set()
+    for o in obs:
+        if o.get('kind') == 'QUOTE' and o.get('purpose') == 'ENTRY' and o.get('target_id'):
+            entry[o['target_id']] = o
+        elif o.get('kind') == 'MARGIN':
+            margins.setdefault(o.get('fetch_id'), []).append(o)
+        elif o.get('kind') == 'QUOTE' and o.get('purpose') == 'TIME_EXIT':
+            exit_obs.add(o.get('obs_id'))
+    attrib = {}
+    for a in (ev or {}).get('exit_attribution') or []:
+        if a.get('obs_id') in exit_obs:
+            attrib[a.get('pid')] = a
+    return entry, margins, attrib
+
+
+def retained_hypothetical(r, idx):
+    """Replayable evidence for ONE proposal: retained valid entry observation, retained valid SELL margin from
+    the same fetch for the same instrument and lot, and a retained valid exit attribution for the same proposal
+    and exact contract.  Ledger verdicts alone never count.  Returns (entry_ok, margin_ok, exit_ok)."""
+    entry, margins, attrib = idx
+    e = entry.get(r['pid'])
+    e_ok = bool(e and e.get('valid') and e.get('instrument_key') == r.get('k') and r.get('o') == 'VALID')
+    if r.get('s') == 'BUY':
+        m_ok = True
+    else:
+        m_ok = bool(e) and any(m.get('valid') and m.get('instrument_key') == r.get('k') and m.get('quantity') == r.get('lot')
+                               for m in margins.get(e.get('fetch_id'), [])) and r.get('mo') == 'VALID'
+    a = attrib.get(r['pid'])
+    x_ok = bool(a and a.get('valid') and a.get('instrument_key') == r.get('k') and a.get('decision_id') == r.get('d')
+                and r.get('xo') == 'VALID')
+    return e_ok, m_ok, x_ok
 
 
 def read_session(d, session):
@@ -802,7 +925,9 @@ def read_session(d, session):
     for ix in INDICES:
         lg = _read_ledger(d, session, ix) if os.path.exists(_lg_path(d, session, ix)) else None
         ev = _read_evidence(d, session, ix) if os.path.exists(_ev_path(d, session, ix)) else None
-        out[ix] = {'ledger': lg, 'evidence': ev,
+        out[ix] = {'ledger': lg, 'evidence': ev, 'marker': read_marker(d, session, ix),
+                   'evidence_status': 'MISSING' if not os.path.exists(_ev_path(d, session, ix))
+                   else ('PRESENT' if ev is not None else 'UNREADABLE'),
                    'ledger_status': 'MISSING' if not os.path.exists(_lg_path(d, session, ix))
                    else ('PRESENT' if lg is not None else 'CORRUPT')}
     return out
@@ -819,7 +944,10 @@ def _fees_check(session):
 
 def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
     """Per index x single-leg side (BUY/SELL; multi-leg is not in C1).  docs_by_session: {session: read_session}.
-    Never pools NF/BNF or BUY/SELL.  Economic lift is never computed here."""
+    Never pools NF/BNF or BUY/SELL.  Economic lift is never computed here.
+
+    R2 contract: *_verdicts are capture diagnostics (ledger); coverage, resolved rows and the BNF count gate use
+    RETAINED evidence only.  A capped write that passed validation is an evidence gap, never a resolved row."""
     cells = {}
     for session in sorted(docs_by_session or {}):
         docs = docs_by_session[session] or {}
@@ -827,60 +955,79 @@ def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
             ent = docs.get(ix) or {}
             lg = ent.get('ledger')
             ev = ent.get('evidence') or {}
+            idx = _evidence_index(ev)
             for side in ('BUY', 'SELL'):
                 c = cells.setdefault((ix, side), {
                     'index': ix, 'side': side, 'structure': 'SINGLE_LEG_' + side, 'eligible_sessions': set(),
                     'resolved_sessions': set(), 'resolved_by_session': {}, 'eligible_proposals': 0,
                     'completeness': 'COMPLETE', 'completeness_flags': set(), 'coverage_kind': 'FULL',
-                    'entry_requested': 0, 'valid_entry_snapshots': 0, 'margin_complete_sells': 0,
+                    'scorecard_basis': 'RETAINED_EVIDENCE_ONLY (verdict counts are diagnostics)',
+                    'entry_requested': 0, 'valid_entry_verdicts': 0, 'valid_entry_snapshots': 0,
+                    'margin_valid_verdicts': 0, 'margin_complete_sells': 0,
                     'production_time_exit_valid': 0, 'production_earlier_exit': 0,
                     'production_pre_boundary_quote': 0, 'production_exit_pending': 0, 'production_open_no_exit': 0,
-                    'hypothetical_exit_targets': 0, 'hypothetical_exit_valid_prompt_90s': 0,
-                    'hypothetical_exit_valid_window_300s': 0, 'hypothetical_exit_delays_s': [],
+                    'production_admission_evidence_ok': 0,
+                    'hypothetical_exit_targets': 0, 'hypothetical_exit_valid_verdicts': 0,
+                    'hypothetical_exit_valid_prompt_90s': 0, 'hypothetical_exit_valid_window_300s': 0,
+                    'hypothetical_exit_delays_s': [], 'evidence_gaps': {},
                     'resolved_entries': 0, 'resolved_observed_paper': 0, 'resolved_hypothetical': 0,
                     'user_admissions': 0, 'observed_paper_exits': 0, 'exclusions': {}, 'tick_sources': set()})
+
+                def worsen(state, flag):
+                    c['completeness_flags'].add(flag)
+                    order = ('COMPLETE', 'INCOMPLETE', 'UNKNOWN')
+                    if order.index(state) > order.index(c['completeness']):
+                        c['completeness'] = state
+                if ent.get('marker'):
+                    worsen('UNKNOWN', 'EXHAUSTION_MARKER:' + ent['marker'])
                 if lg is None:
                     if ent.get('ledger_status') == 'CORRUPT' or global_exhausted:
-                        c['completeness'] = 'UNKNOWN'
-                        c['completeness_flags'].add('LEDGER_UNAVAILABLE')
+                        worsen('UNKNOWN', 'LEDGER_UNAVAILABLE')
                     continue
                 for fl in lg.get('completeness_flags') or []:
-                    c['completeness_flags'].add(fl)
-                    if c['completeness'] == 'COMPLETE':
-                        c['completeness'] = 'INCOMPLETE'
+                    worsen('INCOMPLETE', fl)
                 rows = [r for r in (lg.get('ids') or {}).values() if r.get('s') == side]
                 if rows:
                     c['eligible_sessions'].add(session)
+                ex = lambda why: c['exclusions'].__setitem__(why, c['exclusions'].get(why, 0) + 1)
+                gap = lambda why: c['evidence_gaps'].__setitem__(why, c['evidence_gaps'].get(why, 0) + 1)
                 for r in rows:
                     c['eligible_proposals'] += 1
-                    ex = lambda why: c['exclusions'].__setitem__(why, c['exclusions'].get(why, 0) + 1)
                     o = r.get('o')
-                    if str(o or '').startswith('CAPPED:'):
+                    if str(o or '').startswith(('CAPPED:', 'DISCARDED_ON_GATE_CLOSE')):
                         c['coverage_kind'] = 'PARTIAL'
                     if o not in (None, 'CAPPED:BYTES', 'CAPPED:TARGETS', 'CAPPED:REQUESTS',
-                                 'PROPOSAL_NOT_CURRENT_AT_PLAN', 'CAPPED:EVIDENCE_CORRUPT'):
+                                 'PROPOSAL_NOT_CURRENT_AT_PLAN', 'CAPPED:EVIDENCE_CORRUPT') \
+                            and not str(o).startswith('DISCARDED_ON_GATE_CLOSE'):
                         c['entry_requested'] += 1
-                    ent_ok = o == 'VALID'
-                    c['valid_entry_snapshots'] += ent_ok
-                    if not ent_ok:
+                    e_ok, m_ok, x_ok_h = retained_hypothetical(r, idx)
+                    c['valid_entry_verdicts'] += o == 'VALID'
+                    c['valid_entry_snapshots'] += e_ok
+                    if o == 'VALID' and not e_ok:
+                        gap('ENTRY_VALID_VERDICT_DETAIL_NOT_RETAINED')
+                    if o != 'VALID':
                         ex('ENTRY:' + str(o or 'NOT_RECORDED'))
-                    m_ok = side == 'BUY' or r.get('mo') == 'VALID'
                     if side == 'SELL':
+                        c['margin_valid_verdicts'] += r.get('mo') == 'VALID'
                         c['margin_complete_sells'] += m_ok
-                        if not m_ok:
+                        if r.get('mo') == 'VALID' and not m_ok:
+                            gap('MARGIN_VALID_VERDICT_DETAIL_NOT_RETAINED')
+                        if r.get('mo') != 'VALID':
                             ex('MARGIN:' + str(r.get('mo') or 'NOT_RECORDED'))
                     t = (ev.get('targets') or {}).get(r['pid']) or {}
-                    if ent_ok:
+                    if e_ok:
                         c['tick_sources'].add(t.get('tick_source'))
                     pos = admitted_position(positions, session, ix, r)
-                    x_ok, observed = False, False
                     if pos is not None:
                         c['user_admissions'] += 1
                         c['observed_paper_exits'] += pos.get('status') == 'CLOSED'
                         pe = production_exit(pos, session)
+                        a_ok, a_why = production_admission_evidence(pos, side)
+                        c['production_admission_evidence_ok'] += a_ok
+                        if not a_ok:
+                            ex('ADMISSION:' + a_why)
                         if pe == 'PRODUCTION_TIME_EXIT_VALID':
                             c['production_time_exit_valid'] += 1
-                            x_ok, observed = True, True
                         else:
                             ex('EXIT:' + pe)
                             if pe.startswith('PRODUCTION_EARLIER_EXIT'):
@@ -891,23 +1038,32 @@ def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
                                 c['production_exit_pending'] += 1
                             else:
                                 c['production_open_no_exit'] += 1
+                        if a_ok and pe == 'PRODUCTION_TIME_EXIT_VALID':      # observed Paper: production evidence only
+                            resolved, kind = True, 'resolved_observed_paper'
+                        else:
+                            resolved, kind = False, None
                     else:
                         c['hypothetical_exit_targets'] += 1
                         xo = r.get('xo')
-                        if xo == 'VALID':
-                            x_ok = True
+                        c['hypothetical_exit_valid_verdicts'] += xo == 'VALID'
+                        if x_ok_h:
                             c['hypothetical_exit_valid_window_300s'] += 1
                             c['hypothetical_exit_valid_prompt_90s'] += bool(r.get('xp'))
                             c['hypothetical_exit_delays_s'].append(r.get('xd'))
+                        elif xo == 'VALID':
+                            gap('EXIT_VALID_VERDICT_DETAIL_NOT_RETAINED')
                         else:
                             ex('EXIT:' + str(xo or 'NOT_RECORDED'))
                             if str(xo or '').startswith('CAPPED:'):
                                 c['coverage_kind'] = 'PARTIAL'
-                    if ent_ok and m_ok and x_ok:
+                        resolved, kind = (e_ok and m_ok and x_ok_h), 'resolved_hypothetical'
+                    if resolved:
                         c['resolved_entries'] += 1
-                        c['resolved_observed_paper' if observed else 'resolved_hypothetical'] += 1
+                        c[kind] += 1
                         c['resolved_sessions'].add(session)
                         c['resolved_by_session'][session] = c['resolved_by_session'].get(session, 0) + 1
+                if c['evidence_gaps']:
+                    c['coverage_kind'] = 'PARTIAL'
     out = []
     for (ix, side), c in sorted(cells.items()):
         n = c['eligible_proposals']
@@ -953,16 +1109,20 @@ def linked_positions(positions, session, docs):
             p = admitted_position(positions, session, ix, r)
             if p is None:
                 continue
+            a_ok, a_why = production_admission_evidence(p, r['s'])
             rows.append({'pid': r['pid'], 'index': ix, 'side': r['s'], 'action': r['a'], 'decision_id': r['d'],
                          'instrument_key': r['k'], 'position_id': p.get('position_id'), 'status': p.get('status'),
                          'exit_reason': p.get('exit_reason'), 'exit_pending_reason': p.get('exit_pending_reason'),
-                         'production_exit': production_exit(p, session), 'basis': 'OBSERVED_PAPER_PRODUCTION'})
+                         'production_exit': production_exit(p, session),
+                         'admission_evidence': 'OK' if a_ok else a_why, 'basis': 'OBSERVED_PAPER_PRODUCTION'})
     return rows
 
 
 def export_part(files_dir, session, level='full'):
     """Bounded export part for session_evidence_v1 (None when the pilot directory does not exist).
-    level: 'full' (ledgers + evidence + scorecard) | 'ledger' (no evidence detail) | 'scorecard'."""
+    level: 'full' (ledgers + evidence + scorecard) | 'ledger' (no evidence detail) | 'scorecard'.
+    A compact level is labelled NOT replayable: its scorecard was computed on the device from evidence that the
+    bundle does not carry."""
     d = os.path.join(files_dir, DIR_NAME)
     if not os.path.isdir(d):
         return None
@@ -972,15 +1132,26 @@ def export_part(files_dir, session, level='full'):
         positions = (_sls.read(os.path.join(files_dir, _sls.STATE_DIR_NAME)) or {}).get('positions') or []
     except Exception:
         positions = []
-    ge = os.path.exists(os.path.join(d, GLOBAL_MARKER))
+    markers = {ix: docs[ix]['marker'] for ix in INDICES}
+    replayable = level == 'full'
     part = {'schema': SCHEMA, 'pilot_id': PILOT_ID, 'revision': REVISION, 'session_date': session, 'level': level,
-            'scorecard': scorecard({session: docs}, positions, global_exhausted=ge),
-            'linked_positions': linked_positions(positions, session, docs), 'global_exhausted': ge,
+            'replayable_bundle': replayable,
+            'quote_detail': 'INCLUDED' if replayable else 'OMITTED_FOR_EXPORT_CAP (scorecard not replayable from this bundle)',
+            'scorecard': scorecard({session: docs}, positions),
+            'linked_positions': linked_positions(positions, session, docs), 'exhaustion_markers': markers,
+            'global_exhausted': any(markers.values()),
             'labels': {'ts_basis': TS_BASIS, 'exchange_quote_age': EXCHANGE_QUOTE_AGE,
                        'time_exit_rule': 'hypothetical: generation_ts >= 15:05:00 IST and <= 15:05 + %ds; prompt <= %ds; '
                                          '15:00 never stands in' % (EXIT_WINDOW_S, EXIT_PROMPT_S),
                        'production_exit': 'persisted single_leg_v1 decision, linked read-only by decision id + contract',
+                       'resolved_rule': 'hypothetical: retained valid entry + exit (+ SELL margin) for the same proposal and '
+                                        'contract; observed Paper: persisted admission quote (+ SELL admission margin) + '
+                                        'production TIME_EXIT evidence; ledger verdicts never count',
                        'evidence_class': 'DEVICE_CAPTURE (research; hypothetical exits for unadmitted proposals)'}}
+    if not replayable:
+        for c in part['scorecard']:
+            c['export_level'] = level
+            c['replayable_from_bundle'] = False
     if level in ('full', 'ledger'):
         part['ledgers'] = {ix: docs[ix]['ledger'] for ix in INDICES}
     if level == 'full':

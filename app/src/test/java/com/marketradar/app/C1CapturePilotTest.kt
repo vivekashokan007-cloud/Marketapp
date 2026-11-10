@@ -54,12 +54,15 @@ class C1CapturePilotTest {
                       records: MutableList<JSONObject>, q: Queue, planOut: () -> String) =
         gated({ if (enabled) null else "PILOT_DISABLED" }, tr, plans, records, q, planOut)
 
+    private val discards = ArrayList<Triple<String, String, Int>>()   // (slices, reason, dropped)
+    private var discardOk = true
     private fun gated(gate: () -> String?, tr: ManagedReadAdapters.Transport?, plans: MutableList<String>,
                       records: MutableList<JSONObject>, q: Queue, planOut: () -> String) = C1CapturePilot(
         gate = gate, transport = { tr }, clocks = clocks,
         plan = { r, _, dropped, discarded -> plans.add(r); calls.add(intArrayOf(dropped, discarded)); planOut() },
         record = { id, ix, s, c -> records.add(JSONObject(c).put("_id", id).put("_ix", ix).put("_s", s)); "{\"status\":\"RECORDED\"}" },
-        executor = q)
+        executor = q,
+        discard = { sl, _, reason, dropped -> discards.add(Triple(sl, reason, dropped)); if (discardOk) "{\"status\":\"OK\"}" else null })
 
     @Test fun disabled_by_default_does_nothing() {
         val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
@@ -236,7 +239,9 @@ class C1CapturePilotTest {
         assertTrue(p.offer("{\"poll\":2}"))
         q.drain()
         assertEquals(listOf("[{\"poll\":2}]"), plans)                 // stale slice never runs
-        assertEquals(listOf(0, 1), calls.single().toList())            // discarded count reported
+        // R2: the loss was recorded durably at gate close, so the later plan carries no deferred count
+        assertEquals(listOf(Triple("[{\"poll\":1}]", "PILOT_DISABLED", 0)), discards)
+        assertEquals(listOf(0, 0), calls.single().toList())
     }
 
     @Test fun leaving_paper_between_quote_and_margin_skips_margin() {
@@ -290,5 +295,58 @@ class C1CapturePilotTest {
         assertFalse(s.has("other"))
         val svc = File("src/main/java/com/marketradar/app/MarketWatchService.kt").readText()
         assertTrue(svc.contains("C1PilotIo.offer(filesDir, prefs, resultObj, System.currentTimeMillis())"))
+    }
+
+    // ── R2 regressions ─────────────────────────────────────────────────────────────────────────────────
+
+    @Test fun leaving_paper_with_queued_work_records_loss_without_any_later_plan() {
+        val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
+        var g: String? = null
+        val tr = FakeTransport(mutableListOf(ok))
+        val p = gated({ g }, tr, plans, recs, q) { planJson(entrySell()) }
+        p.offer("{\"poll\":1}"); p.offer("{\"poll\":2}")
+        g = "NOT_PAPER_MODE"
+        q.drain()                                                      // end of session: nothing else ever runs
+        assertEquals(listOf(Triple("[{\"poll\":1},{\"poll\":2}]", "NOT_PAPER_MODE", 0)), discards)
+        assertTrue(plans.isEmpty()); assertTrue(recs.isEmpty()); assertTrue(tr.calls.isEmpty())
+        assertEquals("GATE_CLOSED", JSONObject(p.lastRun).getString("status"))
+        assertTrue(JSONObject(p.lastRun).getBoolean("discard_recorded"))
+    }
+
+    @Test fun overflow_count_travels_with_the_discard() {
+        val q = Queue()
+        var g: String? = null
+        val p = gated({ g }, FakeTransport(mutableListOf(ok)), ArrayList(), ArrayList(), q) { planJson() }
+        for (i in 1..(C1CapturePilot.MAX_QUEUE + 2)) p.offer("{\"poll\":$i}")
+        g = "PILOT_DISABLED"
+        q.drain()
+        assertEquals(2, discards.single().third)
+        assertEquals(C1CapturePilot.MAX_QUEUE, JSONArray(discards.single().first).length())
+    }
+
+    @Test fun failed_discard_falls_back_to_next_plan_count() {
+        val q = Queue(); val plans = ArrayList<String>()
+        var g: String? = null
+        discardOk = false
+        val p = gated({ g }, FakeTransport(mutableListOf(ok)), plans, ArrayList(), q) { planJson() }
+        p.offer("{\"poll\":1}"); g = "PILOT_DISABLED"; q.drain()
+        assertFalse(JSONObject(p.lastRun).getBoolean("discard_recorded"))
+        g = null; p.offer("{\"poll\":2}"); q.drain()
+        assertEquals(listOf(0, 1), calls.single().toList())
+    }
+
+    @Test fun restart_with_gate_closed_starts_no_calls() {
+        val q = Queue(); val plans = ArrayList<String>(); val recs = ArrayList<JSONObject>()
+        val tr = FakeTransport(mutableListOf(ok))
+        val fresh = gated({ "PILOT_DISABLED" }, tr, plans, recs, q) { planJson(entrySell()) }   // new process
+        assertFalse(fresh.offer("{\"poll\":9}"))
+        fresh.runOnce()                                                // even a stray worker run is inert
+        q.drain()
+        assertTrue(plans.isEmpty()); assertTrue(recs.isEmpty()); assertTrue(tr.calls.isEmpty()); assertTrue(discards.isEmpty())
+    }
+
+    @Test fun host_wires_discard_bridge() {
+        val src = File("src/main/java/com/marketradar/app/C1CapturePilot.kt").readText()
+        assertTrue(src.contains("callAttr(\"c1_capture_discard\", dir, res, now, reason, dropped)"))
     }
 }

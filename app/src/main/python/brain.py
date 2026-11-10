@@ -28223,6 +28223,17 @@ def c1_capture_plan(c1_dir, result_json='null', now_ms=None, enabled=False, sl_d
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'fetches': []})
 
 
+def c1_capture_discard(c1_dir, result_json='[]', now_ms=None, reason=None, native_dropped=0):
+    """Gate closed with offered work queued: durably register the lost identities as DISCARDED and mark the
+    slice INCOMPLETE.  Status only: no plan, no request, no re-arm."""
+    try:
+        import c1_capture_pilot_v1 as _c1
+        res = json.loads(result_json or '[]') or []
+        return json.dumps(_c1.note_discarded(c1_dir, res, now_ms, reason, native_dropped=int(native_dropped or 0)))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
 def c1_capture_record(c1_dir, fetch_id, index, session_date, call_json):
     try:
         import c1_capture_pilot_v1 as _c1

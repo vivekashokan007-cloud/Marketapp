@@ -660,11 +660,18 @@ def slice_for(row, ix='BNF'):
     return r
 
 
-def position(row, pid, status='CLOSED', exit_reason='TIME_EXIT', exit_ts=None, pending=None, ix='BNF'):
+def position(row, pid, status='CLOSED', exit_reason='TIME_EXIT', exit_ts=None, pending=None, ix='BNF',
+             admission=True):
     p = {'index': ix, 'action': row['action'], 'instrument_key': row['instrument_key'], 'session_date': S,
          'position_id': pid, 'entry_decision_id': row['decision_id'], 'status': status, 'exit_reason': exit_reason}
+    if admission:                       # the persisted ACTUAL admission quote (+ SELL admission margin identity)
+        p['entry_quote'] = {'bid': 100.0, 'ask': 100.5, 'ts': row['analysis_ts'], 'basis': 'BROKER_SNAPSHOT',
+                            'contract': pbs.CONTRACT, 'instrument_key': row['instrument_key']}
+        if row['action'].startswith('SELL'):
+            p['margin_identity'] = {'instrument_key': row['instrument_key'], 'product': 'I', 'side': 'SELL',
+                                    'quantity': LOT, 'required_margin': 98765.0}
     if exit_ts is not None:
-        p['exit_quote'] = {'basis': 'BROKER_SNAPSHOT', 'ts': exit_ts.isoformat()}
+        p['exit_quote'] = {'basis': 'BROKER_SNAPSHOT', 'ts': exit_ts.isoformat(), 'instrument_key': row['instrument_key']}
     if pending:
         p['exit_pending_reason'] = pending
     return p
@@ -882,15 +889,27 @@ class R1ExitAttribution(Base):
             self.assertEqual(self.sc()[('BNF', 'BUY')]['eligible_proposals'], 1)     # failed entry still counted
 
 
-def _ledger_docs(session, rows):
-    """Synthetic ledger (scorecard input) for the economic-gate regressions."""
+def _ledger_docs(session, rows, retained=True):
+    """Synthetic ledger (scorecard input) for the economic-gate regressions.  retained=True also writes the
+    matching retained evidence rows (entry quote, SELL margin, exit attribution) exactly as record() stores them;
+    retained=False is the R2 case 'ledger verdicts with zero retained evidence'."""
     lg = c1._empty_ledger(session, 'BNF')
+    ev = c1._empty_evidence(session, 'BNF')
     for i, (side, o, mo, xo) in enumerate(rows):
         pid = 'p_%s_%d' % (session, i)
         lg['ids'][pid] = {'pid': pid, 'd': 'd%d' % i, 'k': 'K', 'a': side + '_PE', 's': side, 'lot': 30,
                           'an': None, 'pub': None, 'o': o, 'mo': mo, 'xo': xo, 'xp': True, 'xd': 1.0}
-    return {'BNF': {'ledger': lg, 'evidence': None, 'ledger_status': 'PRESENT'},
-            'NF': {'ledger': None, 'evidence': None, 'ledger_status': 'MISSING'}}
+        ev['observations'].append({'obs_id': 'e' + pid, 'kind': 'QUOTE', 'purpose': 'ENTRY', 'target_id': pid,
+                                   'fetch_id': 'f' + pid, 'instrument_key': 'K', 'valid': o == 'VALID'})
+        if side == 'SELL':
+            ev['observations'].append({'obs_id': 'm' + pid, 'kind': 'MARGIN', 'target_id': pid, 'fetch_id': 'f' + pid,
+                                       'instrument_key': 'K', 'quantity': 30, 'valid': mo == 'VALID'})
+        ev['observations'].append({'obs_id': 'x' + pid, 'kind': 'QUOTE', 'purpose': 'TIME_EXIT', 'fetch_id': 'fx',
+                                   'instrument_key': 'K', 'valid': True})
+        ev['exit_attribution'].append({'pid': pid, 'decision_id': 'd%d' % i, 'instrument_key': 'K',
+                                       'obs_id': 'x' + pid, 'valid': xo == 'VALID'})
+    return {'BNF': {'ledger': lg, 'evidence': ev if retained else None, 'ledger_status': 'PRESENT', 'marker': None},
+            'NF': {'ledger': None, 'evidence': None, 'ledger_status': 'MISSING', 'marker': None}}
 
 
 class R1EconomicGate(unittest.TestCase):
@@ -999,7 +1018,7 @@ class R1ExportCap(Base):
             for f in self.plan(slice_for(row), now)['fetches']:
                 self.rec(f, now + timedelta(seconds=1))
         out = {}
-        for cap in (size + 200 * 1024, size + 6000, size + 200, size + 20):
+        for cap in (size + 200 * 1024, size + 12000, size + 200, size + 20):
             b = self._bundle(cap)
             nb = self._without_c1(cap)
             self.assertEqual(b['manifest']['parts']['logs']['status'], nb['manifest']['parts']['logs']['status'], cap)
@@ -1010,12 +1029,12 @@ class R1ExportCap(Base):
             out[cap - size] = (b['manifest']['parts'].get('c1_capture') or {}).get('status'), \
                 (b['parts'].get('c1_capture') or {}).get('level')
         self.assertEqual(out[200 * 1024], ('PRESENT', 'full'))
-        self.assertIn(out[6000][1], ('ledger', 'scorecard'))
+        self.assertIn(out[12000][1], ('ledger', 'scorecard'))
         self.assertEqual(out[200], ('OMITTED_FOR_CAP', None))         # manifest stub only
         self.assertEqual(out[20], (None, None))                       # not even a stub fits: C1 absent
         self.assertEqual(base['manifest']['parts']['logs']['status'], 'PRESENT')
         self.assertEqual(len(base['parts']['logs']), 400)              # baseline evidence really present
-        for cap in (size + 6000, size + 20):
+        for cap in (size + 12000, size + 20):
             self.assertEqual(len(self._bundle(cap)['parts']['logs']), 400)   # never truncated because of C1
         if os.environ.get('C1_EXPORT_OUT'):
             with open(os.environ['C1_EXPORT_OUT'], 'w') as fh:
@@ -1029,6 +1048,170 @@ class R1ExportCap(Base):
             return self._bundle(cap)
         finally:
             os.rename(hidden, self.d)
+
+
+# ═══ R2 regressions (Codex C1 R2 corrections).  FIXTURE / unit results only. ═══════════════════════════
+
+class R2RetainedEvidenceOnly(Base):
+    def _admit_file(self, poss):
+        os.makedirs(self.sl, exist_ok=True)
+        with open(os.path.join(self.sl, 'positions.json'), 'w') as fh:
+            json.dump({'schema': 'mr.single_leg_store.v1', 'positions': poss}, fh)
+
+    def test_capped_entry_and_exit_keep_attempts_and_resolve_nothing(self):
+        row = BNF[1]                                                  # BUY_CE (no margin)
+        now = pts(row['published_at']) + timedelta(milliseconds=500)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        capped = mock.patch.object(c1, '_write_evidence', return_value=(False, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES'))
+        with capped:
+            r1 = self.rec(f, now + timedelta(seconds=1))
+        x = self.plan({}, ist('15:05:01'))['fetches'][0]
+        with capped:
+            r2 = self.rec(x, ist('15:05:02'))
+        self.assertEqual([(r['status'], r['used'], r['used_basis']) for r in (r1, r2)],
+                         [('RECORDED_CAPPED', 1, 'COUNTED')] * 2)
+        self.assertEqual((self.ids()[0]['o'], self.ids()[0]['xo']), ('VALID', 'VALID'))    # diagnostics kept
+        self.assertEqual(self.obs(), [])                                                  # nothing retained
+        sc = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((sc['valid_entry_verdicts'], sc['valid_entry_snapshots']), (1, 0))
+        self.assertEqual((sc['hypothetical_exit_valid_verdicts'], sc['hypothetical_exit_valid_window_300s']), (1, 0))
+        self.assertEqual((sc['resolved_entries'], sc['resolved_hypothetical']), (0, 0))
+        self.assertEqual(sc['evidence_gaps'], {'ENTRY_VALID_VERDICT_DETAIL_NOT_RETAINED': 1,
+                                               'EXIT_VALID_VERDICT_DETAIL_NOT_RETAINED': 1})
+        self.assertEqual(sc['coverage_kind'], 'PARTIAL')
+        self.assertEqual(self.lg()['budget']['requests_used'], 2)
+
+    def test_capped_sell_margin_detail_is_a_gap(self):
+        row = BNF[0]
+        now = pts(row['published_at']) + timedelta(milliseconds=500)
+        f = self.plan(slice_for(row), now)['fetches'][0]
+        with mock.patch.object(c1, '_write_evidence', return_value=(False, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES')):
+            self.rec(f, now + timedelta(seconds=1))
+        sc = self.sc()[('BNF', 'SELL')]
+        self.assertEqual((sc['margin_valid_verdicts'], sc['margin_complete_sells']), (1, 0))
+        self.assertIn('MARGIN_VALID_VERDICT_DETAIL_NOT_RETAINED', sc['evidence_gaps'])
+
+    def test_ten_verdicts_without_retained_evidence_leave_gate_unmet(self):
+        ok = R1EconomicGate.OK
+        docs = {'2026-11-09': _ledger_docs('2026-11-09', [ok] * 4, retained=False),
+                '2026-11-10': _ledger_docs('2026-11-10', [ok] * 3, retained=False),
+                '2026-11-11': _ledger_docs('2026-11-11', [ok] * 3, retained=False)}
+        c = {(x['index'], x['side']): x for x in c1.scorecard(docs)}[('BNF', 'SELL')]
+        self.assertEqual((c['valid_entry_verdicts'], c['resolved_entries'], c['n_resolved_sessions']), (10, 0, 0))
+        self.assertEqual((c['evidence_count_gate'], c['economic_checkpoint']), ('NOT_MET', 'COVERAGE_ONLY_LIFT_UNSCORED'))
+        self.assertEqual(c['evidence_gaps']['ENTRY_VALID_VERDICT_DETAIL_NOT_RETAINED'], 10)
+
+    def test_linked_production_exit_without_admission_quote_stays_unresolved(self):
+        a = BNF[0]
+        now = pts(a['published_at']) + timedelta(milliseconds=500)
+        for f in self.plan(slice_for(a), now)['fetches']:
+            self.rec(f, now + timedelta(seconds=1))                # a VALID C1 research snapshot exists ...
+        self.assertTrue(self.obs()[0]['valid'])
+        poss = [position(a, 'p1', exit_ts=ist('15:05:01'), admission=False)]
+        self._admit_file(poss)
+        sc = self.sc(poss)[('BNF', 'SELL')]
+        self.assertEqual(sc['production_time_exit_valid'], 1)
+        self.assertEqual((sc['resolved_entries'], sc['resolved_observed_paper']), (0, 0))  # ... but never substitutes
+        self.assertEqual(sc['exclusions']['ADMISSION:ADMISSION_QUOTE_NOT_PERSISTED'], 1)
+        p2 = position(a, 'p1', exit_ts=ist('15:05:01'))
+        p2.pop('margin_identity')                                   # SELL without admission margin evidence
+        sc = self.sc([p2])[('BNF', 'SELL')]
+        self.assertEqual((sc['resolved_observed_paper'], sc['exclusions']['ADMISSION:ADMISSION_MARGIN_NOT_PERSISTED']), (0, 1))
+        lp = c1.export_part(self.files, S)['linked_positions'][0]
+        self.assertEqual(lp['admission_evidence'], 'ADMISSION_QUOTE_NOT_PERSISTED')
+
+    def test_complete_positive_cases_resolve_once_each_class(self):
+        a, b = BNF[0], variant(BNF[0], 1)                          # same contract: a admitted, b hypothetical
+        for row in (a, b):
+            now = pts(row['published_at']) + timedelta(milliseconds=500)
+            for f in self.plan(slice_for(row), now)['fetches']:
+                self.rec(f, now + timedelta(seconds=1))
+        poss = [position(a, 'p1', exit_ts=ist('15:05:01'))]
+        self._admit_file(poss)
+        for f in self.plan({}, ist('15:05:02'))['fetches']:
+            self.rec(f, ist('15:05:03'))
+        sc = self.sc(poss)[('BNF', 'SELL')]
+        self.assertEqual((sc['resolved_entries'], sc['resolved_observed_paper'], sc['resolved_hypothetical']), (2, 1, 1))
+        self.assertEqual(sc['evidence_gaps'], {})
+        self.assertEqual(self.sc(poss + poss)[('BNF', 'SELL')]['resolved_entries'], 2)      # never twice
+        self.assertEqual(sc['economic_lift'], 'UNSCORED')
+
+    def test_compact_export_is_labelled_not_replayable(self):
+        self.entry(1)
+        full = c1.export_part(self.files, S, level='full')
+        comp = c1.export_part(self.files, S, level='scorecard')
+        self.assertEqual((full['replayable_bundle'], full['quote_detail']), (True, 'INCLUDED'))
+        self.assertFalse(comp['replayable_bundle'])
+        self.assertTrue(comp['quote_detail'].startswith('OMITTED_FOR_EXPORT_CAP'))
+        self.assertTrue(all(c['replayable_from_bundle'] is False and c['export_level'] == 'scorecard'
+                            for c in comp['scorecard']))
+        self.assertNotIn('evidence', comp)
+
+
+class R2IncompleteSurvivesShutdown(Base):
+    def test_exhaustion_marker_on_existing_passing_ledger_suppresses_pass(self):
+        self.entry(1)
+        sc = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((sc['completeness'], sc['entry_target_met_80pct']), ('COMPLETE', True))
+        c1.write_marker(self.d, S, 'BNF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES')
+        sc = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((sc['completeness'], sc['entry_target_met_80pct']), ('UNKNOWN', None))
+        self.assertEqual((sc['eligible_proposals'], sc['valid_entry_snapshots']), (1, 1))      # known counts kept
+        self.assertIn('EXHAUSTION_MARKER:BUDGET_EXHAUSTED:GLOBAL_BYTES', sc['completeness_flags'])
+        self.assertEqual(self.sc()[('NF', 'BUY')]['completeness'], 'COMPLETE')                # other index untouched
+
+    def test_r1_global_marker_still_applies_to_its_session_and_index(self):
+        self.entry(1)
+        with open(os.path.join(self.d, c1.GLOBAL_MARKER), 'w') as fh:
+            json.dump({'reason': 'BUDGET_EXHAUSTED:GLOBAL_BYTES', 'session_date': S, 'index': 'BNF'}, fh)
+        self.assertEqual(self.sc()[('BNF', 'BUY')]['completeness'], 'UNKNOWN')
+
+    def test_ledger_write_total_failure_writes_marker(self):
+        self.entry(1)
+        with mock.patch.object(c1, 'MAX_BYTES_GLOBAL', 10):
+            self.plan(slice_for(BNF[0]), pts(BNF[0]['published_at']))
+        self.assertIsNotNone(c1.read_marker(self.d, S, 'BNF'))
+        self.assertEqual(self.sc()[('BNF', 'BUY')]['completeness'], 'UNKNOWN')
+
+    def _discard_then_export(self, reason):
+        os.makedirs(os.path.join(self.files, 'index_authority_v1'))
+        with open(os.path.join(self.files, 'index_authority_v1', S + '.json'), 'w') as fh:
+            json.dump({'session_date': S, 'history': {}}, fh)
+        slices = [slice_for(BNF[0]), slice_for(BNF[1])]
+        out = json.loads(brain.c1_capture_discard(self.d, json.dumps(slices), ms(pts(BNF[1]['published_at'])), reason))
+        self.assertEqual((out['status'], out['discarded']), ('OK', {'BNF': 2}))
+        bundle = json.loads(brain.session_evidence_bundle(self.files, S, None, '{}', True))   # no later plan
+        return {(c['index'], c['side']): c for c in bundle['parts']['c1_capture']['scorecard']}
+
+    def test_disable_with_queued_then_export_without_later_plan_is_incomplete(self):
+        for reason in ('PILOT_DISABLED', 'NOT_PAPER_MODE'):
+            self.tearDown(); self.setUp()
+            sc = self._discard_then_export(reason)
+            for side in ('BUY', 'SELL'):
+                c = sc[('BNF', side)]
+                self.assertEqual((c['completeness'], c['entry_target_met_80pct'], c['eligible_proposals']),
+                                 ('INCOMPLETE', None, 1), (reason, side))
+                self.assertIn('QUEUED_DISCARDED_ON_GATE_CLOSE', c['completeness_flags'])
+                self.assertEqual(c['exclusions']['ENTRY:DISCARDED_ON_GATE_CLOSE:' + reason], 1)
+                self.assertEqual(c['coverage_kind'], 'PARTIAL')
+            self.assertEqual(self.lg()['fetches'], {})                 # nothing planned, nothing requested
+            self.assertEqual(self.lg()['budget']['requests_reserved'], 0)
+
+    def test_restart_preserves_incomplete_and_plans_nothing(self):
+        self._discard_then_export('PILOT_DISABLED')
+        importlib.reload(c1)
+        sc = self.sc()[('BNF', 'SELL')]
+        self.assertEqual(sc['completeness'], 'INCOMPLETE')
+        # gate still closed after restart: native never calls plan; a disabled plan call is inert anyway
+        self.assertEqual(c1.plan(self.d, slice_for(BNF[2]), ms(pts(BNF[2]['published_at']))),
+                         {'status': 'DISABLED', 'fetches': []})
+        self.assertEqual(self.lg()['fetches'], {})
+        self.assertEqual(len(self.ids()), 2)
+
+    def test_discard_of_overflow_flags_both_indices(self):
+        c1.note_discarded(self.d, [], ms(ist('11:00:00')), 'PILOT_DISABLED', native_dropped=3)
+        for ix in ('NF', 'BNF'):
+            self.assertIn('NATIVE_QUEUE_OVERFLOW', self.lg(ix)['completeness_flags'])
 
 
 if __name__ == '__main__':
