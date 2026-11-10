@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import index_authority_v1 as _ia
@@ -50,7 +51,7 @@ import paper_broker_snapshot_v1 as _pbs
 from local_lock_v1 import FileLock
 
 PILOT_ID = 'c1_exact_contract_capture_v1'
-REVISION = 'R3'
+REVISION = 'R4'
 SCHEMA = 'mr.c1_capture.v1'
 LEDGER_SCHEMA = 'mr.c1_capture.ledger.v1'
 DIR_NAME = 'c1_capture_v1'
@@ -78,7 +79,10 @@ EXIT_EVIDENCE_RESERVE_BYTES = 8 * 1024    # entry evidence must leave this for 1
 MAX_BYTES_GLOBAL = 512 * 1024             # unchanged
 LEDGER_GLOBAL_RESERVE_BYTES = 64 * 1024   # evidence may never consume the ledgers' share
 STATUS_RESERVE_BYTES = 1024
-STATUS_GLOBAL_RESERVE_BYTES = 2048        # R3: kept free of every other write; status.json can never exceed it
+STATUS_FILE_MAX_BYTES = 2048              # R3: status.json can never exceed it
+STATUS_GLOBAL_RESERVE_BYTES = 2 * STATUS_FILE_MAX_BYTES   # R4: old + new status.json during an atomic replace
+TMP_PREFIX = '.tmp_'                      # daily_review_v1._atomic_write -> tempfile.mkstemp(prefix='.tmp_', dir=d)
+_TMP_RE = re.compile(r'^\.tmp_[a-z0-9_]{8}$')   # mkstemp names: prefix + 8 chars of [a-z0-9_]
 
 
 def _writable():
@@ -186,33 +190,57 @@ def _read_ledger(d, session, ix):
 
 def _read_evidence(d, session, ix):
     ev = _read_json(_ev_path(d, session, ix), SCHEMA, lambda: _empty_evidence(session, ix))
-    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3'):
+    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3', 'R4'):
         return None                                # pre-R1 layout: never mixed into R1 evidence (fail closed)
     return ev
 
 
+def _files(d):
+    """(path, size) of every file persisted under the pilot directory (any name, any depth; symlinks by lstat)."""
+    out = []
+    for root, dirs, names in os.walk(d):
+        for name in names:
+            p = os.path.join(root, name)
+            try:
+                out.append((p, os.lstat(p).st_size))
+            except OSError:
+                pass
+    return out
+
+
 def _global_bytes(d, exclude):
-    """Bytes of every persisted pilot file (ledgers, evidence, legacy markers, anything else) EXCEPT the bounded
-    status file and `exclude`.  Atomic-write temp files are transient and not counted."""
-    n = 0
-    try:
-        for name in os.listdir(d):
-            p = os.path.join(d, name)
-            if name != STATUS_NAME and not name.startswith('.tmp_') and p != exclude and os.path.isfile(p):
-                n += os.path.getsize(p)
-    except FileNotFoundError:
-        pass
-    return n
+    """Bytes of every persisted pilot file EXCEPT the bounded status file and `exclude`.  R4: abandoned
+    atomic-write temp files (.tmp_*) ARE counted until reclaimed (an interrupted os.replace leaves them)."""
+    st = os.path.join(d, STATUS_NAME)
+    return sum(n for p, n in _files(d) if p != st and p != exclude)
 
 
 def store_bytes(d):
-    """Total persisted bytes of the pilot store (incl. status.json); always <= MAX_BYTES_GLOBAL for R3 writes."""
-    n = _global_bytes(d, None)
+    """Actual persisted bytes of the pilot store (every file, incl. status.json and temp files)."""
+    return sum(n for _, n in _files(d))
+
+
+def reclaim_abandoned_tmp(d):
+    """Delete confirmed-abandoned capture temp files.  MUST be called with the capture lock held: every pilot
+    write happens under that lock and _atomic_write removes its own temp file on any exception, so a temp file
+    present while the lock is held belongs to a writer that was killed between flush and os.replace (the
+    committed target file is untouched).  Only regular files directly in the pilot directory whose name is
+    exactly a mkstemp '.tmp_XXXXXXXX' are removed; nothing else is ever deleted.  Returns (files, bytes)."""
+    n = b = 0
     try:
-        n += os.path.getsize(os.path.join(d, STATUS_NAME))
+        entries = list(os.scandir(d))
     except OSError:
-        pass
-    return n
+        return 0, 0
+    for e in entries:
+        try:
+            if _TMP_RE.match(e.name) and e.is_file(follow_symlinks=False):
+                sz = e.stat(follow_symlinks=False).st_size
+                os.unlink(e.path)
+                n += 1
+                b += sz
+        except OSError:
+            pass                                   # left in place: still counted, so growth stays blocked
+    return n, b
 
 
 def _exhaust(lg, reason):
@@ -226,8 +254,15 @@ def _flag(lg, flag):
 
 
 def _atomic(p, raw):
+    """Commit `raw` to `p` only if the worst-case footprint of the atomic write (every file now present, incl.
+    the old target and any unreclaimed temp file, PLUS the new temp file) stays <= MAX_BYTES_GLOBAL, so a kill
+    between flush and os.replace can never leave the store over the cap.  Returns True when written."""
+    d = os.path.dirname(p)
+    if store_bytes(d) + len(raw) > MAX_BYTES_GLOBAL:
+        return False
     from daily_review_v1 import _atomic_write
     _atomic_write(p, raw)
+    return True
 
 
 def _write_ledger(d, lg, fallback=None):
@@ -239,8 +274,7 @@ def _write_ledger(d, lg, fallback=None):
     raw = _canon(lg).encode()
     g = _global_bytes(d, p)
     if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES and \
-            g + len(raw) <= _writable() - STATUS_RESERVE_BYTES:
-        _atomic(p, raw)
+            g + len(raw) <= _writable() - STATUS_RESERVE_BYTES and _atomic(p, raw):
         return True, None
     reason = 'BUDGET_EXHAUSTED:LEDGER_BYTES' if len(raw) > MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES \
         else 'BUDGET_EXHAUSTED:GLOBAL_BYTES'
@@ -251,9 +285,7 @@ def _write_ledger(d, lg, fallback=None):
     if fallback is not None:
         fallback(prev)
     raw = _canon(prev).encode()
-    if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= _writable():
-        _atomic(p, raw)
-    else:
+    if not (len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= _writable() and _atomic(p, raw)):
         write_marker(d, lg['session_date'], lg['index'], reason)
     return False, reason
 
@@ -277,7 +309,7 @@ def _read_status(d):
 
 def write_marker(d, session, ix, reason):
     """R3: record that proposal accounting for (session, index) can no longer be trusted, inside the reserved
-    status space (status.json <= STATUS_GLOBAL_RESERVE_BYTES, and the total store <= MAX_BYTES_GLOBAL).
+    status space (status.json <= STATUS_FILE_MAX_BYTES, and the total store <= MAX_BYTES_GLOBAL).
     Exact entries are never removed; when the exact entry cannot fit, the status degrades to
     overflow_from = earliest affected session (every slice from that date fails closed), which keeps all
     earlier recorded losses covered.  If even that cannot fit, nothing is written and the store is not grown:
@@ -294,8 +326,8 @@ def write_marker(d, session, ix, reason):
         for doc in (cand, dict(st, slices={}, overflow_from=min([session] + [k[:10] for k in st['slices']] +
                                                                 ([st['overflow_from']] if st.get('overflow_from') else [])))):
             raw = _canon(doc).encode()
-            if len(raw) <= STATUS_GLOBAL_RESERVE_BYTES and others + len(raw) <= MAX_BYTES_GLOBAL:
-                _atomic(os.path.join(d, STATUS_NAME), raw)
+            if len(raw) <= STATUS_FILE_MAX_BYTES and others + len(raw) <= MAX_BYTES_GLOBAL and \
+                    _atomic(os.path.join(d, STATUS_NAME), raw):
                 return True
     except Exception:
         pass
@@ -345,15 +377,29 @@ def _write_evidence(d, ev, *, exit_phase=False):
     cap = MAX_EVIDENCE_BYTES_PER_INDEX_SESSION - (0 if exit_phase else EXIT_EVIDENCE_RESERVE_BYTES)
     if len(raw) > cap:
         return False, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES'
-    if _global_bytes(d, p) + len(raw) > _writable() - LEDGER_GLOBAL_RESERVE_BYTES:
+    if _global_bytes(d, p) + len(raw) > _writable() - LEDGER_GLOBAL_RESERVE_BYTES or not _atomic(p, raw):
         return False, 'BUDGET_EXHAUSTED:GLOBAL_BYTES'
-    _atomic(p, raw)
     return True, None
 
 
-def _lock(d):
-    os.makedirs(d, exist_ok=True)
-    return FileLock(os.path.join(d, '.lock'), timeout_s=5.0)
+class _lock:
+    """Capture lock; on acquisition, abandoned temp files from a killed writer are reclaimed (R4)."""
+    def __init__(self, d):
+        os.makedirs(d, exist_ok=True)
+        self.d = d
+        self.fl = FileLock(os.path.join(d, '.lock'), timeout_s=5.0)
+
+    def __enter__(self):
+        self.fl.__enter__()
+        try:
+            self.reclaimed = reclaim_abandoned_tmp(self.d)
+        except BaseException:
+            self.fl.__exit__(None, None, None)
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        return self.fl.__exit__(*exc)
 
 
 def _requests_left(lg):

@@ -1317,7 +1317,7 @@ class R3StatusInsideGlobalCap(Base):
                 self.assertTrue(c1.write_marker(self.d, sess, ix, 'BUDGET_EXHAUSTED:GLOBAL_BYTES'))
         # a real write path at the limit as well: a new proposal whose ledger cannot be written -> no broker call
         self.assertEqual(self.plan(slice_for(BNF[2]), pts(BNF[2]['published_at']))['fetches'], [])
-        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_GLOBAL_RESERVE_BYTES)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_FILE_MAX_BYTES)
         self._check(before, slices)
 
     def test_store_exactly_at_cap_no_status_file(self):
@@ -1342,7 +1342,7 @@ class R3StatusInsideGlobalCap(Base):
                 c1.write_marker(self.d, sess, ix, 'BUDGET_EXHAUSTED:GLOBAL_BYTES')
         st = json.load(open(os.path.join(self.d, c1.STATUS_NAME)))
         self.assertEqual(st['overflow_from'], S)                       # earliest loss still covered
-        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_GLOBAL_RESERVE_BYTES)
+        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_FILE_MAX_BYTES)
         self._check(before, [(S, 'BNF'), (days[-1], 'NF')])
 
     def test_legacy_marker_files_count_inside_cap(self):
@@ -1362,6 +1362,156 @@ class R3StatusInsideGlobalCap(Base):
         self.assertEqual(out['fetches'], [])
         self.assertLessEqual(c1._global_bytes(self.d, None), c1._writable())
         self.assertLessEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
+
+
+# ═══ R4 regressions (Codex C1 R4: interrupted atomic write).  FIXTURE / unit results only. ════════════════
+
+_CHILD = r"""
+import os, signal, sys, json
+py, d, sl, row, now = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5])
+sys.path.insert(0, py); sys.path.insert(0, os.path.join(py, 'tests')); os.chdir(py)
+import c1_capture_pilot_v1 as c1, test_c1_capture_pilot_v1 as T
+real = os.replace
+def hook(src, dst):                       # after flush + fsync of the temp file, before the rename
+    if os.path.basename(src).startswith('.tmp_'):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return real(src, dst)
+os.replace = hook
+c1.plan(d, T.result_for(T.BNF[row]), now, enabled=True, sl_dir=sl)
+print('NOT_KILLED')
+"""
+
+
+def kill_child_mid_write(py, d, sl, row, now_ms):
+    """Run a REAL child process that registers BNF[row] and is SIGKILLed between temp flush and os.replace."""
+    import subprocess, sys as _sys
+    r = subprocess.run([_sys.executable, '-c', _CHILD, py, d, sl, str(row), str(now_ms)],
+                       capture_output=True, text=True, timeout=60)
+    return r.returncode, r.stdout
+
+
+def walk_bytes(d):
+    """Independent of production counters: every file under d, any name, by stat."""
+    return sum(os.stat(os.path.join(r, n)).st_size for r, _, ns in os.walk(d) for n in ns)
+
+
+def fill_actual(d, total):
+    """Pad with an unrelated other-session file so the independently measured store size == total."""
+    p = os.path.join(d, '2026-11-02_BNF.json')
+    if os.path.exists(p):
+        os.remove(p)
+    need = total - walk_bytes(d)
+    assert need >= 2, need
+    with open(p, 'w') as fh:
+        fh.write('"' + 'x' * (need - 2) + '"')
+
+
+def tmp_files(d):
+    return sorted(n for n in os.listdir(d) if n.startswith('.tmp_'))
+
+
+class R4InterruptedAtomicWrite(Base):
+    CAP = 524288
+    S2 = '2026-11-10'
+
+    def _prior(self):
+        self.entry(1)
+        self.assertEqual(self.sc()[('BNF', 'BUY')]['entry_target_met_80pct'], True)
+        return open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), open(c1._lg_path(self.d, S, 'BNF'), 'rb').read()
+
+    def _kill(self, row=2):
+        rc, out = kill_child_mid_write(os.getcwd(), self.d, self.sl, row,
+                                       ms(pts(BNF[row]['published_at']) + timedelta(milliseconds=500)))
+        self.assertEqual((rc, out), (-9, ''))
+        self.assertEqual(len(tmp_files(self.d)), 1)          # abandoned temp file left on disk
+        return os.path.getsize(os.path.join(self.d, tmp_files(self.d)[0]))
+
+    def _fail_closed(self, ev0):
+        self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), ev0)
+        for phase in ('read', 'restart'):
+            if phase == 'restart':
+                importlib.reload(c1)
+            for side in ('BUY', 'SELL'):
+                c = self.sc()[('BNF', side)]
+                self.assertIn(c['completeness'], ('UNKNOWN', 'INCOMPLETE'))
+                self.assertIsNone(c['entry_target_met_80pct'])
+        self.assertEqual(self.sc()[('BNF', 'BUY')]['eligible_proposals'], 1)
+
+    def test_killed_child_then_near_cap_status_write_stays_within_cap(self):
+        ev0, lg0 = self._prior()
+        tsz = self._kill()
+        self.assertEqual(open(c1._lg_path(self.d, S, 'BNF'), 'rb').read(), lg0)   # prior committed ledger kept
+        fill_actual(self.d, self.CAP - 300)                     # real usage (incl. the %d B temp) = cap - 300
+        self.assertEqual(walk_bytes(self.d), self.CAP - 300)
+        with c1._lock(self.d):                                   # normal status-write path (always under the lock)
+            self.assertTrue(c1.write_marker(self.d, S, 'BNF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES'))
+        self.assertEqual(tmp_files(self.d), [])                  # reclaimed under the capture lock
+        self.assertLessEqual(walk_bytes(self.d), self.CAP)
+        self.assertEqual(open(c1._lg_path(self.d, S, 'BNF'), 'rb').read(), lg0)
+        self._fail_closed(ev0)
+
+    def test_killed_child_then_plan_after_restart(self):
+        ev0, lg0 = self._prior()
+        tsz = self._kill()
+        fill_actual(self.d, self.CAP - 200)
+        importlib.reload(c1)                                     # reopen in a fresh module state
+        out = self.plan(slice_for(BNF[3]), pts(BNF[3]['published_at']))
+        self.assertEqual(out['fetches'], [])
+        self.assertEqual(tmp_files(self.d), [])
+        self.assertLessEqual(walk_bytes(self.d), self.CAP)
+        self._fail_closed(ev0)
+
+    def test_killed_child_far_from_cap_recovers_and_keeps_committed_state(self):
+        ev0, lg0 = self._prior()
+        self._kill()
+        self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), ev0)
+        self.assertEqual(open(c1._lg_path(self.d, S, 'BNF'), 'rb').read(), lg0)
+        f, r = self.entry(2)                                    # normal operation resumes after reclaim
+        self.assertEqual(r['status'], 'RECORDED')
+        self.assertEqual(tmp_files(self.d), [])
+        sc = self.sc()
+        self.assertEqual(sc[('BNF', 'BUY')]['eligible_proposals'] + sc[('BNF', 'SELL')]['eligible_proposals'], 2)
+
+    def test_unconfirmed_tmp_like_file_is_kept_counted_and_blocks_growth(self):
+        ev0, lg0 = self._prior()
+        odd = os.path.join(self.d, '.tmp_not-a-mkstemp-name')    # not a confirmed capture temp: never deleted
+        with open(odd, 'wb') as fh:
+            fh.write(b'x' * 4000)
+        fill_actual(self.d, self.CAP - 10)
+        before = walk_bytes(self.d)
+        with c1._lock(self.d):
+            self.assertFalse(c1.write_marker(self.d, S, 'BNF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES'))
+        out = self.plan(slice_for(BNF[3]), pts(BNF[3]['published_at']))
+        self.assertEqual(out['fetches'], [])
+        self.assertTrue(os.path.exists(odd))
+        self.assertEqual(walk_bytes(self.d), before)             # store not grown
+        self._fail_closed(ev0)
+
+    def test_existing_incomplete_status_survives_interrupted_status_write(self):
+        ev0, lg0 = self._prior()
+        with c1._lock(self.d):
+            c1.write_marker(self.d, S, 'BNF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES')
+        st0 = open(os.path.join(self.d, c1.STATUS_NAME), 'rb').read()
+        import subprocess, sys as _sys
+        child = _CHILD.replace("c1.plan(d, T.result_for(T.BNF[row]), now, enabled=True, sl_dir=sl)",
+                               "c1.write_marker(d, '2026-11-10', 'NF', 'BUDGET_EXHAUSTED:GLOBAL_BYTES')")
+        r = subprocess.run([_sys.executable, '-c', child, os.getcwd(), self.d, self.sl, '0', '0'], capture_output=True)
+        self.assertEqual(r.returncode, -9)
+        self.assertEqual(open(os.path.join(self.d, c1.STATUS_NAME), 'rb').read(), st0)   # prior status intact
+        self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), ev0)
+        fill_actual(self.d, self.CAP - 300)
+        self.plan(slice_for(BNF[3]), pts(BNF[3]['published_at']))
+        self.assertEqual(tmp_files(self.d), [])
+        self.assertLessEqual(walk_bytes(self.d), self.CAP)
+        self.assertIn(S + '_BNF', json.load(open(os.path.join(self.d, c1.STATUS_NAME)))['slices'])
+        self._fail_closed(ev0)
+
+    def test_commit_guard_never_leaves_store_over_cap_even_if_killed(self):
+        self._prior()
+        fill_actual(self.d, self.CAP - 50)                       # a full ledger rewrite cannot fit beside the old one
+        self.assertFalse(c1._atomic(c1._lg_path(self.d, S, 'BNF'), b'x' * 100))
+        self.assertEqual(tmp_files(self.d), [])
+        self.assertEqual(walk_bytes(self.d), self.CAP - 50)
 
 
 if __name__ == '__main__':
