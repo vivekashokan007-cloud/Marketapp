@@ -1970,6 +1970,14 @@ class NativeBridge(private val context: Context) {
     @JavascriptInterface
     fun getC1CapturePilotEnabled(): Boolean = BuildConfig.PWA_CANDIDATE && prefs.getBoolean(C1PilotIo.PREF_ENABLED, false)
 
+    /** Candidate-only switch status for the PWA ({candidate_build, enabled, gate, ...}); CPU-only, reads prefs only. */
+    @JavascriptInterface
+    fun getC1CapturePilotStatus(): String = try {
+        C1PilotIo.status(prefs)
+    } catch (t: Throwable) {
+        JSONObject().put("available", false).put("reason", "STATUS_ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
     @JavascriptInterface
     fun singleLegRead(): String {
         return try {

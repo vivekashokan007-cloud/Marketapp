@@ -349,4 +349,35 @@ class C1CapturePilotTest {
         val src = File("src/main/java/com/marketradar/app/C1CapturePilot.kt").readText()
         assertTrue(src.contains("callAttr(\"c1_capture_discard\", dir, res, now, reason, dropped)"))
     }
+
+    // ---- candidate-only PWA switch status (C1 smoke candidate) ----
+    @Test fun status_non_candidate_is_never_enabled_even_with_pref() {
+        val o = JSONObject(C1PilotIo.statusJson(false, true, "paper"))
+        assertEquals(false, o.getBoolean("candidate_build")); assertEquals(false, o.getBoolean("enabled"))
+        assertEquals("NOT_CANDIDATE_BUILD", o.getString("gate")); assertEquals(true, o.getBoolean("evidence_only"))
+    }
+
+    @Test fun status_candidate_default_off_then_paper_gate() {
+        val off = JSONObject(C1PilotIo.statusJson(true, false, "paper"))
+        assertEquals(true, off.getBoolean("candidate_build")); assertEquals(false, off.getBoolean("enabled"))
+        assertEquals("PILOT_DISABLED", off.getString("gate"))
+        val notPaper = JSONObject(C1PilotIo.statusJson(true, true, "real"))
+        assertEquals(true, notPaper.getBoolean("enabled")); assertEquals("NOT_PAPER_MODE", notPaper.getString("gate"))
+        assertEquals(false, notPaper.getBoolean("paper_mode"))
+        val on = JSONObject(C1PilotIo.statusJson(true, true, "paper"))
+        assertTrue(on.isNull("gate")); assertEquals("CAPTURING_IN_PAPER", on.getString("label"))
+        // the status gate is the SAME function the capture worker uses
+        assertNull(C1PilotIo.gateReason(true, true, "paper"))
+    }
+
+    @Test fun bridge_and_facade_expose_the_switch_without_touching_admission() {
+        val nb = File("src/main/java/com/marketradar/app/NativeBridge.kt").readText()
+        assertTrue(nb.contains("fun getC1CapturePilotStatus(): String = try {\n        C1PilotIo.status(prefs)"))
+        val setter = nb.substring(nb.indexOf("fun setC1CapturePilotEnabled"), nb.indexOf("fun getC1CapturePilotEnabled"))
+        assertTrue(setter.contains("if (!BuildConfig.PWA_CANDIDATE) return"))
+        assertFalse(setter.contains("bumpSingleLegConfigRev")); assertFalse(setter.contains("PREF_SINGLE_LEG_PAPER"))
+        val ma = File("src/main/java/com/marketradar/app/MainActivity.kt").readText()
+        for (m in listOf("getC1CapturePilotStatus", "getC1CapturePilotEnabled", "setC1CapturePilotEnabled"))
+            assertTrue(m, ma.contains("$m: function("))
+    }
 }

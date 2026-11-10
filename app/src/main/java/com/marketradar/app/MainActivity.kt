@@ -812,6 +812,21 @@ class MainActivity : AppCompatActivity() {
                     singleLegRead: function() { return AndroidBridge.singleLegRead(); },
                     setSingleLegPaperEnabled: function(v) { return AndroidBridge.setSingleLegPaperEnabled(v === true); },
                     getSingleLegPaperEnabled: function() { return AndroidBridge.getSingleLegPaperEnabled(); },
+                    // C1 capture pilot (candidate-only research evidence; native gates on BuildConfig.PWA_CANDIDATE).
+                    getC1CapturePilotStatus: function() {
+                        if (typeof AndroidBridge.getC1CapturePilotStatus !== 'function') return JSON.stringify({ available: false, reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getC1CapturePilotStatus();
+                    },
+                    getC1CapturePilotEnabled: function() {
+                        if (typeof AndroidBridge.getC1CapturePilotEnabled !== 'function') return false;
+                        return AndroidBridge.getC1CapturePilotEnabled() === true;
+                    },
+                    setC1CapturePilotEnabled: function(on) {
+                        if (typeof AndroidBridge.setC1CapturePilotEnabled !== 'function') return JSON.stringify({ available: false, reason: 'NATIVE_METHOD_ABSENT' });
+                        AndroidBridge.setC1CapturePilotEnabled(on === true);
+                        if (typeof AndroidBridge.getC1CapturePilotStatus !== 'function') return JSON.stringify({ available: false, reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getC1CapturePilotStatus();
+                    },
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { return AndroidBridge.triggerMLRetrain(); },
                     triggerDayEvaluation: function() { return AndroidBridge.triggerDayEvaluation(); },

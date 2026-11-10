@@ -201,6 +201,21 @@ object C1PilotIo {
         else -> null
     }
 
+    /** Status for the PWA switch (CPU-only; no disk, no network).  On a non-candidate build `enabled` is always false
+     *  and the PWA hides the switch.  `gate` null = capture active (candidate + opt-in + Paper). */
+    fun statusJson(candidate: Boolean, enabledPref: Boolean, executionMode: String?): String {
+        val enabled = candidate && enabledPref
+        val g = gateReason(candidate, enabled, executionMode)
+        return JSONObject().put("schema", "c1_capture_pilot_status_v1").put("available", true)
+            .put("candidate_build", candidate).put("enabled", enabled).put("gate", g ?: JSONObject.NULL)
+            .put("paper_mode", executionMode == "paper")
+            .put("label", when { !candidate -> "NOT_CANDIDATE_BUILD"; g == null -> "CAPTURING_IN_PAPER"; else -> g })
+            .put("evidence_only", true).toString()
+    }
+
+    fun status(prefs: android.content.SharedPreferences): String = statusJson(BuildConfig.PWA_CANDIDATE,
+        prefs.getBoolean(PREF_ENABLED, false), try { EvAcceptance.executionMode(prefs) } catch (e: Exception) { null })
+
     fun gate(prefs: android.content.SharedPreferences): String? = gateReason(BuildConfig.PWA_CANDIDATE,
         prefs.getBoolean(PREF_ENABLED, false), try { EvAcceptance.executionMode(prefs) } catch (e: Exception) { null })
 
