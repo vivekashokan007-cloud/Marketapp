@@ -158,3 +158,28 @@ test('7. b510 X1 research methods are declared in Kotlin, forwarded once, ev cou
   assert.ok(!/fun (placeOrder|buy|openTrade)\w*PaperBuying/i.test(kt), 'no trade hook for X1');
   assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by b510');
 });
+
+// C1 capture pilot switch (candidate-only research evidence): three forwarders, each guarded for older APKs.
+test('8. C1 pilot: status/get/set forwarded; set returns the re-read status; absent native methods are explicit', () => {
+  const kt = nativeBridgeSource();
+  for (const name of ['getC1CapturePilotStatus', 'getC1CapturePilotEnabled', 'setC1CapturePilotEnabled'])
+    assert.match(kt, new RegExp(`@JavascriptInterface\\s+fun ${name}\\(`), `${name} declared`);
+  assert.match(kt, /fun setC1CapturePilotEnabled\(enabled: Boolean\) \{\s*if \(!BuildConfig\.PWA_CANDIDATE\) return/);
+  const st = '{"available":true,"candidate_build":true,"enabled":true,"gate":null}';
+  const { ab, calls } = spy({ getC1CapturePilotStatus: () => st, getC1CapturePilotEnabled: () => true, setC1CapturePilotEnabled: () => undefined });
+  const nb = runFacade({ AndroidBridge: ab });
+  assert.deepEqual(calls, [], 'injection calls nothing');
+  assert.equal(nb.getC1CapturePilotStatus(), st);
+  assert.equal(nb.getC1CapturePilotEnabled(), true);
+  assert.equal(nb.setC1CapturePilotEnabled(true), st);
+  assert.deepEqual(calls.map(c => [c.name, ...c.args]), [['getC1CapturePilotStatus'], ['getC1CapturePilotEnabled'],
+    ['setC1CapturePilotEnabled', true], ['getC1CapturePilotStatus']]);
+  const { calls: c2, ab: ab2 } = spy({ setC1CapturePilotEnabled: () => undefined, getC1CapturePilotStatus: () => st });
+  runFacade({ AndroidBridge: ab2 }).setC1CapturePilotEnabled('yes');
+  assert.deepEqual(c2[0], { name: 'setC1CapturePilotEnabled', args: [false] }, 'only a strict true enables');
+  const old = runFacade({ AndroidBridge: {} });
+  assert.equal(JSON.parse(old.getC1CapturePilotStatus()).reason, 'NATIVE_METHOD_ABSENT');
+  assert.equal(old.getC1CapturePilotEnabled(), false);
+  assert.equal(JSON.parse(old.setC1CapturePilotEnabled(true)).reason, 'NATIVE_METHOD_ABSENT');
+  assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by C1');
+});

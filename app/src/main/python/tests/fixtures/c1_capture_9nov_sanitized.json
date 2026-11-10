@@ -1,0 +1,175 @@
+{
+ "evidence_class": "FIXTURE_DERIVED_FROM_EXPORT (not device evidence)",
+ "fixture": "c1_capture_9nov_sanitized_v1",
+ "indices": {
+  "BNF": {
+   "blocked_single_leg_reason_counts": {
+    "BROKER_SNAPSHOT_UNAVAILABLE": 13,
+    "ENTRY_WINDOW_CLOSED": 13
+   },
+   "decision_rows": 77,
+   "eligible": [
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T11:35:08.522000+05:30",
+     "decision_id": "fx9n_BNF_1135",
+     "decision_poll_ts": "2026-11-09T11:35:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T11:35:27.327000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    },
+    {
+     "action": "BUY_CE",
+     "analysis_ts": "2026-11-09T11:40:07.917000+05:30",
+     "decision_id": "fx9n_BNF_1140",
+     "decision_poll_ts": "2026-11-09T11:40:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59500CE",
+     "option_type": "CE",
+     "published_at": "2026-11-09T11:40:22.727000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59500
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T11:45:08.246000+05:30",
+     "decision_id": "fx9n_BNF_1145",
+     "decision_poll_ts": "2026-11-09T11:45:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T11:45:22.861000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T11:50:08.285000+05:30",
+     "decision_id": "fx9n_BNF_1150",
+     "decision_poll_ts": "2026-11-09T11:50:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T11:50:27.790000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T11:55:08.248000+05:30",
+     "decision_id": "fx9n_BNF_1155",
+     "decision_poll_ts": "2026-11-09T11:55:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59300PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T11:55:24.407000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59300
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T14:15:10.324000+05:30",
+     "decision_id": "fx9n_BNF_1415",
+     "decision_poll_ts": "2026-11-09T14:15:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T14:15:24.011000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T14:20:17.038000+05:30",
+     "decision_id": "fx9n_BNF_1420",
+     "decision_poll_ts": "2026-11-09T14:20:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59500PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T14:20:30.391000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59500
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T14:25:13.104000+05:30",
+     "decision_id": "fx9n_BNF_1425",
+     "decision_poll_ts": "2026-11-09T14:25:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T14:25:28.758000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    },
+    {
+     "action": "SELL_PE",
+     "analysis_ts": "2026-11-09T14:30:18.193000+05:30",
+     "decision_id": "fx9n_BNF_1430",
+     "decision_poll_ts": "2026-11-09T14:30:00+05:30",
+     "direction": "BULL",
+     "expiry": "2026-11-23",
+     "instrument_key": "FX|BNF|2026-11-23|59400PE",
+     "option_type": "PE",
+     "published_at": "2026-11-09T14:30:32.015000+05:30",
+     "reasons": [
+      "BROKER_SNAPSHOT_UNAVAILABLE"
+     ],
+     "status": "ELIGIBLE_PENDING_SNAPSHOT",
+     "strike": 59400
+    }
+   ]
+  },
+  "NF": {
+   "blocked_single_leg_reason_counts": {},
+   "decision_rows": 77,
+   "eligible": []
+  }
+ },
+ "lot": {
+  "BNF": 30,
+  "NF": 65,
+  "source": "contract_lot_table NSE_FAOP_70616 @ c0de50d4"
+ },
+ "session_date": "2026-11-09",
+ "source_export_sha256": "40f672cb3d116588e3f13f42d545acaf89ed975d107638366aff0b45a9a26f9f",
+ "tick": {
+  "source": "FIXTURE_ASSUMED",
+  "value": 0.05
+ }
+}

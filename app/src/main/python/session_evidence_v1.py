@@ -337,4 +337,40 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                                                                for k, v in entries.items()},
                                  note='irreducible evidence exceeds the export cap; originals preserved, not truncated')}
         return fail, _canon(fail).encode()
+    # C1 capture pilot (opt-in research), attached only AFTER the released parts are final: present ONLY when
+    # its directory exists, and degraded (full -> ledgers -> scorecard -> manifest stub -> absent) so it can
+    # never cause any released part to be truncated.  A build that never enabled the pilot exports exactly
+    # what the released build exported.
+    try:
+        import c1_capture_pilot_v1 as _c1
+        probe = _c1.export_part(files_dir, sess, level='scorecard')
+    except Exception as exc:
+        probe = {'status': 'UNREADABLE', 'reason': type(exc).__name__}
+    if probe is not None:
+        base_parts, base_entries = dict(parts), dict(entries)
+        attached = False
+        levels = ('full', 'ledger', 'scorecard') if probe.get('status') != 'UNREADABLE' else ()
+        for lvl in levels:
+            try:
+                c1 = probe if lvl == 'scorecard' else _c1.export_part(files_dir, sess, level=lvl)
+            except Exception:
+                continue
+            parts['c1_capture'] = c1
+            entries['c1_capture'] = _part_entry('PRESENT' if lvl == 'full' else 'TRUNCATED', c1,
+                                                None if lvl == 'full' else {'c1_level': lvl, 'reduced_for_cap': True})
+            cand = assemble()
+            if len(cand) <= MAX_BUNDLE_BYTES:
+                raw, attached = cand, True
+                break
+        if not attached:
+            parts.clear(); parts.update(base_parts)
+            entries.clear(); entries.update(base_entries)
+            entries['c1_capture'] = _part_entry('UNREADABLE' if probe.get('status') == 'UNREADABLE' else 'OMITTED_FOR_CAP',
+                                                None)
+            cand = assemble()
+            if len(cand) <= MAX_BUNDLE_BYTES:
+                raw = cand
+            else:
+                entries.pop('c1_capture', None)
+                raw = assemble()
     return {'manifest': man, 'parts': parts}, raw

@@ -121,6 +121,45 @@ object ManagedReadAdapters {
         return MarginFetch(req, body, receipt)
     }
 
+    // ── C1 capture pilot: same exact-instrument endpoints and bounds, with the failure reason kept ─────────
+    /** fetch != null on success; otherwise an explicit failure (never a silent null) and whether a retry may help. */
+    data class QuoteOutcome(val fetch: QuoteFetch?, val failure: String?, val retryable: Boolean)
+    data class MarginOutcome(val fetch: MarginFetch?, val failure: String?, val retryable: Boolean)
+
+    private fun failureOf(e: Exception) =
+        if (e is java.net.SocketTimeoutException) "TIMEOUT" else "TRANSPORT_ERROR:" + e.javaClass.simpleName
+
+    private fun httpRetryable(code: Int) = code == 429 || code >= 500 || code < 0
+
+    fun fetchQuotesOutcome(keys: List<String>, transport: Transport, clocks: Clocks): QuoteOutcome {
+        val exact = keys.filter { it.isNotBlank() }.distinct().take(MAX_QUOTE_KEYS)
+        if (exact.isEmpty()) return QuoteOutcome(null, "NO_KEYS", false)
+        val start = clocks.wallMs()
+        val r = try { transport.call("GET", quoteUrl(exact), null) } catch (e: Exception) {
+            return QuoteOutcome(null, failureOf(e), true)
+        }
+        val receipt = clocks.wallMs()
+        val mono = clocks.monoMs()
+        val body = r.body ?: return QuoteOutcome(null, "BODY_MISSING:HTTP_${r.code}", true)
+        if (r.code != 200) return QuoteOutcome(null, "HTTP_${r.code}", httpRetryable(r.code))
+        if (body.length > MAX_BODY_BYTES) return QuoteOutcome(null, "BODY_TOO_LARGE", false)
+        return QuoteOutcome(QuoteFetch(JSONArray(exact).toString(), body, start, receipt, mono), null, false)
+    }
+
+    fun fetchShortMarginOutcome(action: String, instrumentKey: String, quantity: Int, transport: Transport,
+                                clocks: Clocks): MarginOutcome {
+        if (!action.startsWith("SELL") || instrumentKey.isBlank() || quantity <= 0) return MarginOutcome(null, "NOT_APPLICABLE", false)
+        val req = marginRequest(instrumentKey, quantity).toString()
+        val r = try { transport.call("POST", "$BASE/v2/charges/margin", req) } catch (e: Exception) {
+            return MarginOutcome(null, failureOf(e), true)
+        }
+        val receipt = clocks.wallMs()
+        val body = r.body ?: return MarginOutcome(null, "BODY_MISSING:HTTP_${r.code}", true)
+        if (r.code != 200) return MarginOutcome(null, "HTTP_${r.code}", httpRetryable(r.code))
+        if (body.length > MAX_BODY_BYTES) return MarginOutcome(null, "BODY_TOO_LARGE", false)
+        return MarginOutcome(MarginFetch(req, body, receipt), null, false)
+    }
+
     /** Production transport: bounded timeouts, bearer token per request, never logged. */
     class HttpTransport(private val token: () -> String) : Transport {
         override fun call(method: String, url: String, body: String?): Response {

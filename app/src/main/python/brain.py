@@ -7209,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.96"
+BRAIN_VERSION = "2.6.97"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -28202,6 +28202,52 @@ def single_leg_monitor(sl_dir, ia_state_dir, session_date, spots_json='{}'):
         spots = json.loads(spots_json or '{}')
         obs = single_leg_observations(ia_state_dir, session_date)
         return json.dumps(_sls.monitor(sl_dir, _sls.read_snapshots(sl_dir), obs, spots=spots))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+# ═══ C1 exact-contract Paper capture pilot (opt-in research; never admits, never writes single_leg_v1) ═══
+def c1_capture_plan(c1_dir, result_json='null', now_ms=None, enabled=False, sl_dir=None, native_dropped=0,
+                    discarded_on_disable=0):
+    """Register every offered proposal identity (denominator) and return the bounded fetch plan.
+    result_json: one compact publication slice or a JSON array of them (native FIFO).  enabled=False -> no I/O."""
+    try:
+        import c1_capture_pilot_v1 as _c1
+        if not enabled:
+            return json.dumps({'status': 'DISABLED', 'fetches': []})
+        res = json.loads(result_json or 'null') or {}
+        return json.dumps(_c1.plan(c1_dir, res, now_ms, enabled=True, sl_dir=sl_dir,
+                                   native_dropped=int(native_dropped or 0),
+                                   discarded_on_disable=int(discarded_on_disable or 0)))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'fetches': []})
+
+
+def c1_capture_discard(c1_dir, result_json='[]', now_ms=None, reason=None, native_dropped=0):
+    """Gate closed with offered work queued: durably register the lost identities as DISCARDED and mark the
+    slice INCOMPLETE.  Status only: no plan, no request, no re-arm."""
+    try:
+        import c1_capture_pilot_v1 as _c1
+        res = json.loads(result_json or '[]') or []
+        return json.dumps(_c1.note_discarded(c1_dir, res, now_ms, reason, native_dropped=int(native_dropped or 0)))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def c1_capture_record(c1_dir, fetch_id, index, session_date, call_json):
+    try:
+        import c1_capture_pilot_v1 as _c1
+        return json.dumps(_c1.record(c1_dir, fetch_id, index, session_date, json.loads(call_json or '{}')))
+    except Exception as exc:
+        return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
+
+
+def c1_capture_scorecard(files_dir, session_date):
+    try:
+        import c1_capture_pilot_v1 as _c1
+        part = _c1.export_part(files_dir, str(session_date)[:10], level='scorecard')
+        return json.dumps({'status': 'NO_PILOT_DATA'} if part is None else
+                          {'status': 'OK', 'scorecard': part['scorecard'], 'linked_positions': part['linked_positions']})
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 
