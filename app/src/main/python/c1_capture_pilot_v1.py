@@ -50,12 +50,13 @@ import paper_broker_snapshot_v1 as _pbs
 from local_lock_v1 import FileLock
 
 PILOT_ID = 'c1_exact_contract_capture_v1'
-REVISION = 'R2'
+REVISION = 'R3'
 SCHEMA = 'mr.c1_capture.v1'
 LEDGER_SCHEMA = 'mr.c1_capture.ledger.v1'
 DIR_NAME = 'c1_capture_v1'
 GLOBAL_MARKER = 'global_exhausted.json'      # R1 single marker (still honoured for its session/index)
-MARKER_FMT = 'exhausted_%s_%s.json'           # R2: one marker per session x index, never overwritten by another
+MARKER_FMT = 'exhausted_%s_%s.json'           # R2 per-slice marker (legacy: still read and counted, never written)
+STATUS_NAME = 'status.json'                   # R3: the ONE bounded status file, inside the reserved status space
 IST = timezone(timedelta(hours=5, minutes=30))
 INDICES = ('NF', 'BNF')
 ELIGIBLE = ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT')
@@ -77,6 +78,11 @@ EXIT_EVIDENCE_RESERVE_BYTES = 8 * 1024    # entry evidence must leave this for 1
 MAX_BYTES_GLOBAL = 512 * 1024             # unchanged
 LEDGER_GLOBAL_RESERVE_BYTES = 64 * 1024   # evidence may never consume the ledgers' share
 STATUS_RESERVE_BYTES = 1024
+STATUS_GLOBAL_RESERVE_BYTES = 2048        # R3: kept free of every other write; status.json can never exceed it
+
+
+def _writable():
+    return MAX_BYTES_GLOBAL - STATUS_GLOBAL_RESERVE_BYTES   # every non-status write stays below this
 IN_FLIGHT_TTL_S = 60                      # a REQUESTED fetch older than this is fenced LOST (never re-armed)
 ENTRY_MAX_LAG_S = _pbs.MAX_AGE_S          # generation vs published decision analysis time
 TIME_EXIT = _sl.TIME_EXIT                 # (15, 5) from the released policy
@@ -180,19 +186,31 @@ def _read_ledger(d, session, ix):
 
 def _read_evidence(d, session, ix):
     ev = _read_json(_ev_path(d, session, ix), SCHEMA, lambda: _empty_evidence(session, ix))
-    if ev is not None and ev.get('revision') not in ('R1', 'R2'):
+    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3'):
         return None                                # pre-R1 layout: never mixed into R1 evidence (fail closed)
     return ev
 
 
 def _global_bytes(d, exclude):
+    """Bytes of every persisted pilot file (ledgers, evidence, legacy markers, anything else) EXCEPT the bounded
+    status file and `exclude`.  Atomic-write temp files are transient and not counted."""
     n = 0
     try:
         for name in os.listdir(d):
             p = os.path.join(d, name)
-            if name.endswith('.json') and p != exclude and os.path.isfile(p):
+            if name != STATUS_NAME and not name.startswith('.tmp_') and p != exclude and os.path.isfile(p):
                 n += os.path.getsize(p)
     except FileNotFoundError:
+        pass
+    return n
+
+
+def store_bytes(d):
+    """Total persisted bytes of the pilot store (incl. status.json); always <= MAX_BYTES_GLOBAL for R3 writes."""
+    n = _global_bytes(d, None)
+    try:
+        n += os.path.getsize(os.path.join(d, STATUS_NAME))
+    except OSError:
         pass
     return n
 
@@ -214,13 +232,14 @@ def _atomic(p, raw):
 
 def _write_ledger(d, lg, fallback=None):
     """Ledger write (priority on the global budget).  On a cap the previous ledger is kept and `fallback(prev)`
-    applies only small counters (STATUS_RESERVE_BYTES); if even that fails a global marker is written."""
+    applies only small counters (STATUS_RESERVE_BYTES); if even that fails the slice is recorded in the
+    bounded status.json (write_marker), which never grows the store past MAX_BYTES_GLOBAL."""
     os.makedirs(d, exist_ok=True)
     p = _lg_path(d, lg['session_date'], lg['index'])
     raw = _canon(lg).encode()
     g = _global_bytes(d, p)
     if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES and \
-            g + len(raw) <= MAX_BYTES_GLOBAL - STATUS_RESERVE_BYTES:
+            g + len(raw) <= _writable() - STATUS_RESERVE_BYTES:
         _atomic(p, raw)
         return True, None
     reason = 'BUDGET_EXHAUSTED:LEDGER_BYTES' if len(raw) > MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES \
@@ -232,7 +251,7 @@ def _write_ledger(d, lg, fallback=None):
     if fallback is not None:
         fallback(prev)
     raw = _canon(prev).encode()
-    if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= MAX_BYTES_GLOBAL:
+    if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= _writable():
         _atomic(p, raw)
     else:
         write_marker(d, lg['session_date'], lg['index'], reason)
@@ -243,17 +262,67 @@ def _marker_path(d, session, ix):
     return os.path.join(d, MARKER_FMT % (session, ix))
 
 
-def write_marker(d, session, ix, reason):
-    """Tiny per session x index marker: proposal accounting for this slice can no longer be trusted."""
+def _read_status(d):
     try:
-        p = _marker_path(d, session, ix)
-        if not os.path.exists(p):
-            _atomic(p, _canon({'reason': reason, 'session_date': session, 'index': ix}).encode())
+        with open(os.path.join(d, STATUS_NAME), 'rb') as f:
+            st = json.loads(f.read().decode())
+        if isinstance(st, dict) and isinstance(st.get('slices', {}), dict):
+            return st, True
+        return None, True
+    except FileNotFoundError:
+        return {'schema': SCHEMA + '.status', 'slices': {}, 'overflow_from': None}, False
+    except Exception:
+        return None, True                              # unreadable -> every slice fails closed (see slice_status)
+
+
+def write_marker(d, session, ix, reason):
+    """R3: record that proposal accounting for (session, index) can no longer be trusted, inside the reserved
+    status space (status.json <= STATUS_GLOBAL_RESERVE_BYTES, and the total store <= MAX_BYTES_GLOBAL).
+    Exact entries are never removed; when the exact entry cannot fit, the status degrades to
+    overflow_from = earliest affected session (every slice from that date fails closed), which keeps all
+    earlier recorded losses covered.  If even that cannot fit, nothing is written and the store is not grown:
+    slice_status() then fails closed from the store size itself.  Retained evidence is never touched."""
+    try:
+        st, _ = _read_status(d)
+        if st is None:
+            return False                               # unreadable status already fails closed; never overwrite
+        key = '%s_%s' % (session, ix)
+        if key in st['slices'] or (st.get('overflow_from') and st['overflow_from'] <= session):
+            return True
+        cand = dict(st, slices=dict(st['slices'], **{key: str(reason)[:48]}))
+        others = _global_bytes(d, None)
+        for doc in (cand, dict(st, slices={}, overflow_from=min([session] + [k[:10] for k in st['slices']] +
+                                                                ([st['overflow_from']] if st.get('overflow_from') else [])))):
+            raw = _canon(doc).encode()
+            if len(raw) <= STATUS_GLOBAL_RESERVE_BYTES and others + len(raw) <= MAX_BYTES_GLOBAL:
+                _atomic(os.path.join(d, STATUS_NAME), raw)
+                return True
     except Exception:
         pass
+    return False
+
+
+def slice_status(d, session, ix):
+    """Fail-closed status of one slice: exact entry, overflow range, legacy R1/R2 markers, or a store whose
+    non-status bytes already exceed the writable limit (a status that could not be recorded)."""
+    st, present = _read_status(d)
+    if st is None:
+        return 'STATUS_UNREADABLE'
+    key = '%s_%s' % (session, ix)
+    if key in st.get('slices', {}):
+        return str(st['slices'][key])
+    if st.get('overflow_from') and st['overflow_from'] <= session:
+        return 'STATUS_OVERFLOW_FROM_' + st['overflow_from']
+    legacy = read_marker(d, session, ix)
+    if legacy:
+        return legacy
+    if _global_bytes(d, None) > _writable() - STATUS_RESERVE_BYTES:
+        return 'STORE_AT_CAP_STATUS_UNRECORDABLE'
+    return None
 
 
 def read_marker(d, session, ix):
+    """Legacy R1 (single) / R2 (per-slice) marker files: still honoured for their own slice."""
     for p in (_marker_path(d, session, ix), os.path.join(d, GLOBAL_MARKER)):
         try:
             with open(p, 'rb') as f:
@@ -276,7 +345,7 @@ def _write_evidence(d, ev, *, exit_phase=False):
     cap = MAX_EVIDENCE_BYTES_PER_INDEX_SESSION - (0 if exit_phase else EXIT_EVIDENCE_RESERVE_BYTES)
     if len(raw) > cap:
         return False, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES'
-    if _global_bytes(d, p) + len(raw) > MAX_BYTES_GLOBAL - LEDGER_GLOBAL_RESERVE_BYTES:
+    if _global_bytes(d, p) + len(raw) > _writable() - LEDGER_GLOBAL_RESERVE_BYTES:
         return False, 'BUDGET_EXHAUSTED:GLOBAL_BYTES'
     _atomic(p, raw)
     return True, None
@@ -589,21 +658,29 @@ def note_discarded(d, results, now_ms, reason, native_dropped=0):
             if lg is None:
                 write_marker(d, session, ix, 'C1_LEDGER_CORRUPT_AT_DISCARD')
                 continue
+            before = _canon(lg)
+            ov0 = lg['stats']['identities_overflow']
             new = _register(lg, ix, items, session, now_dt)
-            if not new and not native_dropped:
+            overflow = lg['stats']['identities_overflow'] - ov0   # discarded AND not even registrable (R3)
+            if not new and not native_dropped and not overflow:
+                if _canon(lg) != before:                    # duplicates only: persist the counter
+                    _write_ledger(d, lg)
                 continue                                    # nothing of this index was lost
             for row, _ in new:
                 row['o'] = why
             if native_dropped:                              # overflowed slices: index unknown -> both slices
                 lg['stats']['native_dropped'] += int(native_dropped)
                 _flag(lg, 'NATIVE_QUEUE_OVERFLOW')
-            if new:
-                lg['stats']['discarded_on_disable'] += len(new)
+            if new or overflow:
+                lg['stats']['discarded_on_disable'] += len(new) + overflow
                 _flag(lg, 'QUEUED_DISCARDED_ON_GATE_CLOSE')
-            ok, err = _write_ledger(d, lg, fallback=lambda prev, n=len(new): (
+            ok, err = _write_ledger(d, lg, fallback=lambda prev, n=len(new) + overflow, o=overflow: (
                 prev['stats'].__setitem__('discarded_on_disable', prev['stats']['discarded_on_disable'] + n),
-                _flag(prev, 'QUEUED_DISCARDED_ON_GATE_CLOSE')))
+                prev['stats'].__setitem__('identities_overflow', prev['stats']['identities_overflow'] + o),
+                _flag(prev, 'QUEUED_DISCARDED_ON_GATE_CLOSE'), _flag(prev, 'IDENTITY_CAP') if o else None))
             out['discarded'][ix] = len(new)
+            if overflow:
+                out.setdefault('not_registrable', {})[ix] = overflow
             if not ok:
                 out.setdefault('budget_exhausted', []).append({'index': ix, 'reason': err})
     return out
@@ -925,7 +1002,7 @@ def read_session(d, session):
     for ix in INDICES:
         lg = _read_ledger(d, session, ix) if os.path.exists(_lg_path(d, session, ix)) else None
         ev = _read_evidence(d, session, ix) if os.path.exists(_ev_path(d, session, ix)) else None
-        out[ix] = {'ledger': lg, 'evidence': ev, 'marker': read_marker(d, session, ix),
+        out[ix] = {'ledger': lg, 'evidence': ev, 'marker': slice_status(d, session, ix),
                    'evidence_status': 'MISSING' if not os.path.exists(_ev_path(d, session, ix))
                    else ('PRESENT' if ev is not None else 'UNREADABLE'),
                    'ledger_status': 'MISSING' if not os.path.exists(_lg_path(d, session, ix))

@@ -1170,8 +1170,11 @@ class R2IncompleteSurvivesShutdown(Base):
         self.entry(1)
         with mock.patch.object(c1, 'MAX_BYTES_GLOBAL', 10):
             self.plan(slice_for(BNF[0]), pts(BNF[0]['published_at']))
-        self.assertIsNotNone(c1.read_marker(self.d, S, 'BNF'))
-        self.assertEqual(self.sc()[('BNF', 'BUY')]['completeness'], 'UNKNOWN')
+            # R3: no room even for status.json under this (artificial) cap -> nothing written, store not grown,
+            # and the slice still fails closed from the store size itself
+            self.assertEqual(c1.slice_status(self.d, S, 'BNF'), 'STORE_AT_CAP_STATUS_UNRECORDABLE')
+            self.assertEqual(self.sc()[('BNF', 'BUY')]['completeness'], 'UNKNOWN')
+        self.assertFalse(os.path.exists(os.path.join(self.d, c1.STATUS_NAME)))
 
     def _discard_then_export(self, reason):
         os.makedirs(os.path.join(self.files, 'index_authority_v1'))
@@ -1212,6 +1215,153 @@ class R2IncompleteSurvivesShutdown(Base):
         c1.note_discarded(self.d, [], ms(ist('11:00:00')), 'PILOT_DISABLED', native_dropped=3)
         for ix in ('NF', 'BNF'):
             self.assertIn('NATIVE_QUEUE_OVERFLOW', self.lg(ix)['completeness_flags'])
+
+
+# ═══ R3 regressions (Codex C1 R3 corrections).  FIXTURE / unit results only. ═══════════════════════════
+
+def _fill(d, total_non_status, name='2026-11-02_BNF.json'):
+    """Pad the store with an unrelated (other-session) file so non-status bytes == total_non_status."""
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, name)
+    if os.path.exists(p):
+        os.remove(p)
+    need = total_non_status - c1._global_bytes(d, None)
+    assert need >= 2, need
+    with open(p, 'w') as fh:
+        fh.write('"' + 'x' * (need - 2) + '"')
+
+
+def _all_bytes(d):
+    return sum(os.path.getsize(os.path.join(d, n)) for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
+
+
+class R3DiscardWithFullIdentityLedger(Base):
+    def _bundle_cells(self):
+        if not os.path.exists(os.path.join(self.files, 'index_authority_v1', S + '.json')):
+            os.makedirs(os.path.join(self.files, 'index_authority_v1'), exist_ok=True)
+            with open(os.path.join(self.files, 'index_authority_v1', S + '.json'), 'w') as fh:
+                json.dump({'session_date': S, 'history': {}}, fh)
+        b = json.loads(brain.session_evidence_bundle(self.files, S, None, '{}', True))
+        return {(c['index'], c['side']): c for c in b['parts']['c1_capture']['scorecard']}
+
+    def test_identity_cap_full_discard_is_persisted_export_and_restart(self):
+        for reason in ('NOT_PAPER_MODE', 'PILOT_DISABLED'):
+            self.tearDown(); self.setUp()
+            with mock.patch.object(c1, 'MAX_IDS_PER_INDEX_SESSION', 1):
+                self.entry(1)                                          # BNF BUY registered + valid
+                self.assertEqual(self.sc()[('BNF', 'BUY')]['entry_target_met_80pct'], True)
+                fetches0 = copy.deepcopy(self.lg()['fetches'])
+                reserved0 = self.lg()['budget']['requests_reserved']
+                out = json.loads(brain.c1_capture_discard(self.d, json.dumps([slice_for(BNF[2])]),
+                                                          ms(pts(BNF[2]['published_at'])), reason))
+                self.assertEqual((out['status'], out['discarded'], out['not_registrable']), ('OK', {'BNF': 0}, {'BNF': 1}))
+            lg = self.lg()
+            self.assertIn('IDENTITY_CAP', lg['completeness_flags'])
+            self.assertIn('QUEUED_DISCARDED_ON_GATE_CLOSE', lg['completeness_flags'])
+            self.assertEqual((lg['stats']['identities_overflow'], lg['stats']['discarded_on_disable']), (1, 1))
+            for phase in ('export', 'restart'):
+                if phase == 'restart':
+                    importlib.reload(c1)
+                cells = self._bundle_cells()
+                for side in ('BUY', 'SELL'):
+                    c = cells[('BNF', side)]
+                    self.assertEqual((c['completeness'], c['entry_target_met_80pct']), ('INCOMPLETE', None), (reason, phase, side))
+                self.assertEqual((cells[('BNF', 'BUY')]['eligible_proposals'], cells[('BNF', 'BUY')]['valid_entry_snapshots']), (1, 1))
+            self.assertEqual(self.lg()['fetches'], fetches0)          # zero new broker calls planned
+            self.assertEqual(self.lg()['budget']['requests_reserved'], reserved0)
+
+    def test_identity_cap_full_and_ledger_unwritable_falls_back_to_status(self):
+        with mock.patch.object(c1, 'MAX_IDS_PER_INDEX_SESSION', 1):
+            self.entry(1)
+            _fill(self.d, c1._writable() - 50)                         # no room for the flagged ledger
+            before = open(c1._ev_path(self.d, S, 'BNF'), 'rb').read()
+            c1.note_discarded(self.d, [slice_for(BNF[2])], ms(pts(BNF[2]['published_at'])), 'PILOT_DISABLED')
+        self.assertLessEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
+        self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), before)      # evidence intact
+        importlib.reload(c1)
+        c = self.sc()[('BNF', 'BUY')]
+        self.assertEqual((c['completeness'], c['entry_target_met_80pct'], c['eligible_proposals']), ('UNKNOWN', None, 1))
+
+
+class R3StatusInsideGlobalCap(Base):
+    S2, S3 = '2026-11-10', '2026-11-11'
+
+    def _prior_entry(self):
+        self.entry(1)
+        return open(c1._ev_path(self.d, S, 'BNF'), 'rb').read()
+
+    def _check(self, before, slices):
+        self.assertLessEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
+        self.assertEqual(open(c1._ev_path(self.d, S, 'BNF'), 'rb').read(), before)
+        for phase in ('read', 'restart'):
+            if phase == 'restart':
+                importlib.reload(c1)
+            for sess, ix in slices:
+                docs = {sess: c1.read_session(self.d, sess)}
+                for c in c1.scorecard(docs):
+                    if c['index'] == ix:
+                        self.assertEqual(c['completeness'], 'UNKNOWN', (phase, sess, ix, c['side']))
+                        self.assertIsNone(c['entry_target_met_80pct'])
+            part = c1.export_part(self.files, S)
+            bb = {(c['index'], c['side']): c for c in part['scorecard']}[('BNF', 'BUY')]
+            if (S, 'BNF') in slices:
+                self.assertEqual((bb['completeness'], bb['entry_target_met_80pct'], bb['eligible_proposals']),
+                                 ('UNKNOWN', None, 1))
+
+    def test_nearly_full_store_two_indices_repeated_sessions(self):
+        before = self._prior_entry()
+        _fill(self.d, c1._writable() - 300)
+        slices = [(sess, ix) for sess in (S, self.S2, self.S3) for ix in ('NF', 'BNF')]
+        for _ in range(3):                                             # repeated hits of the same dates
+            for sess, ix in slices:
+                self.assertTrue(c1.write_marker(self.d, sess, ix, 'BUDGET_EXHAUSTED:GLOBAL_BYTES'))
+        # a real write path at the limit as well: a new proposal whose ledger cannot be written -> no broker call
+        self.assertEqual(self.plan(slice_for(BNF[2]), pts(BNF[2]['published_at']))['fetches'], [])
+        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_GLOBAL_RESERVE_BYTES)
+        self._check(before, slices)
+
+    def test_store_exactly_at_cap_no_status_file(self):
+        before = self._prior_entry()
+        _fill(self.d, c1.MAX_BYTES_GLOBAL)                             # e.g. legacy files filled the store
+        self.assertEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
+        for sess in (S, self.S2):
+            for ix in ('NF', 'BNF'):
+                self.assertFalse(c1.write_marker(self.d, sess, ix, 'BUDGET_EXHAUSTED:GLOBAL_BYTES'))
+        self.assertEqual(self.plan(slice_for(BNF[2]), pts(BNF[2]['published_at']))['fetches'], [])
+        c1.note_discarded(self.d, [slice_for(BNF[3])], ms(pts(BNF[3]['published_at'])), 'PILOT_DISABLED')
+        self.assertEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)       # store not grown
+        self.assertFalse(os.path.exists(os.path.join(self.d, c1.STATUS_NAME)))
+        self.assertEqual(c1.slice_status(self.d, self.S2, 'NF'), 'STORE_AT_CAP_STATUS_UNRECORDABLE')
+        self._check(before, [(S, 'NF'), (S, 'BNF'), (self.S2, 'NF'), (self.S2, 'BNF')])
+
+    def test_status_overflow_keeps_earlier_losses(self):
+        before = self._prior_entry()
+        days = ['2026-11-%02d' % d for d in range(9, 31)] + ['2026-12-%02d' % d for d in range(1, 31)]
+        for sess in days:
+            for ix in ('NF', 'BNF'):
+                c1.write_marker(self.d, sess, ix, 'BUDGET_EXHAUSTED:GLOBAL_BYTES')
+        st = json.load(open(os.path.join(self.d, c1.STATUS_NAME)))
+        self.assertEqual(st['overflow_from'], S)                       # earliest loss still covered
+        self.assertLessEqual(os.path.getsize(os.path.join(self.d, c1.STATUS_NAME)), c1.STATUS_GLOBAL_RESERVE_BYTES)
+        self._check(before, [(S, 'BNF'), (days[-1], 'NF')])
+
+    def test_legacy_marker_files_count_inside_cap(self):
+        before = self._prior_entry()
+        for sess in (S, self.S2):
+            for ix in ('NF', 'BNF'):
+                with open(os.path.join(self.d, c1.MARKER_FMT % (sess, ix)), 'w') as fh:
+                    json.dump({'reason': 'BUDGET_EXHAUSTED:GLOBAL_BYTES', 'session_date': sess, 'index': ix}, fh)
+        _fill(self.d, c1._writable() - 10)
+        self.assertEqual(self.plan(slice_for(BNF[2]), pts(BNF[2]['published_at']))['fetches'], [])
+        self.assertLessEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
+        self._check(before, [(S, 'BNF'), (self.S2, 'NF')])
+
+    def test_normal_writes_leave_status_reserve(self):
+        _fill(self.d, c1._writable() - c1.STATUS_RESERVE_BYTES - 200)
+        out = self.plan(slice_for(BNF[2]), pts(BNF[2]['published_at']))
+        self.assertEqual(out['fetches'], [])
+        self.assertLessEqual(c1._global_bytes(self.d, None), c1._writable())
+        self.assertLessEqual(_all_bytes(self.d), c1.MAX_BYTES_GLOBAL)
 
 
 if __name__ == '__main__':
