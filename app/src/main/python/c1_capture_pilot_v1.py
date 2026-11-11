@@ -51,7 +51,7 @@ import paper_broker_snapshot_v1 as _pbs
 from local_lock_v1 import FileLock
 
 PILOT_ID = 'c1_exact_contract_capture_v1'
-REVISION = 'R5'
+REVISION = 'R6'
 SCHEMA = 'mr.c1_capture.v1'
 LEDGER_SCHEMA = 'mr.c1_capture.ledger.v1'
 DIR_NAME = 'c1_capture_v1'
@@ -194,6 +194,197 @@ def _canon(obj):
     return json.dumps(obj, sort_keys=True, separators=(',', ':'), default=str)
 
 
+# ── R6 compact ledger on disk + exact worst-case ledger reservation ────────────────────────────────────────
+# R5 stress (40-48 identities per index-session) filled the 24 KiB ledger at the 15:05 exit record, so exit
+# verdicts stayed REQUESTED.  R6 (a) writes the ledger in a lossless compact layout (expand_ledger() restores the
+# R5 in-memory document exactly; the in-memory/exported shape is unchanged) and (b) admits a new identity or a
+# new entry fetch only if the WORST-CASE final ledger still fits: every open verdict at its maximum length,
+# every in-flight fetch terminal at its longest basis, the 15:05 exit plan for every identity without an exit
+# outcome, every exhaustion reason / completeness flag and 5-digit counters.  Otherwise the work is refused
+# deterministically (offer order) with a reason; existing identities and terminal verdicts are never dropped.
+LEDGER_LAYOUT = 'COMPACT_L1'
+LEDGER_VERDICT_MAX_CHARS = 48             # ledger verdict strings; longer reasons stay in full in the evidence row
+STATS_KEYS = ('duplicate_notifications', 'coalesced', 'lost_in_flight', 'late_records_refused', 'native_dropped',
+              'identities_overflow', 'discarded_on_disable', 'ledger_write_failed', 'identities_overflow_buy',
+              'identities_overflow_sell', 'identities_refused_ledger_bytes')
+_ALL_EXHAUSTED = tuple('BUDGET_EXHAUSTED:' + x for x in (
+    'EVIDENCE_BYTES', 'EVIDENCE_BYTES:BUY', 'EVIDENCE_BYTES:SELL', 'EVIDENCE_BYTES:EXIT_UNLINKED_ROWS',
+    'GLOBAL_BYTES', 'GLOBAL_BYTES:EXIT_UNLINKED_ROWS', 'LEDGER_BYTES', 'LEDGER_RESERVE:IDENTITY',
+    'LEDGER_RESERVE:BUY', 'LEDGER_RESERVE:SELL', 'TARGETS', 'REQUESTS', 'EXIT_INSTRUMENTS'))
+_ALL_FLAGS = ('IDENTITY_CAP', 'NATIVE_QUEUE_OVERFLOW', 'QUEUED_DISCARDED_ON_GATE_CLOSE', 'LEDGER_WRITE_FAILED')
+_ID_TS = ('an', 'pub')
+_FETCH_TS = ('planned_at', 'recorded_at')
+
+
+def _ledger_writable():
+    return MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES
+
+
+def _vd(v):
+    """Bounded ledger verdict (deterministic): reasons longer than LEDGER_VERDICT_MAX_CHARS keep a 41-char prefix
+    plus a 6-hex digest of the full reason; the evidence row keeps the full text."""
+    if isinstance(v, str) and len(v) > LEDGER_VERDICT_MAX_CHARS:
+        return v[:41] + '~' + _h(v)[:6]
+    return v
+
+
+def _ts_c(session, v):
+    pre = '%sT' % session
+    if isinstance(v, str) and v.startswith(pre) and v.endswith('+05:30') and len(v) > len(pre) + 6:
+        return '~' + v[len(pre):-6]
+    return v
+
+
+def _ts_x(session, v):
+    return '%sT%s+05:30' % (session, v[1:]) if isinstance(v, str) and v.startswith('~') else v
+
+
+def _margin_default(ids, f):
+    pid = (f.get('pids') or [None])[0]
+    return [{'pid': pid, 'target_id': pid, 'instrument_key': (f.get('keys') or [None])[0],
+             'quantity': ((ids or {}).get(pid) or {}).get('lot'), 'product': _sl.SHORT_PRODUCT, 'side': 'SELL'}]
+
+
+def _expand_id(S, pid, row):
+    out = dict(row)
+    out.setdefault('pid', pid)
+    if 's' not in out:
+        out['s'] = _side(out.get('a'))
+    for k in ('o', 'mo', 'xo'):
+        out.setdefault(k, None)
+    for k in _ID_TS:
+        if k in out:
+            out[k] = _ts_x(S, out[k])
+    return out
+
+
+def _expand_fetch(S, ids, exit_keys, fid, f):
+    out = dict(f)
+    out.setdefault('fid', fid)
+    out.setdefault('p', 'ENTRY')
+    if 'pids' not in out:                    # TIME_EXIT: exit_keys[k].pids of this fetch, in key order
+        out['pids'] = [p for k in out.get('keys') or [] for p in ((exit_keys or {}).get(k) or {}).get('pids') or []
+                       if ((exit_keys or {}).get(k) or {}).get('fid') == fid]
+    if out.get('margins', []) == 1 and out.get('margins') is not True:
+        out['margins'] = _margin_default(ids, out)
+    out.setdefault('margins', [])
+    out.setdefault('reserved', MAX_ATTEMPTS * (1 + len(out['margins'])))
+    st = out.get('state')
+    out.setdefault('used_basis', 'COUNTED' if st in ('RECORDED', 'RECORDED_CAPPED') else None)
+    if st in ('RECORDED', 'RECORDED_CAPPED'):
+        out.setdefault('evidence_stored', st == 'RECORDED')
+    for k in _FETCH_TS:
+        if k in out:
+            out[k] = _ts_x(S, out[k])
+    return out
+
+
+def _pid_refs(order, pids):
+    pos = {p: i for i, p in enumerate(order)}
+    return [pos.get(p, p) for p in pids]
+
+
+def _pid_deref(order, refs):
+    return [order[x] if isinstance(x, int) and not isinstance(x, bool) and 0 <= x < len(order) else x for x in refs]
+
+
+def expand_ledger(doc):
+    """In-memory (R5-shaped) ledger from its on-disk form; R1-R5 ledgers pass through unchanged.  Pure.
+    On disk, proposal-id lists hold positions in the document's own sorted identity keys."""
+    if not isinstance(doc, dict) or doc.get('ledger_layout') != LEDGER_LAYOUT:
+        return doc
+    S = doc.get('session_date')
+    order = sorted(doc.get('ids') or {})
+    out = {k: v for k, v in doc.items() if k != 'ledger_layout'}
+    out['ids'] = {pid: _expand_id(S, pid, r) for pid, r in (doc.get('ids') or {}).items()}
+    out['exit_keys'] = {k: dict(v, pids=_pid_deref(order, v['pids'])) if isinstance(v, dict) and 'pids' in v else v
+                        for k, v in (doc.get('exit_keys') or {}).items()}
+    fe = {}
+    for fid, f in (doc.get('fetches') or {}).items():
+        f = dict(f, pids=_pid_deref(order, f['pids'])) if isinstance(f.get('pids'), list) else f
+        fe[fid] = _expand_fetch(S, out['ids'], out['exit_keys'], fid, f)
+    out['fetches'] = fe
+    return out
+
+
+def _compact_ledger(lg):
+    """On-disk form: a field is dropped/shortened only when expand_ledger() restores it exactly (checked per
+    field and for the whole document; any doubt -> the full R5 document is written).  Lossless by construction."""
+    S = lg.get('session_date')
+    ids, fe = {}, {}
+    for pid, r in (lg.get('ids') or {}).items():
+        c = dict(r)
+        for k in _ID_TS:
+            if k in c:
+                c[k] = _ts_c(S, c[k])
+        for k in ('pid', 's', 'o', 'mo', 'xo'):
+            if k in c:
+                t = {x: v for x, v in c.items() if x != k}
+                if _expand_id(S, pid, t) == r:
+                    c = t
+        ids[pid] = c if _expand_id(S, pid, c) == r else dict(r)
+    ek = lg.get('exit_keys') or {}
+    for fid, f in (lg.get('fetches') or {}).items():
+        c = dict(f)
+        for k in _FETCH_TS:
+            if k in c:
+                c[k] = _ts_c(S, c[k])
+        if c.get('margins') and c['margins'] == _margin_default(lg.get('ids'), f):
+            c['margins'] = 1
+        for k in ('fid', 'p', 'pids', 'margins', 'reserved', 'used_basis', 'evidence_stored'):
+            if k in c:
+                t = {x: v for x, v in c.items() if x != k}
+                if _expand_fetch(S, lg.get('ids'), ek, fid, t) == f:
+                    c = t
+        fe[fid] = c if _expand_fetch(S, lg.get('ids'), ek, fid, c) == f else dict(f)
+    order = sorted(ids)
+    fe = {fid: dict(f, pids=_pid_refs(order, f['pids'])) if isinstance(f.get('pids'), list) else f for fid, f in fe.items()}
+    ek = {k: dict(v, pids=_pid_refs(order, v['pids'])) if isinstance(v, dict) and isinstance(v.get('pids'), list) else v
+          for k, v in ek.items()}
+    out = dict(lg, ids=ids, fetches=fe, exit_keys=ek, ledger_layout=LEDGER_LAYOUT)
+    return out if expand_ledger(out) == lg else lg
+
+
+def _ledger_raw(lg):
+    return _canon(_compact_ledger(lg)).encode()
+
+
+def _ledger_worst(lg):
+    """Bytes of the on-disk ledger in its worst reachable final state WITHOUT any further admission."""
+    w = json.loads(_canon(lg))
+    for r in w['ids'].values():
+        if r.get('o') in (None, 'REQUESTED'):
+            r['o'] = 'X' * LEDGER_VERDICT_MAX_CHARS
+        if r.get('s') == 'SELL' and r.get('mo') in (None, 'REQUESTED'):
+            r['mo'] = 'X' * LEDGER_VERDICT_MAX_CHARS
+    b = _boundary(w.get('session_date'))
+    if b is not None:
+        _plan_exit(w, b, None, {'fetches': []})          # the 15:05 plan for every identity without an exit outcome
+    for r in w['ids'].values():
+        if r.get('xo') in (None, 'REQUESTED'):
+            r.update(xo='X' * LEDGER_VERDICT_MAX_CHARS, xp=False, xd=-99999.999)
+    wt = '%sT15:59:59.999999+05:30' % w.get('session_date')
+    for f in w['fetches'].values():
+        if f.get('state') == 'REQUESTED':
+            f.update(state='RECORDED_CAPPED', used=f.get('reserved', 0), used_basis='UPPER_BOUND_UNKNOWN_AFTER_RESTART',
+                     recorded_at=wt, evidence_stored=False, verdicts_stored=False)
+            if f.get('p') == 'TIME_EXIT':
+                f.update(evidence_scope='ENTRY_LINKED_ONLY', unlinked_exit_rows_not_retained=999)
+    for k in STATS_KEYS:
+        w['stats'][k] = max(int(w['stats'].get(k) or 0), 99999)
+    for k in ('requests_reserved', 'requests_used', 'requests_used_upper_bound'):
+        w['budget'][k] = max(int(w['budget'].get(k) or 0), 999)
+    w['budget']['exhausted'] = list(w['budget']['exhausted']) + [x for x in _ALL_EXHAUSTED if x not in w['budget']['exhausted']]
+    w['completeness_flags'] = list(w['completeness_flags']) + [x for x in _ALL_FLAGS if x not in w['completeness_flags']]
+    return len(_ledger_raw(w))
+
+
+def _ledger_admits(lg, mutate):
+    w = json.loads(_canon(lg))
+    mutate(w)
+    return _ledger_worst(w) <= _ledger_writable()
+
+
 def _h(*parts):
     return hashlib.sha256('|'.join(str(p) for p in parts).encode()).hexdigest()[:16]
 
@@ -251,7 +442,8 @@ def _empty_ledger(session, ix):
             'budget': {'requests_reserved': 0, 'requests_used': 0, 'requests_used_upper_bound': 0, 'exhausted': []},
             'stats': {'duplicate_notifications': 0, 'coalesced': 0, 'lost_in_flight': 0, 'late_records_refused': 0,
                       'native_dropped': 0, 'identities_overflow': 0, 'discarded_on_disable': 0,
-                      'ledger_write_failed': 0},
+                      'ledger_write_failed': 0, 'identities_overflow_buy': 0, 'identities_overflow_sell': 0,
+                      'identities_refused_ledger_bytes': 0},
             'completeness_flags': [],
             'limits': {'max_ids': MAX_IDS_PER_INDEX_SESSION, 'max_targets': MAX_TARGETS_PER_INDEX_SESSION,
                        'max_requests': MAX_REQUESTS_PER_INDEX_SESSION, 'max_attempts': MAX_ATTEMPTS,
@@ -260,7 +452,8 @@ def _empty_ledger(session, ix):
                        'exit_evidence_reserve_bytes': EXIT_EVIDENCE_RESERVE_BYTES,
                        'max_bytes_global': MAX_BYTES_GLOBAL, 'exit_reserved_requests': EXIT_RESERVED_REQUESTS,
                        'exit_window_s': EXIT_WINDOW_S, 'exit_prompt_s': EXIT_PROMPT_S,
-                       'side_floor_bytes': SIDE_FLOOR_BYTES, 'row_layout': ROW_LAYOUT}}
+                       'side_floor_bytes': SIDE_FLOOR_BYTES, 'row_layout': ROW_LAYOUT,
+                       'ledger_layout': LEDGER_LAYOUT, 'ledger_verdict_max_chars': LEDGER_VERDICT_MAX_CHARS}}
 
 
 def _empty_evidence(session, ix):
@@ -280,12 +473,12 @@ def _read_json(p, schema, empty):
 
 
 def _read_ledger(d, session, ix):
-    return _read_json(_lg_path(d, session, ix), LEDGER_SCHEMA, lambda: _empty_ledger(session, ix))
+    return expand_ledger(_read_json(_lg_path(d, session, ix), LEDGER_SCHEMA, lambda: _empty_ledger(session, ix)))
 
 
 def _read_evidence(d, session, ix):
     ev = _read_json(_ev_path(d, session, ix), SCHEMA, lambda: _empty_evidence(session, ix))
-    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3', 'R4', 'R5'):
+    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3', 'R4', 'R5', 'R6'):
         return None                                # pre-R1 layout: never mixed into R1 evidence (fail closed)
     return ev
 
@@ -366,7 +559,7 @@ def _write_ledger(d, lg, fallback=None):
     bounded status.json (write_marker), which never grows the store past MAX_BYTES_GLOBAL."""
     os.makedirs(d, exist_ok=True)
     p = _lg_path(d, lg['session_date'], lg['index'])
-    raw = _canon(lg).encode()
+    raw = _ledger_raw(lg)
     g = _global_bytes(d, p)
     if len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION - STATUS_RESERVE_BYTES and \
             g + len(raw) <= _writable() - STATUS_RESERVE_BYTES and _atomic(p, raw):
@@ -379,7 +572,7 @@ def _write_ledger(d, lg, fallback=None):
     _flag(prev, 'LEDGER_WRITE_FAILED')
     if fallback is not None:
         fallback(prev)
-    raw = _canon(prev).encode()
+    raw = _ledger_raw(prev)
     if not (len(raw) <= MAX_LEDGER_BYTES_PER_INDEX_SESSION and g + len(raw) <= _writable() and _atomic(p, raw)):
         write_marker(d, lg['session_date'], lg['index'], reason)
     return False, reason
@@ -537,8 +730,15 @@ def _register(lg, ix, results, session, now_dt):
         if any(n['pid'] == row['pid'] for n, _ in new):
             lg['stats']['duplicate_notifications'] += 1
             continue
-        if len(lg['ids']) >= MAX_IDS_PER_INDEX_SESSION:
+        refuse = len(lg['ids']) >= MAX_IDS_PER_INDEX_SESSION
+        if not refuse and not _ledger_admits(lg, lambda w, r=row: w['ids'].__setitem__(r['pid'], r)):
+            refuse = True                                        # R6: the identity's worst-case ledger bytes do not fit
+            lg['stats']['identities_refused_ledger_bytes'] = lg['stats'].get('identities_refused_ledger_bytes', 0) + 1
+            _exhaust(lg, 'BUDGET_EXHAUSTED:LEDGER_RESERVE:IDENTITY')
+        if refuse:
             lg['stats']['identities_overflow'] += 1
+            k = 'identities_overflow_' + row['s'].lower()          # per-side accounting of every exclusion
+            lg['stats'][k] = lg['stats'].get(k, 0) + 1
             _flag(lg, 'IDENTITY_CAP')
             continue
         lg['ids'][row['pid']] = row
@@ -629,6 +829,11 @@ def _plan_entries(lg, ev, new, now_dt, out):
                     joined = f
                     break
         tgt = _compact_target(_layout(ev), _target_row(lg['index'], row, p, lg['session_date']))
+        if joined is not None and not _ledger_admits(lg, lambda w, j=joined['fid'], pid=row['pid']: (
+                w['fetches'][j]['pids'].append(pid), w['ids'][pid].__setitem__('o', 'REQUESTED'))):
+            row['o'] = 'CAPPED:LEDGER_BYTES'
+            _exhaust(lg, 'BUDGET_EXHAUSTED:LEDGER_RESERVE:' + row['s'])
+            continue
         if joined is not None and not _entry_fits(lg, ev, row['pid'], tgt, RESERVE_QUOTE_OBS):
             row['o'] = 'CAPPED:BYTES'
             _exhaust(lg, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES:' + row['s'])
@@ -649,6 +854,11 @@ def _plan_entries(lg, ev, new, now_dt, out):
         if _requests_left(lg) - EXIT_RESERVED_REQUESTS < need:
             row['o'] = 'CAPPED:REQUESTS'
             _exhaust(lg, 'BUDGET_EXHAUSTED:REQUESTS')
+            continue
+        if not _ledger_admits(lg, lambda w, pid=row['pid'], k=row['k'], m=margins: (
+                _new_fetch(w, 'ENTRY', [pid], [k], m, now_dt), w['ids'][pid].__setitem__('o', 'REQUESTED'))):
+            row['o'] = 'CAPPED:LEDGER_BYTES'
+            _exhaust(lg, 'BUDGET_EXHAUSTED:LEDGER_RESERVE:' + row['s'])
             continue
         if not _entry_fits(lg, ev, row['pid'], tgt, RESERVE_QUOTE_OBS + (RESERVE_MARGIN_OBS if margins else 0)):
             row['o'] = 'CAPPED:BYTES'
@@ -1028,13 +1238,13 @@ def record(d, fetch_id, index, session, call):
                 else:
                     ok, why, _ = _entry_validity(t, snap, receipt_dt)
                 rows.append(_obs_row(fetch_id, 'ENTRY', ix, session, key, snap, ok, why, qa, failure, target=t))
-                lg['ids'][pid]['o'] = 'VALID' if ok else why
+                lg['ids'][pid]['o'] = 'VALID' if ok else _vd(why)
             quote_receipt = receipt_dt
             for m in f['margins']:
                 t = tg.get(m['pid']) or _target_from_ledger(lg, m['pid'])
                 mr = _margin_row(fetch_id, t, m, margins_in.get(m['pid']), quote_receipt)
                 rows.append(mr)
-                mo = 'VALID' if mr['valid'] else mr['reason']
+                mo = 'VALID' if mr['valid'] else _vd(mr['reason'])
                 for pid in f['pids']:                            # coalesced SELL proposals share the identity
                     if lg['ids'][pid]['s'] == 'SELL' and lg['ids'][pid]['k'] == m['instrument_key'] \
                             and lg['ids'][pid]['lot'] == m['quantity']:
@@ -1059,7 +1269,7 @@ def record(d, fetch_id, index, session, call):
                                    'valid': bool(ok), 'reason': why, 'hypothetical': True,
                                    'delay_after_cutoff_s': round(delay, 3) if delay is not None else None,
                                    'prompt_90s': prompt})
-                    r['xo'] = 'VALID' if ok else why
+                    r['xo'] = 'VALID' if ok else _vd(why)
                     r['xp'] = prompt
                     r['xd'] = round(delay, 3) if delay is not None else None
         # ── evidence detail (optional; exit evidence may use the reserve) ──
@@ -1247,7 +1457,8 @@ def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
                     'hypothetical_exit_valid_prompt_90s': 0, 'hypothetical_exit_valid_window_300s': 0,
                     'hypothetical_exit_delays_s': [], 'evidence_gaps': {},
                     'resolved_entries': 0, 'resolved_observed_paper': 0, 'resolved_hypothetical': 0,
-                    'user_admissions': 0, 'observed_paper_exits': 0, 'exclusions': {}, 'tick_sources': set()})
+                    'user_admissions': 0, 'observed_paper_exits': 0, 'exclusions': {}, 'tick_sources': set(),
+                    'identities_not_registered': 0})
 
                 def worsen(state, flag):
                     c['completeness_flags'].add(flag)
@@ -1263,6 +1474,11 @@ def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
                 for fl in lg.get('completeness_flags') or []:
                     worsen('INCOMPLETE', fl)
                 rows = [r for r in (lg.get('ids') or {}).values() if r.get('s') == side]
+                nr = int((lg.get('stats') or {}).get('identities_overflow_' + side.lower()) or 0)
+                if nr:                                     # R6: offered but never registered -> counted per side
+                    c['identities_not_registered'] = c.get('identities_not_registered', 0) + nr
+                    c['exclusions']['IDENTITY:NOT_REGISTERED'] = c['exclusions'].get('IDENTITY:NOT_REGISTERED', 0) + nr
+                    c['coverage_kind'] = 'PARTIAL'
                 if rows:
                     c['eligible_sessions'].add(session)
                 ex = lambda why: c['exclusions'].__setitem__(why, c['exclusions'].get(why, 0) + 1)
@@ -1272,7 +1488,7 @@ def scorecard(docs_by_session, positions=None, *, global_exhausted=False):
                     o = r.get('o')
                     if str(o or '').startswith(('CAPPED:', 'DISCARDED_ON_GATE_CLOSE')):
                         c['coverage_kind'] = 'PARTIAL'
-                    if o not in (None, 'CAPPED:BYTES', 'CAPPED:TARGETS', 'CAPPED:REQUESTS',
+                    if o not in (None, 'CAPPED:BYTES', 'CAPPED:LEDGER_BYTES', 'CAPPED:TARGETS', 'CAPPED:REQUESTS',
                                  'PROPOSAL_NOT_CURRENT_AT_PLAN', 'CAPPED:EVIDENCE_CORRUPT') \
                             and not str(o).startswith('DISCARDED_ON_GATE_CLOSE'):
                         c['entry_requested'] += 1
@@ -1431,5 +1647,8 @@ def export_part(files_dir, session, level='full'):
     if level in ('full', 'ledger'):
         part['ledgers'] = {ix: docs[ix]['ledger'] for ix in INDICES}
     if level == 'full':
-        part['evidence'] = {ix: docs[ix]['evidence'] for ix in INDICES}
+        # R6: rows are expanded to the R4 shape at the export boundary, so off-device readers of R4 bundles read
+        # this build unchanged (on-device rows stay compact; ledgers are always read back in the R5 shape).
+        part['evidence'] = {ix: expand_evidence(docs[ix]['evidence']) for ix in INDICES}
+        part['row_layout'] = 'R4_ROW_SHAPE_EXPANDED_AT_EXPORT'
     return part

@@ -117,7 +117,7 @@ class Base(unittest.TestCase):
         return c1.expand_evidence(json.load(open(c1._ev_path(self.d, S, ix))))
 
     def lg(self, ix='BNF'):
-        return json.load(open(c1._lg_path(self.d, S, ix)))
+        return c1.expand_ledger(json.load(open(c1._lg_path(self.d, S, ix))))   # R6: on-disk ledger is compact
 
     def ids(self, ix='BNF'):
         return list(self.lg(ix)['ids'].values())
