@@ -76,6 +76,10 @@ def margin_body(req_margin=98765.0):
     return json.dumps({'status': 'success', 'data': {'required_margin': req_margin, 'final_margin': req_margin}})
 
 
+def _bytes_reason(reasons):
+    return any(str(r).startswith('BUDGET_EXHAUSTED:EVIDENCE_BYTES') for r in reasons)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.files = tempfile.mkdtemp()
@@ -109,7 +113,8 @@ class Base(unittest.TestCase):
         return c1.record(self.d, f['fetch_id'], f['index'], S, call)
 
     def doc(self, ix='BNF'):
-        return json.load(open(c1._ev_path(self.d, S, ix)))
+        # R5: evidence rows are stored compact; assertions read the lossless R4-shaped view (expand_evidence)
+        return c1.expand_evidence(json.load(open(c1._ev_path(self.d, S, ix))))
 
     def lg(self, ix='BNF'):
         return json.load(open(c1._lg_path(self.d, S, ix)))
@@ -491,9 +496,9 @@ class Budgets(Base):
                 for f in out['fetches']:
                     r = self.rec(f, now + timedelta(seconds=1))
                     self.assertIn(r['status'], ('RECORDED', 'RECORDED_CAPPED'))
-            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', got)
+            self.assertTrue(_bytes_reason(got), got)          # R5: per side (…:BUY / …:SELL)
             self.assertLessEqual(os.path.getsize(c1._ev_path(self.d, S, 'BNF')), 5000)
-            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', self.lg()['budget']['exhausted'])
+            self.assertTrue(_bytes_reason(self.lg()['budget']['exhausted']))
             sc = self.sc()
             total = sc[('BNF', 'SELL')]['eligible_proposals'] + sc[('BNF', 'BUY')]['eligible_proposals']
             self.assertEqual(total, 9)                                # never shrinks when bytes run out
@@ -869,7 +874,7 @@ class R1ExitAttribution(Base):
                 now = pts(row['published_at']) + timedelta(milliseconds=500)
                 for f in self.plan(slice_for(row), now)['fetches']:
                     self.rec(f, now + timedelta(seconds=1))
-            self.assertIn('BUDGET_EXHAUSTED:EVIDENCE_BYTES', self.lg()['budget']['exhausted'])
+            self.assertTrue(_bytes_reason(self.lg()['budget']['exhausted']))
             out = self.plan({}, ist('15:05:01'))
             self.assertEqual(len(out['fetches']), 1)                 # exits still requested (request reserve)
             r = self.rec(out['fetches'][0], ist('15:05:02'))

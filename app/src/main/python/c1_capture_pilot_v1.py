@@ -51,7 +51,7 @@ import paper_broker_snapshot_v1 as _pbs
 from local_lock_v1 import FileLock
 
 PILOT_ID = 'c1_exact_contract_capture_v1'
-REVISION = 'R4'
+REVISION = 'R5'
 SCHEMA = 'mr.c1_capture.v1'
 LEDGER_SCHEMA = 'mr.c1_capture.ledger.v1'
 DIR_NAME = 'c1_capture_v1'
@@ -77,6 +77,14 @@ MAX_LEDGER_BYTES_PER_INDEX_SESSION = 24 * 1024
 MAX_EVIDENCE_BYTES_PER_INDEX_SESSION = 40 * 1024       # ledger + evidence = 64 KiB per index-session (unchanged)
 EXIT_EVIDENCE_RESERVE_BYTES = 8 * 1024    # entry evidence must leave this for 15:05 exit evidence
 MAX_BYTES_GLOBAL = 512 * 1024             # unchanged
+# R5 deterministic entry admission (planning reserves for compact rows; every write is still checked against
+# the unchanged caps above).  Measured 11 Nov 2026 compact maxima: entry quote 509, margin 375, exit quote 583,
+# attribution 239 bytes.
+RESERVE_QUOTE_OBS = 640                   # one entry quote row per admitted proposal (coalesced too)
+RESERVE_MARGIN_OBS = 512                  # one margin row per SELL entry fetch
+RESERVE_EXIT_OBS = 704                    # one 15:05 quote row per distinct exact instrument
+RESERVE_EXIT_ATTR = 320                   # one 15:05 attribution per proposal
+SIDE_FLOOR_BYTES = 4 * 1024               # per index-session, each single-leg side keeps this much for itself
 LEDGER_GLOBAL_RESERVE_BYTES = 64 * 1024   # evidence may never consume the ledgers' share
 STATUS_RESERVE_BYTES = 1024
 STATUS_FILE_MAX_BYTES = 2048              # R3: status.json can never exceed it
@@ -94,6 +102,92 @@ EXIT_WINDOW_S = 300                       # hypothetical window 15:05-15:10 (dis
 EXIT_PROMPT_S = _pbs.MAX_AGE_S            # prompt coverage: generation <= 15:05 + 90 s
 SKIPPED_PREFIX = 'SKIPPED:'
 _NOW = [None]                             # plan clock (registered_at on evidence rows)
+
+# ── R5 compact evidence rows (lossless: expand_evidence() restores the R4 row shape exactly) ────────────
+# 11 Nov 2026 BNF: R4 rows repeated per-row constants and target fields on every observation, so 17 BUY
+# entries filled the 32 KiB entry ceiling and the second 15:05 exit write overflowed 40 KiB.  R5 writes each
+# constant once per document and joins target fields by target_id.  Nothing is dropped: every quote,
+# timestamp, depth, lot and margin field and every proposal->quote link (target_id, fetch_id, obs_id) stays.
+ROW_LAYOUT = 'COMPACT_V1'
+ROW_DEFAULTS = {
+    'QUOTE': {'ts_basis': TS_BASIS, 'exchange_quote_age': EXCHANGE_QUOTE_AGE, 'provenance': PROVENANCE,
+              'validator': _pbs.CONTRACT},
+    'MARGIN': {'purpose': 'ENTRY', 'side': 'SELL', 'asof_basis': 'DEVICE_RECEIPT_OF_BROKER_RESPONSE',
+               'evaluated_at_basis': 'CAPTURE_COMPLETION(max(quote_receipt, margin_receipt))',
+               'provenance': 'C1_DEDICATED_MARGIN_FETCH', 'validator': 'index_single_leg_v1.margin_evidence_ok'},
+    'ATTRIBUTION': {'hypothetical': True}}
+DOC_FIELDS = ('index', 'session_date')                      # on the document, not repeated per row
+TARGET_JOIN = ('action', 'analysis_ts', 'published_at', 'lot_size', 'lot_source', 'tick_size', 'tick_source')
+
+
+def _compact(ev, row, kind):
+    """Drop a field only when expand_row() restores exactly the same value (checked per field, so a row that
+    differs from its document constants or its target keeps the field).  Lossless by construction."""
+    out = dict(row)
+    for k in list(out):
+        if k in ('kind', 'obs_id', 'target_id', 'fetch_id', 'pid', 'instrument_key', 'valid', 'reason'):
+            continue                                         # link + verdict fields always written
+        trial = {x: v for x, v in out.items() if x != k}
+        if expand_row(ev, trial, kind).get(k, _MISSING) == row[k] and k in expand_row(ev, trial, kind):
+            out = trial
+    return out if expand_row(ev, out, kind) == row else dict(row)    # never lossy: full row on any doubt
+
+
+_MISSING = object()
+
+
+def _compact_target(ev, t):
+    out = {k: v for k, v in t.items() if not (k in DOC_FIELDS and (ev or {}).get(k) == v)}
+    return out if expand_target(ev, out) == t else dict(t)
+
+
+def _layout(ev):
+    ev.setdefault('row_layout', ROW_LAYOUT)
+    ev.setdefault('row_defaults', ROW_DEFAULTS)
+    ev.setdefault('row_join', {'doc_fields': list(DOC_FIELDS), 'quote_target_fields': list(TARGET_JOIN),
+                               'key': 'target_id -> targets', 'attribution_closing_side': 'opposite of action'})
+    return ev
+
+
+def expand_row(ev, row, kind=None):
+    """R4-shaped row from a compact (R5) row; R4 rows pass through unchanged.  Pure, read-only."""
+    kind = kind or row.get('kind') or 'ATTRIBUTION'
+    out = dict(row)
+    if kind == 'ATTRIBUTION':
+        out.setdefault('hypothetical', True)
+        if 'closing_side' not in out and out.get('action'):
+            out['closing_side'] = _close_side(out['action'])
+        return out
+    for k in DOC_FIELDS:
+        out.setdefault(k, (ev or {}).get(k))
+    for k, v in ROW_DEFAULTS.get(kind, {}).items():
+        out.setdefault(k, v)
+    if kind == 'QUOTE':
+        t = ((ev or {}).get('targets') or {}).get(out.get('target_id')) or {}
+        for k in TARGET_JOIN:
+            out.setdefault(k, t.get(k))
+        if 'generation_ts' not in out:
+            g = _pbs.parse_generation_ts(out.get('generation_ts_raw'))
+            out['generation_ts'] = g.isoformat() if g else None
+    return out
+
+
+def expand_target(ev, t):
+    out = dict(t)
+    for k in DOC_FIELDS:
+        out.setdefault(k, (ev or {}).get(k))
+    return out
+
+
+def expand_evidence(ev):
+    """Whole document in the R4 row shape (what off-device replay reads).  Never written back."""
+    if not isinstance(ev, dict):
+        return ev
+    out = {k: v for k, v in ev.items() if k not in ('row_layout', 'row_defaults', 'row_join')}
+    out['targets'] = {k: expand_target(ev, t) for k, t in (ev.get('targets') or {}).items()}
+    out['observations'] = [expand_row(ev, o) for o in ev.get('observations') or []]
+    out['exit_attribution'] = [expand_row(ev, a, 'ATTRIBUTION') for a in ev.get('exit_attribution') or []]
+    return out
 
 
 def _canon(obj):
@@ -165,12 +259,13 @@ def _empty_ledger(session, ix):
                        'max_evidence_bytes': MAX_EVIDENCE_BYTES_PER_INDEX_SESSION,
                        'exit_evidence_reserve_bytes': EXIT_EVIDENCE_RESERVE_BYTES,
                        'max_bytes_global': MAX_BYTES_GLOBAL, 'exit_reserved_requests': EXIT_RESERVED_REQUESTS,
-                       'exit_window_s': EXIT_WINDOW_S, 'exit_prompt_s': EXIT_PROMPT_S}}
+                       'exit_window_s': EXIT_WINDOW_S, 'exit_prompt_s': EXIT_PROMPT_S,
+                       'side_floor_bytes': SIDE_FLOOR_BYTES, 'row_layout': ROW_LAYOUT}}
 
 
 def _empty_evidence(session, ix):
-    return {'schema': SCHEMA, 'pilot_id': PILOT_ID, 'revision': REVISION, 'session_date': session, 'index': ix,
-            'targets': {}, 'observations': [], 'exit_attribution': []}
+    return _layout({'schema': SCHEMA, 'pilot_id': PILOT_ID, 'revision': REVISION, 'session_date': session,
+                    'index': ix, 'targets': {}, 'observations': [], 'exit_attribution': []})
 
 
 def _read_json(p, schema, empty):
@@ -190,7 +285,7 @@ def _read_ledger(d, session, ix):
 
 def _read_evidence(d, session, ix):
     ev = _read_json(_ev_path(d, session, ix), SCHEMA, lambda: _empty_evidence(session, ix))
-    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3', 'R4'):
+    if ev is not None and ev.get('revision') not in ('R1', 'R2', 'R3', 'R4', 'R5'):
         return None                                # pre-R1 layout: never mixed into R1 evidence (fail closed)
     return ev
 
@@ -477,11 +572,44 @@ def _new_fetch(lg, purpose, pids, keys, margins, now_dt):
             'max_attempts': MAX_ATTEMPTS}
 
 
+def _side_claim(lg, ev, side):
+    """Bytes a side has claimed: its target rows plus fixed reserves for their quote/margin/attribution rows."""
+    n = 0
+    for pid, t in (ev.get('targets') or {}).items():
+        if t.get('side') == side:
+            n += len(_canon(t)) + len(pid) + 4 + RESERVE_QUOTE_OBS + RESERVE_EXIT_ATTR + \
+                (RESERVE_MARGIN_OBS if side == 'SELL' else 0)
+    return n
+
+
+def _entry_fits(lg, ev, pid, tgt, extra):
+    """Deterministic R5 admission of ONE new entry target (offer order, no reordering, no eviction):
+      (i)  stored bytes + new target + pending entry rows        <= MAX_EVIDENCE - EXIT_EVIDENCE_RESERVE (32 KiB)
+      (ii) ... + 15:05 rows: one attribution per target + the worst-case 8 exit quote rows  <= MAX_EVIDENCE (40 KiB)
+      (iii) ... + what the OTHER side still needs to reach its SIDE_FLOOR_BYTES  <= MAX_EVIDENCE
+    so admitted entries can always store both exit fetches and BUY can never use the last SELL bytes (nor SELL
+    the last BUY bytes).  The caps themselves are unchanged."""
+    trial = dict(ev, targets=dict(ev.get('targets') or {}, **{pid: tgt}))
+    cur = len(_canon(trial).encode())
+    pend = extra
+    for f in lg['fetches'].values():
+        if f.get('p') == 'ENTRY' and f.get('state') == 'REQUESTED':
+            pend += RESERVE_QUOTE_OBS * len(f.get('pids') or []) + RESERVE_MARGIN_OBS * len(f.get('margins') or [])
+    done = {a.get('pid') for a in ev.get('exit_attribution') or []}
+    ex = RESERVE_EXIT_ATTR * sum(1 for k in trial['targets'] if k not in done) + \
+        RESERVE_EXIT_OBS * max(0, MAX_EXIT_INSTRUMENTS_PER_INDEX_SESSION - len(lg.get('exit_keys') or {}))
+    other = 'SELL' if tgt.get('side') == 'BUY' else 'BUY'
+    short = max(0, SIDE_FLOOR_BYTES - _side_claim(lg, ev, other))
+    return (cur + pend <= MAX_EVIDENCE_BYTES_PER_INDEX_SESSION - EXIT_EVIDENCE_RESERVE_BYTES and
+            cur + pend + ex + short <= MAX_EVIDENCE_BYTES_PER_INDEX_SESSION)
+
+
 def _plan_entries(lg, ev, new, now_dt, out):
     """Phase 2: per registered identity, caps then coalescing (only after identities are accounted)."""
     planned = {}
     for row, p in new:
-        if [r for r in lg['budget']['exhausted'] if 'EVIDENCE_BYTES' in r or 'GLOBAL_BYTES' in r]:
+        if [r for r in lg['budget']['exhausted'] if r in ('BUDGET_EXHAUSTED:EVIDENCE_BYTES', 'BUDGET_EXHAUSTED:GLOBAL_BYTES',
+                                                          'BUDGET_EXHAUSTED:EVIDENCE_BYTES:' + row['s'])]:
             row['o'] = 'CAPPED:BYTES'
             continue
         at = _ia.parse_ts(row['an'])
@@ -500,11 +628,16 @@ def _plan_entries(lg, ev, new, now_dt, out):
                 if head.get('a') == row['a'] and head.get('lot') == row['lot']:
                     joined = f
                     break
+        tgt = _compact_target(_layout(ev), _target_row(lg['index'], row, p, lg['session_date']))
+        if joined is not None and not _entry_fits(lg, ev, row['pid'], tgt, RESERVE_QUOTE_OBS):
+            row['o'] = 'CAPPED:BYTES'
+            _exhaust(lg, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES:' + row['s'])
+            continue
         if joined is not None:
             joined['pids'].append(row['pid'])
             row['o'] = 'REQUESTED'
             lg['stats']['coalesced'] += 1
-            ev['targets'][row['pid']] = _target_row(lg['index'], row, p, lg['session_date'])
+            ev['targets'][row['pid']] = tgt
             continue
         margins = []
         if row['s'] == 'SELL':
@@ -517,7 +650,11 @@ def _plan_entries(lg, ev, new, now_dt, out):
             row['o'] = 'CAPPED:REQUESTS'
             _exhaust(lg, 'BUDGET_EXHAUSTED:REQUESTS')
             continue
-        ev['targets'][row['pid']] = _target_row(lg['index'], row, p, lg['session_date'])
+        if not _entry_fits(lg, ev, row['pid'], tgt, RESERVE_QUOTE_OBS + (RESERVE_MARGIN_OBS if margins else 0)):
+            row['o'] = 'CAPPED:BYTES'
+            _exhaust(lg, 'BUDGET_EXHAUSTED:EVIDENCE_BYTES:' + row['s'])
+            continue
+        ev['targets'][row['pid']] = tgt
         f = _new_fetch(lg, 'ENTRY', [row['pid']], [row['k']], margins, now_dt)
         planned[f['fetch_id']] = lg['fetches'][f['fetch_id']]
         row['o'] = 'REQUESTED'
@@ -880,7 +1017,7 @@ def record(d, fetch_id, index, session, call):
             return failure or rej_by.get(key) or resp_reason or 'BROKER_SNAPSHOT_UNAVAILABLE'
 
         rows, attrib = [], []
-        tg = (ev or {}).get('targets') or {}
+        tg = {k: expand_target(ev, t) for k, t in ((ev or {}).get('targets') or {}).items()}   # R4-shaped view
         if f['p'] == 'ENTRY':
             key = f['keys'][0]
             snap = snaps.get(key)
@@ -929,9 +1066,25 @@ def record(d, fetch_id, index, session, call):
         f['recorded_at'] = _iso(receipt_dt or datetime.now(IST))
         stored = False
         if ev is not None:
-            ev['observations'].extend(rows)
-            ev['exit_attribution'].extend(attrib)
+            _layout(ev)
+            obs0, att0 = list(ev['observations']), list(ev['exit_attribution'])
+            ev['observations'].extend(_compact(ev, r, r['kind']) for r in rows)
+            ev['exit_attribution'].extend(_compact(ev, a, 'ATTRIBUTION') for a in attrib)
             stored, ewhy = _write_evidence(d, ev, exit_phase=(f['p'] == 'TIME_EXIT'))
+            if not stored and f['p'] == 'TIME_EXIT':
+                # R5 deterministic fallback: keep the 15:05 rows of proposals whose ENTRY evidence is retained
+                # (the only ones that can resolve); the others keep their ledger verdict and are counted.
+                linked = [a for a in attrib if a['pid'] in tg]
+                lk = {a['instrument_key'] for a in linked}
+                ev['observations'] = obs0 + [_compact(ev, r, r['kind']) for r in rows if r['instrument_key'] in lk]
+                ev['exit_attribution'] = att0 + [_compact(ev, a, 'ATTRIBUTION') for a in linked]
+                stored, ewhy2 = _write_evidence(d, ev, exit_phase=True)
+                if stored:
+                    f['evidence_scope'] = 'ENTRY_LINKED_ONLY'
+                    f['unlinked_exit_rows_not_retained'] = len(attrib) - len(linked)
+                    _exhaust(lg, ewhy + ':EXIT_UNLINKED_ROWS')
+                else:
+                    ewhy = ewhy2
             if not stored:
                 _exhaust(lg, ewhy)
         f['state'] = 'RECORDED' if stored else 'RECORDED_CAPPED'
