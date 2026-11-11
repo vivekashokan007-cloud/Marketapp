@@ -5164,11 +5164,103 @@ def get_session_trajectory(history):
         'alignment': 'Institutional accumulation pressure — 4+ signals rising' if up_c >= 4 else 'Institutional selling pressure — 4+ signals falling' if dn_c >= 4 else None
     }
 
-def get_strike(strikes_dict, k):
+GET_STRIKE_LOOKUP_VERSION = 'get_strike_v2_numeric_identity_total'
 
-    """Helper for Phase C: handle both string and numeric strike keys."""
-    if not strikes_dict: return None
-    return strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k))) or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None)
+
+def _strike_key_candidates(k):
+    """Spellings of ONE requested strike that denote the SAME contract, in lookup priority order.
+
+    Returns ``(candidates, reason)``. ``reason`` is None when the request is usable; otherwise it
+    names why not and ``candidates`` is empty, so the caller returns None instead of raising.
+
+    Equivalence here is exact, never approximate:
+
+    * An integral request yields its int, integer-string, float and float-string spellings, because
+      all four name one strike.
+    * A genuinely fractional request (56250.5) yields only fractional spellings. It is NEVER
+      truncated onto 56250, which is a DIFFERENT contract.
+    * No epsilon tolerance is used. Integral values below 2**53 are exact in binary floating point
+      and the arithmetic that builds these requests (``atm +/- n*step``) is exact for them, so a
+      tolerance could only ever match a strike that was not asked for.
+    """
+    if isinstance(k, bool):                      # bool is an int subclass; True is not strike 1
+        return [], 'BOOLEAN_NOT_A_STRIKE'
+    if isinstance(k, (int, float)):
+        raw = k
+    elif isinstance(k, str):
+        try:
+            raw = float(k.strip())
+        except Exception:
+            return [], 'NOT_NUMERIC'
+    else:
+        return [], 'UNSUPPORTED_TYPE'
+    try:
+        f = float(raw)
+    except Exception:
+        return [], 'NOT_NUMERIC'
+    if not math.isfinite(f):
+        return [], 'NOT_FINITE'
+
+    spellings = [k]
+    if f.is_integer():
+        i = int(f)
+        spellings += [i, str(i), f, str(f)]
+    else:
+        spellings += [f, str(f)]
+    out = []
+    for c in spellings:                          # de-duplicate, preserving priority order
+        if not any(type(c) is type(p) and c == p for p in out):
+            out.append(c)
+    return out, None
+
+
+def get_strike(strikes_dict, k):
+    """Resolve one strike row across the spellings a strike key can take.
+
+    Why this is not a plain ``strikes_dict.get(k)``: a chain's keys and the requested strike need not
+    share a type. The live producer (``OptionChainBrainFormatter``) keys strikes as
+    ``strike.toInt().toString()`` while holding ``atm`` and ``allStrikes`` as Doubles, and the
+    PWA-supplied rich chain arrives as JSON too, so an integer-string key with a numeric request is
+    the normal case.
+
+    In the SHIPPED path the two do agree, and this function changes nothing there. The context
+    crosses into Python as JSON text (``MarketWatchService`` passes ``ctxObj.toString()`` to
+    ``brain.analyze``, which does ``json.loads``), and both org.json implementations in use render an
+    integral double as an integer literal. The committed golden formatter output
+    ``app/src/test/resources/contracts/x1_upstox_formatted_golden.json`` shows ``"atm":24650`` and
+    ``"allStrikes":[24250,...]``, i.e. ints after parsing. See the four-way matrix in
+    ``tests/test_chain_profile_strike_interval.py``, which pins that production profiles are
+    byte-identical before and after this change.
+
+    It is therefore hardening, not a live-behaviour fix: it exists so that an un-collapsed Double
+    payload, a non-integral interval, or a NaN inside ``allStrikes`` degrades to "row not found"
+    rather than silently zeroing every chain feature or raising out of the profile.
+
+    The previous body was::
+
+        return (strikes_dict.get(k) or strikes_dict.get(str(k)) or strikes_dict.get(str(float(k)))
+                or strikes_dict.get(int(k) if isinstance(k, (int, float)) else None))
+
+    It had no ``str(int(k))`` spelling, so a float request missed an integer-string key, and
+    ``int(k)`` raised on a NaN request. That raise is reachable today: ``allStrikes`` entries are
+    handed to this function unfiltered, and a NaN there aborts ``chain_profile`` with
+    ``ValueError: cannot convert float NaN to integer``.
+
+    Selection is deliberately unchanged: the FIRST candidate whose value is truthy wins, and None is
+    returned when none is. A present-but-falsy row therefore still reads as absent, exactly as
+    before; every call site applies ``or {}`` to the result, so the distinction is inert here, and
+    changing it would be a separate decision rather than a side effect of this repair. Where a dict
+    carries two spellings of one strike with different rows, the order above decides: the request's
+    own spelling first, then int, integer-string, float, float-string.
+    """
+    if not strikes_dict:
+        return None
+    candidates, _reason = _strike_key_candidates(k)
+    for key in candidates:
+        v = strikes_dict.get(key)
+        if v:
+            return v
+    return None
 
 def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     """Phase C: 30-feature chain profile builder.
@@ -5186,7 +5278,24 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
     if not daily_sigma or daily_sigma <= 0:
         return None
 
-    step = (all_k[1] - all_k[0]) if len(all_k) > 1 else (100 if spot > 30000 else 50)
+    # Strike interval. The previous rule was `all_k[1] - all_k[0]`: the gap between the two LOWEST
+    # strikes, which is the sparse far wing on an NSE monthly ladder. On a BNF monthly that is ~1500
+    # while the near-ATM interval is 100, so ivSkew/ivSlope sampled at atm +/- 1500 instead of
+    # +/- 200-400 and read the empty outer wings, yielding 0.0 for both. This is the same formula the
+    # 2026-09-01 candidate-generation bugfix replaced; chain_profile was never migrated.
+    # The interval comes from the observed ladder only. There is no metadata override to pass: that
+    # interface was removed (see infer_strike_interval) because it could not be made trustworthy and
+    # has no producer.
+    _si = infer_strike_interval(all_k, atm=chain.get('atm'))
+    if _si['status'] == 'OK' and _si['value'] and _si['value'] > 0:
+        step = _si['value']
+    else:
+        # LEGACY COMPATIBILITY FALLBACK, deliberately isolated and reached only when the ladder
+        # yields no usable local interval. It infers geometry from the spot price, which the new
+        # evidence path must never do; it is kept here only so existing consumers of this legacy
+        # profile keep a value where they previously had one. `strikeInterval` below records that
+        # the interval was unavailable or ambiguous, so new evidence can exclude the field instead.
+        step = 100 if spot > 30000 else 50
     if step <= 0:
         step = 100 if spot > 30000 else 50
 
@@ -5338,6 +5447,10 @@ def chain_profile(chain, spot, ohlc, vix=None, gap=None):
 
     return {
         'ivSkew': round(p_iv - c_iv, 1),
+        # additive provenance for the interval the IV sampling distances were derived from, so a
+        # consumer can tell an observed interval from the legacy spot-based fallback
+        'strikeIntervalEvidence': dict(_si, applied=step,
+                                       legacy_fallback_used=(_si['status'] != 'OK')),
         'pcrZ1': zone_pcr(0.3, 0.5), 'pcrZ2': zone_pcr(0.5, 0.8), 'pcrZ3': zone_pcr(0.8, 1.2),
         'cwFresh': cw['fresh'], 'cwOiChg': cw['oiChg'], 'pwFresh': pw['fresh'], 'pwOiChg': pw['oiChg'],
         'atmSpread': round((atm_ce.get('ask', 0) or 0) - (atm_ce.get('bid', 0) or 0) + (atm_pe.get('ask', 0) or 0) - (atm_pe.get('bid', 0) or 0), 1),
@@ -7066,6 +7179,149 @@ def _trading_dte_from_dates(today_str, expiry_str, fallback_dte=None):
             count += 1
         current += timedelta(days=1)
     return max(float(count), 1.0)
+
+STRIKE_INTERVAL_VERSION = 'strike_interval_v3_unique_repeated_mode_ladder_only'
+STRIKE_INTERVAL_ATM_WINDOW = 6          # strikes either side of ATM treated as "near the money"
+#
+# There is deliberately NO metadata override channel here. An earlier version of this helper accepted
+# a `metadata_step` argument; Codex R1 showed it applied any finite positive number as trusted
+# OK/METADATA evidence, so `strikeInterval = 1500` reinstated the exact sparse-wing failure this code
+# removes. The follow-up binding contract was then shown to be unestablishable in review: a caller
+# passing index/expiry/session_date=None skipped every binding check, a future `as_of` passed a
+# lexical date comparison, a non-empty `source` string authenticated nothing, and "appears as an
+# adjacent gap somewhere in the ladder" would still accept a sparse 1500 against a dense 100 local
+# ladder. No producer of such metadata exists in this repository either -- a repository-wide search
+# finds no writer of strikeInterval / strike_interval in Python, Kotlin or the PWA.
+#
+# So the interface is removed rather than carried as unverified surface. The interval is inferred from
+# the observed ladder only. A real producer, when one exists, must arrive with its own review: parsed
+# dates with explicit as-of semantics, trusted and complete binding context, LOCAL applicability
+# rather than any-gap matching, and contradiction tests.
+
+
+def _normalise_strike_ladder(all_strikes):
+    """Finite positive numeric strikes as a sorted unique list.
+
+    Rejects booleans (bool is an int subclass, and True would otherwise become strike 1), NaN, Inf,
+    non-numeric values and non-positive strikes. Returns [] for anything unusable rather than raising,
+    so a malformed feed degrades to "interval unavailable" instead of producing a wrong number.
+    """
+    out = set()
+    for raw in (all_strikes or []):
+        if isinstance(raw, bool):
+            continue
+        v = None
+        if isinstance(raw, (int, float)):
+            v = float(raw)
+        elif isinstance(raw, str):
+            try:
+                v = float(raw.strip())
+            except Exception:
+                continue
+        else:
+            continue
+        if not math.isfinite(v) or v <= 0:
+            continue
+        out.add(v)
+    return sorted(out)
+
+
+def infer_strike_interval(all_strikes, atm=None, window=STRIKE_INTERVAL_ATM_WINDOW):
+    """Infer the LOCAL strike interval, with an explicit status instead of a guessed number.
+
+    Why this exists rather than reusing `_infer_strike_step` directly: that helper returns
+    ``min(gaps)`` over the whole ladder. Its docstring says "modal/minimum", but the code is a pure
+    minimum, so ONE anomalous narrow gap anywhere in the chain silently sets the sampling distance for
+    every feature derived from it. A minimum is also not necessarily a *local* interval. This function
+    therefore takes the modal gap among strikes NEAR THE MONEY, which is where the features that use
+    the interval actually sample, and reports whether the helper agrees so a disagreement is visible
+    rather than absorbed.
+
+    Returns a dict:
+      value            the inferred interval, or None
+      status           'OK' | 'AMBIGUOUS' | 'UNAVAILABLE'
+      reason           None, or why it is not OK
+      source           'NEAR_ATM_MODAL' | 'GLOBAL_MODAL'
+      gaps_considered  how many adjacent gaps were used
+      modal_count      how many gaps had the winning value
+      helper_value     what `_infer_strike_step` would have returned (min gap), for comparison
+      helper_agrees    whether the helper matches this result
+      version          STRIKE_INTERVAL_VERSION
+
+    Deliberately does NOT look at the spot price: spot must not be used to infer instrument identity
+    or ladder geometry. A caller that needs a legacy spot-based default applies it itself, explicitly.
+    """
+    out = {'value': None, 'candidate_value': None, 'status': 'UNAVAILABLE', 'reason': None,
+           'source': None, 'evidence': None, 'gaps_considered': 0, 'modal_count': 0,
+           'distinct_gaps': 0, 'helper_value': None, 'helper_agrees': None,
+           'version': STRIKE_INTERVAL_VERSION}
+
+    def _narrow(v):
+        """Return an integral interval as int. Strike keys are looked up by str(), so a float 100.0
+        would stringify to "56200.0" and miss a dict keyed "56200" -- silently reproducing the very
+        zero-IV symptom this commit repairs. The legacy rule yielded ints; keep that."""
+        if v is None:
+            return None
+        return int(v) if float(v).is_integer() else v
+
+    ladder = _normalise_strike_ladder(all_strikes)
+    if len(ladder) < 2:
+        return dict(out, reason='INSUFFICIENT_STRIKES')
+
+    gaps_all = [ladder[i + 1] - ladder[i] for i in range(len(ladder) - 1)]
+    gaps_all = [g for g in gaps_all if g > 0]
+    if not gaps_all:
+        return dict(out, reason='NO_POSITIVE_GAPS')
+    out['helper_value'] = _narrow(min(gaps_all))
+
+    # restrict to gaps whose BOTH endpoints sit near the money, which is where the interval is used
+    gaps = gaps_all
+    source = 'GLOBAL_MODAL'
+    atm_v = None
+    if atm is not None and not isinstance(atm, bool):
+        try:
+            a = float(atm)
+            if math.isfinite(a) and a > 0:
+                atm_v = a
+        except Exception:
+            atm_v = None
+    if atm_v is not None:
+        nearest = min(range(len(ladder)), key=lambda i: abs(ladder[i] - atm_v))
+        lo, hi = max(0, nearest - window), min(len(ladder) - 1, nearest + window)
+        near = [ladder[i + 1] - ladder[i] for i in range(lo, hi) if ladder[i + 1] - ladder[i] > 0]
+        if len(near) >= 2:
+            gaps, source = near, 'NEAR_ATM_MODAL'
+
+    counts = {}
+    for g in gaps:
+        counts[g] = counts.get(g, 0) + 1
+    best = max(counts.values())
+    modes = sorted(g for g, c in counts.items() if c == best)
+    candidate = _narrow(modes[0])
+    # The candidate is DIAGNOSTIC and lives in its own field. `value` is populated only when the
+    # evidence actually supports it, so a caller cannot mistake a guess for established geometry.
+    out.update(candidate_value=candidate, source=source, gaps_considered=len(gaps),
+               modal_count=best, distinct_gaps=len(counts),
+               helper_agrees=(out['helper_value'] == candidate))
+
+    # Codex R1: the earlier contract returned OK whenever a single mode existed OR ties were broken by
+    # preferring the tighter gap, so [56000,56100,56300] and [55800,55900,56000,56200,56400] were both
+    # labelled OK=100 despite having no unique repeated interval. A tighter-interval preference is not
+    # established geometry, and on another valid ladder it samples strikes that do not exist and
+    # recreates the zero features this repair removes. OK now requires a UNIQUE and REPEATED mode.
+    # Order matters: when nothing repeats, EVERY distinct gap is a "mode" of count 1, so a tie check
+    # placed first would mislabel a no-repetition ladder as tied modes. No repetition is the more
+    # specific condition and is reported as such; TIED_MODES means two or more intervals each repeated
+    # the same number of times.
+    if best == 1:
+        return dict(out, status='AMBIGUOUS', evidence=('SINGLE_GAP' if len(gaps) == 1
+                                                       else 'NO_REPETITION'),
+                    reason=('SINGLE_GAP_ONLY' if len(gaps) == 1 else 'NO_REPEATED_INTERVAL'))
+    if len(modes) > 1:
+        return dict(out, status='AMBIGUOUS', reason='TIED_MODES', evidence='TIED_MODES',
+                    tied_modes=[_narrow(m) for m in modes])
+    return dict(out, value=candidate, status='OK', evidence='REPEATED_UNIQUE_MODE')
+
 
 def _infer_strike_step(all_strikes, default_step):
     """Return the true strike interval (smallest positive gap between adjacent strikes).
