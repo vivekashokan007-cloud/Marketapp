@@ -86,6 +86,17 @@ object PremiumCaptureWorker {
     private var lastResult: JSONObject? = null
     /** The most recent completed result per index, so a caller can see BOTH indices. */
     private val lastByIndex = HashMap<String, JSONObject>()
+    /**
+     * The most recent result per index that was NOT an outside-the-window refusal.
+     *
+     * Every poll after 15:05 completes with OUTSIDE_EXPERIMENT_WINDOW, and [lastByIndex] is
+     * overwritten each time, so by the end of the session the status surface showed only the
+     * after-window result: on 13 November 2026 the About screen read
+     * `OUTSIDE_EXPERIMENT_WINDOW written=0` for both indices, and the in-window refusal that
+     * actually explained the empty day had already been displaced. Keeping the last in-window
+     * result alongside costs one bounded reference per index.
+     */
+    private val lastInWindowByIndex = HashMap<String, JSONObject>()
     private var completed: Long = 0L
     private var failed: Long = 0L
     /**
@@ -175,7 +186,13 @@ object PremiumCaptureWorker {
                 pendingBytes -= job.preparedBytes
                 if (pendingBytes < 0) pendingBytes = 0
                 lastResult = result
-                result?.let { lastByIndex[job.index] = it }
+                result?.let {
+                    lastByIndex[job.index] = it
+                    // keep the last result that was actually inside the window, so a run of
+                    // after-window polls cannot displace the refusal that explains the session
+                    if (it.optString("status") != PremiumCaptureSession.OUTSIDE_WINDOW)
+                        lastInWindowByIndex[job.index] = it
+                }
                 if (result?.optString("status") == "CAPTURE_ERROR") failed++ else completed++
                 running = waiting
                 waiting = null
@@ -210,6 +227,10 @@ object PremiumCaptureWorker {
     /** The last completed persistence result for one index, or null. */
     fun resultFor(index: String): JSONObject? = synchronized(lock) { lastByIndex[index] }
 
+    /** The last result for one index that was not an outside-the-window refusal, or null. */
+    fun inWindowResultFor(index: String): JSONObject? =
+        synchronized(lock) { lastInWindowByIndex[index] }
+
     /** Observable occupancy, for the status surface and for tests. */
     fun stats(): JSONObject = synchronized(lock) {
         JSONObject()
@@ -242,6 +263,19 @@ object PremiumCaptureWorker {
                                 ?.optBoolean("durably_recorded", false) ?: false))
                 }
             })
+            // The last IN-WINDOW result per index, which a run of after-window polls can no
+            // longer displace. Absent means no in-window job has completed this process.
+            .put("last_in_window_by_index", JSONObject().also { o ->
+                lastInWindowByIndex.forEach { (idx, r) ->
+                    o.put(idx, JSONObject()
+                        .put("status", r.optString("status"))
+                        .put("written", r.optInt("written", -1))
+                        .put("detail", r.optString("detail", ""))
+                        .put("summary_durably_recorded",
+                            r.optJSONObject("summary_write")
+                                ?.optBoolean("durably_recorded", false) ?: false))
+                }
+            })
             .put("in_flight_io_is_not_cancellable", true)
     }
 
@@ -255,6 +289,7 @@ object PremiumCaptureWorker {
             waiting = null
             lastResult = null
             lastByIndex.clear()
+            lastInWindowByIndex.clear()
             completed = 0L
             failed = 0L
             refusedTotal = 0L

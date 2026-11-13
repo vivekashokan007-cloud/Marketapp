@@ -72,8 +72,31 @@ object PremiumExportSection {
             for (idx in listOf("NF", "BNF")) {
                 if (store.readCohortText(idx, date) == null &&
                     store.outcomeCount(idx, date) == 0) {
-                    section.getJSONObject("indices").put(idx,
-                        JSONObject().put("state", "NO_PREMIUM_DATA_FOR_THIS_INDEX"))
+                    /*
+                     * An index that captured nothing still has to SAY WHY.
+                     *
+                     * This branch used to emit the state alone, so a completed export of an
+                     * empty session carried no counter, no refusal reason and no remaining
+                     * bytes — on 13 November 2026 the whole index block was one key and the
+                     * cause had to be inferred from phone logs that do not record persistence
+                     * outcomes at all.
+                     *
+                     * What is added is diagnostic only: the durable summary if one exists, and
+                     * the store's capacity. Neither is evidence, and neither changes
+                     * eligibility — `state` stays NO_PREMIUM_DATA_FOR_THIS_INDEX and the
+                     * records, envelopes and pinned contracts a replay requires are still
+                     * absent, so capture preflight still refuses this index.
+                     */
+                    val empty = JSONObject().put("state", "NO_PREMIUM_DATA_FOR_THIS_INDEX")
+                        .put("diagnostics_only",
+                            "NOT_EVIDENCE_AND_NOT_ELIGIBILITY: why this index is empty")
+                        .put("capacity", runCatching { store.capacitySnapshot() }
+                            .getOrElse { JSONObject().put("unavailable", it.javaClass.simpleName) })
+                    val summary = runCatching { store.readSummary(idx, date) }.getOrNull()
+                    if (summary != null) empty.put("durable_counters", summary)
+                    else empty.put("durable_counters_state",
+                        if (store.sessionBytes(idx, date) > 0L) "UNREADABLE" else "NOT_WRITTEN")
+                    section.getJSONObject("indices").put(idx, empty)
                     continue
                 }
                 /*

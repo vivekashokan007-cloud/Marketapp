@@ -65,7 +65,46 @@ class PremiumCaptureStore(val root: File) {
          */
         const val CONTROL_RESERVE_BYTES = 16L * 1024                     // 16 KiB
         const val MAX_BYTES_PER_CONTROL_FILE = 4L * 1024                 //  4 KiB
-        const val MAX_BYTES_GLOBAL = 4L * 1024 * 1024                     // 4 MiB
+        /**
+         * Carved out INSIDE [MAX_BYTES_GLOBAL], on top of [CONTROL_RESERVE_BYTES], so a session
+         * summary stays writable when EVIDENCE is at the ceiling.
+         *
+         * Before this reserve the global check applied to every kind including [KIND_SUMMARY],
+         * so a full store refused the very summary that would have recorded why it was full:
+         * on 13 November 2026 both indices reported `written=0 summary_durable=false` and the
+         * completed export carried no counter at all. A reserve only evidence is excluded from
+         * is the smallest change that makes the first persistence failure durable.
+         *
+         * 128 KiB against a summary cap of [SUMMARY_RESERVE_BYTES] per index/session is room for
+         * eight index/sessions at the maximum summary size, and summaries observed on 12
+         * November are a few hundred bytes each.
+         */
+        const val DIAGNOSTIC_RESERVE_BYTES = 128L * 1024                 // 128 KiB
+        /**
+         * MEASURED, not proposed. The 4 MiB first-delivery cap was explicitly
+         * "PROPOSED_INITIAL_IMPLEMENTATION_CAPS_NOT_MEASURED_TYPICAL_PAYLOADS", and measurement
+         * showed it holds only about three and a half two-index sessions. Nothing is ever
+         * deleted, so on 13 November 2026 the store stood at 4,177,185 B against an evidence
+         * budget of 4,177,920 B — 735 B left — and the first cohort write of the new session,
+         * about 1.6 KB, was refused. No cohort means no envelope and no quote, so the session
+         * recorded nothing.
+         *
+         * Sizing for three further complete sessions ABOVE the retained footprint:
+         *
+         *     retained on the device            4,177,185 B   (12 November export accounting)
+         *     3 full two-index sessions         4,584,000 B   (1,185,211 B for 53/54 slots,
+         *                                                      scaled to a 69-slot window)
+         *     conflict archives, 32 x 2 KiB     393,216 B     (2 indices x 3 sessions)
+         *     diagnostic reserve                131,072 B
+         *     control reserve                    16,384 B
+         *     ---------------------------------------------
+         *     required                        9,301,857 B  ~= 8.87 MiB
+         *
+         * 16 MiB leaves about 80% margin over that requirement and is negligible on the device.
+         * Raising a bound is preferred here over deleting or moving evidence: every retained
+         * file stays exactly where it is, and the change is one constant.
+         */
+        const val MAX_BYTES_GLOBAL = 16L * 1024 * 1024                    // 16 MiB
         const val MAX_BYTES_PER_RECORD = 2L * 1024                        // 2 KiB
 
         // write outcomes
@@ -221,6 +260,43 @@ class PremiumCaptureStore(val root: File) {
     fun sessionBytes(index: String, session: String) = bytesOf(sessionDir(index, session))
     fun globalBytes() = bytesOf(root)
 
+    /**
+     * Bounded capacity view, for the status surface and for an export of a session that wrote
+     * nothing. Reads only directory sizes and constants, so it still answers when the store is
+     * at its ceiling — which is exactly when it is needed.
+     */
+    fun capacitySnapshot(): JSONObject {
+        val g = globalBytes()
+        val evidenceBudget = MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
+        return JSONObject()
+            .put("global_bytes", g)
+            .put("max_bytes_global", MAX_BYTES_GLOBAL)
+            .put("control_reserve_bytes", CONTROL_RESERVE_BYTES)
+            .put("diagnostic_reserve_bytes", DIAGNOSTIC_RESERVE_BYTES)
+            .put("evidence_budget_bytes", evidenceBudget)
+            .put("evidence_remaining_bytes", (evidenceBudget - g).coerceAtLeast(0L))
+            .put("evidence_at_ceiling", g >= evidenceBudget)
+            .put("retention_deletion", "NONE_IN_THIS_DELIVERY")
+    }
+
+    /**
+     * The durable session summary as written, or null when none exists or it is unreadable.
+     *
+     * DELIBERATELY LOCK-FREE, like [readCohortText]. The export calls this during assembly, and
+     * the export is documented never to hold the store's write lock across assembly, so that a
+     * long export cannot block a capture write. An earlier draft took `lock` here and the
+     * module's own `aWriterPausedAfterRenameCannotProduceAStableView` hung on it: a writer
+     * paused between rename and generation bump holds the lock, and the reader waited forever.
+     * Summaries are written through [atomicWriteLocked], so a reader sees either the previous
+     * file or the new one, never a torn one; an unreadable file reads as null, which the caller
+     * reports rather than treating as absent.
+     */
+    fun readSummary(index: String, session: String): JSONObject? {
+        val f = summaryFile(index, session)
+        if (!f.isFile) return null
+        return runCatching { JSONObject(f.readText()) }.getOrNull()
+    }
+
     /** The current write generation for this root. Changes on every mutation, never decreases. */
     fun generation(): Long = generationFor(root).get()
 
@@ -271,15 +347,22 @@ class PremiumCaptureStore(val root: File) {
             return WriteResult(REFUSED_SESSION_BYTES, finalBytes,
                 "$kind would take the session to ${session0 + finalBytes} B against $budget B " +
                     "(cap $MAX_BYTES_PER_INDEX_SESSION B less $SUMMARY_RESERVE_BYTES B reserve)")
-        // evidence must leave the control/status reserve intact, so the stop action and the
-        // status that reports a full store remain writable at capacity
-        val globalBudget = MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES
+        // Evidence must leave the control/status reserve intact, so the stop action and the
+        // status that reports a full store remain writable at capacity. It must also leave the
+        // DIAGNOSTIC reserve intact, so the summary that records WHY the store is full can still
+        // be written after evidence has been refused. A summary may use that second reserve;
+        // nothing else may.
+        val globalBudget = if (kind == KIND_SUMMARY) MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES
+        else MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
         val global0 = globalBytes()
         if (global0 + finalBytes > globalBudget)
             return WriteResult(REFUSED_GLOBAL_BYTES, finalBytes,
                 "$kind would take the store to ${global0 + finalBytes} B against " +
                     "$globalBudget B (cap $MAX_BYTES_GLOBAL B less $CONTROL_RESERVE_BYTES B " +
-                    "control reserve); nothing is deleted to make room")
+                    "control reserve" +
+                    (if (kind == KIND_SUMMARY) "" else
+                        " less $DIAGNOSTIC_RESERVE_BYTES B diagnostic reserve") +
+                    "); nothing is deleted to make room")
         return null
     }
 
