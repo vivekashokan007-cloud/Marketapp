@@ -104,3 +104,91 @@ Pricing assumptions declared before scoring: Black-Scholes European, r = 0, ACT/
 After-cost Paper P&L is long premium only: entry at **ask**, exit at **bid**, dated lot
 (NF 65, BNF 30), fees at the plan's ₹20 / ₹30 sensitivity. Depth is reported from
 `bid_qty_raw` / `ask_qty_raw`. **Quote age is not carried in these records.**
+
+---
+
+## Addendum 3 — corrected premium repricing (13 Nov 2026, `premium_repricing_v2.py`)
+
+Supersedes the "60-minute premium comparison" block above for all future runs. The three
+corrections are the clock, the anchoring form, and the underlying reference. The earlier
+block's pricing assumptions — session-fraction time and index spot with `r = 0` — are
+**withdrawn as defective**, not merely refined.
+
+### Clock
+
+| rule | value |
+|---|---|
+| convention | one ACT/365 **calendar** term throughout |
+| time to expiry | `T(ts) = (expiry_ts − ts) / 365 days`, elapsed calendar time |
+| expiry timestamp | **15:30 IST on each contract's own expiry date** — stated assumption |
+| expiry source | read **per contract** from `pinned_contracts[].expiry`, never per session (on 2026-11-12 NIFTY is the 17 Nov weekly and BANKNIFTY the 23 Nov monthly) |
+| rejection | a forecast target at or after expiry is rejected (`rej_target_at_or_after_expiry`) |
+| runtime assertion | a 60-minute hold must consume 60.0000 calendar minutes, asserted before any scoring |
+
+The withdrawn rule mixed a 375-minute session fraction into the calendar term: a 60-minute
+hold consumed **230.40 calendar minutes (3.84×)** and `T0` overstated time to expiry by
+**0.73 calendar days**.
+
+### Underlying reference
+
+| rule | value |
+|---|---|
+| forward | `F = K + (C_mid − P_mid)` by put-call parity, **DF = 1**, median over paired strikes at that minute |
+| consistency gate | cross-strike dispersion of the per-strike estimates must be ≤ 25 points, else the minute is refused (`fwd_rej_strike_dispersion`) |
+| discounting | `DF = 1` in both the parity derivation and the pricer, so the two are mutually consistent |
+| spot-based models | retained for comparison, and labelled as using index spot, **not** the options' own forward |
+
+### Anchoring
+
+| rule | value |
+|---|---|
+| anchored forecast | `observed_entry_mid + (model_exit − model_entry)` |
+| information used | entry-time only; no future observation enters an anchored forecast |
+| reporting | entry basis error is reported separately, signed and absolute, and also in implied-vol points via numerical vega, so a level error is never read as forecast skill |
+
+### Price bounds
+
+`max(intrinsic, 0) ≤ price`, `call ≤ underlying`, `put ≤ strike`, applied inside the pricer.
+
+### Ranked models and diagnostics
+
+| name | definition | ranked |
+|---|---|---|
+| `PERSIST` | exit premium equals the observed entry mid | yes |
+| `E0_IV` | E0 spot sample, unchanged IV, calendar clock, **index spot**, unanchored | yes |
+| `E0_IV_ANCH` | the same, entry-anchored | yes |
+| `E0_FWD` | E0 sample applied to the **parity forward**, unchanged IV, unanchored, no fitted offset | yes |
+| `E0RV_IV_ANCH` | corrected E0+RV, entry-anchored, on its common sample | yes, sensitivity only |
+| `ORACLE_UNANCH` / `ORACLE_ANCH` / `ORACLE_FWD` | realised exit spot or its return, unchanged IV | **no — use future data, diagnostic only** |
+
+Interval coverage and width are reported as `--` for single-point forecasts (`PERSIST` and
+every oracle); a degenerate interval has no coverage to report.
+
+### Denominators and coverage
+
+Reported separately, never collapsed: entry quotes admitted; those with a **nominal** t+60
+inside the capture; matched same-contract pairs; E0-eligible; E0-scored. A missing realised
+exit spot excludes the **oracle alone**. Event-time and receipt-time clock coverage are
+counted separately. Rejection reasons are retained individually under `rej_*`.
+
+### Uncertainty
+
+One session gives no session-level uncertainty. The only clustering unit is the contract, so
+the reported test is a **paired per-contract sign test** against persistence across the six
+contracts per index (`p = 2^−6 = 0.016` when unanimous). No cluster bootstrap over sessions
+is claimed.
+
+### Proxy labels that remain in force
+
+Quote **event age is unverified** — 0 of 318 (NF) and 0 of 323 (BNF) records carry a verified
+quote event clock, though receipt time is present on all. Quantity units are unverified and
+displayed depth is treated as raw quantity. The dated lot is **assumed** (NF 65, BNF 30), not
+resolved from a dated authority. Prices and ask-to-bid P&L are **proxies**.
+
+**IV units — resolved empirically for this session only.** A joint `(F, σ)` least-squares fit
+to the six observed mids recovers the recorded Greeks IV to **0.02 points (NIFTY: 17.75 fitted
+vs 17.77 recorded)** and **0.07 points (BANKNIFTY: 18.95 vs 19.02)**, residual rms 0.76 and
+1.55 points, so the recorded IV is annualised percent here. Priced off the parity forward with
+each contract's own recorded IV, the entry residual is **0.293 vol points (NIFTY)** and
+**0.182 (BANKNIFTY)**. The export still declares `iv_unit_status: UNKNOWN`; this fit is
+evidence on one session and does not amend the export's own contract.
