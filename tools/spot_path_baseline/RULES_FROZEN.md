@@ -192,3 +192,72 @@ vs 17.77 recorded)** and **0.07 points (BANKNIFTY: 18.95 vs 19.02)**, residual r
 each contract's own recorded IV, the entry residual is **0.293 vol points (NIFTY)** and
 **0.182 (BANKNIFTY)**. The export still declares `iv_unit_status: UNKNOWN`; this fit is
 evidence on one session and does not amend the export's own contract.
+
+---
+
+## Addendum 4 — R1 corrections to premium repricing (13 Nov 2026, contract 2.1)
+
+Review found three defects in Addendum 3's harness and two overstatements in its reporting.
+All five are corrected. **Three of the defects were latent on 2026-11-12** — they did not
+change that session's numbers — and are fixed because they would fire on other captures, not
+because they moved a result. That distinction is recorded so a future reader does not mistake
+the rerun's unchanged figures for evidence that the defects were harmless.
+
+### Parity inputs
+
+| rule | value |
+|---|---|
+| leg matching | a call pairs with a put only when **underlying, expiry AND strike** all agree. Addendum 3 keyed by strike alone, so legs from different expiries could pair. |
+| availability | both legs must come from the **same acquisition envelope**, so they share one receipt instant; legs are never borrowed across envelopes |
+| minimum pairs | **≥ 2** valid pairs (`MIN_FWD_PAIRS`) before the dispersion gate may pass. The spread of a single estimate is identically zero, so one pair passed a consistency check that checked nothing. |
+| dispersion gate | unchanged at ≤ 25 points, applied only once ≥ 2 pairs exist |
+| refusals | `fwd_rej_too_few_pairs`, `fwd_rej_strike_dispersion`, counted and reported |
+
+Latency on 2026-11-12: each index pins exactly **one** expiry, and every admitted minute
+carries **2 or 3** pairs, never 1. Both defects were therefore inert on that session.
+
+### Forecast cutoff
+
+| rule | value |
+|---|---|
+| cutoff | the slot's **envelope receipt instant** (`clocks.acquisition_response_ms`), not the nominal minute boundary. No quote exists at the boundary: all 641 records arrive **5.59–7.02 s** after their nominal minute begins. |
+| entry clock | `T0 = tte(receipt(m0))` |
+| exit matching | the t+60 quote is matched by **its own receipt instant**, and the realised hold is `receipt(m1) − receipt(m0)` |
+| horizon gate | realised hold must be **3600 ± 5 s** (`HORIZON_TOL_S`), else `rej_horizon_out_of_tolerance`. Observed on 2026-11-12: **3599.07–3601.09 s**. |
+| exchange event age | **UNKNOWN wherever unverified.** 0 of 641 records carry a verified quote event clock. A receipt instant bounds when a price *could have been known*; it never establishes how old the price was. |
+
+Effect on 2026-11-12: every time-dependent model shifts by **1e-4 to 1e-8** CRPS points and
+`PERSIST`, which has no time dependence, shifts by **exactly zero** — the expected control.
+5.8 seconds out of a 5–11 day expiry.
+
+### Price bounds
+
+Applied in the pricer **and again after the entry anchor is added**, in every anchored model
+and in the anchored realised-spot diagnostic: `max(intrinsic, 0) ≤ price`,
+`call ≤ underlying`, `put ≤ strike`. Addendum 3 bounded the model price and then added the
+anchor, so an anchored price could fall below intrinsic.
+
+Latency on 2026-11-12: **0 of 2370 (NF) and 0 of 2420 (BNF)** real anchored samples breached
+intrinsic. A −3 % synthetic probe produced 21 breaches, which is why the guard exists.
+
+### Record-to-envelope join
+
+Validated before scoring, each failure counted by reason: `rej_envelope_unresolved`,
+`rej_envelope_slot_mismatch`, `rej_envelope_without_receipt_clock`,
+`rej_envelope_without_acquisition_id`, `rej_envelope_duplicate_acquisition_id`,
+`rej_envelope_without_slot`. On 2026-11-12 all are zero: 53 and 54 envelopes, 318 and 323
+records, no mismatch.
+
+### Two reporting overstatements, withdrawn
+
+| withdrawn claim | replacement |
+|---|---|
+| a sign test over the six contracts at `p = 2⁻⁶ = 0.016` | **no inferential statistic from contracts.** The six are three strikes × two sides on one underlying over one session and share the same spot path, so they are not independent. Per-contract agreement is **descriptive only**, and six contracts from one session are descriptive evidence. |
+| the forward basis sign as a plan prediction whose failure halts the read | the **sign and size of the basis are diagnostics**. A positive BANKNIFTY basis is a market observation, not a data fault, and alone it leaves an otherwise valid session eligible. |
+
+### Ranking
+
+Primary comparison is **`E0_FWD` vs `PERSIST`** on matched rows; `E0_IV_ANCH` is secondary;
+all three oracles stay outside the ranking. **CRPS and MAE are both reported every time**: on
+2026-11-12 `E0_FWD` won on CRPS and lost on MAE for both indices, and that split is reported
+as a split, never as an unqualified improvement.

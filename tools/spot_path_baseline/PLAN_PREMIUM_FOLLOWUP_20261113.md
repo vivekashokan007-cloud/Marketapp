@@ -1,98 +1,134 @@
-# Frozen follow-up plan — premium repricing confirmation
+# Frozen plan — premium repricing research check
 
-**Dated 13 November 2026 IST. Frozen before any fresh session is evaluated.**
+**Dated 13 November 2026 IST. Revision R1, frozen before any fresh session is scored.**
 
-The 12 November run is **development evidence**. It found and fixed three defects in the
-scoring harness, so it cannot also serve as confirmation of the conclusions it produced.
-This plan fixes what will be measured, on what, and what each outcome will be allowed to
-mean, so that the fresh-session test cannot be re-specified after its result is seen.
+R1 supersedes the plan first written earlier today, on review. Three things changed and are
+recorded here rather than quietly edited away:
+
+- The **spot–forward basis is a diagnostic, not a gate.** The earlier plan made "BANKNIFTY's
+  basis stays negative" a prediction whose failure would halt the read. That was wrong: a
+  positive BANKNIFTY basis is a market observation, not a data fault, and alone it leaves an
+  otherwise valid session eligible.
+- **No inferential statistic is computed from the six contracts.** The earlier plan claimed a
+  sign test at `p = 2⁻⁶ = 0.016`. Those six contracts are three strikes × two sides on one
+  underlying over one session: they share the same spot path, so they are not independent and
+  that p-value was not available. Per-contract agreement is reported as **descriptive** only.
+- The harness is **contract 2.1**, which fixes the parity inputs, the forecast cutoff and the
+  post-anchor price bounds.
+
+The 12 November run is **development evidence**. It found and fixed defects in its own
+harness, so it cannot also confirm the conclusions it produced.
 
 ## 1 · What is frozen
 
-Everything in `RULES_FROZEN.md` Addendum 3: the ACT/365 calendar clock with a 15:30 IST
-per-contract expiry timestamp and the 60-calendar-minute runtime assertion; the parity
-forward `F = K + (C_mid − P_mid)` with `DF = 1` and the 25-point cross-strike dispersion
-gate; the anchoring form `observed_entry_mid + (model_exit − model_entry)`; the price
-bounds; the five ranked models and three oracle diagnostics; the denominator set; the
-paired per-contract sign test; and every proxy label.
-
-Frozen artifacts:
+Everything in `RULES_FROZEN.md` Addenda 3 and 4: the ACT/365 calendar clock measured from the
+**envelope receipt instant**, with a 15:30 IST per-contract expiry timestamp and the realised
+receipt-to-receipt horizon gated at 3600 ± 5 s; the parity forward `F = K + (C_mid − P_mid)`
+with `DF = 1`, matched on **(underlying, expiry, strike)** within **one envelope**, requiring
+**≥ 2 pairs** before the ≤ 25-point dispersion gate may pass; the anchoring form
+`observed_entry_mid + (model_exit − model_entry)` with price bounds re-applied **after**
+anchoring, including in the anchored realised-spot diagnostic; the ranked set and the three
+oracle diagnostics; the denominator set; and every proxy label.
 
 | item | identity |
 |---|---|
-| harness | `tools/spot_path_baseline/premium_repricing_v2.py` at the commit recorded in the reply |
-| rules | `tools/spot_path_baseline/RULES_FROZEN.md`, Addendum 3 |
+| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.1` |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 28 checks, all passing |
+| rules | `RULES_FROZEN.md`, Addenda 3 and 4 |
 | spot history | `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186` |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
 
-No constant, model, gate, metric or denominator in that set may be changed for the
-confirmation run. A change to any of them restarts this plan under a new date.
+No constant, model, gate, metric or denominator in that set may change for the research check.
+A change to any of them restarts this plan under a new date and revision.
 
-## 2 · Primary question
+## 2 · Primary comparison
 
-**Does E0 spot information price the 60-minute premium better than assuming the premium
-does not move, once the clock and the underlying reference are correct?**
+**`E0_FWD` against `PERSIST`**, by mean CRPS, per index, on **matched rows** — identical
+contract, forecast cutoff and exit observation.
 
-The pre-registered primary comparison is **`E0_FWD` against `PERSIST`**, by mean CRPS, per
-index, decided by the paired per-contract sign test.
+`E0_FWD` is primary because it uses no fitted offset and no future observation, so it cannot
+be argued to have absorbed a level error through a free parameter. `E0_IV_ANCH` is reported
+as **secondary**. All three oracles stay outside the forecast ranking.
 
-`E0_FWD` is primary rather than the anchored variants for one reason: it uses no fitted
-offset and no future observation, so it cannot be argued to have absorbed the level error
-through a free parameter. The anchored variants are reported beside it as secondary.
+A known split in the development evidence, carried forward deliberately: `E0_FWD` improved
+CRPS against persistence on both indices while its **point-forecast MAE was worse** (NIFTY
+24.41 vs 24.35, BANKNIFTY 52.98 vs 47.91). CRPS scores the whole predictive distribution and
+MAE only its median, so a wider but better-placed distribution can win one and lose the
+other. **Both are reported every time**, and a CRPS win accompanied by an MAE loss is
+reported as exactly that, never as an unqualified improvement.
 
-## 3 · Pre-registered predictions
+## 3 · What is recorded as diagnostic
 
-Stated now, before fresh data, so they can fail.
+Reported every session, never used to admit or refuse one:
 
-| # | prediction | fails if |
-|---|---|---|
-| P1 | BANKNIFTY's forward basis stays negative in every admitted minute | any admitted minute shows `F ≥ spot` |
-| P2 | NIFTY's forward basis stays small, inside ±0.1 % | the mean basis leaves that band |
-| P3 | Entry basis error priced off the parity forward stays under 0.5 implied-vol points for both indices | either index exceeds it |
-| P4 | `E0_FWD` beats `PERSIST` on mean CRPS for both indices | either index fails to beat it |
-| P5 | `E0_FWD` beats `PERSIST` on at least 5 of 6 contracts per index | fewer on either index |
-| P6 | Spot-based unanchored `E0_IV` is worse than `E0_FWD` for BANKNIFTY | it is not |
-| P7 | `E0RV_IV_ANCH` does not beat `E0_IV_ANCH` on the common sample for both indices | it beats it on both |
+- the **sign and size** of the spot–forward basis, per index, with its range;
+- entry basis error under both underlyings, in points and in implied-vol points;
+- cross-strike dispersion of the parity forward and pairs per minute;
+- the realised receipt-to-receipt horizon distribution;
+- all three oracle diagnostics.
 
-P1–P3 test whether the 12 November market structure and data contract hold at all. P4–P6
-test the forecast conclusion. P7 carries forward the premium-side RV finding.
+## 4 · Eligibility and exclusions
 
-## 4 · Sessions and stopping rule
+A session is eligible when it yields matched rows under the frozen gates. A **minute** is
+refused only for a stated data reason: fewer than 2 valid parity pairs, cross-strike
+dispersion above 25 points, a realised horizon outside 3600 ± 5 s, an unresolved
+record-to-envelope join, a missing receipt clock, a one-sided or non-positive book, an
+unverified or disagreeing identity, a missing entry spot or IV, a target at or after expiry,
+or fewer than 5 prior sessions in the E0 pool. Every refusal is counted by reason and
+reported. A missing realised exit spot excludes the **oracle alone**.
 
-- **Minimum three fresh sessions**, each a session not yet examined for premium research,
-  each with its own export captured under the existing pilot rules.
-- Every session is scored **independently and reported separately** before any pooling.
-- Pooling, if any, is by **session-level mean**, never by row, because rows inside one
-  session are heavily correlated across minutes and strikes.
-- The run order is fixed by date. No session is dropped after its result is seen; a session
-  may be excluded only for a **pre-stated data reason** — missing authority spot, no admitted
-  two-sided book, or a cross-strike dispersion refusal — and the reason is recorded.
-- No result is reported as confirmation until all three sessions have been scored.
+Nothing is refused on the basis sign, on the magnitude of a model's error, or on any
+outcome-dependent quantity.
 
-## 5 · What each outcome is allowed to mean
+## 5 · Sessions and stopping rule
+
+- **Three fresh sessions** for an initial research check, each not yet examined for premium
+  research, each captured under the existing pilot rules.
+- Each session is scored **independently and reported separately**, with CRPS, MAE, interval
+  coverage and exclusions **by session and index**, before any pooling.
+- Pooling, if any, is by **session-level mean**, never by row and never by contract: rows
+  within a session share one spot path.
+- Run order is fixed by date. No session is dropped after its result is seen; exclusion
+  requires a pre-stated data reason from §4, recorded with its counts.
+
+## 6 · What each outcome is allowed to mean
 
 | outcome | permitted conclusion |
 |---|---|
-| P4 and P5 hold on all three sessions, per index | the 60-minute E0 premium challenger is confirmed **for research**, for that index. Still no activation claim, no ranking change, no change to v7, gates, sizing, exits or teacher fee. |
-| P4 holds but P5 fails, or results split across sessions | **inconclusive**; report and widen the session count before any further claim |
-| P4 fails on either index | the 12 November result does not generalise for that index; record it and stop that line |
-| P1, P2 or P3 fails | the data contract or market structure changed. **Stop and re-diagnose before reading any forecast result** — a forecast score computed on a broken underlying is what produced the defect this plan exists to correct. |
+| `E0_FWD` beats `PERSIST` on CRPS in all three sessions for an index | the 60-minute E0 premium challenger is supported **for research** on that index. Still no activation claim and no change to v7 ranking, gates, sizing, exits, teacher fee or notifications. |
+| it wins in two of three, or wins on CRPS while losing on MAE throughout | **inconclusive**; report both metrics and widen the session count before any further claim |
+| it fails in two or more sessions for an index | the 12 November result does not generalise for that index; record it and stop that line |
+| entry basis error under the forward exceeds ~0.5 implied-vol points, or the parity forward stops agreeing across strikes | **stop and re-diagnose the data contract before reading any forecast number.** A forecast score computed on a broken underlying is what produced the defect this plan exists to correct. This is a data-quality halt, not a market finding. |
 
-## 6 · Explicitly out of scope for this checkpoint
+## 7 · Explicitly out of scope
 
-- Any IV-change model. The 12 November evidence now says the unchanged-IV assumption was
-  **not** the binding error once the underlying is correct, so an IV-dynamics model is not
-  justified by it and is not pre-registered here.
+- **Any IV-change model.** Deferred on review. The corrected evidence says the unchanged-IV
+  assumption was not the binding error once the underlying is right, so nothing here
+  pre-registers an IV-dynamics model.
 - Any change to live behaviour: v7 ranking, entry gates, sizing, exits, teacher fee,
   notification policy, the b529 phone smoke, or the frozen t203 pilot.
-- Execution or activation claims of any kind. The P&L figures stay proxies while quote event
-  age, quantity units and the dated lot authority are unresolved.
+- Execution or activation claims. Ask-to-bid P&L stays a **proxy** while quote freshness,
+  quantity units and dated lot authority are unresolved.
 - Full-session, next-session and multi-day horizons, which remain on the agreed forward path
   under their own rules.
 
-## 7 · Return format for the confirmation run
+## 8 · Evidence needed to run the confirmation
+
+For each of the three fresh sessions, one `mr_session_evidence_<date>.json` export carrying,
+per index: `premium.indices[ix].records` with `bbo.bid_raw` / `ask_raw` and
+`iv.iv_greeks_raw`; `premium.indices[ix].slot_envelopes` with `acquisition_id`, `slot` and
+`clocks.acquisition_response_ms`; `pinned_contracts` with `instrument_key`, `option_type`,
+`strike` and `expiry`; and `parts.authority_doc.history[ix][].spot` with `value` and `asof`.
+Slots must span at least 60 minutes beyond the first so a t+60 target exists, and at least two
+strikes must carry **both** a call and a put in the same expiry at the same minute, or the
+parity forward is refused and `E0_FWD` cannot be scored.
+
+Plus a spot-history file covering **at least 5 prior sessions** at the same minute grid as the
+session's slots, in the frozen `{d, t, nf, bnf}` JSONL form.
+
+## 9 · Return format
 
 Commit, patch against its stated base, checksum manifest, replay commands, rule and input
-hashes, per-session tables by index, the P1–P7 outcome list stated as pass or fail, exclusion
-counts with reasons, and a proposed decision per index. Any deviation from this plan is
-reported as a deviation, with its reason, and not presented as a planned analysis.
+hashes, per-session tables by index with CRPS, MAE, coverage and exclusion counts, the
+diagnostics of §3, and a proposed decision per index. Any deviation from this plan is reported
+as a deviation, with its reason, not presented as a planned analysis.
